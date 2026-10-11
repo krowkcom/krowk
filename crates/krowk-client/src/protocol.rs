@@ -266,6 +266,45 @@ impl Usage {
     }
 }
 
+/// Who runs a subagent's loop (R-SUB-7).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RanBy {
+    /// krowk's own loop, through its `subagent` tool.
+    #[default]
+    Krowk,
+    /// Claude Code's `Agent` tool.
+    Claude,
+    /// A Codex child thread.
+    Codex,
+}
+
+/// Where a subagent stands, as its `subagent.status` says (R-SUB-9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ChildState {
+    Running,
+    Done,
+    Interrupted,
+    Failed,
+}
+
+/// The tool call a subagent is in, and when it began (ms since the epoch).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ChildTool {
+    pub name: String,
+    pub started_ms: i64,
+}
+
+/// What a subagent waits on the person for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Waiting {
+    Approval,
+    Question,
+}
+
 /// How a turn ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -735,6 +774,14 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         agent: Option<String>,
         model: ModelRef,
+        /// Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.
+        /// A log written before the field existed reads as `krowk`.
+        #[serde(default)]
+        ran_by: RanBy,
+        /// The backend's own id for it: Claude Code's `task_id`, Codex's
+        /// thread id. Absent for krowk's own.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        backend_id: Option<String>,
     },
     /// The session's todo list, whole, as `todo_write` last set it
     /// (R-TODO-2): each write replaces the list before it.
@@ -812,6 +859,13 @@ pub enum LogBody {
         /// priced the turn's calls at.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reported_cost_usd: Option<f64>,
+        /// What a backend counted a child it ran as having used (the
+        /// tokens of the child's last `subagent.status`), in a backend
+        /// child's own log, whose `usage` is empty: its calls are metered
+        /// as the parent's `subagent.response`. What a replay draws the
+        /// child's row with; never spend.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reported_tokens: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
     },
@@ -883,8 +937,37 @@ pub enum LiveEvent {
     /// changes — during a turn and between turns alike. Between turns it
     /// reaches a host's watchers (`Host::watch`) rather than a turn's
     /// stream. Empty when the last one has finished.
+    ///
+    /// **Deprecated** (R-SUB-7): a backend's agent is a child session of
+    /// its own, named by the session's `subagent.started` — whose
+    /// `backendId` is the `taskId` here — and followed by `subagent.status`.
+    /// Still sent for clients older than those; a client that reads them
+    /// counts and shows the child, not this frame's entry for it.
     #[serde(rename = "backend.agents")]
     BackendAgents { session_id: String, agents: Vec<BackendAgent> },
+    /// How many background jobs and background children the session has
+    /// running (R-STEER-2, R-STEER-3), each time it changes: during a turn
+    /// and between turns alike, to a host's watchers (`Host::watch`).
+    #[serde(rename = "background")]
+    Background { session_id: String, running: u32 },
+    /// A subagent's state, under its own session id (R-SUB-9): sent on
+    /// every change of it — a tool starts or ends, an approval or a
+    /// question waits or is answered, a response completes, the child ends
+    /// — and never per text delta. Timestamps, not durations, so every
+    /// client reads how long against its own clock.
+    #[serde(rename = "subagent.status")]
+    SubagentStatus {
+        session_id: String,
+        status: ChildState,
+        /// The call it is in, or null.
+        tool: Option<ChildTool>,
+        /// When anything last arrived from it (ms since the epoch).
+        last_event_ms: i64,
+        /// What it waits on the person for, or null.
+        waiting: Option<Waiting>,
+        /// What it has used so far.
+        tokens: i64,
+    },
     /// A backend began a turn nobody prompted — Claude Code answering a
     /// background agent that finished — and it waits for `continue`. Sent
     /// to a host's watchers, between turns.
@@ -981,7 +1064,7 @@ impl StreamLine {
             StreamLine::Log(ev) => &ev.session_id,
             StreamLine::Live(LiveEvent::ItemStarted { session_id, .. } | LiveEvent::ItemDelta { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Cost { session_id, .. } | LiveEvent::Notice { session_id, .. } | LiveEvent::Limits { session_id, .. }) => session_id,
-            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. }) => session_id,
+            StreamLine::Live(LiveEvent::BackendAgents { session_id, .. } | LiveEvent::TurnUnprompted { session_id, .. } | LiveEvent::Background { session_id, .. } | LiveEvent::SubagentStatus { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) => &r.session_id,
             StreamLine::Live(LiveEvent::ApprovalResolved { session_id, .. }) => session_id,
             StreamLine::Live(LiveEvent::Result(r)) => &r.session_id,
@@ -1230,6 +1313,11 @@ pub struct HostStatus {
     /// (before 0.14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<u32>,
+    /// Those sessions, by id: a client resuming one learns whether work of
+    /// its — a backend's agent run in the background — still goes on here.
+    /// None from a daemon that does not name them (before 0.14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_sessions: Option<Vec<String>>,
     /// The sessions it has run since it started, newest first.
     pub sessions: Vec<HostSession>,
 }

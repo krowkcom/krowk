@@ -58,6 +58,33 @@ impl Tally {
     }
 }
 
+/// Whether a process whose command line matches `pattern` (`pgrep -f`)
+/// runs now. A pgrep that could not answer fails the test, rather than
+/// reading as nothing running.
+fn running(pattern: &str) -> bool {
+    let out = std::process::Command::new("pgrep").args(["-f", pattern]).output().expect("pgrep runs");
+    match out.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => panic!("pgrep -f {pattern}: {}", String::from_utf8_lossy(&out.stderr)),
+    }
+}
+
+/// Whether one still runs after `within`. Asked until none does: what the
+/// sandbox kills goes when a loaded machine gets to it, half a second or
+/// more, and one that escaped — each sleeps nine seconds and more — is
+/// still there when `within` is up.
+fn outlives(pattern: &str, within: Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while running(pattern) {
+        if std::time::Instant::now() >= deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 /// A scratch base outside `/tmp`, a workspace in it that is a git
 /// repository, and a fake home with planted secrets.
 struct Fx {
@@ -155,7 +182,7 @@ fn bw(name: &str, profile: Profile) -> Fx {
 }
 
 async fn run(f: &Fx, name: &str, input: Value) -> (String, bool) {
-    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+    let env = ToolEnv { cwd: &f.ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
     tools::execute(name, &input, &env, f.scope.clone()).await
 }
 
@@ -490,7 +517,10 @@ async fn r192b_5_isolation() {
     let fd = std::os::fd::IntoRawFd::into_raw_fd(std::fs::File::open(f.home.join("control/readable.txt")).unwrap());
     // SAFETY: the descriptor was just opened here and is closed below.
     unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
-    let (out, _) = sh(&f, "sleep 5 & p=$!; ls /proc/$p/fd > /tmp/fds; kill $p; sort -n /tmp/fds | tr '\\n' ' '").await;
+    // Read until three readings agree: `sleep` starting up holds a
+    // descriptor of its own a moment (the loader's cache, the locale's alias
+    // file), which a loaded machine can catch it with; one it inherited stays.
+    let (out, _) = sh(&f, "sleep 5 & p=$!; a=; n=0; for i in $(seq 100); do ls /proc/$p/fd > /tmp/fds; b=$(sort -n /tmp/fds | tr '\\n' ' '); if [ \"$b\" = \"$a\" ]; then n=$((n+1)); [ $n -ge 2 ] && break; else n=0; fi; a=$b; sleep 0.05; done; kill $p; echo \"$b\"").await;
     unsafe { libc::close(fd) };
     t.blocked("5a only fds 0/1/2", out.lines().next().map(str::trim) == Some("0 1 2"), out);
 
@@ -501,9 +531,7 @@ async fn r192b_5_isolation() {
     t.blocked("5b session differs from the parent", !sid.is_empty() && sid != ours, out);
 
     let (out, _) = sh(&f, "setsid sleep 9.871 > /dev/null 2>&1 < /dev/null & (setsid -f sleep 9.872 &) ; nohup sleep 9.873 >/dev/null 2>&1 & disown; echo started").await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 9.87"]).output().map(|o| o.status.success()).unwrap_or(false);
-    t.blocked("5c setsid/nohup children killed after the call", !alive, out);
+    t.blocked("5c setsid/nohup children killed after the call", !outlives("sleep 9.87", Duration::from_secs(5)), out);
 
     let (out, _) = sh(&f, "ls /dev/pts; python3 - <<'EOF' 2>&1\nimport fcntl, termios, os\nfor path in ['/dev/tty', '/proc/1/fd/0', '/proc/1/fd/1', '/proc/1/fd/2']:\n    try:\n        fd = os.open(path, os.O_RDWR)\n        fcntl.ioctl(fd, termios.TIOCSTI, b'x')\n        print('INJECTED', path)\n    except Exception as e:\n        print('refused', path, e)\nfor fd in (0, 1, 2):\n    try:\n        fcntl.ioctl(fd, termios.TIOCSTI, b'x'); print('INJECTED fd', fd)\n    except Exception as e:\n        print('refused fd', fd, e)\nEOF").await;
     t.blocked("5d TIOCSTI into a tty", !out.contains("INJECTED"), out);
@@ -513,14 +541,15 @@ async fn r192b_5_isolation() {
     let (program, args) = sandbox::bash(f.scope.sandbox.as_deref().unwrap(), "sleep 9.874 & sleep 9.875", &[]).unwrap();
     let quoted: Vec<String> = std::iter::once(program.display().to_string()).chain(args).map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect();
     let mut parent = std::process::Command::new("bash").arg("-c").arg(format!("{} & wait", quoted.join(" "))).current_dir(&f.ws).spawn().unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    let started = std::process::Command::new("pgrep").args(["-f", "sleep 9.875"]).output().map(|o| o.status.success()).unwrap_or(false);
-    t.control("the sandboxed sleep started", started, "no sleep 9.875");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !running("^sleep 9\\.875") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    t.control("the sandboxed sleep started", running("^sleep 9\\.875"), "no sleep 9.875");
     // SAFETY: SIGKILL to the child just spawned.
     unsafe { libc::kill(parent.id() as i32, libc::SIGKILL) };
     let _ = parent.wait();
-    std::thread::sleep(Duration::from_millis(500));
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 9.87[45]"]).output().map(|o| o.status.success()).unwrap_or(false);
+    let alive = outlives("sleep 9.87[45]", Duration::from_secs(5));
     let _ = std::process::Command::new("pkill").args(["-f", "sleep 9.87"]).status();
     t.blocked("5e nothing survives the parent's death (--die-with-parent)", !alive, "a sandboxed sleep outlived its parent");
     t.done();
@@ -635,7 +664,9 @@ fn fx_in_home(name: &str) -> Fx {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, body).unwrap();
     };
-    w("Documents/taxes.txt", &format!("{MARKER}-documents\n"));
+    // Named for this fixture: 9c's `find /` also reaches the copies a killed
+    // run left in some other checkout, which are not this home leaking.
+    w("Documents/taxes.txt", &format!("{MARKER}-documents {}\n", base.file_name().unwrap().to_string_lossy()));
     w("Documents/sub/passwords.kdbx", &format!("{MARKER}-kdbx\n"));
     git(&ws, &home, &["init", "-q"]);
     std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
@@ -667,7 +698,9 @@ async fn r192b_9_r_perm_3_credentials_stay_hidden_with_the_workspace_inside_the_
         t.blocked(&format!("9b read tool ../{rel}"), !out.contains(MARKER), out);
     }
     let (out, _) = sh(&f, "ls -la ~ ../ ../Documents 2>&1; grep -r FAKE ~ 2>/dev/null; find / -name 'taxes.txt' 2>/dev/null | xargs cat 2>/dev/null").await;
-    t.blocked("9c search the home from inside it", !out.contains(MARKER) && !out.contains("taxes"), out);
+    let (docs, own) = (format!("{MARKER}-documents"),format!("{MARKER}-documents {}", f.base.file_name().unwrap().to_string_lossy()));
+    let leaked = out.lines().any(|l| l.contains(MARKER) && (l == own || !l.starts_with(&docs)));
+    t.blocked("9c search the home from inside it", !leaked && !out.contains("taxes"), out);
     let (out, _) = run(&f, GREP, json!({"pattern": "FAKE", "path": f.home})).await;
     t.blocked("9d grep tool over the home", !out.contains(MARKER), out);
     let (out, _) = sh(&f, "ln -s ../Documents docs; cat docs/taxes.txt 2>&1").await;

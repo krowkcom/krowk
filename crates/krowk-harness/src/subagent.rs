@@ -56,15 +56,16 @@
 use crate::agents::AgentDef;
 use crate::budget::Budget;
 use crate::catalog::{self, Listed};
-use crate::engine::Events;
+use crate::engine::{EngineEvent, Events};
 use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
-use crate::protocol::{ModelRef, PermissionMode, StreamLine, TurnStatus};
+use crate::protocol::{ChildState, ChildTool, Item, ItemKind, LiveEvent, ModelRef, PermissionMode, StreamLine, TurnStatus, Waiting};
 use crate::worktree::InUse;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Semaphore};
@@ -149,6 +150,9 @@ pub struct SubagentInput {
     #[serde(default)]
     #[schemars(with = "Isolation")]
     pub isolation: Option<Isolation>,
+    /// Answered at once; its summary arrives when it ends.
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
 }
 
 /// Where a subagent works: the parent's directory, or a git worktree of
@@ -185,6 +189,11 @@ impl AgentRun {
     /// Whether the turn offers the tool `name`, whose edit tool is `edit`.
     pub fn allows(&self, name: &str, edit: &str) -> bool {
         if name == SUBAGENT {
+            return false;
+        }
+        // A background job outlives the turn that starts it, and a
+        // subagent has one turn: it keeps none, and is offered no job tools.
+        if name == crate::tools::BASH_OUTPUT || name == crate::tools::KILL_BASH {
             return false;
         }
         match &self.tools {
@@ -321,6 +330,9 @@ pub(crate) struct ParentTurn {
     pub grants: crate::permissions::SessionGrants,
     /// Flips when the parent's turn is interrupted: every child follows.
     pub cancel: watch::Receiver<bool>,
+    /// The parent turn's steer queue, where a background child's summary
+    /// goes as a note (R-STEER-3).
+    pub steers: crate::engine::Steers,
 }
 
 pub(crate) struct Spawn {
@@ -336,6 +348,30 @@ pub(crate) struct Spawn {
     /// had no price: part of the parent turn's cost, as a backend's own
     /// subagents are part of theirs.
     pub spent: std::sync::Mutex<(f64, bool)>,
+    /// The children started in the background, by session id, and how
+    /// many of them still run: the turn does not complete while one does.
+    pub background: std::sync::Mutex<Vec<(String, tokio::task::JoinHandle<()>)>>,
+    pub running: std::sync::atomic::AtomicUsize,
+    /// Flipped to stop every child: by the parent's interrupt, and once the
+    /// turn is over, whatever children it leaves. `parent.cancel` follows
+    /// it.
+    pub stop: Arc<watch::Sender<bool>>,
+    /// Raised when a steer moves the batch of subagent calls running to
+    /// the background (R-STEER-4): each call still waiting on its child
+    /// answers at once, and the child reports back as a background one.
+    pub moving: watch::Sender<bool>,
+}
+
+/// Where a foreground child's answer goes: its call, until a steer moves
+/// the call on (`to` taken), when it goes to the parent as a note instead.
+type Answer = Arc<std::sync::Mutex<AnswerSlot>>;
+
+#[derive(Default)]
+struct AnswerSlot {
+    to: Option<tokio::sync::oneshot::Sender<(String, bool)>>,
+    /// The child has chosen to answer its call — its worktree applied to
+    /// the parent's checkout as a call's is — and is no longer moved.
+    bound: bool,
 }
 
 impl Subagents {
@@ -368,17 +404,163 @@ impl Subagents {
 
     /// One `subagent` call: the child's final summary, or why there is none.
     /// `item_id` is the call's result, where a wait for an agent slot is said.
+    /// In the background (R-STEER-3) the call is answered at once with the
+    /// child's session id, and its summary is a note for the parent's next
+    /// model call.
     pub async fn run(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
+        if input.get("run_in_background").and_then(Value::as_bool) == Some(true) {
+            return self.background_child(call_id, item_id, input, events);
+        }
+        let child = krowk_store::new_id();
+        let answer: Answer = Arc::default();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        answer.lock().unwrap_or_else(|e| e.into_inner()).to = Some(tx);
+        let task = self.spawn_child(call_id, item_id, input, events, child.clone(), answer.clone());
+        // Where the turn's end waits for it, whatever becomes of its call.
+        self.0.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
+        let mut moving = self.0.moving.subscribe();
+        let mut rx = rx;
+        let failed = || ("the subagent failed before it answered".to_string(), true);
+        tokio::select! {
+            r = &mut rx => return r.unwrap_or_else(|_| failed()),
+            _ = async { let _ = moving.wait_for(|m| *m).await; } => {}
+        }
+        if !self.moved(&answer) {
+            return rx.await.unwrap_or_else(|_| failed());
+        }
+        (format!("moved to background as agent {child}"), false)
+    }
+
+    /// Takes a child's answer from its call, and counts it as a background
+    /// child — first, so a child ending meanwhile leaves the count — unless
+    /// it has answered already.
+    fn moved(&self, answer: &Answer) -> bool {
+        let mut slot = answer.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.to.is_none() || slot.bound {
+            return false;
+        }
+        self.0.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.host.jobs.agent_started(&self.0.parent.session_id);
+        slot.to = None;
+        true
+    }
+
+    /// Starts a child on a task of its own — so a child that panics still
+    /// ends with an answer — whose answer goes to its call while `answer`
+    /// holds one, and as a note once a steer moved the call on.
+    fn spawn_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String, answer: Answer) -> tokio::task::JoinHandle<()> {
+        let me = self.clone();
+        let (call_id, item_id, input, events) = (call_id.to_string(), item_id.to_string(), input.clone(), events.clone());
+        tokio::spawn(async move {
+            let run = me.clone();
+            let id = child.clone();
+            let to_call = answer.clone();
+            let ran = tokio::spawn(async move { run.run_as(&call_id, &item_id, &input, &events, id, &to_call).await }).await;
+            let (text, failed, status) = ran.unwrap_or_else(|e| (format!("the subagent failed: {e}"), true, "failed"));
+            let to_call = answer.lock().unwrap_or_else(|e| e.into_inner()).to.take();
+            match to_call {
+                Some(tx) => {
+                    let _ = tx.send((text, failed));
+                }
+                None => me.ended_in_background(&child, status, &text),
+            }
+        })
+    }
+
+    /// A background child's end: its note on the parent turn's queue (or
+    /// held for the session's next turn), then the count let go of — the
+    /// note first, so a turn that sees none running has it waiting.
+    fn ended_in_background(&self, child: &str, status: &str, text: &str) {
+        let p = &self.0.parent;
+        let note = crate::engine::Steer::note(crate::jobs::note_of(child, status, &format!("{}\n", text.trim_end())));
+        if let Err(note) = p.steers.push(note) {
+            self.0.host.jobs.hold(&p.session_id, note);
+        }
+        self.0.running.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+        self.0.host.jobs.agent_ended(&p.session_id);
+    }
+
+    /// A batch of subagent calls begins: none of it has been moved.
+    pub fn batch_starts(&self) {
+        self.0.moving.send_replace(false);
+    }
+
+    /// A steer moves the batch's calls still running to the background.
+    pub fn move_running(&self) {
+        self.0.moving.send_replace(true);
+    }
+
+    /// How many of the turn's background children still run.
+    pub fn background(&self) -> usize {
+        self.0.running.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Stops every child still running, as an interrupt of the parent
+    /// would: the turn is ending without them.
+    pub fn stop_background(&self) {
+        // Every child of a turn that is over: a foreground one's call may
+        // have been let go of with the turn, its child running on alone.
+        let _ = self.0.stop.send(true);
+    }
+
+    /// Once the parent's turn is over: each child still running — in the
+    /// background, or a foreground one whose call was let go of with the
+    /// turn — is stopped and waited for, so its log ends with its turn.
+    pub async fn settle_background(&self) {
+        self.stop_background();
+        let children: Vec<(String, tokio::task::JoinHandle<()>)> = std::mem::take(&mut *self.0.background.lock().unwrap_or_else(|e| e.into_inner()));
+        for (_, task) in children {
+            let _ = task.await;
+        }
+    }
+
+    /// A `subagent` call run in the background: checked as far as it can be
+    /// before it starts, then started on a task of its own.
+    fn background_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events) -> (String, bool) {
+        if let Err(why) = self.check(input) {
+            return (why, true);
+        }
+        let child = krowk_store::new_id();
+        let spawn = &self.0;
+        spawn.running.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        spawn.host.jobs.agent_started(&spawn.parent.session_id);
+        // No call waits on it: its answer is a note from the start.
+        let task = self.spawn_child(call_id, item_id, input, events, child.clone(), Arc::default());
+        spawn.background.lock().unwrap_or_else(|e| e.into_inner()).push((child.clone(), task));
+        (format!("started background agent {child}"), false)
+    }
+
+    /// Whether a call could start: its input, its prompt, its agent and
+    /// its model.
+    fn check(&self, input: &Value) -> Result<(), String> {
+        let input = SubagentInput::deserialize(input).map_err(|e| format!("invalid input for subagent: {e}"))?;
+        if input.prompt.trim().is_empty() {
+            return Err("subagent needs a prompt: the whole task, since the subagent sees nothing else".into());
+        }
+        let def = self.resolve(input.agent.as_deref())?;
+        let (registry, p) = (self.0.host.registry(), &self.0.parent);
+        choose_model(def.and_then(|d| d.model.as_deref()), registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, self.0.host.cfg.agents.models.as_ref()).map(drop).map_err(|e| format!("the subagent could not start: {e}"))
+    }
+
+    /// One `subagent` call as the child `child`: its answer, whether it is
+    /// an error, and how its turn ended (`completed`, `interrupted`,
+    /// `failed`), for a background child's note.
+    async fn run_as(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String, answer: &Answer) -> (String, bool, &'static str) {
+        let (text, failed, status) = self.run_child(call_id, item_id, input, events, child, answer).await;
+        (text, failed, status.unwrap_or("failed"))
+    }
+
+    async fn run_child(&self, call_id: &str, item_id: &str, input: &Value, events: &Events, child: String, answer: &Answer) -> (String, bool, Option<&'static str>) {
         let input = match SubagentInput::deserialize(input) {
             Ok(i) => i,
-            Err(e) => return (format!("invalid input for subagent: {e}"), true),
+            Err(e) => return (format!("invalid input for subagent: {e}"), true, None),
         };
         if input.prompt.trim().is_empty() {
-            return ("subagent needs a prompt: the whole task, since the subagent sees nothing else".into(), true);
+            return ("subagent needs a prompt: the whole task, since the subagent sees nothing else".into(), true, None);
         }
         let def = match self.resolve(input.agent.as_deref()) {
             Ok(d) => d,
-            Err(why) => return (why, true),
+            Err(why) => return (why, true, None),
         };
         let host = &self.0.host;
         let cfg = &host.cfg;
@@ -387,7 +569,7 @@ impl Subagents {
         let choose = |asked| choose_model(asked, registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, cfg.agents.models.as_ref());
         let model = match choose(def.and_then(|d| d.model.as_deref())) {
             Ok(m) => m,
-            Err(e) => return (format!("the subagent could not start: {e}"), true),
+            Err(e) => return (format!("the subagent could not start: {e}"), true, None),
         };
         // A repository's definition is someone else's words until the
         // repository is trusted: it may pick a model of the parent's own
@@ -400,7 +582,7 @@ impl Subagents {
             Some(d) if d.project && model.instance != p.model.instance && !cfg.permissions.trusted.as_ref().is_some_and(|t| t(&crate::trust::root(&p.cwd))) => {
                 let fallback = match choose(None) {
                     Ok(m) => m,
-                    Err(e) => return (format!("the subagent could not start: {e}"), true),
+                    Err(e) => return (format!("the subagent could not start: {e}"), true, None),
                 };
                 let _ = events
                     .send(crate::engine::EngineEvent::Notice {
@@ -428,9 +610,9 @@ impl Subagents {
         let _permit = tokio::select! {
             permit = self.0.gate.clone().acquire_owned() => match permit {
                 Ok(permit) => permit,
-                Err(_) => return ("not run: the turn is ending".into(), true),
+                Err(_) => return ("not run: the turn is ending".into(), true, None),
             },
-            _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+            _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true, Some("interrupted")),
         };
         // Then one of the machine's agent slots, held until it ends — or
         // its parent's, when the parent holds one (`--worktree`): a parent
@@ -446,24 +628,32 @@ impl Subagents {
         let _slot = match &registry.agents {
             Some(pool) if !host.cfg.session.on_agent_slot => tokio::select! {
                 taken = pool.take(waiting) => taken.ok().map(|(slot, _)| slot),
-                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true),
+                _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true, Some("interrupted")),
             },
             _ => None,
         };
         // Its session id is chosen now: a worktree is locked in its name
         // before the session exists, and the session records it as its
         // directory.
-        let child = krowk_store::new_id();
         let (worktree, prompt) = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
             Isolation::None => (None, input.prompt.clone()),
             Isolation::Worktree => match self.worktree(&child).await {
                 Ok((w, notes)) => (Some(w), crate::worktree::first_prompt(&notes, &input.prompt)),
-                Err(why) => return (why, true),
+                Err(why) => return (why, true, None),
             },
         };
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
         let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
         let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
+        // In the background from the start, or moved there by a steer: no
+        // call waits on it any more.
+        // Chosen under the slot's lock, and binding: a call still waiting
+        // can no longer be moved once its child applies its worktree.
+        let background = {
+            let mut slot = answer.lock().unwrap_or_else(|e| e.into_inner());
+            slot.bound = slot.to.is_some();
+            !slot.bound
+        };
         if let Ok(r) = &result {
             let mut spent = self.0.spent.lock().unwrap_or_else(|e| e.into_inner());
             match r.cost_usd {
@@ -471,14 +661,7 @@ impl Subagents {
                 None => spent.1 = true,
             }
         }
-        let (text, failed) = answer(result);
-        match worktree {
-            Some(w) => match finish(w, p.cwd.clone()).await {
-                Some(note) => (format!("{text}\n\n{note}"), failed),
-                None => (text, failed),
-            },
-            None => (text, failed),
-        }
+        concluded(result, worktree, (!background).then(|| p.cwd.clone())).await
     }
 
     /// A worktree of the parent's repository for the child `child`, readied
@@ -520,6 +703,28 @@ impl Subagents {
     }
 }
 
+/// What a child's call is answered with once its turn is over — its
+/// summary, or why there is none, and what became of its worktree — and
+/// how the turn ended. A worktree's changes are applied to `to`, the
+/// parent's directory; with none — a background child's, which ends while
+/// its parent may be editing the same files — a changed worktree is kept,
+/// and the note says how to apply it.
+async fn concluded(result: Result<crate::protocol::RunResult, crate::engine::EngineError>, worktree: Option<InUse>, to: Option<PathBuf>) -> (String, bool, Option<&'static str>) {
+    let status = Some(match &result {
+        Ok(r) if r.status == TurnStatus::Completed => "completed",
+        Ok(r) if r.status == TurnStatus::Interrupted => "interrupted",
+        _ => "failed",
+    });
+    let (text, failed) = answer(result);
+    match worktree {
+        Some(w) => match finish(w, to).await {
+            Some(note) => (format!("{text}\n\n{note}"), failed, status),
+            None => (text, failed, status),
+        },
+        None => (text, failed, status),
+    }
+}
+
 /// What a child's turn answers its call with: its summary, or why there
 /// is none.
 fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>) -> (String, bool) {
@@ -537,19 +742,149 @@ fn answer(result: Result<crate::protocol::RunResult, crate::engine::EngineError>
 
 /// A child's worktree, finished when the child is, its changes applied to
 /// the parent's working tree, `to` being the parent's directory
-/// (`crate::worktree::finish_into`): what its parent is told of it. Its
-/// port slot, and its hold on it, are let go once it is.
-async fn finish(i: InUse, to: PathBuf) -> Option<String> {
+/// (`crate::worktree::finish_into`), or kept when there is none: what its
+/// parent is told of it. Its port slot, and its hold on it, are let go
+/// once it is.
+async fn finish(i: InUse, to: Option<PathBuf>) -> Option<String> {
     let path = i.worktree.path.clone();
     let finished = tokio::task::spawn_blocking(move || {
         let w = i.worktree.clone();
-        i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w)))
+        match to {
+            Some(to) => i.finish_into(&to).map(|a| a.and_then(|a| a.note(&w))),
+            None => i.finish().map(|f| (f != crate::worktree::Finished::Removed).then(|| crate::worktree::kept_line(&w))),
+        }
     })
     .await;
     match finished {
         Ok(Ok(note)) => note,
         Ok(Err(e)) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
         Err(e) => Some(format!("Worktree: {} was left as it is: {e}", path.display())),
+    }
+}
+
+/// A child's state as its `subagent.status` frames say it (R-SUB-9), kept
+/// by the writer of the child's own turn from the events that turn
+/// handles: the call it is in, what it waits on the person for, its tokens
+/// and when anything last came from it.
+pub(crate) struct ChildWatch {
+    session_id: String,
+    /// The tool each call the model made names, by call id, until it runs.
+    named: HashMap<String, String>,
+    /// The calls running, oldest first, by call id.
+    tools: Vec<(String, ChildTool)>,
+    /// The requests waiting on the person, by request id.
+    waiting: Vec<(String, Waiting)>,
+    /// The call each waiting request asks about, when the engine said
+    /// (`EngineEvent::AskedFor`).
+    asked: HashMap<String, String>,
+    last_event_ms: i64,
+    tokens: i64,
+    /// A backend's agent: its items come whole, a call's result started
+    /// and completed at once, so its tool runs from its call (`backend`).
+    at_call: bool,
+}
+
+impl ChildWatch {
+    /// The watch of a turn's session when the turn is a subagent's: one
+    /// with a parent.
+    pub fn of<P>(parent: Option<&P>, session_id: &str) -> Option<ChildWatch> {
+        parent.map(|_| ChildWatch::new(session_id))
+    }
+
+    pub fn new(session_id: &str) -> ChildWatch {
+        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), asked: HashMap::new(), last_event_ms: krowk_store::now_ms(), tokens: 0, at_call: false }
+    }
+
+    /// The watch of a backend's agent (R-SUB-7), whose items come whole:
+    /// a tool runs from its call, the only moment before its result, and
+    /// its tokens are the backend's count (`EngineEvent::Progress`).
+    pub fn backend(session_id: &str) -> ChildWatch {
+        ChildWatch { at_call: true, ..ChildWatch::new(session_id) }
+    }
+
+    /// The tokens its frames say it has used.
+    pub fn tokens(&self) -> i64 {
+        self.tokens
+    }
+
+    /// Takes in what the child's engine said at `now`: true when its state
+    /// changed, so a frame is due. A text delta, or anything else that only
+    /// shows it is alive, changes `lastEventMs` and nothing a frame is sent
+    /// for: the next frame carries it.
+    pub fn note(&mut self, ev: &EngineEvent, now: i64) -> bool {
+        self.last_event_ms = now;
+        match ev {
+            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } if self.at_call => {
+                self.tools.push((call_id.clone(), ChildTool { name: name.clone(), started_ms: now }));
+                true
+            }
+            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } => {
+                self.named.insert(call_id.clone(), name.clone());
+                false
+            }
+            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { .. }, .. } if self.at_call => false,
+            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { call_id }, .. } => {
+                let name = self.named.remove(call_id).unwrap_or_default();
+                self.tools.push((call_id.clone(), ChildTool { name, started_ms: now }));
+                true
+            }
+            EngineEvent::ItemCompleted { item: Item::ToolResult { call_id, .. }, .. } => {
+                let before = self.tools.len();
+                self.tools.retain(|(c, _)| c != call_id);
+                self.tools.len() != before
+            }
+            EngineEvent::Approval(r) => {
+                let what = if r.questions.is_empty() { Waiting::Approval } else { Waiting::Question };
+                self.waiting.push((r.request_id.clone(), what));
+                true
+            }
+            // Answered, the call it held runs from now: the time it waited
+            // on the person is not the tool's.
+            EngineEvent::ApprovalResolved { request_id, .. } => {
+                let before = self.waiting.len();
+                self.waiting.retain(|(r, _)| r != request_id);
+                let answered = self.waiting.len() != before;
+                // The call it asked about when known, else the latest.
+                let call = self.asked.remove(request_id);
+                let held = match &call {
+                    Some(c) => self.tools.iter_mut().find(|(id, _)| id == c),
+                    None => self.tools.last_mut(),
+                };
+                if answered && let Some((_, t)) = held {
+                    t.started_ms = now;
+                }
+                answered
+            }
+            EngineEvent::AskedFor { request_id, call_id } => {
+                self.asked.insert(request_id.clone(), call_id.clone());
+                false
+            }
+            EngineEvent::ResponseCompleted { usage, .. } => {
+                self.tokens += usage.total();
+                true
+            }
+            // A count, never less than the last one.
+            EngineEvent::Progress { tokens } if *tokens > self.tokens => {
+                self.tokens = *tokens;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The frame for where the child stands: an ended child is in no call
+    /// and waits on nobody, and one waiting on the person is in no call
+    /// yet — the call it waits to run starts once answered.
+    pub fn frame(&self, status: ChildState) -> LiveEvent {
+        let running = status == ChildState::Running;
+        LiveEvent::SubagentStatus {
+            session_id: self.session_id.clone(),
+            status,
+            tool: self.tools.first().filter(|_| running && self.waiting.is_empty()).map(|(_, t)| t.clone()),
+            last_event_ms: self.last_event_ms,
+            waiting: self.waiting.first().filter(|_| running).map(|(_, w)| *w),
+            tokens: self.tokens,
+        }
     }
 }
 
@@ -584,6 +919,70 @@ mod tests {
         assert_eq!(choose_model(Some("sonnet"), None, &gpt, "openai", &registry, &listed).unwrap(), ModelRef { instance: "anthropic".into(), model: "claude-sonnet-5".into() });
     }
 
+    /// R-SUB-7: a `subagent.started` logged before `ranBy` existed reads
+    /// as krowk's own; krowk's own is logged saying so, with no backend id.
+    #[test]
+    fn r_sub_7_an_old_subagent_started_without_ran_by_replays_as_krowk() {
+        use crate::protocol::{LogBody, LogEvent, RanBy};
+        let old = r#"{"id":"e1","sessionId":"p","timeMs":1,"type":"subagent.started","turnId":"t","callId":"c","subagentSessionId":"k","description":"look","model":{"instance":"anthropic","model":"claude-haiku-4-5"}}"#;
+        let ev: LogEvent = serde_json::from_str(old).unwrap();
+        let LogBody::SubagentStarted { ran_by, backend_id, .. } = &ev.body else { panic!("{ev:?}") };
+        assert_eq!((*ran_by, backend_id.as_deref()), (RanBy::Krowk, None));
+        let again = serde_json::to_value(&ev).unwrap();
+        assert_eq!(again["ranBy"], "krowk", "written whole from now on: {again}");
+        assert!(again.get("backendId").is_none());
+        let mut theirs = again;
+        theirs["ranBy"] = "claude".into();
+        theirs["backendId"] = "task_1".into();
+        let claude: LogEvent = serde_json::from_value(theirs).unwrap();
+        assert!(matches!(claude.body, LogBody::SubagentStarted { ran_by: RanBy::Claude, backend_id: Some(ref b), .. } if b == "task_1"));
+    }
+
+    /// R-SUB-9: a backend's agent's items come whole — its call's result
+    /// started and completed at once — so its tool runs from its call, is
+    /// none while it waits on the person, runs again from the answer, and
+    /// ends at its result; its tokens are the backend's count, never less.
+    #[test]
+    fn r_sub_9_a_backend_agents_tool_runs_from_its_call_and_its_tokens_are_the_backends_count() {
+        use crate::protocol::{ApprovalDecision, ApprovalRequest};
+        let mut w = ChildWatch::backend("k");
+        let call = Item::ToolCall { call_id: "c1".into(), name: "Bash".into(), input: serde_json::json!({}) };
+        let result = Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false };
+        let frame = |w: &ChildWatch| match w.frame(ChildState::Running) {
+            LiveEvent::SubagentStatus { tool, waiting, tokens, .. } => (tool.map(|t| (t.name, t.started_ms)), waiting, tokens),
+            other => panic!("{other:?}"),
+        };
+        assert!(w.note(&EngineEvent::Progress { tokens: 1200 }, 1));
+        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i1".into(), item: call }, 2));
+        assert_eq!(frame(&w), (Some(("Bash".into(), 2)), None, 1200), "running from its call");
+        let req = ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: "r1".into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `sleep 30`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() };
+        assert!(w.note(&EngineEvent::Approval(req), 3));
+        assert_eq!(frame(&w), (None, Some(Waiting::Approval), 1200), "waiting, in no call yet");
+        assert!(w.note(&EngineEvent::ApprovalResolved { request_id: "r1".into(), decision: ApprovalDecision::Allow }, 9));
+        assert_eq!(frame(&w), (Some(("Bash".into(), 9)), None, 1200), "its clock starts at the answer");
+        assert!(!w.note(&EngineEvent::Progress { tokens: 1100 }, 10), "a count never goes down");
+        assert!(w.note(&EngineEvent::Progress { tokens: 1300 }, 11));
+        assert!(!w.note(&EngineEvent::ItemStarted { item_id: "i2".into(), kind: ItemKind::ToolResult { call_id: "c1".into() } }, 20), "its result's start ends nothing");
+        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i2".into(), item: result }, 20));
+        assert_eq!(frame(&w), (None, None, 1300));
+        assert!(matches!(w.frame(ChildState::Done), LiveEvent::SubagentStatus { status: ChildState::Done, tool: None, waiting: None, tokens: 1300, .. }));
+        // Two calls in one message, the first asked about: its clock starts
+        // again at the answer, the other's runs on.
+        let mut w = ChildWatch::backend("k");
+        for (c, at) in [("c1", 2), ("c2", 3)] {
+            w.note(&EngineEvent::ItemCompleted { item_id: c.into(), item: Item::ToolCall { call_id: c.into(), name: "Bash".into(), input: serde_json::json!({}) } }, at);
+        }
+        assert!(!w.note(&EngineEvent::AskedFor { request_id: "r2".into(), call_id: "c1".into() }, 4));
+        w.note(&EngineEvent::Approval(req_for("r2")), 4);
+        w.note(&EngineEvent::ApprovalResolved { request_id: "r2".into(), decision: ApprovalDecision::Allow }, 9);
+        let started: Vec<(&str, i64)> = w.tools.iter().map(|(c, t)| (c.as_str(), t.started_ms)).collect();
+        assert_eq!(started, [("c1", 9), ("c2", 3)]);
+    }
+
+    fn req_for(id: &str) -> crate::protocol::ApprovalRequest {
+        crate::protocol::ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() }
+    }
+
     #[test]
     fn r_sub_5_the_definitions_listed_cost_every_call_a_bounded_amount() {
         let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, isolation: None, instructions: String::new(), path: PathBuf::new(), project: true };
@@ -600,6 +999,16 @@ mod tests {
         let huge: Vec<AgentDef> = (0..1000).map(|i| AgentDef { name: format!("a{i:04}"), ..def(0, String::new()) }).collect();
         let text = describe(&huge);
         assert!(text.contains("a0199") && !text.contains("a0200") && text.ends_with(" (and 800 more)"), "named up to {MAX_NAMED}");
+    }
+
+    /// R-STEER-2: a subagent, whose one turn would leave a job to nobody,
+    /// is offered neither of a job's tools, whatever its allowlist.
+    #[test]
+    fn r_steer_2_a_subagent_is_offered_no_job_tools() {
+        let (o, k) = (crate::tools::BASH_OUTPUT, crate::tools::KILL_BASH);
+        assert!(!AgentRun::default().allows(o, "str_replace") && !AgentRun::default().allows(k, "str_replace"));
+        let asked = AgentRun { tools: Some(vec!["bash".into(), "bash_output".into(), "kill_bash".into()]), ..AgentRun::default() };
+        assert!(asked.allows("bash", "str_replace") && !asked.allows(o, "str_replace") && !asked.allows(k, "str_replace"));
     }
 
     #[test]

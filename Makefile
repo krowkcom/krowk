@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test lint check signoff install dev mock clean dist release-check golden golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
@@ -11,21 +11,67 @@ build: ## Build target/release/krowk (the full build) and krowk-mcp
 # nextest runs no doctests, so cargo test runs those. CI sets
 # NEXTEST_PROFILE=ci, which retries a flaky test instead of failing the job.
 # nextest gives each test a scratch KROWK_HOME (.config/nextest.toml); the
-# doctests get the same one here.
-test: ## The unit and integration tests
-	cargo nextest run --workspace --exclude krowk-golden --features krowk/harness
+# doctests get the same one here. `check` builds the tests with everything
+# else and runs them after (`check-run`).
+NEXTEST := cargo nextest run --workspace --exclude krowk-golden --features krowk/harness
+
+test: test-build test-doc test-run ## The unit and integration tests
+
+test-build:
+	$(NEXTEST) --no-run
+
+test-run:
+	$(NEXTEST)
+
+test-doc:
 	KROWK_HOME=$(CURDIR)/target/krowk-test-home cargo test --doc --workspace --exclude krowk-golden --features krowk/harness
 
 # Both builds: the agent build (no sessions) is the one a container compiles
 # from source, and a cfg that only one of them sees is a lint only one catches.
 # cognitive_complexity sits in clippy's nursery group, which is off by default,
 # so it is named here; clippy.toml sets the ceiling it holds a function to.
-lint:
-	cargo clippy --workspace --all-targets -- -D warnings -D clippy::cognitive_complexity
-	cargo clippy --workspace --all-targets --features krowk/sessions -- -D warnings -D clippy::cognitive_complexity
-	cargo clippy --workspace --all-targets --features krowk/harness -- -D warnings -D clippy::cognitive_complexity
+# Each feature set has a target directory of its own, so `make -j` runs the
+# three at once (one directory is one cargo at a time) and none undoes
+# another's build.
+CLIPPY := cargo clippy --workspace --all-targets
+CLIPPY_DENY := -- -D warnings -D clippy::cognitive_complexity
 
-check: lint lean-deps test golden ## Everything CI runs
+lint: lint-lean lint-sessions lint-harness
+
+lint-lean:
+	CARGO_TARGET_DIR=$(CURDIR)/target/lint-lean $(CLIPPY) $(CLIPPY_DENY)
+
+lint-sessions:
+	CARGO_TARGET_DIR=$(CURDIR)/target/lint-sessions $(CLIPPY) --features krowk/sessions $(CLIPPY_DENY)
+
+lint-harness:
+	CARGO_TARGET_DIR=$(CURDIR)/target/lint-harness $(CLIPPY) --features krowk/harness $(CLIPPY_DENY)
+
+# Two phases. Everything that compiles runs at once: the lints, the test
+# builds and the doctests, the golden builds. The release builds end in one
+# single-threaded LTO link each, which the rest fills the cores around. The
+# tests then run on a machine doing nothing else, as they always have: the
+# no-lag tests measure time (.config/nextest.toml). One -j for all of it:
+# make hands its job slots to every cargo below (the jobserver), so the
+# builds share the cores instead of each taking them all.
+CHECK_JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+
+check: ## Everything CI runs
+	$(MAKE) -j$(CHECK_JOBS) --output-sync=target check-build
+	$(MAKE) check-run
+
+check-build: lint lean-deps test-build test-doc golden-build
+
+check-run: golden-run test-run
+
+# The edit loop, not a gate: the harness build's lint, then the tests of the
+# crates this branch changed and of the crates that depend on them
+# (scripts/affected.sh), leaving out the five that take a minute or more
+# (.config/nextest.toml). The lint and the build are `check`'s, so each
+# reuses the other's. No golden cases: `make golden` runs them in about half
+# a minute. `make signoff` is still what a pull request needs.
+quick-check: lint-harness ## Lint and the affected tests, in a minute or two
+	$(NEXTEST) --profile quick --no-tests=pass -E "$$(scripts/affected.sh)"
 
 # gh-signoff (github.com/basecamp/gh-signoff): `make check` on this machine,
 # then a green `signoff` status on the commit, which is what a pull request
@@ -112,13 +158,20 @@ clean:
 	rm -rf bin dist
 	cargo clean
 
-# The stand-in registry the golden cases and the integration tests run
-# against, at the path they look for it. Built by no release.
+# The profile the golden cases and their registry are built with. The golden
+# profile (Cargo.toml) is the quick build, a link of seconds where a release
+# one takes minutes; full.yml sets GOLDEN_PROFILE=release, so the build that
+# ships is held to the cases on every platform after the merge.
+GOLDEN_PROFILE ?= golden
+GOLDEN_DIR := target/$(GOLDEN_PROFILE)
+
+# The stand-in registry the golden cases run against, at the path they look
+# for it. Built by no release.
 bin/devregistry:
-	cargo build --release -p krowk-devregistry --bin devregistry
+	cargo build --profile $(GOLDEN_PROFILE) -p krowk-devregistry --bin devregistry
 	# rm first: on macOS a rebuilt binary copied over the old one keeps the old
 	# inode's code signature, and the kernel kills it on launch.
-	mkdir -p bin && rm -f bin/devregistry && cp target/release/devregistry bin/devregistry
+	mkdir -p bin && rm -f bin/devregistry && cp $(GOLDEN_DIR)/devregistry bin/devregistry
 
 # The cases compare the version like any other output, so the build they run is
 # stamped with one no release will ever carry.
@@ -128,15 +181,28 @@ GOLDEN_VERSION := 0.0.0-golden
 # the TUI when a person is at the terminal, runs tests/golden/cases-full:
 # bare `krowk` with no terminal to open it on, recorded from the full build
 # before the TUI existed, so any difference is a behaviour change. The full
-# build goes first and is copied out, so target/release ends as the device
-# build `golden-update` and the default KROWK_BIN expect.
-golden: bin/devregistry ## Hold the build to tests/golden/cases
-	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --release -p krowk --features harness
-	mkdir -p target/golden && rm -f target/golden/krowk-full && cp target/release/krowk target/golden/krowk-full
-	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --release -p krowk --features sessions
-	cargo test -p krowk-golden
-	GOLDEN_CASES=cases-full KROWK_BIN=target/golden/krowk-full cargo test -p krowk-golden
+# build has a target directory of its own, so the two build at once and
+# $(GOLDEN_DIR) holds the device build `golden-update` expects. The cases'
+# own test binary builds apart from `test-build`'s too, so neither waits on
+# the other's lock. Both runs take krowk-mcp from the device build.
+GOLDEN_TEST := CARGO_TARGET_DIR=$(CURDIR)/target/golden-tests cargo test -p krowk-golden
+GOLDEN_FULL := target/golden-full/$(GOLDEN_PROFILE)/krowk
+
+golden: golden-build golden-run ## Hold the build to tests/golden/cases
+
+golden-build: golden-device golden-full
+	$(GOLDEN_TEST) --no-run
+
+golden-device: bin/devregistry
+	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p krowk --features sessions
+
+golden-full:
+	KROWK_VERSION=$(GOLDEN_VERSION) CARGO_TARGET_DIR=$(CURDIR)/target/golden-full cargo build --profile $(GOLDEN_PROFILE) -p krowk --features harness
+
+golden-run:
+	KROWK_BIN=$(GOLDEN_DIR)/krowk KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
+	GOLDEN_CASES=cases-full KROWK_BIN=$(GOLDEN_FULL) KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp $(GOLDEN_TEST)
 
 golden-update: bin/devregistry ## Re-record tests/golden/cases after an intended output change
-	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --release -p krowk --features sessions
-	GOLDEN_UPDATE=1 cargo test -p krowk-golden
+	KROWK_VERSION=$(GOLDEN_VERSION) cargo build --profile $(GOLDEN_PROFILE) -p krowk --features sessions
+	GOLDEN_UPDATE=1 KROWK_BIN=$(GOLDEN_DIR)/krowk KROWK_MCP_BIN=$(GOLDEN_DIR)/krowk-mcp cargo test -p krowk-golden

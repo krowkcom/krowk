@@ -9,6 +9,8 @@
 //!   the alternate screen with the footer pinned (the default), or `term`,
 //!   the inline viewport over the terminal's scrollback (R-TUI-1).
 //! - `app` — what is shown, driven by frames and keys.
+//! - `child` — the child view: a full-height view of one subagent's
+//!   transcript, in either screen (R-SUB-11).
 //! - `editor` — the multi-line prompt and its history.
 //! - `look` — glyphs, colours, the spinner and the light markdown.
 //! - `syntax` — code in colour, in the terminal's own sixteen.
@@ -34,12 +36,14 @@
 pub mod app;
 pub mod ask;
 pub mod card;
+pub mod child;
 pub mod clipboard;
 pub mod connect;
 pub mod link;
 pub mod device;
 pub mod pr;
 pub mod presence;
+pub mod osc7501;
 pub mod editor;
 pub mod full;
 pub mod help;
@@ -87,6 +91,9 @@ pub mod synced {
         pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
             match *self {}
         }
+        pub fn child_history(&self, _: &str) -> Vec<LogEvent> {
+            match *self {}
+        }
         pub fn events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
             match *self {}
         }
@@ -101,7 +108,7 @@ use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
 use krowk_harness::instances::Asked;
 use krowk_harness::log;
-use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
+use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ErrorInfo, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
 use ratatui::layout::Size;
 use settings::Settings;
@@ -131,9 +138,15 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+/// How long resuming a session waits for the daemon to say whether its
+/// background agents still run there.
+const STATUS_WAIT: Duration = Duration::from_millis(1500);
 /// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
 /// that does.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
+/// How long "copied …" stays under the prompt: a mouse copy is followed by
+/// no key that would clear it.
+const COPIED_SHOWN: Duration = Duration::from_secs(3);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
 
@@ -291,6 +304,9 @@ fn restore_terminal() {
 
 type TurnFuture<'a> = Pin<Box<dyn Future<Output = Result<Option<RunResult>, EngineError>> + 'a>>;
 type ProbeFuture = Pin<Box<dyn Future<Output = bool>>>;
+/// An interrupt of one child (R-SUB-10) on its way: the child, whether it
+/// was sent from the child view, and the host's answer.
+type StopFuture<'a> = Pin<Box<dyn Future<Output = (String, bool, Result<(), EngineError>)> + 'a>>;
 type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>> + 'a>>;
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
@@ -316,6 +332,17 @@ async fn renew_at_start(app: &mut App, client: &krowk_harness::daemon::remote::R
     }
 }
 
+/// A session resumed at start, replayed. With no `daemon`, nothing of it
+/// runs now: the children its log left unanswered ended with it, said with
+/// the rest of it, above the header. A daemon's sessions are known once it
+/// answers, and what ended is said then.
+fn resumed(app: &mut App, id: &str, daemon: bool) {
+    if !daemon {
+        app.end_replayed_children(true);
+    }
+    app.say(&format!("resumed session {id}"), app::dim());
+}
+
 async fn session(opts: Options) -> Outcome {
     let mut stdout = std::io::stdout();
     let _ = stdout.write_all(b"\x1b[?2004h");
@@ -339,8 +366,8 @@ async fn session(opts: Options) -> Outcome {
         match read_session(&sessions_dir, id) {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
-                runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
-                app.say(&format!("resumed session {id}"), app::dim());
+                runs_in = replay(&mut app, id, &events, &opts.host.registry, Some(&sessions_dir)).unwrap_or(runs_in);
+                resumed(&mut app, id, opts.daemon.is_some());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
         }
@@ -351,7 +378,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(o) = opts.sync {
         match synced::open(o).await {
             Ok(s) => {
-                replay(&mut app, &s.id, &s.history, &opts.host.registry);
+                replay(&mut app, &s.id, &s.history, &opts.host.registry, None);
                 app.session_id = Some(s.id.clone());
                 app.log_dir = None;
                 // Said once the relay says whether the host is there
@@ -398,6 +425,7 @@ async fn session(opts: Options) -> Outcome {
         }
         Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the terminal could not be drawn on: {e}")) },
     };
+    app.inline = term.inline();
     let credentials = opts.host.credentials.clone();
     let permissions_cfg = opts.host.permissions.clone();
     let local = Host::new(opts.host);
@@ -406,6 +434,7 @@ async fn session(opts: Options) -> Outcome {
     // reached leaves them here, and says so.
     #[cfg_attr(not(unix), allow(unused_mut))]
     let mut live: Vec<String> = Vec::new();
+    let has_daemon = opts.daemon.is_some();
     let host = match (opened, opts.daemon) {
         (Some(client), _) => link::Link::Synced { host: local, client },
         (None, None) => link::Link::Local(local),
@@ -451,8 +480,11 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        continuing: false,
+        following_bg: None,
         pasting: None,
         pastes: Default::default(),
+        stops: Vec::new(),
         looked_in: None,
         first_run: false,
         first_run_pending: false,
@@ -473,13 +505,11 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
-    // A resumed session still running in the daemon is followed from where
-    // its log left off: the turn so far, then live.
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     if let Some(id) = opts.resume.clone()
-        && live.contains(&id)
+        && has_daemon
     {
-        ui.reattach(&mut app, &id, replayed_to.clone());
+        ui.resumed_in_daemon(&mut app, &id, replayed_to).await;
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -489,9 +519,17 @@ async fn session(opts: Options) -> Outcome {
     ui.rx = None;
     // The screen is left first, so leaving shows at once whatever is still
     // to be let go.
+    if let Some(clear) = ui.presence.clear() {
+        let _ = term.report(&clear);
+    }
     let _ = term.leave();
     ui.presence.finish();
     let mut out = term.into_inner();
+    // This process's jobs go with it, which is said where the person
+    // looks as krowk exits: the daemon's run on.
+    if let Some(line) = krowk_harness::jobs::stopped_line(&host.running_jobs(), app.session_id.as_deref(), "with this krowk") {
+        let _ = write!(out, "! {line}\r\n");
+    }
     if let Some(id) = &app.session_id {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }
@@ -507,6 +545,14 @@ async fn session(opts: Options) -> Outcome {
     }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+}
+
+/// A session followed only for its background agents: its id, and, once
+/// the turn its backend began to answer them was asked for here, the count
+/// of its turns completed then.
+struct FollowingBg {
+    id: String,
+    answered_at: Option<u32>,
 }
 
 struct Ui<'h> {
@@ -537,11 +583,22 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// The turn running is a `continue` this client sent.
+    continuing: bool,
+    /// The session followed only for its background agents
+    /// (`follow_background`), until none is left and the turn Claude Code
+    /// begins to answer them has run (`FollowingBg`).
+    following_bg: Option<FollowingBg>,
     /// A paste being read and made ready, off the runtime's thread (the
     /// clipboard, or the files dropped), and the editor's mark for where it
     /// goes; the ones asked for after it, waiting their turn.
     pasting: Option<(Option<u64>, PasteFuture)>,
     pastes: std::collections::VecDeque<(u64, PasteJob)>,
+    /// Interrupts of one child each, waiting for the host's answer. Not
+    /// waited for in the key's handler: a backend's agent is stopped by
+    /// the turn that reads it, which, on a host in this process, runs only
+    /// while the loop does.
+    stops: Vec<StopFuture<'h>>,
     /// Where the agent was at work when that was last read.
     looked_in: Option<PathBuf>,
     /// The flow running is the first-run card's.
@@ -602,11 +659,17 @@ struct Ui<'h> {
     /// when: the same key again within `QUIT_CONFIRM` leaves, any other
     /// key forgets it.
     quit_armed: Option<(char, Instant)>,
+    /// The copy's flash and when it goes, unless something took its place.
+    copied: Option<(String, Instant)>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
-    /// The window title and herdr's agent state.
+    /// The window title, the terminal's root record and herdr's agent
+    /// state.
     presence: presence::Presence,
+    /// How the last turn ended, done or error with its message, until the
+    /// person's next key: what the root record says while nothing runs.
+    ended: Option<(presence::State, String)>,
     project: Option<Project>,
 }
 
@@ -819,11 +882,12 @@ fn parse_cursor_report(bytes: &[u8]) -> Option<u16> {
     None
 }
 
-/// When the running turn's clock and spinner next change: the first whole
-/// `TICK` after `now`, counted from the turn's start, so it is always in
-/// the future and the loop sleeps until then.
-fn next_tick(started: Instant, now: Instant) -> Instant {
-    let tick = app::TICK.as_millis().max(1);
+/// When the running turn's clock and spinner next change (`every` is
+/// `TICK`), or a running child's facts (each second): the first whole
+/// `every` after `now`, counted from `started`, so it is always in the
+/// future and the loop sleeps until then.
+fn next_tick(started: Instant, now: Instant, every: Duration) -> Instant {
+    let tick = every.as_millis().max(1);
     let n = now.saturating_duration_since(started).as_millis() / tick + 1;
     started + Duration::from_millis((n * tick) as u64)
 }
@@ -855,6 +919,19 @@ async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> O
     }
 }
 
+/// The session's state for the title and the root record, and its topic:
+/// the provider signed in to while `/connect`'s overlay is up and waits on
+/// the person (hidden, or closed, it no longer does), else the prompt.
+/// At rest, how the last turn `ended`, until the next key (R-PRES-3).
+fn root_state<'a>(app: &'a App, last_prompt: &'a str, ended: Option<&'a (presence::State, String)>) -> (presence::State, &'a str) {
+    let sign_in = app.flow.as_ref().filter(|_| app.overlay == Overlay::Connect).and_then(|f| f.sign_in.as_deref());
+    match presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), app.running()) {
+        presence::State::SigningIn => (presence::State::SigningIn, sign_in.unwrap_or_default()),
+        presence::State::Idle => ended.map_or((presence::State::Idle, last_prompt), |(s, msg)| (*s, msg)),
+        state => (state, last_prompt),
+    }
+}
+
 /// The next of a sign-in's messages, or never; none once its thread is gone.
 async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Option<connect::Msg> {
     match rx {
@@ -882,6 +959,24 @@ async fn finish<F: Future + Unpin>(f: &mut Option<F>) -> F::Output {
     }
 }
 
+/// The first of `futures` to finish, taken out; never, while there are
+/// none.
+async fn first_of<T>(futures: &mut Vec<Pin<Box<dyn Future<Output = T> + '_>>>) -> T {
+    if futures.is_empty() {
+        return std::future::pending().await;
+    }
+    std::future::poll_fn(|cx| {
+        for i in 0..futures.len() {
+            if let std::task::Poll::Ready(t) = futures[i].as_mut().poll(cx) {
+                drop(futures.swap_remove(i));
+                return std::task::Poll::Ready(t);
+            }
+        }
+        std::task::Poll::Pending
+    })
+    .await
+}
+
 async fn until(at: Option<Instant>) {
     match at {
         Some(t) => tokio::time::sleep_until(t).await,
@@ -907,6 +1002,7 @@ struct Due {
     stall: Option<Instant>,
     retry: Option<Instant>,
     quit: Option<Instant>,
+    copied: Option<Instant>,
 }
 
 /// Whether the model's provider can be reached, as the loop finds out:
@@ -964,7 +1060,7 @@ impl<'h> Ui<'h> {
         self.first_frame(app, term, &mut frames)?;
         loop {
             let due = self.due(app, &reach);
-            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit].into_iter().flatten().min();
+            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
@@ -978,14 +1074,8 @@ impl<'h> Ui<'h> {
                         return Ok(());
                     }
                 }
-                ev = next_key(&mut self.keys) => match ev {
-                    Some(Ok(ev)) => {
-                        if self.on_event(app, term, ev, &mut quitting).await? {
-                            reach.probe_at = Some(Instant::now());
-                        }
-                    }
-                    // The terminal is gone: nobody is left to answer.
-                    Some(Err(_)) | None => return Ok(()),
+                ev = next_key(&mut self.keys) => if self.on_terminal(app, term, ev, &mut quitting, &mut reach).await? {
+                    return Ok(());
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => {
@@ -1001,6 +1091,7 @@ impl<'h> Ui<'h> {
                 r = finish(&mut self.model_route) => self.on_model_route(app, r).await,
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
                 p = finish_paste(&mut self.pasting) => self.on_pasted(app, p),
+                (id, in_view, answer) = first_of(&mut self.stops) => stop_answered(app, &id, in_view, answer),
                 (branch, found) = finish(&mut self.pr) => self.on_pr(app, branch, found),
                 reports = finish(&mut self.checks) => {
                     self.checks = None;
@@ -1018,6 +1109,16 @@ impl<'h> Ui<'h> {
             }
             self.paint(app, term, &mut frames)?;
         }
+    }
+
+    /// One terminal event, or the terminal's end: true once it is gone, and
+    /// nobody is left to answer.
+    async fn on_terminal<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, ev: Option<std::io::Result<Event>>, quitting: &mut bool, reach: &mut Reach) -> std::io::Result<bool> {
+        let Some(Ok(ev)) = ev else { return Ok(true) };
+        if self.on_event(app, term, ev, quitting).await? {
+            reach.probe_at = Some(Instant::now());
+        }
+        Ok(false)
     }
 
     /// The first frame, and what is asked behind it.
@@ -1051,11 +1152,18 @@ impl<'h> Ui<'h> {
     fn due(&self, app: &App, reach: &Reach) -> Due {
         let now = Instant::now();
         Due {
-            tick: app.turn.as_ref().map(|t| next_tick(Instant::from_std(t.started), now)),
+            tick: match (&app.turn, app.child_running_since()) {
+                (Some(t), _) => Some(next_tick(Instant::from_std(t.started), now, app::TICK)),
+                // No turn, a child running on in the background: its row's
+                // durations each second (R-SUB-11).
+                (None, Some(since)) => Some(next_tick(Instant::from_std(since), now, Duration::from_secs(1))),
+                (None, None) => None,
+            },
             stall: (app.waiting_on_model() && reach.probe.is_none() && app.offline.is_none() && self.target.is_some())
                 .then(|| (reach.last_activity + STALL).max(reach.stall_quiet_until.unwrap_or(now))),
             retry: app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY),
             quit: self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM),
+            copied: self.copied.as_ref().map(|(_, t)| *t),
         }
     }
 
@@ -1094,6 +1202,7 @@ impl<'h> Ui<'h> {
     /// stops now, `quitting`.
     async fn on_turn_end(&mut self, app: &mut App, r: Result<Option<RunResult>, EngineError>, reach: &mut Reach, quitting: bool) -> bool {
         self.turn = None;
+        let continued = std::mem::take(&mut self.continuing);
         if let Some(n) = self.host.take_note() {
             app.note(&n);
         }
@@ -1104,6 +1213,7 @@ impl<'h> Ui<'h> {
             }
         }
         self.follow(app);
+        self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
             std::thread::spawn(move || project(&id));
@@ -1125,9 +1235,14 @@ impl<'h> Ui<'h> {
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
-        // news.
+        // news, nor one another client following the session runs: nor
+        // does it touch how the turn that did run ended.
+        let no_news = matches!(&r, Err(e) if e.code == "nothing_pending" || (continued && e.code == "session_busy"));
+        if !no_news {
+            self.ended = turn_ended(&r, &self.last_prompt);
+        }
         if let Err(e) = r
-            && e.code != "nothing_pending"
+            && !no_news
         {
             app.error(&e.info());
         }
@@ -1228,6 +1343,13 @@ impl<'h> Ui<'h> {
             app.flash = None;
             app.touch();
         }
+        if due.copied.is_some_and(|t| t <= now)
+            && let Some((said, _)) = self.copied.take()
+            && app.flash.as_ref() == Some(&said)
+        {
+            app.flash = None;
+            app.touch();
+        }
         Ok(())
     }
 
@@ -1256,18 +1378,23 @@ impl<'h> Ui<'h> {
         }
         // Before the view: the flash it leaves is in this frame, not the
         // next one, which an idle TUI may not draw for a while.
-        if let Some((what, text)) = app.copy.take() {
+        if let Some((_, text)) = app.copy.take() {
             // As written, tabs and all, but no escape or bidi control
             // reaches the place it is pasted.
             // The joiner that makes one emoji of several is kept too.
             let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
-            app.flash = Some(if text.len() > clipboard::MAX {
-                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
+            let said = if text.len() > clipboard::MAX {
+                format!("Too long to copy ({} KB)", text.len() / 1024)
             } else {
                 term.clipboard(&text)?;
                 clipboard::system(&text);
-                format!("copied {what} ({} lines)", text.lines().count())
-            });
+                match text.lines().count() {
+                    1 => "Copied 1 line".to_string(),
+                    n => format!("Copied {n} lines"),
+                }
+            };
+            self.copied = Some((said.clone(), Instant::now() + COPIED_SHOWN));
+            app.flash = Some(said);
         }
         // Scrollback's lines first: what they let go of (held tool blocks)
         // is then not in the live region too.
@@ -1278,15 +1405,15 @@ impl<'h> Ui<'h> {
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let state = if !app.approvals.is_empty() {
-            presence::State::Blocked
-        } else if app.running() {
-            presence::State::Working
-        } else {
-            presence::State::Idle
-        };
-        if let Some(title) = self.presence.update(state, &self.last_prompt) {
-            term.title(&title)?;
+        let (state, topic) = root_state(app, &self.last_prompt, self.ended.as_ref());
+        // The children's first: cleared at the turn's end before the root
+        // says it ended.
+        for report in self.presence.tell_children(app.child_records()) {
+            term.report(&report)?;
+        }
+        if let Some(told) = self.presence.tell(state, topic) {
+            term.title(&told.title)?;
+            term.report(&told.report)?;
         }
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
@@ -1295,6 +1422,12 @@ impl<'h> Ui<'h> {
             term.follow();
         }
         term.steady(app.running())?;
+        // The child view takes the screen it is given, the conversation
+        // back as it was once it closes.
+        let waiting = (!app.approvals.is_empty()).then_some(if app.inline { "⚠ approval waiting · `esc` to answer it" } else { "⚠ approval waiting · answer it below" });
+        if let Some(view) = app.child_rows(inner(term.size().width), term.view_rows(rows.len()), waiting) {
+            return term.view(&lines, &view, &rows, caret);
+        }
         term.frame(&lines, &rows, caret)
     }
 
@@ -1540,6 +1673,14 @@ impl<'h> Ui<'h> {
             synced::Event::Host(h) => {
                 status.host = Some(h);
                 app.say_attached();
+                // A backend's agent runs in the host's process: with no
+                // host on the session, nothing says it goes on, and it is
+                // presumed ended. Presumed only: a line of it, should the
+                // host come back with it running, says it runs, and its
+                // logged end replaces this one.
+                if !h {
+                    app.end_backend_children();
+                }
             }
             synced::Event::Path(p) => status.path = Some(p),
             synced::Event::Note(n) => app.notice(&n),
@@ -1568,6 +1709,62 @@ impl<'h> Ui<'h> {
         }
         app.notice(&format!("{what} is the host's to change: this session runs on another machine, and prompts from here run in its default mode (plan, if it is in plan)"));
         true
+    }
+
+    /// The session resumed at start, with a daemon: one still running there
+    /// is followed from where its log left off — the turn so far, then
+    /// live. One that is not left no child running: its log's unanswered
+    /// children ended with it (with no daemon, `resumed` said so already),
+    /// and its background agents go on only while the daemon runs them.
+    async fn resumed_in_daemon(&mut self, app: &mut App, id: &str, replayed_to: Option<String>) {
+        if self.live.iter().any(|l| l == id) {
+            return self.reattach(app, id, replayed_to);
+        }
+        app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+        self.follow_background(app, id, replayed_to.as_deref()).await;
+    }
+
+    /// A resumed session whose backend's agents its log leaves at work
+    /// between turns, in the daemon. Kept running only while the daemon
+    /// says work of the session still goes on there; then the daemon is
+    /// asked to send this client the session's frames from the last event
+    /// replayed, as one of its followers, so their rows and transcripts go
+    /// on as they run (R-SUB-7), until none is left (`let_go_background`).
+    /// Otherwise the process that ran them is gone — killed, the machine
+    /// restarted — with no end written: they end interrupted, as a local
+    /// session's do.
+    async fn follow_background(&mut self, app: &mut App, id: &str, after: Option<&str>) {
+        let Some(remote) = self.host.remote() else { return };
+        if app.backend_children_running().is_empty() {
+            return;
+        }
+        // Not known — an older daemon, one that does not answer in time —
+        // and they are taken to run: followed, and their end said by the
+        // daemon if it has one, rather than ended on a guess.
+        let asked = tokio::time::timeout(STATUS_WAIT, remote.status()).await;
+        let gone = matches!(asked, Ok(Ok(krowk_harness::protocol::HostStatus { background_sessions: Some(ref busy), .. })) if !busy.iter().any(|b| b == id));
+        if gone {
+            return app.end_backend_children();
+        }
+        remote.attach_later(id, after);
+        self.following_bg = Some(FollowingBg { id: id.to_string(), answered_at: None });
+    }
+
+    /// Following a session only for its background agents
+    /// (`follow_background`): once none is left, the turn its backend began
+    /// to answer them asked for here (`go_on`) and a turn of the session
+    /// completed since — that one, or the one another client ran first —
+    /// and no turn of this client's runs, the daemon stops sending it here,
+    /// so this TUI does not go on mirroring the session's later turns.
+    /// Not before: the last client to leave a session nothing runs lets its
+    /// backend go, and the turn answering the agents with it.
+    fn let_go_background(&mut self, app: &App) {
+        let done = self.following_bg.as_ref().is_some_and(|f| f.answered_at.is_some_and(|at| app.turns_completed() > at));
+        if done && self.turn.is_none() && app.backend_children_running().is_empty()
+            && let Some(f) = self.following_bg.take()
+        {
+            self.host.leave(&f.id);
+        }
     }
 
     /// Follows `id`'s turn running in the daemon as though this TUI had
@@ -1611,6 +1808,9 @@ impl<'h> Ui<'h> {
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
+        // This client's own turn of the session: it follows it from here
+        // as any client that runs one does.
+        self.following_bg = None;
         let (host, quiet) = (self.host, !app.backend_agents_running() && !app.unprompted);
         self.turn = Some(Box::pin(async move {
             host.renew(quiet).await;
@@ -1623,13 +1823,21 @@ impl<'h> Ui<'h> {
     /// A turn the backend began by itself runs as soon as none of the
     /// TUI's own does. A prompt sent first runs it ahead of itself, and a
     /// `continue` left over is then refused quietly (`nothing_pending`).
+    /// A TUI following a session only for its background agents runs it
+    /// too: another client may have run it first, and then the host says
+    /// so (`session_busy`, not shown); if none is left, it is this one's.
     fn go_on(&mut self, app: &mut App) {
+        self.let_go_background(app);
         if self.turn.is_some() || !std::mem::take(&mut app.unprompted) {
             return;
+        }
+        if let Some(f) = &mut self.following_bg {
+            f.answered_at = Some(app.turns_completed());
         }
         let Some(session_id) = app.session_id.clone() else { return };
         let (tx, rx) = mpsc::channel(1024);
         self.turn = Some(Box::pin(self.host.execute(Command::Continue { session_id, budget: self.budget }, tx)));
+        self.continuing = true;
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
     }
@@ -1674,10 +1882,15 @@ impl<'h> Ui<'h> {
 
     /// One terminal event. True when it asks for a connectivity probe.
     async fn on_event<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, ev: Event, quitting: &mut bool) -> std::io::Result<bool> {
+        // A key, any key, and the turn's end has been seen: the root record
+        // goes back to idle.
+        if matches!(&ev, Event::Key(k) if k.kind != KeyEventKind::Release) && self.ended.take().is_some() {
+            app.touch();
+        }
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
             // Fullscreen's conversation scrolls under the pinned footer.
-            Event::Key(k) if k.kind != KeyEventKind::Release && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !term.inline() => {
+            Event::Key(k) if k.kind != KeyEventKind::Release && matches!(k.code, KeyCode::PageUp | KeyCode::PageDown) && !term.inline() && app.child.is_none() => {
                 let page = term.page();
                 term.scroll(if k.code == KeyCode::PageUp { page } else { -page });
                 app.touch();
@@ -1730,6 +1943,16 @@ impl<'h> Ui<'h> {
     /// selects, and letting go copies what was selected.
     fn on_mouse<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, m: crossterm::event::MouseEvent) {
         use crossterm::event::{MouseButton, MouseEventKind};
+        // The child view scrolls with the wheel and selects nothing.
+        if let Some(child) = app.child.as_mut() {
+            match m.kind {
+                MouseEventKind::ScrollUp => child.scroll(full::WHEEL),
+                MouseEventKind::ScrollDown => child.scroll(-full::WHEEL),
+                _ => return,
+            }
+            app.touch();
+            return;
+        }
         let changed = match m.kind {
             MouseEventKind::ScrollUp => term.scroll(full::WHEEL),
             MouseEventKind::ScrollDown => term.scroll(-full::WHEEL),
@@ -1792,6 +2015,9 @@ impl<'h> Ui<'h> {
     /// what the person types next.
     fn give_up<W: Write>(&mut self, term: &mut Screen<W>) -> std::io::Result<()> {
         self.keys = None;
+        if let Some(clear) = self.presence.clear() {
+            term.report(&clear)?;
+        }
         self.presence.pause();
         term.finish()?;
         restore_terminal();
@@ -1835,6 +2061,9 @@ impl<'h> Ui<'h> {
         app.touch();
         app.flash = None;
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
+        if let Some(done) = self.view_key(app, k).await {
+            return done;
+        }
         // A call waiting for the person's say takes the keys that answer it
         // (R-PERM-2): y once, s for the session, p for the project, n or
         // Esc no, v to print a request that was cut to fit (its y/s/p work
@@ -1877,13 +2106,7 @@ impl<'h> Ui<'h> {
                 _ => None,
             };
             if let Some(d) = decision {
-                app.answered(&req.request_id);
-                match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
-                    Ok(()) => {}
-                    // Sent, and not answered in time: the daemon has it.
-                    Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
-                    Err(_) => app.notice("that approval was already answered, or its turn is over"),
-                }
+                self.approve(app, &req, d).await;
             }
             return false;
         }
@@ -1926,6 +2149,17 @@ impl<'h> Ui<'h> {
             return false;
         }
         self.on_prompt_key(app, k, quitting, armed).await
+    }
+
+    /// `req` answered `d`, and the answer sent.
+    async fn approve(&mut self, app: &mut App, req: &ApprovalRequest, d: ApprovalDecision) {
+        app.answered(&req.request_id);
+        match self.command(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: d, answers: Vec::new() }).await {
+            Ok(()) => {}
+            // Sent, and not answered in time: the daemon has it.
+            Err(e) if e.code == SLOW => app.notice("the host daemon is slow to answer — the approval was sent, and the turn goes on once it takes it"),
+            Err(_) => app.notice("that approval was already answered, or its turn is over"),
+        }
     }
 
     /// Ctrl-C or Ctrl-D asked to leave krowk: the first press asks for a
@@ -1981,7 +2215,7 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Modes && plain && let Some(done) = self.modes_key(app, k) {
             return done;
         }
-        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k) {
+        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k).await {
             return done;
         }
         if app.overlay == Overlay::Models && plain && let Some(done) = self.models_key(app, k).await {
@@ -2025,21 +2259,64 @@ impl<'h> Ui<'h> {
     }
 
     /// The Agents overlay takes the keys that move through it: select a
-    /// subagent, expand its line, interrupt it alone (R-SUB-2, R-SUB-3).
+    /// subagent, open its transcript (its history read now, its lines
+    /// live after), interrupt it alone (R-SUB-2, R-SUB-3, R-SUB-11).
     async fn agents_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
-            KeyCode::Enter => app.agent_toggle(),
+            KeyCode::Enter => {
+                if let Some(id) = app.agent_selected() {
+                    self.open_child(app, &id);
+                }
+            }
             KeyCode::Char('x') => {
-                if let Some(id) = app.agent_selected_running()
-                    && let Err(e) = self.command(Command::Interrupt { session_id: id }).await
-                {
-                    app.notice(&e.message);
+                if let Some(id) = app.agent_to_interrupt() {
+                    self.stop_child(app, id, false);
                 }
             }
             _ => return None,
         }
         Some(false)
+    }
+
+    /// The child view's keys (`child_key`), ← → and `x` carried out: the
+    /// sibling's history read and opened, the child interrupted alone.
+    async fn view_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match child_key(app, k)? {
+            child::Key::Sibling(by) => {
+                if let Some(id) = app.child_sibling(by) {
+                    self.open_child(app, &id);
+                }
+            }
+            child::Key::Stop => {
+                if let Some(id) = app.child_to_stop() {
+                    self.stop_child(app, id, true);
+                }
+            }
+            _ => {}
+        }
+        Some(false)
+    }
+
+    /// The child view on child `id`, its history read now: its log, or, on
+    /// a synced session, where no child has a log here, its events as the
+    /// session's chunks and stream brought them, replayed whole (R-SUB-12).
+    fn open_child(&self, app: &mut App, id: &str) {
+        match self.host.synced() {
+            Some(s) => app.open_child_synced(id, s.child_history(id)),
+            None => app.open_child(id, read_child(&self.sessions_dir, id)),
+        }
+    }
+
+    /// Interrupts child `id` alone (R-SUB-10): its row says it is stopping
+    /// until its end arrives, or, refused — `not_stoppable`, or nothing of
+    /// it running — the answer is said, in the child view's footer when
+    /// `in_view`, else as a notice. Never silently nothing. The loop goes
+    /// on meanwhile (`stops`): Claude Code answers a stop once the turn
+    /// has sent it.
+    fn stop_child(&mut self, app: &mut App, id: String, in_view: bool) {
+        let host = self.host;
+        queue_stop(&mut self.stops, app, id, in_view, move |cmd| async move { host.execute(cmd, mpsc::channel(1).0).await.map(|_| ()) });
     }
 
     /// The trust question for a routed backend. It is answered by one
@@ -2169,7 +2446,7 @@ impl<'h> Ui<'h> {
             help::Action::New => self.new_session(app),
             help::Action::Sessions => self.open_resume(app),
             help::Action::Todos => app.overlay = Overlay::Todos,
-            help::Action::Agents => app.overlay = Overlay::Agents,
+            help::Action::Agents => app.open_agents(),
             help::Action::Details => app.overlay = Overlay::Details,
             help::Action::Copy => copy(app),
             help::Action::PasteImage => self.start_paste(app, paste::from_clipboard),
@@ -2211,14 +2488,14 @@ impl<'h> Ui<'h> {
     }
 
     /// `/sessions` takes the arrows and enter while it is open.
-    fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+    async fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up => app.resume_at = app.resume_at.saturating_sub(1),
             KeyCode::Down => app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1)),
             KeyCode::Enter => {
                 app.overlay = Overlay::None;
                 if let Some(r) = app.resumable.get(app.resume_at).cloned() {
-                    self.resume(app, &r.id);
+                    self.resume(app, &r.id).await;
                 }
             }
             _ => return None,
@@ -2302,7 +2579,13 @@ impl<'h> Ui<'h> {
             KeyCode::Char('v') if ctrl || alt => self.start_paste(app, paste::from_clipboard),
             KeyCode::Char('o') if ctrl => app.overlay = if app.overlay == Overlay::Details { Overlay::None } else { Overlay::Details },
             KeyCode::Char('t') if ctrl => app.overlay = if app.overlay == Overlay::Todos { Overlay::None } else { Overlay::Todos },
-            KeyCode::Char('g') if ctrl => app.overlay = if app.overlay == Overlay::Agents { Overlay::None } else { Overlay::Agents },
+            KeyCode::Char('g') if ctrl => {
+                if app.overlay == Overlay::Agents {
+                    app.overlay = Overlay::None;
+                } else {
+                    app.open_agents();
+                }
+            }
             KeyCode::F(1) => app.toggle_help(),
             KeyCode::Char('?') if app.editor.is_empty() && !ctrl && !alt => app.toggle_help(),
             KeyCode::Enter if alt => app.editor.insert('\n'),
@@ -2364,7 +2647,7 @@ impl<'h> Ui<'h> {
     /// Continues session `id` in place of the one shown: its conversation
     /// replayed under what is on screen, and the next prompt sent to it, on
     /// the model it last ran on.
-    fn resume(&mut self, app: &mut App, id: &str) {
+    async fn resume(&mut self, app: &mut App, id: &str) {
         if !self.can_resume(app) {
             return;
         }
@@ -2394,10 +2677,13 @@ impl<'h> Ui<'h> {
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
-        replay(app, id, &events, &self.host.registry());
+        replay(app, id, &events, &self.host.registry(), Some(&self.sessions_dir));
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
+        } else {
+            app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+            self.follow_background(app, id, events.last().map(|e| e.id.as_str())).await;
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -2455,6 +2741,7 @@ impl<'h> Ui<'h> {
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
     fn leave(&mut self, app: &mut App) {
+        self.following_bg = None;
         // The daemon stops sending it here: no frame of it is taken for the
         // next session's.
         if let Some(old) = &app.session_id {
@@ -2526,7 +2813,11 @@ impl<'h> Ui<'h> {
             ],
             false => Vec::new(),
         };
-        app.flow = Some(connect::Flow::new(title, intro, prefer));
+        let mut flow = connect::Flow::new(title, intro, prefer);
+        if let connect::Job::Connect(target) = &job {
+            flow.sign_in = Some(connect::sign_in(target.as_deref(), &|t| self.host.registry().instances.contains_key(t)));
+        }
+        app.flow = Some(flow);
         app.overlay = Overlay::Connect;
         self.first_run = first_run;
         self.auth = Some(connect::start(job, paths));
@@ -2868,7 +3159,7 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 let id = t["/sessions ".len()..].trim().to_string();
-                self.resume(app, &id);
+                self.resume(app, &id).await;
                 return false;
             }
             "/mode" => {
@@ -2983,11 +3274,127 @@ fn read_session(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_ha
     log::read_events(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {}", e.message()))
 }
 
+/// Child `id`'s log for the child view, as far as it is written: it may be
+/// running, and appending as it is read (`child::read_log`).
+fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
+    if !log::valid_id(id) {
+        return Err(format!("{id:?} is not a krowk session id"));
+    }
+    child::read_log(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {e}"))
+}
+
+/// The backend children of session `id` whose end its replayed `branch`
+/// cannot say, each once: a Codex child, which answers no call of the
+/// session's log, and one whose call nothing in the branch answers —
+/// always read, whatever CHILD_ENDS_READ allows; never one the branch
+/// answers, or one started on a branch not replayed.
+fn unanswered_backend_children(id: &str, branch: &[&krowk_harness::protocol::LogEvent]) -> Vec<String> {
+    use krowk_harness::protocol::{Item, LogBody, RanBy};
+    let answered: std::collections::HashSet<&str> = branch
+        .iter()
+        .filter_map(|e| match &e.body {
+            LogBody::ItemCompleted { item: Item::ToolResult { call_id, .. }, .. } if e.session_id == id => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut kids: Vec<String> = Vec::new();
+    for e in branch.iter().filter(|e| e.session_id == id) {
+        if let LogBody::SubagentStarted { subagent_session_id: kid, ran_by, call_id, .. } = &e.body
+            && (*ran_by == RanBy::Codex || (*ran_by != RanBy::Krowk && !answered.contains(call_id.as_str())))
+            && !kids.contains(kid)
+        {
+            kids.push(kid.clone());
+        }
+    }
+    kids
+}
+
+/// How many children of a resumed session have their own log's end read:
+/// the newest, whose rows the screen and the Agents overlay show first.
+/// Older ones are drawn as the session's log answered their calls.
+const CHILD_ENDS_READ: usize = 256;
+
+/// The children of session `id` whose ends a replay of `branch` reads,
+/// each once: every one it names, the newest CHILD_ENDS_READ of them when
+/// each is a file to open (`local`), and always those whose end the branch
+/// cannot say (`unanswered_backend_children`).
+fn children_to_read(id: &str, branch: &[&krowk_harness::protocol::LogEvent], local: bool) -> Vec<String> {
+    use krowk_harness::protocol::LogBody;
+    let mut seen = std::collections::HashSet::new();
+    let mut named: Vec<String> = Vec::new();
+    for e in branch.iter().filter(|e| e.session_id == id) {
+        if let LogBody::SubagentStarted { subagent_session_id: kid, .. } = &e.body
+            && seen.insert(kid.as_str())
+        {
+            named.push(kid.clone());
+        }
+    }
+    if local && named.len() > CHILD_ENDS_READ {
+        named.drain(..named.len() - CHILD_ENDS_READ);
+    }
+    let kept: std::collections::HashSet<String> = named.iter().cloned().collect();
+    named.extend(unanswered_backend_children(id, branch).into_iter().filter(|k| !kept.contains(k)));
+    named
+}
+
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
-fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry) -> Option<PathBuf> {
-    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-    app.replay(&log::branch(events, &head));
+fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    use krowk_harness::protocol::{LogBody, LogEvent};
+    // The session's own last event: a synced history holds its children's
+    // events too, and one of a child that ended after it may come last.
+    let head = events.iter().rfind(|e| e.session_id == id).or(events.last()).map(|e| e.id.clone()).unwrap_or_default();
+    let branch = log::branch(events, &head);
+    // A child's end is in its own log, not the session's: its last
+    // `turn.completed`, read once from the file's end, never the whole
+    // file (`child::last_end`) — or, for a synced session, from its
+    // history, which holds its children's events too.
+    let mut last: std::collections::HashMap<&str, Option<&LogEvent>> = std::collections::HashMap::new();
+    if sessions_dir.is_none() {
+        for e in events.iter().filter(|e| e.session_id != id) {
+            match &e.body {
+                LogBody::TurnCompleted { .. } => _ = last.insert(&e.session_id, Some(e)),
+                LogBody::TurnStarted { .. } => _ = last.insert(&e.session_id, None),
+                _ => {}
+            }
+        }
+    }
+    let mut read: std::collections::HashMap<String, Option<app::ChildEnd>> = std::collections::HashMap::new();
+    let mut end_of = |kid: &str| -> Option<app::ChildEnd> {
+        read.entry(kid.to_string())
+            .or_insert_with(|| match sessions_dir {
+                Some(dir) => log::valid_id(kid).then(|| child::last_end(&dir.join(kid).join(log::EVENTS_FILE))).flatten().as_ref().and_then(app::ChildEnd::of),
+                None => last.get(kid).copied().flatten().and_then(app::ChildEnd::of),
+            })
+            .clone()
+    };
+    // Read before the replay, so a child's row is drawn as it ended, not
+    // as its call was answered (SV16) — and one the replay's turn ends
+    // cannot end from the session's log, a Codex child whose spawn
+    // returns at once, is ended from its own.
+    let mut ends = std::collections::HashMap::new();
+    for kid in children_to_read(id, &branch, sessions_dir.is_some()) {
+        if let Some(e) = end_of(&kid) {
+            ends.insert(kid, e);
+        }
+    }
+    app.child_ends_logged(ends);
+    app.replay(&branch);
+    // A child run in the background, its call answered at once, runs on
+    // past it, and a batch still running answers none of its children:
+    // their ends too are their own logs' — the newest CHILD_ENDS_READ of
+    // them when each is a file to open, and every backend's child, as
+    // before.
+    let mut unended = app.children_unended();
+    if sessions_dir.is_some() && unended.len() > CHILD_ENDS_READ {
+        unended.drain(..unended.len() - CHILD_ENDS_READ);
+    }
+    for kid in app.backend_children_running().into_iter().chain(unended) {
+        if let Some(e) = end_of(&kid) {
+            app.child_logged_end(&kid, &e);
+        }
+    }
+    app.order_ended();
     // A turn logged on a name since renamed is on the new name.
     for old in registry.renamed.keys() {
         app.renamed(old, &registry.current(old));
@@ -3129,8 +3536,354 @@ fn copy(app: &mut App) {
     app.open_copy();
 }
 
+/// The child view takes every key but Ctrl-C's and Ctrl-D's. With an
+/// approval waiting, fullscreen leaves the other keys to it — its card is
+/// on screen under the view, and y, n or Esc answer it as ever — but for
+/// the other Ctrl keys, which do nothing: each would open an overlay under
+/// the view. Inline, the card is hidden, and the view says so: Esc closes
+/// it to show the card. Esc closes it onto the Agents overlay that opened
+/// it, the same child selected. Some with what the view made of the key
+/// when it took it — ← → and `x` are `on_key`'s to carry out — None when
+/// the key goes on.
+fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
+    app.child.as_ref()?;
+    if !app.inline && !app.approvals.is_empty() {
+        let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+        return (ctrl && !matches!(k.code, KeyCode::Char('c' | 'd'))).then_some(child::Key::Taken);
+    }
+    match app.child.as_mut()?.key(k) {
+        child::Key::Close => {
+            app.close_child();
+            Some(child::Key::Close)
+        }
+        child::Key::Pass => None,
+        other => Some(other),
+    }
+}
+
+/// What a turn's end leaves on the root record (R-PRES-3): done with the
+/// topic, error with the failure's first line (the prompt's when it has
+/// none), and nothing, idle, after an interrupt or a turn whose result
+/// this client never got.
+fn turn_ended(r: &Result<Option<RunResult>, EngineError>, topic: &str) -> Option<(presence::State, String)> {
+    let failure = |e: Option<ErrorInfo>| {
+        let line = e.and_then(|e| e.message.lines().map(|l| card::clean(&l.replace('\t', " "))).find(|l| !l.trim().is_empty()));
+        (presence::State::Error, line.unwrap_or_else(|| topic.to_string()))
+    };
+    match r {
+        Ok(Some(res)) if res.status == TurnStatus::Completed => Some((presence::State::Done, topic.to_string())),
+        Ok(Some(res)) if res.status == TurnStatus::Failed => Some(failure(res.error.clone())),
+        Err(e) => Some(failure(Some(e.info()))),
+        _ => None,
+    }
+}
+
+/// Child `id`'s interrupt, sent with `execute`: it reads stopping at once,
+/// and the host's answer is waited for in `stops`, beside everything else
+/// the loop waits on, never in the key's handler (`stop_answered` takes
+/// it). Nothing here waits on the host, so there is no slow answer to
+/// tell apart, as `Ui::command` must.
+fn queue_stop<'h, F: Future<Output = Result<(), EngineError>> + 'h>(stops: &mut Vec<StopFuture<'h>>, app: &mut App, id: String, in_view: bool, execute: impl FnOnce(Command) -> F) {
+    app.stopping(&id);
+    let answer = execute(Command::Interrupt { session_id: id.clone() });
+    stops.push(Box::pin(async move { (id, in_view, answer.await) }));
+}
+
+/// The host's answer to child `id`'s interrupt: taken, the child reads
+/// stopping until its end arrives; refused, it no longer does, and why is
+/// said in the child view's footer when `in_view`, else as a notice.
+fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), EngineError>) {
+    match answer {
+        Ok(()) => app.stopping(id),
+        Err(e) => {
+            app.not_stopping(id);
+            let why = format!("not stopped: {}", e.message);
+            if in_view { app.child_say(&why) } else { app.notice(&why) }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    /// R-PRES-3: done with the topic, error with the failure's first
+    /// line from either kind of failure, the topic when it has none, and
+    /// idle for an interrupt or no result.
+    #[test]
+    fn r_pres_3_a_turn_ends_done_error_or_idle() {
+        use super::{presence::State, turn_ended};
+        use krowk_harness::protocol::{ErrorInfo, ModelRef, RunResult, TurnStatus, Usage};
+        let res = |status, error| Ok(Some(RunResult { session_id: "s".into(), turn_id: "t".into(), status, is_error: false, result: String::new(), model: ModelRef { instance: "a".into(), model: "m".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error, unread_steers: Vec::new(), switch_offer: None, worktree: None }));
+        let info = |message: &str| Some(ErrorInfo { code: "x".into(), message: message.into(), http_status: None, resets_at_ms: None });
+        let ended = |s, m: &str| Some((s, m.to_string()));
+        assert_eq!(turn_ended(&res(TurnStatus::Completed, None), "fix it"), ended(State::Done, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("refused\nwhy")), "fix it"), ended(State::Error, "refused"));
+        assert_eq!(turn_ended(&Err(krowk_harness::engine::EngineError::new("x", "\n\u{202E}gone\nwhy")), "fix it"), ended(State::Error, "gone"), "its first line with something in it");
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("no\tway")), "fix it"), ended(State::Error, "no way"), "a tab a space");
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, None), "fix it"), ended(State::Error, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("\u{202E}")), "fix it"), ended(State::Error, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Interrupted, None), "fix it"), None);
+        assert_eq!(turn_ended(&Ok(None), "fix it"), None);
+    }
+
+    /// R-SUB-7: the backend children the replayed branch cannot end, whose
+    /// ends a resume reads whatever its bound (`children_to_read`): a Codex
+    /// child, a Claude Code agent whose call nothing answers — never one
+    /// its `Agent` result answered, krowk's own, or one on a branch not
+    /// replayed.
+    #[test]
+    fn r_sub_7_the_children_a_branch_cannot_end_are_found() {
+        use krowk_harness::protocol::{Item, LogBody, LogEvent, ModelRef, RanBy};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let ev = |id: &str, parent: Option<&str>, body: LogBody| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: "s".into(), time_ms: 0, body };
+        let started = |kid: &str, call: &str, ran_by| LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: kid.into(), agent: None, model: model.clone(), ran_by, backend_id: None };
+        let events = vec![
+            ev("e1", None, started("codex-kid", "spawn-1", RanBy::Codex)),
+            ev("e2", Some("e1"), started("claude-answered", "c1", RanBy::Claude)),
+            ev("e3", Some("e2"), LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false } }),
+            ev("e4", Some("e3"), started("claude-unanswered", "c2", RanBy::Claude)),
+            ev("e5", Some("e4"), started("krowk-own", "c3", RanBy::Krowk)),
+            // A branch the head does not follow.
+            ev("e6", Some("e3"), started("abandoned", "c4", RanBy::Codex)),
+            ev("e7", Some("e5"), started("codex-kid", "spawn-1", RanBy::Codex)),
+        ];
+        let branch = krowk_harness::log::branch(&events, "e7");
+        assert_eq!(super::unanswered_backend_children("s", &branch), ["codex-kid", "claude-unanswered"]);
+    }
+
+    /// R-SUB-11 (SV16): a resumed session and an attached client draw
+    /// each finished child with its own end — a native child's duration
+    /// and its calls' tokens, a Claude Code agent's tokens as its backend
+    /// counted them — read from its log's last `turn.completed`, never the
+    /// whole of it, or from the synced history the client holds.
+    #[test]
+    fn r_sub_11_a_resumed_or_attached_session_reads_each_childs_own_end() {
+        use super::{App, Editor, Settings, log};
+        use krowk_harness::protocol::{ErrorInfo, Item, LogBody, LogEvent, ModelRef, RanBy, TurnStatus, Usage};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let ev = |sid: &str, n: i64, body: LogBody| LogEvent { id: format!("{sid}-{n}"), parent_id: None, session_id: sid.into(), time_ms: n, body };
+        let mut parent = vec![ev("s", 0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None })];
+        // Session ids as the host makes them: only those name a log.
+        let id = |n: u8| format!("01a12a49-9b97-7000-8d44-758e6f292dc{n}");
+        for (i, (kid, ran_by)) in [(id(1), RanBy::Krowk), (id(2), RanBy::Krowk), (id(3), RanBy::Claude)].into_iter().enumerate() {
+            let call = format!("c{i}");
+            parent.push(ev("s", 10 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{i}"), item: Item::ToolCall { call_id: call.clone(), name: "subagent".into(), input: serde_json::json!({}) } }));
+            parent.push(ev("s", 1000 + i as i64, LogBody::SubagentStarted { turn_id: "t".into(), call_id: call, subagent_session_id: kid, description: ["sleeper", "counter", "agent"][i].into(), agent: None, model: model.clone(), ran_by, backend_id: None }));
+        }
+        // And one in the background, answered at once; its note never
+        // logged, the session's process gone before its next turn.
+        parent.push(ev("s", 1500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i3".into(), item: Item::ToolCall { call_id: "c3".into(), name: "subagent".into(), input: serde_json::json!({"run_in_background": true}) } }));
+        parent.push(ev("s", 1501, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c3".into(), subagent_session_id: id(4), description: "surveyor".into(), agent: None, model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }));
+        parent.push(ev("s", 1502, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: format!("started background agent {}", id(4)), is_error: false } }));
+        // The batch answered together, at its end.
+        for (i, is_error) in [true, false, true].into_iter().enumerate() {
+            parent.push(ev("s", 101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{i}"), item: Item::ToolResult { call_id: format!("c{i}"), output: if is_error { "the subagent was interrupted".into() } else { "ok".into() }, is_error } }));
+        }
+        parent.push(ev("s", 102_000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 101_000, error: None, reported_cost_usd: None, reported_tokens: None }));
+        for i in 1..parent.len() {
+            parent[i].parent_id = Some(parent[i - 1].id.clone());
+        }
+        let used = Usage { input_tokens: 50, output_tokens: 10, ..Usage::default() };
+        let stopped = ErrorInfo { code: "agent_ended".into(), message: "stopped".into(), http_status: None, resets_at_ms: None };
+        let ends = [
+            ev(&id(1), 61_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: used, duration_ms: 60_000, error: None, reported_cost_usd: None, reported_tokens: None }),
+            ev(&id(2), 96_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: used, duration_ms: 95_000, error: None, reported_cost_usd: None, reported_tokens: None }),
+            ev(&id(3), 63_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 62_000, error: Some(stopped), reported_cost_usd: None, reported_tokens: Some(12_000) }),
+            ev(&id(4), 140_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: used, duration_ms: 138_000, error: None, reported_cost_usd: None, reported_tokens: None }),
+        ];
+        // Each child's log: much more than the window read, then its end.
+        let said = |sid: &str| ev(sid, 2000, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "o".into(), item: Item::user("x".repeat(40_000)) });
+        let dir = std::env::temp_dir().join(format!("krowk-child-ends-{}", std::process::id()));
+        for end in &ends {
+            let kid = &end.session_id;
+            std::fs::create_dir_all(dir.join(kid)).unwrap();
+            let lines: Vec<String> = (0..4).map(|_| serde_json::to_string(&said(kid)).unwrap()).chain([serde_json::to_string(end).unwrap()]).collect();
+            std::fs::write(dir.join(kid).join(log::EVENTS_FILE), lines.join("\n") + "\n").unwrap();
+        }
+        // An attached client's history holds its children's events too:
+        // the batch's before the parent's turn that ran them ends, the
+        // background child's after it, last.
+        let (last, before) = parent.split_last().unwrap();
+        let history: Vec<LogEvent> = before.iter().cloned().chain(ends[..3].iter().flat_map(|e| [said(&e.session_id), e.clone()])).chain([last.clone(), said(&id(4)), ends[3].clone()]).collect();
+        let registry = krowk_harness::instances::Registry::resolve(&krowk_harness::instances::InstancesConfig::default(), &|_| String::new());
+        for (local, events) in [(true, &parent), (false, &history)] {
+            let mut app = App::new(Editor::new(None), 120, Settings::default(), None, None);
+            super::replay(&mut app, "s", events, &registry, local.then_some(dir.as_path()));
+            let shown: String = app.take_pending().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() + "\n").collect();
+            for row in ["Agent sleeper · interrupted after 1m0s · 60 tokens", "Agent counter · done in 1m35s · 60 tokens", "Agent agent · interrupted after 1m2s · 12k tokens"] {
+                assert!(shown.contains(row), "local {local}, {row}: {shown}");
+            }
+            if local {
+                app.end_replayed_children(true);
+            }
+            app.open_agents();
+            let rows: Vec<String> = app.view(std::time::Instant::now()).0.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).filter(|r| r.contains("Agent ")).collect();
+            assert!(rows[0].contains("Agent surveyor · done in 2m18s · 60 tokens"), "local {local}: the background child as it ended, newest: {rows:?}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SV16: a resume reads the ends of the newest CHILD_ENDS_READ children
+    /// its branch names, each once, and always those it cannot end itself;
+    /// an attached client, whose history is in memory, reads every one.
+    #[test]
+    fn r_sub_11_a_resume_reads_a_bounded_number_of_child_ends() {
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef, RanBy};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let started = |n: usize, ran_by| LogEvent { id: format!("e{n}"), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("c{n}"), subagent_session_id: format!("k{n}"), description: String::new(), agent: None, model: model.clone(), ran_by, backend_id: None } };
+        let mut events = vec![started(0, RanBy::Codex)];
+        events.extend((1..=super::CHILD_ENDS_READ + 10).map(|n| started(n, RanBy::Krowk)));
+        events.push(started(5, RanBy::Krowk));
+        let branch: Vec<&LogEvent> = events.iter().collect();
+        let local = super::children_to_read("s", &branch, true);
+        assert_eq!(local.len(), super::CHILD_ENDS_READ + 1, "the newest, and the Codex child its branch cannot end");
+        assert_eq!((local[0].as_str(), local.last().map(String::as_str)), ("k11", Some("k0")));
+        assert_eq!(super::children_to_read("s", &branch, false).len(), super::CHILD_ENDS_READ + 11, "each once");
+    }
+
+    /// R-PRES-2: an approval arriving while `/connect`'s overlay is up wins
+    /// while it waits, and the sign-in is told again once it is answered;
+    /// hidden or closed, the overlay is no longer told.
+    #[test]
+    fn r_pres_5_an_approval_over_connect_wins_and_the_sign_in_is_told_again_once_it_is_answered() {
+        use super::*;
+        use osc7501::{Kind, Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let req = ApprovalRequest { session_id: "s".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "Bash `ls`".into(), reason: String::new(), remember: vec![], questions: vec![] };
+        let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
+        let mut p = presence::Presence::from_env(&|_| String::new());
+        let mut tell = |app: &App| {
+            let (state, topic) = root_state(app, "fix it", None);
+            p.tell(state, topic).map(|t| t.report)
+        };
+        let mut flow = connect::Flow::new("Connect a provider", Vec::new(), None);
+        flow.sign_in = Some(connect::sign_in(Some("anthropic"), &|_| false));
+        app.flow = Some(flow);
+        app.overlay = Overlay::Connect;
+        let auth = root(Rec::Blocked(Kind::Auth), "Sign in to anthropic");
+        assert_eq!(tell(&app), Some(auth.clone()));
+        app.approvals.push(req.clone());
+        assert_eq!(tell(&app), Some(root(Rec::Blocked(Kind::Permission), "fix it")), "the approval wins");
+        app.answered(&req.request_id);
+        assert_eq!(tell(&app), Some(auth.clone()), "answered, the sign-in again");
+        app.overlay = Overlay::None;
+        assert_eq!(tell(&app), Some(root(Rec::Idle, "")), "hidden, what it would otherwise be");
+        app.overlay = Overlay::Connect;
+        assert_eq!(tell(&app), Some(auth));
+        app.flow = Some(connect::Flow::new("Disconnect", Vec::new(), None));
+        assert_eq!(tell(&app), Some(root(Rec::Idle, "")), "a /disconnect waits on no sign-in");
+    }
+
+    #[test]
+    fn r_sub_11_an_approval_waiting_under_the_child_view_gets_its_keys_or_is_said_to_wait() {
+        use super::*;
+        let key = |c: KeyCode| KeyEvent::from(c);
+        let req = ApprovalRequest { session_id: "s".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "Bash `ls`".into(), reason: String::new(), remember: vec![], questions: vec![] };
+        for inline in [true, false] {
+            let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
+            app.inline = inline;
+            app.child = Some(child::ChildView::new((0..30).map(|i| ratatui::text::Line::from(format!("line {i}"))), 40));
+            assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken), "no approval: the view takes it");
+            app.approvals.push(req.clone());
+            if inline {
+                // The card is hidden: y is no answer, Esc shows it.
+                assert_eq!(child_key(&mut app, key(KeyCode::Char('y'))), Some(child::Key::Taken));
+                assert_eq!(child_key(&mut app, key(KeyCode::Esc)), Some(child::Key::Close));
+                assert!(app.child.is_none(), "closed, the card under it");
+            } else {
+                // The card is on screen: y, n and Esc are its, the view stays.
+                for c in [KeyCode::Char('y'), KeyCode::Char('n'), KeyCode::Esc] {
+                    assert_eq!(child_key(&mut app, key(c)), None, "{c:?}");
+                }
+                assert!(app.child.is_some());
+                // No overlay opens under it; Ctrl-C and Ctrl-D go on.
+                for c in ['o', 'g', 't', 'y'] {
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), Some(child::Key::Taken), "Ctrl-{c}");
+                }
+                for c in ['c', 'd'] {
+                    assert_eq!(child_key(&mut app, KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)), None, "Ctrl-{c}");
+                }
+            }
+        }
+    }
+
+    /// R-SUB-10: an interrupt the host refuses — `not_stoppable`, with why —
+    /// is said in the child view's footer, and the child no longer reads
+    /// stopping.
+    #[test]
+    fn r_sub_10_a_refused_interrupt_says_why_in_the_footer_and_nothing_reads_stopping() {
+        use super::*;
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef};
+        let mut app = App::new(Editor::new(None), 80, Settings::default(), None, None);
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        app.on_line(&StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "build it".into(), agent: None, model, ran_by: Default::default(), backend_id: None } }));
+        app.open_child("k1", Ok(Vec::new()));
+        let rows = |app: &mut App| app.child_rows(100, 8, None).unwrap().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>();
+        // Sent: it reads stopping while the answer is on its way.
+        app.stopping("k1");
+        assert!(rows(&mut app)[0].contains("· stopping…"), "{:?}", rows(&mut app));
+        stop_answered(&mut app, "k1", true, Err(EngineError::new("not_stoppable", "its backend cannot stop one agent alone")));
+        let shown = rows(&mut app);
+        assert_eq!(shown[7], "⚠ not stopped: its backend cannot stop one agent alone", "{shown:?}");
+        assert!(!shown[0].contains("stopping"), "{shown:?}");
+    }
+
+    /// R-SUB-10: `x` on a child sends its interrupt without waiting for
+    /// the answer (`queue_stop`): the child reads stopping at once, and the
+    /// loop goes on — here running the turn, which a host in this process
+    /// answers a backend's stop from, as Claude Code's turn writes
+    /// `stop_task`. The answer is taken once it comes (`first_of`); one
+    /// that is refused clears stopping and says why.
+    #[tokio::test]
+    async fn r_sub_10_x_on_a_child_answers_once_the_loop_runs_the_turn() {
+        use super::*;
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef};
+        use std::{cell::Cell, rc::Rc};
+        let mut app = App::new(Editor::new(None), 80, Settings::default(), None, None);
+        let model = ModelRef { instance: "claude".into(), model: "haiku".into() };
+        for k in ["k1", "k2"] {
+            app.on_line(&StreamLine::Log(LogEvent { id: format!("e{k}"), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("c{k}"), subagent_session_id: k.into(), description: format!("do {k}"), agent: None, model: model.clone(), ran_by: krowk_harness::protocol::RanBy::Claude, backend_id: Some(format!("a{k}")) } }));
+        }
+        app.open_child("k1", Ok(Vec::new()));
+        let rows = |app: &mut App| app.child_rows(100, 8, None).unwrap().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>();
+        // The host answers a stop only once the turn has run: it is the
+        // turn that sends it.
+        let ran = Rc::new(tokio::sync::Notify::new());
+        let turned = Rc::new(Cell::new(false));
+        let execute = |refuse: bool| {
+            let (ran, turned) = (ran.clone(), turned.clone());
+            move |cmd: Command| async move {
+                assert!(matches!(cmd, Command::Interrupt { .. }));
+                if !turned.get() {
+                    ran.notified().await;
+                }
+                if refuse { Err(EngineError::new("not_stoppable", "Claude Code did not stop that agent: no")) } else { Ok(()) }
+            }
+        };
+        let mut stops: Vec<StopFuture<'_>> = Vec::new();
+        queue_stop(&mut stops, &mut app, "k1".into(), true, execute(false));
+        assert!(rows(&mut app)[0].contains("· stopping…"), "at once: {:?}", rows(&mut app));
+        // The loop: the stop waits beside the turn, which runs.
+        let turn = async {
+            turned.set(true);
+            ran.notify_waiters();
+            std::future::pending::<()>().await
+        };
+        tokio::pin!(turn);
+        let (id, in_view, answer) = tokio::select! {
+            a = first_of(&mut stops) => a,
+            _ = &mut turn => unreachable!(),
+        };
+        stop_answered(&mut app, &id, in_view, answer);
+        assert!(stops.is_empty() && rows(&mut app)[0].contains("· stopping…"), "taken: stopping until its end: {:?}", rows(&mut app));
+        // A refusal clears it, and says why.
+        app.open_child("k2", Ok(Vec::new()));
+        queue_stop(&mut stops, &mut app, "k2".into(), true, execute(true));
+        let (id, in_view, answer) = first_of(&mut stops).await;
+        stop_answered(&mut app, &id, in_view, answer);
+        let shown = rows(&mut app);
+        assert!(!shown[0].contains("stopping") && shown[7].contains("not stopped: Claude Code did not stop that agent: no"), "{shown:?}");
+    }
+
     #[test]
     fn r_perf_2_the_turn_clock_ticks_at_the_spinner_rate_and_never_in_the_past() {
         use tokio::time::Instant;
@@ -3138,7 +3891,7 @@ mod tests {
         let tick = super::app::TICK;
         for ms in [0u64, 1, 124, 125, 126, 999, 1000, 5_001] {
             let now = t0 + std::time::Duration::from_millis(ms);
-            let next = super::next_tick(t0, now);
+            let next = super::next_tick(t0, now, tick);
             assert!(next > now, "at {ms} ms the next tick is in the future");
             assert!(next - now <= tick, "at {ms} ms it is at most one frame away");
         }

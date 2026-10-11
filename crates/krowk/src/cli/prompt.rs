@@ -18,6 +18,7 @@ use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, 
 use std::collections::HashMap;
 use krowk_harness::subagent::{AgentsConfig, Models};
 use krowk_harness::trust;
+use krowk_tui::osc7501::{self, Report, State};
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 
@@ -75,6 +76,16 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     };
     if let Some(r) = &resumed {
         trust_as.set(&r.worktree);
+    }
+    // The daemon trusts only a repository on the trusted list, so `--trust`
+    // has nothing to reach it with.
+    #[cfg(not(unix))]
+    if ctx.f.daemon {
+        return Err(fail("not_supported", "--daemon needs a unix socket, which this platform's build does not have yet"));
+    }
+    #[cfg(unix)]
+    if ctx.f.daemon && ctx.f.trust {
+        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
     }
     if ctx.f.daemon && (ctx.f.own_worktree || resumed.is_some()) {
         return Err(fail("bad_flag", "a session in a worktree of its own runs in this process, which holds the worktree and finishes it when the run ends, and --daemon runs the turn in the host daemon — drop --daemon"));
@@ -137,7 +148,38 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         agents: agents_config(ctx.io.env),
         session,
     };
+    // R-PRES-6: the run's record, on stderr when that is a terminal: working
+    // now, and what it came to right before krowk exits, left behind for a
+    // person who started it in another tab.
+    // Its first line with text: a prompt piped in may open on a blank one.
+    let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
+    report(ctx, State::Working, &topic);
     let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
+    let ran = turn(ctx, cfg, opts);
+    match &ran {
+        Ok(()) => report(ctx, State::Done, &topic),
+        Err(e) if e.code() == "interrupted" => report(ctx, State::Idle, &topic),
+        Err(e) => report(ctx, State::Error, &crate::output::headline(e)),
+    }
+    ran
+}
+
+/// One OSC 7501 report of the root record, on stderr and only on a
+/// terminal: a file or a pipe would keep the bytes as text. Never stdout,
+/// which holds the answer in the format asked for.
+fn report(ctx: &mut Ctx, state: State, msg: &str) {
+    if !ctx.io.err_tty {
+        return;
+    }
+    if let Some(r) = osc7501::encode(&Report { state, msg, ..Report::default() }) {
+        let _ = ctx.io.stderr.write_all(r.as_bytes());
+        let _ = ctx.io.stderr.flush();
+    }
+}
+
+/// The turn, from its start to what krowk exits with.
+fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), Error> {
+    let format = opts.format;
     let outcome = if ctx.f.daemon { on_daemon(ctx, &cfg.cwd.clone(), opts)? } else { headless::run(cfg, opts, ctx.io.stdout) };
     let _ = ctx.io.stdout.flush();
     // A kept worktree is named: in the result, when one was printed as
@@ -173,13 +215,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
 }
 
 /// `--daemon`: the turn is the host daemon's, started first when none runs.
-/// The daemon trusts only a repository on the trusted list, so `--trust`
-/// has nothing to reach it with.
 #[cfg(unix)]
 fn on_daemon(ctx: &mut Ctx, cwd: &std::path::Path, opts: headless::Options) -> Result<headless::Outcome, Error> {
-    if ctx.f.trust {
-        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
-    }
     let spawn = super::host::spawner(ctx)?;
     Ok(headless::run_on_daemon(ctx.io.env, cwd, super::VERSION, &spawn, opts, ctx.io.stdout))
 }

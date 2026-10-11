@@ -26,10 +26,16 @@ use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::Arc;
 use std::time::Duration;
 use ureq::http::Uri;
+use ureq::unversioned::transport as net;
 
 const MAX_ATTEMPTS: u32 = 3;
 
 const MAX_BODY: u64 = 1 << 20;
+
+/// How long a call may go with nothing arriving and nothing sent before it
+/// is given up as stalled (R-REG-1): far past any pause a working server or
+/// proxy makes, and far short of the five minutes a call has in all.
+const QUIET: Duration = Duration::from_secs(30);
 
 /// The proxy Go's ProxyFromEnvironment would pick: HTTPS_PROXY for an https
 /// registry, HTTP_PROXY for an http one, ALL_PROXY ignored, NO_PROXY honoured,
@@ -92,6 +98,40 @@ pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8]) -
     format!("krowk/registry/v1\n{method}\n{target}\n{timestamp}\n{}", sha256_hex(body)).into_bytes()
 }
 
+/// The millisecond a signed request carries: now, or one past the last this
+/// process signed with, whichever is later. A signature is deterministic,
+/// so two requests of one shape signed in one millisecond are one to the
+/// registry, which refuses the second as a replay (R-E2E-2); this
+/// process's tasks — a bridge and another reader of the session in the
+/// same process — never sign two so. Each step forward is a millisecond.
+/// More than a second ahead of the clock means the clock stepped back (a
+/// fast one corrected): the clock is taken again, so a fixed clock is used
+/// at once rather than once it catches up.
+fn signing_ms() -> i64 {
+    static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    signing_ms_at(&LAST, jiff::Timestamp::now().as_millisecond())
+}
+
+/// `signing_ms` against the counter `last`, at the clock reading `now`.
+fn signing_ms_at(last_used: &std::sync::atomic::AtomicI64, now: i64) -> i64 {
+    use std::sync::atomic::Ordering;
+    let mut last = last_used.load(Ordering::Relaxed);
+    loop {
+        let next = if last - now > 1_000 { now } else { now.max(last + 1) };
+        match last_used.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
+    }
+}
+
+/// Up to `max` milliseconds, from the clock's nanoseconds and this
+/// process's id: enough to part two processes that pause alike.
+fn jitter_ms(max: u64) -> u64 {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    (u64::from(nanos) ^ u64::from(std::process::id()).wrapping_mul(0x9e37_79b9)) % (max + 1)
+}
+
 /// The path and query of an absolute URL, which is what its request line
 /// carries and so what the registry sees and checks a signature over.
 fn request_target(url: &str) -> &str {
@@ -112,33 +152,37 @@ pub struct Client {
     /// The person this key speaks for (`GET /v1/key`'s `user_id`), read
     /// once, the first time a call under `/users/:user_id` needs it.
     user: std::sync::OnceLock<String>,
+    limits: Limits,
+}
+
+/// How long a call may take: in all, to connect, and with nothing moving.
+#[derive(Debug, Clone, Copy)]
+struct Limits {
+    global: Duration,
+    connect: Duration,
+    quiet: Duration,
 }
 
 impl Client {
     /// A client against `base_url` (the public registry when empty).
     pub fn new(base_url: &str, token: &str) -> Client {
-        Client::within(base_url, token, Duration::from_secs(300), Duration::from_secs(30))
+        Client::within(base_url, token, Limits { global: Duration::from_secs(300), connect: Duration::from_secs(30), quiet: QUIET })
     }
 
-    /// `new`, each call given up after `global` and its connection after
-    /// `connect`.
-    fn within(base_url: &str, token: &str, global: Duration, connect: Duration) -> Client {
+    /// `new`, each call given up after `limits`.
+    fn within(base_url: &str, token: &str, limits: Limits) -> Client {
         let base_url = if base_url.is_empty() { crate::DEFAULT_BASE_URL } else { base_url }.trim_end_matches('/').to_string();
-        let proxy = proxy_for(&base_url);
-        let guard = Guard { base: base_url.clone(), proxy: proxy.as_ref().map(|p| (p.host().to_string(), p.port())) };
-        let config = ureq::Agent::config_builder()
-            .http_status_as_error(false)
-            // Redirects are judged here, hop by hop, never followed blind.
-            .max_redirects(0)
-            .timeout_global(Some(global))
-            .timeout_connect(Some(connect))
-            .proxy(proxy)
-            .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
-            .user_agent(format!("krowk-cli/{}", option_env!("KROWK_VERSION").unwrap_or("dev")))
-            .build();
-        let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
-        let agent = ureq::Agent::with_parts(config, ureq::unversioned::transport::DefaultConnector::default(), resolver);
-        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None, user: std::sync::OnceLock::new() }
+        let agent = agent(&base_url, limits);
+        Client { base_url, token: token.to_string(), agent, sleep: std::thread::sleep, signer: None, user: std::sync::OnceLock::new(), limits }
+    }
+
+    /// This client, giving a call up once nothing has moved for `quiet`
+    /// rather than `QUIET` — for a test that cannot wait half a minute.
+    #[doc(hidden)]
+    pub fn quiet_after(mut self, quiet: Duration) -> Client {
+        self.limits.quiet = quiet;
+        self.agent = agent(&self.base_url, self.limits);
+        self
     }
 
     /// This client, signing the calls that act as a device with `signer`.
@@ -173,13 +217,13 @@ impl Client {
     }
 
     pub(crate) fn keyless(&self) -> Client {
-        Client { sleep: self.sleep, ..Client::new(&self.base_url, "") }
+        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", self.limits) }
     }
 
     /// `keyless`, every call given up after `limit`: for a call its caller
     /// can do without, which must not hold it up.
     pub(crate) fn keyless_within(&self, limit: Duration) -> Client {
-        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", limit, limit) }
+        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", Limits { global: limit, connect: limit, quiet: self.limits.quiet }) }
     }
 
     /// Reads back the key the client holds. A key the registry will not take
@@ -416,9 +460,13 @@ impl Client {
                 // changes nothing, so it is signed again a moment later; a
                 // write never is.
                 Err(e) if method == "GET" && signer.is_some() && e.code() == "signature_replayed" && attempt < attempts => {
-                    (self.sleep)(std::time::Duration::from_millis(2));
+                    // A moment unlike the other's: two processes that
+                    // collided, both signing again after the same pause,
+                    // would collide again.
+                    (self.sleep)(std::time::Duration::from_millis(2 + jitter_ms(20)));
                     last = Some(e);
                 }
+                Err(e) if attempts == 1 && method != "GET" && e.body.contains_key("stalled") => return Err(sent_once(e)),
                 Err(e) => {
                     if !e.retryable() || attempt == attempts {
                         return Err(e);
@@ -447,8 +495,10 @@ impl Client {
             }
             if let Some(signer) = signer {
                 // Milliseconds, so two calls of the same shape a moment apart
-                // are two requests to the registry's replay check, not one.
-                let at = jiff::Timestamp::now().as_millisecond().to_string();
+                // are two requests to the registry's replay check, not one;
+                // and never a millisecond this process has signed with, so
+                // two of its tasks reading alike at once are two as well.
+                let at = signing_ms().to_string();
                 let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default()));
                 req = req.header("X-Krowk-Device", signer.device()).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
             }
@@ -456,7 +506,13 @@ impl Client {
             let mut res = self.agent.run(req).map_err(|e| self.transport(method, &url, e, "network_unreachable"))?;
             let status = res.status().as_u16();
             let mut bytes = Vec::new();
-            let _ = res.body_mut().as_reader().take(MAX_BODY).read_to_end(&mut bytes);
+            // A body that broke off reads as what arrived, as it always has;
+            // one that went quiet is a call to give up, and maybe make again.
+            if let Err(e) = res.body_mut().as_reader().take(MAX_BODY).read_to_end(&mut bytes)
+                && stalled(&e)
+            {
+                return Err(self.transport(method, &url, e.into(), "network_unreachable"));
+            }
             if (300..400).contains(&status) {
                 let location = header(&res, "location");
                 match self.next_hop(&url, &location, hop) {
@@ -548,6 +604,23 @@ impl Client {
         // Spelled as Go's net/http spells it — `Get "url": cause` — so the
         // detail reads the same whichever build wrote it.
         let op = method.chars().next().map(|c| c.to_ascii_uppercase().to_string() + &method[1..].to_ascii_lowercase()).unwrap_or_default();
+        if let ureq::Error::Other(inner) = &e
+            && inner.is::<Stalled>()
+        {
+            // The code stays the transport's, which callers read as "the
+            // network", and the exit code with it; what is new is that a
+            // retry could help, and that the words say what happened.
+            let who = if code == "network_unreachable" { "the registry" } else { "object storage" };
+            let quiet = spoken(self.limits.quiet);
+            body.insert("detail".into(), json!(format!("{op} {url:?}: nothing arrived for {quiet}")));
+            if code == "network_unreachable" {
+                body.insert("endpoint".into(), json!(url));
+            }
+            body.insert("fix".into(), json!(format!("{who} stopped answering — nothing arrived for {quiet}, so the call was given up; try again, and check the network or any proxy in between if it persists")));
+            body.insert("stalled".into(), json!(true));
+            body.insert("retryable".into(), json!(true));
+            return Error { status: 0, body };
+        }
         body.insert("detail".into(), json!(format!("{op} {url:?}: {e}")));
         if code == "network_unreachable" {
             body.insert("endpoint".into(), json!(url));
@@ -724,17 +797,31 @@ impl Client {
 
     /// Reads a stored object — a session chunk — from the URL the registry
     /// listed, judged like an upload target, with no redirect followed and
-    /// at most `limit` bytes read.
+    /// at most `limit` bytes read. A read that went quiet is made again
+    /// (R-REG-1); any other failure is the caller's.
     pub fn get_blob(&self, url: &str, limit: u64) -> Result<Vec<u8>, Error> {
         let endpoint = self.storage_origin(url)?;
-        let req = ureq::http::Request::builder().method("GET").uri(&endpoint).body(()).map_err(|e| fail("bad_download_url", e.to_string()))?;
-        let mut res = self.agent.run(req).map_err(|e| self.transport("GET", &endpoint, e, "storage_unreachable"))?;
+        let mut attempt = 1;
+        loop {
+            match self.get_blob_once(&endpoint, limit) {
+                Err(e) if e.body.contains_key("stalled") && attempt < MAX_ATTEMPTS => (self.sleep)(Duration::from_millis(250 << attempt)),
+                done => return done,
+            }
+            attempt += 1;
+        }
+    }
+
+    fn get_blob_once(&self, endpoint: &str, limit: u64) -> Result<Vec<u8>, Error> {
+        let req = ureq::http::Request::builder().method("GET").uri(endpoint).body(()).map_err(|e| fail("bad_download_url", e.to_string()))?;
+        let mut res = self.agent.run(req).map_err(|e| self.transport("GET", endpoint, e, "storage_unreachable"))?;
         let status = res.status().as_u16();
         if status != 200 {
             return Err(fail("storage_read_failed", format!("object storage answered {status} for a chunk the registry listed — list the chunks again, and report it if it persists")));
         }
         let mut bytes = Vec::new();
-        res.body_mut().as_reader().take(limit).read_to_end(&mut bytes).map_err(|e| fail("storage_read_failed", e.to_string()))?;
+        res.body_mut().as_reader().take(limit).read_to_end(&mut bytes).map_err(|e| {
+            if stalled(&e) { self.transport("GET", endpoint, e.into(), "storage_unreachable") } else { fail("storage_read_failed", e.to_string()) }
+        })?;
         Ok(bytes)
     }
 
@@ -789,6 +876,17 @@ fn unexpected_redirect(status: u16, endpoint: &str, location: &str) -> Error {
     );
     body.insert("retryable".into(), json!(false));
     Error { status, body }
+}
+
+/// A stall on a write sent once on purpose — acquiring a lease, say, where
+/// a second attempt is refused under a fence this device never heard. The
+/// registry may have acted on it, so "try again" is not the advice.
+fn sent_once(mut e: Error) -> Error {
+    let fix = e.fix();
+    let said = fix.split_once("; try again").map_or(fix.as_str(), |(said, _)| said);
+    e.body.insert("fix".into(), json!(format!("{said}; it may have been acted on, so it was not sent again — check the network or any proxy in between")));
+    e.body.insert("retryable".into(), json!(false));
+    e
 }
 
 fn malformed(status: u16, fix: &str) -> Error {
@@ -1166,13 +1264,129 @@ impl ureq::unversioned::resolver::Resolver for GuardResolver {
         &self,
         uri: &Uri,
         config: &ureq::config::Config,
-        timeout: ureq::unversioned::transport::NextTimeout,
+        timeout: net::NextTimeout,
     ) -> Result<ureq::unversioned::resolver::ResolvedSocketAddrs, ureq::Error> {
         let addrs = self.inner.resolve(uri, config, timeout)?;
         for addr in addrs.iter() {
             self.guard.permit(uri, *addr).map_err(|e| ureq::Error::Other(Box::new(e)))?;
         }
         Ok(addrs)
+    }
+}
+
+/// The agent every call of a client goes through: the address guard on
+/// the resolver, the quiet limit on the transport.
+fn agent(base_url: &str, limits: Limits) -> ureq::Agent {
+    let proxy = proxy_for(base_url);
+    let guard = Guard { base: base_url.to_string(), proxy: proxy.as_ref().map(|p| (p.host().to_string(), p.port())) };
+    let config = ureq::Agent::config_builder()
+        .http_status_as_error(false)
+        // Redirects are judged here, hop by hop, never followed blind.
+        .max_redirects(0)
+        .timeout_global(Some(limits.global))
+        .timeout_connect(Some(limits.connect))
+        .proxy(proxy)
+        .tls_config(ureq::tls::TlsConfig::builder().root_certs(ureq::tls::RootCerts::PlatformVerifier).build())
+        .user_agent(format!("krowk-cli/{}", option_env!("KROWK_VERSION").unwrap_or("dev")))
+        .build();
+    let resolver = GuardResolver { guard: Arc::new(guard), inner: ureq::unversioned::resolver::DefaultResolver::default() };
+    let connector = QuietConnector { inner: net::DefaultConnector::default(), quiet: limits.quiet };
+    ureq::Agent::with_parts(config, connector, resolver)
+}
+
+/// A call given up because nothing moved for the quiet limit.
+#[derive(Debug)]
+struct Stalled;
+
+impl std::fmt::Display for Stalled {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("nothing arrived within the quiet limit")
+    }
+}
+
+impl std::error::Error for Stalled {}
+
+/// Whether a body read failed because the connection went quiet.
+fn stalled(e: &std::io::Error) -> bool {
+    e.get_ref().and_then(|inner| inner.downcast_ref::<ureq::Error>()).is_some_and(|u| matches!(u, ureq::Error::Other(o) if o.is::<Stalled>()))
+}
+
+/// A limit as the person reads it: `30 s`, or milliseconds below a second.
+fn spoken(d: Duration) -> String {
+    if d.as_millis().is_multiple_of(1000) { format!("{} s", d.as_secs()) } else { format!("{} ms", d.as_millis()) }
+}
+
+/// The default connector, its every connection given up once nothing has
+/// moved either way for `quiet` (R-REG-1). ureq's own timeouts are totals,
+/// per phase of a call — the wait for the head, the body, the upload — so
+/// one of 30 seconds would cut a large body that is arriving, just slowly,
+/// while the five-minute ceiling is what a server that went silent costs.
+/// Each read and write the transport makes is waited on for at most
+/// `quiet`, which is a limit on silence and never on progress: a body that
+/// keeps coming, however slowly, never meets it. On the transport rather
+/// than a reader around the body, because it holds every phase — the
+/// head, the body, an upload the far end stopped taking — of the calls to
+/// the registry and to storage alike.
+#[derive(Debug)]
+struct QuietConnector {
+    inner: net::DefaultConnector,
+    quiet: Duration,
+}
+
+impl net::Connector for QuietConnector {
+    type Out = Quiet;
+
+    fn connect(&self, details: &net::ConnectionDetails, chained: Option<()>) -> Result<Option<Quiet>, ureq::Error> {
+        Ok(self.inner.connect(details, chained)?.map(|inner| Quiet { inner, quiet: self.quiet }))
+    }
+}
+
+#[derive(Debug)]
+struct Quiet {
+    inner: Box<dyn net::Transport>,
+    quiet: Duration,
+}
+
+impl Quiet {
+    /// `timeout`, held to the quiet limit, and whether that shortened it:
+    /// only then is a timeout this transport's to name.
+    fn held(&self, timeout: net::NextTimeout) -> (net::NextTimeout, bool) {
+        if *timeout.after <= self.quiet {
+            return (timeout, false);
+        }
+        (net::NextTimeout { after: net::time::Duration::Exact(self.quiet), reason: timeout.reason }, true)
+    }
+}
+
+/// A timeout the quiet limit caused, named as a stall; anything else as it is.
+fn quiet_or(e: ureq::Error, held: bool) -> ureq::Error {
+    match e {
+        ureq::Error::Timeout(_) if held => ureq::Error::Other(Box::new(Stalled)),
+        e => e,
+    }
+}
+
+impl net::Transport for Quiet {
+    fn buffers(&mut self) -> &mut dyn net::Buffers {
+        self.inner.buffers()
+    }
+
+    fn transmit_output(&mut self, amount: usize, timeout: net::NextTimeout) -> Result<(), ureq::Error> {
+        let (timeout, held) = self.held(timeout);
+        self.inner.transmit_output(amount, timeout).map_err(|e| quiet_or(e, held))
+    }
+
+    fn await_input(&mut self, timeout: net::NextTimeout) -> Result<bool, ureq::Error> {
+        let (timeout, held) = self.held(timeout);
+        self.inner.await_input(timeout).map_err(|e| quiet_or(e, held))
+    }
+
+    fn is_open(&mut self) -> bool {
+        self.inner.is_open()
+    }
+
+    fn is_tls(&self) -> bool {
+        self.inner.is_tls()
     }
 }
 
@@ -1265,13 +1479,45 @@ mod boundary {
     /// Answers each connection with the next scripted response (the last
     /// repeats), recording each request's head and body.
     fn server(responses: Vec<String>) -> (u16, Log) {
+        scripted(responses.into_iter().map(Act::Answer).collect())
+    }
+
+    /// What a scripted server does with one connection.
+    #[derive(Clone)]
+    enum Act {
+        Answer(String),
+        /// Takes the request and says nothing, the connection held open.
+        Silent,
+        /// Says this much of an answer, then nothing, the connection held open.
+        Part(String),
+        /// Reads the request's head and nothing more, so an upload backs up.
+        Deaf,
+        /// The head, then the body in `n` pieces `every` apart.
+        Trickle { body: Vec<u8>, n: usize, every: Duration },
+    }
+
+    /// `server`, with each connection given the next act (the last repeats).
+    fn scripted(acts: Vec<Act>) -> (u16, Log) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // A small receive buffer, which each connection takes from the
+        // listener, so an upload nobody reads backs up within megabytes.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let size: libc::c_int = 4096;
+            // SAFETY: a valid socket, and an option value of the size given.
+            let set = unsafe { libc::setsockopt(listener.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF, (&size as *const libc::c_int).cast(), std::mem::size_of_val(&size) as libc::socklen_t) };
+            assert_eq!(set, 0);
+        }
         let port = listener.local_addr().unwrap().port();
         let log: Log = Arc::default();
         let seen = Arc::clone(&log);
         std::thread::spawn(move || {
+            // Held, never closed: a stall is a connection that stays open.
+            let mut held = Vec::new();
             for (i, stream) in listener.incoming().enumerate() {
                 let Ok(mut stream) = stream else { continue };
+                let act = acts[i.min(acts.len() - 1)].clone();
                 let mut reader = BufReader::new(stream.try_clone().unwrap());
                 let (mut head, mut length) = (String::new(), 0usize);
                 loop {
@@ -1284,11 +1530,28 @@ mod boundary {
                     }
                     head.push_str(&line);
                 }
-                let mut body = vec![0; length];
+                let mut body = vec![0; if matches!(act, Act::Deaf) { 0 } else { length }];
                 let _ = std::io::Read::read_exact(&mut reader, &mut body);
                 seen.lock().unwrap().push(format!("{head}\n{}", String::from_utf8_lossy(&body)));
-                let response = &responses[i.min(responses.len() - 1)];
-                let _ = stream.write_all(response.as_bytes());
+                match act {
+                    Act::Answer(response) => {
+                        let _ = stream.write_all(response.as_bytes());
+                    }
+                    Act::Silent | Act::Deaf => held.push(stream),
+                    Act::Part(part) => {
+                        let _ = stream.write_all(part.as_bytes());
+                        held.push(stream);
+                    }
+                    Act::Trickle { body, n, every } => {
+                        std::thread::spawn(move || {
+                            let _ = write!(stream, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                            for piece in body.chunks(body.len().div_ceil(n)) {
+                                std::thread::sleep(every);
+                                let _ = stream.write_all(piece);
+                            }
+                        });
+                    }
+                }
             }
         });
         (port, log)
@@ -1298,7 +1561,7 @@ mod boundary {
         format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}", body.len())
     }
 
-    fn quiet(mut c: Client) -> Client {
+    fn no_wait(mut c: Client) -> Client {
         c.sleep = |_| {};
         c
     }
@@ -1349,7 +1612,7 @@ mod boundary {
     #[test]
     fn a_public_registry_never_dials_loopback_however_it_is_spelled() {
         let (port, _) = server(vec![respond("200 OK", "", "{}")]);
-        let c = quiet(Client::new("https://api.krowk.com/v1", ""));
+        let c = no_wait(Client::new("https://api.krowk.com/v1", ""));
         for target in [format!("http://127.0.0.1:{port}/"), format!("http://[::1]:{port}/"), format!("http://localhost:{port}/")] {
             let e = c.request_url::<Value>("GET", &target, None, 1, None, None).unwrap_err();
             assert_eq!(e.code(), "untrusted_endpoint", "{target}");
@@ -1365,7 +1628,7 @@ mod boundary {
             respond("302 Found", &format!("Location: http://127.0.0.1:{other}/x\r\n"), ""),
             respond("302 Found", "Location: http://evil.example/x\r\n", ""),
         ]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{port}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), ""));
         assert!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).is_ok());
         assert!(log.lock().unwrap()[1].starts_with("GET /v1/moved "));
         assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).unwrap_err().code(), "unexpected_redirect");
@@ -1395,7 +1658,7 @@ mod boundary {
     fn an_upload_is_a_put_never_redirected_and_carries_no_transport_headers_from_the_registry() {
         let (storage, log) = server(vec![respond("200 OK", "", ""), respond("307 Temporary Redirect", "Location: http://127.0.0.1:1/x\r\n", "")]);
         let (api, _) = server(vec![respond("200 OK", "", "{}")]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
         let mut a = prepared(storage, "/put", &[("Host", "evil.example"), ("Transfer-Encoding", "chunked"), ("x-amz-meta-k", "v")]);
         c.put_bytes(&mut a, &spec()).unwrap();
         let first = log.lock().unwrap()[0].to_ascii_lowercase();
@@ -1409,7 +1672,7 @@ mod boundary {
         let (storage, log) = server(vec![respond("403 Forbidden", "", "<Error/>"), respond("200 OK", "", "")]);
         let fresh = format!(r#"{{"slug":"art_x","upload":{{"method":"PUT","url":"http://127.0.0.1:{storage}/second","headers":{{}}}}}}"#);
         let (api, api_log) = server(vec![respond("200 OK", "", &fresh)]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
         let mut a = prepared(storage, "/first", &[]);
         c.put_bytes(&mut a, &spec()).unwrap();
         let log = log.lock().unwrap();
@@ -1421,7 +1684,7 @@ mod boundary {
     fn one_idempotency_key_per_call_carried_by_every_attempt() {
         let run = r#"{"slug":"run_x","status":"open"}"#;
         let (api, log) = server(vec![respond("503 Service Unavailable", "", ""), respond("503 Service Unavailable", "", ""), respond("201 Created", "", run)]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
         c.create_run(&json!({})).unwrap();
         c.create_run(&json!({})).unwrap();
         let keys: Vec<String> = log
@@ -1437,7 +1700,7 @@ mod boundary {
     #[test]
     fn a_claim_token_is_sent_instead_of_the_key_never_beside_it() {
         let (api, log) = server(vec![respond("204 No Content", "", ""), respond("200 OK", "", "not json")]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
         c.take_down_artifact("art_x", "krowk_claim_y").unwrap();
         c.take_down_artifact("art_x", "").unwrap();
         let log = log.lock().unwrap();
@@ -1484,5 +1747,214 @@ mod boundary {
         assert_eq!(request_target("https://api.krowk.com"), "/");
         let unsigned = Client::new("https://api.krowk.com/v1", "krowk_sk_x");
         assert_eq!(unsigned.acquire_lease("x", "ab", 60, "production").unwrap_err().code(), "device_signature_missing");
+    }
+
+    /// The quiet limit in these tests: a hundredth of `QUIET`, so a stall
+    /// costs a test a fraction of a second, not half a minute.
+    const SHORT: Duration = Duration::from_millis(300);
+
+    /// A client of the scripted server on `port`, giving up after `SHORT`
+    /// of silence and waiting no wall clock between attempts.
+    fn hushed(port: u16, token: &str) -> Client {
+        no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), token).quiet_after(SHORT))
+    }
+
+    struct Signer;
+
+    impl RequestSigner for Signer {
+        fn device(&self) -> String {
+            "ab".into()
+        }
+        fn sign(&self, _: &[u8]) -> [u8; 64] {
+            [0; 64]
+        }
+    }
+
+    /// A registry that keeps every signed request it answers, by device,
+    /// method, target and timestamp — what a deterministic signature is a
+    /// function of — and refuses one it has seen as a replay, as the
+    /// registry does. Each connection is one request, on a thread of its own.
+    fn replay_checking() -> (u16, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
+        let refused: Arc<Mutex<usize>> = Arc::default();
+        let count = Arc::clone(&refused);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let (seen, refused) = (Arc::clone(&seen), Arc::clone(&refused));
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut head = Vec::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        head.push(line.trim_end().to_string());
+                    }
+                    let header = |n: &str| head.iter().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v.trim().to_string())).unwrap_or_default();
+                    let key = format!("{}\n{}\n{}", header("X-Krowk-Device"), head[0], header("X-Krowk-Timestamp"));
+                    let answer = if seen.lock().unwrap().insert(key) {
+                        respond("200 OK", "", "{}")
+                    } else {
+                        *refused.lock().unwrap() += 1;
+                        respond("401 Unauthorized", "", r#"{"error":{"code":"signature_replayed","message":"already accepted once"}}"#)
+                    };
+                    let _ = stream.write_all(answer.as_bytes());
+                });
+            }
+        });
+        (port, count)
+    }
+
+    /// R-E2E-2: a signature is deterministic, so a process's tasks reading
+    /// alike at once — a bridge and another reader of its session —
+    /// used to sign one request twice in a millisecond, and the registry
+    /// refused the second as a replay; with no pause between attempts (as
+    /// here, the moment the retry signed in being the same) all three
+    /// attempts were refused and the read failed. Now no two requests this
+    /// process signs carry one millisecond, so none is refused.
+    #[test]
+    fn r_e2e_2_tasks_of_one_process_reading_alike_at_once_are_never_a_replay() {
+        let (port, refused) = replay_checking();
+        let c = Arc::new(no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), "krowk_sk_test")).signed_by(Arc::new(Signer)));
+        let reads: Vec<_> = (0..8)
+            .map(|_| {
+                let c = Arc::clone(&c);
+                std::thread::spawn(move || (0..25).map(|_| c.get_as_device::<Value>("/sessions/s1").map(|_| ())).collect::<Vec<_>>())
+            })
+            .collect();
+        let failed: Vec<Error> = reads.into_iter().flat_map(|t| t.join().unwrap()).filter_map(Result::err).collect();
+        assert!(failed.is_empty(), "{} of 200 reads failed, the first: {}", failed.len(), failed[0]);
+        assert_eq!(*refused.lock().unwrap(), 0, "no request was signed in a millisecond another had");
+    }
+
+    /// R-E2E-2: a write refused as a replay may have been the registry's
+    /// to act on once already, so it is never sent again, retries or not.
+    #[test]
+    fn r_e2e_2_a_write_refused_as_a_replay_is_sent_once() {
+        let (port, log) = server(vec![respond("401 Unauthorized", "", r#"{"error":{"code":"signature_replayed","message":"already accepted once"}}"#)]);
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), "krowk_sk_test")).signed_by(Arc::new(Signer));
+        let e = c.call_as_device::<Value>("PUT", "/sessions/s1", Some(json!({})), MAX_ATTEMPTS, Some("key".into())).unwrap_err();
+        assert_eq!(e.code(), "signature_replayed");
+        assert_eq!(log.lock().unwrap().len(), 1, "sent once");
+    }
+
+    /// R-E2E-2: the millisecond a request is signed with only moves on, one
+    /// at a time when the clock has not, and never far past the clock.
+    #[test]
+    fn r_e2e_2_each_signed_request_has_a_millisecond_of_its_own() {
+        let last = std::sync::atomic::AtomicI64::new(0);
+        let stamps: Vec<i64> = (0..1000).map(|_| signing_ms_at(&last, jiff::Timestamp::now().as_millisecond())).collect();
+        assert!(stamps.windows(2).all(|w| w[1] > w[0]), "rising");
+        assert!(stamps[999] - jiff::Timestamp::now().as_millisecond() < 2000, "within seconds of the clock");
+    }
+
+    /// R-E2E-2: a clock stepped back — a fast one corrected — is used at
+    /// once, not once it catches up with the stamps the fast one gave.
+    #[test]
+    fn r_e2e_2_a_clock_set_back_is_used_at_once() {
+        let last = std::sync::atomic::AtomicI64::new(0);
+        let fast = jiff::Timestamp::now().as_millisecond() + 10 * 60 * 1000;
+        assert!(signing_ms_at(&last, fast) >= fast);
+        let fixed = jiff::Timestamp::now().as_millisecond();
+        let after = signing_ms_at(&last, fixed);
+        assert!(after - fixed < 1_000, "the corrected clock, not ten minutes ahead: {}", after - fixed);
+    }
+
+    /// R-REG-1: a call has five minutes in all and thirty seconds to
+    /// connect, as before, and thirty seconds of quiet; one its caller can
+    /// do without has less of each.
+    #[test]
+    fn r_reg_1_the_limits_are_thirty_seconds_of_quiet_under_five_minutes() {
+        let c = Client::new("https://api.krowk.com/v1", "");
+        assert_eq!((c.limits.global, c.limits.connect, c.limits.quiet), (Duration::from_secs(300), Duration::from_secs(30), Duration::from_secs(30)));
+        let k = c.keyless_within(Duration::from_secs(5)).limits;
+        assert_eq!((k.global, k.connect), (Duration::from_secs(5), Duration::from_secs(5)));
+        assert_eq!((spoken(QUIET), spoken(SHORT)), ("30 s".to_string(), "300 ms".to_string()));
+    }
+
+    /// R-REG-1: a chunk read that storage answers with nothing — first
+    /// before the head, then part way through the body — is given up after
+    /// the quiet limit and made again, and the third answer is read whole.
+    #[test]
+    fn r_reg_1_a_chunk_read_that_goes_quiet_is_made_again_and_reads_whole() {
+        let sealed = "sealed-chunk-bytes";
+        let (port, log) = scripted(vec![
+            Act::Silent,
+            Act::Part(format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\nsealed", sealed.len())),
+            Act::Answer(respond("200 OK", "", sealed)),
+        ]);
+        let c = hushed(port, "");
+        let started = std::time::Instant::now();
+        let got = c.get_blob(&format!("http://127.0.0.1:{port}/_storage/chunk"), 1 << 20).unwrap();
+        let took = started.elapsed();
+        assert_eq!(got, sealed.as_bytes());
+        assert_eq!(log.lock().unwrap().len(), 3, "read three times");
+        assert!(took >= SHORT * 2 && took < SHORT * 2 + Duration::from_secs(3), "{took:?}");
+    }
+
+    /// R-REG-1: a download that keeps coming, however slowly, is never cut:
+    /// one six times as long in all as the quiet limit, a piece at a time
+    /// a quarter of it apart, arrives whole — as one of three minutes
+    /// would under the thirty-second limit.
+    #[test]
+    fn r_reg_1_a_download_that_keeps_coming_slowly_is_never_cut() {
+        let body: Vec<u8> = (0..24 * 1024).map(|i| (i % 251) as u8).collect();
+        let (port, log) = scripted(vec![Act::Trickle { body: body.clone(), n: 24, every: SHORT / 4 }]);
+        let c = hushed(port, "");
+        let started = std::time::Instant::now();
+        assert_eq!(c.get_blob(&format!("http://127.0.0.1:{port}/_storage/big"), 1 << 20).unwrap(), body);
+        assert!(started.elapsed() > SHORT * 5, "{:?}", started.elapsed());
+        assert_eq!(log.lock().unwrap().len(), 1, "read once");
+    }
+
+    /// R-REG-1: a create that goes quiet is made again under the same
+    /// Idempotency-Key, which is what makes the second attempt the first.
+    #[test]
+    fn r_reg_1_a_create_that_goes_quiet_is_made_again_under_the_same_key() {
+        let run = r#"{"slug":"run_x","status":"open"}"#;
+        let (port, log) = scripted(vec![Act::Silent, Act::Answer(respond("201 Created", "", run))]);
+        assert_eq!(hushed(port, "krowk_sk_test").create_run(&json!({})).unwrap().slug, "run_x");
+        let keys: Vec<String> = log.lock().unwrap().iter().map(|r| r.lines().find(|l| l.to_ascii_lowercase().starts_with("idempotency-key:")).unwrap().to_string()).collect();
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0], keys[1]);
+    }
+
+    /// R-REG-1: acquiring a lease is sent once (architecture.md: a retry
+    /// would be refused as held under a fence the client never heard), so
+    /// one that goes quiet is reported, not made again — in words that say
+    /// the registry stopped answering, under the network's code, and with
+    /// no advice to try again, since the registry may have acted on it.
+    #[test]
+    fn r_reg_1_a_lease_acquire_that_goes_quiet_is_sent_once_and_says_the_registry_stopped_answering() {
+        let (port, log) = scripted(vec![Act::Silent, Act::Answer(respond("200 OK", "", "{}"))]);
+        let c = hushed(port, "krowk_sk_test").signed_by(Arc::new(Signer));
+        let e = c.acquire_lease("x", "ab", 60, "production").unwrap_err();
+        assert_eq!(log.lock().unwrap().len(), 1, "sent once");
+        assert_eq!((e.code().as_str(), e.status, e.retryable(), e.body.get("stalled")), ("network_unreachable", 0, false, Some(&json!(true))));
+        assert_eq!(
+            e.fix(),
+            "the registry stopped answering — nothing arrived for 300 ms, so the call was given up; it may have been acted on, so it was not sent again — check the network or any proxy in between"
+        );
+        // A body that goes quiet part way is the same stall, not a body
+        // this client could not read.
+        let (port, _) = scripted(vec![Act::Part("HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{\"slug\":".into())]);
+        let e = hushed(port, "").show_run("run_x").unwrap_err();
+        assert!(e.fix().starts_with("the registry stopped answering"), "{e:?}");
+    }
+
+    /// R-REG-1: an upload the far end stopped taking is a stall too, and a
+    /// chunk's upload is made again, as a lost connection's is.
+    #[test]
+    fn r_reg_1_an_upload_the_far_end_stopped_taking_is_given_up_and_made_again() {
+        let (port, log) = scripted(vec![Act::Deaf, Act::Answer(respond("200 OK", "", ""))]);
+        let c = hushed(port, "");
+        let upload = Upload { method: "PUT".into(), url: format!("http://127.0.0.1:{port}/_storage/chunk"), headers: None, expires_at: String::new() };
+        // More than the two ends' buffers hold, so the writes back up.
+        c.put_blob(&upload, &vec![7u8; 16 << 20]).unwrap();
+        assert_eq!(log.lock().unwrap().len(), 2, "put twice");
     }
 }

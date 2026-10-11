@@ -894,6 +894,14 @@ fn clip_label(s: &str) -> String {
     s.chars().take(MAX_LABEL_RUNES).collect::<String>() + "…"
 }
 
+/// A failure's headline, the line a person reads first: the fix's first
+/// sentence, or, for a fix that opens on its command, the code said as
+/// words.
+pub fn headline(err: &Error) -> String {
+    let code = err.body.get("error").and_then(Value::as_str).unwrap_or_default();
+    fix::fix_lines(&err.fix()).first().map(|l| l.say.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| fix::sentence(&code.replace('_', " ")))
+}
+
 /// A failure. JSON hands back the body as it is; a person gets the fix as a
 /// headline, what else it says under it, each command it names on a line of
 /// its own, and the code last, for a search or a bug report.
@@ -907,12 +915,10 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     }
     let code = body.get("error").and_then(Value::as_str).unwrap_or_default().to_string();
     let said = fix::fix_lines(body.get("fix").and_then(Value::as_str).unwrap_or_default());
-    // A fix that opens on its command has no sentence before it: the code,
-    // said as words, stands in.
-    let head = said.first().map(|l| l.say.clone()).filter(|s| !s.is_empty()).unwrap_or_else(|| fix::sentence(&code.replace('_', " ")));
+    let head = headline(err);
     let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, &head))];
     for (k, v) in &body {
-        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status") {
+        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled") {
             continue;
         }
         if let (Value::Object(fields), "details") = (v, k.as_str()) {

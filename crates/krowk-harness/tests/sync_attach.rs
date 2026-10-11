@@ -50,6 +50,14 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let messages = body["messages"].as_array().cloned().unwrap_or_default();
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    // A subagent's own call: a slow answer, stopped part way.
+    if body["system"].to_string().contains("You are a subagent") {
+        let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    if !has_result && last.to_string().contains("start a slow subagent") {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
+    }
     if !has_result && last.to_string().contains("a long answer") {
         let words: String = (0..160).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -258,6 +266,11 @@ impl World {
 
     /// The host daemon of the machine `env` describes, its home `home`.
     fn serve_env(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str) {
+        self.serve_with(env, home, InstancesConfig::default());
+    }
+
+    /// `serve_env`, the daemon's instances `instances`.
+    fn serve_with(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str, instances: InstancesConfig) {
         let socket = daemon::socket(&env).unwrap();
         let credentials = self.root.join(home).join(".krowk/credentials.json");
         let wait = env.clone();
@@ -266,7 +279,7 @@ impl World {
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
-                    registry: Registry::resolve(&InstancesConfig::default(), &env),
+                    registry: Registry::resolve(&instances, &env),
                     krowk_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
@@ -313,6 +326,7 @@ impl World {
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
+            sessions: log::sessions_dir(&self.env()).unwrap(),
             ttl,
             keep,
             direct: None,
@@ -337,6 +351,7 @@ impl World {
             session: session.into(),
             title: "the title is sealed too".into(),
             cwd: self.repo().display().to_string(),
+            sessions: log::sessions_dir(&self.env()).unwrap(),
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
             direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
@@ -349,7 +364,16 @@ impl World {
     fn run_bridge(&self, o: host::Options, daemon: Arc<Client>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let (stop, stop_rx) = watch::channel(false);
         let (cp, cp_rx) = mpsc::unbounded_channel();
-        (stop, cp, tokio::spawn(host::run(o, daemon, stop_rx, cp_rx)))
+        // A bridge that ends with an error says it on stderr, which a test
+        // waiting on what the bridge should have done shows when it fails.
+        let run = async move {
+            let r = host::run(o, daemon, stop_rx, cp_rx).await;
+            if let Err(e) = &r {
+                eprintln!("the bridge ended: {e}");
+            }
+            r
+        };
+        (stop, cp, tokio::spawn(run))
     }
 
     fn viewer(&self, b: &Device, session: &str) -> viewer::Options {
@@ -373,18 +397,22 @@ impl World {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let (api, id, keys, chain) = (api.clone(), id.clone(), self.keys(), self.chain());
-            let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
-                let s = api.show_sync_session(&id).ok()?;
-                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).ok()?;
-                let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
-                Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
+            // What the registry last said, for a failure to name.
+            let ready = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
+                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
+                let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
+                match (s.lease.is_some(), index.checkpoint.is_some(), index.head.is_some()) {
+                    (true, true, true) => Ok(true),
+                    (lease, checkpoint, head) => Err(format!("lease {lease}, checkpoint {checkpoint}, head {head}")),
+                }
             })
             .await
             .unwrap();
-            if ready == Some(true) {
+            if ready == Ok(true) {
                 return;
             }
-            assert!(Instant::now() < deadline, "the bridge never synced the session");
+            assert!(Instant::now() < deadline, "the bridge never synced the session: the registry's last word {ready:?}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }
@@ -909,17 +937,20 @@ async fn r_hand_4_with_a_offline_b_is_read_only_and_its_queued_prompt_runs_when_
 
 /// The session's events as the registry holds them, read at rest by a
 /// device that has never seen it: what every later attach gets.
-async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
+async fn at_rest(w: &World, session: &str) -> Result<Vec<serde_json::Value>, String> {
     let (api, keys, chain, id) = (w.client(), w.keys(), w.chain(), session.to_string());
     tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
         let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
         let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
-        let a = krowk_harness::sync::store::attach(&api, &key, &id, index, None)?;
-        Ok(a.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
+        Ok(krowk_harness::sync::store::attach(&api, &key, &id, index, None)?.events)
     })
     .await
     .unwrap()
+}
+
+async fn at_rest_ids(w: &World, session: &str) -> Result<Vec<String>, String> {
+    Ok(at_rest(w, session).await?.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect())
 }
 
 /// Waits until what the registry holds is A's whole log.
@@ -1646,6 +1677,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         session: session.clone(),
         title: String::new(),
         cwd: applied.cwd.display().to_string(),
+        sessions: log::sessions_dir(&b_env).unwrap(),
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct: None,
@@ -1671,4 +1703,375 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let free = krowk_api::Client::new(&w.api, "krowk_sk_free_0000000000000000000000").signed_by(signer(&b));
     let refused = tokio::task::spawn_blocking(move || free.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
     assert_eq!(refused.code(), "sync_requires_paid_plan", "{refused:?}");
+}
+
+/// The ids of a session's events, `of` alone, in the order they came.
+fn ids_of(events: &[serde_json::Value], of: &str) -> Vec<String> {
+    events.iter().filter(|e| e["sessionId"] == of).filter_map(|e| e["id"].as_str().map(String::from)).collect()
+}
+
+/// Waits until the parent's chunks hold the logs of `sessions` whole, each
+/// in its log's order, and returns what they hold. The logs are read again
+/// each time, so an event logged late is waited for rather than missed; and
+/// the wait is judged on a read begun after `wait` has passed, never on one
+/// begun before it, so a read the registry is slow to answer is not taken
+/// for chunks missing.
+async fn chunks_hold(w: &World, session: &str, sessions: &[&str], wait: Duration) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let late = Instant::now() > deadline;
+        let rest = at_rest(w, session).await.unwrap_or_default();
+        let short: Vec<_> = sessions.iter().map(|s| (*s, log_ids(w, s))).filter(|(s, ids)| ids_of(&rest, s) != *ids).collect();
+        if short.is_empty() {
+            return rest;
+        }
+        assert!(!late, "the chunks hold, of the logs {:?}, only {:?}", short, short.iter().map(|(s, _)| ids_of(&rest, s)).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
+/// R-SUB-12, R-SUB-6: B stops a subagent of the session it follows, by
+/// the child's id, while the parent's turn — started at A's terminal, in
+/// another directory than the bridge's — goes on and ends. B can stop
+/// nothing else that way: another session on A, an id it made up, and a
+/// steer of the child are refused. And the child's logged events are
+/// written into the parent's chunks: the parent's branch walk leaves them
+/// out, so its replay is its own log's, and the child is rebuilt from them.
+#[tokio::test]
+async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
+    let w = World::new("child");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let other = d.execute(w.prompt(None, "another session"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    // The person at A's terminal, in a subdirectory: the child runs on that
+    // directory's host, not on the bridge's.
+    let sub = w.repo().join("sub");
+    std::fs::create_dir_all(&sub).unwrap();
+    let terminal = Client::connect(&daemon::socket(&w.env()).unwrap(), &sub, "test", true).await.ok().expect("the daemon answers");
+    let ask = w.prompt(Some(&session), "start a slow subagent");
+    let parent_turn = tokio::spawn(async move {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        terminal.execute(ask, tx).await.map(|r| r.unwrap().status)
+    });
+    let started = |u: &viewer::Update| match u {
+        viewer::Update::Line(StreamLine::Log(e)) if e.session_id == session => match &e.body {
+            krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, .. } => Some(subagent_session_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| started(u).is_some()).await;
+    let child = got.iter().find_map(started).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { session_id, .. })) if *session_id == child)).await;
+    // A client in the bridge's directory following the child's own id: the
+    // hub that makes is on that directory's host, where the child runs
+    // nothing, and the interrupt still goes to the parent's.
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let follower = w.daemon().await;
+    follower.attach(&child, None, tx).await.unwrap();
+
+    let mut ack = async |c: Command| {
+        v.commands.send(c).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+    };
+    for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
+        let e = ack(Command::Interrupt { session_id: refused.into() }).await;
+        assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
+    }
+    let e = ack(Command::Steer { session_id: child.clone(), text: "not you".into(), images: Vec::new() }).await;
+    assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "a steer of the child: {e:?}");
+    assert_eq!(ack(Command::Interrupt { session_id: child.clone() }).await, None, "the session's own child stops");
+
+    let status = tokio::time::timeout(Duration::from_secs(15), parent_turn).await.expect("the parent's turn ends").unwrap().unwrap();
+    assert_eq!(status, krowk_harness::protocol::TurnStatus::Completed, "the parent's turn goes on past its stopped child");
+    let child_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&child).join("events.jsonl")).unwrap();
+    assert!(child_log.contains("\"status\":\"interrupted\""), "the child ended interrupted: {child_log}");
+    assert!(!child_log.contains("childword399"), "short of its end");
+    let other_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&other).join("events.jsonl")).unwrap();
+    assert!(!other_log.contains("interrupted"), "the other session was never reached");
+
+    // R-SUB-6: the child's events ride the parent's chunks.
+    let rest = chunks_hold(&w, &session, &[&session, &child], Duration::from_secs(30)).await;
+    let (parent_ids, child_ids) = (log_ids(&w, &session), log_ids(&w, &child));
+    assert!(rest.iter().all(|e| e["sessionId"] == session || e["sessionId"] == child), "nothing of another session");
+    let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
+    let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
+    assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
+}
+
+/// The fake `claude` beside the Claude Code tests, as an instance whose
+/// sessions play `scenario`: logged in, with a config directory of its own.
+fn fake_claude(w: &World, scenario: &Path) -> InstancesConfig {
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude");
+    let bin = w.root.join("bin/claude");
+    std::fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(fixtures.join("fake-claude"), &bin).unwrap();
+    let config = w.root.join("claude-config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("fake-login"), "").unwrap();
+    let mut env = std::collections::BTreeMap::new();
+    env.insert("FAKE_CLAUDE_SCENARIO".to_string(), scenario.display().to_string());
+    env.insert("FAKE_CLAUDE_LOG".to_string(), w.root.join("fake-claude.log").display().to_string());
+    let kind = krowk_harness::instances::InstanceKind::ClaudeCode { binary: Some(bin.display().to_string()), config_dir: Some(config.display().to_string()), env, args: Vec::new(), api_key_env: None, effort: None };
+    InstancesConfig { instances: [("claude".to_string(), kind)].into_iter().collect(), ..Default::default() }
+}
+
+/// R-SUB-12, R-SUB-9: a Claude Code agent's approval is asked under its
+/// child session, and a viewer answers it as it answered the session's own
+/// before the agent had a session: B prompts, the recorded sleeper agent
+/// asks for its Bash, and B's answer under the child's id reaches Claude
+/// Code. An answer naming another session, or an id the session's log
+/// never named, is refused before it is looked up.
+#[tokio::test]
+async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() {
+    let w = World::new("claude-ask");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    for m in &printed[init + 1..] {
+        match m["type"].as_str() {
+            Some("control_request") if m["request"]["subtype"] == "can_use_tool" => scenario.push_str(&format!("@ask {}\n", m["request"])),
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let first = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap();
+    let session = first.session_id;
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let other = d.execute(ask(None, "another session"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    v.commands.send(ask(Some(&session), "run two agents")).unwrap();
+    let asked = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))));
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, asked).await;
+    let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
+    assert_ne!(req.session_id, session, "the agent's own session asks");
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(parent.iter().any(|e| matches!(&e.body, krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, .. } if *subagent_session_id == req.session_id)), "one of the session's own children");
+
+    let mut ack = async |c: Command| {
+        v.commands.send(c).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+    };
+    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+    for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
+        let e = ack(answer(refused)).await;
+        assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
+    }
+    assert_eq!(ack(answer(&req.session_id)).await, None, "the session's own child's approval is answered");
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
+    assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
+}
+
+/// R-SUB-12, R-SUB-10: a viewer stops one of a Claude Code session's
+/// agents by its child session's id, as it stops a native child: the
+/// command reaches the daemon running the turn through the bridge, the
+/// daemon routes it to the host whose turn runs the child, and that host
+/// sends Claude Code `stop_task` for that agent alone. The child ends
+/// interrupted; the parent's turn goes on to its own result.
+#[tokio::test]
+async fn r_sub_12_a_viewer_stops_one_claude_agent() {
+    let w = World::new("claude-stop");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let sleeper = printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == "sleeper").unwrap()["task_id"].as_str().unwrap().to_string();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    // Where the recording stopped the sleeper, the fake waits for krowk to.
+    for m in &printed[init + 1..] {
+        let said_stopped = m["task_id"] == sleeper.as_str() && (m["patch"]["status"] == "killed" || m["status"] == "stopped");
+        match m["type"].as_str() {
+            _ if said_stopped && m["subtype"] == "task_updated" => scenario.push_str("@await-stop\n"),
+            _ if said_stopped => {}
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let session = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    v.commands.send(ask(Some(&session), "run two agents")).unwrap();
+    let started = |u: &viewer::Update| match u {
+        viewer::Update::Line(StreamLine::Log(e)) => match &e.body {
+            krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, backend_id: Some(t), .. } if *t == sleeper => Some(subagent_session_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, |u| started(u).is_some()).await;
+    let child = got.iter().find_map(started).unwrap();
+    v.commands.send(Command::Interrupt { session_id: child.clone() }).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    let error = got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap();
+    assert_eq!(error, None, "the session's own Claude Code agent stops");
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let status = got.iter().find_map(|u| match u {
+        viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) => Some(r.status),
+        _ => None,
+    });
+    assert_eq!(status, Some(krowk_harness::protocol::TurnStatus::Completed), "the parent's turn goes on");
+    let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
+    let stops: Vec<&str> = fake.lines().filter_map(|l| l.strip_prefix("stop_task ")).collect();
+    assert_eq!(stops, [sleeper.as_str()], "that agent alone: {fake}");
+    let child_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&child).join("events.jsonl")).unwrap();
+    assert!(child_log.contains("\"status\":\"interrupted\""), "the child ended interrupted: {child_log}");
+}
+
+/// R-SUB-6, R-SUB-7: Claude Code's agents, written as child sessions, ride
+/// the parent's chunks as krowk's own children do — the recorded parallel
+/// turn's two agents, on a session A's bridge syncs: every event of each
+/// child's log is in the chunks, the parent's replay is its own log's, and
+/// each child is rebuilt from them, its prompt first. What moves a session
+/// moves them with it.
+#[tokio::test]
+async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_children_do() {
+    let w = World::new("claude-kids");
+    let a = w.device("machine-a");
+    // A first turn to sync from, then the recording's turn after `init`,
+    // its control lines and replayed prompt left out.
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    for m in printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true) {
+        scenario.push_str(&format!("{m}\n"));
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let run = async |c: Command| {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        d.execute(c, tx).await.unwrap().unwrap()
+    };
+    let first = run(ask(None, "say hello")).await;
+    assert_eq!(first.status, krowk_harness::protocol::TurnStatus::Completed, "{first:?}");
+    let session = first.session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let second = run(ask(Some(&session), "run two agents")).await;
+    assert_eq!(second.status, krowk_harness::protocol::TurnStatus::Completed, "{second:?}");
+
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    let kids: Vec<String> = parent.iter().filter_map(|e| match &e.body {
+        krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, ran_by: krowk_harness::protocol::RanBy::Claude, backend_id: Some(_), .. } => Some(subagent_session_id.clone()),
+        _ => None,
+    }).collect();
+    assert_eq!(kids.len(), 2, "two children of Claude Code's");
+    let all: Vec<&str> = std::iter::once(session.as_str()).chain(kids.iter().map(String::as_str)).collect();
+    let rest = chunks_hold(&w, &session, &all, Duration::from_secs(30)).await;
+    let parent_ids = log_ids(&w, &session);
+    let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
+    let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+    assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the children's events left out");
+    for k in &kids {
+        let ids = log_ids(&w, k);
+        assert_eq!(walk(ids.last().unwrap()), ids, "{k} is rebuilt from the parent's chunks");
+        let first_item = events.iter().filter(|e| e.session_id == *k).find_map(|e| match &e.body {
+            krowk_harness::protocol::LogBody::ItemCompleted { item, .. } => Some(item.clone()),
+            _ => None,
+        });
+        assert!(matches!(first_item, Some(krowk_harness::protocol::Item::UserText { .. })), "its prompt first: {first_item:?}");
+    }
+}
+
+/// R-SUB-6, R-SUB-7 through the daemon: a Claude Code agent run in the
+/// background goes on after its turn, and what it does between turns —
+/// its items and its end, written by the session's writer — reaches the
+/// parent's followers and the bridge's chunks as the parent's session's,
+/// as its lines in a turn do. Its child's log, whole, is in the chunks,
+/// its turn completed last, so a viewer, a move or a rebuild does not show
+/// it running forever.
+#[tokio::test]
+async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_and_chunks() {
+    let w = World::new("claude-bg-kid");
+    let a = w.device("machine-a");
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/background_agent.jsonl")).unwrap();
+    let hello = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n";
+    let path = w.root.join("background.jsonl");
+    std::fs::write(&path, format!("{hello}{fixture}")).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let run = async |c: Command| {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        d.execute(c, tx).await.unwrap().unwrap()
+    };
+    let first = run(ask(None, "say hello")).await;
+    let session = first.session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut watch = d.watch();
+    let second = run(ask(Some(&session), "survey the repo in the background")).await;
+    assert_eq!(second.status, krowk_harness::protocol::TurnStatus::Completed, "{second:?}");
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    let kid = parent.iter().find_map(|e| match &e.body {
+        krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, backend_id: Some(_), .. } => Some(subagent_session_id.clone()),
+        _ => None,
+    });
+    let kid = kid.expect("the background agent is a child");
+    // The follower: the child's end, between turns.
+    let ended = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match watch.recv().await {
+                Ok(StreamLine::Log(e)) if e.session_id == kid && matches!(e.body, krowk_harness::protocol::LogBody::TurnCompleted { .. }) => return e,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+    });
+    let ended = ended.await.expect("the parent's follower gets the child's turn.completed");
+    assert!(matches!(ended.body, krowk_harness::protocol::LogBody::TurnCompleted { status: krowk_harness::protocol::TurnStatus::Completed, .. }));
+    // The chunks: the child's log whole, its end last.
+    assert_eq!(log_ids(&w, &kid).last(), Some(&ended.id));
+    chunks_hold(&w, &session, &[&kid], Duration::from_secs(30)).await;
 }

@@ -205,3 +205,123 @@ fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_o
     assert_eq!(history.matches("\nwrite it all out\n").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
 }
+
+/// R-SUB-7, R-SUB-11 through the daemon: a second TUI resuming a session
+/// whose Claude Code agent runs in the background, between turns, shows
+/// that agent running — not done at its call's result — and follows it:
+/// its end, which comes with no turn running, reaches that TUI too, then
+/// the turn Claude Code begins to answer it, which one of the two runs and
+/// the other is refused without a word (`session_busy`). That turn over,
+/// it stops following: a later prompt of the first is not mirrored.
+#[test]
+fn r_sub_7_a_tui_resuming_a_session_follows_its_background_agent_between_turns() {
+    let d = Daemon::new("bgfollow");
+    let (a, parent) = background_agent_started(&d);
+    let mut a = a;
+    let secs = Duration::from_secs;
+    let mut b = pty::Pty::spawn(claude_cmd(&d, &["--resume", &parent]), 160, 30);
+    assert!(b.wait_for("[1 subagent]", secs(10)).is_some(), "running, not done at its result: {:?}", b.text());
+    b.write(b"\x07");
+    assert!(b.wait_for("survey the repo · general-purpose · in the background", secs(10)).is_some(), "{:?}", b.text());
+    assert!(b.wait_for("done in", secs(15)).is_some(), "its end, between turns: {:?}", b.text());
+    b.write(b"\x1b");
+    for t in [&a, &b] {
+        assert!(t.wait_for("The agent is done: the repo is small.", secs(15)).is_some(), "Claude Code's turn: {:?}", t.text());
+    }
+    std::thread::sleep(Duration::from_millis(1000));
+    a.write(b"and one more thing\r");
+    assert!(a.wait_for("and one more thing", secs(10)).is_some(), "{:?}", a.text());
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!b.text().contains("session_busy") && !a.text().contains("session_busy"), "{:?}", b.text());
+    assert!(!b.text().contains("and one more thing"), "no longer following once that turn ran: {:?}", b.text());
+    for t in [&mut a, &mut b] {
+        t.write(b"\x04\x04");
+        assert!(t.wait(secs(10)).is_some());
+    }
+}
+
+/// R-SUB-7: the TUI that ran the session gone, the second, following it
+/// for its background agent, runs the turn Claude Code begins to answer
+/// it: it does not let go of the session first, which would let its
+/// backend go with that turn.
+#[test]
+fn r_sub_7_a_tui_following_a_background_agent_alone_runs_the_turn_that_answers_it() {
+    let d = Daemon::new("bgalone");
+    let (mut a, parent) = background_agent_started(&d);
+    let secs = Duration::from_secs;
+    let mut b = pty::Pty::spawn(claude_cmd(&d, &["--resume", &parent]), 160, 30);
+    assert!(b.wait_for("[1 subagent]", secs(10)).is_some(), "{:?}", b.text());
+    a.write(b"\x04\x04");
+    assert!(a.wait(secs(10)).is_some());
+    assert!(b.wait_for("The agent is done: the repo is small.", secs(20)).is_some(), "run here: {:?}", b.text());
+    b.write(b"\x04\x04");
+    assert!(b.wait(secs(10)).is_some());
+}
+
+/// R-SUB-7: a background agent whose log never got an end — its process
+/// killed, the machine restarted — is not shown running for ever by a TUI
+/// resuming the session through a daemon that runs nothing of it: it ends
+/// interrupted, as a local session's does.
+#[test]
+fn r_sub_7_a_resumed_background_agent_the_daemon_no_longer_runs_ends_interrupted() {
+    let d = Daemon::new("bgdead");
+    let (mut a, parent) = background_agent_started(&d);
+    let secs = Duration::from_secs;
+    assert!(a.wait_for("The agent is done: the repo is small.", secs(20)).is_some(), "{:?}", a.text());
+    a.write(b"\x04\x04");
+    assert!(a.wait(secs(10)).is_some());
+    let _ = d.command("http://127.0.0.1:9", &["host", "stop", "--force"]).output();
+    // As a process killed mid-agent leaves it: the child's end never written.
+    let sessions = d.sandbox.root.join("home/.krowk/sessions");
+    let kid = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.path()).find(|p| std::fs::read_to_string(p.join("events.jsonl")).unwrap_or_default().lines().next().is_some_and(|l| l.contains(&format!("\"parentSessionId\":\"{parent}\""))));
+    let log = kid.expect("the agent's child").join("events.jsonl");
+    let kept: Vec<String> = std::fs::read_to_string(&log).unwrap().lines().filter(|l| !l.contains("\"turn.completed\"")).map(|l| format!("{l}\n")).collect();
+    std::fs::write(&log, kept.concat()).unwrap();
+    let mut b = pty::Pty::spawn(claude_cmd(&d, &["--resume", &parent]), 160, 30);
+    assert!(b.wait_for(" help", secs(10)).is_some(), "{:?}", b.text());
+    b.write(b"\x07");
+    assert!(b.wait_for("survey the repo · general-purpose · interrupted", secs(10)).is_some(), "{:?}", b.text());
+    assert!(!b.text().contains("[1 subagent]"), "{:?}", b.text());
+    b.write(b"\x1b\x04\x04");
+    assert!(b.wait(secs(10)).is_some());
+}
+
+/// The fake `claude` playing its background-agent scenario, the agent's
+/// lines a few seconds after its turn — time for a second TUI to resume
+/// the session first — and its own turn a second after the agent's end,
+/// as `args` asks.
+fn claude_cmd(d: &Daemon, args: &[&str]) -> Command {
+    let root = &d.sandbox.root;
+    let scenario = root.join("background.jsonl");
+    if !scenario.exists() {
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude");
+        let s = std::fs::read_to_string(fixtures.join("background_agent.jsonl")).unwrap().replacen("@by-itself\n", "@by-itself\n@sleep 4\n", 1);
+        // And a moment before the turn Claude Code begins, as its model call
+        // takes: what a client that heard the agent end does meanwhile.
+        let at = s.rfind("@begin\n").unwrap();
+        let s = format!("{}@sleep 1\n{}", &s[..at], &s[at..]);
+        std::fs::write(&scenario, s).unwrap();
+        let mut add = d.command("http://127.0.0.1:9", &["providers", "add", "claude", "--json"]);
+        assert!(add.output().unwrap().status.success());
+        std::fs::write(root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [root.join("repo")]}).to_string()).unwrap();
+    }
+    let mut c = d.command("http://127.0.0.1:9", args);
+    c.env("FAKE_CLAUDE_SCENARIO", &scenario);
+    c
+}
+
+/// A TUI on the daemon that has started the background agent, and the
+/// session's id (not its child's).
+fn background_agent_started(d: &Daemon) -> (pty::Pty, String) {
+    let secs = Duration::from_secs;
+    let mut a = pty::Pty::spawn(claude_cmd(d, &["--model", "claude/sonnet"]), 160, 30);
+    assert!(a.wait_for(" help", secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"survey the repo in the background\r");
+    assert!(a.wait_for("launched", secs(10)).is_some(), "{:?}", a.text());
+    let sessions = d.sandbox.root.join("home/.krowk/sessions");
+    let parent = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.len() == 36).find(|n| {
+        let first = std::fs::read_to_string(sessions.join(n).join("events.jsonl")).unwrap_or_default();
+        first.lines().next().is_some_and(|l| !l.contains("parentSessionId\":\""))
+    });
+    (a, parent.expect("the session"))
+}

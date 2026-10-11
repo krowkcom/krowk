@@ -49,7 +49,7 @@ pub const ENTRIES: &[Entry] = &[
     e("New session", "Start over in a fresh session", "/new · /clear", Action::New),
     e("Earlier sessions", "Continue one started here", "/sessions · /resume", Action::Sessions),
     e("Todos", "The task list for this session", "`ctrl-t`", Action::Todos),
-    e("Subagents", "See, expand or stop subagents", "`ctrl-g`", Action::Agents),
+    e("Subagents", "See, open or stop subagents", "`ctrl-g`", Action::Agents),
     e("Session", "Tokens, limits and the log file", "`ctrl-o`", Action::Details),
     e("Copy", "Copy the last answer, a code block in it, or your prompt, as written", "`ctrl-y`", Action::Copy),
     e("Paste image", "Paste a screenshot, or drop an image file onto the terminal", "`ctrl-v` `alt-v`", Action::PasteImage),

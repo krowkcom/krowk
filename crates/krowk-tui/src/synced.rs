@@ -16,6 +16,9 @@
 //!   and the TUI's own wait on it (`COMMAND_WAIT`) counts it as sent.
 //! - Whether a host is there, and the path the session comes by, are
 //!   `Event`s for the status line.
+//! - Its children's logged events ride the same chunks and stream (R-SUB-6)
+//!   and are kept (`Children`): a child view reads a child's history from
+//!   them, as it reads a local child's from its log (R-SUB-12).
 
 use krowk_harness::engine::EngineError;
 use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, LogBody, LogEvent, RunResult, StreamLine};
@@ -81,9 +84,69 @@ struct State {
     sink: Option<Sink>,
 }
 
+/// The logged events of the session's children, as its chunks and stream
+/// have brought them so far: what a child view reads for a child's history
+/// here, where no child has a log (R-SUB-12). Each arrives once — the
+/// viewer hands on an event it has not handed on before, and nothing else
+/// — so none is kept twice. Kept for as long as the session is attached,
+/// as the conversation's own lines are.
+#[derive(Default)]
+struct Children {
+    events: Vec<LogEvent>,
+}
+
+impl Children {
+    /// `e`, kept when it is a child's: not session `of`'s own.
+    fn keep(&mut self, of: &str, e: &LogEvent) {
+        if e.session_id != of {
+            self.events.push(e.clone());
+        }
+    }
+
+    /// Child `id`'s events in its log's order, as far as they show it.
+    /// They arrive in another order at times — a catch-up after the live
+    /// lines it fills in before, at attach or after a gap — and ids are
+    /// minted rising only within one process, so neither order is the log's.
+    /// A child's log has no forks: each event names the one before it. Each
+    /// run of events linked that way is kept in its links' order, and the
+    /// runs, where a link is missing (not arrived yet), go by their first
+    /// event's id. The child view replays them all (`ChildView::open`,
+    /// `whole`), so nothing is dropped for a link not here yet.
+    fn of(&self, id: &str) -> Vec<LogEvent> {
+        let mine: Vec<&LogEvent> = self.events.iter().filter(|e| e.session_id == id).collect();
+        let ids: std::collections::HashSet<&str> = mine.iter().map(|e| e.id.as_str()).collect();
+        let mut next: std::collections::HashMap<&str, &LogEvent> = std::collections::HashMap::new();
+        let mut firsts = Vec::new();
+        for e in &mine {
+            match e.parent_id.as_deref().filter(|p| ids.contains(p)) {
+                Some(p) => {
+                    next.entry(p).or_insert(e);
+                }
+                None => firsts.push(*e),
+            }
+        }
+        firsts.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut out: Vec<LogEvent> = Vec::with_capacity(mine.len());
+        let mut placed = std::collections::HashSet::new();
+        for first in firsts {
+            let mut at = Some(first);
+            while let Some(e) = at.filter(|e| placed.insert(e.id.as_str())) {
+                out.push(e.clone());
+                at = next.get(e.id.as_str()).copied();
+            }
+        }
+        // A cycle has no first: what is left goes last, by id.
+        let mut rest: Vec<&LogEvent> = mine.into_iter().filter(|e| !placed.contains(e.id.as_str())).collect();
+        rest.sort_by(|a, b| a.id.cmp(&b.id));
+        out.extend(rest.into_iter().cloned());
+        out
+    }
+}
+
 pub struct SyncLink {
     commands: mpsc::UnboundedSender<Command>,
     state: Arc<Mutex<State>>,
+    children: Arc<Mutex<Children>>,
     watch: broadcast::Sender<StreamLine>,
     events: Mutex<Option<mpsc::UnboundedReceiver<Event>>>,
 }
@@ -116,9 +179,14 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
     }
     let state = Arc::new(Mutex::new(State::default()));
+    let mut kept = Children::default();
+    for e in &history {
+        kept.keep(&id, e);
+    }
+    let children = Arc::new(Mutex::new(kept));
     let watch = broadcast::channel(256).0;
     let (events_tx, events) = mpsc::unbounded_channel();
-    let pump = Pump { state: state.clone(), watch: watch.clone(), events: events_tx, session: id.clone() };
+    let pump = Pump { session: id.clone(), state: state.clone(), children: children.clone(), watch: watch.clone(), events: events_tx };
     tokio::spawn(async move {
         while let Some(batch) = v.updates.recv().await {
             for u in batch {
@@ -127,10 +195,10 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
         pump.gone("the link to the synced session ended");
     });
-    Ok(Opened { link: SyncLink { commands: v.commands, state, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
+    Ok(Opened { link: SyncLink { commands: v.commands, state, children, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
 }
 
-fn lock(m: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -194,6 +262,13 @@ impl SyncLink {
         self.watch.subscribe()
     }
 
+    /// Child `id`'s logged events, in its log's order as far as their links
+    /// show it (`Children::of`), as the session's chunks and stream have
+    /// brought them: its history for the child view, replayed whole.
+    pub fn child_history(&self, id: &str) -> Vec<LogEvent> {
+        lock(&self.children).of(id)
+    }
+
     /// The session's other news, taken once by the loop.
     pub fn events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -202,12 +277,12 @@ impl SyncLink {
 
 /// Turns the viewer's updates into lines, acks and events.
 struct Pump {
+    /// The session followed: its children's events are kept besides.
+    session: String,
     state: Arc<Mutex<State>>,
+    children: Arc<Mutex<Children>>,
     watch: broadcast::Sender<StreamLine>,
     events: mpsc::UnboundedSender<Event>,
-    /// The synced session: a subagent's approval names its own, which the
-    /// host refuses a viewer's answer to.
-    session: String,
 }
 
 impl Pump {
@@ -279,11 +354,10 @@ impl Pump {
     /// its logged end when that comes caught up rather than live; or, its
     /// `result` never sent, when the next turn starts or the host goes.
     async fn line(&self, l: StreamLine, live: bool) {
-        if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = &l
-            && r.session_id != self.session
-        {
-            let _ = self.events.send(Event::Note(format!("a subagent asks to {} — it is answered on the host", r.summary)));
-            return;
+        // Kept before it is handed on: a child view opened once the TUI
+        // has seen an event reads it in the child's history.
+        if let StreamLine::Log(e) = &l {
+            lock(&self.children).keep(&self.session, e);
         }
         let to = {
             let mut s = lock(&self.state);
@@ -364,7 +438,7 @@ mod tests {
     fn pump() -> (Pump, mpsc::UnboundedReceiver<Event>, Arc<Mutex<State>>) {
         let state = Arc::new(Mutex::new(State::default()));
         let (events, rx) = mpsc::unbounded_channel();
-        (Pump { state: state.clone(), watch: broadcast::channel(16).0, events, session: "s".into() }, rx, state)
+        (Pump { session: "s".into(), state: state.clone(), children: Default::default(), watch: broadcast::channel(16).0, events }, rx, state)
     }
 
     fn ev(id: &str, body: LogBody) -> serde_json::Value {
@@ -376,7 +450,7 @@ mod tests {
     }
 
     fn completed(id: &str) -> serde_json::Value {
-        ev(id, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None })
+        ev(id, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None })
     }
 
     fn turns(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<(mpsc::Receiver<StreamLine>, super::Done)> {
@@ -442,15 +516,68 @@ mod tests {
         assert!(done_rx.try_recv().is_err(), "the prompt is still queued, not ended as taken");
     }
 
-    /// D11: a subagent's approval names its own session, whose answer the
-    /// host refuses a viewer: it is said, not offered.
+    /// R-SUB-12, R-SUB-6: a child's logged events, as the chunks (attached,
+    /// caught up) and the stream bring them, are kept, the session's own
+    /// left out, and read back in the child's log order whatever order they
+    /// came in: a live line ahead of the catch-up that fills in before it
+    /// is still the last, and the walk back from it reaches the first.
     #[tokio::test]
-    async fn d11_a_subagents_approval_is_not_offered_to_a_viewer() {
+    async fn r_sub_12_a_childs_events_from_the_chunks_and_the_stream_are_its_history_in_log_order() {
+        use krowk_harness::protocol::Item;
+        let (p, _rx, _) = pump();
+        let said = |sid: &str, id: &str, parent: Option<&str>| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: sid.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(id) } };
+        let json = |e: &LogEvent| serde_json::to_value(e).unwrap();
+        let attached = vec![started("e1"), json(&said("k1", "c1", None)), json(&said("k2", "d1", None))];
+        p.update(Update::Attached { events: attached, head: None }).await;
+        p.update(Update::Line(StreamLine::Log(said("k1", "c2", Some("c1"))))).await;
+        p.update(Update::Line(StreamLine::Log(said("s", "e2", Some("e1"))))).await;
+        // A gap: c5 arrives live before the catch-up brings c3 and c4.
+        p.update(Update::Line(StreamLine::Log(said("k1", "c5", Some("c4"))))).await;
+        p.update(Update::CaughtUp(vec![json(&said("k1", "c3", Some("c2"))), json(&said("k1", "c4", Some("c3")))])).await;
+        let kept = p.children.lock().unwrap();
+        let ids = |h: &[LogEvent]| h.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let history = kept.of("k1");
+        assert_eq!(ids(&history), ["c1", "c2", "c3", "c4", "c5"], "in the log's order");
+        let head = history.last().unwrap().id.clone();
+        assert_eq!(krowk_harness::log::branch(&history, &head).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3", "c4", "c5"], "the child view's walk reaches every one");
+        assert_eq!(ids(&kept.of("k2")), ["d1"]);
+        assert!(kept.of("s").is_empty(), "the session's own is its replay's, not kept twice");
+    }
+
+    /// R-SUB-12: a child's events are ordered by their links, not their
+    /// ids, which rise only within the process that minted them: a host
+    /// whose clock went back between two runs of the child still reads in
+    /// its log's order. A run whose link has not arrived goes by its first
+    /// id, after the runs before it.
+    #[test]
+    fn r_sub_12_a_childs_history_follows_its_links_whatever_its_ids_say() {
+        use krowk_harness::protocol::Item;
+        let ev = |id: &str, parent: Option<&str>| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: "k1".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(id) } };
+        let mut kept = super::Children::default();
+        // Minted by a later run whose clock was behind: ids that sort first.
+        for e in [ev("05", None), ev("06", Some("05")), ev("01", Some("06")), ev("02", Some("01"))] {
+            kept.keep("s", &e);
+        }
+        let ids = |h: Vec<LogEvent>| h.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(kept.of("k1")), ["05", "06", "01", "02"], "the links' order");
+        // A gap: 07 names 03, which has not arrived.
+        let mut gap = super::Children::default();
+        for e in [ev("07", Some("03")), ev("01", None), ev("02", Some("01"))] {
+            gap.keep("s", &e);
+        }
+        assert_eq!(ids(gap.of("k1")), ["01", "02", "07"]);
+    }
+
+    /// D11, R-SUB-12: a subagent's approval names its own session, which
+    /// the host lets a viewer answer for the session's own children: it is
+    /// offered as the session's is, and the card says which subagent asks.
+    #[tokio::test]
+    async fn d11_a_subagents_approval_is_offered_to_a_viewer() {
         let (p, mut rx, _) = pump();
         let mut watch = p.watch.subscribe();
         let req = ApprovalRequest { session_id: "sub".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "run ls".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
-        p.update(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(req)))).await;
-        assert!(watch.try_recv().is_err(), "no dialog");
-        assert!(matches!(rx.try_recv(), Ok(Event::Note(n)) if n.contains("answered on the host")));
+        p.update(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(req.clone())))).await;
+        assert!(matches!(watch.try_recv(), Ok(StreamLine::Live(LiveEvent::ApprovalRequested(r))) if r == req), "offered");
+        assert!(rx.try_recv().is_err(), "no note that it is the host's");
     }
 }

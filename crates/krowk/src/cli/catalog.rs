@@ -159,6 +159,8 @@ is online, except these:
   /allow-session REQUEST_ID  allow it, and calls like it for the session
   /deny REQUEST_ID           refuse it
   /interrupt                 stop the running turn
+  /interrupt SESSION_ID      stop one subagent of the session alone, by the
+                             subagentSessionId its subagent.started names
   /steer TEXT                add TEXT to the running turn without stopping it
 
 Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.

@@ -51,6 +51,12 @@ impl Remote {
     fn watch(&self) -> broadcast::Receiver<StreamLine> {
         match *self {}
     }
+    pub async fn status(&self) -> Result<krowk_harness::protocol::HostStatus, EngineError> {
+        match *self {}
+    }
+    pub fn attach_later(&self, _: &str, _: Option<&str>) {
+        match *self {}
+    }
 }
 
 pub enum Link {
@@ -158,6 +164,12 @@ impl Link {
     /// its sessions', which outlive this TUI.
     pub async fn shutdown(&self) {
         self.host().shutdown().await;
+    }
+
+    /// The background jobs `shutdown` stops, as (session, id): this
+    /// process's. The daemon's run on.
+    pub fn running_jobs(&self) -> Vec<(String, String)> {
+        self.host().running_jobs()
     }
 }
 

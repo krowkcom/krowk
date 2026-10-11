@@ -56,8 +56,11 @@ jobs:
           cache: check
 
       # The ci profile retries a failed test twice: one that then passes is
-      # reported FLAKY instead of failing the job.
+      # reported FLAKY instead of failing the job. The golden cases run on the
+      # release build here, the one that ships; a signoff runs them on the
+      # quicker golden profile.
       - name: Lint, unit tests and golden cases
         run: make check
         env:
           NEXTEST_PROFILE: ci
+          GOLDEN_PROFILE: release

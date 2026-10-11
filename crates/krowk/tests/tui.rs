@@ -1147,7 +1147,7 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     tm.keys(&["Enter"]);
     assert!(tm.wait_for("→ /greet", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     tm.keys(&["the team", "Enter"]);
-    assert!(tm.wait_for("Loaded the greet skill", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("Skill greet", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     let seen = m.seen.lock().unwrap();
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
@@ -2044,7 +2044,8 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     let m = streamed(120, Duration::from_micros(100));
     let b = Sandbox::new("fullscreen");
     b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
-    let Some(tm) = Tmux::start_after("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&") else { return };
+    // The shell stays once krowk leaves, so all it printed leaving is read.
+    let Some(tm) = Tmux::start_around("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&", Some("echo krowk-exit=$?; exec sleep 600")) else { return };
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "1", "on the alternate screen");
     tm.keys(&["write it all out", "Enter"]);
@@ -2085,14 +2086,17 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     mouse(&tm, &format!("\x1b[<32;6;{y}M"));
     mouse(&tm, &format!("\x1b[<32;13;{}M", y + 1));
     mouse(&tm, &format!("\x1b[<0;13;{}m", y + 1));
-    assert!(tm.wait_for("copied the selection (2 lines)", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("Copied 2 lines", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["show-buffer"]), "line 00110: the quick brown fox jumps over the lazy dog again\nline 00111:");
-    // The pane kept once krowk is gone, to read what it left.
-    tm.tmux(&["set-option", "-t", "t", "remain-on-exit", "on"]);
+    // No key follows a mouse copy: its flash goes by itself.
+    assert!(tm.wait_gone("Copied 2 lines", Duration::from_secs(10)).is_some(), "the flash stayed:\n{}", tm.screen());
     tm.keys(&["C-d", "C-d"]);
     assert!(tm.wait_for("krowk --resume", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    // krowk left, and well: the shell after it says how.
+    assert!(tm.wait_for("krowk-exit=", Duration::from_secs(10)).is_some(), "krowk left, the shell after it: {}", tm.screen());
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "0", "the shell's screen back");
     let history = tm.history();
+    assert!(history.contains("krowk-exit=0"), "krowk exited 0: {history}");
     assert!(history.find("shell-was-here").unwrap() < history.find("write it all out").unwrap(), "printed under what the shell had: {history}");
     let want: Vec<String> = mock::numbered_lines(120).lines().map(String::from).collect();
     let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
@@ -2144,4 +2148,476 @@ fn fullscreen_takes_the_alternate_screen_and_gives_everything_back() {
     assert!(!out.contains("\x1b[?1003h"), "no motion reported without a button down: {out:?}");
     assert!(out.find("\x1b[?1049l").unwrap() < out.rfind("Directory").unwrap(), "the header printed again on the shell's screen: {out:?}");
     assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "bracketed paste off and the cursor back, last: {out:?}");
+}
+
+// ---- the terminal's root record (OSC 7501) ----------------------------------
+
+/// Every OSC 7501 report written, in order.
+fn reports(out: &str) -> Vec<String> {
+    out.match_indices("\x1b]7501;").map(|(i, _)| out[i..].split_inclusive("\x1b\\").next().unwrap_or_default().to_string()).collect()
+}
+
+/// The root record's report for `state` with `msg`, as krowk writes it.
+fn root(state: krowk_tui::osc7501::State, msg: &str) -> String {
+    krowk_tui::osc7501::encode(&krowk_tui::osc7501::Report { state, msg, ..Default::default() }).unwrap()
+}
+
+/// Waits until `n` reports have been written; false at `timeout`.
+fn reported(t: &pty::Pty, n: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while reports(&t.text()).len() < n {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Allows the call that waits, past the moment a key typed ahead is not
+/// taken as the answer: `y` again until the `n`th report says it was.
+fn allow(t: &mut pty::Pty, n: usize) {
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(500));
+        t.write(b"y");
+        if reported(t, n, Duration::from_secs(5)) {
+            return;
+        }
+    }
+    panic!("the yes was never taken: {:?}", reports(&t.text()));
+}
+
+/// krowk on a bare terminal, on `screen`, its prompt up.
+fn pres_pty(name: &str, screen: &str, script: impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static) -> (mock::Mock, Sandbox, pty::Pty) {
+    let m = mock::serve(script);
+    let b = Sandbox::new(&format!("{name}-{screen}"));
+    b.config(serde_json::json!({"tui": {"screen": screen}}));
+    let t = pty::Pty::spawn(b.command(&m.url, &[]), 100, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    (m, b, t)
+}
+
+/// Quits with Ctrl-D twice and gives every report written.
+fn quit_reports(mut t: pty::Pty) -> (Vec<String>, String) {
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "{:?}", t.text());
+    let out = t.text();
+    (reports(&out), out)
+}
+
+/// `mock::edit_script`, with a plain answer to a call that offers no
+/// edit tool (the session's title), and the answer after the edit slowed,
+/// so the turn is seen working again before it ends: a state that comes
+/// and goes between two frames is never drawn, nor reported.
+fn edit_or_answer(body: &serde_json::Value, n: usize) -> mock::Reply {
+    let has_result = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    let edits = body["tools"].as_array().into_iter().flatten().any(|t| ["str_replace", "apply_patch", "search_replace"].iter().any(|e| t["name"] == *e));
+    match (edits, has_result) {
+        (true, true) => mock::Reply::paced(mock::fixture("turn2_answer.sse"), Duration::from_millis(100)),
+        (true, false) => mock::edit_script(body, n),
+        (false, _) => mock::Reply::sse(&mock::text_stream("Editing the readme")),
+    }
+}
+
+/// A prompt, its approval and the answer, done until a key: each change
+/// reported once, in the frame that sets the window title, and every record
+/// cleared on the way out, after the last report.
+fn root_record_follows_a_turn(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-turn", screen, edit_or_answer);
+    t.write(b"edit the readme\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
+    allow(&mut t, 4);
+    assert!(reported(&t, 5, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    assert!(t.wait_for("tokens", Duration::from_secs(10)).is_some());
+    key_goes_idle(&mut t, 6);
+    let (got, out) = quit_reports(t);
+    let ask = "edit the readme";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Blocked(Kind::Permission), ask), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    // Right after the window title that says the same, in the same write.
+    let mut from = 0;
+    for (r, glyph) in got[..6].iter().zip(["✳ krowk", "◑ edit the readme", "✋ edit the readme", "◑ edit the readme", "✳ krowk", "✳ krowk"]) {
+        let at = from + out[from..].find(r.as_str()).unwrap();
+        assert!(out[..at].ends_with(&format!("\x1b]2;{glyph}\x07")), "{r:?} not right after the title {glyph:?}: {out:?}");
+        from = at + r.len();
+    }
+    assert!(out.rfind("\x1b]7501;") < out.rfind("\x1b[23;2t"), "cleared before the title is given back");
+}
+
+#[test]
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_done_inline() {
+    root_record_follows_a_turn("inline");
+}
+
+#[test]
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_done_fullscreen() {
+    root_record_follows_a_turn("fullscreen");
+}
+
+/// The agent's questions report blocked on a question, and an interrupt
+/// idle.
+fn root_record_waits_on_a_question(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let input = serde_json::json!({"questions": [{"question": "Which way?", "header": "Way", "options": [{"label": "Left"}, {"label": "Right"}]}]});
+    let (_m, _b, mut t) = pres_pty("pres-ask", screen, move |_, _| mock::Reply::sse(&mock::tool_use("toolu_01Ask", "ask_user", &input)));
+    t.write(b"ask me\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no question reported: {:?}", reports(&t.text()));
+    t.write(b"\x03");
+    assert!(reported(&t, 4, Duration::from_secs(10)), "the interrupt was not reported: {:?}", reports(&t.text()));
+    let (got, _) = quit_reports(t);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "ask me"), root(State::Blocked(Kind::Question), "ask me"), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_2_a_question_reports_blocked_on_a_question_inline() {
+    root_record_waits_on_a_question("inline");
+}
+
+#[test]
+fn r_pres_2_a_question_reports_blocked_on_a_question_fullscreen() {
+    root_record_waits_on_a_question("fullscreen");
+}
+
+/// A job stop clears every record, and coming back reports the state
+/// again: here an approval still waiting.
+fn root_record_is_cleared_at_a_job_stop_and_told_again_on_resume(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-stop", screen, edit_or_answer);
+    t.write(b"edit the readme\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
+    // Ctrl-Z: the stop is dropped here (see the keyboard protocol's test),
+    // so krowk gives the terminal up and takes it back at once.
+    t.write(b"\x1a");
+    assert!(reported(&t, 5, Duration::from_secs(10)), "nothing reported on the way back: {:?}", reports(&t.text()));
+    allow(&mut t, 6);
+    assert!(reported(&t, 7, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 8);
+    let (got, _) = quit_reports(t);
+    let (ask, blocked) = ("edit the readme", State::Blocked(Kind::Permission));
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(blocked, ask), root(State::Clear, ""), root(blocked, ask), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_inline() {
+    root_record_is_cleared_at_a_job_stop_and_told_again_on_resume("inline");
+}
+
+#[test]
+fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_fullscreen() {
+    root_record_is_cleared_at_a_job_stop_and_told_again_on_resume("fullscreen");
+}
+
+/// Enter at `/connect`'s pick, past the moment a key typed ahead is not
+/// taken as the answer: again until the `n`th report says it was.
+fn pick(t: &mut pty::Pty, n: usize) {
+    for _ in 0..5 {
+        settle();
+        t.write(b"\r");
+        if reported(t, n, Duration::from_secs(5)) {
+            return;
+        }
+    }
+    panic!("the pick was never taken: {:?}", reports(&t.text()));
+}
+
+/// `/connect` reports blocked on a sign-in to the provider named, or to
+/// the one picked once it is, and its overlay closed reports idle again.
+fn root_record_waits_on_a_sign_in(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-connect", screen, |_, _| mock::Reply::sse(&mock::text_stream("Hi")));
+    let auth = State::Blocked(Kind::Auth);
+    t.write(b"/connect anthropic\r");
+    assert!(reported(&t, 2, Duration::from_secs(10)), "no sign-in reported: {:?}", reports(&t.text()));
+    // A word of each question, as either screen draws it.
+    assert!(t.wait_for("anthropic?", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    assert!(reported(&t, 3, Duration::from_secs(10)), "the close was not reported: {:?}", reports(&t.text()));
+    assert!(t.wait_for("chosen", Duration::from_secs(10)).is_some(), "the sign-in never ended: {:?}", t.text());
+    t.write(b"/connect\r");
+    assert!(reported(&t, 4, Duration::from_secs(10)), "no sign-in reported: {:?}", reports(&t.text()));
+    assert!(t.wait_for("provider?", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    pick(&mut t, 5);
+    t.write(b"\x1b");
+    assert!(reported(&t, 6, Duration::from_secs(10)), "the close was not reported: {:?}", reports(&t.text()));
+    let (got, out) = quit_reports(t);
+    let (named, picked) = ("Sign in to anthropic", "Sign in to a provider");
+    assert_eq!(got, [root(State::Idle, ""), root(auth, named), root(State::Idle, ""), root(auth, picked), root(auth, named), root(State::Idle, ""), root(State::Clear, "")]);
+    assert!(out.contains("\x1b]2;✋ Sign in to anthropic\x07"), "the title says it too: {out:?}");
+}
+
+#[test]
+fn r_pres_5_connect_reports_blocked_on_a_sign_in_to_the_provider_and_idle_once_closed_inline() {
+    root_record_waits_on_a_sign_in("inline");
+}
+
+#[test]
+fn r_pres_5_connect_reports_blocked_on_a_sign_in_to_the_provider_and_idle_once_closed_fullscreen() {
+    root_record_waits_on_a_sign_in("fullscreen");
+}
+
+/// A vendor's own login has the terminal as a job stop's shell does:
+/// every record cleared before it runs, none written while it does, and
+/// the sign-in done, idle.
+fn root_record_is_cleared_while_a_vendors_login_has_the_terminal(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let b = Sandbox::new(&format!("pres-login-{screen}"));
+    b.config(serde_json::json!({"tui": {"screen": screen}}));
+    let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
+    // A word of each question, as either screen draws it.
+    for question in ["provider?", "anthropic?", "account?"] {
+        assert!(t.wait_for(question, Duration::from_secs(15)).is_some(), "{question}: {:?}", t.text());
+        settle();
+        t.write(b"\r");
+    }
+    assert!(t.wait_for("Press Enter to sign in to Claude", Duration::from_secs(10)).is_some(), "the vendor's login never ran: {:?}", t.text());
+    let login = t.text();
+    t.write(b"\r");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reports(&t.text()).last() != Some(&root(State::Idle, "")) {
+        assert!(Instant::now() < deadline, "never idle once signed in: {:?}", reports(&t.text()));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(t.text().contains("claude-opus-5-5"), "signed in, and on it: {:?}", t.text());
+    let before = reports(&login[..login.find("Press Enter to sign in to Claude").expect("the login's words")]);
+    assert_eq!(before[before.len() - 2..], [root(State::Blocked(Kind::Auth), "Sign in to anthropic"), root(State::Clear, "")], "cleared before the login: {before:?}");
+    let (got, _) = quit_reports(t);
+    // Nothing while the login has the terminal; back, idle, perhaps after a
+    // frame of the sign-in the end of it closes a moment later.
+    let after = &got[before.len()..];
+    let idle = [root(State::Idle, ""), root(State::Clear, "")];
+    assert!(after == idle || after == [&[root(State::Blocked(Kind::Auth), "Sign in to anthropic")][..], &idle].concat(), "idle once signed in: {got:?}");
+}
+
+#[test]
+fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_inline() {
+    root_record_is_cleared_while_a_vendors_login_has_the_terminal("inline");
+}
+
+#[test]
+fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_fullscreen() {
+    root_record_is_cleared_while_a_vendors_login_has_the_terminal("fullscreen");
+}
+
+// ---- what a turn leaves on the root record ----------------------------------
+
+/// Types a key and waits for the `n`th report, the idle it is to write;
+/// then another key, which writes nothing, both rubbed out again.
+fn key_goes_idle(t: &mut pty::Pty, n: usize) {
+    t.write(b"x");
+    assert!(reported(t, n, Duration::from_secs(10)), "the key wrote no idle: {:?}", reports(&t.text()));
+    t.write(b"y");
+    std::thread::sleep(Duration::from_millis(500));
+    t.write(b"\x7f\x7f");
+    std::thread::sleep(Duration::from_millis(200));
+}
+
+/// A completed turn leaves done with the prompt's first line, under the
+/// idle window title; the next key press puts the record back to idle,
+/// once.
+fn a_completed_turn_leaves_done(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let (_m, _b, mut t) = pres_pty("pres-done", screen, |_, _| mock::Reply::paced(mock::text_stream("All done here, nothing left to do."), Duration::from_millis(100)));
+    t.write(b"\x1b[200~say you are done\nand nothing more\x1b[201~");
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(b"\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 4);
+    let (got, out) = quit_reports(t);
+    let ask = "say you are done";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    assert!(out.contains(&format!("\x1b]2;✳ krowk\x07{}", got[2])), "done under the idle title: {out:?}");
+}
+
+#[test]
+fn r_pres_3_a_completed_turn_leaves_done_and_a_key_goes_back_to_idle_inline() {
+    a_completed_turn_leaves_done("inline");
+}
+
+#[test]
+fn r_pres_3_a_completed_turn_leaves_done_and_a_key_goes_back_to_idle_fullscreen() {
+    a_completed_turn_leaves_done("fullscreen");
+}
+
+/// A turn the provider fails leaves error with the failure's first line,
+/// which a key puts back to idle too.
+fn a_failed_turn_leaves_error(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let failing = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01Fails\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n\
+        event: ping\ndata: {\"type\":\"ping\"}\n\n\
+        event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long\\nby a mile\"}}\n\n";
+    let (_m, _b, mut t) = pres_pty("pres-error", screen, move |_, _| mock::Reply::paced(failing.to_string(), Duration::from_millis(300)));
+    t.write(b"fail please\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 4);
+    let (got, _) = quit_reports(t);
+    // The failure's first line, as krowk shows it, cut where the
+    // provider's message broke the line.
+    let failed = "Anthropic stopped the response (invalid_request_error: prompt is too long";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "fail please"), root(State::Error, failed), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_3_a_failed_turn_leaves_error_with_its_first_line_inline() {
+    a_failed_turn_leaves_error("inline");
+}
+
+#[test]
+fn r_pres_3_a_failed_turn_leaves_error_with_its_first_line_fullscreen() {
+    a_failed_turn_leaves_error("fullscreen");
+}
+
+/// Interrupting a running turn goes back to idle, never done.
+fn an_interrupted_turn_leaves_idle(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let (_m, _b, mut t) = pres_pty("pres-stop", screen, |_, _| mock::Reply::paced(mock::text_stream(&mock::numbered_lines(200)), Duration::from_millis(50)));
+    t.write(b"count slowly\r");
+    assert!(reported(&t, 2, Duration::from_secs(20)), "never working: {:?}", reports(&t.text()));
+    std::thread::sleep(Duration::from_millis(800));
+    t.write(b"\x1b");
+    assert!(reported(&t, 3, Duration::from_secs(10)), "the interrupt was not reported: {:?}", reports(&t.text()));
+    std::thread::sleep(Duration::from_secs(1));
+    let (got, _) = quit_reports(t);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "count slowly"), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_inline() {
+    an_interrupted_turn_leaves_idle("inline");
+}
+
+#[test]
+fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_fullscreen() {
+    an_interrupted_turn_leaves_idle("fullscreen");
+}
+
+// ---- each subagent's record (OSC 7501) -----------------------------------
+
+/// The parent fans out three subagents, each held at its first answer
+/// until the test opens its gate: one edits the README, which asks; one is
+/// refused by the model's API and fails; one sleeps until it is stopped.
+/// The parent's answer to the three is held by the fourth.
+fn three_children(gates: [mock::Gate; 4]) -> impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static {
+    move |body, n| {
+        let held = |r: mock::Reply, gate: &mock::Gate, at: &'static str| mock::Reply { pace: Some(Duration::from_millis(1)), hold: Some((at, gate.clone())), ..r };
+        let answered = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+        let task = body["messages"][0].to_string();
+        if body["system"].to_string().contains("You are a subagent") {
+            return match () {
+                // Slowed, so it is seen working again before it ends.
+                _ if task.contains("TASK-EDIT") && answered => mock::Reply::paced(mock::text_stream("Edited the readme."), Duration::from_millis(100)),
+                _ if task.contains("TASK-EDIT") => held(mock::edit_script(body, n), &gates[0], "message_start"),
+                _ if task.contains("TASK-FAIL") => held(mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "no"}})), &gates[1], "error"),
+                _ => held(mock::Reply::sse(&mock::text_stream("Slept.")), &gates[2], "message_start"),
+            };
+        }
+        if !body["tools"].as_array().into_iter().flatten().any(|t| t["name"] == "subagent") {
+            return mock::Reply::sse(&mock::text_stream("Fan out"));
+        }
+        if answered {
+            return held(mock::Reply::sse(&mock::text_stream("The three are back.")), &gates[3], "message_start");
+        }
+        let calls = [("edit the readme", "TASK-EDIT: edit README.md"), ("fail at once", "TASK-FAIL: fail"), ("sleep on it", "TASK-SLEEP: sleep")];
+        let mut out = String::from("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_calls\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n");
+        for (i, (description, prompt)) in calls.iter().enumerate() {
+            let input = serde_json::json!({"description": description, "prompt": prompt});
+            out += &format!("event: content_block_start\ndata: {}\n\n", serde_json::json!({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": format!("toolu_agent{i}"), "name": "subagent", "input": {}}}));
+            out += &format!("event: content_block_delta\ndata: {}\n\n", serde_json::json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": input.to_string()}}));
+            out += &format!("event: content_block_stop\ndata: {}\n\n", serde_json::json!({"type": "content_block_stop", "index": i}));
+        }
+        mock::Reply::sse(&(out + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":40}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+    }
+}
+
+/// Waits until the reports written so far satisfy `done`; false at `timeout`.
+fn reported_until(t: &pty::Pty, timeout: Duration, done: impl Fn(&[String]) -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !done(&reports(&t.text())) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Three native subagents: each its own record, under the last 12 hex
+/// digits of its session id and titled by its description, written once
+/// per change — working, blocked on its approval while the root is too,
+/// done, error, cleared when stopped alone — and every one cleared at the
+/// turn's end, before the root's done.
+fn each_subagent_is_a_record(screen: &str) {
+    use krowk_tui::osc7501::{encode, Kind, Report, State};
+    let gates: [mock::Gate; 4] = Default::default();
+    let (_m, b, mut t) = pres_pty("pres-children", screen, three_children(gates.clone()));
+    let child_reports = |rs: &[String], pat: &str| rs.iter().filter(|r| r.contains(":id=") && r.contains(pat)).count();
+    t.write(b"fan out\r");
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=working") == 3), "three working: {:?}", reports(&t.text()));
+    gates[0].open();
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=blocked:kind=permission") == 1 && rs.iter().any(|r| r == &root(State::Blocked(Kind::Permission), "fan out"))), "the approval: {:?}", reports(&t.text()));
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(500));
+        t.write(b"y");
+        if reported_until(&t, Duration::from_secs(5), |rs| child_reports(rs, "state=done") == 1) {
+            break;
+        }
+    }
+    assert!(reported_until(&t, Duration::from_secs(5), |rs| child_reports(rs, "state=done") == 1), "the edit done: {:?}", reports(&t.text()));
+    gates[1].open();
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=error") == 1), "the failure: {:?}", reports(&t.text()));
+    // The Agents overlay, on the one still running: x stops it alone, and
+    // it is cleared while the turn still runs.
+    let mark = t.output().len();
+    t.write(b"\x07");
+    assert!(says(&t, mark, "enter opens", Duration::from_secs(10)), "no Agents overlay: {:?}", t.text());
+    t.write(b"x");
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last().is_some_and(|r| r.starts_with("\x1b]7501;state=clear:app=krowk:id="))), "the stop not reported: {:?}", reports(&t.text()));
+    let stopped = reports(&t.text()).len();
+    gates[3].open();
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last() == Some(&root(State::Done, "fan out"))), "the turn never ended: {:?}", reports(&t.text()));
+    gates[2].open();
+    let (got, _) = quit_reports(t);
+    // The children, by the parent's log.
+    let mut children = Vec::new();
+    for path in walk(&b.root.join("home/.krowk/sessions")).into_iter().filter(|p| p.ends_with("events.jsonl")) {
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let ev: serde_json::Value = serde_json::from_str(line).unwrap();
+            if ev["type"] == "subagent.started" {
+                children.push((ev["description"].as_str().unwrap().to_string(), ev["subagentSessionId"].as_str().unwrap().to_string()));
+            }
+        }
+    }
+    children.sort();
+    assert_eq!(children.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["edit the readme", "fail at once", "sleep on it"]);
+    let ids: Vec<String> = children.iter().map(|(_, sid)| sid.replace('-', "")[20..].to_string()).collect();
+    assert!(ids.iter().all(|i| i.len() == 12) && ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
+    let rec = |i: usize, state| encode(&Report { state, id: &[ids[i].as_str()], title: &children[i].0, ..Default::default() }).unwrap();
+    let of = |i: usize| got.iter().filter(|r| r.contains(&format!(":id={}", ids[i]))).cloned().collect::<Vec<_>>();
+    // Once per change: a tool or a token count alone writes nothing.
+    assert_eq!(of(0), [rec(0, State::Working), rec(0, State::Blocked(Kind::Permission)), rec(0, State::Working), rec(0, State::Done), rec(0, State::Clear)]);
+    assert_eq!(of(1), [rec(1, State::Working), rec(1, State::Error), rec(1, State::Clear)]);
+    assert_eq!(of(2), [rec(2, State::Working), rec(2, State::Clear)], "stopped alone, cleared");
+    assert_eq!(got[stopped - 1], rec(2, State::Clear), "cleared when stopped, the turn still running");
+    let rooted: Vec<&String> = got.iter().filter(|r| !r.contains(":id=")).collect();
+    let ask = "fan out";
+    assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Done, ask), &root(State::Clear, "")]);
+    let at = |r: &String| got.iter().position(|g| g == r).unwrap();
+    // Both blocked before either says it works again.
+    let (root_blocked, child_blocked) = (at(&root(State::Blocked(Kind::Permission), ask)), at(&rec(0, State::Blocked(Kind::Permission))));
+    let again = |from: usize, r: &String| from + got[from..].iter().position(|g| g == r).unwrap();
+    let back = again(root_blocked, &root(State::Working, ask)).min(again(child_blocked, &rec(0, State::Working)));
+    assert!(root_blocked < back && child_blocked < back, "the root blocked while the child is: {got:?}");
+    let done = at(&root(State::Done, ask));
+    for (i, (title, _)) in children.iter().enumerate() {
+        assert!(at(&rec(i, State::Clear)) < done, "{title} cleared before the root's done: {got:?}");
+    }
+}
+
+#[test]
+fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_ends_inline() {
+    each_subagent_is_a_record("inline");
+}
+
+#[test]
+fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_ends_fullscreen() {
+    each_subagent_is_a_record("fullscreen");
 }

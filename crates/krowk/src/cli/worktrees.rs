@@ -6,7 +6,9 @@
 //!
 //! - `list` (bare `krowk worktrees` too): each one's directory, repository,
 //!   branch, base, commits ahead of the base, uncommitted changes, session,
-//!   age, and whether a live session holds it.
+//!   age, and whether a live session holds it. A commit already on
+//!   `origin`'s default branch, or with an equivalent patch there (a merged
+//!   or rebase-merged PR), is not ahead (WT17).
 //! - `remove <hex|path> [--force]`: refused (exit 4) while a live session
 //!   holds it (`worktree_live`), and while it has uncommitted changes or
 //!   commits ahead of its base unless forced (`worktree_has_changes`).
@@ -247,8 +249,10 @@ fn refused(r: Refusal, now: i64, details: bool) -> Error {
                 Some(n) => what.push(format!("{n} commit{} ahead of its base", if n == 1 { "" } else { "s" })),
                 None => what.push("a base krowk has no record of".to_string()),
             }
+            // A squash merge leaves no patch on origin to match its commits.
+            let squash = if l.ahead.is_some_and(|n| n > 0) { " (a squash-merged branch still reads as ahead)" } else { "" };
             let fix = format!(
-                "{} has {} — nothing was removed. `--force` removes it anyway, saving uncommitted changes as refs/krowk/snapshots/{} first; its branch {} is kept either way",
+                "{} has {}{squash} — nothing was removed. `--force` removes it anyway, saving uncommitted changes as refs/krowk/snapshots/{} first; its branch {} is kept either way",
                 l.path.display(),
                 what.join(" and "),
                 l.hex,

@@ -9,7 +9,292 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **krowk tells your terminal whether it is working or waiting on you.**
+  Beside the window title, the TUI now sends an OSC 7501 report (the
+  Program Status Protocol) each time its state changes: working while a
+  turn runs, blocked while an approval or the agent's questions wait on
+  you, idle otherwise. While working or blocked, its message is the prompt
+  as the title shows it (its first line, cut short).
+  Terminals and agent inboxes that read it, such as Rex, can list krowk
+  with its status without guessing from the title's glyphs. Leaving krowk,
+  stopping it with Ctrl-Z, or handing the terminal to a provider's own
+  sign-in under `/connect` clears what it reported, and krowk reports it
+  again once it has the terminal back. A terminal that doesn't know the
+  sequence ignores it.
+- **`/connect` tells your terminal it is waiting on your sign-in.** While
+  its overlay is up, krowk reports blocked on auth (OSC 7501), with the
+  message "Sign in to" the provider you named or picked, and the window
+  title shows the same (inside herdr, krowk shows as blocked). An approval
+  that comes up meanwhile is reported instead until you answer it. Closing
+  or hiding the overlay, whatever came of it, reports what krowk is doing
+  otherwise; a provider's own sign-in that takes the terminal still clears
+  the record until krowk has it back.
+- **The TUI leaves a turn's end on your terminal until you are back.** A
+  terminal or agent inbox that reads OSC 7501 now shows a turn that
+  completed as done, with the prompt's first line, and one that failed as
+  failed, with the first line of what went wrong, rather than idle, so a
+  finished answer you haven't read stands apart from krowk at rest. Your
+  next key press puts it back to idle. An interrupted turn goes straight to
+  idle. The window title and herdr say idle as before.
+- **Each subagent shows on your terminal as its own record.** When a turn
+  fans out to subagents, the TUI reports each one beside krowk itself over
+  OSC 7501, titled by its description: working, waiting on an approval or
+  a question, done or failed. So a terminal that lists records can show
+  the one subagent that waits on you while the others work. A subagent you
+  stop is removed at once, and every subagent's record is removed when the
+  turn ends, before krowk reports it done or failed.
+- **`krowk -p` leaves a record of how it ended on your terminal.** A
+  terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
+  now shows a `krowk -p` you started in another tab as working while its
+  turn runs, then done, failed (with the first line of what went wrong) or,
+  after Ctrl-C, idle, and keeps done or failed once krowk has exited. The
+  report goes to stderr, and only when stderr is a terminal: a stderr sent
+  to a file or a pipe gets nothing, and stdout is the same as before in
+  every `--output-format`. Other terminals ignore the sequence.
+- **Background commands.** The agent can run a command in the background
+  (`bash` with `run_in_background`) and keep working: a dev server, a long
+  test run, a build. It reads the output later with `bash_output` and stops
+  the command with `kill_bash`. When one ends, the agent is told at its next
+  step. A command runs the way it would in the foreground, in the sandbox
+  when there is one. Up to 8 run at once per session, and they stop when
+  krowk's host does: `krowk -p`, and a TUI not on the host daemon, name
+  the ones they stop on the way out. On the daemon they outlive the krowk
+  that started them, and the daemon stays up until they end. The status line shows `[N background]`
+  while any run, and a second krowk following the session in the daemon
+  gets the count at once, not at the next change. A command's end, as the
+  agent is told it, is stored as krowk's in your session history, never as
+  a message of yours (and so is the todo reminder).
+- **Background subagents.** The agent can start a subagent in the
+  background (`subagent` with `run_in_background`) and go on working while
+  it runs. Its summary reaches the agent at its next step. The turn doesn't
+  finish while a background subagent still runs: the agent waits for it,
+  reads what it found, and answers. Interrupting the turn stops them too.
+  They count in `[N background]`.
+- **Each subagent reports what it is doing as it goes.** While a subagent
+  runs, krowk sends a `subagent.status` line each time its state changes:
+  the tool it is in and since when, whether it waits on your approval or
+  answer, the tokens it has used, and how it ended. While it waits on you
+  it names no tool, and a tool you allow counts from your answer, not from
+  when it asked. Programs reading
+  `--output-format stream-json`, and anything attached to krowk's host,
+  get it without working it out from the raw lines; the TUI will show it
+  next. A subagent's start in the session log now also says who ran it
+  (`ranBy`); older logs read as krowk's own.
+- **Groundwork for reading a subagent's transcript in the TUI.** The view
+  that opens a subagent will keep its transcript's lines and scroll through
+  them itself: arrows, PgUp/PgDn, Home/End, following new lines until you
+  scroll up and again once you're back at the bottom. It keeps the last
+  20,000 lines and says when earlier ones are not shown. Nothing you see
+  changes yet: the main conversation is printed exactly as before.
+- **A device attached to a synced session can stop one of its
+  subagents.** A device following the session with `krowk sync attach`
+  (and the apps, later) may now interrupt a subagent of that session by
+  the subagent's id, and only that subagent stops: the rest of the turn
+  goes on. It reaches only the subagents the session's own log started:
+  another session, an id the device made up, or steering a subagent is
+  refused as before. It works whichever directory the subagent's session
+  was started from.
+- **The subagent view can take the whole screen and give it back.** In the
+  inline screen it fills the terminal without switching to the alternate
+  screen, so tmux, SSH and phone terminals still get only plain output.
+  Nothing is printed into your scrollback while it is open, and when it
+  closes, or you quit krowk or suspend it with Ctrl-Z while it is open, the
+  conversation and the prompt are where they were. Lines that arrive in
+  the meantime are printed then. While an approval waits on you, the view
+  says so: in the inline screen Esc closes it to show the approval, and in
+  the fullscreen screen you answer it below as usual. In the fullscreen
+  screen it takes the conversation's area and leaves the prompt and status
+  line where they are, and the conversation comes back scrolled where you
+  left it. Resizing the window while it is open redraws it at the new size. One
+  limit in the inline screen: making the window narrower than the view's
+  lines pushes some of its rows into scrollback on terminals that reflow
+  (tmux among them). Enter on a subagent in the Ctrl-G overlay opens it.
+- **Ctrl-G lists every subagent of the session, finished ones too.** The
+  Agents overlay used to show only the subagents still running, so one that
+  had finished could not be found again. It now lists them all: the running
+  ones first, oldest first, then the finished ones, newest first, each
+  saying how it ended and how long it took (`done in 42s`,
+  `interrupted after 3.1s`, `failed after 1m5s`). A session you resume
+  lists its earlier subagents the same way; one its log left without an
+  answer is listed as interrupted, not as still running. The selection
+  stays on the subagent you picked as others start and finish, and `x` on
+  a finished one says there is nothing to interrupt. The area above the prompt still shows
+  only the subagents running now, and a subagent line in the conversation
+  now says how long an interrupted or failed one ran, also in a resumed
+  session, where it used to say `running 0.0s`.
+- **A running subagent's line says whether it is busy, quiet or waiting on
+  you.** Above the prompt and in the Ctrl-G overlay, a running subagent's
+  line now adds the tool it is in once that has run 10 seconds
+  (`bash 2m10s`), `quiet 45s` once nothing has come from it for 30 seconds
+  (text it is still writing counts),
+  and `⚠ waiting on you` while it waits on your approval or answer. The
+  status line's count says how many wait (`[3 subagents · 1 waiting]`).
+  The times go on counting every second, also between turns while a
+  background subagent runs. Nothing changes colour: a long build and a hung
+  command read the same until you look.
+- **Read a subagent's whole transcript from Ctrl-G.** Enter on a subagent
+  in the Agents overlay now opens its transcript, in the inline screen and
+  the fullscreen screen alike: the prompt its parent gave it first, then
+  every tool call and answer, read from its session log. While it runs,
+  what it does next appears as it happens, its text as it streams, and the
+  view stays at the bottom until you scroll up. Only that subagent's lines
+  are shown, never a sibling's. A finished subagent opens the same way,
+  also in a session you resumed. Esc goes back to the overlay with the same
+  subagent selected, and the conversation behind it has kept up with
+  everything that happened meanwhile.
+- **See whether a subagent is stuck, move between subagents and stop one,
+  from inside its transcript.** The top line of a subagent's transcript
+  now shows its description, its agent, what ran it (krowk, Claude Code or
+  Codex) and where it stands, kept up to date: running for how long, the
+  tool it has been in for over 10 s, `quiet` once nothing has come from it
+  for 30 s, and `⚠ waiting on you` while it waits on your approval or
+  answer. ← and → open the subagent before or after it in the Ctrl-G
+  list, and Esc goes back to the list with that one selected. `x` stops
+  this subagent alone: the top line says `stopping…`, then `interrupted`,
+  while the others and the turn carry on. When it can't be stopped — it
+  has already finished, or what runs it refuses — the bottom line says
+  why, as `x` in the Ctrl-G list now does too, instead of nothing
+  happening.
+- **Read a subagent's transcript from a device attached to a synced
+  session.** In the TUI that `krowk sync attach` (or `krowk --resume` of a
+  synced session) opens, Enter on a subagent in Ctrl-G now shows its
+  transcript as it does on the host: its prompt first, then its calls and
+  answers, read from what the session synced, then what it does next as
+  it happens. It used to open empty, saying its history could not be read
+  there, since that device has no log of the subagent. `x` in it stops the
+  subagent on the host. Text the subagent was in the middle of writing
+  when you attached shows once that answer is finished.
+
 ### Changed
+
+- **The running turn's label is in your terminal's text colour.**
+  "Thinking…", "Responding…", "Running …" and the rest now show in the
+  normal foreground (white on a dark theme). Only the spinner keeps the
+  accent colour.
+- **A loaded skill looks like a tool call.** "Loaded the X skill" in grey
+  italics is now `◆ Skill X`, as when the agent loads one, with a blank
+  line above it.
+- **Enter in the Agents overlay opens the subagent's transcript instead of
+  expanding its last line.** Ctrl-G's Enter used to add one line under the
+  selected subagent saying what it did last. The transcript shows that and
+  everything before it, so the one-line expansion is gone.
+- **A synced session keeps playing when a newer host sends something
+  unknown.** A device following a session skips a line it does not
+  understand and shows the rest, where it used to drop the whole batch.
+- **A message you send while a command or subagents run reaches the agent
+  within seconds.** A long build or test run, or a batch of subagents, used
+  to hold your message until the slowest finished, sometimes for minutes.
+  Now, once it has run two seconds with your message waiting, krowk moves
+  it to the background without stopping it. The agent reads your message
+  at once, with what the command printed so far or what the subagents
+  already finished. It can check on the command later with `bash_output`,
+  and each subagent still running reports back when it's done. Anything
+  that finishes within two seconds just finishes. The two seconds count
+  from when the agent asked, so a build that waited for a build slot moves
+  as soon as it starts, and once one command has moved, the next ones the
+  agent asked for in the same step move after a moment rather than two
+  seconds.
+- **Steering reaches a Claude Code turn while it runs.** A message you send
+  while Claude Code works used to wait until its whole turn ended, then come
+  back into your prompt. Now it goes to Claude Code at once, and the model
+  reads it at its next step, usually as soon as the running tool call
+  returns. It appears in the conversation where the model read it. One sent
+  as the model writes its last answer is read right after, in the same
+  turn. Interrupting still gives back what Claude Code never read. If
+  Claude Code hasn't picked a message up ten seconds after it finished,
+  krowk cancels it and gives it back, so it is never both read and
+  returned to your prompt.
+- **Groundwork for watching and stopping each Claude Code agent from the
+  TUI.** Seeing what each agent Claude Code starts is doing, and stopping
+  one while the others go on, is on its way. It is built against a
+  recording of a real Claude Code run: each agent's prompt and messages,
+  its progress, the approvals it asks for, and one agent stopped alone.
+  How krowk runs Claude Code today is unchanged.
+- **krowk now follows what each Claude Code agent says and does.** Claude
+  Code is asked to pass on each agent's own words as well as its tool
+  calls, and krowk sorts them into one transcript per agent: what it was
+  asked first, then its messages, tool calls and results in order, then how
+  it ended. A sub-agent an agent starts lands in that agent's transcript.
+  Nothing shows these transcripts yet: the next change writes them to each
+  agent's own session. Usage and cost are counted exactly as before, each
+  call once.
+- **Claude Code's agents are subagents of the session, like krowk's own.**
+  Each agent Claude Code starts during a turn gets its own session log,
+  linked to yours: what it was asked first, then its messages, tool calls
+  and results, then how it ended. It shows as a subagent row in the TUI,
+  Ctrl-G lists it, and Enter opens its transcript, live. `[N subagents]`
+  counts each agent once. Its log goes wherever the session goes: synced,
+  moved to another machine, and back after `krowk sessions rebuild`. Its
+  spend stays on the session, counted once. Stopping one agent alone, and
+  agents that keep running between turns, come next.
+- **Claude Code's background agents are followed after their turn ends.**
+  An agent Claude Code runs in the background keeps working once its turn
+  is over, and krowk now writes what it does meanwhile to its session log
+  as it happens. Its row stays running in the TUI, `[N subagents]` counts
+  it, and its transcript fills in live with no turn running, also in
+  another krowk that resumes the session meanwhile, on a device following
+  it, and in what sync uploads. It ends when the agent does, so the turn
+  Claude Code then begins to answer it finds it finished. It used to show
+  as done the moment it was launched. If Claude Code is let go of while the
+  agent runs (the session moved to another account, or krowk quit), the
+  agent's log ends as interrupted and says why. One whose process went
+  without a word (killed, or the machine restarted) shows as interrupted
+  when you resume the session, rather than running for ever.
+- **A Claude Code agent's row says what it is doing, and when it waits on
+  you.** Like krowk's own subagents, its row now shows the tool it has been
+  in for a while (`bash 12s`) and `⚠ waiting on you` when it asks for an
+  approval, and its tokens rise as Claude Code counts them instead of
+  staying at 0. An approval an agent asks for now says which subagent
+  asks, instead of passing for the conversation's own; answering it clears
+  the wait and the agent goes on. A device following a synced session can
+  answer a subagent's approval too, as it answers the session's own; it
+  used to be told the approval is answered on the host. If nobody answers
+  one from a turn started on that device, it is denied after five minutes,
+  as the session's own are.
+- **Stop one Claude Code agent and let the rest carry on.** `x` on a Claude
+  Code agent, in its transcript or in the Ctrl-G list, now stops that agent
+  alone. It used to say krowk couldn't. Claude Code is asked to stop it: its
+  row reads `stopping…`, then `interrupted`, and the other agents and the
+  turn carry on. It still reads `interrupted` when the session is resumed
+  later or opened on a device that attaches to it, rather than `failed`.
+  This also works for an agent waiting on your approval (its question is
+  taken back), for an agent still running in the background after its turn
+  ended, and from a device following a synced session. If Claude Code
+  refuses, or the stop can't reach it, the bottom line says why and the
+  agent keeps running.
+- **Codex's agents are subagents of the session too.** Each agent Codex
+  spawns during a turn gets its own session log, linked to yours: what it
+  was asked first, then its messages, tool calls and results, then how it
+  ended. It shows as a subagent row in the TUI with the tool it is in and
+  its tokens, `[N subagents]` counts it, Ctrl-G lists it and Enter opens its
+  transcript, live. An agent it starts in turn lands in that agent's
+  transcript, not as a row of its own. Its spend stays on the session,
+  counted once, as before. Resuming the session shows each agent as it
+  ended. krowk only reads Codex during a turn, so it stops following an
+  agent still running when the turn ends: its row and log say so (marked
+  interrupted), though Codex may still be running it. What it does after
+  that isn't shown, even if a later turn talks to it again, but its spend
+  is still counted. This is built from Codex's published protocol, not
+  checked against a live Codex yet, so tell us if a Codex agent shows up
+  wrong.
+- **Answer a Codex agent's approvals as its own, and stop one Codex agent
+  alone.** When an agent Codex runs asks to run a command or change files,
+  or asks you a question, the request now shows as that agent's: its row
+  and transcript read `⚠ waiting on you`, and your answer goes back to that
+  agent. It used to show as the session's own. `x` on a Codex agent, in its
+  transcript or in the Ctrl-G list, now stops that agent alone, as it does
+  for Claude Code's: Codex is asked to interrupt that agent's turn, its row
+  reads `stopping…`, then `interrupted`, and the other agents and the turn
+  carry on. From another client or a device following the session, it
+  also works while an agent's approval waits on you, that agent's own
+  included (its question is taken back); in the TUI the approval prompt
+  takes your keys until you answer it. If Codex
+  refuses, or hasn't said yet which turn the agent runs, the bottom line
+  says why and the agent keeps running. Like the rest of krowk's Codex
+  agents, this is checked against Codex's published protocol, not against
+  a live Codex.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
@@ -42,6 +327,23 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk worktrees remove` no longer needs `--force` once a worktree's
+  branch is merged.** A commit already on `origin`'s default branch, or
+  with the same change there (a rebased or rebase-merged PR), no longer
+  counts as ahead, so `krowk worktrees list` and a kept worktree's report
+  stop showing merged work as unsaved. Squash-merged branches still read
+  as ahead. Nothing is fetched: run `git fetch` first if origin moved.
+- **A synced session no longer fails to start syncing now and then with
+  "signature_replayed".** Two reads of the same session signed as this
+  machine in the same millisecond carry the same signature, so the
+  registry refused the second as a replay. That happens with two krowk
+  commands on one machine at once, or two parts of one. The sync host
+  then stopped with "the registry did not say whether it holds session
+  …". Within one krowk process each request now has a millisecond of its
+  own, and a read refused this way retries after a short random pause,
+  so two processes don't collide again.
+- **"Copied 2 lines" goes away by itself** after a few seconds, instead
+  of staying in the status bar until the next key.
 - **What you said is on a band across the width again**, instead of a
   background behind each row's text.
 - **A prompt with images is no longer sent to an older host daemon that
@@ -65,6 +367,27 @@ the versions are the `v*` tags a release is cut from. Entries land under
   your user key, like synced sessions, and keep opening after a device is
   removed and the key rotates. A vintage sealed the old way is refused by
   name.
+- **A resumed or attached session shows each finished subagent as it
+  ended.** When you resumed a session (`krowk --resume`) or opened it on a
+  device that attaches to it (`krowk sync attach`), its subagents' rows
+  were worked out from the session's own log alone. Subagents that ran
+  side by side all read the time the last of them took, so one you stopped
+  after a minute read `interrupted after 1m40s`, and no row showed its
+  tokens. Each row now reads what it read live: how the subagent ended,
+  how long it took and its tokens, from the end of that subagent's own
+  log. A resume reads only the end of each (the newest 256, and the newest
+  256 still unfinished in the session's log), never a whole log. Claude
+  Code and Codex agents' tokens are kept on that line from now on, so
+  sessions recorded before this still show none for them.
+- **A registry that stops answering costs 30 seconds, not five minutes.**
+  A call to the registry or to storage that receives nothing for 30
+  seconds is now given up. Before, it hung for five minutes, so
+  `krowk sync attach` or a host taking a session up looked stuck. A call
+  that is safe to repeat is tried again; `sync attach` then carries on.
+  One that isn't, like taking a session's lease, fails with "the registry
+  stopped answering". A large upload or download that keeps moving is not
+  cut for being slow; only the five-minute limit on a whole call still
+  applies.
 
 ## [0.13.0] - 2026-10-07
 

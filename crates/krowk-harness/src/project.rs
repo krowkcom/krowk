@@ -10,7 +10,7 @@
 //! |-----------------------------|------------------------------------------------------|
 //! | `session.started`           | `session` (its id = the session id, directory, worktree) and its `session_binding` (provider and harness `krowk`, foreign id = the session id) |
 //! | `turn.started` … `turn.completed` | one `turn`: status, and the token columns summed over the turn's responses |
-//! | `item.completed` userText   | a `user` message, one `text` part                     |
+//! | `item.completed` userText   | a `user` message, one `text` part; a note of krowk's (a background job's end, the todo reminder) a `system` one |
 //! | `response.completed`        | one `assistant` message holding the items it names: `thinking` (the signature in `part.signature`), `text`, `tool_call` parts |
 //! | `item.completed` toolResult | a `tool` message, one `tool_result` part              |
 //!
@@ -152,7 +152,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
                 th.turns.push(Turn { status: "incomplete".into(), ..Turn::default() });
             }
             LogBody::ItemCompleted { item_id, item, .. } => match item {
-                Item::UserText { text, .. } => th.messages.push(message(Role::User, "", "", &ev.id, turn, "", vec![text_part(text)])),
+                Item::UserText { text, .. } => th.messages.push(message(said_by(text), "", "", &ev.id, turn, "", vec![text_part(text)])),
                 Item::ToolResult { call_id, output, is_error } => th.messages.push(message(
                     Role::Tool,
                     "",
@@ -209,6 +209,13 @@ fn flush(th: &mut Thread, pending: &mut Vec<(&str, &str, &Item)>, provider: &str
     for (_, event_id, item) in pending.drain(..) {
         th.messages.push(message(Role::Assistant, provider, &model, event_id, turn, "", vec![part(item)]));
     }
+}
+
+/// Who said a user turn's text: krowk, for a note it sent the model in the
+/// person's place (a background job's end, the todo reminder), so sync,
+/// web and search never show it as theirs; the person otherwise.
+fn said_by(text: &str) -> Role {
+    if text.starts_with(crate::jobs::NOTE) || text.starts_with(crate::todo::REMINDER) { Role::System } else { Role::User }
 }
 
 fn event_type(b: &LogBody) -> &'static str {
@@ -308,12 +315,12 @@ mod tests {
         bodies.extend(turn("t1", "first"));
         // The response streamed a text item, then failed: no response.completed.
         bodies.push(LogBody::ItemCompleted { turn_id: "t1".into(), item_id: "t1-a".into(), item: Item::AssistantText { text: "half an answer".into() } });
-        bodies.push(LogBody::TurnCompleted { turn_id: "t1".into(), status: TurnStatus::Failed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None });
+        bodies.push(LogBody::TurnCompleted { turn_id: "t1".into(), status: TurnStatus::Failed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
         let after_first = bodies.len();
         bodies.extend(turn("t2", "second"));
         bodies.push(LogBody::ItemCompleted { turn_id: "t2".into(), item_id: "t2-a".into(), item: Item::AssistantText { text: "done".into() } });
         bodies.push(LogBody::ResponseCompleted { turn_id: "t2".into(), response_id: None, model: "m".into(), usage: Usage::default(), stop_reason: None, item_ids: vec!["t2-a".into()] });
-        bodies.push(LogBody::TurnCompleted { turn_id: "t2".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None });
+        bodies.push(LogBody::TurnCompleted { turn_id: "t2".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
         let events = log(bodies);
 
         let home = std::env::temp_dir().join(format!("krowk-harness-project-{}", std::process::id()));

@@ -292,6 +292,14 @@ impl Approvals {
         self.lock().remove(id);
     }
 
+    /// Makes the request `id` one of `session_id`'s: a backend's agent asks
+    /// through its session's turn, and is answered as itself (R-SUB-9).
+    pub fn hand_to(&self, id: &str, session_id: &str) {
+        if let Some(w) = self.lock().get_mut(id) {
+            w.session_id = session_id.to_string();
+        }
+    }
+
     /// Answers the request `id` of `session_id`: with `answers` when it
     /// asked questions.
     pub fn answer(&self, session_id: &str, id: &str, decision: ApprovalDecision, answers: Vec<QuestionAnswer>) -> Result<(), String> {
@@ -582,7 +590,7 @@ impl Gate {
                     let _ = settings::remember(file, &self.0.policy.loaded.root, &remember);
                 }
             }
-            ApprovalDecision::Deny if *cancel.borrow() => return Err(format!("{what} was not run: the turn was interrupted while it waited for approval")),
+            ApprovalDecision::Deny if *cancel.borrow() => return Err(format!("{what} was not run: it was stopped while it waited for approval — its turn interrupted, or the agent asking stopped")),
             ApprovalDecision::Deny => return Err(format!("the person declined {what}. Do not try another way around it; ask what they would like instead.")),
         }
         Ok(Opens { outside: true, fences: true })
@@ -628,7 +636,7 @@ impl Gate {
         let decision = reply.as_ref().map_or(ApprovalDecision::Deny, |(d, _)| *d);
         let _ = events.send(EngineEvent::ApprovalResolved { request_id, decision }).await;
         match reply {
-            _ if *cancel.borrow() => Err("the turn was interrupted before the person answered".into()),
+            _ if *cancel.borrow() => Err("it was stopped before the person answered — its turn interrupted, or the agent asking stopped".into()),
             None => Err(NOBODY_TO_ASK.into()),
             Some((ApprovalDecision::Deny, _)) => Err(DECLINED.into()),
             Some((_, answers)) => Ok(answers),

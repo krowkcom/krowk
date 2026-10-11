@@ -209,9 +209,18 @@ pub struct Welcome {
 /// A batch's body: the frames the host sent in one display frame.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Batch {
+    /// Read one by one: a line this viewer does not know — a frame a newer
+    /// host sends — is skipped, and the rest of the batch still applies.
+    #[serde(deserialize_with = "known_lines")]
     pub lines: Vec<crate::protocol::StreamLine>,
     /// The log's head once the chunks written so far are in.
     pub head: Option<store::Head>,
+}
+
+/// The lines of a batch this krowk can read, in order, each decoded alone.
+fn known_lines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::protocol::StreamLine>, D::Error> {
+    let raw = Vec::<Value>::deserialize(d)?;
+    Ok(raw.into_iter().filter_map(|l| serde_json::from_value(l).ok()).collect())
 }
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {
@@ -292,8 +301,11 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
         "allow-session" => ApprovalDecision::AllowSession,
         "deny" => ApprovalDecision::Deny,
         "interrupt" if arg.is_empty() => return Ok(Command::Interrupt { session_id }),
+        // One of the session's subagents, by the id its `subagent.started`
+        // line names (R-SUB-12): the host refuses any other.
+        "interrupt" if crate::log::valid_id(arg) => return Ok(Command::Interrupt { session_id: arg.to_string() }),
         "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() }),
-        "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone, or `/steer TEXT`")),
+        "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone or with a subagent's session id, or `/steer TEXT`")),
         _ => return prompt(line),
     };
     if arg.is_empty() || arg.contains(char::is_whitespace) {
@@ -466,6 +478,7 @@ mod tests {
 
     /// The five commands, each to its `Command`; anything else starting
     /// with `/` is a prompt as typed, and `//` escapes a command's name.
+    /// `/interrupt` takes a subagent's session id, and nothing else.
     #[test]
     fn typed_lines_are_the_five_commands_or_else_prompts() {
         let t = |l: &str| typed("s", l.to_string());
@@ -474,6 +487,8 @@ mod tests {
             assert_eq!((session_id.as_str(), request_id.as_str(), decision), ("s", "r1", want), "{line}");
         }
         assert!(matches!(t("/interrupt"), Ok(Command::Interrupt { session_id }) if session_id == "s"));
+        let child = "01a0ec7b-0000-7000-8000-00000000c41d";
+        assert!(matches!(t(&format!("/interrupt {child}")), Ok(Command::Interrupt { session_id }) if session_id == child), "R-SUB-12: a subagent, by its id");
         assert!(matches!(t("/steer go on"), Ok(Command::Steer { text, .. }) if text == "go on"));
         for bad in ["/approve", "/deny a b", "/interrupt now", "/steer"] {
             assert!(t(bad).is_err(), "{bad}");

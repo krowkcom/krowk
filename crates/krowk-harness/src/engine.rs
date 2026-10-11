@@ -88,8 +88,9 @@ pub enum EngineEvent {
     /// `todo_write` replaced the session's todo list: the host logs it.
     Todos { todos: Vec<Todo> },
     /// A subagent started, as the child session `session_id`, answering
-    /// the tool call `call_id`: the host logs the link.
-    SubagentStarted { call_id: String, session_id: String, description: String, agent: Option<String>, model: ModelRef },
+    /// the tool call `call_id`: the host logs the link, with who runs it
+    /// and the backend's own id for it (R-SUB-7).
+    SubagentStarted { call_id: String, session_id: String, description: String, agent: Option<String>, model: ModelRef, ran_by: crate::protocol::RanBy, backend_id: Option<String> },
     /// How close the instance is to its rate or usage limit, as its
     /// provider just said (R-INST-6).
     Limits(LimitStatus),
@@ -103,6 +104,36 @@ pub enum EngineEvent {
     /// Between turns only, through `Idle`: the backend began a turn by
     /// itself, and it waits for `Command::Continue` (`turn.unprompted`).
     Unprompted { reason: String },
+    /// Through `Idle` only: a turn took the process from between turns.
+    /// What was said through `Idle` before it came before the turn's
+    /// events; what is said after it comes after them, the turn over.
+    Woke,
+    /// One of the backend's own agents started (R-SUB-7): Claude Code's
+    /// task `task_id`, answering the conversation's `Agent` call `call_id`,
+    /// with what the parent asked of it (R-SUB-8) and whether it runs in the
+    /// background, outliving the turn. Its `BackendChild` events follow,
+    /// the prompt first, then its `BackendChildEnded`; in a turn's stream
+    /// or, between turns, through `Idle`.
+    BackendChildStarted { task_id: String, call_id: String, description: String, agent: Option<String>, prompt: String, background: bool },
+    /// One event of that agent's own conversation, in order: its items,
+    /// whole (a `ToolCall` completing is when its tool starts, the
+    /// `ToolResult` when it ends; each item's started and completed come
+    /// together), and its responses, which carry no usage — its calls are
+    /// metered once, as the parent's `SubagentResponse`. Its `Approval` and
+    /// `ApprovalResolved` too: a call it asks about is its own, sent under
+    /// its session (R-SUB-9), and its `Progress`.
+    BackendChild { task_id: String, event: Box<EngineEvent> },
+    /// Only inside `BackendChild`: the tokens the agent has used so far, as
+    /// the backend counts them (Claude Code's `task_progress`), which its
+    /// responses, carrying no usage, do not say.
+    Progress { tokens: i64 },
+    /// Only inside `BackendChild`, right before its `Approval`: the call
+    /// the request `request_id` asks about (Claude Code's `tool_use_id`),
+    /// whose clock starts again once it is answered.
+    AskedFor { request_id: String, call_id: String },
+    /// It ended, and nothing more of it follows: how, and why when the
+    /// backend or krowk said.
+    BackendChildEnded { task_id: String, status: crate::protocol::ChildState, error: Option<String> },
 }
 
 /// A turn a backend began by itself, waiting for `Command::Continue`.
@@ -165,6 +196,9 @@ pub struct TurnContext {
     pub evidence: Option<Evidence>,
     /// The build slots bash's heavy commands wait for (`crate::builds`).
     pub builds: crate::builds::Builds,
+    /// The session's background jobs (R-STEER-2), the host's: none where
+    /// nothing keeps them.
+    pub jobs: Option<Arc<crate::jobs::Jobs>>,
     /// The turn's permissions: every call the engine runs or is asked about
     /// is judged here, and asked about through it.
     pub gate: crate::permissions::Gate,
@@ -197,28 +231,49 @@ pub struct TurnContext {
 /// it is empty, and the host closes it when the turn is over, so a push that
 /// comes after either is told so instead of being queued for nobody.
 #[derive(Debug, Clone, Default)]
-pub struct Steers(Arc<Mutex<SteerQueue>>);
+pub struct Steers(Arc<Queue>);
+
+#[derive(Debug, Default)]
+struct Queue {
+    q: Mutex<SteerQueue>,
+    /// Woken by each push: a turn held open for its background children
+    /// waits on it for their notes, or the person's steering.
+    arrived: tokio::sync::Notify,
+}
 
 #[derive(Debug, Default)]
 struct SteerQueue {
     waiting: Vec<Steer>,
     closed: bool,
+    /// A call was moved to the background for the steering waiting
+    /// (R-STEER-4): the step's later calls are moved sooner. Cleared when
+    /// that steering is taken.
+    moved: bool,
 }
 
-/// One steer: its text, and the images it carries, already kept.
+/// One steer: its text, and the images it carries, already kept. Or a
+/// note of krowk's riding the same queue (`from_krowk`): a background job
+/// or child that ended, which the model reads as it reads steering but
+/// which is never handed back as the person's words.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Steer {
     pub text: String,
     pub images: Vec<ImageRef>,
+    pub from_krowk: bool,
 }
 
 impl From<&str> for Steer {
     fn from(text: &str) -> Steer {
-        Steer { text: text.to_string(), images: Vec::new() }
+        Steer { text: text.to_string(), images: Vec::new(), from_krowk: false }
     }
 }
 
 impl Steer {
+    /// A note of krowk's.
+    pub fn note(text: String) -> Steer {
+        Steer { text, images: Vec::new(), from_krowk: true }
+    }
+
     pub fn item(self) -> Item {
         Item::UserText { text: self.text, images: self.images }
     }
@@ -226,7 +281,7 @@ impl Steer {
 
 impl Steers {
     fn lock(&self) -> std::sync::MutexGuard<'_, SteerQueue> {
-        self.0.lock().unwrap_or_else(|e| e.into_inner())
+        self.0.q.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// Queues `steer`, or hands it back when the turn takes no more.
@@ -236,12 +291,57 @@ impl Steers {
             return Err(steer);
         }
         q.waiting.push(steer);
+        drop(q);
+        self.0.arrived.notify_waiters();
         Ok(())
+    }
+
+    /// Whether nothing waits.
+    pub fn is_empty(&self) -> bool {
+        self.lock().waiting.is_empty()
+    }
+
+    /// Returns once the person's steering waits: krowk's notes do not
+    /// count.
+    pub async fn steered(&self) {
+        loop {
+            let arrived = self.0.arrived.notified();
+            tokio::pin!(arrived);
+            arrived.as_mut().enable();
+            if self.lock().waiting.iter().any(|s| !s.from_krowk) {
+                return;
+            }
+            arrived.await;
+        }
+    }
+
+    /// Returns once something waits in the queue.
+    pub async fn arrival(&self) {
+        let arrived = self.0.arrived.notified();
+        tokio::pin!(arrived);
+        arrived.as_mut().enable();
+        if !self.is_empty() {
+            return;
+        }
+        arrived.await;
     }
 
     /// Everything waiting, oldest first, leaving the queue empty.
     pub fn take(&self) -> Vec<Steer> {
-        std::mem::take(&mut self.lock().waiting)
+        let mut q = self.lock();
+        q.moved = false;
+        std::mem::take(&mut q.waiting)
+    }
+
+    /// Says a call was moved to the background for the steering waiting.
+    pub fn moved_one(&self) {
+        self.lock().moved = true;
+    }
+
+    /// Whether a call was moved for the steering waiting: one after it in
+    /// the same step is moved after a moment, not its two seconds.
+    pub fn has_moved(&self) -> bool {
+        self.lock().moved
     }
 
     /// Closes the queue if nothing is waiting, and says whether it did: the
@@ -252,6 +352,15 @@ impl Steers {
             q.closed = true;
         }
         q.closed
+    }
+
+    /// Returns steering to the front of the queue, oldest first, whether or
+    /// not it is closed: steering a backend took but the model never read
+    /// (cancelled on an interrupt), and the host's notes of krowk's, taken
+    /// out with the person's steering when the turn ended and kept for the
+    /// next.
+    pub fn put_back(&self, steers: Vec<Steer>) {
+        self.lock().waiting.splice(0..0, steers);
     }
 
     /// Closes the queue whatever it holds, and returns what was never taken.
@@ -355,6 +464,13 @@ pub trait Engine: Send + Sync {
     /// as idle.
     fn busy(&self) -> bool {
         false
+    }
+    /// Stops one of the backend's own agents alone, by the backend's id for
+    /// it (R-SUB-10): once the backend has taken the stop, the agent ends
+    /// as its events say. A backend that cannot answers `not_stoppable`,
+    /// with why.
+    fn stop_task<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move { Err(EngineError::new("not_stoppable", format!("this backend cannot stop one of its agents ({task_id}) alone — interrupt the session that started it to stop it with that turn"))) })
     }
 }
 

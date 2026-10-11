@@ -21,6 +21,7 @@
 
 mod artifacts;
 mod auth;
+mod conn;
 mod devices;
 mod encode;
 mod errors;
@@ -40,7 +41,7 @@ mod xml;
 
 use encode::Json;
 use http::{Req, Resp, clean_path, parseable, redirect, unescape};
-use std::io::{self, Cursor};
+use std::io::{self, Read};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
@@ -67,7 +68,7 @@ pub struct Config {
 /// A registry serving on its own thread, stopped when dropped.
 pub struct Running {
     addr: SocketAddr,
-    server: Arc<tiny_http::Server>,
+    open: Arc<conn::Open>,
     thread: Option<JoinHandle<io::Error>>,
 }
 
@@ -84,7 +85,7 @@ impl Running {
     /// Stops serving and says why the loop ended, as Go's `Serve` returns once
     /// its listener closes.
     pub fn stop(mut self) -> io::Error {
-        self.server.unblock();
+        self.open.stop(self.addr);
         self.thread.take().unwrap().join().unwrap_or_else(|_| io::Error::other("the registry thread panicked"))
     }
 }
@@ -92,7 +93,7 @@ impl Running {
 impl Drop for Running {
     fn drop(&mut self) {
         if let Some(t) = self.thread.take() {
-            self.server.unblock();
+            self.open.stop(self.addr);
             let _ = t.join();
         }
     }
@@ -105,8 +106,9 @@ fn app(config: Config) -> Arc<App> {
     Arc::new(app)
 }
 
-fn server(listener: TcpListener) -> io::Result<tiny_http::Server> {
-    tiny_http::Server::from_listener(listener, None).map_err(io::Error::other)
+/// A thread a connection (conn.rs says why), each request on it routed.
+fn handler(app: Arc<App>) -> Arc<conn::Handler> {
+    Arc::new(move |head: &conn::Head, body: &mut dyn Read| respond(&app, head, body))
 }
 
 /// Serves on an already-bound listener from a background thread.
@@ -116,40 +118,20 @@ pub fn start(listener: TcpListener, config: Config) -> io::Result<Running> {
 
 fn spawn(listener: TcpListener, app: Arc<App>) -> io::Result<Running> {
     let addr = listener.local_addr()?;
-    let server = Arc::new(server(listener)?);
-    let s = Arc::clone(&server);
-    let thread = thread::spawn(move || run(&s, app));
-    Ok(Running { addr, server, thread: Some(thread) })
+    let open = Arc::new(conn::Open::default());
+    let o = Arc::clone(&open);
+    let thread = thread::spawn(move || conn::accept(&listener, &o, &handler(app)));
+    Ok(Running { addr, open, thread: Some(thread) })
 }
 
 /// Serves on an already-bound listener until accepting fails, and returns why.
 pub fn serve(listener: TcpListener, config: Config) -> io::Error {
-    match server(listener) {
-        Ok(s) => run(&s, app(config)),
-        Err(e) => e,
-    }
+    conn::accept(&listener, &Arc::new(conn::Open::default()), &handler(app(config)))
 }
 
-fn run(server: &tiny_http::Server, app: Arc<App>) -> io::Error {
-    loop {
-        let rq = match server.recv() {
-            Ok(rq) => rq,
-            Err(e) => return e,
-        };
-        let app = Arc::clone(&app);
-        // A thread a request: an upload is slow and must not hold up a poll.
-        // The stack is sized for a body nested as deep as Go's 10,000 levels.
-        let spawned = thread::Builder::new().stack_size(64 << 20).spawn(move || respond(&app, rq));
-        if let Err(e) = spawned {
-            return e;
-        }
-    }
-}
-
-fn respond(app: &Arc<App>, mut rq: tiny_http::Request) {
-    let mut target = rq.url().to_owned();
-    let headers: Vec<(String, String)> =
-        rq.headers().iter().map(|h| (h.field.as_str().to_string(), h.value.as_str().to_string())).collect();
+fn respond(app: &Arc<App>, rq: &conn::Head, body: &mut dyn Read) -> conn::Answer {
+    let mut target = rq.target.clone();
+    let headers = rq.headers.clone();
     let mut host = headers.iter().find(|(k, _)| k.eq_ignore_ascii_case("Host")).map(|h| h.1.clone()).unwrap_or_default();
     // An absolute-form target names the host itself, and Go prefers it.
     if let Some(rest) = target.strip_prefix("http://").or_else(|| target.strip_prefix("https://")) {
@@ -158,25 +140,9 @@ fn respond(app: &Arc<App>, mut rq: tiny_http::Request) {
         target = path.to_owned();
     }
     let (path, query) = target.split_once('?').map_or((target.clone(), String::new()), |(p, q)| (p.into(), q.into()));
-    let mut req = Req {
-        method: rq.method().as_str().to_owned(),
-        path,
-        query,
-        headers,
-        host,
-        remote: rq.remote_addr().map(|a| a.ip().to_string()).unwrap_or_default(),
-        body: rq.as_reader(),
-    };
-    let mut resp = route(app, &mut req);
-    let undo = resp.undo.take();
-    let headers = resp.headers.iter().filter_map(|(k, v)| tiny_http::Header::from_bytes(k.as_bytes(), v.as_bytes()).ok());
-    let len = resp.body.len();
-    let out = tiny_http::Response::new(resp.status.into(), headers.collect(), Cursor::new(resp.body), Some(len), None);
-    if rq.respond(out).is_err()
-        && let Some(undo) = undo
-    {
-        undo();
-    }
+    let mut req = Req { method: rq.method.clone(), path, query, headers, host, remote: rq.remote.ip().to_string(), body };
+    let resp = route(app, &mut req);
+    conn::Answer { status: resp.status, headers: resp.headers, body: resp.body, undo: resp.undo }
 }
 
 /// The origin baked into links: `--site` when given, else the request's host.
@@ -383,5 +349,74 @@ mod tests {
         assert!(field(&again, "token").starts_with("krowk_sk_"), "{again}");
         let spent = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
         assert!(spent.starts_with("HTTP/1.1 410") && spent.contains("\"spent\""), "{spent}");
+    }
+
+    /// One GET on a connection kept open, its response read whole.
+    fn keep_alive_get(s: &mut TcpStream, addr: SocketAddr) -> io::Result<String> {
+        write!(s, "GET / HTTP/1.1\r\nHost: {addr}\r\n\r\n")?;
+        let mut head = Vec::new();
+        let mut byte = [0u8; 1];
+        while !head.ends_with(b"\r\n\r\n") {
+            s.read_exact(&mut byte)?;
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8_lossy(&head).into_owned();
+        let len: usize = head
+            .lines()
+            .find_map(|l| l.to_ascii_lowercase().strip_prefix("content-length:").map(|v| v.trim().parse().unwrap()))
+            .unwrap_or(0);
+        let mut body = vec![0; len];
+        s.read_exact(&mut body)?;
+        Ok(head)
+    }
+
+    /// Every connection is served while others sit idle on keep-alive, as
+    /// ureq's pool leaves them: none waits on another's closing. A burst of
+    /// connections opened at once, each kept open until the whole burst is
+    /// answered, more of them than the server has threads waiting, round
+    /// after round. tiny_http's pool left one of a burst unread here, every
+    /// run, until another closed.
+    #[test]
+    fn a_new_connection_is_answered_while_others_idle_on_keep_alive() {
+        let running = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config::default()).unwrap();
+        let addr = running.addr();
+        for _ in 0..20 {
+            let at_once = Arc::new(std::sync::Barrier::new(12));
+            let clients: Vec<_> = (0..12)
+                .map(|_| {
+                    let at_once = Arc::clone(&at_once);
+                    thread::spawn(move || -> Result<TcpStream, String> {
+                        at_once.wait();
+                        let mut s = TcpStream::connect(addr).unwrap();
+                        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                        let started = std::time::Instant::now();
+                        let head = keep_alive_get(&mut s, addr).map_err(|e| format!("unanswered after {:?}: {e}", started.elapsed()))?;
+                        assert!(head.starts_with("HTTP/1.1 200"), "{head}");
+                        // And again on the same connection, which stays usable.
+                        keep_alive_get(&mut s, addr).map_err(|e| format!("the second request: {e}"))?;
+                        Ok(s)
+                    })
+                })
+                .collect();
+            // Every stream is held here until the whole burst has been joined.
+            let answered: Vec<_> = clients.into_iter().map(|c| c.join().unwrap()).collect();
+            for a in &answered {
+                assert!(a.is_ok(), "{a:?}");
+            }
+        }
+    }
+
+    /// A stopped registry answers nothing more, on a connection kept open
+    /// from before the stop either.
+    #[test]
+    fn a_stop_closes_the_connections_kept_open() {
+        let running = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config::default()).unwrap();
+        let addr = running.addr();
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        keep_alive_get(&mut s, addr).unwrap();
+        running.stop();
+        assert!(keep_alive_get(&mut s, addr).is_err(), "answered after the stop");
+        assert!(TcpStream::connect(addr).is_err(), "still accepting after the stop");
     }
 }

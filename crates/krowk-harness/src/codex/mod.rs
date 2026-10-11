@@ -22,9 +22,10 @@
 //! | `thread/start`, `thread/resume` | krowk → codex | the session's thread, in krowk's mode, with krowk's tools; resumed by the id the log's `backend.session` holds |
 //! | `turn/start` | krowk → codex | a prompt; the turn is everything up to its `turn/completed` |
 //! | `turn/steer` | krowk → codex | `Command::Steer`, into the running turn |
-//! | `turn/interrupt` | krowk → codex | `Command::Interrupt`; the process lives on for the next turn |
+//! | `turn/interrupt` | krowk → codex | `Command::Interrupt`; the process lives on for the next turn. With a child's session id, on the child's thread and turn alone (R-SUB-10) — checked against the schema, not live |
 //! | `item/*`, `thread/tokenUsage/updated` | codex → krowk | translated into krowk's events by `stream` (R-BACK-5) |
-//! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
+//! | `thread/started`, another thread's `item/*`, `collabAgentToolCall`, `subAgentActivity` | codex → krowk | the session thread's direct children as child sessions, by `children` (R-SUB-7) — checked against the schema, not live |
+//! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)`; one naming a child's `threadId` is asked under the child's session (R-SUB-9) — checked against the schema, not live |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
 //! | `item/tool/requestUserInput` | codex → krowk | the model's questions, asked of the person (`crate::ask`) and answered by question id |
 //!
@@ -53,6 +54,7 @@
 //! holds every source file and every run to that.
 
 pub mod auth;
+pub mod children;
 pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};
@@ -70,6 +72,7 @@ use std::time::Duration;
 use stream::Translator;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// The binary a `codex-app-server` instance runs when its definition names none.
 pub const BINARY: &str = "codex";
@@ -84,6 +87,9 @@ const THREAD_TIMEOUT: Duration = Duration::from_secs(120);
 /// After an interrupt, how long the turn waits for Codex's `turn/completed`
 /// before the process is stopped; the session continues on `thread/resume`.
 const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
+/// How long a stop of one child thread waits to be written, then, once
+/// written, for Codex's answer (R-SUB-10).
+const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How long a process asked to exit (stdin closed) gets.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 /// How long a stopped process group gets between SIGTERM and SIGKILL.
@@ -476,6 +482,42 @@ pub struct CodexEngine {
     instance: Resolved,
     krowk_version: String,
     proc: tokio::sync::Mutex<Option<Proc>>,
+    /// Where a stop of one child thread goes while a turn runs: its
+    /// children live only that long.
+    stopper: Mutex<Option<mpsc::UnboundedSender<StopAsk>>>,
+}
+
+/// A stop of one child thread (R-SUB-10), handed to the running turn:
+/// `sent` once its `turn/interrupt` is written, `done` with Codex's answer,
+/// or why it was not sent.
+struct StopAsk {
+    thread: String,
+    sent: oneshot::Sender<()>,
+    done: oneshot::Sender<Result<(), String>>,
+}
+
+/// A stop of one child thread handed to the running turn, answered once
+/// Codex answers its `turn/interrupt`. Not written, or refused, it is
+/// `not_stoppable` with why. Each wait has its own `grace`: to be written,
+/// then, from the write, to be answered; written and not answered in time,
+/// it is taken, and the child's end says how it went.
+async fn stop_answer(stopper: &Mutex<Option<mpsc::UnboundedSender<StopAsk>>>, thread: &str, grace: Duration) -> Result<(), EngineError> {
+    let refused = |why: &str| EngineError::new("not_stoppable", format!("Codex did not stop that agent: {why}"));
+    let ((sent, written), (done, answer)) = (oneshot::channel(), oneshot::channel());
+    let handed = stopper.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.send(StopAsk { thread: thread.to_string(), sent, done }).is_ok());
+    if !handed {
+        return Err(refused("no turn of the session that started it is running, so krowk no longer follows it"));
+    }
+    // Dropped unwritten: `answer` says why.
+    if tokio::time::timeout(grace, written).await.is_err() {
+        return Err(refused(&format!("nothing read Codex to send it the stop within {} seconds, so it was not sent", grace.as_secs())));
+    }
+    match tokio::time::timeout(grace, answer).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(why))) => Err(refused(&why)),
+        Ok(Err(_)) => Err(refused("the turn that ran it ended before Codex answered")),
+        Err(_) => Ok(()),
+    }
 }
 
 impl CodexEngine {
@@ -483,7 +525,7 @@ impl CodexEngine {
         if instance.backend.is_none() {
             return Err(EngineError::new("bad_config", format!("{} is not a Codex instance", instance.name)));
         }
-        Ok(CodexEngine { instance, krowk_version: krowk_version.into(), proc: tokio::sync::Mutex::new(None) })
+        Ok(CodexEngine { instance, krowk_version: krowk_version.into(), proc: tokio::sync::Mutex::new(None), stopper: Mutex::new(None) })
     }
 
     fn backend(&self) -> &Backend {
@@ -532,6 +574,8 @@ impl Engine for CodexEngine {
                 *slot = Some(Proc::spawn(self.backend(), &ctx.cwd, bypass, &ask, &self.instance.name).await?);
             }
             let p = slot.as_mut().expect("spawned above");
+            let (stopper, mut stops) = mpsc::unbounded_channel();
+            *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = Some(stopper);
             let outcome = async {
                 // The thread: the one this process has open, else the
                 // session's to resume — by the path it was copied to, when
@@ -563,9 +607,18 @@ impl Engine for CodexEngine {
                 if let Some(ev) = handoff {
                     let _ = events.send(ev).await;
                 }
-                p.turn(Steer { text: prompt, images }, &mut ctx, &ask, &events, &self.instance.name).await
+                p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &mut stops, &self.instance.name).await
             }
             .await;
+            *self.stopper.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            // krowk reads Codex only while a turn runs, and sends it nothing
+            // for an open child: one still open is no longer followed from
+            // here, though Codex may still run it (R-SUB-7).
+            let why = match &outcome {
+                Err(e) => format!("krowk stopped following it when the turn that ran it failed, before Codex said it finished ({}) — Codex may still be running it; what it does after this is not shown here", e.message),
+                Ok(_) => children::UNFINISHED.to_string(),
+            };
+            forward(&events, p.kids.turn_ended(&why)).await;
             // A process that died, or a turn that failed partway, is not
             // trusted with the next turn: that one starts clean on resume.
             if (outcome.is_err() || !p.alive())
@@ -583,6 +636,12 @@ impl Engine for CodexEngine {
                 p.shutdown().await;
             }
         })
+    }
+
+    /// `turn/interrupt` on one child thread (R-SUB-10), handed to the
+    /// running turn (`stop_answer`).
+    fn stop_task<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(stop_answer(&self.stopper, task_id, STOP_GRACE))
     }
 }
 
@@ -747,6 +806,8 @@ enum Pending {
     TurnStart,
     Steer(Steer),
     Interrupt,
+    /// A child thread's `turn/interrupt`: its answer goes to whoever asked.
+    Stop(oneshot::Sender<Result<(), String>>),
 }
 
 /// One running `codex app-server`.
@@ -771,6 +832,8 @@ struct Proc {
     /// The thread this process has open, and its transcript.
     thread: Option<String>,
     transcript: Option<String>,
+    /// The thread's child threads, as the session's children (R-SUB-7).
+    kids: children::Children,
 }
 
 #[cfg(unix)]
@@ -880,13 +943,18 @@ fn tail(s: &str) -> String {
 }
 
 /// A notification of Codex's during a turn on `thread`.
-async fn on_note(thread: &str, method: &str, params: &Value, (subs, t): (&mut stream::SubThreads, &mut Translator), (codex_turn, completed): (&mut Option<String>, &mut Option<Value>), limit: &mut Option<LimitStatus>, events: &Events) {
-    // Another thread's — a subagent Codex runs — is
-    // its own conversation, which Codex keeps; what
-    // its calls cost is the session's spend.
+async fn on_note(thread: &str, method: &str, params: &Value, (subs, kids, t): (&mut stream::SubThreads, &mut children::Children, &mut Translator), (codex_turn, completed): (&mut Option<String>, &mut Option<Value>), limit: &mut Option<LimitStatus>, events: &Events) {
+    // Another thread's — a subagent Codex runs — is its own conversation:
+    // what its calls cost is the session's spend, and a direct child's
+    // lines are its child session's (R-SUB-7).
     if method == "thread/started" || params.get("threadId").and_then(Value::as_str).is_some_and(|th| th != thread) {
         forward(events, subs.apply(thread, method, params).into_iter().collect()).await;
+        forward(events, kids.apply(thread, &t.model, method, params)).await;
         return;
+    }
+    // The thread's own spawns, and what it says of its children.
+    if matches!(method, "item/started" | "item/completed") {
+        forward(events, kids.apply(thread, &t.model, method, params)).await;
     }
     let of_turn = params.get("turnId").and_then(Value::as_str).or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
     if let (Some(mine), Some(theirs)) = (&*codex_turn, of_turn)
@@ -966,6 +1034,16 @@ async fn finish(t: &mut Translator, events: &Events) {
     let mut out = Vec::new();
     t.finish(&mut out);
     forward(events, out).await;
+}
+
+/// What answering a child's request said, as the child's event — but a
+/// publish's notice and the run it opened, which are the session's: the
+/// person's to read, and the parent's log's to hold for its next turn.
+fn as_childs(thread: &str, ev: EngineEvent) -> EngineEvent {
+    match ev {
+        EngineEvent::Notice { .. } | EngineEvent::RunOpened { .. } => ev,
+        ev => EngineEvent::BackendChild { task_id: thread.into(), event: Box::new(ev) },
+    }
 }
 
 async fn forward(events: &Events, out: Vec<EngineEvent>) {
@@ -1060,7 +1138,7 @@ impl Proc {
                 }
             });
         }
-        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None };
+        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None, kids: children::Children::default() };
         p.request("initialize", initialize_params(&ask.krowk_version), ask, INITIALIZE_TIMEOUT).await?;
         p.notify("initialized").await?;
         // Signed in, and to what, asked before a thread exists for a turn
@@ -1247,7 +1325,7 @@ impl Proc {
 
     /// Runs one krowk turn: the prompt as a Codex turn, steering passed in
     /// as it arrives, until Codex completes it with nothing left unread.
-    async fn turn(&mut self, prompt: Steer, ctx: &mut TurnContext, ask: &Answers, events: &Events, instance: &str) -> Result<TurnEnd, EngineError> {
+    async fn turn(&mut self, prompt: Steer, ctx: &mut TurnContext, ask: &Answers, events: &Events, stops: &mut mpsc::UnboundedReceiver<StopAsk>, instance: &str) -> Result<TurnEnd, EngineError> {
         let thread = self.thread.clone().expect("opened before a turn");
         let _ = events.send(EngineEvent::Context { system: SYSTEM_NOTE.into(), tools: bridge::definitions() }).await;
         let _ = events.send(EngineEvent::BackendSession { backend: BACKEND.into(), session_id: thread.clone(), transcript: self.transcript.clone(), billing: self.billing }).await;
@@ -1300,6 +1378,7 @@ impl Proc {
                         finish(&mut t, events).await;
                         return self.died_in_turn(interrupted);
                     }
+                    Some(s) = stops.recv() => self.stop_child(s, &mut pending).await,
                     _ = poll.tick(), if steering => {
                         let turn = codex_turn.clone().expect("steering only once the turn has an id");
                         self.steer(&thread, &turn, ctx.steers.take(), &ctx.session_dir, &mut pending).await?;
@@ -1310,16 +1389,12 @@ impl Proc {
                             return self.died_in_turn(interrupted);
                         };
                         match msg {
-                            Msg::Response { id, result } => match id.as_u64().and_then(|id| pending.remove(&id)) {
-                                Some(Pending::TurnStart) => self.turn_started(result, &thread, &mut codex_turn, &mut want_interrupt, &mut pending).await?,
-                                Some(Pending::Steer(steer)) => steer_answered(result.is_ok(), steer, &mut refused, events).await,
-                                Some(Pending::Interrupt) | None => {}
-                            },
+                            Msg::Response { id, result } => self.answered(id, result, &thread, (&mut codex_turn, &mut want_interrupt), &mut pending, &mut refused, events).await?,
                             Msg::Request { id, method, params } => {
-                                let answer = ask.answer(&method, &params, &mut t, Some((events, &ctx.cancel))).await;
+                                let answer = self.answer_request(&method, &params, ask, &mut t, events, &ctx.cancel, stops, &mut pending).await;
                                 self.reply(id, answer).await?;
                             }
-                            Msg::Note { method, params } => on_note(&thread, &method, &params, (&mut subs, &mut t), (&mut codex_turn, &mut completed), &mut limit, events).await,
+                            Msg::Note { method, params } => on_note(&thread, &method, &params, (&mut subs, &mut self.kids, &mut t), (&mut codex_turn, &mut completed), &mut limit, events).await,
                         }
                     }
                 }
@@ -1333,6 +1408,116 @@ impl Proc {
                 None => return Ok(TurnEnd::Completed),
             }
         }
+    }
+
+    /// Answers a request of Codex's in a turn. One naming an open child's
+    /// thread is the child's (R-SUB-9): asked under its session — its
+    /// approval and its answer are its events — and answered from its
+    /// items. While the person decides, a stop of one child is still sent
+    /// (`sending_stops`); one of the child asking takes its question back,
+    /// as an interrupt of the turn does.
+    #[allow(clippy::too_many_arguments)]
+    async fn answer_request(&mut self, method: &str, params: &Value, ask: &Answers, t: &mut Translator, events: &Events, cancel: &watch::Receiver<bool>, stops: &mut mpsc::UnboundedReceiver<StopAsk>, pending: &mut HashMap<u64, Pending>) -> Result<Value, (i64, String)> {
+        let thread = str_of(params, "threadId").to_string();
+        let Some(mut lent) = self.kids.lend(&thread) else {
+            return self.sending_stops(ask.answer(method, params, t, Some((events, cancel))), None, cancel, stops, pending).await;
+        };
+        let (tx, mut rx) = mpsc::channel(4);
+        // The turn's interrupt, or a stop of this child.
+        let (mine, theirs) = watch::channel(*cancel.borrow());
+        // The call it asks about: an approval's item, a krowk tool's call.
+        let call = Some(str_of(params, "itemId")).filter(|i| !i.is_empty()).unwrap_or(str_of(params, "callId")).to_string();
+        let asked = async {
+            let tx = tx;
+            ask.answer(method, params, &mut lent, Some((&tx, &theirs))).await
+        };
+        let told = async {
+            let child = |ev| as_childs(&thread, ev);
+            while let Some(ev) = rx.recv().await {
+                if let EngineEvent::Approval(r) = &ev
+                    && !call.is_empty()
+                {
+                    let _ = events.send(child(EngineEvent::AskedFor { request_id: r.request_id.clone(), call_id: call.clone() })).await;
+                }
+                let _ = events.send(child(ev)).await;
+            }
+        };
+        let both = async { tokio::join!(asked, told).0 };
+        let answer = self.sending_stops(both, Some((&thread, &mine)), cancel, stops, pending).await;
+        self.kids.give_back(&thread, lent);
+        answer
+    }
+
+    /// Waits for `answering` — a request the person may take minutes over —
+    /// writing each stop of one child handed over meanwhile (R-SUB-10).
+    /// `mine` is the child asking and its question's cancel: a stop of it,
+    /// or the turn's interrupt, takes the question back.
+    async fn sending_stops<T>(&mut self, answering: impl std::future::Future<Output = T>, mine: Option<(&str, &watch::Sender<bool>)>, cancel: &watch::Receiver<bool>, stops: &mut mpsc::UnboundedReceiver<StopAsk>, pending: &mut HashMap<u64, Pending>) -> T {
+        tokio::pin!(answering);
+        let mut turn = cancel.clone();
+        let mut followed = mine.is_none();
+        loop {
+            tokio::select! {
+                biased;
+                t = &mut answering => return t,
+                _ = cancelled(&mut turn), if !followed => {
+                    followed = true;
+                    if let Some((_, m)) = mine {
+                        let _ = m.send(true);
+                    }
+                }
+                Some(s) = stops.recv() => {
+                    let asking = mine.filter(|(thread, _)| *thread == s.thread);
+                    self.stop_child(s, pending).await;
+                    if let Some((_, m)) = asking {
+                        let _ = m.send(true);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Sends `turn/interrupt` for one child thread's turn alone (R-SUB-10);
+    /// Codex's answer goes to whoever asked. One given up on before it was
+    /// read is not sent, and one with no turn to name is refused with why.
+    async fn stop_child(&mut self, StopAsk { thread, sent, done }: StopAsk, pending: &mut HashMap<u64, Pending>) {
+        if done.is_closed() {
+            return;
+        }
+        let turn = match self.kids.turn_of(&thread) {
+            Ok(turn) => turn,
+            Err(why) => {
+                let _ = done.send(Err(why));
+                return;
+            }
+        };
+        match self.call("turn/interrupt", json!({"threadId": thread, "turnId": turn})).await {
+            Ok(id) => {
+                self.kids.stopping(&thread);
+                let _ = sent.send(());
+                pending.insert(id, Pending::Stop(done));
+            }
+            Err(e) => {
+                let _ = done.send(Err(e.message));
+            }
+        }
+    }
+
+    /// Codex's answer to a request krowk sent in the turn: `turn/start`'s
+    /// gives the turn's id; a steer's says whether it landed, else it is
+    /// kept for the next turn; a child's `turn/interrupt`'s goes to whoever
+    /// asked for the stop.
+    #[allow(clippy::too_many_arguments)]
+    async fn answered(&mut self, id: Value, result: Result<Value, String>, thread: &str, (codex_turn, want_interrupt): (&mut Option<String>, &mut bool), pending: &mut HashMap<u64, Pending>, refused: &mut Vec<Steer>, events: &Events) -> Result<(), EngineError> {
+        match id.as_u64().and_then(|id| pending.remove(&id)) {
+            Some(Pending::TurnStart) => self.turn_started(result, thread, codex_turn, want_interrupt, pending).await?,
+            Some(Pending::Steer(steer)) => steer_answered(result.is_ok(), steer, refused, events).await,
+            Some(Pending::Stop(done)) => {
+                let _ = done.send(result.map(drop));
+            }
+            Some(Pending::Interrupt) | None => {}
+        }
+        Ok(())
     }
 
     /// Asks Codex to interrupt its turn; false when it has no id yet, and
@@ -1632,6 +1817,50 @@ mod tests {
         assert_eq!(refused["success"], false);
         assert!(refused["contentItems"][0]["text"].as_str().unwrap().contains("needs approval"), "{refused}");
         assert_eq!(ask.answer("account/chatgptAuthTokens/refresh", &json!({}), &mut t, None).await.unwrap_err().0, -32601, "krowk never handles Codex's tokens");
+    }
+
+    /// R-SUB-10: a stop of one child with no turn to take it, one the turn
+    /// refuses, and one nothing reads are `not_stoppable`, each saying why;
+    /// one written and answered is taken.
+    #[tokio::test(flavor = "current_thread")]
+    async fn r_sub_10_a_stop_codex_cannot_send_or_refuses_is_not_stoppable_with_why() {
+        let stopper: Mutex<Option<mpsc::UnboundedSender<StopAsk>>> = Mutex::new(None);
+        let grace = Duration::from_millis(50);
+        let e = stop_answer(&stopper, "kid", grace).await.unwrap_err();
+        assert!(e.code == "not_stoppable" && e.message.contains("no turn of the session that started it is running"), "{e:?}");
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        *stopper.lock().unwrap() = Some(tx);
+        let e = stop_answer(&stopper, "kid", grace).await.unwrap_err();
+        assert!(e.message.contains("nothing read Codex"), "{e:?}");
+        // That ask, unread, is still queued: given up on, so never sent.
+        let StopAsk { done, .. } = rx.try_recv().unwrap();
+        assert!(done.is_closed());
+        let turn = async {
+            for answer in [Err("Codex has not said which turn it runs yet".to_string()), Ok(())] {
+                let StopAsk { thread, sent, done } = rx.recv().await.unwrap();
+                assert_eq!(thread, "kid");
+                if answer.is_ok() {
+                    let _ = sent.send(());
+                }
+                let _ = done.send(answer);
+            }
+        };
+        let asks = async {
+            let e = stop_answer(&stopper, "kid", grace).await.unwrap_err();
+            assert_eq!((e.code.as_str(), e.message.as_str()), ("not_stoppable", "Codex did not stop that agent: Codex has not said which turn it runs yet"));
+            stop_answer(&stopper, "kid", grace).await.unwrap();
+        };
+        tokio::join!(turn, asks);
+    }
+
+    /// R-SUB-9, R-EVID-1: what answering a child's request says is the
+    /// child's, but a publish's notice and the run it opened stay the
+    /// session's.
+    #[test]
+    fn r_sub_9_a_childs_request_is_its_own_but_a_publishs_notice_and_run_are_the_sessions() {
+        assert!(matches!(as_childs("kid", EngineEvent::Notice { text: "x".into() }), EngineEvent::Notice { .. }));
+        assert!(matches!(as_childs("kid", EngineEvent::RunOpened { run: "run_1".into() }), EngineEvent::RunOpened { .. }));
+        assert!(matches!(as_childs("kid", EngineEvent::Progress { tokens: 1 }), EngineEvent::BackendChild { task_id, .. } if task_id == "kid"));
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! The TUI's part of krowk's config.json, under `"tui"` (R-TUI-2):
 //!
 //! ```json
-//! { "tui": { "screen": "auto", "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "help", "branch", "pr", "cost"] } }
+//! { "tui": { "screen": "auto", "contentWidth": "prose", "statusBar": true, "statusItems": ["model", "device", "tasks", "subagents", "background", "help", "branch", "pr", "cost"] } }
 //! ```
 //!
 //! - `screen` — `auto` (the default) is `fullscreen`, but `inline` inside
@@ -67,6 +67,8 @@ pub enum Item {
     Tasks,
     /// `[N subagents]` while subagents run.
     Subagents,
+    /// `[N background]` while background jobs or children run.
+    Background,
     /// `? help`, drawn last on the first row.
     Help,
     /// The branch checked out.
@@ -76,11 +78,12 @@ pub enum Item {
 }
 
 impl Item {
-    pub const ALL: [(&'static str, Item); 8] = [
+    pub const ALL: [(&'static str, Item); 9] = [
         ("model", Item::Model),
         ("device", Item::Device),
         ("tasks", Item::Tasks),
         ("subagents", Item::Subagents),
+        ("background", Item::Background),
         ("help", Item::Help),
         ("branch", Item::Branch),
         ("pr", Item::Pr),
@@ -397,7 +400,7 @@ mod tests {
     #[test]
     fn r_tui_2_the_status_bar_is_optional_and_its_items_configurable() {
         assert_eq!(from_config(&json!({})).0, Settings::default());
-        assert_eq!(Settings::default().status_items, [Item::Model, Item::Device, Item::Tasks, Item::Subagents, Item::Help, Item::Branch, Item::Pr, Item::Cost], "the template's order");
+        assert_eq!(Settings::default().status_items, [Item::Model, Item::Device, Item::Tasks, Item::Subagents, Item::Background, Item::Help, Item::Branch, Item::Pr, Item::Cost], "the template's order");
         let (s, w) = from_config(&json!({"tui": {"statusBar": false}}));
         assert!(!s.status_bar && w.is_empty());
         let (s, w) = from_config(&json!({"tui": {"statusItems": ["cost", "model", "cost", "nope"]}}));

@@ -42,6 +42,8 @@ pub use search::{GlobInput, GrepInput};
 
 pub const READ: &str = "read";
 pub const BASH: &str = "bash";
+pub const BASH_OUTPUT: &str = "bash_output";
+pub const KILL_BASH: &str = "kill_bash";
 
 /// A read returns at most this many lines unless asked for fewer.
 const READ_DEFAULT_LINES: usize = 2000;
@@ -54,7 +56,7 @@ const BASH_DEFAULT_TIMEOUT: Duration = Duration::from_secs(120);
 const BASH_MAX_TIMEOUT: Duration = Duration::from_secs(600);
 /// Output beyond this is cut from the middle: the start says what ran, the
 /// end says how it finished.
-const BASH_MAX_OUTPUT: usize = 30_000;
+pub(crate) const BASH_MAX_OUTPUT: usize = 30_000;
 
 /// Read a file from the filesystem.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -79,6 +81,16 @@ pub struct BashInput {
     /// Milliseconds before the command is killed: 120000 by default, at most 600000.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// Run as a background job, answered at once with its id.
+    #[serde(default)]
+    pub run_in_background: Option<bool>,
+}
+
+/// A background job, by id.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct JobInput {
+    pub id: String,
 }
 
 pub const WRITE: &str = "write";
@@ -143,6 +155,8 @@ pub fn definitions(ts: &Toolset) -> Vec<ToolDefinition> {
             "Run a shell command with `bash -c` in the working directory; returns its combined stdout and stderr, then the exit code. Output beyond 30000 bytes is cut from the middle.",
             input_schema::<BashInput>(),
         ),
+        function(BASH_OUTPUT, "A background job's new output, and whether it runs.", input_schema::<JobInput>()),
+        function(KILL_BASH, "Stop a background job.", input_schema::<JobInput>()),
         function(
             GREP,
             "Search file contents with a regular expression. Returns matching lines as `path:line:text`, 200 at most. Skips binary files and what .gitignore excludes. Prefer this to running grep or rg through bash.",
@@ -233,7 +247,22 @@ pub struct ToolEnv<'a> {
     /// What bash's commands get in their environment beyond krowk's own,
     /// passed into the sandbox too: a krowk worktree's `KROWK_PORT_BASE`.
     pub env: &'a [(String, String)],
+    /// The session's background jobs, and its id: none, and bash runs in
+    /// the foreground only.
+    pub jobs: Option<(&'a crate::jobs::Jobs, &'a str)>,
+    /// The turn's steering: a foreground bash call asked for `MOVE_AFTER`
+    /// ago with the person's steer waiting is moved to the background
+    /// (R-STEER-4). None, and it is waited for.
+    pub steers: Option<&'a crate::engine::Steers>,
 }
+
+/// How long after a foreground bash call is asked for a steer moves it to
+/// the background rather than wait for it (R-STEER-4).
+pub const MOVE_AFTER: Duration = Duration::from_secs(2);
+/// The same, once a call before it in the step was moved for the same
+/// steer: long enough that a command that is over at once (`ls`, `git
+/// status`) just answers.
+pub const MOVE_SOON: Duration = Duration::from_millis(200);
 
 /// Parses a call's input, or answers why it cannot.
 fn parse_input<T: for<'de> Deserialize<'de>>(name: &str, input: &Value) -> Result<T, (String, bool)> {
@@ -270,6 +299,13 @@ pub fn describe(name: &str, input: &Value, env: &ToolEnv<'_>) -> Result<Call, (S
         GREP => call(Access::Read(vec![parse_input::<GrepInput>(name, input)?.path.as_deref().map_or_else(|| env.cwd.to_path_buf(), at)])),
         GLOB => call(Access::Read(vec![parse_input::<GlobInput>(name, input)?.path.as_deref().map_or_else(|| env.cwd.to_path_buf(), at)])),
         BASH => call(Access::Bash(parse_input::<BashInput>(name, input)?.command)),
+        // A job the session started, read or stopped: judged under Claude
+        // Code's names for its background-shell tools, which no mode
+        // governs but a deny or ask rule on them does.
+        BASH_OUTPUT | KILL_BASH => {
+            parse_input::<JobInput>(name, input)?;
+            call(Access::Session)
+        }
         crate::evidence::PUBLISH => crate::evidence::call(env.cwd, input)?,
         other => return Err((format!("there is no tool named {other:?} — the tools are read, write, {}, bash, grep, glob, todo_write, publish, subagent and ask_user", env.edit.name()), true)),
     })
@@ -341,7 +377,12 @@ pub async fn execute(name: &str, input: &Value, env: &ToolEnv<'_>, scope: Scope)
             Err(e) => e,
         },
         BASH => match parse_input::<BashInput>(name, input) {
+            Ok(i) if i.run_in_background == Some(true) => background(&i, env, scope.sandbox.as_deref()).await,
             Ok(i) => bash(&i, env, scope.sandbox.as_deref()).await,
+            Err(e) => e,
+        },
+        BASH_OUTPUT | KILL_BASH => match parse_input::<JobInput>(name, input) {
+            Ok(i) => job(name, &i.id, env),
             Err(e) => e,
         },
         // krowk_push's rules keep it in the working directory and away from
@@ -853,12 +894,12 @@ fn read_file(path: &Path, start: usize, limit: usize, exact: bool) -> (String, b
 /// How long the output is still read once the shell has exited: long enough
 /// for what it wrote last, short enough that a process it left in the
 /// background — which holds the pipes open — does not hold the call.
-const BASH_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(250);
+pub(crate) const BASH_DRAIN_AFTER_EXIT: Duration = Duration::from_millis(250);
 
 /// A bounded capture of a stream: the first half of the budget kept whole,
 /// the last half as a ring, and a count of what fell in between — so a
 /// command that prints gigabytes costs 30 KB.
-struct Capture {
+pub(crate) struct Capture {
     head: Vec<u8>,
     tail: std::collections::VecDeque<u8>,
     dropped: u64,
@@ -866,11 +907,11 @@ struct Capture {
 }
 
 impl Capture {
-    fn new(max: usize) -> Capture {
+    pub(crate) fn new(max: usize) -> Capture {
         Capture { head: Vec::new(), tail: std::collections::VecDeque::new(), dropped: 0, half: max / 2 }
     }
 
-    fn push(&mut self, mut b: &[u8]) {
+    pub(crate) fn push(&mut self, mut b: &[u8]) {
         let room = self.half - self.head.len();
         if room > 0 {
             let n = room.min(b.len());
@@ -885,7 +926,33 @@ impl Capture {
         }
     }
 
-    fn render(&self) -> String {
+    /// Takes off the end the bytes of a character not yet whole, and
+    /// returns them. With nothing cut, head and tail are one run, and a
+    /// character may start in the one and end in the other.
+    pub(crate) fn split_partial(&mut self) -> Vec<u8> {
+        // The last three bytes are all a character's first byte can be back.
+        let mut end: Vec<u8> = match self.dropped {
+            0 => self.head.iter().chain(&self.tail).rev().take(3).copied().collect(),
+            _ => self.tail.iter().rev().take(3).copied().collect(),
+        };
+        end.reverse();
+        // Back from the end to the character's first byte: the length it
+        // says against the bytes there are.
+        let partial = (1..=end.len().min(3))
+            .find_map(|back| {
+                let b = end[end.len() - back];
+                (b & 0xC0 != 0x80).then(|| {
+                    let len = if b >= 0xF0 { 4 } else if b >= 0xE0 { 3 } else if b >= 0xC0 { 2 } else { 1 };
+                    if len > back { back } else { 0 }
+                })
+            })
+            .unwrap_or(0);
+        let mut out: Vec<u8> = (0..partial).filter_map(|_| self.tail.pop_back().or_else(|| self.head.pop())).collect();
+        out.reverse();
+        out
+    }
+
+    pub(crate) fn render(&self) -> String {
         let (a, b) = self.tail.as_slices();
         let tail: Vec<u8> = [a, b].concat();
         if self.dropped == 0 {
@@ -908,10 +975,10 @@ impl Capture {
 /// could be undone by it (a link planted again just after). On a timeout
 /// that is awaited; on an interrupt, where nothing awaits a drop, it runs
 /// on a thread of its own.
-struct GroupKill {
-    group: Option<u32>,
+pub struct GroupKill {
+    pub(crate) group: Option<u32>,
     init: Option<std::sync::mpsc::Receiver<Option<Pidfd>>>,
-    unfenced: Option<crate::sandbox::Unfenced>,
+    pub(crate) unfenced: Option<crate::sandbox::Unfenced>,
 }
 
 #[cfg(unix)]
@@ -930,7 +997,7 @@ impl GroupKill {
     /// Kills the group, at once: its leader is not reaped until the call's
     /// child is dropped, after this, so the pid cannot name another's.
     /// Returns whether it was armed, and disarms it.
-    fn kill_group(&mut self) -> bool {
+    pub(crate) fn kill_group(&mut self) -> bool {
         let Some(pid) = self.group.take() else { return false };
         // SAFETY: kill(2) on the group this call created; a group that
         // already exited is ESRCH, which is fine.
@@ -945,7 +1012,7 @@ impl GroupKill {
 
     /// Kills the sandbox's first process and waits until it has exited —
     /// when everything in its namespace has — then sweeps. Blocks.
-    fn settle(&mut self) {
+    pub(crate) fn settle(&mut self) -> Vec<PathBuf> {
         #[cfg(target_os = "linux")]
         if let Some(Ok(Some(init))) = self.init.take().map(|rx| rx.recv_timeout(SANDBOX_LEARN)) {
             use std::os::fd::AsRawFd;
@@ -957,7 +1024,7 @@ impl GroupKill {
                 libc::poll(&mut p, 1, SANDBOX_EXIT_MS);
             }
         }
-        drop(self.unfenced.take());
+        self.unfenced.take().map(|mut u| u.appeared()).unwrap_or_default()
     }
 }
 
@@ -965,7 +1032,7 @@ impl Drop for GroupKill {
     fn drop(&mut self) {
         if self.kill_group() {
             let mut rest = GroupKill { group: None, init: self.init.take(), unfenced: self.unfenced.take() };
-            std::thread::spawn(move || rest.settle());
+            std::thread::spawn(move || drop(rest.settle()));
         }
     }
 }
@@ -1028,10 +1095,28 @@ async fn build_slot(env: &ToolEnv<'_>, pool: &crate::slots::Pool) -> (Option<cra
     }
 }
 
-async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
-    use tokio::io::AsyncReadExt;
+/// A command started the way `bash` starts one: in the sandbox when the
+/// session has one, in its own process group, its stdout and stderr on one
+/// pipe, holding a build slot when it is a build. A foreground call reads
+/// it to its end; a background job (`crate::jobs`) is the same command,
+/// read by the session instead.
+pub struct Started {
+    pub(crate) child: tokio::process::Child,
+    /// The merged output (stdout only off unix, with `err` beside it).
+    pub(crate) out: tokio::process::ChildStdout,
+    pub(crate) err: Option<tokio::process::ChildStderr>,
+    /// Kills the group when dropped armed, and sweeps the sandbox once
+    /// what ran in it is gone.
+    pub(crate) group: GroupKill,
+    /// The build slot it holds until it is done, and what the result says
+    /// of it.
+    pub(crate) slot: Option<crate::slots::Slot>,
+    pub(crate) slot_note: Option<String>,
+}
+
+/// Starts `command` as `bash` runs it, or says why it could not be.
+pub async fn start(command: &str, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> Result<Started, String> {
     let cwd = env.cwd;
-    let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
     // Inside the sandbox when the session has one, or not at all: a plan
     // this machine cannot enforce refuses the command (R-PERM-3). Laid out
     // as the workspace is now, so a repository or a hooks directory made
@@ -1039,7 +1124,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let current = sandbox.map(crate::sandbox::Plan::current);
     let sandbox = current.as_ref();
     if let Some(why) = sandbox.and_then(|p| p.refused.as_ref()) {
-        return (format!("the command was not run: {why}"), true);
+        return Err(format!("the command was not run: {why}"));
     }
     // Where bubblewrap says which process is the sandbox's first.
     #[cfg(target_os = "linux")]
@@ -1047,16 +1132,16 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // A build or a test run: its share of the cores, and a build slot
     // before it starts, held until it is done — dropped after the group
     // is killed, since it was taken first.
-    let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(&i.command));
+    let builds = env.builds.filter(|b| b.pool.is_some() && crate::builds::heavy(command));
     let jobs: Vec<(String, String)> = env.env.iter().cloned().chain(builds.and_then(|b| b.jobs.clone()).map(|n| ("CARGO_BUILD_JOBS".to_string(), n))).collect();
-    let (_slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
+    let (slot, slot_note) = match builds.and_then(|b| b.pool.as_ref()) {
         Some(pool) => build_slot(env, pool).await,
         None => (None, None),
     };
-    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, &i.command, &jobs)) {
+    let mut cmd = match sandbox.filter(|p| p.kernel).map(|p| crate::sandbox::bash(p, command, &jobs)) {
         None => {
             let mut c = tokio::process::Command::new("bash");
-            c.arg("-c").arg(&i.command).envs(jobs.iter().cloned());
+            c.arg("-c").arg(command).envs(jobs.iter().cloned());
             c
         }
         Some(Ok((program, args))) => {
@@ -1070,7 +1155,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                     c.args(["--info-fd", "3"]);
                     fd
                 }
-                Err(e) => return (format!("bash could not be started: {e}"), true),
+                Err(e) => return Err(format!("bash could not be started: {e}")),
             };
             // bubblewrap's own environment is the allowlist too: its
             // process inside the namespace is pid 1, whose environ the
@@ -1095,7 +1180,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             }
             c
         }
-        Some(Err(fix)) => return (format!("the command was not run: {fix}"), true),
+        Some(Err(fix)) => return Err(format!("the command was not run: {fix}")),
     };
     let unfenced = sandbox.filter(|p| p.kernel).map(crate::sandbox::Unfenced::before);
     cmd.current_dir(cwd);
@@ -1109,7 +1194,7 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
             cmd.stdout(w1).stderr(w2);
             r
         }
-        Err(e) => return (format!("bash could not be started: {e}"), true),
+        Err(e) => return Err(format!("bash could not be started: {e}")),
     };
     #[cfg(not(unix))]
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
@@ -1118,10 +1203,8 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     // command started too, not just the shell.
     #[cfg(unix)]
     cmd.process_group(0);
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => return (format!("bash could not be started: {e}"), true),
-    };
+    #[allow(unused_mut)]
+    let mut child = cmd.spawn().map_err(|e| format!("bash could not be started: {e}"))?;
     // The command's copies of the write end go with it, so the pipe closes
     // when the shell and what it started are done.
     drop(cmd);
@@ -1132,18 +1215,81 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     });
     #[cfg(not(target_os = "linux"))]
     let init = None;
-    let mut group = GroupKill { group: child.id(), init, unfenced };
+    let group = GroupKill { group: child.id(), init, unfenced };
     #[cfg(unix)]
-    let (mut so, mut se): (_, Option<tokio::process::ChildStderr>) = {
+    let (out, err) = {
         let std_out = std::process::ChildStdout::from(std::os::fd::OwnedFd::from(merged));
-        match tokio::process::ChildStdout::from_std(std_out) {
-            Ok(so) => (so, None),
-            Err(e) => return (format!("bash's output could not be read: {e}"), true),
-        }
+        (tokio::process::ChildStdout::from_std(std_out).map_err(|e| format!("bash's output could not be read: {e}"))?, None)
     };
     #[cfg(not(unix))]
-    let (mut so, mut se) = (child.stdout.take().expect("piped"), child.stderr.take());
+    let (out, err) = (child.stdout.take().expect("piped"), child.stderr.take());
+    Ok(Started { child, out, err, group, slot, slot_note })
+}
+
+/// Where background jobs cannot run: a host that keeps none.
+const NO_JOBS: &str = "background jobs are not available in this session";
+
+/// `bash_output` or `kill_bash` on the session's job `id`.
+fn job(name: &str, id: &str, env: &ToolEnv<'_>) -> (String, bool) {
+    let Some((jobs, session)) = env.jobs else { return (NO_JOBS.into(), true) };
+    if name == KILL_BASH {
+        return match jobs.kill(session, id) {
+            Ok(None) => (format!("stopped background job {id}"), false),
+            Ok(Some(crate::jobs::Status::Running)) => (format!("background job {id} is already being stopped"), false),
+            Ok(Some(status)) => (format!("background job {id} had already ended: {status}"), false),
+            Err(e) => (e, true),
+        };
+    }
+    match jobs.read(session, id) {
+        Ok((text, status)) if text.is_empty() => (format!("(no new output)\n{status}"), false),
+        Ok((text, status)) => (format!("{}\n{status}", text.trim_end_matches('\n')), false),
+        Err(e) => (e, true),
+    }
+}
+
+/// `bash` with `run_in_background`: the command started as a job of the
+/// session (R-STEER-2), answered at once. A job has no timeout.
+async fn background(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
+    let Some((jobs, session)) = env.jobs else { return (NO_JOBS.into(), true) };
+    if let Err(e) = jobs.admit(session) {
+        return (e, true);
+    }
+    let started = match start(&i.command, env, sandbox).await {
+        Ok(s) => s,
+        Err(e) => return (e, true),
+    };
+    match jobs.start(session, started) {
+        Ok(id) => (format!("started background job {id}"), false),
+        Err(e) => (e, true),
+    }
+}
+
+async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
+    use tokio::io::AsyncReadExt;
+    let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
+    // What a steer's `MOVE_AFTER` counts from: the call, not the command,
+    // so one that waited for a build slot is moved as soon as it starts.
+    let asked = tokio::time::Instant::now();
+    let mut started = match start(&i.command, env, sandbox).await {
+        Ok(s) => s,
+        Err(e) => return (e, true),
+    };
+    // Bound first, so it is let go of last: after the group is killed.
+    let _slot = started.slot.take();
+    let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
+    // A steer moves it to the background once it was asked for
+    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs; after
+    // `MOVE_SOON` when a call before it in the step was moved for the same
+    // steer.
+    let movable = env.jobs.zip(env.steers);
+    let moving = async {
+        let Some((_, steers)) = movable else { return std::future::pending().await };
+        tokio::time::sleep_until(asked + if steers.has_moved() { MOVE_SOON } else { MOVE_AFTER }).await;
+        steers.steered().await;
+    };
+    tokio::pin!(moving);
+    let mut moved = false;
     let run = async {
         let (mut b1, mut b2) = ([0u8; 8192], [0u8; 8192]);
         let (mut so_open, mut se_open) = (true, se.is_some());
@@ -1184,11 +1330,28 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                     held_open = true;
                     break;
                 }
+                _ = &mut moving, if status.is_none() => {
+                    moved = true;
+                    break;
+                }
             }
         }
         (status.and_then(|s| s.ok()).and_then(|s| s.code()), held_open)
     };
-    match tokio::time::timeout(timeout, run).await {
+    let ran = tokio::time::timeout(timeout, run).await;
+    if moved && let Some(((jobs, session), steers)) = env.jobs.zip(env.steers) {
+        steers.moved_one();
+        // A character the command is part way through goes to the job,
+        // unread, rather than half into the answer.
+        let unread = cap.split_partial();
+        let shown = cap.render();
+        let note = slot_note.as_ref().map(|n| format!("\n{n}")).unwrap_or_default();
+        let started = Started { child, out: so, err: se, group, slot: _slot, slot_note };
+        let id = jobs.adopt(session, started, shown.clone().into_bytes(), unread);
+        let so_far = if shown.is_empty() { String::new() } else { format!("{}\n", shown.trim_end_matches('\n')) };
+        return (format!("{so_far}moved to background as job {id} because the person sent a message{note}"), false);
+    }
+    match ran {
         Ok((code, held_open)) => {
             // Finished: what it left in the background is its business —
             // outside the sandbox; inside it, bubblewrap's exit means its
@@ -1239,11 +1402,40 @@ pub(crate) mod tests {
         Toolset { preset: crate::toolset::by_name(name).unwrap(), custom_tools }
     }
 
+    /// R-STEER-4: a call moved part way through a character shows only
+    /// whole ones; the rest is the job's to read.
+    #[test]
+    fn r_steer_4_a_capture_gives_up_the_start_of_a_character_it_has_not_finished() {
+        let split = |bytes: &[u8]| {
+            let mut c = Capture::new(BASH_MAX_OUTPUT);
+            c.push(bytes);
+            let partial = c.split_partial();
+            (c.render(), partial)
+        };
+        assert_eq!(split("ab→".as_bytes()), ("ab→".to_string(), Vec::new()), "whole");
+        assert_eq!(split(&"ab→".as_bytes()[..4]), ("ab".to_string(), "→".as_bytes()[..2].to_vec()));
+        assert_eq!(split(&"é".as_bytes()[..1]), (String::new(), vec![0xC3]));
+        assert_eq!(split(b"plain\n"), ("plain\n".to_string(), Vec::new()));
+    }
+
+    /// R-STEER-4: a character split where the kept head gives way to the
+    /// tail, with nothing cut between them, is given up whole too.
+    #[test]
+    fn r_steer_4_a_character_across_the_head_and_the_tail_is_given_up_whole() {
+        let mut c = Capture::new(8);
+        // "abc" and the arrow's first byte fill the head; its second is the tail's.
+        c.push(&"abc→".as_bytes()[..5]);
+        assert_eq!((c.split_partial(), c.render()), ("→".as_bytes()[..2].to_vec(), "abc".to_string()));
+        let mut c = Capture::new(8);
+        c.push("abc→".as_bytes());
+        assert_eq!((c.split_partial(), c.render()), (Vec::new(), "abc→".to_string()), "whole");
+    }
+
     #[test]
     fn r_tool_1_the_core_tools_are_derived_object_schemas_in_a_fixed_order() {
         for (preset, edit) in [("claude", STR_REPLACE), ("gpt", APPLY_PATCH), ("grok", SEARCH_REPLACE)] {
             let defs = definitions(&toolset(preset, false));
-            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT, crate::ask::ASK_USER], "{preset}");
+            assert_eq!(defs.iter().map(|d| d.name.as_str()).collect::<Vec<_>>(), [READ, WRITE, edit, BASH, BASH_OUTPUT, KILL_BASH, GREP, GLOB, crate::todo::TODO_WRITE, crate::evidence::PUBLISH, crate::subagent::SUBAGENT, crate::ask::ASK_USER], "{preset}");
             assert!(defs.iter().all(|d| d.input_schema["type"] == "object" && d.grammar.is_none()), "function tools everywhere without custom tools");
             assert_eq!(definitions(&toolset(preset, false)), defs, "deterministic: the definitions are part of the cached prefix");
         }
@@ -1253,10 +1445,12 @@ pub(crate) mod tests {
         assert!(defs[3].input_schema["properties"]["timeout_ms"].is_object());
         assert_eq!(definitions(&toolset("grok", false))[2].input_schema["required"], json!(["file_path", "old_string", "new_string"]));
         assert_eq!(definitions(&toolset("gpt", false))[2].input_schema["required"], json!(["input"]));
-        assert_eq!(defs[6].input_schema["required"], json!(["todos"]), "todo_write takes the whole list");
-        assert_eq!(defs[7].input_schema["required"], json!(["files"]), "publish takes the files krowk_push takes");
-        assert_eq!(defs[8].input_schema["required"], json!(["description", "prompt"]));
-        assert_eq!(defs[9].input_schema["required"], json!(["questions"]), "ask_user takes Claude Code's AskUserQuestion input");
+        assert_eq!(defs[4].input_schema["required"], json!(["id"]), "bash_output takes a job's id");
+        assert_eq!(defs[5].input_schema["required"], json!(["id"]), "kill_bash too");
+        assert_eq!(defs[8].input_schema["required"], json!(["todos"]), "todo_write takes the whole list");
+        assert_eq!(defs[9].input_schema["required"], json!(["files"]), "publish takes the files krowk_push takes");
+        assert_eq!(defs[10].input_schema["required"], json!(["description", "prompt"]));
+        assert_eq!(defs[11].input_schema["required"], json!(["questions"]), "ask_user takes Claude Code's AskUserQuestion input");
     }
 
     #[test]
@@ -1286,7 +1480,7 @@ pub(crate) mod tests {
         symlink(&outside, cwd.join("dir-link")).unwrap();
         symlink(outside.join("not-yet.txt"), cwd.join("dangling")).unwrap();
         symlink(cwd.join("a.txt"), cwd.join("inside-link")).unwrap();
-        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &cwd, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let refused = |r: (String, bool)| r.1 && r.0.contains("outside the working directory") && r.0.contains("bypassPermissions");
         let abs = outside.join("new.txt").display().to_string();
         for path in ["../outside/new.txt", abs.as_str(), "dir-link/new.txt", "dangling", "file-link", "sub/../../outside/x", "new/../../x"] {
@@ -1358,7 +1552,7 @@ pub(crate) mod tests {
         let marker = d.join("fsmonitor-ran");
         let config = std::fs::read_to_string(d.join(".git/config")).unwrap();
         std::fs::write(d.join(".git/config"), format!("{config}[core]\n\tfsmonitor = \"touch '{}'; false\"\n", marker.display())).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         assert_eq!(run(GREP, &json!({"pattern": "needle"}), &env).await, ("a.txt:1:needle\n".into(), false));
         assert_eq!(run(GLOB, &json!({"pattern": "*.txt"}), &env).await, ("a.txt\n".into(), false));
         assert!(!marker.exists(), "the repository's fsmonitor ran");
@@ -1408,7 +1602,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_back_3_codex_config_and_the_instances_home_are_kept_like_git() {
         let d = dir("codex-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let fenced = |r: (String, bool), dir: &str| r.1 && r.0.contains(&format!("inside a {dir} directory"));
         assert!(fenced(run(WRITE, &json!({"path": ".codex/config.toml", "content": "x"}), &env).await, ".codex"));
         assert!(fenced(run(WRITE, &json!({"path": "sub/.Codex/rules/x.rules", "content": "x"}), &env).await, ".codex"), "any component, any case");
@@ -1444,7 +1638,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn r_sub_5_krowk_agent_definitions_are_kept_like_git() {
         let d = dir("krowk-guard");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::AcceptEdits, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         for path in [".krowk/agents/evil.md", ".KROWK/agents/evil.md", "sub/.krowk./agents/x.md", ".claude/agents/evil.md"] {
             let (out, refused) = run(WRITE, &json!({"path": path, "content": "---\nname: evil\n---\n"}), &env).await;
             assert!(refused && out.contains("inside a ."), "{path}: {out}");
@@ -1463,7 +1657,7 @@ pub(crate) mod tests {
         let f = d.join("locked.txt");
         std::fs::write(&f, "keep\n").unwrap();
         std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o444)).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         for (tool, input) in [
             (WRITE, json!({"path": "locked.txt", "content": "gone"})),
             (STR_REPLACE, json!({"path": "locked.txt", "old_str": "keep", "new_str": "gone"})),
@@ -1486,7 +1680,7 @@ pub(crate) mod tests {
     async fn only_the_turns_edit_tool_runs() {
         let d = dir("edit-gate");
         std::fs::write(d.join("a.txt"), "x\n").unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::ApplyPatch, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let (out, err) = run(STR_REPLACE, &json!({"path": "a.txt", "old_str": "x", "new_str": "y"}), &env).await;
         assert!(err && out.contains("edit files with apply_patch"), "{out}");
         assert_eq!(std::fs::read_to_string(d.join("a.txt")).unwrap(), "x\n");
@@ -1506,7 +1700,7 @@ pub(crate) mod tests {
         let d = dir("read");
         std::fs::write(d.join("a.txt"), "one\ntwo\nthree\n").unwrap();
         std::fs::write(d.join("bin"), [0u8, 1, 2]).unwrap();
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let (out, err) = run(READ, &json!({"path": "a.txt"}), &env).await;
         assert!(!err);
         assert_eq!(out, "     1\tone\n     2\ttwo\n     3\tthree\n");
@@ -1532,7 +1726,7 @@ pub(crate) mod tests {
         assert!(made.success());
         // Bypassed, so the devices outside the working directory are reached
         // at all: what is refused here is what they are, not where.
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         for path in [fifo.display().to_string(), "/dev/zero".into(), "/dev/stdin".into(), d.display().to_string()] {
             let r = tokio::time::timeout(Duration::from_secs(2), run(READ, &json!({ "path": path }), &env)).await.expect("read never blocks");
             assert!(r.1 && r.0.contains("not a regular file"), "{path}: {r:?}");
@@ -1547,9 +1741,9 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn bash_runs_only_when_permissions_are_bypassed_and_is_bounded() {
         let d = dir("bash");
-        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] }).await;
+        let refused = run(BASH, &json!({"command": "echo hi"}), &ToolEnv { cwd: &d, permission_mode: PermissionMode::Default, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None }).await;
         assert!(refused.1 && refused.0.contains("bypassPermissions"), "{refused:?}");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         assert_eq!(run(BASH, &json!({"command": "echo hi; echo oops >&2"}), &env).await, ("hi\noops\nexit code 0".into(), false));
         // One pipe: stdout and stderr arrive in the order they were written.
         let interleaved = "for i in 1 2 3 4 5 6 7 8; do echo out$i; echo err$i >&2; done";
@@ -1601,7 +1795,7 @@ pub(crate) mod tests {
         std::fs::write(d.join("Makefile"), "slow:\n\tsleep 2\n").unwrap();
         let b = builds(&d, 1);
         let (tx, mut rx) = tokio::sync::mpsc::channel(16);
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[], jobs: None, steers: None };
         let (first, second) = (ToolEnv { live: Some((&tx, "first")), ..env }, ToolEnv { live: Some((&tx, "second")), ..env });
         let started = std::time::Instant::now();
         let timed = async |env: &ToolEnv<'_>, command: &str| (run(BASH, &json!({ "command": command }), env).await, started.elapsed());
@@ -1635,13 +1829,69 @@ pub(crate) mod tests {
         let _ = std::fs::remove_dir_all(d);
     }
 
+    /// R-STEER-4: a call's two seconds count from when it was asked for, so
+    /// one steered while it waited for a build slot is moved as soon as it
+    /// starts, not two seconds after.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn r_steer_4_a_call_steered_while_it_waits_for_a_build_slot_is_moved_once_it_starts() {
+        let d = dir("build-slot-steer");
+        if !std::process::Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success()) {
+            eprintln!("make is not installed: skipping");
+            return;
+        }
+        let b = builds(&d, 1);
+        let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
+        let (jobs, steers) = (crate::jobs::Jobs::new(d.join("sessions")), crate::engine::Steers::default());
+        steers.push("stop, say hi".into()).unwrap();
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[], jobs: Some((&jobs, "s-1")), steers: Some(&steers) };
+        let started = std::time::Instant::now();
+        let freed = async {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            drop(held);
+        };
+        let input = json!({"command": "make --version >/dev/null && sleep 5"});
+        let ((out, err), ()) = tokio::join!(run(BASH, &input, &env), freed);
+        assert!(!err && out.contains("moved to background as job b1 because the person sent a message"), "{out}");
+        assert!(started.elapsed() < Duration::from_millis(4000), "moved as it started, at 2.5 s: {:?}", started.elapsed());
+        jobs.shutdown().await;
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// R-STEER-4: once a steer has moved one call, the next long call of the
+    /// step is moved after a moment, and one over at once just answers;
+    /// once the steer is taken, the next waits its two seconds again, and a
+    /// short one just finishes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn r_steer_4_after_a_move_the_steps_next_long_call_is_moved_in_a_moment() {
+        let d = dir("move-next");
+        let (jobs, steers) = (crate::jobs::Jobs::new(d.join("sessions")), crate::engine::Steers::default());
+        steers.push("stop, say hi".into()).unwrap();
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: Some((&jobs, "s-1")), steers: Some(&steers) };
+        let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
+        assert!(out.contains("as job b1"), "{out}");
+        let (out, err) = run(BASH, &json!({"command": "echo quick"}), &env).await;
+        assert_eq!((out.as_str(), err), ("quick\nexit code 0", false), "over at once: not a job");
+        let started = std::time::Instant::now();
+        let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
+        assert!(out.contains("as job b2") && started.elapsed() < Duration::from_secs(1), "in a moment: {out} {:?}", started.elapsed());
+        // The next step takes the steer; another arrives.
+        steers.take();
+        steers.push("and then this".into()).unwrap();
+        let (out, err) = run(BASH, &json!({"command": "sleep 1; echo done"}), &env).await;
+        assert_eq!((out.as_str(), err), ("done\nexit code 0", false));
+        jobs.shutdown().await;
+        let _ = std::fs::remove_dir_all(d);
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
     async fn an_interrupted_wait_for_a_build_slot_runs_nothing() {
         let d = dir("build-slot-interrupt");
         let b = builds(&d, 1);
         let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[], jobs: None, steers: None };
         let input = json!({"command": "touch ran && make --version"});
         let call = run(BASH, &input, &env);
         // Dropped mid-wait, as the loop drops a call when the turn is interrupted.
@@ -1656,7 +1906,7 @@ pub(crate) mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn an_interrupted_bash_call_kills_what_the_command_started() {
         let d = dir("bash-cancel");
-        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[] };
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
         let input = json!({"command": "sleep 30 & echo $! > grandchild; wait"});
         let call = run(BASH, &input, &env);
         // Dropped mid-run, as the loop drops a call when the turn is interrupted.

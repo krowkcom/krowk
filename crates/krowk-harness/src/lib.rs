@@ -80,6 +80,7 @@ pub mod host;
 pub mod http;
 pub mod images;
 pub mod instances;
+pub mod jobs;
 pub mod keys;
 pub mod log;
 pub mod mcp;

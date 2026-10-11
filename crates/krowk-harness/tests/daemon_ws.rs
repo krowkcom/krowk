@@ -655,11 +655,15 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
 /// R-LAG-9: no file I/O on the daemon's thread during a turn. Every log
 /// append, context record and log read is made to take 40 ms, as on a disk
 /// that stalls; the turn, a tool call and an answer, writes a dozen of them.
-/// One of those left on the thread shows on the lateness probe (5 ms ticks)
-/// as 40 ms or more; off it, the thread stays on time while the turn waits
-/// for its writes.
+/// One of those left on the thread is said by the thread that waited it out
+/// (`stalls_on_daemon_thread`), with where it was made. The lateness probe
+/// (5 ms ticks) would show it as 40 ms or more, but a loaded machine holds
+/// the thread up as long with no write on it (36 ms on Linux under load,
+/// 130 ms on a macOS runner), so the probe is held only to a backstop of
+/// six stalls: the thread waiting out a turn's writes made elsewhere (a
+/// `block_on`), one after another, which no stall on it would say.
 #[test]
-fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
+fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let m = mock::serve(|body, _| {
         let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
@@ -698,7 +702,13 @@ fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
         let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
         assert!(logged >= 6, "the turn logged its events: {logged}");
         assert!(took >= STALL * logged as u32, "each write waited out the stalling disk: {took:?} for {logged}");
-        assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn — a write on it? held {held:?}");
+        let on_thread = log::stalls_on_daemon_thread();
+        assert!(on_thread.is_empty(), "{} writes stalled the daemon's thread (held {late:?}: {held:?}), the first at:\n{}", on_thread.len(), on_thread[0]);
+        // And a backstop for the thread waiting on writes made elsewhere: six
+        // stalls end to end, past the 130 ms a loaded runner was seen to
+        // hold it with nothing on it, and short of a turn's dozen writes
+        // waited for one after another.
+        assert!(late < STALL * 6, "the daemon's thread was held {late:?} during the turn — waiting on its writes? held {held:?}");
     });
     drop(slow);
     daemon.join().unwrap().unwrap();

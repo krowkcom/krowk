@@ -524,6 +524,18 @@
             "model": {
               "$ref": "#/$defs/ModelRef"
             },
+            "ranBy": {
+              "description": "Who runs its loop (R-SUB-7): krowk's own, or a backend's agent.\nA log written before the field existed reads as `krowk`.",
+              "$ref": "#/$defs/RanBy",
+              "default": "krowk"
+            },
+            "backendId": {
+              "description": "The backend's own id for it: Claude Code's `task_id`, Codex's\nthread id. Absent for krowk's own.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "subagent.started"
@@ -730,6 +742,14 @@
                 "null"
               ],
               "format": "double"
+            },
+            "reportedTokens": {
+              "description": "What a backend counted a child it ran as having used (the\ntokens of the child's last `subagent.status`), in a backend\nchild's own log, whose `usage` is empty: its calls are metered\nas the parent's `subagent.response`. What a replay draws the\nchild's row with; never spend.",
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64"
             },
             "error": {
               "anyOf": [
@@ -1033,6 +1053,26 @@
       "enum": [
         "subscription",
         "apiKey"
+      ]
+    },
+    "RanBy": {
+      "description": "Who runs a subagent's loop (R-SUB-7).",
+      "oneOf": [
+        {
+          "description": "krowk's own loop, through its `subagent` tool.",
+          "type": "string",
+          "const": "krowk"
+        },
+        {
+          "description": "Claude Code's `Agent` tool.",
+          "type": "string",
+          "const": "claude"
+        },
+        {
+          "description": "A Codex child thread.",
+          "type": "string",
+          "const": "codex"
+        }
       ]
     },
     "Todo": {
@@ -1368,7 +1408,7 @@
           ]
         },
         {
-          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.",
+          "description": "The agents a backend runs by itself for the session (Claude Code's\n`Agent` tool, often in the background), whole, each time the list\nchanges — during a turn and between turns alike. Between turns it\nreaches a host's watchers (`Host::watch`) rather than a turn's\nstream. Empty when the last one has finished.\n\n**Deprecated** (R-SUB-7): a backend's agent is a child session of\nits own, named by the session's `subagent.started` — whose\n`backendId` is the `taskId` here — and followed by `subagent.status`.\nStill sent for clients older than those; a client that reads them\ncounts and shows the child, not this frame's entry for it.",
           "type": "object",
           "properties": {
             "sessionId": {
@@ -1389,6 +1429,84 @@
             "type",
             "sessionId",
             "agents"
+          ]
+        },
+        {
+          "description": "How many background jobs and background children the session has\nrunning (R-STEER-2, R-STEER-3), each time it changes: during a turn\nand between turns alike, to a host's watchers (`Host::watch`).",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "running": {
+              "type": "integer",
+              "format": "uint32",
+              "minimum": 0
+            },
+            "type": {
+              "type": "string",
+              "const": "background"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "running"
+          ]
+        },
+        {
+          "description": "A subagent's state, under its own session id (R-SUB-9): sent on\nevery change of it — a tool starts or ends, an approval or a\nquestion waits or is answered, a response completes, the child ends\n— and never per text delta. Timestamps, not durations, so every\nclient reads how long against its own clock.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": "string"
+            },
+            "status": {
+              "$ref": "#/$defs/ChildState"
+            },
+            "tool": {
+              "description": "The call it is in, or null.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/ChildTool"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "lastEventMs": {
+              "description": "When anything last arrived from it (ms since the epoch).",
+              "type": "integer",
+              "format": "int64"
+            },
+            "waiting": {
+              "description": "What it waits on the person for, or null.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Waiting"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "tokens": {
+              "description": "What it has used so far.",
+              "type": "integer",
+              "format": "int64"
+            },
+            "type": {
+              "type": "string",
+              "const": "subagent.status"
+            }
+          },
+          "required": [
+            "type",
+            "sessionId",
+            "status",
+            "lastEventMs",
+            "tokens"
           ]
         },
         {
@@ -1864,6 +1982,41 @@
         "description"
       ]
     },
+    "ChildState": {
+      "description": "Where a subagent stands, as its `subagent.status` says (R-SUB-9).",
+      "type": "string",
+      "enum": [
+        "running",
+        "done",
+        "interrupted",
+        "failed"
+      ]
+    },
+    "ChildTool": {
+      "description": "The tool call a subagent is in, and when it began (ms since the epoch).",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "startedMs": {
+          "type": "integer",
+          "format": "int64"
+        }
+      },
+      "required": [
+        "name",
+        "startedMs"
+      ]
+    },
+    "Waiting": {
+      "description": "What a subagent waits on the person for.",
+      "type": "string",
+      "enum": [
+        "approval",
+        "question"
+      ]
+    },
     "HostStatus": {
       "description": "How the host daemon is: `krowk host status`.",
       "type": "object",
@@ -1933,6 +2086,16 @@
           ],
           "format": "uint32",
           "minimum": 0
+        },
+        "backgroundSessions": {
+          "description": "Those sessions, by id: a client resuming one learns whether work of\nits — a backend's agent run in the background — still goes on here.\nNone from a daemon that does not name them (before 0.14).",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",

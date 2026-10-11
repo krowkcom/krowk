@@ -226,6 +226,23 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
 
     fn run_turn<'a>(&'a self, ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
         Box::pin(async move {
+            // A turn that ends any other way than completed stops the
+            // background children it leaves (R-STEER-3).
+            let spawned = ctx.subagents.clone();
+            let ended = self.turn(ctx, events).await;
+            if !matches!(ended, Ok(TurnEnd::Completed))
+                && let Some(s) = spawned
+            {
+                s.stop_background();
+            }
+            ended
+        })
+    }
+}
+
+impl<C: ModelClient> NativeEngine<C> {
+    fn turn(&self, ctx: TurnContext, events: Events) -> BoxFuture<'_, Result<TurnEnd, EngineError>> {
+        Box::pin(async move {
             let toolset = Toolset { preset: ctx.preset, custom_tools: self.client.custom_tools(&ctx.model.model) };
             // The instructions and the skills' names ride after krowk's own
             // lines: stable for as long as their files are, so the prefix
@@ -294,7 +311,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             // Response indexes continue from the history's, so a replayed
             // turn and this one never share an index.
             let first_response = req.history.iter().filter_map(|h| h.response).max().map_or(0, |m| m + 1);
-            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env };
+            let tool_env = tools::ToolEnv { cwd: &ctx.cwd, permission_mode: ctx.permission_mode, edit: ctx.preset.edit, evidence: ctx.evidence.as_ref().map(|e| (e, &events)), builds: Some(&ctx.builds), live: None, env: &ctx.env, jobs: ctx.jobs.as_deref().map(|j| (j, ctx.session_id.as_str())), steers: Some(&ctx.steers) };
             for (made, response) in (first_response..).take(MAX_STEPS).enumerate() {
                 if *ctx.cancel.borrow() {
                     return Ok(TurnEnd::Interrupted);
@@ -365,6 +382,12 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                             continue;
                         }
                     }
+                    // Background children hold the turn open (R-STEER-3):
+                    // their notes, or the person's steering, then the model
+                    // is called again.
+                    if wait_background(&ctx).await {
+                        return Ok(TurnEnd::Interrupted);
+                    }
                     // An answer that crossed a steer in flight is not the
                     // end: the model has not read it yet.
                     if ctx.steers.close_if_empty() {
@@ -399,7 +422,7 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
                         // stops itself, so its log ends with its turn.
                         let runs: Vec<BoxFuture<'_, (String, bool)>> =
                             batch.iter().zip(&ids).map(|((call_id, name, input), item_id)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, (call_id, item_id), name, input)) as BoxFuture<'_, (String, bool)>).collect();
-                        let out = join_all(runs).await;
+                        let out = fan_out(&ctx, runs).await;
                         interrupted = *ctx.cancel.borrow();
                         out
                     } else {
@@ -433,6 +456,43 @@ impl<C: ModelClient> Engine for NativeEngine<C> {
             ))
         })
     }
+}
+
+/// A batch of subagent calls, run together. A steer moves the children
+/// still running to the background once the batch has run `MOVE_AFTER`
+/// (R-STEER-4), or `MOVE_SOON` when a call before it in the step was
+/// moved for the same steer: their calls answer at once, and their
+/// summaries arrive as notes.
+async fn fan_out<'a>(ctx: &TurnContext, runs: Vec<BoxFuture<'a, (String, bool)>>) -> Vec<(String, bool)> {
+    let Some(s) = &ctx.subagents else { return join_all(runs).await };
+    s.batch_starts();
+    let all = join_all(runs);
+    tokio::pin!(all);
+    tokio::select! {
+        out = &mut all => out,
+        _ = async {
+            tokio::time::sleep(if ctx.steers.has_moved() { tools::MOVE_SOON } else { tools::MOVE_AFTER }).await;
+            ctx.steers.steered().await;
+        } => {
+            ctx.steers.moved_one();
+            s.move_running();
+            all.await
+        }
+    }
+}
+
+/// Waits while the turn's background children run and nothing is queued
+/// for the model; true when the turn was interrupted meanwhile.
+async fn wait_background(ctx: &TurnContext) -> bool {
+    let Some(s) = &ctx.subagents else { return false };
+    let mut cancel = ctx.cancel.clone();
+    while s.background() > 0 && ctx.steers.is_empty() {
+        tokio::select! {
+            _ = ctx.steers.arrival() => {}
+            _ = crate::engine::cancelled(&mut cancel) => return true,
+        }
+    }
+    false
 }
 
 /// How many times a `Stop` hook may send the model back to work in one turn.
@@ -767,8 +827,11 @@ mod tests {
     /// The ceiling for a toolset whose `apply_patch` is a freeform grammar
     /// tool: the JSON budget plus the grammar (about 125 tokens) with
     /// headroom. Ticket 10 measured 1,617 with a long working directory;
-    /// `ask_user` brings it to 1,766.
-    const FREEFORM_CONTEXT_TOKENS: u64 = 1825;
+    /// `ask_user` brings it to 1,766. Background jobs' `bash_output`,
+    /// `kill_bash` and `run_in_background` (R-STEER-2), about 115 more, bring
+    /// it to 1,918; `subagent`'s `run_in_background` (R-STEER-3), 27 more,
+    /// to 1,945.
+    const FREEFORM_CONTEXT_TOKENS: u64 = 1950;
 
     /// The ceiling with no MCP servers, which is what the bench measures:
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
@@ -776,7 +839,10 @@ mod tests {
     /// 1,500 it had before, so that headroom is MCP's alone. `ask_user`
     /// raised both by 175 (1,641 for gpt, its largest); the `subagent`
     /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
-    const BASE_CONTEXT_TOKENS: u64 = 1675;
+    /// Background jobs (R-STEER-2) add `bash_output` (51), `kill_bash` (44)
+    /// and `bash`'s `run_in_background` (about 20): 1,793 for gpt.
+    /// `subagent`'s `run_in_background` (R-STEER-3) is 27 more: 1,820.
+    const BASE_CONTEXT_TOKENS: u64 = 1825;
 
     fn freeform_or(ts: &Toolset) -> bool {
         tools::definitions(ts).iter().any(|d| d.grammar.is_some())
