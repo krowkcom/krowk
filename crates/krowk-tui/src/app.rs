@@ -5774,7 +5774,7 @@ mod tests {
         let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
         let model = ModelRef { instance: "claude".into(), model: "haiku".into() };
         for (ran_by, how) in [(RanBy::Claude, "interrupted after 12s"), (RanBy::Krowk, "failed after 12s")] {
-            let evs = vec![
+            let evs = [
                 at(0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }),
                 at(1000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i1".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "sleep 120"}) } }),
                 at(1001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: None, model: model.clone(), ran_by, backend_id: None }),
