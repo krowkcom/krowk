@@ -2926,7 +2926,9 @@ impl App {
                 },
                 _ => "Working…".to_string(),
             };
-            let label_style = if t.want_interrupt { red() } else { look::accent() };
+            // The label in the terminal's own ink (white on a dark theme),
+            // the spinner alone in the accent.
+            let label_style = if t.want_interrupt { red() } else { Style::default() };
             let right = format!(" {} · `esc` to interrupt", look::duration(since));
             // A blank line above, unless there is one already: straight
             // under streaming text, the spinner read as part of it.
