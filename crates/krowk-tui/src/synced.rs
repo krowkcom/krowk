@@ -450,7 +450,7 @@ mod tests {
     }
 
     fn completed(id: &str) -> serde_json::Value {
-        ev(id, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None })
+        ev(id, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None })
     }
 
     fn turns(rx: &mut mpsc::UnboundedReceiver<Event>) -> Vec<(mpsc::Receiver<StreamLine>, super::Done)> {

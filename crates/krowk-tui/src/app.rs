@@ -247,6 +247,37 @@ struct Streaming {
     text: String,
 }
 
+/// How a child ended, as its own log's last line, its `turn.completed`,
+/// says (SV16): how, when, how long it took, and its tokens — its calls'
+/// usage, or for a backend's child, whose log holds none, the count its
+/// backend reported. What a replay draws its row with, as it was drawn
+/// live; the parent's answer to its call ended a parallel batch's children
+/// all at the batch's end.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChildEnd {
+    pub status: TurnStatus,
+    pub at_ms: i64,
+    pub took_ms: u64,
+    pub tokens: i64,
+    pub reason: Option<String>,
+}
+
+impl ChildEnd {
+    /// `ev`'s end, when it is one.
+    pub fn of(ev: &LogEvent) -> Option<ChildEnd> {
+        match &ev.body {
+            LogBody::TurnCompleted { status, usage, duration_ms, error, reported_tokens, .. } => Some(ChildEnd {
+                status: *status,
+                at_ms: ev.time_ms,
+                took_ms: *duration_ms,
+                tokens: usage.total().max(reported_tokens.unwrap_or(0)),
+                reason: error.as_ref().map(|e| e.message.clone()),
+            }),
+            _ => None,
+        }
+    }
+}
+
 /// A tool's output and reasoning under way are shown by their last line:
 /// only their last bytes are kept for a view that opens in the middle.
 const STREAMED_OUTPUT: usize = 4096;
@@ -297,6 +328,19 @@ impl Sub {
                 _ => self.started.elapsed(),
             });
         }
+        if self.ended == 0 {
+            self.ended = tick;
+        }
+    }
+
+    /// Its end as its own log says (`ChildEnd`), whatever was said or
+    /// presumed of it before: that is how it ended.
+    fn end_as(&mut self, e: &ChildEnd, tick: u64) {
+        self.status = Some(e.status);
+        self.took = Some(Duration::from_millis(e.took_ms));
+        self.tokens = self.tokens.max(e.tokens);
+        self.reason.clone_from(&e.reason);
+        self.presumed = false;
         if self.ended == 0 {
             self.ended = tick;
         }
@@ -910,11 +954,12 @@ pub struct App {
     child_order_running: usize,
     /// The time of the last event a replay read.
     replayed_ms: Option<i64>,
-    /// How a replayed session's backend children ended, read from their
-    /// own logs before the replay (`child_ends_logged`): a Codex child
-    /// answers no call of the parent's log, so the parent's end of turn
-    /// takes its end from here.
-    logged_ends: HashMap<String, (TurnStatus, i64, Option<String>)>,
+    /// How a replayed session's children ended, read from their own logs
+    /// before the replay (`child_ends_logged`): a child's row is drawn as
+    /// it ended, not as the parent's log answered its call — and a Codex
+    /// child answers no call of the parent's log, so the parent's end of
+    /// turn takes its end from here.
+    logged_ends: HashMap<String, ChildEnd>,
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
     /// as it last listed them: counted and listed, never driven from here.
     backend_agents: Vec<BackendAgent>,
@@ -1990,7 +2035,8 @@ impl App {
                     s.tokens += usage.total();
                     s.calls += 1;
                 }
-                LogBody::TurnCompleted { status, duration_ms, error, .. } => {
+                LogBody::TurnCompleted { status, duration_ms, error, reported_tokens, .. } => {
+                    s.tokens = s.tokens.max(reported_tokens.unwrap_or(0));
                     s.reason = error.as_ref().map(|e| e.message.clone());
                     s.status = Some(*status);
                     s.took = Some(Duration::from_millis(*duration_ms));
@@ -2050,11 +2096,16 @@ impl App {
     /// A child's end, where its own lines did not say it (a replayed log
     /// holds none of them): how, and how long it took — from the log's
     /// times when it has them, `at_ms` being when it ended.
+    /// Replayed, its own log's end is taken first (`logged_ends`).
     fn ended(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
         self.sub_clock += 1;
         let tick = self.sub_clock;
+        let own = self.logged_ends.remove(sid);
         if let Some(s) = self.child(sid) {
-            s.end(status, Some(at_ms), tick);
+            match own {
+                Some(e) => s.end_as(&e, tick),
+                None => s.end(status, Some(at_ms), tick),
+            }
         }
     }
 
@@ -2428,7 +2479,7 @@ impl App {
                 }
             }
             LogBody::TodosUpdated { todos, .. } => self.todos.clone_from(todos),
-            LogBody::TurnCompleted { status, usage, duration_ms, error, reported_cost_usd, .. } => {
+            LogBody::TurnCompleted { status, usage, duration_ms, error, reported_cost_usd, reported_tokens, .. } => {
                 self.turns += 1;
                 if !live {
                     self.settle_replayed(*reported_cost_usd);
@@ -2447,7 +2498,10 @@ impl App {
                     TurnStatus::Completed => {
                         let took = look::duration(Duration::from_millis(*duration_ms));
                         self.gap();
-                        self.push_wrapped("", "", &format!("Worked for {took} · {} tokens", tokens(usage.total())), dim(), dim());
+                        // A backend's child's calls are its parent's spend:
+                        // what its backend counted is its own.
+                        let used = usage.total().max(reported_tokens.unwrap_or(0));
+                        self.push_wrapped("", "", &format!("Worked for {took} · {} tokens", tokens(used)), dim(), dim());
                     }
                     TurnStatus::Interrupted => {
                         let took = look::duration(Duration::from_millis(*duration_ms));
@@ -2580,8 +2634,9 @@ impl App {
 
     /// Subagent `i`'s call answered, at `at_ms`: its line into scrollback,
     /// and it kept for the Agents overlay, which lists every child. Unless
-    /// it runs on, it has ended, as its result says when its own lines did
-    /// not (a replayed log holds none of them).
+    /// it runs on, it has ended: replayed, as its own log's end says when
+    /// that was read, else as its result says when its own lines did not
+    /// (a replayed log holds none of them).
     ///
     /// A backend's agent its call ran in the background (`backgrounded`)
     /// runs on too, until its own end comes as its child's lines do,
@@ -2606,7 +2661,12 @@ impl App {
                 (true, false) => TurnStatus::Failed,
             };
             self.sub_clock += 1;
-            s.end(how, Some(at_ms), self.sub_clock);
+            // Replayed, as it ended, which the answer may not say: a
+            // parallel batch's are answered together, at its end.
+            match self.logged_ends.remove(&s.session_id) {
+                Some(e) => s.end_as(&e, self.sub_clock),
+                None => s.end(how, Some(at_ms), self.sub_clock),
+            }
         }
         self.commit_sub(&s, output, is_error);
         self.past.push(s);
@@ -2638,15 +2698,19 @@ impl App {
         self.turns
     }
 
-    /// How the session's backend children ended, by session id, as their
-    /// own logs say: read before a replay, whose turn ends take them.
-    pub fn child_ends_logged(&mut self, ends: HashMap<String, (TurnStatus, i64, Option<String>)>) {
+    /// How the session's children ended, by session id, as their own logs
+    /// say: read before a replay, whose answers and turn ends take them.
+    pub fn child_ends_logged(&mut self, ends: HashMap<String, ChildEnd>) {
         self.logged_ends = ends;
     }
 
-    /// Child `sid` ended as its own log says, at `at_ms`.
-    pub fn child_logged_end(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
-        self.ended(sid, status, at_ms);
+    /// Child `sid` ended as its own log says.
+    pub fn child_logged_end(&mut self, sid: &str, end: &ChildEnd) {
+        self.sub_clock += 1;
+        let tick = self.sub_clock;
+        if let Some(s) = self.child(sid) {
+            s.end_as(end, tick);
+        }
         self.dirty = true;
     }
 
@@ -2660,14 +2724,11 @@ impl App {
             // A backend's child its own lines ended needs no result: a
             // Codex child answers no call of the parent's log — its spawn
             // returns at once, and it runs on to its own end (R-SUB-7).
-            // Replayed, that end is read from its own log.
-            if s.ran_by != RanBy::Krowk
-                && (s.status.is_none() || s.presumed)
-                && let Some((status, at, reason)) = self.logged_ends.remove(&s.session_id)
+            // Replayed, that end — any child's — is read from its own log.
+            if (s.status.is_none() || s.presumed)
+                && let Some(e) = self.logged_ends.remove(&s.session_id)
             {
-                (s.status, s.took, s.ended, s.presumed) = (None, None, 0, false);
-                s.end(status, Some(at), self.sub_clock);
-                s.reason = reason;
+                s.end_as(&e, self.sub_clock);
             }
             let own = (s.ran_by != RanBy::Krowk && !s.presumed).then_some(s.status).flatten();
             s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
@@ -4552,7 +4613,7 @@ mod tests {
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "s".into(), turn_id: "t".into(), item_id: "i".into(), item: ItemKind::AssistantText }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "Done.".into() } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: thinking("") }));
-        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert_eq!(text(&a.take_pending()), ["Done.", "", "Worked for 1.0s · 0 tokens"]);
 
         // Replayed, the same.
@@ -4593,7 +4654,7 @@ mod tests {
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\nmore\n".into(), is_error: false } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It is a CLI.".into() } }),
-            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None }),
+            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None, reported_tokens: None }),
         ];
         a.replay(&evs.iter().collect::<Vec<_>>());
         assert_eq!(text(&a.take_pending()), ["", "hi", "", "", "◆ Read README.md (2 lines)", "", "It is a CLI.", "", "Worked for 1.5s · 1.2k tokens"]);
@@ -4610,7 +4671,7 @@ mod tests {
             [
                 ev(LogBody::TurnStarted { turn_id: t.into(), model: ModelRef { instance: "claude".into(), model: model.into() }, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
                 ev(LogBody::ResponseCompleted { turn_id: t.into(), response_id: None, model: model.into(), usage: Usage { input_tokens: 10, ..Usage::default() }, stop_reason: None, item_ids: Vec::new() }),
-                ev(LogBody::TurnCompleted { turn_id: t.into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: reported }),
+                ev(LogBody::TurnCompleted { turn_id: t.into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: reported, reported_tokens: None }),
             ]
         };
         // Unpriced but reported; priced above what was reported; priced
@@ -5137,7 +5198,7 @@ mod tests {
         assert!(a.status_bar().contains("[3 subagents]"), "{}", a.status_bar());
         // A child that ended no longer hides its agent's line: the frame
         // drops it as the agent ends.
-        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None, reported_tokens: None }));
         a.on_line(&agents(vec![agent("t2", "sleeper"), agent("t3", "survey")]));
         assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
     }
@@ -5159,11 +5220,11 @@ mod tests {
         assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
         let rows = text(&a.view(Instant::now()).0);
         assert!(rows.iter().any(|r| r.contains("Agent Ada · explorer · running")) && rows.iter().any(|r| r.contains("Agent Turing · explorer · running")), "{rows:?}");
-        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
         // The other is no longer followed once the turn ends: its own end says why.
-        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: Some(stopped_following()), reported_cost_usd: None }));
-        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: Some(stopped_following()), reported_cost_usd: None, reported_tokens: None }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let done = a.past.iter().find(|s| s.session_id == "k1").unwrap();
         assert_eq!(done.status, Some(TurnStatus::Completed), "done as its own lines said");
         assert_eq!(a.past.iter().find(|s| s.session_id == "k2").unwrap().status, Some(TurnStatus::Interrupted));
@@ -5188,8 +5249,9 @@ mod tests {
         for (ms, child, what) in [(2, "k1", "Ada"), (3, "k2", "Turing")] {
             evs.push(at(ms, LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("call-{child}"), subagent_session_id: child.into(), description: what.into(), agent: None, model: model.clone(), ran_by: RanBy::Codex, backend_id: Some(format!("thread-{child}")) }));
         }
-        evs.push(at(9000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9000, error: None, reported_cost_usd: None }));
-        a.child_ends_logged(HashMap::from([("k1".to_string(), (TurnStatus::Completed, 6002, None)), ("k2".to_string(), (TurnStatus::Failed, 4003, Some("model refused".to_string())))]));
+        evs.push(at(9000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9000, error: None, reported_cost_usd: None, reported_tokens: None }));
+        let end = |status, at_ms, took_ms, reason: Option<&str>| ChildEnd { status, at_ms, took_ms, tokens: 0, reason: reason.map(String::from) };
+        a.child_ends_logged(HashMap::from([("k1".to_string(), end(TurnStatus::Completed, 6002, 6000, None)), ("k2".to_string(), end(TurnStatus::Failed, 4003, 4000, Some("model refused")))]));
         a.replay(&evs.iter().collect::<Vec<_>>());
         let of = |sid: &str| a.past.iter().find(|s| s.session_id == sid).map(|s| (s.status, s.took)).unwrap();
         assert_eq!(of("k1"), (Some(TurnStatus::Completed), Some(Duration::from_millis(6000))));
@@ -5210,8 +5272,8 @@ mod tests {
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i1".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "…"}) } }));
         a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: None, model, ran_by: RanBy::Claude, backend_id: Some("a1".into()) }));
         let why = ErrorInfo { code: "agent_ended".into(), message: "the turn that ran it ended before Claude Code said it finished".into(), http_status: None, resets_at_ms: None };
-        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 500, error: Some(why), reported_cost_usd: None }));
-        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 500, error: Some(why), reported_cost_usd: None, reported_tokens: None }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let all = text(&a.take_pending()).join("\n");
         assert!(all.contains("Agent sleeper · interrupted after") && all.contains("before Claude Code said it finished") && !all.contains("no result"), "{all}");
     }
@@ -5230,7 +5292,7 @@ mod tests {
             a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ic".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "survey", "prompt": "look around", "run_in_background": true}) } }), live);
             a.on_log(&ev(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "survey".into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some("a_bg_1".into()) }), live);
             a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ir".into(), item: Item::ToolResult { call_id: "c1".into(), output: "Async agent launched successfully.".into(), is_error: false } }), live);
-            a.on_log(&ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }), live);
+            a.on_log(&ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None, reported_tokens: None }), live);
         };
         let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
         a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
@@ -5241,7 +5303,7 @@ mod tests {
         // Between turns: its frames, then its end, as its child's.
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 5, waiting: None, tokens: 0 }));
         assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
-        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 2000, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 2000, error: None, reported_cost_usd: None, reported_tokens: None }));
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Done, tool: None, last_event_ms: 6, waiting: None, tokens: 0 }));
         assert!(!a.status_bar().contains("subagent"), "ended by its own end: {}", a.status_bar());
         assert!(a.child_running_since().is_none());
@@ -5249,8 +5311,9 @@ mod tests {
         let mut r = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
         launched(&mut r, false);
         assert_eq!(r.backend_children_running(), ["k1"]);
-        r.child_logged_end("k1", TurnStatus::Completed, 2000);
+        r.child_logged_end("k1", &ChildEnd { status: TurnStatus::Completed, at_ms: 2000, took_ms: 2000, tokens: 9000, reason: None });
         assert!(r.backend_children_running().is_empty() && r.child_running_since().is_none(), "ended as its log says");
+        assert!(r.children()[0].line(Instant::now(), false).ends_with("survey · general-purpose · done in 2.0s · 9.0k tokens"), "{}", r.children()[0].line(Instant::now(), false));
         // Replayed with no end in its log and nothing running it any more:
         // ended interrupted, not left running.
         let mut gone = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
@@ -5264,7 +5327,7 @@ mod tests {
         gone.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 7, waiting: None, tokens: 0 }));
         assert_eq!(gone.backend_children_running(), ["k1"], "running again");
         gone.end_backend_children();
-        gone.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 4000, error: None, reported_cost_usd: None }));
+        gone.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 4000, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert_eq!(gone.children()[0].status, Some(TurnStatus::Completed), "its own end, not the presumed one");
         assert_eq!(gone.children()[0].took, Some(Duration::from_millis(4000)));
     }
@@ -5289,7 +5352,7 @@ mod tests {
         a.on_line(&child_log("k1", LogBody::ItemCompleted { turn_id: "u".into(), item_id: "x".into(), item: Item::ToolCall { call_id: "r".into(), name: "grep".into(), input: serde_json::json!({"pattern": "fn test"}) } }));
         a.on_line(&child_log("k1", LogBody::ResponseCompleted { turn_id: "u".into(), response_id: None, model: "claude-haiku".into(), usage: Usage { input_tokens: 1500, output_tokens: 500, ..Usage::default() }, stop_reason: None, item_ids: vec![] }));
         a.on_line(&live(LiveEvent::Cost { session_id: "k1".into(), turn_id: "u".into(), cost_usd: Some(0.02), turn_cost_usd: Some(0.02), generated_tokens: 500 }));
-        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert!(a.take_pending().is_empty(), "nothing of a child's reaches the conversation");
         assert_eq!(a.status_bar(), "Claude X (anthropic) | [1 subagent] | ? help\n$0.00", "a child's cost frame is its line's, not the session's");
         let (rows, _) = a.view(Instant::now());
@@ -5396,7 +5459,7 @@ mod tests {
         let said = text(&a.take_pending()).join(" ");
         assert!(said.contains("finished") && said.contains("nothing of it is running"), "{said:?}");
         // Ended by its own turn, it moves to the finished, newest first.
-        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let rows = listed(&a);
         assert!(rows[0].contains("Agent read the docs · done in 30s") && rows[1].contains("map the store") && rows[2].contains("find the tests"), "{rows:?}");
     }
@@ -5577,7 +5640,7 @@ mod tests {
         started_three(&mut c, RanBy::Krowk);
         c.open_agents();
         c.open_child("k2", Ok(Vec::new()));
-        c.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
+        c.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let k3 = c.child_sibling(1);
         assert_eq!(k3.as_deref(), Some("k3"), "→ after it, as it was");
         c.open_child("k3", Ok(Vec::new()));
@@ -5630,7 +5693,7 @@ mod tests {
         // x again before its end: nothing sent, and said.
         assert_eq!(a.child_to_stop(), None);
         assert_eq!(rows(&mut a)[7], "⚠ already stopping — its end is on the way");
-        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 4_000, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 4_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert!(rows(&mut a)[0].contains("· interrupted after 4.0s"), "{:?}", rows(&mut a));
         // Ended: nothing to send, and the footer says so.
         assert_eq!(a.child_to_stop(), None);
@@ -5702,7 +5765,7 @@ mod tests {
         // The turn was interrupted with `k2`'s call out: it ended with it.
         let mut a = fresh();
         let mut evs = three_children();
-        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
+        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         a.replay(&evs.iter().collect::<Vec<_>>());
         let shown = text(&a.take_pending()).join("\n");
         assert!(shown.contains("◆ Agent find the tests · done in 9.0s") && shown.contains("◆ Agent map the store · interrupted after 17s"), "its lines in the conversation say so too: {shown}");
@@ -5739,7 +5802,7 @@ mod tests {
         evs.push(at(4000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i4".into(), item: Item::ToolCall { call_id: "c4".into(), name: "subagent".into(), input: serde_json::json!({"description": "review the store"}) } }));
         evs.push(at(4001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c4".into(), subagent_session_id: "k4".into(), description: "review the store".into(), agent: None, model: ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() }, ran_by: Default::default(), backend_id: None }));
         evs.push(at(4500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r4".into(), item: Item::ToolResult { call_id: "c4".into(), output: "started background agent k4".into(), is_error: false } }));
-        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None }));
+        evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         for (local, running) in [(false, true), (true, false)] {
             let mut a = fresh();
             a.replay(&evs.iter().collect::<Vec<_>>());
@@ -5779,6 +5842,48 @@ mod tests {
         }
     }
 
+    /// R-SUB-11 (SV16): replayed, a child is drawn as its own log ended —
+    /// how, how long it took, its tokens — not as its call was answered:
+    /// a native parallel batch's children are answered together at the
+    /// batch's end, and a Claude Code agent's tokens are its backend's
+    /// count, logged on its end. A child whose end was not read is drawn
+    /// from its answer, as before.
+    #[test]
+    fn r_sub_11_a_replayed_child_is_drawn_as_its_own_log_ended() {
+        let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        let mut evs = vec![at(0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None })];
+        let kids = [("c1", "k1", "sleeper", RanBy::Krowk), ("c2", "k2", "counter", RanBy::Krowk), ("c3", "k3", "reader", RanBy::Krowk), ("c4", "k4", "agent", RanBy::Claude), ("c5", "k5", "unread", RanBy::Krowk)];
+        for (i, (call, kid, what, ran_by)) in kids.into_iter().enumerate() {
+            let ms = 1000 + i as i64;
+            evs.push(at(ms, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{call}"), item: Item::ToolCall { call_id: call.into(), name: "subagent".into(), input: serde_json::json!({"description": what}) } }));
+            evs.push(at(ms + 100, LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: what.into(), agent: None, model: model.clone(), ran_by, backend_id: None }));
+        }
+        // The batch answered whole when its last child ended, 100 s in.
+        let answers = [("c1", "the subagent was interrupted", true), ("c2", "counted", false), ("c3", "read", false), ("c4", "[Request interrupted by user for tool use]", true), ("c5", "done", false)];
+        for (i, (call, output, is_error)) in answers.into_iter().enumerate() {
+            evs.push(at(101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{call}"), item: Item::ToolResult { call_id: call.into(), output: output.into(), is_error } }));
+        }
+        evs.push(at(102_000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 101_000, error: None, reported_cost_usd: None, reported_tokens: None }));
+        let end = |status, took_ms: u64, tokens| ChildEnd { status, at_ms: 1100 + took_ms as i64, took_ms, tokens, reason: None };
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.child_ends_logged(HashMap::from([
+            ("k1".to_string(), end(TurnStatus::Interrupted, 60_000, 60)),
+            ("k2".to_string(), end(TurnStatus::Completed, 95_000, 76)),
+            ("k3".to_string(), end(TurnStatus::Completed, 100_000, 76)),
+            ("k4".to_string(), end(TurnStatus::Interrupted, 62_000, 12_000)),
+        ]));
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        let shown = text(&a.take_pending()).join("\n");
+        for row in ["Agent sleeper · interrupted after 1m0s · 60 tokens", "Agent counter · done in 1m35s · 76 tokens", "Agent reader · done in 1m40s · 76 tokens", "Agent agent · interrupted after 1m2s · 12k tokens", "Agent unread · done in 1m39s"] {
+            assert!(shown.contains(row), "{row}: {shown}");
+        }
+        assert!(!shown.contains("unread · done in 1m39s ·"), "no tokens where none were read: {shown}");
+        a.open_agents();
+        let rows = listed(&a);
+        assert!(rows.iter().any(|r| r.contains("Agent sleeper · interrupted after 1m0s · 60 tokens")), "the overlay too: {rows:?}");
+    }
+
     /// R-SUB-11: the overlay's selection stays on its child as the list
     /// reorders, and `x` goes to that one or to none.
     #[test]
@@ -5791,7 +5896,7 @@ mod tests {
             a.on_line(&StreamLine::Log(ev));
         }
         assert_eq!(a.agent_selected_running().as_deref(), Some("k1"));
-        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 5, error: None, reported_cost_usd: None }));
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 5, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert_eq!(a.agent_to_interrupt(), None, "k1 ended and is still the one selected, now last");
         a.agent_move(-1);
         assert_eq!(a.agent_selected_running().as_deref(), Some("k3"), "the one above it");
@@ -5824,7 +5929,7 @@ mod tests {
         for ev in three_children().into_iter().take(3) {
             a.on_line(&StreamLine::Log(ev));
         }
-        a.on_line(&StreamLine::Log(LogEvent { id: "end".into(), parent_id: None, session_id: "s".into(), time_ms: 30_001, body: LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None } }));
+        a.on_line(&StreamLine::Log(LogEvent { id: "end".into(), parent_id: None, session_id: "s".into(), time_ms: 30_001, body: LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None, reported_tokens: None } }));
         a.end_turn();
         a.open_agents();
         assert!(listed(&a)[0].contains("Agent find the tests · interrupted after 29s"), "{:?}", listed(&a));
@@ -5997,7 +6102,7 @@ mod tests {
         a.settings = Settings { status_bar: true, status_items: vec![StatusItem::Model], content_width: ContentWidth::FullWidth, ..Settings::default() };
         let usage = Usage { input_tokens: 1000, output_tokens: 200, ..Usage::default() };
         let response = |model: &str| LogBody::ResponseCompleted { turn_id: "t".into(), response_id: None, model: model.into(), usage, stop_reason: None, item_ids: Vec::new() };
-        let done = LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage, duration_ms: 1, error: None, reported_cost_usd: None };
+        let done = LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage, duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None };
         let cost = |usd: f64| live(LiveEvent::Cost { session_id: "s".into(), turn_id: "t".into(), cost_usd: Some(usd), turn_cost_usd: Some(usd), generated_tokens: 1 });
         a.on_line(&log(switch_turn("anthropic", "claude-x")));
         a.on_line(&log(response("claude-x")));
@@ -6200,7 +6305,7 @@ mod tests {
         let m = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
         a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: m.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }));
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![Todo { content: "x".into(), status: TodoStatus::Pending }] }));
-        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 5, ..Usage::default() }, duration_ms: 1, error: None, reported_cost_usd: None }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 5, ..Usage::default() }, duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert!(a.session_id.is_some() && a.turns == 1 && !a.used.is_empty() && !a.todos.is_empty());
         a.forget_session();
         assert!(a.session_id.is_none() && a.turns == 0 && a.used.is_empty() && a.todos.is_empty() && a.instances.is_empty());
@@ -6360,7 +6465,7 @@ mod tests {
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "src/config.rs"}) } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "fn read()\n".into(), is_error: false } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It reads the file once at start, and a missing one is taken as empty:\n\n```rust\nlet text = std::fs::read_to_string(path).unwrap_or_default();\n```\n\n- defaults fill the rest\n- nothing is written back".into() } }),
-            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 900, ..Usage::default() }, duration_ms: 2500, error: None, reported_cost_usd: None }),
+            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 900, ..Usage::default() }, duration_ms: 2500, error: None, reported_cost_usd: None, reported_tokens: None }),
         ]
     }
 

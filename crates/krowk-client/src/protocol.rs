@@ -859,6 +859,13 @@ pub enum LogBody {
         /// priced the turn's calls at.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reported_cost_usd: Option<f64>,
+        /// What a backend counted a child it ran as having used (the
+        /// tokens of the child's last `subagent.status`), in a backend
+        /// child's own log, whose `usage` is empty: its calls are metered
+        /// as the parent's `subagent.response`. What a replay draws the
+        /// child's row with; never spend.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reported_tokens: Option<i64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
     },

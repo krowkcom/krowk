@@ -3251,8 +3251,9 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
 
 /// The backend children of session `id` whose end its replayed `branch`
 /// cannot say, each once: a Codex child, which answers no call of the
-/// session's log, and one whose call nothing in the branch answers. A
-/// child answered there, or started on a branch not replayed, is not read.
+/// session's log, and one whose call nothing in the branch answers: read
+/// whatever the bound on how many a resume reads. Not one answered there,
+/// or started on a branch not replayed.
 fn unanswered_backend_children(id: &str, branch: &[&krowk_harness::protocol::LogEvent]) -> Vec<String> {
     use krowk_harness::protocol::{Item, LogBody, RanBy};
     let answered: std::collections::HashSet<&str> = branch
@@ -3274,31 +3275,67 @@ fn unanswered_backend_children(id: &str, branch: &[&krowk_harness::protocol::Log
     kids
 }
 
+/// How many children of a resumed session have their own log's end read:
+/// the newest, whose rows the screen and the Agents overlay show first.
+/// Older ones are drawn as the session's log answered their calls.
+const CHILD_ENDS_READ: usize = 256;
+
+/// The children of session `id` whose ends a replay of `branch` reads,
+/// each once: every one it names, the newest CHILD_ENDS_READ of them when
+/// each is a file to open (`local`), and always those whose end the branch
+/// cannot say (`unanswered_backend_children`).
+fn children_to_read(id: &str, branch: &[&krowk_harness::protocol::LogEvent], local: bool) -> Vec<String> {
+    use krowk_harness::protocol::LogBody;
+    let mut seen = std::collections::HashSet::new();
+    let mut named: Vec<String> = Vec::new();
+    for e in branch.iter().filter(|e| e.session_id == id) {
+        if let LogBody::SubagentStarted { subagent_session_id: kid, .. } = &e.body
+            && seen.insert(kid.as_str())
+        {
+            named.push(kid.clone());
+        }
+    }
+    if local && named.len() > CHILD_ENDS_READ {
+        named.drain(..named.len() - CHILD_ENDS_READ);
+    }
+    let kept: std::collections::HashSet<String> = named.iter().cloned().collect();
+    named.extend(unanswered_backend_children(id, branch).into_iter().filter(|k| !kept.contains(k)));
+    named
+}
+
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
-    use krowk_harness::protocol::{LogBody, LogEvent};
+    use krowk_harness::protocol::LogEvent;
     let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
     let branch = log::branch(events, &head);
-    // A backend child's end is in its own log, not the session's: its last
-    // complete line, read once from the file's end — or, for a synced
-    // session, from its history, which holds its children's events too.
-    let mut read: std::collections::HashMap<String, Option<LogEvent>> = std::collections::HashMap::new();
-    let mut last_of = |kid: &str| -> Option<LogEvent> {
+    // A child's end is in its own log, not the session's: its last
+    // complete line, read once from the file's end, never the whole file
+    // (`child::last_event`) — or, for a synced session, from its history,
+    // which holds its children's events too.
+    let mut last: std::collections::HashMap<&str, &LogEvent> = std::collections::HashMap::new();
+    if sessions_dir.is_none() {
+        for e in events.iter().filter(|e| e.session_id != id) {
+            last.insert(&e.session_id, e);
+        }
+    }
+    let mut read: std::collections::HashMap<String, Option<app::ChildEnd>> = std::collections::HashMap::new();
+    let mut end_of = |kid: &str| -> Option<app::ChildEnd> {
         read.entry(kid.to_string())
             .or_insert_with(|| match sessions_dir {
-                Some(dir) => log::valid_id(kid).then(|| child::last_event(&dir.join(kid).join(log::EVENTS_FILE))).flatten(),
-                None => events.iter().rfind(|e| e.session_id == kid).cloned(),
+                Some(dir) => log::valid_id(kid).then(|| child::last_event(&dir.join(kid).join(log::EVENTS_FILE))).flatten().as_ref().and_then(app::ChildEnd::of),
+                None => last.get(kid).and_then(|e| app::ChildEnd::of(e)),
             })
             .clone()
     };
-    // One the replay's turn ends cannot end from the session's log — a
-    // Codex child, whose spawn returns at once — is ended from its own,
-    // read before the replay so its turn's end takes it.
+    // Read before the replay, so a child's row is drawn as it ended, not
+    // as its call was answered (SV16) — and one the replay's turn ends
+    // cannot end from the session's log, a Codex child whose spawn
+    // returns at once, is ended from its own.
     let mut ends = std::collections::HashMap::new();
-    for kid in unanswered_backend_children(id, &branch) {
-        if let Some(LogEvent { time_ms, body: LogBody::TurnCompleted { status, error, .. }, .. }) = last_of(&kid) {
-            ends.insert(kid, (status, time_ms, error.map(|e| e.message)));
+    for kid in children_to_read(id, &branch, sessions_dir.is_some()) {
+        if let Some(e) = end_of(&kid) {
+            ends.insert(kid, e);
         }
     }
     app.child_ends_logged(ends);
@@ -3306,8 +3343,8 @@ fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent],
     // A backend's agent run in the background, its call answered at once,
     // runs on past it: its end too is its own log's.
     for kid in app.backend_children_running() {
-        if let Some(LogEvent { time_ms, body: LogBody::TurnCompleted { status, .. }, .. }) = last_of(&kid) {
-            app.child_logged_end(&kid, status, time_ms);
+        if let Some(e) = end_of(&kid) {
+            app.child_logged_end(&kid, &e);
         }
     }
     // A turn logged on a name since renamed is on the new name.
@@ -3503,12 +3540,13 @@ fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), Engi
 
 #[cfg(test)]
 mod tests {
-    /// R-SUB-7: on resume only the backend children the replayed branch
-    /// cannot end are read — a Codex child, a Claude Code agent whose call
-    /// nothing answers — never one its `Agent` result answered, krowk's
-    /// own, or one on a branch not replayed.
+    /// R-SUB-7: the backend children the replayed branch cannot end, whose
+    /// ends a resume reads whatever its bound (`children_to_read`): a Codex
+    /// child, a Claude Code agent whose call nothing answers — never one
+    /// its `Agent` result answered, krowk's own, or one on a branch not
+    /// replayed.
     #[test]
-    fn r_sub_7_a_resume_reads_only_the_children_its_branch_cannot_end() {
+    fn r_sub_7_the_children_a_branch_cannot_end_are_found() {
         use krowk_harness::protocol::{Item, LogBody, LogEvent, ModelRef, RanBy};
         let model = ModelRef { instance: "x".into(), model: "y".into() };
         let ev = |id: &str, parent: Option<&str>, body: LogBody| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: "s".into(), time_ms: 0, body };
@@ -3525,6 +3563,83 @@ mod tests {
         ];
         let branch = krowk_harness::log::branch(&events, "e7");
         assert_eq!(super::unanswered_backend_children("s", &branch), ["codex-kid", "claude-unanswered"]);
+    }
+
+    /// R-SUB-11 (SV16): a resumed session and an attached client draw
+    /// each finished child with its own end — a native child's duration
+    /// and its calls' tokens, a Claude Code agent's tokens as its backend
+    /// counted them — read from the last line of its log, never the whole
+    /// of it, or from the synced history the client holds.
+    #[test]
+    fn r_sub_11_a_resumed_or_attached_session_reads_each_childs_own_end() {
+        use super::{App, Editor, Settings, log};
+        use krowk_harness::protocol::{ErrorInfo, Item, LogBody, LogEvent, ModelRef, RanBy, TurnStatus, Usage};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let ev = |sid: &str, n: i64, body: LogBody| LogEvent { id: format!("{sid}-{n}"), parent_id: None, session_id: sid.into(), time_ms: n, body };
+        let mut parent = vec![ev("s", 0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None })];
+        // Session ids as the host makes them: only those name a log.
+        let id = |n: u8| format!("01a12a49-9b97-7000-8d44-758e6f292dc{n}");
+        for (i, (kid, ran_by)) in [(id(1), RanBy::Krowk), (id(2), RanBy::Krowk), (id(3), RanBy::Claude)].into_iter().enumerate() {
+            let call = format!("c{i}");
+            parent.push(ev("s", 10 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{i}"), item: Item::ToolCall { call_id: call.clone(), name: "subagent".into(), input: serde_json::json!({}) } }));
+            parent.push(ev("s", 1000 + i as i64, LogBody::SubagentStarted { turn_id: "t".into(), call_id: call, subagent_session_id: kid, description: ["sleeper", "counter", "agent"][i].into(), agent: None, model: model.clone(), ran_by, backend_id: None }));
+        }
+        // Answered together, at the batch's end.
+        for (i, is_error) in [true, false, true].into_iter().enumerate() {
+            parent.push(ev("s", 101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{i}"), item: Item::ToolResult { call_id: format!("c{i}"), output: if is_error { "the subagent was interrupted".into() } else { "ok".into() }, is_error } }));
+        }
+        parent.push(ev("s", 102_000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 101_000, error: None, reported_cost_usd: None, reported_tokens: None }));
+        for i in 1..parent.len() {
+            parent[i].parent_id = Some(parent[i - 1].id.clone());
+        }
+        let used = Usage { input_tokens: 50, output_tokens: 10, ..Usage::default() };
+        let stopped = ErrorInfo { code: "agent_ended".into(), message: "stopped".into(), http_status: None, resets_at_ms: None };
+        let ends = [
+            ev(&id(1), 61_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: used, duration_ms: 60_000, error: None, reported_cost_usd: None, reported_tokens: None }),
+            ev(&id(2), 96_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: used, duration_ms: 95_000, error: None, reported_cost_usd: None, reported_tokens: None }),
+            ev(&id(3), 63_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 62_000, error: Some(stopped), reported_cost_usd: None, reported_tokens: Some(12_000) }),
+        ];
+        // Each child's log: much more than the window read, then its end.
+        let said = |sid: &str| ev(sid, 2000, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "o".into(), item: Item::user("x".repeat(40_000)) });
+        let dir = std::env::temp_dir().join(format!("krowk-child-ends-{}", std::process::id()));
+        for end in &ends {
+            let kid = &end.session_id;
+            std::fs::create_dir_all(dir.join(kid)).unwrap();
+            let lines: Vec<String> = (0..4).map(|_| serde_json::to_string(&said(kid)).unwrap()).chain([serde_json::to_string(end).unwrap()]).collect();
+            std::fs::write(dir.join(kid).join(log::EVENTS_FILE), lines.join("\n") + "\n").unwrap();
+        }
+        // An attached client's history holds its children's events too,
+        // before the parent's turn that ran them ends.
+        let (last, before) = parent.split_last().unwrap();
+        let history: Vec<LogEvent> = before.iter().cloned().chain(ends.iter().flat_map(|e| [said(&e.session_id), e.clone()])).chain([last.clone()]).collect();
+        let registry = krowk_harness::instances::Registry::resolve(&krowk_harness::instances::InstancesConfig::default(), &|_| String::new());
+        for (local, events) in [(true, &parent), (false, &history)] {
+            let mut app = App::new(Editor::new(None), 120, Settings::default(), None, None);
+            super::replay(&mut app, "s", events, &registry, local.then_some(dir.as_path()));
+            let shown: String = app.take_pending().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>() + "\n").collect();
+            for row in ["Agent sleeper · interrupted after 1m0s · 60 tokens", "Agent counter · done in 1m35s · 60 tokens", "Agent agent · interrupted after 1m2s · 12k tokens"] {
+                assert!(shown.contains(row), "local {local}, {row}: {shown}");
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// SV16: a resume reads the ends of the newest CHILD_ENDS_READ children
+    /// its branch names, each once, and always those it cannot end itself;
+    /// an attached client, whose history is in memory, reads every one.
+    #[test]
+    fn r_sub_11_a_resume_reads_a_bounded_number_of_child_ends() {
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef, RanBy};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let started = |n: usize, ran_by| LogEvent { id: format!("e{n}"), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("c{n}"), subagent_session_id: format!("k{n}"), description: String::new(), agent: None, model: model.clone(), ran_by, backend_id: None } };
+        let mut events = vec![started(0, RanBy::Codex)];
+        events.extend((1..=super::CHILD_ENDS_READ + 10).map(|n| started(n, RanBy::Krowk)));
+        events.push(started(5, RanBy::Krowk));
+        let branch: Vec<&LogEvent> = events.iter().collect();
+        let local = super::children_to_read("s", &branch, true);
+        assert_eq!(local.len(), super::CHILD_ENDS_READ + 1, "the newest, and the Codex child its branch cannot end");
+        assert_eq!((local[0].as_str(), local.last().map(String::as_str)), ("k11", Some("k0")));
+        assert_eq!(super::children_to_read("s", &branch, false).len(), super::CHILD_ENDS_READ + 11, "each once");
     }
 
     #[test]

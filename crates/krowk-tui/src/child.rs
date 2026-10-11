@@ -223,10 +223,16 @@ pub fn read_log(path: &std::path::Path) -> Result<Vec<LogEvent>, String> {
     Ok(out)
 }
 
+/// How much of a child's log's end is read for its last event, at most:
+/// a resume reads no whole child log (SV16), and an end — its
+/// `turn.completed` — is one short line.
+pub const END_WINDOW: u64 = 64 << 10;
+
 /// The last complete event of the log at `path`, read from its end: how a
-/// child ended, without reading the whole of it. A last line cut
-/// mid-append is not complete, and the one before it is taken. None when
-/// the log has no complete line, or that line is no event.
+/// child ended, without reading the whole of it — never more than its last
+/// `END_WINDOW` bytes. A last line cut mid-append is not complete, and the
+/// one before it is taken. None when the log has no complete line in that
+/// window, or that line is no event.
 pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
@@ -251,7 +257,10 @@ pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
             _ if from == 0 => return None,
             _ => {}
         }
-        window *= 4;
+        if window >= END_WINDOW {
+            return None;
+        }
+        window = (window * 4).min(END_WINDOW);
     }
 }
 
@@ -273,21 +282,28 @@ fn clip(text: &str, width: u16) -> String {
 #[cfg(test)]
 mod tests {
     /// R-SUB-7: a child's end is read off its log's last complete line,
-    /// however long the log and whatever half-written line follows it.
+    /// however long the log and whatever half-written line follows it —
+    /// never more than its last END_WINDOW bytes.
     #[test]
     fn r_sub_7_a_childs_last_event_is_read_from_its_logs_end() {
         let dir = std::env::temp_dir().join(format!("krowk-last-event-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("events.jsonl");
         let ev = |id: &str, body: LogBody| serde_json::to_string(&LogEvent { id: id.into(), parent_id: None, session_id: "k".into(), time_ms: 7, body }).unwrap();
-        let big = ev("big", LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: krowk_harness::protocol::Item::user("x".repeat(100_000)) });
-        let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: krowk_harness::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None });
-        std::fs::write(&path, format!("{big}\n{end}\n{{\"id\":\"half")).unwrap();
+        let said = |id: &str, n: usize| ev(id, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: krowk_harness::protocol::Item::user("x".repeat(n)) });
+        let (big, huge) = (said("big", 30_000), said("huge", 100_000));
+        let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: krowk_harness::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
+        std::fs::write(&path, format!("{huge}\n{end}\n{{\"id\":\"half")).unwrap();
         assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "the half-written line is not complete");
         std::fs::write(&path, format!("{end}\n{big}\n\n")).unwrap();
         assert_eq!(last_event(&path).map(|e| e.id), Some("big".into()), "a line longer than the first window");
+        std::fs::write(&path, format!("{end}\n{}", "y".repeat(30_000))).unwrap();
+        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "behind a half-written line longer than the first window");
+        // A resume reads no whole child log (SV16): past END_WINDOW, none.
+        std::fs::write(&path, format!("{end}\n{huge}\n")).unwrap();
+        assert!(last_event(&path).is_none(), "a last line longer than the bound is not read whole");
         std::fs::write(&path, format!("{end}\n{}", "y".repeat(100_000))).unwrap();
-        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "behind a half-written line longer than the window");
+        assert!(last_event(&path).is_none(), "nor the log behind a half-written line past it");
         std::fs::write(&path, "{\"id\":\"half").unwrap();
         assert!(last_event(&path).is_none());
         assert!(last_event(&dir.join("none")).is_none());

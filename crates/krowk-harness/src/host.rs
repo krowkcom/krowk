@@ -1515,7 +1515,7 @@ impl Shared {
         // The turn's cost is its subagents' too, as a backend's own
         // subagents' are part of its turn (R-SUB-4).
         let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
-        let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported };
+        let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported, reported_tokens: None };
         let next = w.finish(completed, status, &model, after.as_ref(), &mut plan.here, next).await?;
         // Off the daemon's thread, and not waited for: the result goes out
         // as soon as the turn has ended, and the daemon waits for the sync
@@ -1991,9 +1991,10 @@ async fn child_line(state: &tokio::sync::Mutex<BackendChildren>, task_id: &str, 
 
 /// Ends a backend's agent as it ended, in a turn or between turns: its
 /// one turn completed in its log — with no usage, its spend being the
-/// parent's — then what to send, written first: that line and its last
-/// frame, or, its log failing, a failed frame and what to say. Its hold
-/// goes with it.
+/// parent's, and the tokens its frames said, so a replay draws its row as
+/// it was drawn live — then what to send, written first: that line and
+/// its last frame, or, its log failing, a failed frame and what to say.
+/// Its hold goes with it.
 async fn end_child(mut c: OpenChild, status: ChildState, error: Option<String>) -> (Vec<StreamLine>, Option<String>) {
     let ended = match status {
         ChildState::Done => TurnStatus::Completed,
@@ -2001,7 +2002,7 @@ async fn end_child(mut c: OpenChild, status: ChildState, error: Option<String>) 
         ChildState::Running | ChildState::Failed => TurnStatus::Failed,
     };
     let error = error.map(|message| crate::protocol::ErrorInfo { code: "agent_ended".into(), message, http_status: None, resets_at_ms: None });
-    let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None };
+    let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None, reported_tokens: Some(c.watch.tokens()).filter(|t| *t > 0) };
     let out = match c.log.append_off(completed).await {
         Ok(ev) => (vec![StreamLine::Log(ev), StreamLine::Live(c.watch.frame(status))], None),
         Err(e) => (vec![StreamLine::Live(c.watch.frame(ChildState::Failed))], Some(lost_words(&c.log.session_id, &e))),
