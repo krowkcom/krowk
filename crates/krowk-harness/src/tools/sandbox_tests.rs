@@ -273,7 +273,11 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     // Asked until none runs, for up to three seconds: what the timeout
     // killed goes when a loaded machine gets to it, and one that outlived
     // it would still be there, its 7.31 seconds not up.
-    let alive = || std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().map(|o| o.status.success()).unwrap_or(false);
+    let alive = || {
+        let out = std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().expect("pgrep runs");
+        assert!(matches!(out.status.code(), Some(0 | 1)), "pgrep could not answer: {}", String::from_utf8_lossy(&out.stderr));
+        out.status.success()
+    };
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while alive() && std::time::Instant::now() < deadline {
         tokio::time::sleep(Duration::from_millis(50)).await;

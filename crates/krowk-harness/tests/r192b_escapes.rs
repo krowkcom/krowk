@@ -59,9 +59,15 @@ impl Tally {
 }
 
 /// Whether a process whose command line matches `pattern` (`pgrep -f`)
-/// runs now.
+/// runs now. A pgrep that could not answer fails the test, rather than
+/// reading as nothing running.
 fn running(pattern: &str) -> bool {
-    std::process::Command::new("pgrep").args(["-f", pattern]).output().map(|o| o.status.success()).unwrap_or(false)
+    let out = std::process::Command::new("pgrep").args(["-f", pattern]).output().expect("pgrep runs");
+    match out.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        _ => panic!("pgrep -f {pattern}: {}", String::from_utf8_lossy(&out.stderr)),
+    }
 }
 
 /// Whether one still runs after `within`. Asked until none does: what the
