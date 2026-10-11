@@ -930,10 +930,12 @@ impl Capture {
     /// returns them. With nothing cut, head and tail are one run, and a
     /// character may start in the one and end in the other.
     pub(crate) fn split_partial(&mut self) -> Vec<u8> {
-        let end: Vec<u8> = match self.dropped {
-            0 => self.head.iter().chain(&self.tail).copied().collect(),
-            _ => self.tail.iter().copied().collect(),
+        // The last three bytes are all a character's first byte can be back.
+        let mut end: Vec<u8> = match self.dropped {
+            0 => self.head.iter().chain(&self.tail).rev().take(3).copied().collect(),
+            _ => self.tail.iter().rev().take(3).copied().collect(),
         };
+        end.reverse();
         // Back from the end to the character's first byte: the length it
         // says against the bytes there are.
         let partial = (1..=end.len().min(3))
