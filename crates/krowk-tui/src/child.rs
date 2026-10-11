@@ -299,7 +299,9 @@ mod tests {
         let said = |id: &str, n: usize| ev(id, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: Item::user("x".repeat(n)) });
         let (big, huge) = (said("big", 30_000), said("huge", 100_000));
         let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
-        let switched = ev("switched", LogBody::ModelSwitched { turn_id: None, from: None, to: ModelRef { instance: "a".into(), model: "b".into() }, reason: SwitchReason::Requested, detail: None });
+        let model = ModelRef { instance: "a".into(), model: "b".into() };
+        let switched = ev("switched", LogBody::ModelSwitched { turn_id: None, from: None, to: model.clone(), reason: SwitchReason::Requested, detail: None });
+        let started = ev("started", LogBody::TurnStarted { turn_id: "v".into(), model, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None });
         let id = |path: &std::path::Path| last_end(path).map(|e| e.id);
         std::fs::write(&path, format!("{huge}\n{end}\n{{\"id\":\"half")).unwrap();
         assert_eq!(id(&path), Some("end".into()), "the half-written line is not complete");
@@ -309,6 +311,8 @@ mod tests {
         assert_eq!(id(&path), Some("end".into()), "behind a half-written line longer than the first window");
         std::fs::write(&path, format!("{end}\n{switched}\n")).unwrap();
         assert_eq!(id(&path), Some("end".into()), "behind a line that does not start it again");
+        std::fs::write(&path, format!("{end}\n{started}\n")).unwrap();
+        assert_eq!(id(&path), None, "a turn started after it: it runs again");
         // A resume reads no whole child log (SV16): past END_WINDOW, none.
         std::fs::write(&path, format!("{end}\n{huge}\n")).unwrap();
         assert_eq!(id(&path), None, "an end behind a line longer than the bound is not read");

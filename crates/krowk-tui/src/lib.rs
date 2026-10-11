@@ -3582,8 +3582,8 @@ mod tests {
     /// R-SUB-11 (SV16): a resumed session and an attached client draw
     /// each finished child with its own end — a native child's duration
     /// and its calls' tokens, a Claude Code agent's tokens as its backend
-    /// counted them — read from the last line of its log, never the whole
-    /// of it, or from the synced history the client holds.
+    /// counted them — read from its log's last `turn.completed`, never the
+    /// whole of it, or from the synced history the client holds.
     #[test]
     fn r_sub_11_a_resumed_or_attached_session_reads_each_childs_own_end() {
         use super::{App, Editor, Settings, log};

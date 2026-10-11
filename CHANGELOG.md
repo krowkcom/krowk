@@ -318,10 +318,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   after a minute read `interrupted after 1m40s`, and no row showed its
   tokens. Each row now reads what it read live: how the subagent ended,
   how long it took and its tokens, from the end of that subagent's own
-  log. A resume reads only the end of each (the newest 256, and any still
-  unfinished in the session's log), never a whole log. Claude Code and
-  Codex agents' tokens are kept on that line from now on, so sessions
-  recorded before this still show none for them.
+  log. A resume reads only the end of each (the newest 256, and the newest
+  256 still unfinished in the session's log), never a whole log. Claude
+  Code and Codex agents' tokens are kept on that line from now on, so
+  sessions recorded before this still show none for them.
 
 ## [0.13.0] - 2026-10-07
 

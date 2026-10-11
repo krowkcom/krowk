@@ -250,8 +250,8 @@ struct Streaming {
     text: String,
 }
 
-/// How a child ended, as its own log's last line, its `turn.completed`,
-/// says (SV16): how, when, how long it took, and its tokens — its calls'
+/// How a child ended, as its own log's last `turn.completed` says
+/// (SV16): how, when, how long it took, and its tokens — its calls'
 /// usage, or for a backend's child, whose log holds none, the count its
 /// backend reported. What a replay draws its row with, as it was drawn
 /// live; the parent's answer to its call ended a parallel batch's children
@@ -2037,10 +2037,14 @@ impl App {
         }
         match line {
             StreamLine::Log(ev) => match &ev.body {
-                LogBody::ResponseCompleted { usage, .. } => {
+                // Counted while it runs: one ended already holds its
+                // tokens — a replay took them from its end, and a daemon
+                // followed again sends a batch's children's lines again.
+                LogBody::ResponseCompleted { usage, .. } if s.status.is_none() => {
                     s.tokens += usage.total();
                     s.calls += 1;
                 }
+                LogBody::ResponseCompleted { .. } => {}
                 LogBody::TurnCompleted { status, duration_ms, error, reported_tokens, .. } => {
                     s.tokens = s.tokens.max(reported_tokens.unwrap_or(0));
                     s.reason = error.as_ref().map(|e| e.message.clone());
@@ -2742,6 +2746,7 @@ impl App {
     pub fn child_logged_end(&mut self, sid: &str, end: &ChildEnd) {
         self.sub_clock += 1;
         let tick = self.sub_clock;
+        self.logged_ends.remove(sid);
         if let Some(s) = self.child(sid) {
             s.end_as(end, tick);
         }
@@ -5940,6 +5945,11 @@ mod tests {
         a.child_logged_end("k2", &ChildEnd { status: TurnStatus::Completed, at_ms: 7002, took_ms: 5000, tokens: 300, reason: None });
         assert_eq!(a.children_unended(), ["k1", "k3"]);
         assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
+        let live: String = text(&a.view(Instant::now()).0).join("\n");
+        assert!(live.contains("Agent read the docs · done in 5.0s · 300 tokens"), "{live}");
+        // A daemon followed again sends its lines again: counted once.
+        a.on_line(&child_log("k2", LogBody::ResponseCompleted { turn_id: "u".into(), response_id: None, model: "m".into(), usage: Usage { input_tokens: 300, ..Usage::default() }, stop_reason: None, item_ids: vec![] }));
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 300, ..Usage::default() }, duration_ms: 5000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let live: String = text(&a.view(Instant::now()).0).join("\n");
         assert!(live.contains("Agent read the docs · done in 5.0s · 300 tokens"), "{live}");
         a.end_replayed_children(true);
