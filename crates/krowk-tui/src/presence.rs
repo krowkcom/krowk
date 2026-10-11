@@ -5,12 +5,13 @@
 //! coding agents, which sets `HERDR_PANE_ID`), the pane's agent state, so
 //! herdr lists krowk as an agent with its status and notifies on it.
 //! Beside the title, in the same write, the same state as the terminal's
-//! root record for krowk (OSC 7501, `osc7501`): what a terminal or an inbox
-//! that keeps one reads instead of the title's glyphs, and one thing they
-//! don't say: how the last turn ended, done or error, until the next key.
+//! root record for krowk (OSC 7501, `osc7501`), and a record of its own for
+//! each subagent of the turn: what a terminal or an inbox that keeps them
+//! reads instead of the title's glyphs, and one thing they don't say: how
+//! the last turn ended, done or error, until the next key.
 
 use crate::osc7501;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -75,10 +76,43 @@ pub struct Told {
     pub report: String,
 }
 
+/// A child of the session as its own record (R-PRES-4): the session ids
+/// from the session's child down to it, its title, and its state, `Clear`
+/// once it was interrupted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Child {
+    pub path: Vec<String>,
+    pub title: String,
+    pub state: osc7501::State,
+}
+
+impl Child {
+    /// Its report in `state`: the id the last 12 hex digits of each session
+    /// id on its path (a UUIDv7's random part; the leading digits are a
+    /// time its siblings share), all 32 when those are zeros (no random
+    /// source to make them), a grandchild's under its parent's. None for a
+    /// path past the id's limits: it goes unreported.
+    fn report(&self, state: osc7501::State) -> Option<String> {
+        let segments: Vec<String> = self
+            .path
+            .iter()
+            .map(|sid| {
+                let hex: String = sid.chars().filter(char::is_ascii_hexdigit).collect();
+                let tail = &hex[hex.len().saturating_sub(12)..];
+                if tail.bytes().all(|b| b == b'0') { hex.clone() } else { tail.to_string() }
+            })
+            .collect();
+        let id: Vec<&str> = segments.iter().map(String::as_str).collect();
+        osc7501::encode(&osc7501::Report { state, id: &id, title: &self.title, ..Default::default() })
+    }
+}
+
 /// The last state told, so each change is told once.
 #[derive(Default)]
 pub struct Presence {
     told: Option<(State, String)>,
+    /// The children's records as last told.
+    children: Vec<Child>,
     pane: Option<String>,
     herdr: Option<Reporter>,
 }
@@ -108,7 +142,7 @@ impl Reporter {
         let (done_tx, done) = mpsc::channel();
         std::thread::spawn(move || {
             let herdr = |args: &[String]| Command::new("herdr").args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().ok();
-            let mut started: Option<Child> = None;
+            let mut started: Option<std::process::Child> = None;
             for job in rx {
                 match job {
                     Job::Run(args) => {
@@ -161,7 +195,7 @@ impl Presence {
         let nested = !env("TMUX").is_empty() || !env("STY").is_empty();
         let pane = (!pane.is_empty() && !nested).then_some(pane);
         let herdr = pane.as_ref().map(|_| Reporter::start());
-        Presence { told: None, pane, herdr }
+        Presence { told: None, children: Vec::new(), pane, herdr }
     }
 
     /// The last word to herdr on the way out: released, and a moment given
@@ -192,6 +226,31 @@ impl Presence {
             r.send_detached(&["pane", "release-agent", pane, "--source", "krowk", "--agent", "krowk"]);
         }
         self.told = None;
+        self.children.clear();
+    }
+
+    /// The reports that bring the children's records to `now` (R-PRES-4):
+    /// one for each child whose state or title changed since last told, a
+    /// clear for one interrupted, and a clear for each told no longer in
+    /// `now` — all of them once the parent's turn has ended and `now` is
+    /// empty. Written ahead of the root's report, so a turn's children are
+    /// gone before the root says the turn ended.
+    pub fn tell_children(&mut self, now: Vec<Child>) -> Vec<String> {
+        use osc7501::State::Clear;
+        let gone = self.children.iter().filter(|c| c.state != Clear && !now.iter().any(|n| n.path == c.path));
+        let mut out: Vec<String> = gone.filter_map(|c| c.report(Clear)).collect();
+        for c in &now {
+            let was = self.children.iter().find(|t| t.path == c.path);
+            let changed = match c.state {
+                Clear => was.is_some_and(|t| t.state != Clear),
+                _ => was != Some(c),
+            };
+            if changed {
+                out.extend(c.report(c.state));
+            }
+        }
+        self.children = now;
+        out
     }
 
     /// The report that clears every record krowk made, when it made one:
@@ -308,6 +367,31 @@ mod tests {
         assert_eq!((error.title.as_str(), error.report), ("✳ krowk", root(Rec::Error, &failure[..failure.find('\n').unwrap()])), "the whole first line, longer than the title's");
         assert_eq!(p.tell(State::Idle, "fix it").unwrap().report, root(Rec::Idle, ""));
         assert!([State::Done, State::Error].iter().all(|s| s.herdr() == "idle"), "herdr hears idle, as before");
+    }
+
+    #[test]
+    fn r_pres_4_each_child_is_told_once_per_change_and_cleared_when_gone() {
+        use osc7501::{Kind, Report, State as Rec};
+        let sid = "0199a3c2-7e10-7a3b-9c41-5f2e8d6b1a07";
+        let child = |path: &[&str], title: &str, state| Child { path: path.iter().map(|s| s.to_string()).collect(), title: title.into(), state };
+        let rec = |id: &[&str], title, state| osc7501::encode(&Report { state, id, title, ..Default::default() }).unwrap();
+        let mut p = Presence::from_env(&|_| String::new());
+        assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Working)]), [rec(&["5f2e8d6b1a07"], "review", Rec::Working)], "the last 12 hex digits");
+        assert!(p.tell_children(vec![child(&[sid], "review", Rec::Working)]).is_empty(), "nothing new, nothing told");
+        let unrandom = "0199a3c2-7e10-7a3b-8000-000000000000";
+        assert_eq!(Child { path: vec![unrandom.into()], title: String::new(), state: Rec::Clear }.report(Rec::Clear).unwrap(), rec(&["0199a3c27e107a3b8000000000000000"], "", Rec::Clear), "no random part: the whole id");
+        let deep = child(&[sid, "0199a3c2-7e11-7000-8000-00000000beef"], "dig", Rec::Blocked(Kind::Permission));
+        assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Working), deep.clone()]), [rec(&["5f2e8d6b1a07", "00000000beef"], "dig", Rec::Blocked(Kind::Permission))], "a grandchild under its parent");
+        let nine: Vec<String> = (0..9).map(|i| format!("0199a3c2-7e11-7000-8000-00000000000{i}")).collect();
+        let nine: Vec<&str> = nine.iter().map(String::as_str).collect();
+        assert!(p.tell_children(vec![child(&[sid], "review", Rec::Working), deep.clone(), child(&nine, "too deep", Rec::Working)]).is_empty(), "past the limits, unreported");
+        assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Done), deep.clone()]), [rec(&["5f2e8d6b1a07"], "review", Rec::Done)]);
+        assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Done), child(&deep.path.iter().map(String::as_str).collect::<Vec<_>>(), "dig", Rec::Clear)]), [rec(&["5f2e8d6b1a07", "00000000beef"], "", Rec::Clear)], "interrupted, cleared");
+        assert_eq!(p.tell_children(Vec::new()), [rec(&["5f2e8d6b1a07"], "", Rec::Clear)], "the turn over: the rest cleared, the cleared not again");
+        assert!(p.tell_children(Vec::new()).is_empty());
+        p.tell_children(vec![child(&[sid], "review", Rec::Working)]);
+        p.release();
+        assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Working)]), [rec(&["5f2e8d6b1a07"], "review", Rec::Working)], "told again from scratch after a job stop");
     }
 
     #[test]
