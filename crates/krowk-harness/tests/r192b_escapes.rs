@@ -490,7 +490,10 @@ async fn r192b_5_isolation() {
     let fd = std::os::fd::IntoRawFd::into_raw_fd(std::fs::File::open(f.home.join("control/readable.txt")).unwrap());
     // SAFETY: the descriptor was just opened here and is closed below.
     unsafe { libc::fcntl(fd, libc::F_SETFD, 0) };
-    let (out, _) = sh(&f, "sleep 5 & p=$!; ls /proc/$p/fd > /tmp/fds; kill $p; sort -n /tmp/fds | tr '\\n' ' '").await;
+    // Read until three readings agree: `sleep` starting up holds a
+    // descriptor of its own a moment (the loader's cache, the locale's alias
+    // file), which a loaded machine can catch it with; one it inherited stays.
+    let (out, _) = sh(&f, "sleep 5 & p=$!; a=; n=0; for i in $(seq 100); do ls /proc/$p/fd > /tmp/fds; b=$(sort -n /tmp/fds | tr '\\n' ' '); if [ \"$b\" = \"$a\" ]; then n=$((n+1)); [ $n -ge 2 ] && break; else n=0; fi; a=$b; sleep 0.05; done; kill $p; echo \"$b\"").await;
     unsafe { libc::close(fd) };
     t.blocked("5a only fds 0/1/2", out.lines().next().map(str::trim) == Some("0 1 2"), out);
 

@@ -233,6 +233,10 @@ async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// Shell: process `$p`'s descriptors in `$b`, `0 1 2 ` style, once three
+/// readings 50 ms apart agree (at most five seconds of trying).
+const SETTLED_FDS: &str = "a=; n=0; for i in $(seq 100); do ls /proc/$p/fd > /tmp/fds; b=$(sort -n /tmp/fds | tr '\\n' ' '); if [ \"$b\" = \"$a\" ]; then n=$((n+1)); [ $n -ge 2 ] && break; else n=0; fi; a=$b; sleep 0.05; done";
+
 #[tokio::test(flavor = "current_thread")]
 async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session() {
     if !enforced("r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session") {
@@ -247,8 +251,11 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     let (base, ws, scope) = setup("sbx-fd", Profile::Workspace);
     // The descriptors of a process the shell starts outside any pipeline —
     // listing the shell's own from inside one would catch that pipeline's
-    // pipe, still open while it forks — written to a file, not a pipe.
-    let (out, err) = bash(&ws, &scope, "sleep 5 & p=$!; ls /proc/$p/fd > /tmp/fds; ls -l /proc/$p/fd > /tmp/fdl; kill $p; sort -n /tmp/fds | tr '\\n' ' '; echo; ps -o sid= -p $$; echo $$; cat /tmp/fdl").await;
+    // pipe, still open while it forks — written to a file, not a pipe. Read
+    // until three readings agree: `sleep` starting up holds a descriptor of
+    // its own a moment (the loader's cache, the locale's alias file), which
+    // a loaded machine can catch it with; one it inherited stays.
+    let (out, err) = bash(&ws, &scope, &format!("sleep 5 & p=$!; {SETTLED_FDS}; ls -l /proc/$p/fd > /tmp/fdl; kill $p; echo \"$b\"; ps -o sid= -p $$; echo $$; cat /tmp/fdl")).await;
     unsafe { libc::close(fd) };
     let mut lines = out.lines();
     assert_eq!(lines.next(), Some("0 1 2 "), "{out}");
