@@ -49,7 +49,7 @@ sha2 = "0.11"
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = ["ring", "alloc"] }
 rustls-pki-types = { version = "1", default-features = false }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
-ureq ={ version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
+ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier"] }
 
 [target.'cfg(unix)'.dependencies]
 # Open flags and errnos per target: their values differ by architecture.

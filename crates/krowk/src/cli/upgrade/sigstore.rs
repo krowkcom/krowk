@@ -11,11 +11,12 @@
 //!   entry, for code signing — the certificate lives ten minutes, so the
 //!   time is the log's, not now;
 //! - its SAN is the release workflow at `refs/tags/v<version>`, the version
-//!   being installed, and its OIDC issuer is GitHub Actions';
+//!   being installed, its OIDC issuer is GitHub Actions', its source
+//!   repository krowkcom/krowk and its trigger a push;
 //! - its key signed these exact bytes;
 //! - Rekor logged that signature with that certificate for this digest: its
 //!   signed entry timestamp (which also vouches for the time above) and the
-//!   inclusion proof up to a checkpoint Rekor signed.
+//!   inclusion proof up to a checkpoint Rekor signed for its own origin.
 //!
 //! What cosign also does and this does not: the certificate's SCT (Fulcio's
 //! issuance in the CT log) and the RFC 3161 timestamp are not checked, and a
@@ -35,13 +36,22 @@ use sha2::{Digest, Sha256};
 
 const TRUSTED_ROOT: &str = include_str!("trusted_root.json");
 /// The workflow that signs releases; the SAN names it at the release's tag.
+const REPOSITORY: &str = "https://github.com/krowkcom/krowk";
 const WORKFLOW: &str = "https://github.com/krowkcom/krowk/.github/workflows/release.yml";
 const ISSUER: &str = "https://token.actions.githubusercontent.com";
+/// What started the signing run: a tag pushed. A `workflow_dispatch` or
+/// `workflow_call` added to release.yml later does not widen who may sign.
+const TRIGGER: &str = "push";
 /// id-kp-codeSigning (1.3.6.1.5.5.7.3.3), the EKU Fulcio's leaf and
 /// intermediate both carry.
 const CODE_SIGNING: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x03];
-/// Fulcio's OIDC issuer extension (1.3.6.1.4.1.57264.1.8), a UTF8String.
+/// Fulcio's extensions (1.3.6.1.4.1.57264.1.n): the OIDC issuer (8), the
+/// source repository (12) and the build trigger (20), each a UTF8String, and
+/// the older GitHub trigger (2), the bare string.
 const OIDC_ISSUER: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x08];
+const SOURCE_REPOSITORY: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x0c];
+const BUILD_TRIGGER: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x14];
+const GITHUB_TRIGGER_V1: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x83, 0xbf, 0x30, 0x01, 0x02];
 
 /// The identity a release's signature must carry: the release workflow at
 /// that release's tag.
@@ -88,16 +98,50 @@ fn verify_with(root: &Value, message: &[u8], bundle: &[u8], identity: &str) -> R
     let at = UnixTime::since_unix_epoch(std::time::Duration::from_secs(time));
     leaf.verify_for_usage(&algs, &anchors, &intermediates, at, webpki::KeyUsage::required(CODE_SIGNING), None, None)
         .map_err(|e| format!("the signing certificate is not one Sigstore's Fulcio issued: {e:?}"))?;
-    let names: Vec<&str> = leaf.valid_uri_names().collect();
-    if names != [identity] {
-        return Err(format!("the signature is by {}, not by {identity}", names.join(", ")));
-    }
-    let issuer = extension(&cert, OIDC_ISSUER).and_then(|v| der(v, 0x0c)).map(|(s, _)| s);
-    if issuer != Some(ISSUER.as_bytes()) {
-        return Err(format!("the signing identity was not issued by {ISSUER}"));
-    }
+    check_signer(&Signer::of(&leaf, &cert), identity)?;
     leaf.verify_signature(webpki::ring::ECDSA_P256_SHA256, message, &signature)
         .map_err(|_| "the signature does not match these bytes".to_string())
+}
+
+/// Who a Fulcio certificate says signed: its SAN URIs and the extensions
+/// that name the issuer, the repository and the trigger.
+struct Signer<'a> {
+    uris: Vec<&'a str>,
+    issuer: Option<&'a [u8]>,
+    repository: Option<&'a [u8]>,
+    trigger: Option<&'a [u8]>,
+    trigger_v1: Option<&'a [u8]>,
+}
+
+impl<'a> Signer<'a> {
+    fn of(leaf: &webpki::EndEntityCert<'a>, cert: &'a [u8]) -> Self {
+        let utf8 = |oid| extension(cert, oid).and_then(|v| der(v, 0x0c)).map(|(s, _)| s);
+        Signer {
+            uris: leaf.valid_uri_names().collect(),
+            issuer: utf8(OIDC_ISSUER),
+            repository: utf8(SOURCE_REPOSITORY),
+            trigger: utf8(BUILD_TRIGGER),
+            trigger_v1: extension(cert, GITHUB_TRIGGER_V1),
+        }
+    }
+}
+
+/// The release workflow at this tag, and nothing wider: one SAN, GitHub's
+/// issuer, this repository, a push.
+fn check_signer(s: &Signer, identity: &str) -> Result<(), String> {
+    if s.uris != [identity] {
+        return Err(format!("the signature is by {}, not by {identity}", s.uris.join(", ")));
+    }
+    if s.issuer != Some(ISSUER.as_bytes()) {
+        return Err(format!("the signing identity was not issued by {ISSUER}"));
+    }
+    if s.repository != Some(REPOSITORY.as_bytes()) {
+        return Err(format!("the signing run was not in {REPOSITORY}"));
+    }
+    if s.trigger != Some(TRIGGER.as_bytes()) || s.trigger_v1.is_some_and(|t| t != TRIGGER.as_bytes()) {
+        return Err(format!("the signing run was not started by a {TRIGGER} of the tag"));
+    }
+    Ok(())
 }
 
 /// Checks the bundle's one Rekor entry: it logs this signature by this
@@ -110,7 +154,7 @@ fn check_entry(root: &Value, entry: &Value, digest: &[u8], signature: &[u8], cer
     }
     let log_id = b64(str_at(entry, "/logId/keyId")?)?;
     let time: u64 = number(entry, "/integratedTime")?;
-    let key = rekor_key(root, &log_id, time)?;
+    let (key, origin) = rekor_key(root, &log_id, time)?;
 
     // What was logged is what is being checked.
     let body_b64 = str_at(entry, "/canonicalizedBody")?;
@@ -141,14 +185,24 @@ fn check_entry(root: &Value, entry: &Value, digest: &[u8], signature: &[u8], cer
     let root_hash = b64(str_at(entry, "/inclusionProof/rootHash")?)?;
     let hashes = entry.pointer("/inclusionProof/hashes").and_then(Value::as_array).ok_or("the inclusion proof has no hashes")?;
     let hashes: Vec<Vec<u8>> = hashes.iter().map(|h| h.as_str().ok_or_else(|| "an inclusion proof hash is not a string".to_string()).and_then(b64)).collect::<Result<_, _>>()?;
+    // SHA-256 throughout: anything else is no node of this tree.
+    if root_hash.len() != 32 || hashes.iter().any(|h| h.len() != 32) {
+        return Err("the inclusion proof holds a hash that is not 32 bytes".into());
+    }
     if merkle_root(proof_index, size, leaf, &hashes).as_ref().map(|r| &r[..]) != Some(&root_hash[..]) {
         return Err("the inclusion proof does not reach its root".into());
     }
     let note = str_at(entry, "/inclusionProof/checkpoint/envelope")?;
     let (text, sigs) = note.split_once("\n\n").ok_or("the checkpoint is unreadable")?;
     let mut lines = text.lines();
-    let (_origin, size_line, root_line) = (lines.next(), lines.next(), lines.next());
-    if size_line != Some(&size.to_string()) || root_line.map(b64).transpose()?.as_deref() != Some(&root_hash[..]) {
+    let (origin_line, size_line, root_line) = (lines.next(), lines.next(), lines.next());
+    // The log's origin, `<host> - <tree id>`: a checkpoint of another log
+    // the same key signed is not this one's.
+    let tree = origin_line.and_then(|l| l.strip_prefix(origin.as_str())).and_then(|l| l.strip_prefix(" - "));
+    if !tree.is_some_and(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit())) {
+        return Err(format!("the checkpoint is not {origin}'s"));
+    }
+    if size_line != Some(&size.to_string()) || root_line.and_then(|l| b64(l).ok()).as_deref() != Some(&root_hash[..]) {
         return Err("the checkpoint is for a different tree than the inclusion proof".into());
     }
     let signed = format!("{text}\n");
@@ -161,9 +215,9 @@ fn check_entry(root: &Value, entry: &Value, digest: &[u8], signature: &[u8], cer
     Ok(time)
 }
 
-/// Rekor's key with that log id, an ECDSA P-256 one valid at `time`; its
-/// raw public point.
-fn rekor_key(root: &Value, log_id: &[u8], time: u64) -> Result<Vec<u8>, String> {
+/// Rekor's key with that log id, an ECDSA P-256 one valid at `time`: its
+/// raw public point, and the log's host, which its checkpoints name.
+fn rekor_key(root: &Value, log_id: &[u8], time: u64) -> Result<(Vec<u8>, String), String> {
     for log in root.get("tlogs").and_then(Value::as_array).into_iter().flatten() {
         let Ok(id) = str_at(log, "/logId/keyId").and_then(b64) else { continue };
         if id != log_id || str_at(log, "/publicKey/keyDetails") != Ok("PKIX_ECDSA_P256_SHA_256") || !valid_at(log.pointer("/publicKey/validFor"), time) {
@@ -173,8 +227,9 @@ fn rekor_key(root: &Value, log_id: &[u8], time: u64) -> Result<Vec<u8>, String> 
         // SubjectPublicKeyInfo: the algorithm, then the key as a BIT STRING
         // with no unused bits.
         let key = der(&spki, 0x30).and_then(|(spki, _)| der(spki, 0x30).and_then(|(_, rest)| der(rest, 0x03))).map(|(k, _)| k);
+        let origin = str_at(log, "/baseUrl")?.strip_prefix("https://").unwrap_or_default().trim_end_matches('/').to_string();
         return match key {
-            Some([0, point @ ..]) => Ok(point.to_vec()),
+            Some([0, point @ ..]) if !origin.is_empty() => Ok((point.to_vec(), origin)),
             _ => Err("the embedded Rekor key is unreadable".into()),
         };
     }
@@ -393,13 +448,58 @@ mod tests {
         let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), hashes), &identity("0.13.0")).unwrap_err();
         assert!(err.contains("inclusion proof"), "{err}");
         let note = entry.pointer("/inclusionProof/checkpoint/envelope").unwrap().as_str().unwrap();
-        let forged = note.replacen("rekor.sigstore.dev - ", "rekor.sigstore.dev  - ", 1);
+        let forged = note.replacen("wNI9ajBEAiAXlFise4", "wNI9ajBEAiAXlFise5", 1);
         let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &identity("0.13.0")).unwrap_err();
         assert!(err.contains("checkpoint signature"), "{err}");
+        for origin in ["rekor.sigstore.dev  - 1193050959916656506", "log2025-1.rekor.sigstore.dev - 1", "rekor.sigstore.dev - ", "rekor.sigstore.dev - 11x"] {
+            let forged = note.replacen("rekor.sigstore.dev - 1193050959916656506", origin, 1);
+            let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/checkpoint/envelope"), forged.into()), &identity("0.13.0")).unwrap_err();
+            assert!(err.contains("not rekor.sigstore.dev's"), "{origin}: {err}");
+        }
+        let mut short = entry.pointer("/inclusionProof/hashes").unwrap().clone();
+        short[0] = base64::engine::general_purpose::STANDARD.encode([0u8; 31]).into();
+        let err = verify(SUMS, &tampered(&format!("{path}/inclusionProof/hashes"), short), &identity("0.13.0")).unwrap_err();
+        assert!(err.contains("not 32 bytes"), "{err}");
         let err = verify(SUMS, &tampered(&format!("{path}/kindVersion/version"), "0.0.2".into()), &identity("0.13.0")).unwrap_err();
         assert!(err.contains("by hand"), "a kind it cannot check is refused, and the way round named: {err}");
         let err = verify(SUMS, &tampered("/verificationMaterial/tlogEntries", serde_json::json!([])), &identity("0.13.0")).unwrap_err();
         assert!(err.contains("0 transparency-log entries"), "{err}");
+    }
+
+    #[test]
+    fn r_oss_3_the_signer_is_this_repository_on_a_push_and_nothing_wider() {
+        let cert = b64(&bundle_cert()).unwrap();
+        let der = CertificateDer::from(cert.as_slice());
+        let leaf = webpki::EndEntityCert::try_from(&der).unwrap();
+        let id = identity("0.13.0");
+        assert_eq!(check_signer(&Signer::of(&leaf, &cert), &id), Ok(()), "the recorded release's certificate names all of it");
+        let refused = |change: &dyn Fn(&mut Signer), says: &str| {
+            let mut s = Signer::of(&leaf, &cert);
+            change(&mut s);
+            let err = check_signer(&s, &id).unwrap_err();
+            assert!(err.contains(says), "{says}: {err}");
+        };
+        refused(&|s| s.uris.push("https://example.com/other"), "not by");
+        refused(&|s| s.issuer = Some(b"https://gitlab.com"), "not issued by");
+        refused(&|s| s.repository = Some(b"https://github.com/someone/krowk"), "not in https://github.com/krowkcom/krowk");
+        refused(&|s| s.repository = None, "not in");
+        refused(&|s| s.trigger = Some(b"workflow_dispatch"), "push");
+        refused(&|s| s.trigger = None, "push");
+        refused(&|s| s.trigger_v1 = Some(b"workflow_call"), "push");
+    }
+
+    /// The release workflow runs this on the bundle it has just signed,
+    /// before anything is published (release.yml: "Check the signature as
+    /// krowk upgrade will"): a change in what cosign writes fails the
+    /// release, not every krowk's next upgrade.
+    #[test]
+    #[ignore = "needs KROWK_RELEASE_DIR and KROWK_RELEASE_VERSION, which the release workflow sets"]
+    fn r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it() {
+        let dir = std::path::PathBuf::from(std::env::var("KROWK_RELEASE_DIR").expect("KROWK_RELEASE_DIR"));
+        let version = std::env::var("KROWK_RELEASE_VERSION").expect("KROWK_RELEASE_VERSION");
+        let sums = std::fs::read(dir.join("checksums.txt")).unwrap();
+        let bundle = std::fs::read(dir.join("checksums.txt.sigstore.json")).unwrap();
+        assert_eq!(verify(&sums, &bundle, &identity(&version)), Ok(()));
     }
 
     #[test]
@@ -418,7 +518,7 @@ mod tests {
     fn the_embedded_root_names_the_public_fulcio_and_rekor() {
         let root: Value = serde_json::from_str(TRUSTED_ROOT).unwrap();
         let rekor = b64("wNI9atQGlz+VWfO6LRygH4QUfY/8W4RFwiT5i5WRgB0=").unwrap();
-        assert_eq!(rekor_key(&root, &rekor, 1_791_389_941).map(|k| k.len()), Ok(65), "an uncompressed P-256 point");
+        assert_eq!(rekor_key(&root, &rekor, 1_791_389_941).map(|(k, o)| (k.len(), o)), Ok((65, "rekor.sigstore.dev".into())), "an uncompressed P-256 point");
         assert!(fulcio(&root, 1_791_389_941).is_ok_and(|(a, i)| a.len() == 1 && i.len() == 1));
     }
 }
