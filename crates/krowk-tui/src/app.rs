@@ -222,9 +222,9 @@ struct Sub {
     tool: Option<ChildTool>,
     last_event_ms: Option<i64>,
     waiting: Option<Waiting>,
-    /// Where that frame said it stands, and `sub_clock` then: an end it
-    /// says comes before its log's, or, its log not written, instead of it.
-    said: Option<(ChildState, u64)>,
+    /// Where that frame said it stands: its end, should its log's never
+    /// come.
+    said: Option<ChildState>,
     /// The item it is streaming, and its text so far: what a child view
     /// opened in the middle of it starts from.
     streaming: Option<Streaming>,
@@ -2078,7 +2078,7 @@ impl App {
                 // Its stamp, or what arrived since, whichever is later.
                 s.last_event_ms = running.then(|| s.last_event_ms.map_or(*last_event_ms, |ms| ms.max(*last_event_ms)));
                 s.waiting = waiting.filter(|_| running);
-                s.said = Some((*status, tick));
+                s.said = Some(*status);
             }
             _ => return,
         }
@@ -2173,33 +2173,24 @@ impl App {
     }
 
     /// The turn's children as the terminal's records of them (R-PRES-4),
-    /// none once it is over: each running, or ended since the turn began,
-    /// once the parent's `subagent.started` has named it (its own lines can
-    /// come first), titled by its description. Its state is its
-    /// `subagent.status`'s — an approval or a question waiting blocks it —
-    /// its end its log's, else its frame's; an interrupted one is cleared.
-    /// Children are one level deep (R-SUB-7), so each one's path is its own
-    /// session id.
+    /// none once it is over: each started in it, once the parent's
+    /// `subagent.started` has named it (its own lines can come first),
+    /// titled by its description. Its state is its `subagent.status`'s —
+    /// an approval or a question waiting blocks it — its end its log's,
+    /// else its frame's; an interrupted one is cleared. Children are one
+    /// level deep (R-SUB-7), so each one's path is its own session id.
     pub fn child_records(&self) -> Vec<crate::presence::Child> {
         use crate::osc7501::{Kind, State};
         let Some(from) = self.turn.as_ref().map(|t| t.subs_from) else { return Vec::new() };
-        // Its end and when: its log's, else its frame's.
-        let end = |s: &Sub| match (s.status, s.said) {
-            (Some(how), _) => Some((how, s.ended)),
-            (None, Some((ChildState::Done, at))) => Some((TurnStatus::Completed, at)),
-            (None, Some((ChildState::Failed, at))) => Some((TurnStatus::Failed, at)),
-            (None, Some((ChildState::Interrupted, at))) => Some((TurnStatus::Interrupted, at)),
-            (None, _) => None,
-        };
-        let mut children: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.call_id.is_some() && end(s).is_none_or(|(_, at)| at > from)).collect();
+        let mut children: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.call_id.is_some() && s.born > from).collect();
         children.sort_by_key(|s| s.born);
-        let state = |s: &Sub| match (end(s), s.waiting) {
-            (Some((TurnStatus::Completed, _)), _) => State::Done,
-            (Some((TurnStatus::Failed, _)), _) => State::Error,
-            (Some((TurnStatus::Interrupted, _)), _) => State::Clear,
-            (None, Some(Waiting::Approval)) => State::Blocked(Kind::Permission),
-            (None, Some(Waiting::Question)) => State::Blocked(Kind::Question),
-            (None, None) => State::Working,
+        let state = |s: &Sub| match (s.status, s.said, s.waiting) {
+            (Some(TurnStatus::Completed), ..) | (None, Some(ChildState::Done), _) => State::Done,
+            (Some(TurnStatus::Failed), ..) | (None, Some(ChildState::Failed), _) => State::Error,
+            (Some(TurnStatus::Interrupted), ..) | (None, Some(ChildState::Interrupted), _) => State::Clear,
+            (None, _, Some(Waiting::Approval)) => State::Blocked(Kind::Permission),
+            (None, _, Some(Waiting::Question)) => State::Blocked(Kind::Question),
+            (None, _, None) => State::Working,
         };
         children.into_iter().map(|s| crate::presence::Child { path: vec![s.session_id.clone()], title: s.description.clone(), state: state(s) }).collect()
     }
@@ -5690,7 +5681,7 @@ mod tests {
 
     /// R-PRES-4: the turn's children as records — a question waiting blocks
     /// one on a question, its end done, error or cleared — and none once the
-    /// turn is over, nor in the next turn for those that ended before it.
+    /// turn is over, nor in the next turn: they were the last one's.
     #[test]
     fn r_pres_4_the_turns_children_are_its_records_and_the_last_turns_are_not() {
         use crate::osc7501::{Kind, State};

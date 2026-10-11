@@ -2493,7 +2493,8 @@ fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_fullscreen() {
 /// The parent fans out three subagents, each held at its first answer
 /// until the test opens its gate: one edits the README, which asks; one is
 /// refused by the model's API and fails; one sleeps until it is stopped.
-fn three_children(gates: [mock::Gate; 3]) -> impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static {
+/// The parent's answer to the three is held by the fourth.
+fn three_children(gates: [mock::Gate; 4]) -> impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static {
     move |body, n| {
         let held = |r: mock::Reply, gate: &mock::Gate, at: &'static str| mock::Reply { pace: Some(Duration::from_millis(1)), hold: Some((at, gate.clone())), ..r };
         let answered = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
@@ -2511,7 +2512,7 @@ fn three_children(gates: [mock::Gate; 3]) -> impl Fn(&serde_json::Value, usize) 
             return mock::Reply::sse(&mock::text_stream("Fan out"));
         }
         if answered {
-            return mock::Reply::sse(&mock::text_stream("The three are back."));
+            return held(mock::Reply::sse(&mock::text_stream("The three are back.")), &gates[3], "message_start");
         }
         let calls = [("edit the readme", "TASK-EDIT: edit README.md"), ("fail at once", "TASK-FAIL: fail"), ("sleep on it", "TASK-SLEEP: sleep")];
         let mut out = String::from("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_calls\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n");
@@ -2544,7 +2545,7 @@ fn reported_until(t: &pty::Pty, timeout: Duration, done: impl Fn(&[String]) -> b
 /// turn's end, before the root's report that the turn ended.
 fn each_subagent_is_a_record(screen: &str) {
     use krowk_tui::osc7501::{encode, Kind, Report, State};
-    let gates: [mock::Gate; 3] = Default::default();
+    let gates: [mock::Gate; 4] = Default::default();
     let (_m, b, mut t) = pres_pty("pres-children", screen, three_children(gates.clone()));
     let child_reports = |rs: &[String], pat: &str| rs.iter().filter(|r| r.contains(":id=") && r.contains(pat)).count();
     t.write(b"fan out\r");
@@ -2561,10 +2562,15 @@ fn each_subagent_is_a_record(screen: &str) {
     assert!(reported_until(&t, Duration::from_secs(5), |rs| child_reports(rs, "state=done") == 1), "the edit done: {:?}", reports(&t.text()));
     gates[1].open();
     assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=error") == 1), "the failure: {:?}", reports(&t.text()));
-    // The Agents overlay, on the one still running: x stops it alone.
+    // The Agents overlay, on the one still running: x stops it alone, and
+    // it is cleared while the turn still runs.
+    let mark = t.output().len();
     t.write(b"\x07");
-    std::thread::sleep(Duration::from_millis(500));
+    assert!(says(&t, mark, "enter", Duration::from_secs(10)), "no Agents overlay: {:?}", t.text());
     t.write(b"x");
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last().is_some_and(|r| r.starts_with("\x1b]7501;state=clear:app=krowk:id="))), "the stop not reported: {:?}", reports(&t.text()));
+    let stopped = reports(&t.text()).len();
+    gates[3].open();
     assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last() == Some(&root(State::Idle, ""))), "the turn never ended: {:?}", reports(&t.text()));
     gates[2].open();
     let (got, _) = quit_reports(t);
@@ -2588,6 +2594,7 @@ fn each_subagent_is_a_record(screen: &str) {
     assert_eq!(of(0), [rec(0, State::Working), rec(0, State::Blocked(Kind::Permission)), rec(0, State::Working), rec(0, State::Done), rec(0, State::Clear)]);
     assert_eq!(of(1), [rec(1, State::Working), rec(1, State::Error), rec(1, State::Clear)]);
     assert_eq!(of(2), [rec(2, State::Working), rec(2, State::Clear)], "stopped alone, cleared");
+    assert_eq!(got[stopped - 1], rec(2, State::Clear), "cleared when stopped, the turn still running");
     let rooted: Vec<&String> = got.iter().filter(|r| !r.contains(":id=")).collect();
     let ask = "fan out";
     assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Idle, ""), &root(State::Clear, "")]);
