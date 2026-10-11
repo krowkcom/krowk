@@ -468,6 +468,7 @@ async fn session(opts: Options) -> Outcome {
         checks: None,
         pr: None,
         continuing: false,
+        following_bg: None,
         pasting: None,
         pastes: Default::default(),
         looked_in: None,
@@ -491,17 +492,10 @@ async fn session(opts: Options) -> Outcome {
         runs_in: runs_in.clone(),
         started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
-    // A resumed session still running in the daemon is followed from where
-    // its log left off: the turn so far, then live. One that is not left no
-    // child running: its log's unanswered children ended with it (with no
-    // daemon, `resumed` said so already).
-    match opts.resume.clone() {
-        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
-        Some(id) if has_daemon => {
-            app.end_replayed_children(matches!(ui.host, link::Link::Local(_)));
-            ui.follow_background(&app, &id, replayed_to.as_deref());
-        }
-        _ => {}
+    if let Some(id) = opts.resume.clone()
+        && has_daemon
+    {
+        ui.resumed_in_daemon(&mut app, &id, replayed_to).await;
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -561,6 +555,9 @@ struct Ui<'h> {
     pr: Option<PrFuture>,
     /// The turn running is a `continue` this client sent.
     continuing: bool,
+    /// The session followed only for its background agents
+    /// (`follow_background`), until none is left.
+    following_bg: Option<String>,
     /// A paste being read and made ready, off the runtime's thread (the
     /// clipboard, or the files dropped), and the editor's mark for where it
     /// goes; the ones asked for after it, waiting their turn.
@@ -1579,6 +1576,12 @@ impl<'h> Ui<'h> {
             synced::Event::Host(h) => {
                 status.host = Some(h);
                 app.say_attached();
+                // A backend's agent runs in the host's process: with no
+                // host on the session, nothing says it goes on. Its real
+                // end, should the host come back with it, replaces this.
+                if !h {
+                    app.end_backend_children();
+                }
             }
             synced::Event::Path(p) => status.path = Some(p),
             synced::Event::Note(n) => app.notice(&n),
@@ -1609,24 +1612,60 @@ impl<'h> Ui<'h> {
         true
     }
 
+    /// The session resumed at start, with a daemon: one still running there
+    /// is followed from where its log left off — the turn so far, then
+    /// live. One that is not left no child running: its log's unanswered
+    /// children ended with it (with no daemon, `resumed` said so already),
+    /// and its background agents go on only while the daemon runs them.
+    async fn resumed_in_daemon(&mut self, app: &mut App, id: &str, replayed_to: Option<String>) {
+        if self.live.iter().any(|l| l == id) {
+            return self.reattach(app, id, replayed_to);
+        }
+        app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+        self.follow_background(app, id, replayed_to.as_deref()).await;
+    }
+
+    /// A resumed session whose backend's agents its log leaves at work
+    /// between turns, in the daemon. Kept running only while the daemon
+    /// says work of the session still goes on there; then the daemon is
+    /// asked to send this client the session's frames from the last event
+    /// replayed, as one of its followers, so their rows and transcripts go
+    /// on as they run (R-SUB-7), until none is left (`let_go_background`).
+    /// Otherwise the process that ran them is gone — killed, the machine
+    /// restarted — with no end written: they end interrupted, as a local
+    /// session's do.
+    async fn follow_background(&mut self, app: &mut App, id: &str, after: Option<&str>) {
+        let Some(remote) = self.host.remote() else { return };
+        if app.backend_children_running().is_empty() {
+            return;
+        }
+        let busy = remote.status().await.ok().and_then(|s| s.background_sessions).unwrap_or_default();
+        if busy.iter().any(|b| b == id) {
+            remote.attach_later(id, after);
+            self.following_bg = Some(id.to_string());
+        } else {
+            app.end_backend_children();
+        }
+    }
+
+    /// Following a session only for its background agents
+    /// (`follow_background`): once none is left, and no turn of this
+    /// client's runs, the daemon stops sending it here, so this TUI does
+    /// not go on mirroring the session's later turns.
+    fn let_go_background(&mut self, app: &App) {
+        if self.turn.is_none()
+            && app.backend_children_running().is_empty()
+            && let Some(id) = self.following_bg.take()
+        {
+            self.host.leave(&id);
+        }
+    }
+
     /// Follows `id`'s turn running in the daemon as though this TUI had
     /// sent it: what its log has after what was replayed, the turn so far,
     /// then live, to its result.
     /// `after` is the last event the replay drew: what the log gained since
     /// comes from the daemon, never read here a second time.
-    /// A resumed session whose backend's agents its log leaves at work
-    /// between turns, in the daemon: the daemon is asked to send this
-    /// client the session's frames from the last event replayed, as one of
-    /// its followers, so their rows and transcripts go on as they run
-    /// (R-SUB-7).
-    fn follow_background(&self, app: &App, id: &str, after: Option<&str>) {
-        if let Some(remote) = self.host.remote()
-            && !app.backend_children_running().is_empty()
-        {
-            remote.attach_later(id, after);
-        }
-    }
-
     fn reattach(&mut self, app: &mut App, id: &str, after: Option<String>) {
         let Some(client) = self.host.remote() else { return };
         let (tx, rx) = mpsc::channel(1024);
@@ -1663,6 +1702,9 @@ impl<'h> Ui<'h> {
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
+        // This client's own turn of the session: it follows it from here
+        // as any client that runs one does.
+        self.following_bg = None;
         let (host, quiet) = (self.host, !app.backend_agents_running() && !app.unprompted);
         self.turn = Some(Box::pin(async move {
             host.renew(quiet).await;
@@ -1675,8 +1717,12 @@ impl<'h> Ui<'h> {
     /// A turn the backend began by itself runs as soon as none of the
     /// TUI's own does. A prompt sent first runs it ahead of itself, and a
     /// `continue` left over is then refused quietly (`nothing_pending`).
+    /// A TUI following a session only for its background agents leaves
+    /// that turn to the client that runs the session; its next prompt
+    /// runs it first.
     fn go_on(&mut self, app: &mut App) {
-        if self.turn.is_some() || !std::mem::take(&mut app.unprompted) {
+        self.let_go_background(app);
+        if self.turn.is_some() || self.following_bg.is_some() || !std::mem::take(&mut app.unprompted) {
             return;
         }
         let Some(session_id) = app.session_id.clone() else { return };
@@ -2052,7 +2098,7 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Modes && plain && let Some(done) = self.modes_key(app, k) {
             return done;
         }
-        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k) {
+        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k).await {
             return done;
         }
         if app.overlay == Overlay::Models && plain && let Some(done) = self.models_key(app, k).await {
@@ -2315,14 +2361,14 @@ impl<'h> Ui<'h> {
     }
 
     /// `/sessions` takes the arrows and enter while it is open.
-    fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+    async fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up => app.resume_at = app.resume_at.saturating_sub(1),
             KeyCode::Down => app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1)),
             KeyCode::Enter => {
                 app.overlay = Overlay::None;
                 if let Some(r) = app.resumable.get(app.resume_at).cloned() {
-                    self.resume(app, &r.id);
+                    self.resume(app, &r.id).await;
                 }
             }
             _ => return None,
@@ -2474,7 +2520,7 @@ impl<'h> Ui<'h> {
     /// Continues session `id` in place of the one shown: its conversation
     /// replayed under what is on screen, and the next prompt sent to it, on
     /// the model it last ran on.
-    fn resume(&mut self, app: &mut App, id: &str) {
+    async fn resume(&mut self, app: &mut App, id: &str) {
         if !self.can_resume(app) {
             return;
         }
@@ -2510,7 +2556,7 @@ impl<'h> Ui<'h> {
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {
             app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
-            self.follow_background(app, id, events.last().map(|e| e.id.as_str()));
+            self.follow_background(app, id, events.last().map(|e| e.id.as_str())).await;
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -2568,6 +2614,7 @@ impl<'h> Ui<'h> {
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
     fn leave(&mut self, app: &mut App) {
+        self.following_bg = None;
         // The daemon stops sending it here: no frame of it is taken for the
         // next session's.
         if let Some(old) = &app.session_id {
@@ -2981,7 +3028,7 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 let id = t["/sessions ".len()..].trim().to_string();
-                self.resume(app, &id);
+                self.resume(app, &id).await;
                 return false;
             }
             "/mode" => {

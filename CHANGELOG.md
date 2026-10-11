@@ -168,7 +168,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Claude Code then begins to answer it finds it finished. It used to show
   as done the moment it was launched. If Claude Code is let go of while the
   agent runs (the session moved to another account, or krowk quit), the
-  agent's log ends as interrupted and says why.
+  agent's log ends as interrupted and says why. One whose process went
+  without a word (killed, or the machine restarted) shows as interrupted
+  when you resume the session, rather than running for ever.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

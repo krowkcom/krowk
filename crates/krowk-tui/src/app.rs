@@ -2567,6 +2567,18 @@ impl App {
         self.past.iter().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()).map(|s| s.session_id.clone()).collect()
     }
 
+    /// The backend's agents left running by a replay with nothing to run
+    /// them any more — their process gone with no end written — ended
+    /// interrupted, at the replay's last event.
+    pub fn end_backend_children(&mut self) {
+        let at_ms = self.replayed_ms;
+        for s in self.past.iter_mut().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()) {
+            self.sub_clock += 1;
+            s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
+        }
+        self.dirty = true;
+    }
+
     /// Child `sid` ended as its own log says, at `at_ms`.
     pub fn child_logged_end(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
         self.ended(sid, status, at_ms);
@@ -5047,7 +5059,8 @@ mod tests {
     /// that call at once ("Async agent launched"), and runs on: its row
     /// stays running, counted, through the turn's end and between turns,
     /// until its own end comes as its child's lines — not at its call's
-    /// result. Replayed, its end is read from its own log.
+    /// result. Replayed, its end is read from its own log, or, nothing
+    /// running it any more, it ends interrupted.
     #[test]
     fn r_sub_9_a_claude_background_agents_row_runs_until_its_own_end_not_its_calls_result() {
         let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
@@ -5077,6 +5090,13 @@ mod tests {
         assert_eq!(r.backend_children_running(), ["k1"]);
         r.child_logged_end("k1", TurnStatus::Completed, 2000);
         assert!(r.backend_children_running().is_empty() && r.child_running_since().is_none(), "ended as its log says");
+        // Replayed with no end in its log and nothing running it any more:
+        // ended interrupted, not left running.
+        let mut gone = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
+        launched(&mut gone, false);
+        gone.end_backend_children();
+        assert!(gone.backend_children_running().is_empty() && !gone.status_bar().contains("subagent"), "{}", gone.status_bar());
+        assert_eq!(gone.children()[0].status, Some(TurnStatus::Interrupted));
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {
