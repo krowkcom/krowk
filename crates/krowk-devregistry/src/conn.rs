@@ -77,22 +77,46 @@ impl Open {
     }
 }
 
-/// Accepts until accepting fails or `open` is stopped, and says why.
+/// Accepts until accepting fails for good or `open` is stopped, and says
+/// why. A machine out of descriptors, memory or threads for a moment is
+/// waited out, as Go's server waits out a temporary accept error: that
+/// connection is let go, and the registry goes on serving the next, rather
+/// than stopping for good under a test run's load.
 pub fn accept(listener: &TcpListener, open: &Arc<Open>, handler: &Arc<Handler>) -> io::Error {
+    let mut pause = std::time::Duration::ZERO;
     loop {
         let (stream, remote) = match listener.accept() {
             Ok(c) => c,
             Err(e) if matches!(e.kind(), io::ErrorKind::Interrupted | io::ErrorKind::ConnectionAborted) => continue,
+            Err(e) if temporary(&e) && !open.stopping() => {
+                wait_out(&mut pause, "accepting failed", &e);
+                continue;
+            }
             Err(e) => return e,
         };
         if open.stopping() {
             return io::Error::other("the registry was stopped");
         }
-        let (open, handler) = (Arc::clone(open), Arc::clone(handler));
-        if let Err(e) = thread::Builder::new().stack_size(STACK).spawn(move || connection(&open, &*handler, stream, remote)) {
-            return e;
+        let (o, h) = (Arc::clone(open), Arc::clone(handler));
+        match thread::Builder::new().stack_size(STACK).spawn(move || connection(&o, &*h, stream, remote)) {
+            Ok(_) => pause = std::time::Duration::ZERO,
+            Err(e) => wait_out(&mut pause, "a connection's thread did not start, so it was closed", &e),
         }
     }
+}
+
+/// Says why, and sleeps the next step of a backoff from 5 ms to a second.
+fn wait_out(pause: &mut std::time::Duration, what: &str, e: &io::Error) {
+    *pause = (*pause * 2).clamp(std::time::Duration::from_millis(5), std::time::Duration::from_secs(1));
+    eprintln!("devregistry: {what} ({e}); trying again in {pause:?}");
+    thread::sleep(*pause);
+}
+
+/// Out of descriptors (EMFILE, ENFILE), memory (ENOMEM) or buffers
+/// (ENOBUFS, Linux's 105 and macOS's 55), or EAGAIN: gone in a moment.
+fn temporary(e: &io::Error) -> bool {
+    let enobufs = if cfg!(target_os = "macos") { 55 } else { 105 };
+    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory) || e.raw_os_error().is_some_and(|n| [12, 23, 24, enobufs].contains(&n))
 }
 
 fn connection(open: &Open, handler: &Handler, stream: TcpStream, remote: SocketAddr) {
