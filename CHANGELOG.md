@@ -162,13 +162,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   An agent Claude Code runs in the background keeps working once its turn
   is over, and krowk now writes what it does meanwhile to its session log
   as it happens. Its row stays running in the TUI, `[N subagents]` counts
-  it, and its transcript fills in live with no turn running, also on a
-  device following the session and in what sync uploads. It ends when the
-  agent does, so the turn Claude Code then begins to answer it finds it
-  finished. It used to show as done the moment it was launched. If Claude
-  Code is let go of while the agent runs (the session moved to another
-  account, or krowk quit), the agent's log ends as interrupted and says
-  why.
+  it, and its transcript fills in live with no turn running, also in
+  another krowk that resumes the session meanwhile, on a device following
+  it, and in what sync uploads. It ends when the agent does, so the turn
+  Claude Code then begins to answer it finds it finished. It used to show
+  as done the moment it was launched. If Claude Code is let go of while the
+  agent runs (the session moved to another account, or krowk quit), the
+  agent's log ends as interrupted and says why.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on
