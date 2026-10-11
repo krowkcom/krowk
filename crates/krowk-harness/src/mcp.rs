@@ -6,9 +6,9 @@
 //!
 //! | source | file | read |
 //! |---|---|---|
-//! | project | `<repository>/.mcp.json`: `mcpServers` | only once the repository is trusted |
+//! | project | `<repository>/.mcp.json`: `mcpServers` | only once the repository is trusted, and then those Claude Code's `enabledMcpjsonServers`, `disabledMcpjsonServers` and `enableAllProjectMcpServers` leave on |
 //! | Claude Code, user | Claude's `settings.json`, then `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json`): `mcpServers` | always |
-//! | Claude Code, local | `~/.claude.json`: `projects["<repository>"].mcpServers` | always |
+//! | Claude Code, local | `~/.claude.json`: `projects["<working directory>"].mcpServers`, else `projects["<repository>"]`'s | always |
 //! | krowk, user | `config.json` in krowk's home: `mcpServers` | always |
 //!
 //! The project is lowest, where Claude Code puts it above the user's: a
@@ -16,7 +16,8 @@
 //! allow rules name it. Each server is Claude Code's shape: `{command,
 //! args, env}` for a stdio server, `{type: "http", url, headers}` for a
 //! streamable-HTTP one, with `${VAR}` and `${VAR:-default}` expanded from
-//! the environment.
+//! the environment. A server whose name or config cannot be used is left
+//! out and named, with why, in a notice of the native turn.
 //!
 //! **Trust.** A project's `.mcp.json` is a command someone else wrote, so it
 //! is neither started nor listed until the person answers the trust
@@ -124,20 +125,33 @@ fn good_name(n: &str) -> bool {
 }
 
 /// Every server that applies in `cwd`, lowest source first, later names
-/// replacing earlier ones. A project's `.mcp.json` counts only when its
-/// repository is trusted.
-pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
+/// replacing earlier ones, and why each server left out was: a name a rule
+/// could not name one way, or a config that is not a server's. A project's
+/// `.mcp.json` counts only when its repository is trusted, and then only
+/// the servers Claude Code's own settings leave on (`Approval`).
+pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> (Vec<Server>, Vec<String>) {
     let root = crate::trust::root(cwd);
     let trusted = cfg.trusted.as_ref().is_some_and(|t| t(&root));
     // Untrusted and with no home, there is nowhere safe to start a stdio
     // server: a shared temporary directory is anyone's to plant in.
     let runs_in = if trusted { Some(cwd.to_path_buf()) } else { cfg.home.clone() };
     let mut out: Vec<Server> = Vec::new();
-    let mut add = |v: Option<&Value>, source: &str| {
+    let mut skipped: Vec<String> = Vec::new();
+    let mut add = |v: Option<&Value>, source: &str, on: &dyn Fn(&str) -> bool| {
         let Some(Value::Object(m)) = v else { return };
         for (name, c) in m {
-            let Ok(config) = ServerConfig::deserialize(c) else { continue };
             if !good_name(name) {
+                skipped.push(format!("the MCP server {name:?} in {source} was skipped: a name may hold only letters, digits, - and _, with no __ and no _ at either end, so mcp__server__tool reads one way in a rule"));
+                continue;
+            }
+            let config = match ServerConfig::deserialize(c) {
+                Ok(c) => c,
+                Err(e) => {
+                    skipped.push(format!("the MCP server {name} in {source} was skipped: {}", crate::http::clip(&e.to_string(), 200)));
+                    continue;
+                }
+            };
+            if !on(name) {
                 continue;
             }
             let Some(runs_in) = runs_in.clone().or_else(|| config.command.is_none().then(PathBuf::new)) else { continue };
@@ -146,6 +160,15 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
         }
     };
     let read = |p: &Path| std::fs::read(p).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok());
+    let claude_settings = cfg.claude_home().and_then(|dir| read(&dir.join("settings.json")));
+    let claude_json = match &cfg.claude_dir {
+        Some(d) => Some(d.join(".claude.json")),
+        None => cfg.home.as_ref().map(|h| h.join(".claude.json")),
+    };
+    let claude_json = claude_json.as_deref().and_then(read);
+    // Claude Code keys a project by the directory it was started in, so
+    // that comes first; the repository's root is what krowk keyed it by.
+    let project = claude_json.as_ref().and_then(|v| v.get("projects")).and_then(|p| [cwd, root.as_path()].iter().find_map(|k| p.get(k.display().to_string())));
     // Read once: the servers loaded are the ones whose digest is checked
     // here against what trust recorded, never a file swapped in after the
     // check (`trusted` read it too, but a moment earlier).
@@ -154,28 +177,69 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<Server> {
         // Not listed at all: trusted for this run (`--trust`, or a yes not
         // yet remembered), which covers what is there now.
         if recorded.is_none_or(|r| r == digest(&v)) {
-            add(v.get("mcpServers"), ".mcp.json");
+            let approval = Approval::read(claude_settings.as_ref(), project, &root, cwd);
+            add(v.get("mcpServers"), ".mcp.json", &|n| approval.on(n));
         }
     }
-    if let Some(dir) = cfg.claude_home()
-        && let Some(s) = read(&dir.join("settings.json"))
-    {
-        add(s.get("mcpServers"), "Claude Code's settings.json");
-    }
-    let claude_json = match &cfg.claude_dir {
-        Some(d) => Some(d.join(".claude.json")),
-        None => cfg.home.as_ref().map(|h| h.join(".claude.json")),
-    };
-    if let Some(v) = claude_json.as_deref().and_then(read) {
-        add(v.get("mcpServers"), "~/.claude.json");
-        add(v.get("projects").and_then(|p| p.get(root.display().to_string())).and_then(|p| p.get("mcpServers")), "~/.claude.json (this project)");
-    }
+    let all = |_: &str| true;
+    add(claude_settings.as_ref().and_then(|s| s.get("mcpServers")), "Claude Code's settings.json", &all);
+    add(claude_json.as_ref().and_then(|v| v.get("mcpServers")), "~/.claude.json", &all);
+    add(project.and_then(|p| p.get("mcpServers")), "~/.claude.json (this project)", &all);
     let user = match (&cfg.user_path, cfg.reread) {
         (Some(p), true) => read(p),
         _ => cfg.user.clone(),
     };
-    add(user.as_ref().and_then(|u| u.get("mcpServers")), "krowk's config.json");
-    out
+    add(user.as_ref().and_then(|u| u.get("mcpServers")), "krowk's config.json", &all);
+    (out, skipped)
+}
+
+/// Which of a project's `.mcp.json` servers Claude Code's settings leave
+/// on: `disabledMcpjsonServers` turns one off whatever else says; once
+/// `enabledMcpjsonServers` is set, only the servers it names are on, unless
+/// `enableAllProjectMcpServers` is true. They are read where Claude Code
+/// reads them — its user `settings.json`, this project's entry in
+/// `~/.claude.json` (where its approval dialog writes), and the
+/// repository's `.claude/settings.json` and `.claude/settings.local.json`
+/// from its root down to the working directory — the lists joined, the
+/// most specific `enableAllProjectMcpServers` standing. Trust is still the
+/// ceiling: none of them turns on a server the trust question did not
+/// cover, so a repository's own say here can only narrow what was trusted.
+#[derive(Debug, Default)]
+struct Approval {
+    enabled: Option<Vec<String>>,
+    disabled: Vec<String>,
+    all: Option<bool>,
+}
+
+impl Approval {
+    fn read(user: Option<&Value>, project: Option<&Value>, root: &Path, cwd: &Path) -> Approval {
+        let mut a = Approval::default();
+        let mut take = |v: &Value| {
+            let names = |k: &str| v.get(k).and_then(|l| l.as_array()).map(|l| l.iter().filter_map(|n| n.as_str().map(String::from)).collect::<Vec<_>>());
+            if let Some(on) = names("enabledMcpjsonServers") {
+                a.enabled.get_or_insert_with(Vec::new).extend(on);
+            }
+            a.disabled.extend(names("disabledMcpjsonServers").unwrap_or_default());
+            if let Some(all) = v.get("enableAllProjectMcpServers").and_then(|b| b.as_bool()) {
+                a.all = Some(all);
+            }
+        };
+        user.into_iter().chain(project).for_each(&mut take);
+        for dir in crate::permissions::settings::chain(root, cwd) {
+            for name in ["settings.json", "settings.local.json"] {
+                let p = dir.join(".claude").join(name);
+                if let Some(v) = crate::permissions::settings::read_plain(&p, MAX_MCP_JSON, true).ok().and_then(|raw| serde_json::from_slice::<Value>(&raw).ok()) {
+                    take(&v);
+                }
+            }
+        }
+        a
+    }
+
+    fn on(&self, name: &str) -> bool {
+        let named = |l: &[String]| l.iter().any(|n| n == name);
+        !named(&self.disabled) && (self.all == Some(true) || self.enabled.as_deref().is_none_or(named))
+    }
 }
 
 /// Whether a repository's `.mcp.json` names a server: one of the things
@@ -641,6 +705,7 @@ impl Conn {
                     return Err("an earlier call to this server was cut off mid-message (an interrupt, or a pipe that broke), so it is not used again this turn".into());
                 }
                 write_line(&mut io.stdin, &msg).await?;
+                let (mut junk, mut junk_bytes) = (0usize, 0usize);
                 let answer = loop {
                     let mut line = String::new();
                     let read = (&mut io.stdout).take(MAX_MESSAGE).read_line(&mut line).await.map_err(|e| e.to_string())?;
@@ -820,7 +885,7 @@ mod tests {
         assert!(names.is_empty(), "the swapped-in servers were loaded: {names:?}");
         // The file as trusted loads.
         std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"good": {"command": "good"}}}).to_string()).unwrap();
-        assert_eq!(discover(&cfg, &repo).into_iter().map(|s| s.name).collect::<Vec<_>>(), ["good"]);
+        assert_eq!(discover(&cfg, &repo).0.into_iter().map(|s| s.name).collect::<Vec<_>>(), ["good"]);
         let _ = std::fs::remove_dir_all(&base);
     }
 
@@ -846,13 +911,77 @@ mod tests {
             trusted: Some(std::sync::Arc::new(move |_: &Path| trusted)),
             ..Default::default()
         };
-        let untrusted = discover(&cfg(false), &repo);
+        let (untrusted, _) = discover(&cfg(false), &repo);
         assert_eq!(untrusted.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(), ["github"]);
         assert_eq!(untrusted[0].cwd, base.join("home"), "not in the repository nobody trusted");
-        let trusted = discover(&cfg(true), &repo);
+        let (trusted, _) = discover(&cfg(true), &repo);
         let github = trusted.iter().find(|s| s.name == "github").unwrap();
         assert_eq!(github.config.command.as_deref(), Some("github-mcp-server"), "the person's own server outranks a repository's of the same name");
         assert!(trusted.iter().any(|s| s.name == "repo" && s.cwd == repo));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A repository, trusted, with a `.mcp.json` naming `a`, `b` and `c`,
+    /// started in its `app/` directory; Claude's files under `base/claude`.
+    fn approval_repo(name: &str) -> (PathBuf, PathBuf, crate::permissions::Config) {
+        let base = std::env::temp_dir().join(format!("krowk-mcp-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("repo/.git")).unwrap();
+        std::fs::create_dir_all(base.join("repo/app/.claude")).unwrap();
+        std::fs::create_dir_all(base.join("repo/.claude")).unwrap();
+        std::fs::create_dir_all(base.join("claude")).unwrap();
+        let base = base.canonicalize().unwrap();
+        std::fs::write(base.join("repo/.mcp.json"), json!({"mcpServers": {"a": {"command": "a"}, "b": {"command": "b"}, "c": {"command": "c"}}}).to_string()).unwrap();
+        let cfg = crate::permissions::Config { home: Some(base.join("home")), claude_dir: Some(base.join("claude")), trusted: Some(std::sync::Arc::new(|_: &Path| true)), ..Default::default() };
+        (base.clone(), base.join("repo/app"), cfg)
+    }
+
+    #[test]
+    fn r_tool_3_claude_codes_enabled_and_disabled_mcpjson_servers_choose_among_a_trusted_projects() {
+        let (base, app, cfg) = approval_repo("approval");
+        let names = || discover(&cfg, &app).0.into_iter().map(|s| s.name).collect::<Vec<_>>();
+        assert_eq!(names(), ["a", "b", "c"], "trusted and named by no list: all of them, as the trust question covered");
+        // The person's dialog answers, in ~/.claude.json under the directory
+        // Claude Code was started in.
+        let claude_json = |v: Value| std::fs::write(base.join("claude/.claude.json"), json!({"projects": {app.display().to_string(): v}}).to_string()).unwrap();
+        claude_json(json!({"enabledMcpjsonServers": ["a", "b"]}));
+        assert_eq!(names(), ["a", "b"], "once an enabled list is set, only what it names");
+        // A repository's own settings, down to the working directory, add
+        // to the lists; disabled wins over enabled.
+        std::fs::write(base.join("repo/.claude/settings.json"), json!({"disabledMcpjsonServers": ["b"]}).to_string()).unwrap();
+        assert_eq!(names(), ["a"]);
+        std::fs::write(base.join("repo/app/.claude/settings.local.json"), json!({"enableAllProjectMcpServers": true}).to_string()).unwrap();
+        assert_eq!(names(), ["a", "c"], "enableAllProjectMcpServers overrides the enabled list, never the disabled one");
+        // In Claude Code's user settings too.
+        std::fs::remove_file(base.join("repo/app/.claude/settings.local.json")).unwrap();
+        std::fs::write(base.join("claude/settings.json"), json!({"disabledMcpjsonServers": ["a"]}).to_string()).unwrap();
+        assert!(names().is_empty(), "{:?}", names());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn r_tool_3_claude_json_projects_are_looked_up_by_the_launch_directory_then_the_repository() {
+        let (base, app, cfg) = approval_repo("projects");
+        std::fs::remove_file(base.join("repo/.mcp.json")).unwrap();
+        let entry = |dir: &Path, cmd: &str| (dir.display().to_string(), json!({"mcpServers": {"local": {"command": cmd}}}));
+        let write = |entries: Vec<(String, Value)>| std::fs::write(base.join("claude/.claude.json"), json!({"projects": entries.into_iter().collect::<serde_json::Map<_, _>>()}).to_string()).unwrap();
+        let local = || discover(&cfg, &app).0.into_iter().find(|s| s.name == "local").and_then(|s| s.config.command);
+        write(vec![entry(&base.join("repo"), "by-root")]);
+        assert_eq!(local().as_deref(), Some("by-root"), "the repository's entry, when the launch directory has none");
+        write(vec![entry(&base.join("repo"), "by-root"), entry(&app, "by-cwd")]);
+        assert_eq!(local().as_deref(), Some("by-cwd"), "Claude Code keys a project by where it was started");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn r_tool_3_a_server_left_out_for_its_name_or_config_is_named_with_why() {
+        let (base, app, cfg) = approval_repo("skipped");
+        std::fs::write(base.join("repo/.mcp.json"), json!({"mcpServers": {"ok": {"command": "ok"}, "a__b": {"command": "x"}, "args": {"command": "x", "args": "not a list"}}}).to_string()).unwrap();
+        let (servers, skipped) = discover(&cfg, &app);
+        assert_eq!(servers.into_iter().map(|s| s.name).collect::<Vec<_>>(), ["ok"]);
+        assert_eq!(skipped.len(), 2, "{skipped:?}");
+        assert!(skipped.iter().any(|w| w.contains("\"a__b\" in .mcp.json") && w.contains("no __")), "{skipped:?}");
+        assert!(skipped.iter().any(|w| w.contains("args in .mcp.json was skipped: invalid type")), "{skipped:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

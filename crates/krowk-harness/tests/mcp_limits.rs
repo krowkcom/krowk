@@ -175,7 +175,7 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
         trusted: Some(Arc::new(|_: &Path| false)),
         ..Default::default()
     };
-    let servers = mcp::discover(&cfg, &repo);
+    let (servers, _) = mcp::discover(&cfg, &repo);
     assert!(servers.iter().all(|s| s.cwd == b.join("home")));
     search(&Mcp::new(servers), "x");
     std::thread::sleep(Duration::from_millis(300));
