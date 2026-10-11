@@ -1627,10 +1627,12 @@ async fn r_net_2_without_tailscale_the_session_moves_to_the_lan_and_r_net_3_only
 
 /// R-NET-2 (ticket 27): A's LAN address moves from 127.0.0.2 to 127.0.0.3
 /// after A took the session up. A follows the move: it listens on the new
-/// address and no longer on the old, advertises the new one over mDNS —
-/// where a viewer welcomed before the move finds it — and names it in the
-/// welcomes it gives after, so B, attaching now, moves onto it. Linux only:
-/// macOS answers on 127.0.0.1 alone.
+/// address and no longer on the old, advertises only the new one over mDNS,
+/// and names it in the welcomes it gives after, so B, attaching now, moves
+/// onto it. A viewer welcomed before the move reaches it through mDNS once
+/// its welcome's address fails; that ordering is the race's, and the
+/// finding is `sync/mdns.rs`' own test. Linux only: macOS answers on
+/// 127.0.0.1 alone.
 #[cfg(target_os = "linux")]
 #[tokio::test]
 async fn r_net_2_a_host_whose_lan_address_moves_listens_offers_and_advertises_the_new_one() {

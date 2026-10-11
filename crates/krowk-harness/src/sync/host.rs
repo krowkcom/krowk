@@ -869,7 +869,7 @@ impl Hosting {
         // is known only once the relay's replay leaves it out.
         let due = if self.ws.is_some() { self.unreached.due(Instant::now()) } else { Vec::new() };
         for d in due {
-            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates, same_user));
+            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()), same_user));
         }
         self.deny_late().await;
         Ok(())
