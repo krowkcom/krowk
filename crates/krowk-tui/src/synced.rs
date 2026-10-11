@@ -16,6 +16,9 @@
 //!   and the TUI's own wait on it (`COMMAND_WAIT`) counts it as sent.
 //! - Whether a host is there, and the path the session comes by, are
 //!   `Event`s for the status line.
+//! - Its children's logged events ride the same chunks and stream (R-SUB-6)
+//!   and are kept (`Children`): a child view reads a child's history from
+//!   them, as it reads a local child's from its log (R-SUB-12).
 
 use krowk_harness::engine::EngineError;
 use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, LogBody, LogEvent, RunResult, StreamLine};
@@ -81,9 +84,28 @@ struct State {
     sink: Option<Sink>,
 }
 
+/// The logged events of the session's children, as its chunks and stream
+/// have brought them so far, each once: what a child view reads for a
+/// child's history here, where no child has a log (R-SUB-12).
+#[derive(Default)]
+struct Children {
+    events: Vec<LogEvent>,
+    seen: std::collections::HashSet<String>,
+}
+
+impl Children {
+    /// `e`, kept when it is a child's — not session `of`'s own — and new.
+    fn keep(&mut self, of: &str, e: &LogEvent) {
+        if e.session_id != of && self.seen.insert(e.id.clone()) {
+            self.events.push(e.clone());
+        }
+    }
+}
+
 pub struct SyncLink {
     commands: mpsc::UnboundedSender<Command>,
     state: Arc<Mutex<State>>,
+    children: Arc<Mutex<Children>>,
     watch: broadcast::Sender<StreamLine>,
     events: Mutex<Option<mpsc::UnboundedReceiver<Event>>>,
 }
@@ -116,9 +138,14 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
     }
     let state = Arc::new(Mutex::new(State::default()));
+    let mut kept = Children::default();
+    for e in &history {
+        kept.keep(&id, e);
+    }
+    let children = Arc::new(Mutex::new(kept));
     let watch = broadcast::channel(256).0;
     let (events_tx, events) = mpsc::unbounded_channel();
-    let pump = Pump { state: state.clone(), watch: watch.clone(), events: events_tx };
+    let pump = Pump { session: id.clone(), state: state.clone(), children: children.clone(), watch: watch.clone(), events: events_tx };
     tokio::spawn(async move {
         while let Some(batch) = v.updates.recv().await {
             for u in batch {
@@ -127,10 +154,10 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
         pump.gone("the link to the synced session ended");
     });
-    Ok(Opened { link: SyncLink { commands: v.commands, state, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
+    Ok(Opened { link: SyncLink { commands: v.commands, state, children, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
 }
 
-fn lock(m: &Mutex<State>) -> std::sync::MutexGuard<'_, State> {
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -194,6 +221,12 @@ impl SyncLink {
         self.watch.subscribe()
     }
 
+    /// Child `id`'s logged events, oldest first, as the session's chunks
+    /// and stream have brought them: its history for the child view.
+    pub fn child_history(&self, id: &str) -> Vec<LogEvent> {
+        lock(&self.children).events.iter().filter(|e| e.session_id == id).cloned().collect()
+    }
+
     /// The session's other news, taken once by the loop.
     pub fn events(&self) -> Option<mpsc::UnboundedReceiver<Event>> {
         self.events.lock().unwrap_or_else(|e| e.into_inner()).take()
@@ -202,7 +235,10 @@ impl SyncLink {
 
 /// Turns the viewer's updates into lines, acks and events.
 struct Pump {
+    /// The session followed: its children's events are kept besides.
+    session: String,
     state: Arc<Mutex<State>>,
+    children: Arc<Mutex<Children>>,
     watch: broadcast::Sender<StreamLine>,
     events: mpsc::UnboundedSender<Event>,
 }
@@ -276,6 +312,11 @@ impl Pump {
     /// its logged end when that comes caught up rather than live; or, its
     /// `result` never sent, when the next turn starts or the host goes.
     async fn line(&self, l: StreamLine, live: bool) {
+        // Kept before it is handed on: a child view opened once the TUI
+        // has seen an event reads it in the child's history.
+        if let StreamLine::Log(e) = &l {
+            lock(&self.children).keep(&self.session, e);
+        }
         let to = {
             let mut s = lock(&self.state);
             let starts = matches!(&l, StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }));
@@ -355,7 +396,7 @@ mod tests {
     fn pump() -> (Pump, mpsc::UnboundedReceiver<Event>, Arc<Mutex<State>>) {
         let state = Arc::new(Mutex::new(State::default()));
         let (events, rx) = mpsc::unbounded_channel();
-        (Pump { state: state.clone(), watch: broadcast::channel(16).0, events }, rx, state)
+        (Pump { session: "s".into(), state: state.clone(), children: Default::default(), watch: broadcast::channel(16).0, events }, rx, state)
     }
 
     fn ev(id: &str, body: LogBody) -> serde_json::Value {
@@ -431,6 +472,28 @@ mod tests {
         assert!(matches!(approve_rx.try_recv(), Ok(Ok(()))));
         p.update(Update::Host(false)).await;
         assert!(done_rx.try_recv().is_err(), "the prompt is still queued, not ended as taken");
+    }
+
+    /// R-SUB-12, R-SUB-6: a child's logged events, as the chunks (attached,
+    /// caught up) and the stream bring them, are kept once each, the
+    /// session's own left out: a child view's history on an attached client.
+    #[tokio::test]
+    async fn r_sub_12_a_childs_events_from_the_chunks_and_the_stream_are_its_history() {
+        use krowk_harness::protocol::Item;
+        let (p, _rx, _) = pump();
+        let said = |sid: &str, id: &str, text: &str| LogEvent { id: id.into(), parent_id: None, session_id: sid.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(text) } };
+        let json = |e: &LogEvent| serde_json::to_value(e).unwrap();
+        let attached = vec![started("e1"), json(&said("k1", "c1", "TASK")), json(&said("k2", "d1", "other"))];
+        p.update(Update::Attached { events: attached, head: None }).await;
+        p.update(Update::Line(StreamLine::Log(said("k1", "c2", "found it")))).await;
+        p.update(Update::Line(StreamLine::Log(said("s", "e2", "the parent's")))).await;
+        // A reconnect's catch-up brings what was already kept again.
+        p.update(Update::CaughtUp(vec![json(&said("k1", "c2", "found it")), json(&said("k1", "c3", "done"))])).await;
+        let kept = p.children.lock().unwrap();
+        let of = |sid: &str| kept.events.iter().filter(|e| e.session_id == sid).map(|e| e.id.as_str()).collect::<Vec<_>>();
+        assert_eq!(of("k1"), ["c1", "c2", "c3"], "in order, each once");
+        assert_eq!(of("k2"), ["d1"]);
+        assert!(of("s").is_empty(), "the session's own is its replay's, not kept twice");
     }
 
     /// D11, R-SUB-12: a subagent's approval names its own session, which

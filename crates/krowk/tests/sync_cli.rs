@@ -6,8 +6,9 @@
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
 //! And `krowk hosts` listing the machines that host, with no Tailscale tag
-//! (ticket 43). And a subagent of A's turn stopped alone from B by its id
-//! (R-SUB-12).
+//! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
+//! and opened in a TUI attached on a third machine, which reads its
+//! history there and stops it with `x` (R-SUB-12).
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -34,6 +35,9 @@ const ANSWER: &str = "the-answer-marker-5c2e";
 /// What the model answers a prompt typed into the TUI on B.
 const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 
+/// Holds the slower subagent's answer until the test opens it.
+static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
+
 /// A model that answers with the marker, except when asked to make a
 /// file, which it does with `bash` — an approval — and a long answer, paced
 /// so that it can be interrupted part way.
@@ -42,10 +46,22 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = messages.last().cloned().unwrap_or_default();
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
+    // The slower subagent: a search, then, once the test lets it
+    // (`SLOWER`), a slow answer — an item begun while a TUI looks on.
+    if body["system"].to_string().contains("You are a subagent") && messages.first().is_some_and(|m| m.to_string().contains("look slower")) {
+        if !has_result {
+            return mock::Reply::sse(&mock::tool_use("toolu_01Glob", "glob", &serde_json::json!({"pattern": "*"})));
+        }
+        let words: String = (0..400).map(|i| format!("slowword{i} ")).collect();
+        return mock::Reply { hold: Some(("content_block_start", SLOWER.clone())), ..mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(50)) };
+    }
     // A subagent's own call: a slow answer, stopped part way.
     if body["system"].to_string().contains("You are a subagent") {
         let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    if !has_result && text.contains("start a slower subagent") {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Slower", "subagent", &serde_json::json!({"description": "a slower look", "prompt": "look slower"})));
     }
     if !has_result && text.contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
@@ -311,6 +327,67 @@ fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
     assert_eq!(ended["status"], "interrupted", "{ended}");
     let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
+}
+
+/// R-SUB-12, R-SUB-11: a TUI attached to a synced session opens a child of
+/// it in the child view — its prompt first and what it has said so far,
+/// from what the session's chunks and stream carried, with no log of it on
+/// this machine — sees what it says next arrive, and stops it alone with
+/// `x`, on the host.
+#[test]
+fn r_sub_12_an_attached_tui_opens_a_childs_transcript_and_stops_it() {
+    let w = World::new("childview");
+    let (a, b, c) = (w.machine("a"), w.machine("b"), w.machine("c"));
+    let (host, session) = hosted(&w, &a);
+    // B, on the command line, starts the child; C opens it in its TUI.
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("start a slower subagent");
+    let started = view.until("the subagent", is("subagent.started"));
+    let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
+    view.until("the subagent's search", |v| v["type"] == "item.completed" && v["sessionId"] == child.as_str() && v["item"]["kind"] == "toolResult");
+    let mut cmd = c.command(&["sync", "attach", &session]);
+    cmd.env("TERM", "xterm-256color");
+    let mut t = pty::Pty::spawn(cmd, 120, 40);
+    // What the TUI has drawn since byte `from` of its output, once that holds `what`.
+    let since = |t: &pty::Pty, from: usize, what: &str| -> String {
+        let deadline = Instant::now() + Duration::from_secs(40);
+        loop {
+            let drawn = String::from_utf8_lossy(&t.output()[from..]).into_owned();
+            if drawn.contains(what) {
+                return drawn;
+            }
+            assert!(Instant::now() < deadline, "no {what:?}: {drawn:?}\nA: {:?}", host.stderr());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    };
+    since(&t, 0, "Attached to a");
+    assert!(!c.home.join(".krowk/sessions").join(&child).exists(), "C holds no log of the child");
+    let mark = t.output().len();
+    t.write(b"\x07");
+    since(&t, mark, "select");
+    let mark = t.output().len();
+    t.write(b"\r");
+    let drawn = since(&t, mark, "look slower");
+    assert!(!drawn.contains("could not be read"), "its history is read here: {drawn:?}");
+    // Its answer, begun now, drawn as it arrives.
+    let mark = t.output().len();
+    SLOWER.open();
+    since(&t, mark, "slowword");
+    t.write(b"x");
+    let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
+    assert_eq!(ended["status"], "interrupted", "{ended}");
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
+    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&child).join("events.jsonl")).unwrap();
+    assert!(log.contains("\"status\":\"interrupted\""), "stopped on A: {log}");
+    since(&t, mark, "interrupted");
+    // Esc back to the overlay, Esc out of it, and leave.
+    for key in [&b"\x1b"[..], b"\x1b", b"\x04\x04"] {
+        t.write(key);
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "C leaves: {:?}", t.text());
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
