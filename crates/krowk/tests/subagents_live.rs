@@ -15,7 +15,9 @@
 //! stand-in registry, is attached from a second device's TUI (`krowk sync
 //! attach`; a krowk home and keys of its own, on this computer), which
 //! answers the approvals of a turn it prompted, opens one of its children
-//! and stops it on the host (R-SUB-12).
+//! and stops it on the host (R-SUB-12). The attached TUI's history, and the
+//! session resumed on the host at the end, draw each of the first turn's
+//! agents with the duration, status and tokens the host showed live (SV16).
 //!
 //! Twice: on the Claude Code backend, and on a native session. Both are
 //! ignored by default — each takes minutes, the Claude Code one spends real
@@ -400,6 +402,9 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     let after = until(&ta, "the overlay after", 10, |s| !in_view(s) && s.contains("enter opens"));
     assert!(after.contains("Agent sleeper") && after.matches("done in").count() >= 2, "{after}");
     capture(run.name, "07-overlay-after", &after);
+    // Each child as it ended, live: what a replay draws too (SV16).
+    let live = rows_of(&after, &FIRST);
+    assert!(live.iter().all(|r| r.contains(" tokens")), "{live:?}");
     ta.keys(&["Escape"]);
     let conversation = until(&ta, "the conversation", 10, |s| !s.contains("enter opens"));
     let history = ta.history();
@@ -415,6 +420,7 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     // Its history, replayed from the chunks: the sleeper as it ended.
     assert!(attached.lines().any(|l| l.contains("Agent sleeper") && l.contains("interrupted after")), "{attached}");
     capture(run.name, "b1-attached", &attached);
+    assert_eq!(rows_of(&attached, &FIRST), live, "B draws each child with the duration, status and tokens A showed live");
     prompt(&tb, TWO);
     // A prompt from another machine runs in the host's `default` mode at
     // most: each agent's bash, which writes a file, waits on an approval,
@@ -456,6 +462,35 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     assert_eq!(a.child_end(&session, "waker").1.as_deref(), Some("completed"), "the waker's log on A");
     assert!(a.repo.join("woke.txt").exists() && !a.repo.join("napped.txt").exists(), "the waker's call ran on A, the napper's never finished");
     assert!(host.0.try_wait().unwrap().is_none(), "A still hosts: {}", std::fs::read_to_string(w.root.join("sync-host.log")).unwrap_or_default());
+
+    // The session resumed on A: each child of the first turn as it ended,
+    // in the Agents overlay, which lists them all (SV16).
+    let tr = a.tui(&format!("{}-r", run.name), &["--resume", &session]).expect("tmux, checked before the run");
+    until(&tr, "the resumed session", 30, |s| s.contains("Plan, search, build anything"));
+    tr.keys(&["C-g"]);
+    let resumed = until(&tr, "the resumed session's Agents overlay", 10, |s| s.contains("enter opens") && FIRST.iter().all(|n| s.contains(&format!("Agent {n} ·"))));
+    capture(run.name, "r1-resumed-overlay", &resumed);
+    assert_eq!(rows_of(&resumed, &FIRST), live, "a resume draws each child as A did live");
+}
+
+/// The first turn's agents.
+const FIRST: [&str; 3] = ["sleeper", "counter", "reader"];
+
+/// The last row on `screen` of each agent named, as a replay can draw it:
+/// its bullet and what it cost — a figure only the live host has — left
+/// out.
+fn rows_of(screen: &str, names: &[&str]) -> Vec<String> {
+    names
+        .iter()
+        .map(|n| {
+            let row = screen.lines().map(str::trim).rfind(|l| l.contains(&format!("Agent {n} ·"))).unwrap_or_default();
+            let row = row.trim_start_matches(|c: char| !c.is_alphanumeric());
+            match row.rfind(" · $") {
+                Some(at) => row[..at].to_string(),
+                None => row.to_string(),
+            }
+        })
+        .collect()
 }
 
 /// Whether tmux is here to run the TUIs in, said when it is not.

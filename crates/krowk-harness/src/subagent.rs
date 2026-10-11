@@ -802,6 +802,11 @@ impl ChildWatch {
         ChildWatch { at_call: true, ..ChildWatch::new(session_id) }
     }
 
+    /// The tokens its frames say it has used.
+    pub fn tokens(&self) -> i64 {
+        self.tokens
+    }
+
     /// Takes in what the child's engine said at `now`: true when its state
     /// changed, so a frame is due. A text delta, or anything else that only
     /// shows it is alive, changes `lastEventMs` and nothing a frame is sent

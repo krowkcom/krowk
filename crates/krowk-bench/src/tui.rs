@@ -282,7 +282,7 @@ fn synthetic_session(sessions: &Path, cwd: &Path, turns: usize, tokens: usize) -
         append(LogBody::ItemCompleted { turn_id: turn_id.clone(), item_id: format!("a-{t}"), item: Item::AssistantText { text: answer.clone() } })?;
         let usage = Usage { input_tokens: 20, output_tokens: per_turn as i64, ..Usage::default() };
         append(LogBody::ResponseCompleted { turn_id: turn_id.clone(), response_id: None, model: model.model.clone(), usage, stop_reason: Some("end_turn".into()), item_ids: vec![format!("a-{t}")] })?;
-        append(LogBody::TurnCompleted { turn_id, status: TurnStatus::Completed, usage, duration_ms: 1000, error: None, reported_cost_usd: None })?;
+        append(LogBody::TurnCompleted { turn_id, status: TurnStatus::Completed, usage, duration_ms: 1000, error: None, reported_cost_usd: None, reported_tokens: None })?;
     }
     log.sync().map_err(|e| e.message().to_string())?;
     Ok(root.session_id)

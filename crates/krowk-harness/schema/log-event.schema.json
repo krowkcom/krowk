@@ -513,6 +513,14 @@
           ],
           "format": "double"
         },
+        "reportedTokens": {
+          "description": "What a backend counted a child it ran as having used (the\ntokens of the child's last `subagent.status`), in a backend\nchild's own log, whose `usage` is empty: its calls are metered\nas the parent's `subagent.response`. What a replay draws the\nchild's row with; never spend.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "int64"
+        },
         "error": {
           "anyOf": [
             {

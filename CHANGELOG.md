@@ -310,6 +310,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   restoring access to what the call itself locked. Directories you locked
   yourself are left alone. If something still can't be removed, krowk
   says so.
+- **A resumed or attached session shows each finished subagent as it
+  ended.** When you resumed a session (`krowk --resume`) or opened it on a
+  device that attaches to it (`krowk sync attach`), its subagents' rows
+  were worked out from the session's own log alone. Subagents that ran
+  side by side all read the time the last of them took, so one you stopped
+  after a minute read `interrupted after 1m40s`, and no row showed its
+  tokens. Each row now reads what it read live: how the subagent ended,
+  how long it took and its tokens, from the end of that subagent's own
+  log. A resume reads only the end of each (the newest 256, and the newest
+  256 still unfinished in the session's log), never a whole log. Claude
+  Code and Codex agents' tokens are kept on that line from now on, so
+  sessions recorded before this still show none for them.
 
 ## [0.13.0] - 2026-10-07
 

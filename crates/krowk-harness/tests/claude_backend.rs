@@ -1494,6 +1494,13 @@ fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_appro
     let (ran, waited) = (at(&bash), at(&waits));
     assert!(ran < waited && s[waited + 1] == bash, "in Bash, waiting on the person, in Bash again once answered: {s:?}");
     assert_eq!(s.last().map(|f| f.3), Some(ChildState::Interrupted), "stopped: {s:?}");
+    // SV16: each child's end in its log carries its last frame's tokens,
+    // for a replay to draw its row with; its usage stays empty, its spend
+    // being the parent's `subagent.response`.
+    for (k, frames) in [(&reader_kid, &r), (&sleeper_kid, &s)] {
+        let end = home.events(k).into_iter().rev().find_map(|e| if let LogBody::TurnCompleted { usage, reported_tokens, .. } = e.body { Some((usage.total(), reported_tokens)) } else { None });
+        assert_eq!(end, Some((0, frames.last().map(|f| f.2))), "{k}");
+    }
     // The approval is the sleeper's, in its turn, and so is its answer.
     let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).expect("asked");
     let turn_of = |k: &str| home.events(k).iter().find_map(|e| if let LogBody::TurnStarted { turn_id, .. } = &e.body { Some(turn_id.clone()) } else { None }).unwrap();
