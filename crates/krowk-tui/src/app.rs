@@ -2508,7 +2508,7 @@ impl App {
                 // Drawn as a finished tool call is: verb, then its argument.
                 self.finish_live();
                 self.gap();
-                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::raw("Loaded skill "), Span::styled(clean(name), look::path())]));
+                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::raw("Skill "), Span::styled(clean(name), look::path())]));
             }
             Item::UserText { text, .. } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
             Item::UserText { text, .. } => {

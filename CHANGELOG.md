@@ -126,7 +126,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   normal foreground (white on a dark theme). Only the spinner keeps the
   accent colour.
 - **A loaded skill looks like a tool call.** "Loaded the X skill" in grey
-  italics is now `◆ Loaded skill X`, with a blank line above it.
+  italics is now `◆ Skill X`, as when the agent loads one, with a blank
+  line above it.
 - **Enter in the Agents overlay opens the subagent's transcript instead of
   expanding its last line.** Ctrl-G's Enter used to add one line under the
   selected subagent saying what it did last. The transcript shows that and
