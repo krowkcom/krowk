@@ -85,20 +85,33 @@ struct State {
 }
 
 /// The logged events of the session's children, as its chunks and stream
-/// have brought them so far, each once: what a child view reads for a
-/// child's history here, where no child has a log (R-SUB-12).
+/// have brought them so far: what a child view reads for a child's history
+/// here, where no child has a log (R-SUB-12). Each arrives once — the
+/// viewer hands on an event it has not handed on before, and nothing else
+/// — so none is kept twice. Kept for as long as the session is attached,
+/// as the conversation's own lines are.
 #[derive(Default)]
 struct Children {
     events: Vec<LogEvent>,
-    seen: std::collections::HashSet<String>,
 }
 
 impl Children {
-    /// `e`, kept when it is a child's — not session `of`'s own — and new.
+    /// `e`, kept when it is a child's: not session `of`'s own.
     fn keep(&mut self, of: &str, e: &LogEvent) {
-        if e.session_id != of && self.seen.insert(e.id.clone()) {
+        if e.session_id != of {
             self.events.push(e.clone());
         }
+    }
+
+    /// Child `id`'s events in its log's order. They arrive in another
+    /// order at times — a catch-up after the live lines it fills in
+    /// before, at attach or after a gap — and the child view walks the
+    /// log back from the last: ordered by id, which krowk mints rising
+    /// (time, then a counter) for every event a host writes.
+    fn of(&self, id: &str) -> Vec<LogEvent> {
+        let mut out: Vec<LogEvent> = self.events.iter().filter(|e| e.session_id == id).cloned().collect();
+        out.sort_by(|a, b| a.id.cmp(&b.id));
+        out
     }
 }
 
@@ -221,10 +234,10 @@ impl SyncLink {
         self.watch.subscribe()
     }
 
-    /// Child `id`'s logged events, oldest first, as the session's chunks
-    /// and stream have brought them: its history for the child view.
+    /// Child `id`'s logged events, in its log's order, as the session's
+    /// chunks and stream have brought them: its history for the child view.
     pub fn child_history(&self, id: &str) -> Vec<LogEvent> {
-        lock(&self.children).events.iter().filter(|e| e.session_id == id).cloned().collect()
+        lock(&self.children).of(id)
     }
 
     /// The session's other news, taken once by the loop.
@@ -475,25 +488,31 @@ mod tests {
     }
 
     /// R-SUB-12, R-SUB-6: a child's logged events, as the chunks (attached,
-    /// caught up) and the stream bring them, are kept once each, the
-    /// session's own left out: a child view's history on an attached client.
+    /// caught up) and the stream bring them, are kept, the session's own
+    /// left out, and read back in the child's log order whatever order they
+    /// came in: a live line ahead of the catch-up that fills in before it
+    /// is still the last, and the walk back from it reaches the first.
     #[tokio::test]
-    async fn r_sub_12_a_childs_events_from_the_chunks_and_the_stream_are_its_history() {
+    async fn r_sub_12_a_childs_events_from_the_chunks_and_the_stream_are_its_history_in_log_order() {
         use krowk_harness::protocol::Item;
         let (p, _rx, _) = pump();
-        let said = |sid: &str, id: &str, text: &str| LogEvent { id: id.into(), parent_id: None, session_id: sid.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(text) } };
+        let said = |sid: &str, id: &str, parent: Option<&str>| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: sid.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(id) } };
         let json = |e: &LogEvent| serde_json::to_value(e).unwrap();
-        let attached = vec![started("e1"), json(&said("k1", "c1", "TASK")), json(&said("k2", "d1", "other"))];
+        let attached = vec![started("e1"), json(&said("k1", "c1", None)), json(&said("k2", "d1", None))];
         p.update(Update::Attached { events: attached, head: None }).await;
-        p.update(Update::Line(StreamLine::Log(said("k1", "c2", "found it")))).await;
-        p.update(Update::Line(StreamLine::Log(said("s", "e2", "the parent's")))).await;
-        // A reconnect's catch-up brings what was already kept again.
-        p.update(Update::CaughtUp(vec![json(&said("k1", "c2", "found it")), json(&said("k1", "c3", "done"))])).await;
+        p.update(Update::Line(StreamLine::Log(said("k1", "c2", Some("c1"))))).await;
+        p.update(Update::Line(StreamLine::Log(said("s", "e2", Some("e1"))))).await;
+        // A gap: c5 arrives live before the catch-up brings c3 and c4.
+        p.update(Update::Line(StreamLine::Log(said("k1", "c5", Some("c4"))))).await;
+        p.update(Update::CaughtUp(vec![json(&said("k1", "c3", Some("c2"))), json(&said("k1", "c4", Some("c3")))])).await;
         let kept = p.children.lock().unwrap();
-        let of = |sid: &str| kept.events.iter().filter(|e| e.session_id == sid).map(|e| e.id.as_str()).collect::<Vec<_>>();
-        assert_eq!(of("k1"), ["c1", "c2", "c3"], "in order, each once");
-        assert_eq!(of("k2"), ["d1"]);
-        assert!(of("s").is_empty(), "the session's own is its replay's, not kept twice");
+        let ids = |h: &[LogEvent]| h.iter().map(|e| e.id.clone()).collect::<Vec<_>>();
+        let history = kept.of("k1");
+        assert_eq!(ids(&history), ["c1", "c2", "c3", "c4", "c5"], "in the log's order");
+        let head = history.last().unwrap().id.clone();
+        assert_eq!(krowk_harness::log::branch(&history, &head).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3", "c4", "c5"], "the child view's walk reaches every one");
+        assert_eq!(ids(&kept.of("k2")), ["d1"]);
+        assert!(kept.of("s").is_empty(), "the session's own is its replay's, not kept twice");
     }
 
     /// D11, R-SUB-12: a subagent's approval names its own session, which

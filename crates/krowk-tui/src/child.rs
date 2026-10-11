@@ -6,13 +6,14 @@
 //!
 //! Its body is a second, headless App on the child's session that keeps
 //! what it would print (`App::keep`): the child's history read from its
-//! log — the parent's prompt first — or, attached to a synced session, from
-//! what its chunks and stream carried of the child (R-SUB-12); then its
-//! lines as they arrive, which the main App hands on (`on_line`) while it
-//! folds them into the child's row as ever. Under the kept lines, while the window follows the end,
-//! what the child has not finished yet (`App::tail`): the text streaming,
-//! the call out. Its header is the main App's to say (`App::child_rows`):
-//! the child's row, which its frames keep current.
+//! log — the parent's prompt first — or, attached to a synced session,
+//! from what its chunks and stream carried of the child (R-SUB-12); then
+//! its lines as they arrive, which the main App hands on (`on_line`) while
+//! it folds them into the child's row as ever. Under the kept lines, while
+//! the window follows the end, what the child has not finished yet
+//! (`App::tail`): the text streaming, the call out. Its header is the main
+//! App's to say (`App::child_rows`): the child's row, which its frames keep
+//! current.
 
 use crate::app::App;
 use crate::look;
