@@ -178,6 +178,11 @@ struct OpenChild {
 /// own (`Registration`): a prompt to it is refused as busy, an interrupt
 /// or a steer is answered for what it is. Weak: what the host keeps of a
 /// backend's agents never keeps the host.
+///
+/// Lock order: `backends`, then `running`. Its drop takes `running`, and
+/// can run where `backends` is held (a backend let go with agents open —
+/// `Host::shutdown` drains them under it); nothing takes `backends` while
+/// it holds `running`.
 struct ChildHeld {
     shared: std::sync::Weak<Shared>,
     id: String,
@@ -552,20 +557,43 @@ impl Shared {
         // A session moved to another instance, or its instances changed: the
         // old engine's process is stopped with it when the last handle goes
         // (its drop kills it).
+        let children: Arc<tokio::sync::Mutex<BackendChildren>> = Arc::default();
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
-            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id))),
+            _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),
         };
-        backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation, children: Arc::default() });
+        let old = backends.insert(session_id.to_string(), Backend { instance: instance.name.clone(), engine: e.clone(), used: Instant::now(), generation, children });
+        // Let go of outside the lock: its children's holds take `running`.
+        drop(backends);
+        drop(old);
         Ok(e)
     }
 
     /// Where a session's backend says what happens between turns: to the
-    /// host's watchers, as frames of that session.
-    fn teller(&self, session_id: &str) -> Idle {
+    /// host's watchers, as frames of that session. An agent of its that
+    /// ends between turns — run in the background — ends its child too:
+    /// its turn completed in its log and its last frame, and its hold let
+    /// go. Its other lines between turns are not written yet (SV9c).
+    fn teller(&self, session_id: &str, children: Arc<tokio::sync::Mutex<BackendChildren>>) -> Idle {
         let (watch, session_id) = (self.watch.clone(), session_id.to_string());
         Arc::new(move |ev| {
             let live = match ev {
+                EngineEvent::BackendChildEnded { task_id, status, error } => {
+                    let (children, watch, session_id) = (children.clone(), watch.clone(), session_id.clone());
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        rt.spawn(async move {
+                            let Some(c) = children.lock().await.open.remove(&task_id) else { return };
+                            let (lines, lost) = end_child(c, status, error).await;
+                            if let Some(text) = lost {
+                                let _ = watch.send(StreamLine::Live(LiveEvent::Notice { session_id, turn_id: String::new(), text }));
+                            }
+                            for l in lines {
+                                let _ = watch.send(l);
+                            }
+                        });
+                    }
+                    return;
+                }
                 EngineEvent::BackendAgents { agents } => LiveEvent::BackendAgents { session_id: session_id.clone(), agents },
                 EngineEvent::Unprompted { reason } => LiveEvent::TurnUnprompted { session_id: session_id.clone(), reason },
                 // No turn to name: the frame's turn id is empty.
@@ -1740,11 +1768,30 @@ struct Kids {
     effort: Option<Effort>,
 }
 
-/// Appends to a child's log, then sends: the order `Writer::log` keeps.
-async fn put(log: &mut SessionLog, out: &mpsc::Sender<StreamLine>, body: LogBody) -> Result<(), LogError> {
-    let ev = log.append_off(body).await?;
-    let _ = out.send(StreamLine::Log(ev)).await;
-    Ok(())
+/// What is said of a backend's agent whose log could not be written.
+fn lost_words(which: &str, e: &LogError) -> String {
+    format!("a backend agent's log ({which}) could not be written, and the rest of what it does is not kept: {}", e.message())
+}
+
+/// Ends a backend's agent as it ended, in a turn or between turns: its
+/// one turn completed in its log — with no usage, its spend being the
+/// parent's — then what to send, written first: that line and its last
+/// frame, or, its log failing, a failed frame and what to say. Its hold
+/// goes with it.
+async fn end_child(mut c: OpenChild, status: ChildState, error: Option<String>) -> (Vec<StreamLine>, Option<String>) {
+    let ended = match status {
+        ChildState::Done => TurnStatus::Completed,
+        ChildState::Interrupted => TurnStatus::Interrupted,
+        ChildState::Running | ChildState::Failed => TurnStatus::Failed,
+    };
+    let error = error.map(|message| crate::protocol::ErrorInfo { code: "agent_ended".into(), message, http_status: None, resets_at_ms: None });
+    let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None };
+    let out = match c.log.append_off(completed).await {
+        Ok(ev) => (vec![StreamLine::Log(ev), StreamLine::Live(c.watch.frame(status))], None),
+        Err(e) => (vec![StreamLine::Live(c.watch.frame(ChildState::Failed))], Some(lost_words(&c.log.session_id, &e))),
+    };
+    c.log.sync_behind();
+    out
 }
 
 impl Writer<'_> {
@@ -2023,26 +2070,21 @@ impl Writer<'_> {
     /// usage, its spend being the parent's — and its last frame.
     async fn child_ended(&self, session_id: &str, task_id: &str, status: ChildState, error: Option<String>) {
         let Some(k) = &self.kids else { return };
-        let Some(mut c) = k.state.lock().await.open.remove(task_id) else { return };
-        let ended = match status {
-            ChildState::Done => TurnStatus::Completed,
-            ChildState::Interrupted => TurnStatus::Interrupted,
-            ChildState::Running | ChildState::Failed => TurnStatus::Failed,
-        };
-        let error = error.map(|message| crate::protocol::ErrorInfo { code: "agent_ended".into(), message, http_status: None, resets_at_ms: None });
-        let completed = LogBody::TurnCompleted { turn_id: c.turn_id.clone(), status: ended, usage: Usage::default(), duration_ms: c.started.elapsed().as_millis() as u64, error, reported_cost_usd: None };
-        match put(&mut c.log, self.out, completed).await {
-            Ok(()) => self.live(c.watch.frame(status)).await,
-            Err(e) => self.child_lost(session_id, &c.log.session_id, e, Some(&c.watch)).await,
+        let Some(c) = k.state.lock().await.open.remove(task_id) else { return };
+        let (lines, lost) = end_child(c, status, error).await;
+        if let Some(text) = lost {
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
         }
-        c.log.sync_behind();
+        for l in lines {
+            let _ = self.out.send(l).await;
+        }
     }
 
     /// A backend's agent whose log could not be written: said, ended as
     /// failed on its `subagent.status` when a client knows of it, as a
     /// native child whose turn failed is, and the rest of it not followed.
     async fn child_lost(&self, session_id: &str, which: &str, e: LogError, watch: Option<&ChildWatch>) {
-        let text = format!("a backend agent's log ({which}) could not be written, and the rest of what it does is not kept: {}", e.message());
+        let text = lost_words(which, &e);
         self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
         if let Some(w) = watch {
             self.live(w.frame(ChildState::Failed)).await;
