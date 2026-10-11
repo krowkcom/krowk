@@ -104,6 +104,10 @@ pub enum EngineEvent {
     /// Between turns only, through `Idle`: the backend began a turn by
     /// itself, and it waits for `Command::Continue` (`turn.unprompted`).
     Unprompted { reason: String },
+    /// Through `Idle` only: a turn took the process from between turns.
+    /// What was said through `Idle` before it came before the turn's
+    /// events; what is said after it comes after them, the turn over.
+    Woke,
     /// One of the backend's own agents started (R-SUB-7): Claude Code's
     /// task `task_id`, answering the conversation's `Agent` call `call_id`,
     /// with what the parent asked of it (R-SUB-8) and whether it runs in the

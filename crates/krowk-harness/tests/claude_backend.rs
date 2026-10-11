@@ -1408,3 +1408,125 @@ fn r_sub_7_a_background_agent_ending_between_turns_ends_its_child_and_lets_it_go
         host.shutdown().await;
     }));
 }
+
+/// The child session of the agent Claude Code knows as `task`, from the
+/// turn that started it.
+fn kid_of(lines: &[StreamLine], task: &str) -> String {
+    let kid = lines.iter().find_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, backend_id: Some(b), .. }, .. }) if b == task => Some(subagent_session_id.clone()),
+        _ => None,
+    });
+    kid.expect("the agent is a child")
+}
+
+/// R-SUB-7, R-SUB-9: a background agent's lines between turns, when no
+/// turn runs to write them, are the session's writer's: each item into
+/// its child log, in the order Claude Code said it, sent to the host's
+/// watchers as the child's — a frame each time its state changes, as in a
+/// turn — then its end. The turn Claude Code begins to answer it
+/// (`origin.kind` task-notification) finds it already ended: its log
+/// holds its whole turn before that turn's first line is sent.
+#[test]
+fn r_sub_7_a_background_agents_lines_between_turns_are_written_to_its_child_log_in_order() {
+    let home = Home::new("bg-lines");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        let kid = kid_of(&lines, "a_bg_1");
+        // Between turns: what the watchers are told of the child, until
+        // Claude Code begins its turn.
+        let mut told = Vec::new();
+        loop {
+            match watch.recv().await.expect("the host is watched") {
+                StreamLine::Live(LiveEvent::TurnUnprompted { session_id, .. }) if session_id == first.session_id => break,
+                l if l.session_id() == kid => told.push(l),
+                _ => {}
+            }
+        }
+        let read = told.iter().position(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::ToolCall { name, .. }, .. }, .. }) if name == "Read"));
+        let running = told.iter().position(|l| matches!(l, StreamLine::Live(LiveEvent::SubagentStatus { status: krowk_harness::protocol::ChildState::Running, .. })));
+        let ended = told.iter().position(|l| matches!(l, StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { status: TurnStatus::Completed, .. }, .. })));
+        let done = told.iter().position(|l| matches!(l, StreamLine::Live(LiveEvent::SubagentStatus { status: krowk_harness::protocol::ChildState::Done, .. })));
+        assert!(read.is_some() && read < running && running < ended && ended < done, "its call, its row's frame, its end, its last frame: {told:?}");
+        // Its log: the turn begun in the parent's, its prompt, then what it
+        // did between turns, as sent, and its end.
+        let log = home.events(&kid);
+        let sent: Vec<&str> = told.iter().filter_map(|l| if let StreamLine::Log(e) = l { Some(e.id.as_str()) } else { None }).collect();
+        let tail: Vec<&str> = log[log.len() - sent.len()..].iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(tail, sent, "written as sent, in order: {log:?}");
+        assert!(matches!(&log[2].body, LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if text == "look around"), "{log:?}");
+        assert!(log.iter().all(|e| e.session_id == kid));
+        // Claude Code's turn: by its first line the child had ended.
+        let (tx, mut rx) = mpsc::channel(256);
+        let going = host.execute(continue_turn(&first.session_id), tx);
+        let (r, ended_first) = tokio::join!(going, async {
+            rx.recv().await.expect("the turn sends a line");
+            matches!(home.events(&kid).last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Completed, .. }))
+        });
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        assert!(ended_first, "the agent's child ended before the turn answering it ran");
+        host.shutdown().await;
+    }));
+}
+
+/// R-SUB-7: a process let go with an agent running — the session moved to
+/// another account — ends its child interrupted, saying why: its log's
+/// turn completed and its last frame to the watchers.
+#[test]
+fn r_sub_7_a_background_agents_child_ends_interrupted_when_its_process_is_let_go() {
+    let home = Home::new("bg-let-go");
+    let dir = home.signed_in("cfg-work");
+    let other = home.signed_in("cfg-other");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl"))), ("claude:other", home.instance(&other, None))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let a = r.unwrap().unwrap();
+        let kid = kid_of(&lines, "a_bg_1");
+        let (_, r) = run(&host, prompt(Some(&a.session_id), "go on over there", "claude:other/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        let why = loop {
+            match watch.recv().await.expect("the host is watched") {
+                StreamLine::Log(LogEvent { session_id, body: LogBody::TurnCompleted { status, error, .. }, .. }) if session_id == kid => {
+                    assert_eq!(status, TurnStatus::Interrupted);
+                    break error.expect("why").message;
+                }
+                _ => {}
+            }
+        };
+        assert!(why.contains("let go"), "{why}");
+        let frame = watch.recv().await.unwrap();
+        assert!(matches!(&frame, StreamLine::Live(LiveEvent::SubagentStatus { session_id, status: krowk_harness::protocol::ChildState::Interrupted, .. }) if *session_id == kid), "{frame:?}");
+        host.shutdown().await;
+    }));
+}
+
+/// R-SUB-7: a host shut down with an agent running ends its child before
+/// it returns: the child's log has its turn completed, interrupted, the
+/// moment `shutdown` is done.
+#[test]
+fn r_sub_7_a_host_shut_down_ends_its_background_agents_child_before_it_returns() {
+    let home = Home::new("bg-shutdown");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        r.unwrap().unwrap();
+        let kid = kid_of(&lines, "a_bg_1");
+        // Mid-way: its first call between turns has been written.
+        loop {
+            if let StreamLine::Log(LogEvent { session_id, body: LogBody::ItemCompleted { item: Item::ToolCall { .. }, .. }, .. }) = watch.recv().await.unwrap()
+                && session_id == kid
+            {
+                break;
+            }
+        }
+        host.shutdown().await;
+        let log = home.events(&kid);
+        assert!(matches!(log.last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Interrupted, error: Some(e), .. }) if e.message.contains("shut down")), "{log:?}");
+    }));
+}
