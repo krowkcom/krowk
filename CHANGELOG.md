@@ -189,7 +189,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   can no longer swap both the archive and its checksum. A release that
   fails is not installed (exit code 4, `unverified_release`). The install
   script does the same with `cosign` when you have it installed, and
-  without it prints the command to check by hand.
+  without it prints the command to check by hand; with
+  `KROWK_REQUIRE_SIGNATURE=1` it refuses to install without cosign.
 - **The running turn's label is in your terminal's text colour.**
   "Thinking…", "Responding…", "Running …" and the rest now show in the
   normal foreground (white on a dark theme). Only the spinner keeps the

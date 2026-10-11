@@ -104,32 +104,52 @@ To check a download, with [cosign](https://docs.sigstore.dev/cosign/system_confi
 tag=v0.1.0   # the release you downloaded
 cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \
   --certificate-identity "https://github.com/krowkcom/krowk/.github/workflows/release.yml@refs/tags/$tag" \
-  --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  --certificate-github-workflow-repository krowkcom/krowk \
+  --certificate-github-workflow-trigger push
 sha256sum --check --ignore-missing checksums.txt
 ```
 
 The first command proves the checksums came from this repository's release
-workflow at that tag; the second that your archive is one of them. An SBOM
-verifies the same way, with its own bundle. The npm packages are published
-with npm provenance (npm 9.5 or later), which `npm audit signatures`
-checks.
+workflow, run by pushing that tag; the second that your archive is one of
+them. An SBOM verifies the same way, with its own bundle. The npm packages
+are published with npm provenance (npm 9.5 or later), which `npm audit
+signatures` checks.
 
 `krowk upgrade` checks the signature itself before it reads a line of
 `checksums.txt`: the certificate chains to Sigstore's Fulcio root, names this
-workflow at the tag it is installing, from GitHub's OIDC issuer, and signed
-those bytes, and Rekor's signed entry timestamp and inclusion proof for the
-entry verify against Rekor's key. The roots are Sigstore's
+workflow at the tag it is installing, from GitHub's OIDC issuer, in this
+repository, run by a push, and signed those bytes; and Rekor's signed entry
+timestamp, inclusion proof and checkpoint (for rekor.sigstore.dev's own
+origin) verify against Rekor's key. The roots are Sigstore's
 `trusted_root.json`, embedded in the binary
 (`crates/krowk/src/cli/upgrade/trusted_root.json`) and replaced when Sigstore
 rotates them; a krowk built before a rotation refuses a release signed after
 it rather than installing it unchecked. Unlike cosign it does not check the
-certificate's CT-log SCT or the RFC 3161 timestamp.
+certificate's CT-log SCT or the RFC 3161 timestamp. The release is signed
+with the signing config in the repository (`.github/sigstore/`), which logs
+to Rekor v1, the log `krowk upgrade` reads, and the release workflow checks
+the new signature with `krowk upgrade`'s own code before it publishes.
+
+Which release is the newest, `krowk upgrade` learns from GitHub's
+`releases/latest`, which is not signed (krowk has no TUF metadata of its
+own). Someone who could change that answer cannot make it install anything
+the release workflow did not sign, nor go back to an older version, but can
+hold it on any signed version between this one and the newest.
 
 The installer checks the signature with `cosign verify-blob`, as above, when
 cosign is installed, and refuses the install if it fails; without cosign it
-checks the checksum only and prints the command. Releases before 0.12.0 were
-not signed. For a machine where that matters, install cosign first, or verify
-as above and install the archive yourself.
+checks the checksum only, over HTTPS, and prints the command.
+`KROWK_REQUIRE_SIGNATURE=1` makes the signature required, refusing to install
+without cosign:
+
+```bash
+curl -fsSL https://krowk.com/install | KROWK_REQUIRE_SIGNATURE=1 bash
+```
+
+Releases before 0.12.0 were not signed, so a `KROWK_VERSION` pinned before
+it is installed on its checksum alone, and refused under
+`KROWK_REQUIRE_SIGNATURE=1`.
 
 ### Rebuilding a release
 
