@@ -2217,9 +2217,9 @@ fn edit_or_answer(body: &serde_json::Value, n: usize) -> mock::Reply {
     }
 }
 
-/// A prompt, its approval and the answer: each change reported once, in
-/// the frame that sets the window title, and every record cleared on the
-/// way out, after the last report.
+/// A prompt, its approval and the answer, done until a key: each change
+/// reported once, in the frame that sets the window title, and every record
+/// cleared on the way out, after the last report.
 fn root_record_follows_a_turn(screen: &str) {
     use krowk_tui::osc7501::{Kind, State};
     let (_m, _b, mut t) = pres_pty("pres-turn", screen, edit_or_answer);
@@ -2228,12 +2228,13 @@ fn root_record_follows_a_turn(screen: &str) {
     allow(&mut t, 4);
     assert!(reported(&t, 5, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
     assert!(t.wait_for("tokens", Duration::from_secs(10)).is_some());
+    key_goes_idle(&mut t, 6);
     let (got, out) = quit_reports(t);
     let ask = "edit the readme";
-    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Blocked(Kind::Permission), ask), root(State::Working, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Blocked(Kind::Permission), ask), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
     // Right after the window title that says the same, in the same write.
     let mut from = 0;
-    for (r, glyph) in got[..5].iter().zip(["✳ krowk", "◑ edit the readme", "✋ edit the readme", "◑ edit the readme", "✳ krowk"]) {
+    for (r, glyph) in got[..6].iter().zip(["✳ krowk", "◑ edit the readme", "✋ edit the readme", "◑ edit the readme", "✳ krowk", "✳ krowk"]) {
         let at = from + out[from..].find(r.as_str()).unwrap();
         assert!(out[..at].ends_with(&format!("\x1b]2;{glyph}\x07")), "{r:?} not right after the title {glyph:?}: {out:?}");
         from = at + r.len();
@@ -2242,12 +2243,12 @@ fn root_record_follows_a_turn(screen: &str) {
 }
 
 #[test]
-fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_idle_inline() {
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_done_inline() {
     root_record_follows_a_turn("inline");
 }
 
 #[test]
-fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_idle_fullscreen() {
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_done_fullscreen() {
     root_record_follows_a_turn("fullscreen");
 }
 
@@ -2288,9 +2289,10 @@ fn root_record_is_cleared_at_a_job_stop_and_told_again_on_resume(screen: &str) {
     assert!(reported(&t, 5, Duration::from_secs(10)), "nothing reported on the way back: {:?}", reports(&t.text()));
     allow(&mut t, 6);
     assert!(reported(&t, 7, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 8);
     let (got, _) = quit_reports(t);
     let (ask, blocked) = ("edit the readme", State::Blocked(Kind::Permission));
-    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(blocked, ask), root(State::Clear, ""), root(blocked, ask), root(State::Working, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(blocked, ask), root(State::Clear, ""), root(blocked, ask), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
 }
 
 #[test]
@@ -2392,4 +2394,96 @@ fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_inline() {
 #[test]
 fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_fullscreen() {
     root_record_is_cleared_while_a_vendors_login_has_the_terminal("fullscreen");
+}
+
+// ---- what a turn leaves on the root record ----------------------------------
+
+/// Types a key and waits for the `n`th report, the idle it is to write;
+/// then another key, which writes nothing, both rubbed out again.
+fn key_goes_idle(t: &mut pty::Pty, n: usize) {
+    t.write(b"x");
+    assert!(reported(t, n, Duration::from_secs(10)), "the key wrote no idle: {:?}", reports(&t.text()));
+    t.write(b"y");
+    std::thread::sleep(Duration::from_millis(500));
+    t.write(b"\x7f\x7f");
+    std::thread::sleep(Duration::from_millis(200));
+}
+
+/// A completed turn leaves done with the prompt's first line, under the
+/// idle window title; the next key press puts the record back to idle,
+/// once.
+fn a_completed_turn_leaves_done(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let (_m, _b, mut t) = pres_pty("pres-done", screen, |_, _| mock::Reply::paced(mock::text_stream("All done here, nothing left to do."), Duration::from_millis(100)));
+    t.write(b"\x1b[200~say you are done\nand nothing more\x1b[201~");
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(b"\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 4);
+    let (got, out) = quit_reports(t);
+    let ask = "say you are done";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Done, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    assert!(out.contains(&format!("\x1b]2;✳ krowk\x07{}", got[2])), "done under the idle title: {out:?}");
+}
+
+#[test]
+fn r_pres_3_a_completed_turn_leaves_done_and_a_key_goes_back_to_idle_inline() {
+    a_completed_turn_leaves_done("inline");
+}
+
+#[test]
+fn r_pres_3_a_completed_turn_leaves_done_and_a_key_goes_back_to_idle_fullscreen() {
+    a_completed_turn_leaves_done("fullscreen");
+}
+
+/// A turn the provider fails leaves error with the failure's first line,
+/// which a key puts back to idle too.
+fn a_failed_turn_leaves_error(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let failing = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_01Fails\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"usage\":{\"input_tokens\":12,\"output_tokens\":1}}}\n\n\
+        event: ping\ndata: {\"type\":\"ping\"}\n\n\
+        event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"prompt is too long\\nby a mile\"}}\n\n";
+    let (_m, _b, mut t) = pres_pty("pres-error", screen, move |_, _| mock::Reply::paced(failing.to_string(), Duration::from_millis(300)));
+    t.write(b"fail please\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    key_goes_idle(&mut t, 4);
+    let (got, _) = quit_reports(t);
+    // The failure's first line, as krowk shows it, cut where the
+    // provider's message broke the line.
+    let failed = "Anthropic stopped the response (invalid_request_error: prompt is too long";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "fail please"), root(State::Error, failed), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_3_a_failed_turn_leaves_error_with_its_first_line_inline() {
+    a_failed_turn_leaves_error("inline");
+}
+
+#[test]
+fn r_pres_3_a_failed_turn_leaves_error_with_its_first_line_fullscreen() {
+    a_failed_turn_leaves_error("fullscreen");
+}
+
+/// Interrupting a running turn goes back to idle, never done.
+fn an_interrupted_turn_leaves_idle(screen: &str) {
+    use krowk_tui::osc7501::State;
+    let (_m, _b, mut t) = pres_pty("pres-stop", screen, |_, _| mock::Reply::paced(mock::text_stream(&mock::numbered_lines(200)), Duration::from_millis(50)));
+    t.write(b"count slowly\r");
+    assert!(reported(&t, 2, Duration::from_secs(20)), "never working: {:?}", reports(&t.text()));
+    std::thread::sleep(Duration::from_millis(800));
+    t.write(b"\x1b");
+    assert!(reported(&t, 3, Duration::from_secs(10)), "the interrupt was not reported: {:?}", reports(&t.text()));
+    std::thread::sleep(Duration::from_secs(1));
+    let (got, _) = quit_reports(t);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "count slowly"), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_inline() {
+    an_interrupted_turn_leaves_idle("inline");
+}
+
+#[test]
+fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_fullscreen() {
+    an_interrupted_turn_leaves_idle("fullscreen");
 }
