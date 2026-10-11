@@ -2505,8 +2505,10 @@ impl App {
             // A skill the person asked for, loaded next to the prompt.
             Item::UserText { text, .. } if text.starts_with(krowk_harness::compat::skills::INVOKED) => {
                 let name = text[krowk_harness::compat::skills::INVOKED.len()..].split('"').next().unwrap_or_default();
+                // Drawn as a finished tool call is: verb, then its argument.
                 self.finish_live();
-                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::styled(format!("Loaded the {} skill", clean(name)), dim().add_modifier(Modifier::ITALIC))]));
+                self.gap();
+                self.push_line(Line::from(vec![Span::styled(look::TOOL, dim()), Span::raw("Loaded skill "), Span::styled(clean(name), look::path())]));
             }
             Item::UserText { text, .. } if live && self.echoed.as_ref() == Some(text) => self.echoed = None,
             Item::UserText { text, .. } => {
