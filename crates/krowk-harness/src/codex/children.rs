@@ -60,6 +60,14 @@
 //! `interacted`) does not reopen it: its child session has ended, and its
 //! lines are dropped. Reopening one would need a second turn in a child
 //! log the host has closed, which no backend does yet.
+//!
+//! **Its requests** — an approval or a question whose `threadId` is an open
+//! child's — are asked under the child's session and answered on its
+//! thread (`lend`). **Stopping it** (R-SUB-10) is `turn/interrupt` with its
+//! thread and the turn it runs: the last `turnId` its own lines named
+//! (`turn_of`). Once krowk has sent that, its own `turn/completed`
+//! `interrupted` ends it interrupted, unless the session said it ended
+//! first.
 
 use super::stream::Translator;
 use crate::engine::EngineEvent;
@@ -90,6 +98,10 @@ struct Child {
     prompted: bool,
     /// Its first `userMessage` was seen: the prompt Codex gave it.
     echoed: bool,
+    /// The Codex turn it runs: the last its lines named.
+    turn: Option<String>,
+    /// krowk sent it `turn/interrupt`.
+    stopping: bool,
 }
 
 /// What `thread/started` said of a thread.
@@ -323,7 +335,7 @@ impl Children {
         if let Some(p) = &prompt {
             out.extend(item(thread, Item::user(p.clone())));
         }
-        self.kids.insert(thread.into(), Child { translator: Some(Translator::child(said.model.as_deref().unwrap_or(model))), prompted: prompt.is_some(), echoed: false });
+        self.kids.insert(thread.into(), Child { translator: Some(Translator::child(said.model.as_deref().unwrap_or(model))), prompted: prompt.is_some(), echoed: false, turn: None, stopping: false });
         self.release(thread, out);
     }
 
@@ -363,6 +375,14 @@ impl Children {
         }
         let Some(c) = self.kids.get_mut(thread) else { return };
         let Some(t) = c.translator.as_mut() else { return };
+        if let Some(turn) = opt(params.get("turnId")).or_else(|| opt(params.pointer("/turn/id"))) {
+            c.turn = Some(turn);
+        }
+        // Stopped by krowk: its turn's end is its own.
+        if method == "turn/completed" && c.stopping && params.pointer("/turn/status").and_then(Value::as_str) == Some("interrupted") {
+            self.end(thread, ChildState::Interrupted, None, out);
+            return;
+        }
         if s(it, "type") == "userMessage" {
             if method == "item/completed" {
                 let first = !std::mem::replace(&mut c.echoed, true);
@@ -412,6 +432,37 @@ impl Children {
         t.finish(&mut rest);
         wrap(thread, rest, out);
         out.push(EngineEvent::BackendChildEnded { task_id: thread.into(), status, error });
+    }
+
+    /// Lends an open child's translator for a request of its thread, so the
+    /// request is asked as the child's and its answer read off the child's
+    /// items; given back with `give_back`. None for any other thread.
+    pub fn lend(&mut self, thread: &str) -> Option<Translator> {
+        self.kids.get_mut(thread).and_then(|c| c.translator.take())
+    }
+
+    pub fn give_back(&mut self, thread: &str, t: Translator) {
+        if let Some(c) = self.kids.get_mut(thread) {
+            c.translator = Some(t);
+        }
+    }
+
+    /// The turn to interrupt to stop `thread` alone (R-SUB-10), or why
+    /// there is none.
+    pub fn turn_of(&self, thread: &str) -> Result<String, String> {
+        match self.kids.get(thread) {
+            None => Err("krowk does not follow that agent in this turn".into()),
+            Some(c) if c.translator.is_none() => Err("it has ended".into()),
+            Some(Child { turn: None, .. }) => Err("Codex has not said which turn it runs yet — try again in a moment, or interrupt the session that started it".into()),
+            Some(Child { turn: Some(t), .. }) => Ok(t.clone()),
+        }
+    }
+
+    /// krowk sent `thread` its `turn/interrupt`.
+    pub fn stopping(&mut self, thread: &str) {
+        if let Some(c) = self.kids.get_mut(thread) {
+            c.stopping = true;
+        }
     }
 
     /// The parent's turn is over: every child still open ends, interrupted,
@@ -604,6 +655,27 @@ mod tests {
         assert_eq!(got[0], Item::user("late start"));
         assert!(matches!(&got[1], Item::UserText { text, .. } if text.starts_with(DROPPED) && text.contains("3 of this agent's first lines")), "{got:?}");
         assert_eq!(got.len(), 2);
+    }
+
+    /// R-SUB-10: a child is stopped on the turn its own lines last named,
+    /// none before they name one; once krowk sent it `turn/interrupt`, its
+    /// turn's `interrupted` end is its end — not before — and an ended
+    /// child, or a thread that is none, has nothing to stop or lend.
+    #[test]
+    fn r_sub_10_a_codex_child_is_stopped_on_the_turn_its_lines_name_and_ends_at_that_turns_interrupt() {
+        let mut c = Children::default();
+        feed(&mut c, &[note("item/completed", OWN, spawn("call", OWN, &["kid"], "go"))]);
+        assert!(c.turn_of("kid").unwrap_err().contains("not said which turn"));
+        feed(&mut c, &[("turn/started".into(), json!({"threadId": "kid", "turn": {"id": "d1", "items": [], "status": "inProgress"}}))]);
+        assert_eq!(c.turn_of("kid").as_deref(), Ok("d1"));
+        feed(&mut c, &[note("item/started", "kid", json!({"type": "reasoning", "id": "r", "summary": [], "content": []}))]);
+        assert_eq!(c.turn_of("kid").as_deref(), Ok("t"), "the last its lines named");
+        let interrupted = ("turn/completed".to_string(), json!({"threadId": "kid", "turn": {"id": "t", "items": [], "status": "interrupted"}}));
+        assert!(ends(&feed(&mut c, std::slice::from_ref(&interrupted))).is_empty(), "not stopped by krowk: Codex's own say ends it");
+        c.stopping("kid");
+        assert_eq!(ends(&feed(&mut c, &[interrupted])), [("kid", ChildState::Interrupted)]);
+        assert!(c.turn_of("kid").unwrap_err().contains("ended") && c.lend("kid").is_none());
+        assert!(c.turn_of(OWN).is_err() && c.lend(OWN).is_none() && c.lend("nobody").is_none());
     }
 
     /// R-SUB-9: a child's tool starts at its call item, before its result:
