@@ -350,6 +350,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   not hold it. krowk now reads the vintage the session was archived into
   first, then the week's current one, then the replaced ones the registry
   still keeps.
+- **`krowk sessions show` shows an archived session on a machine without
+  sync.** It used to fail, because the session can't be restored there.
+  It now shows what this machine keeps of it (title, first prompt, models,
+  turns and cost) and says the full session needs sync set up.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

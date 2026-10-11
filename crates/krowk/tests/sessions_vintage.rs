@@ -240,3 +240,29 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     let _ = std::fs::remove_dir_all(&root);
 }
 
+/// R-VINT-3: on a machine without sync, opening an archived session shows
+/// what its stub keeps, and says the rest needs sync, rather than failing.
+#[test]
+fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why() {
+    let root = std::env::temp_dir().join(format!("krowk-vintage-stub-only-{}", std::process::id()));
+    let (_registry, m, _, _) = synced_machine(&root);
+    let sessions = root.join(".krowk").join("sessions");
+    let id = session(&sessions, &root, "asked on the synced machine", 20);
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+
+    // Its stub, on a machine that never set sync up.
+    let bare = Machine { home: root.join("bare"), api_url: m.api_url.clone() };
+    let dir = bare.home.join(".krowk").join("sessions").join(&id);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::copy(sessions.join(&id).join(krowk_harness::vintage::STUB_FILE), dir.join(krowk_harness::vintage::STUB_FILE)).unwrap();
+    let (ok, _, out) = bare.krowk(&["sessions", "import", "--from", "all"]);
+    assert!(ok, "{out}");
+    let (ok, v, out) = bare.krowk(&["sessions", "show", &id]);
+    assert!(ok, "shown, not refused: {out}");
+    assert_eq!(v["data"]["archived"]["restored"], false, "{out}");
+    assert_eq!(v["data"]["archived"]["error"]["code"], "not_set_up", "{out}");
+    assert!(v["data"]["archived"]["summary"].as_str().unwrap().contains("asked on the synced machine"), "{out}");
+    assert!(dir.join(krowk_harness::vintage::STUB_FILE).is_file() && !dir.join(log::EVENTS_FILE).exists(), "left archived");
+    let _ = std::fs::remove_dir_all(&root);
+}

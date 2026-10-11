@@ -897,17 +897,45 @@ pub fn show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
     #[allow(unused_mut)]
     let mut d = load_detail(ctx, args, "show")?;
-    // Opening an archived session brings it back first (R-VINT-4).
+    // Opening an archived session brings it back first (R-VINT-4). One that
+    // cannot come back — no sync here, no registry — is shown as its stub
+    // keeps it, saying so, rather than not at all.
     #[cfg(all(feature = "harness", unix))]
-    if d.session.harness == krowk_harness::project::HARNESS && restore_if_archived(ctx, &d.session.foreign_session_id)? {
-        let conn = open_store(ctx)?;
-        d = load_by_id(ctx, &conn, &d.session.id)?;
+    let mut stub_only: Option<(krowk_harness::vintage::Stub, Error)> = None;
+    #[cfg(all(feature = "harness", unix))]
+    if d.session.harness == krowk_harness::project::HARNESS {
+        match restore_if_archived(ctx, &d.session.foreign_session_id) {
+            Ok(true) => {
+                let conn = open_store(ctx)?;
+                d = load_by_id(ctx, &conn, &d.session.id)?;
+            }
+            Ok(false) => {}
+            Err(e) => match krowk_harness::log::sessions_dir(ctx.io.env).ok().and_then(|dir| krowk_harness::vintage::read_stub(&dir, &d.session.foreign_session_id)) {
+                Some(stub) => stub_only = Some((stub, e)),
+                None => return Err(e),
+            },
+        }
     }
     if ctx.format != Format::Human {
-        let (data, summary) = session_show_json(ctx, &d);
+        #[allow(unused_mut)]
+        let (mut data, summary) = session_show_json(ctx, &d);
+        #[cfg(all(feature = "harness", unix))]
+        if let Some((stub, e)) = &stub_only {
+            data["archived"] = json!({ "restored": false, "week": stub.week, "vintage": stub.vintage, "summary": stub.summary, "error": { "code": e.code(), "message": e.fix() } });
+        }
         return emit_data(ctx, data, summary);
     }
-    let text = human_session_show(ctx, &d, ctx.f.thinking, now_ms());
+    #[allow(unused_mut)]
+    let mut text = human_session_show(ctx, &d, ctx.f.thinking, now_ms());
+    #[cfg(all(feature = "harness", unix))]
+    if let Some((stub, e)) = &stub_only {
+        if !stub.summary.is_empty() {
+            text += &format!("\nfirst asked  {}\n", cell(&stub.summary));
+        }
+        let id = &d.session.foreign_session_id;
+        let again = if matches!(e.code().as_str(), "not_set_up" | "not_authenticated") { String::new() } else { format!(" (`krowk sessions restore {id}` tries again)") };
+        ctx.warn(&format!("session {id} is archived and only its stub is here, so this is its summary — {}{again}", e.fix()));
+    }
     let _ = write!(ctx.io.stdout, "{text}");
     Ok(())
 }
