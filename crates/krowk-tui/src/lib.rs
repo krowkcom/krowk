@@ -43,6 +43,7 @@ pub mod link;
 pub mod device;
 pub mod pr;
 pub mod presence;
+pub mod osc7501;
 pub mod editor;
 pub mod full;
 pub mod help;
