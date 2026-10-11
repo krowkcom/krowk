@@ -177,7 +177,7 @@ impl Presence {
         osc7501::encode(&osc7501::Report { state: osc7501::State::Clear, ..Default::default() })
     }
 
-    /// The title alone, of `tell`.
+    /// The title alone, of `tell`: what the title's own tests hold.
     pub fn update(&mut self, state: State, topic: &str) -> Option<String> {
         self.tell(state, topic).map(|t| t.title)
     }
@@ -227,6 +227,23 @@ mod tests {
         assert_eq!(p.update(State::Blocked, "fix the failing test").as_deref(), Some("✋ fix the failing test"));
         assert_eq!(p.update(State::Working, "evil\x1b]0;x\x07").as_deref(), Some("◑ evil]0;x"), "no escape reaches the title");
         assert_eq!(p.update(State::Working, "txt.\u{202E}exe").as_deref(), Some("◑ txt.exe"), "nor a control that reorders it");
+    }
+
+    #[test]
+    fn r_pres_2_the_root_record_follows_the_title_and_is_cleared_once_told() {
+        use osc7501::{Kind, Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let mut p = Presence::from_env(&|_| String::new());
+        assert_eq!(p.clear(), None, "nothing told, nothing to clear");
+        assert_eq!(p.tell(State::Idle, "an old prompt").unwrap().report, root(Rec::Idle, ""), "idle names no prompt");
+        assert!(p.tell(State::Idle, "another").is_none(), "nor is told again for one");
+        assert_eq!(p.tell(State::Working, "fix it\nnow").unwrap().report, root(Rec::Working, "fix it"));
+        assert_eq!(p.tell(State::Blocked, "fix it").unwrap().report, root(Rec::Blocked(Kind::Permission), "fix it"));
+        assert_eq!(p.tell(State::Asking, "fix it").unwrap().report, root(Rec::Blocked(Kind::Question), "fix it"));
+        assert_eq!(p.clear(), Some(root(Rec::Clear, "")));
+        p.release();
+        assert_eq!(p.clear(), None, "a job stop clears once");
+        assert_eq!(p.tell(State::Asking, "fix it").unwrap().title, "✋ fix it", "told again from scratch");
     }
 
     #[test]

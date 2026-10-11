@@ -2231,10 +2231,12 @@ fn root_record_follows_a_turn(screen: &str) {
     let (got, out) = quit_reports(t);
     let ask = "edit the readme";
     assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Blocked(Kind::Permission), ask), root(State::Working, ask), root(State::Idle, ""), root(State::Clear, "")]);
-    // Beside the window title, in the same write.
-    for r in &got[..5] {
-        let at = out.find(r.as_str()).unwrap();
-        assert!(out[..at].rsplit_once("\x1b]2;").is_some_and(|(_, title)| title.ends_with('\x07') && title.len() < 64), "{r:?} not right after a title: {out:?}");
+    // Right after the window title that says the same, in the same write.
+    let mut from = 0;
+    for (r, glyph) in got[..5].iter().zip(["✳ krowk", "◑ edit the readme", "✋ edit the readme", "◑ edit the readme", "✳ krowk"]) {
+        let at = from + out[from..].find(r.as_str()).unwrap();
+        assert!(out[..at].ends_with(&format!("\x1b]2;{glyph}\x07")), "{r:?} not right after the title {glyph:?}: {out:?}");
+        from = at + r.len();
     }
     assert!(out.rfind("\x1b]7501;") < out.rfind("\x1b[23;2t"), "cleared before the title is given back");
 }

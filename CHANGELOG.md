@@ -15,8 +15,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Beside the window title, the TUI now sends an OSC 7501 report (the
   Program Status Protocol) each time its state changes: working while a
   turn runs, blocked while an approval or the agent's questions wait on
-  you, idle otherwise, with the prompt as the title shows it (its first
-  line, cut short) as its message.
+  you, idle otherwise. While working or blocked, its message is the prompt
+  as the title shows it (its first line, cut short).
   Terminals and agent inboxes that read it, such as Rex, can list krowk
   with its status without guessing from the title's glyphs. Leaving krowk
   or stopping it with Ctrl-Z clears what it reported, and coming back with
