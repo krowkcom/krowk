@@ -965,9 +965,12 @@ struct Proc {
     /// Its `init` announced `interrupt_cancel_queued_v1`: an interrupt can
     /// cancel the steering it has not read, so steering is written to it.
     cancel_queued: bool,
-    /// The `uuid`s the turn's interrupt answered it cancelled: of `unread`,
-    /// only those go back. None when it named none.
+    /// The `uuid`s the turn's interrupts answered they cancelled, every
+    /// one's: of `unread`, only those go back. None when none named any.
     cancelled: Option<Vec<String>>,
+    /// The request ids of the interrupts the turn sent: the give-up's and
+    /// the person's may both be out, and each answer counts.
+    interrupts: Vec<String>,
     /// Stops of one agent handed to this process (`Status::stopper`), and
     /// those sent, by request id, waiting for Claude Code's answer.
     stops: mpsc::UnboundedReceiver<StopAsk>,
@@ -1135,6 +1138,7 @@ impl Proc {
             unread: Vec::new(),
             cancel_queued: false,
             cancelled: None,
+            interrupts: Vec::new(),
             stops,
             stopping: Default::default(),
         };
@@ -1235,6 +1239,7 @@ impl Proc {
         t.meter = std::mem::take(&mut *self.status.meter());
         self.unread.clear();
         self.cancelled = None;
+        self.interrupts.clear();
         let r = self.read_turn(prompt, &mut t, ctx, ask, events, b, instance).await;
         *self.status.meter() = std::mem::take(&mut t.meter);
         // Steering written and never replayed goes back on the turn's
@@ -1389,6 +1394,7 @@ impl Proc {
             req["cancel_queued"] = json!(true);
         }
         self.send(&json!({"type": "control_request", "request_id": id.clone(), "request": req})).await?;
+        self.interrupts.push(id.clone());
         Ok((id, tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE }))
     }
 
@@ -1420,8 +1426,11 @@ impl Proc {
         if self.stop_answered(msg) {
             return None;
         }
-        if receipt.is_some() && msg.pointer("/response/request_id").and_then(Value::as_str) == receipt.as_deref() {
-            self.cancelled = msg.pointer("/response/response/cancelled").and_then(Value::as_array).map(|c| c.iter().filter_map(Value::as_str).map(String::from).collect());
+        let id = msg.pointer("/response/request_id").and_then(Value::as_str);
+        if let Some(c) = msg.pointer("/response/response/cancelled").and_then(Value::as_array)
+            && self.interrupts.iter().any(|i| Some(i.as_str()) == id)
+        {
+            self.cancelled.get_or_insert_default().extend(c.iter().filter_map(Value::as_str).map(String::from));
         }
         receipted(msg, receipt, grace, deadline).or_else(|| if receipt.is_none() { given_up.take() } else { None })
     }
