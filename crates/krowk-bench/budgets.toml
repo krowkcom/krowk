@@ -41,7 +41,9 @@ unit = "bytes"
 # ring's ECDSA, linked for TLS already, Merkle and checkpoint checks of our
 # own, and Sigstore's 6.8 KB trusted_root.json), which adds 36,672 bytes:
 # 4,062,656 (3.87 MiB), 131,648 under this. sigstore-rs, the alternative,
-# brings its own crypto, x509 and TUF stacks, far past this headroom.
+# brings its own crypto, x509 and TUF stacks, far past this headroom. Its
+# review round 1 (the repository and trigger extensions, the checkpoint's
+# origin, 32-byte proof hashes) adds 1,504: 4,064,160, 130,144 under this.
 max = { x86_64-linux = 4_194_304 }
 status = "enforced"
 
