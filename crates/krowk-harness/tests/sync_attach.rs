@@ -339,7 +339,19 @@ impl World {
     /// A's bridge with a direct listener, reading this node from a fake
     /// tailscaled at `ts`; `stop` kills the listener.
     fn bridge_direct(&self, a: &Device, session: &str, daemon: Arc<Client>, ts: &FakeTailscale, same_user: bool, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
+        let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user, lan: false, lan_at: Vec::new(), stop: Some(stop) };
+        let tailnet = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet());
+        self.bridge_with_direct(a, session, daemon, config, tailnet)
+    }
+
+    /// A's bridge offering the LAN at 127.0.0.1 with no Tailscale on the
+    /// machine (ticket 27): nothing answers at tailscaled's socket.
+    fn bridge_lan(&self, a: &Device, session: &str, daemon: Arc<Client>, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
+        let config = direct::Config { socket: self.root.join("no-tailscaled.sock").into(), roster: ticket_roster(), same_user: false, lan: true, lan_at: vec![std::net::Ipv4Addr::LOCALHOST.into()], stop: Some(stop) };
+        self.bridge_with_direct(a, session, daemon, config, None)
+    }
+
+    fn bridge_with_direct(&self, a: &Device, session: &str, daemon: Arc<Client>, config: direct::Config, tailnet: Option<krowk_harness::sync::tailscale::Tailnet>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
@@ -354,8 +366,8 @@ impl World {
             sessions: log::sessions_dir(&self.env()).unwrap(),
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
-            direct: Some(direct::Config { socket: ts.socket.clone().into(), roster: krowk_harness::relay::Roster::parse(&roster).unwrap(), same_user, lan: false, stop: Some(stop) }),
-            tailnet: krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet()),
+            direct: Some(config),
+            tailnet,
             handed: None,
         };
         self.run_bridge(o, daemon)
@@ -1255,6 +1267,11 @@ async fn r_off_2_a_new_stream_after_a_long_cut_loses_nothing() {
     assert!(missing.is_empty(), "B never got {missing:?}");
 }
 
+/// The stand-in registry's ticket key, as a host's direct listener holds it.
+fn ticket_roster() -> krowk_harness::relay::Roster {
+    krowk_harness::relay::Roster::parse(&format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()))).unwrap()
+}
+
 /// A stand-in `tailscaled`: its LocalAPI on a unix socket, answering
 /// `status` with this machine on 127.0.0.1 as tailnet user 1 and a peer,
 /// and `whois` with whichever user `whois` holds.
@@ -1543,6 +1560,60 @@ async fn r_net_3_on_the_tailnet_without_the_registrys_ticket_nobody_joins_the_di
     for (what, ticket, signing, code) in [("no ticket", "", &b.signing, "bad_ticket"), ("a ticket the registry did not sign", &forged, &b.signing, "bad_ticket"), ("B's ticket under another key", &real, &stranger, "bad_signature")] {
         match join_direct(&via, &session, &b, ticket, signing).await {
             Ok(()) => panic!("{what}: joined the direct path"),
+            Err(e) => assert!(e.contains(code), "{what}: {e}"),
+        }
+    }
+    join_direct(&via, &session, &b, &real, &b.signing).await.expect("B's own ticket and key join, so each refusal above was the ticket's or the key's");
+}
+
+/// R-NET-2, R-NET-3 (ticket 27): with no Tailscale on A, A offers the LAN
+/// alone and advertises it over mDNS under the session's tag; B moves onto
+/// it — "direct over LAN" — and none of a live turn's bytes reach B by the
+/// relay. Being on the LAN admits nobody: no ticket, a ticket the registry
+/// did not sign, and B's ticket under another key are each refused there,
+/// and B's own ticket and key join.
+#[tokio::test]
+async fn r_net_2_without_tailscale_the_session_moves_to_the_lan_and_r_net_3_only_a_ticket_joins_there() {
+    let w = World::new("lan");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_lan(&a, &session, w.daemon().await, kill_rx);
+    w.synced(&session).await;
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await;
+    let (path, via) = got.iter().find_map(|u| if let viewer::Update::Path { path, via: Some(via) } = u { Some((path.clone(), via.clone())) } else { None }).unwrap();
+    assert_eq!(path, "direct over LAN");
+    assert!(via.starts_with("ws://127.0.0.1:"), "{via}");
+
+    // The listener is found over mDNS by the session's tag alone.
+    let (tx, mut found) = mpsc::unbounded_channel();
+    let tag_of = krowk_harness::daemon::ws::uuid(&session);
+    tokio::task::spawn_blocking(move || krowk_harness::sync::mdns::browse(tag_of, Duration::from_secs(3), tx)).await.unwrap();
+    let mut advertised = Vec::new();
+    while let Ok(c) = found.try_recv() {
+        advertised.push(c.url);
+    }
+    assert!(advertised.contains(&via), "A's listener {via} was not found over mDNS: {advertised:?}");
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let before = w.b_batches.load(Ordering::SeqCst);
+    v.commands.send(w.prompt(Some(&session), "over the LAN")).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(_))), "the turn streamed to B");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(w.b_batches.load(Ordering::SeqCst), before, "live frames still went to B through the relay");
+
+    let (api, id, device) = (w.as_device(&b), session.clone(), b.key.id().to_string());
+    let real = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, "development").unwrap().relay_ticket).await.unwrap();
+    let keys = [(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
+    let forged = krowk_client::relay_ticket::verify(&real, &keys, krowk_client::relay_ticket::now()).unwrap().sign(&[0x77; 32]);
+    let stranger = SigningKey::from_secret(&[0x42; 32]).unwrap();
+    for (what, ticket, signing, code) in [("no ticket", "", &b.signing, "bad_ticket"), ("a ticket the registry did not sign", &forged, &b.signing, "bad_ticket"), ("B's ticket under another key", &real, &stranger, "bad_signature")] {
+        match join_direct(&via, &session, &b, ticket, signing).await {
+            Ok(()) => panic!("{what}: joined the LAN path"),
             Err(e) => assert!(e.contains(code), "{what}: {e}"),
         }
     }

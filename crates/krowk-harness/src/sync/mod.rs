@@ -11,6 +11,7 @@ pub mod direct;
 pub mod handoff;
 pub mod host;
 pub mod hosts;
+pub mod mdns;
 pub mod store;
 pub mod tailscale;
 pub mod viewer;

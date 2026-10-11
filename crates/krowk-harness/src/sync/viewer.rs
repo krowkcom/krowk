@@ -761,7 +761,7 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, cursor: Option<([u8; 
         None => json!({}),
     };
     let mut set = tokio::task::JoinSet::new();
-    for c in candidates {
+    let try_one = |set: &mut tokio::task::JoinSet<_>, c: Candidate| {
         let (o, ticket, extra) = (o.clone(), ticket.clone(), extra.clone());
         set.spawn(async move {
             let signing = SigningKey::from_secret(&*o.signing.secret_bytes()).map_err(|e| e.to_string())?;
@@ -769,11 +769,36 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, cursor: Option<([u8; 
             let (w, joined) = tokio::time::timeout(PROBE, super::join(j)).await.map_err(|_| "timed out".to_string())??;
             Ok::<_, String>((c, w, joined))
         });
+    };
+    // A host that offers its LAN advertises it over mDNS too: what is
+    // found there for this session joins the race as it is found, each
+    // address once.
+    let (found_tx, mut found) = mpsc::unbounded_channel();
+    if candidates.iter().any(Candidate::on_lan) {
+        let session = crate::daemon::ws::uuid(&o.session);
+        tokio::task::spawn_blocking(move || super::mdns::browse(session, PROBE, found_tx));
+    } else {
+        drop(found_tx);
     }
-    while let Some(r) = set.join_next().await {
-        if let Ok(Ok(w)) = r {
-            let _ = won.send(Some(w));
-            return;
+    let mut tried: HashSet<String> = candidates.iter().map(|c| c.url.clone()).collect();
+    for c in candidates {
+        try_one(&mut set, c);
+    }
+    let mut browsing = true;
+    loop {
+        tokio::select! {
+            r = set.join_next(), if !set.is_empty() => {
+                if let Some(Ok(Ok(w))) = r {
+                    let _ = won.send(Some(w));
+                    return;
+                }
+            }
+            c = found.recv(), if browsing => match c {
+                Some(c) if tried.insert(c.url.clone()) => try_one(&mut set, c),
+                Some(_) => {}
+                None => browsing = false,
+            },
+            else => break,
         }
     }
     let _ = won.send(None);
