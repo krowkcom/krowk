@@ -115,9 +115,11 @@ fn text_field(text: &str, max: usize) -> String {
 
 /// The format characters that reorder or hide text, and the ones that
 /// show as nothing: Unicode's default-ignorables but for the joiners and
-/// the variation selectors, which only shape what is there.
+/// the variation selectors, which only shape what is there. The tag
+/// characters go too, though a subdivision flag needs them: they are how
+/// invisible ASCII is smuggled into text.
 fn invisible(c: char) -> bool {
-    !matches!(c, '\u{200C}' | '\u{200D}')
+    !matches!(c, '\u{200C}' | '\u{200D}' | '\u{E0100}'..='\u{E01EF}')
         && matches!(c,
             '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180E}'
             | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
@@ -190,6 +192,7 @@ mod tests {
         }
         assert_eq!(field(&root(State::Done, "a\tb"), "msg").as_deref(), Some("a b"), "a tab is a space");
         assert_eq!(field(&root(State::Done, "👩\u{200D}💻 done ❤\u{FE0F}"), "msg").as_deref(), Some("👩\u{200D}💻 done ❤\u{FE0F}"), "joiners and selectors stay");
+        assert_eq!(field(&root(State::Done, "葛\u{E0100}飾"), "msg").as_deref(), Some("葛\u{E0100}飾"), "an ideographic variant too");
         for brk in ["\r", "\u{85}", "\u{2028}", "\u{2029}", "\x0b"] {
             assert_eq!(field(&root(State::Done, &format!("approve{brk}rm -rf /")), "msg").as_deref(), Some("approve"), "{brk:?} ends the line");
         }
@@ -203,12 +206,12 @@ mod tests {
     fn r_pres_1_long_texts_are_cut_at_a_character_boundary_and_the_report_stays_small() {
         // Three-byte characters, so neither limit falls on a boundary.
         let msg = "€".repeat(10 * 1024 / 3 + 1); // 10 KB
-        let title = "€".repeat(100); // 300 bytes
+        let title = format!("aa{}x", "€".repeat(99)); // 300 bytes
         let wide = "a".repeat(32);
         let id = [wide.as_str(), &wide, &wide, &"a".repeat(29)]; // 128 bytes, the most an id holds
         let r = encode(&Report { state: State::Blocked(Kind::Permission), id: &id, title: &title, msg: &msg }).unwrap();
         assert_eq!(field(&r, "msg").unwrap(), "€".repeat(682), "2046 bytes, not 2048 of a cut character");
-        assert_eq!(field(&r, "title").unwrap(), "€".repeat(64), "192 bytes");
+        assert_eq!(field(&r, "title").unwrap(), format!("aa{}", "€".repeat(63)), "191 bytes, not 192 of a cut character");
         assert_eq!(field(&root(State::Done, &"é".repeat(5 * 1024)), "msg").unwrap().len(), MSG_MAX);
         assert!(r.len() < 4096, "{} bytes", r.len());
         assert!(r.split_once("msg=").unwrap().1.len() - 2 <= 2732, "the encoded msg within its limit");
