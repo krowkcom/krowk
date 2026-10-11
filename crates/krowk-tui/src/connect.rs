@@ -19,7 +19,7 @@
 
 use crate::app::{clip, dim};
 use crate::look;
-use krowk_harness::connect::{Answer, AuthInteraction, Chosen, Connected, Disconnected, Notice, Prompt, ProviderAuth, Renamed};
+use krowk_harness::connect::{Answer, AuthInteraction, Chosen, Connected, Disconnected, Notice, Prompt, ProviderAuth, Renamed, Vendor};
 use krowk_harness::engine::EngineError;
 use krowk_harness::instances::Registry;
 use ratatui::style::{Modifier, Style};
@@ -150,6 +150,20 @@ impl AuthInteraction for Asker {
     }
 }
 
+/// What the root record says while `/connect` waits on the person: the
+/// provider by the name `krowk connect` takes (a vendor, or an instance
+/// there is or one of a provider's to add, such as `claude:work`), and
+/// `a provider` until one is named or picked. Whatever else was named (a key pasted by mistake) is never
+/// put in a title.
+pub fn sign_in(target: Option<&str>, instance: &dyn Fn(&str) -> bool) -> String {
+    let target = target.map(str::trim).unwrap_or_default();
+    match Vendor::parse(target) {
+        Some(v) => format!("Sign in to {}", v.id()),
+        None if !target.is_empty() && (instance(target) || target.split_once(':').is_some_and(|(p, _)| krowk_harness::connect::by_provider(p, false).is_some())) => format!("Sign in to {target}"),
+        None => "Sign in to a provider".into(),
+    }
+}
+
 /// The overlay while a job runs: its title, the first-run words, the
 /// question up now and where the answer goes.
 pub struct Flow {
@@ -161,6 +175,9 @@ pub struct Flow {
     /// An option a pick starts on: `/disconnect` alone starts on the
     /// session's instance.
     pub prefer: Option<String>,
+    /// `/connect`'s, what the root record says while the overlay is up
+    /// (`sign_in`); none for `/disconnect`, which waits on nobody's sign-in.
+    pub sign_in: Option<String>,
     /// When the question up now was first shown: keys before a moment
     /// has passed were typed ahead, and answer nothing.
     shown_at: Option<std::time::Instant>,
@@ -180,7 +197,7 @@ pub enum Kind {
 
 impl Flow {
     pub fn new(title: &'static str, intro: Vec<String>, prefer: Option<String>) -> Flow {
-        Flow { title, intro, ask: None, busy: "checking what is connected…".into(), prefer, shown_at: None }
+        Flow { title, intro, ask: None, busy: "checking what is connected…".into(), prefer, sign_in: None, shown_at: None }
     }
 
     /// The question up now is on screen, from now.
@@ -217,10 +234,16 @@ impl Flow {
         }
     }
 
-    /// Enter: the choice, or the text typed.
+    /// Enter: the choice, or the text typed. A vendor picked is the one
+    /// the sign-in is for from now.
     pub fn enter(&mut self) {
         let answer = match self.ask.as_mut().map(|a| &mut a.kind) {
-            Some(Kind::Select { at, .. }) => Answer::Choice(*at),
+            Some(Kind::Select { at, options }) => {
+                if self.sign_in.is_some() && options.iter().map(String::as_str).eq(Vendor::ALL.map(Vendor::label)) {
+                    self.sign_in = Some(format!("Sign in to {}", Vendor::ALL[*at].id()));
+                }
+                Answer::Choice(*at)
+            }
             Some(Kind::Text { input, .. }) => Answer::Text(std::mem::take(input)),
             None => return,
         };
@@ -360,5 +383,26 @@ mod tests {
         assert!(text(&f.rows(60).0).contains("❯ claude:work"));
         drop(f);
         assert!(answer.recv().unwrap().is_none(), "dropped unanswered, it cancels");
+    }
+
+    #[test]
+    fn r_pres_5_the_sign_in_names_the_provider_named_or_picked() {
+        let there = |t: &str| t == "claude:work";
+        assert_eq!(sign_in(None, &there), "Sign in to a provider");
+        assert_eq!(sign_in(Some(" Anthropic "), &there), "Sign in to anthropic");
+        assert_eq!(sign_in(Some("claude:work"), &there), "Sign in to claude:work");
+        assert_eq!(sign_in(Some("claude:second"), &there), "Sign in to claude:second", "an account to add");
+        assert_eq!(sign_in(Some("sk-ant-api03-oops"), &there), "Sign in to a provider", "a key pasted by mistake is never shown");
+        let mut f = Flow::new("Connect a provider", Vec::new(), None);
+        f.sign_in = Some(sign_in(None, &there));
+        let (reply, _answer) = sync::channel();
+        f.asked(Ask::Select { message: "Connect which provider?".into(), options: Vendor::ALL.map(|v| v.label().to_string()).to_vec() }, reply);
+        f.step(2);
+        f.enter();
+        assert_eq!(f.sign_in.as_deref(), Some("Sign in to xai"));
+        let (reply, _answer) = sync::channel();
+        f.asked(Ask::Select { message: "Which account?".into(), options: vec!["xai (xAI API key) — ready, reconnect".into(), "+ Add account…".into()] }, reply);
+        f.enter();
+        assert_eq!(f.sign_in.as_deref(), Some("Sign in to xai"), "another pick names no provider");
     }
 }

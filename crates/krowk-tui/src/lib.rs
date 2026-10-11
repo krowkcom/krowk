@@ -911,6 +911,17 @@ async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> O
     }
 }
 
+/// The session's state for the title and the root record, and its topic:
+/// the provider signed in to while `/connect`'s overlay is up and waits on
+/// the person (hidden, or closed, it no longer does), else the prompt.
+fn root_state<'a>(app: &'a App, last_prompt: &'a str) -> (presence::State, &'a str) {
+    let sign_in = app.flow.as_ref().filter(|_| app.overlay == Overlay::Connect).and_then(|f| f.sign_in.as_deref());
+    match presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), app.running()) {
+        presence::State::SigningIn => (presence::State::SigningIn, sign_in.unwrap_or_default()),
+        state => (state, last_prompt),
+    }
+}
+
 /// The next of a sign-in's messages, or never; none once its thread is gone.
 async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Option<connect::Msg> {
     match rx {
@@ -1380,13 +1391,8 @@ impl<'h> Ui<'h> {
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let state = match app.approvals.first() {
-            Some(req) if !req.questions.is_empty() => presence::State::Asking,
-            Some(_) => presence::State::Blocked,
-            None if app.running() => presence::State::Working,
-            None => presence::State::Idle,
-        };
-        if let Some(told) = self.presence.tell(state, &self.last_prompt) {
+        let (state, topic) = root_state(app, &self.last_prompt);
+        if let Some(told) = self.presence.tell(state, topic) {
             term.title(&told.title)?;
             term.report(&told.report)?;
         }
@@ -2783,7 +2789,11 @@ impl<'h> Ui<'h> {
             ],
             false => Vec::new(),
         };
-        app.flow = Some(connect::Flow::new(title, intro, prefer));
+        let mut flow = connect::Flow::new(title, intro, prefer);
+        if let connect::Job::Connect(target) = &job {
+            flow.sign_in = Some(connect::sign_in(target.as_deref(), &|t| self.host.registry().instances.contains_key(t)));
+        }
+        app.flow = Some(flow);
         app.overlay = Overlay::Connect;
         self.first_run = first_run;
         self.auth = Some(connect::start(job, paths));
@@ -3667,6 +3677,39 @@ mod tests {
         assert_eq!(local.len(), super::CHILD_ENDS_READ + 1, "the newest, and the Codex child its branch cannot end");
         assert_eq!((local[0].as_str(), local.last().map(String::as_str)), ("k11", Some("k0")));
         assert_eq!(super::children_to_read("s", &branch, false).len(), super::CHILD_ENDS_READ + 11, "each once");
+    }
+
+    /// R-PRES-2: an approval arriving while `/connect`'s overlay is up wins
+    /// while it waits, and the sign-in is told again once it is answered;
+    /// hidden or closed, the overlay is no longer told.
+    #[test]
+    fn r_pres_5_an_approval_over_connect_wins_and_the_sign_in_is_told_again_once_it_is_answered() {
+        use super::*;
+        use osc7501::{Kind, Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let req = ApprovalRequest { session_id: "s".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "Bash `ls`".into(), reason: String::new(), remember: vec![], questions: vec![] };
+        let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
+        let mut p = presence::Presence::from_env(&|_| String::new());
+        let mut tell = |app: &App| {
+            let (state, topic) = root_state(app, "fix it");
+            p.tell(state, topic).map(|t| t.report)
+        };
+        let mut flow = connect::Flow::new("Connect a provider", Vec::new(), None);
+        flow.sign_in = Some(connect::sign_in(Some("anthropic"), &|_| false));
+        app.flow = Some(flow);
+        app.overlay = Overlay::Connect;
+        let auth = root(Rec::Blocked(Kind::Auth), "Sign in to anthropic");
+        assert_eq!(tell(&app), Some(auth.clone()));
+        app.approvals.push(req.clone());
+        assert_eq!(tell(&app), Some(root(Rec::Blocked(Kind::Permission), "fix it")), "the approval wins");
+        app.answered(&req.request_id);
+        assert_eq!(tell(&app), Some(auth.clone()), "answered, the sign-in again");
+        app.overlay = Overlay::None;
+        assert_eq!(tell(&app), Some(root(Rec::Idle, "")), "hidden, what it would otherwise be");
+        app.overlay = Overlay::Connect;
+        assert_eq!(tell(&app), Some(auth));
+        app.flow = Some(connect::Flow::new("Disconnect", Vec::new(), None));
+        assert_eq!(tell(&app), Some(root(Rec::Idle, "")), "a /disconnect waits on no sign-in");
     }
 
     #[test]

@@ -2302,3 +2302,94 @@ fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_inline() {
 fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_fullscreen() {
     root_record_is_cleared_at_a_job_stop_and_told_again_on_resume("fullscreen");
 }
+
+/// Enter at `/connect`'s pick, past the moment a key typed ahead is not
+/// taken as the answer: again until the `n`th report says it was.
+fn pick(t: &mut pty::Pty, n: usize) {
+    for _ in 0..5 {
+        settle();
+        t.write(b"\r");
+        if reported(t, n, Duration::from_secs(5)) {
+            return;
+        }
+    }
+    panic!("the pick was never taken: {:?}", reports(&t.text()));
+}
+
+/// `/connect` reports blocked on a sign-in to the provider named, or to
+/// the one picked once it is, and its overlay closed reports idle again.
+fn root_record_waits_on_a_sign_in(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-connect", screen, |_, _| mock::Reply::sse(&mock::text_stream("Hi")));
+    let auth = State::Blocked(Kind::Auth);
+    t.write(b"/connect anthropic\r");
+    assert!(reported(&t, 2, Duration::from_secs(10)), "no sign-in reported: {:?}", reports(&t.text()));
+    // A word of each question, as either screen draws it.
+    assert!(t.wait_for("anthropic?", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    assert!(reported(&t, 3, Duration::from_secs(10)), "the close was not reported: {:?}", reports(&t.text()));
+    assert!(t.wait_for("chosen", Duration::from_secs(10)).is_some(), "the sign-in never ended: {:?}", t.text());
+    t.write(b"/connect\r");
+    assert!(reported(&t, 4, Duration::from_secs(10)), "no sign-in reported: {:?}", reports(&t.text()));
+    assert!(t.wait_for("provider?", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    pick(&mut t, 5);
+    t.write(b"\x1b");
+    assert!(reported(&t, 6, Duration::from_secs(10)), "the close was not reported: {:?}", reports(&t.text()));
+    let (got, out) = quit_reports(t);
+    let (named, picked) = ("Sign in to anthropic", "Sign in to a provider");
+    assert_eq!(got, [root(State::Idle, ""), root(auth, named), root(State::Idle, ""), root(auth, picked), root(auth, named), root(State::Idle, ""), root(State::Clear, "")]);
+    assert!(out.contains("\x1b]2;✋ Sign in to anthropic\x07"), "the title says it too: {out:?}");
+}
+
+#[test]
+fn r_pres_5_connect_reports_blocked_on_a_sign_in_to_the_provider_and_idle_once_closed_inline() {
+    root_record_waits_on_a_sign_in("inline");
+}
+
+#[test]
+fn r_pres_5_connect_reports_blocked_on_a_sign_in_to_the_provider_and_idle_once_closed_fullscreen() {
+    root_record_waits_on_a_sign_in("fullscreen");
+}
+
+/// A vendor's own login has the terminal as a job stop's shell does:
+/// every record cleared before it runs, none written while it does, and
+/// the sign-in done, idle.
+fn root_record_is_cleared_while_a_vendors_login_has_the_terminal(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let b = Sandbox::new(&format!("pres-login-{screen}"));
+    b.config(serde_json::json!({"tui": {"screen": screen}}));
+    let mut t = pty::Pty::spawn(fresh_command(&b, "http://127.0.0.1:9"), 110, 34);
+    // A word of each question, as either screen draws it.
+    for question in ["provider?", "anthropic?", "account?"] {
+        assert!(t.wait_for(question, Duration::from_secs(15)).is_some(), "{question}: {:?}", t.text());
+        settle();
+        t.write(b"\r");
+    }
+    assert!(t.wait_for("Press Enter to sign in to Claude", Duration::from_secs(10)).is_some(), "the vendor's login never ran: {:?}", t.text());
+    let login = t.text();
+    t.write(b"\r");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while reports(&t.text()).last() != Some(&root(State::Idle, "")) {
+        assert!(Instant::now() < deadline, "never idle once signed in: {:?}", reports(&t.text()));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(t.text().contains("claude-opus-5-5"), "signed in, and on it: {:?}", t.text());
+    let before = reports(&login[..login.find("Press Enter to sign in to Claude").expect("the login's words")]);
+    assert_eq!(before[before.len() - 2..], [root(State::Blocked(Kind::Auth), "Sign in to anthropic"), root(State::Clear, "")], "cleared before the login: {before:?}");
+    let (got, _) = quit_reports(t);
+    // Nothing while the login has the terminal; back, idle, perhaps after a
+    // frame of the sign-in the end of it closes a moment later.
+    let after = &got[before.len()..];
+    let idle = [root(State::Idle, ""), root(State::Clear, "")];
+    assert!(after == idle || after == [&[root(State::Blocked(Kind::Auth), "Sign in to anthropic")][..], &idle].concat(), "idle once signed in: {got:?}");
+}
+
+#[test]
+fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_inline() {
+    root_record_is_cleared_while_a_vendors_login_has_the_terminal("inline");
+}
+
+#[test]
+fn r_pres_5_a_vendors_login_under_connect_has_the_records_cleared_fullscreen() {
+    root_record_is_cleared_while_a_vendors_login_has_the_terminal("fullscreen");
+}

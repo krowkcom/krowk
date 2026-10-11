@@ -21,14 +21,30 @@ pub enum State {
     Blocked,
     /// The agent's questions wait.
     Asking,
+    /// `/connect`'s overlay is up, waiting on the person's sign-in.
+    SigningIn,
 }
 
 impl State {
+    /// The session's state: a call waiting on the person (`Some(true)`
+    /// when it is the agent's questions) before a sign-in waiting on them,
+    /// and either before a turn running. Answered, the sign-in still
+    /// waiting is what is told again.
+    pub fn of(waiting: Option<bool>, signing_in: bool, running: bool) -> State {
+        match waiting {
+            Some(true) => State::Asking,
+            Some(false) => State::Blocked,
+            None if signing_in => State::SigningIn,
+            None if running => State::Working,
+            None => State::Idle,
+        }
+    }
+
     fn herdr(self) -> &'static str {
         match self {
             State::Idle => "idle",
             State::Working => "working",
-            State::Blocked | State::Asking => "blocked",
+            State::Blocked | State::Asking | State::SigningIn => "blocked",
         }
     }
 
@@ -38,6 +54,7 @@ impl State {
             State::Working => osc7501::State::Working,
             State::Blocked => osc7501::State::Blocked(osc7501::Kind::Permission),
             State::Asking => osc7501::State::Blocked(osc7501::Kind::Question),
+            State::SigningIn => osc7501::State::Blocked(osc7501::Kind::Auth),
         }
     }
 }
@@ -186,7 +203,8 @@ impl Presence {
     /// The title to set now and the root record's report, if `state` and
     /// `topic` differ from what was last told; herdr is told in the
     /// background, and never waited on. The report's msg is the topic the
-    /// title shows: none while idle, the prompt done with.
+    /// title shows: none while idle, the prompt done with; the provider
+    /// signed in to while signing in.
     pub fn tell(&mut self, state: State, topic: &str) -> Option<Told> {
         let topic: String = match state {
             State::Idle => String::new(),
@@ -204,10 +222,10 @@ impl Presence {
             (State::Idle, _) | (_, true) => match now.0 {
                 State::Idle => "✳ krowk".to_string(),
                 State::Working => "◑ krowk".to_string(),
-                State::Blocked | State::Asking => "✋ krowk".to_string(),
+                State::Blocked | State::Asking | State::SigningIn => "✋ krowk".to_string(),
             },
             (State::Working, false) => format!("◑ {}", now.1),
-            (State::Blocked | State::Asking, false) => format!("✋ {}", now.1),
+            (State::Blocked | State::Asking | State::SigningIn, false) => format!("✋ {}", now.1),
         };
         let report = osc7501::encode(&osc7501::Report { state: now.0.record(), msg: &now.1, ..Default::default() }).unwrap_or_default();
         self.told = Some(now);
@@ -245,6 +263,26 @@ mod tests {
         p.release();
         assert_eq!(p.clear(), None, "a job stop clears once");
         assert_eq!(p.tell(State::Asking, "fix it").unwrap().title, "✋ fix it", "told again from scratch");
+    }
+
+    #[test]
+    fn r_pres_5_an_approval_wins_over_a_sign_in_and_the_sign_in_comes_back_once_it_is_answered() {
+        use osc7501::{Kind, Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let (sign_in, ask) = ("Sign in to anthropic", "fix it");
+        let mut p = Presence::from_env(&|_| String::new());
+        let mut tell = |waiting, running| {
+            let state = State::of(waiting, true, running);
+            p.tell(state, if state == State::SigningIn { sign_in } else { ask }).map(|t| (t.title, t.report))
+        };
+        assert_eq!(tell(None, false), Some(("✋ Sign in to anthropic".into(), root(Rec::Blocked(Kind::Auth), sign_in))));
+        assert_eq!(tell(None, true).map(|t| t.1), None, "a turn running waits on the sign-in too");
+        assert_eq!(tell(Some(false), true).map(|t| t.1), Some(root(Rec::Blocked(Kind::Permission), ask)));
+        assert_eq!(tell(None, true).map(|t| t.1), Some(root(Rec::Blocked(Kind::Auth), sign_in)), "answered, the sign-in again");
+        assert_eq!(tell(Some(true), true).map(|t| t.1), Some(root(Rec::Blocked(Kind::Question), ask)));
+        assert_eq!(tell(None, false).map(|t| t.1), Some(root(Rec::Blocked(Kind::Auth), sign_in)));
+        assert_eq!(State::of(None, false, true), State::Working, "the overlay closed, what it would otherwise be");
+        assert_eq!(State::of(None, false, false), State::Idle);
     }
 
     #[test]
