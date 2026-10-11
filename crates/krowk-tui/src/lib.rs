@@ -1380,13 +1380,15 @@ impl<'h> Ui<'h> {
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let state = match app.approvals.first() {
-            Some(req) if !req.questions.is_empty() => presence::State::Asking,
-            Some(_) => presence::State::Blocked,
-            None if app.running() => presence::State::Working,
-            None => presence::State::Idle,
+        // `/connect`'s overlay up waits on the person's sign-in; hidden, or
+        // closed, it no longer does.
+        let sign_in = app.flow.as_ref().filter(|_| app.overlay == Overlay::Connect).and_then(|f| f.sign_in.as_deref());
+        let state = presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), app.running());
+        let topic = match state {
+            presence::State::SigningIn => sign_in.unwrap_or_default(),
+            _ => &self.last_prompt,
         };
-        if let Some(told) = self.presence.tell(state, &self.last_prompt) {
+        if let Some(told) = self.presence.tell(state, topic) {
             term.title(&told.title)?;
             term.report(&told.report)?;
         }
@@ -2783,7 +2785,11 @@ impl<'h> Ui<'h> {
             ],
             false => Vec::new(),
         };
-        app.flow = Some(connect::Flow::new(title, intro, prefer));
+        let mut flow = connect::Flow::new(title, intro, prefer);
+        if let connect::Job::Connect(target) = &job {
+            flow.sign_in = Some(connect::sign_in(target.as_deref()));
+        }
+        app.flow = Some(flow);
         app.overlay = Overlay::Connect;
         self.first_run = first_run;
         self.auth = Some(connect::start(job, paths));
