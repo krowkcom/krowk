@@ -431,9 +431,23 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
         ("mcp_call", json!({"tool": "other:echo", "input": {"text": "sneaked"}})),
         ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
     ]);
-    let m = mock::serve(move |body, n| if is_child(body) { child(body, n) } else { parent(body, n) });
+    // Whether the other server had been started when the parent's model is
+    // handed the subagent's answer: read then, before its own call starts it.
+    let other_log: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::default();
+    let started_before: Arc<std::sync::Mutex<Option<bool>>> = Arc::default();
+    let (log, before) = (other_log.clone(), started_before.clone());
+    let m = mock::serve(move |body, n| {
+        if is_child(body) {
+            return child(body, n);
+        }
+        if results_in(body).len() == 1 {
+            *before.lock().unwrap() = log.lock().unwrap().as_ref().map(|p| p.exists());
+        }
+        parent(body, n)
+    });
     let h = Home::new("subagent-allowlist", &m.url);
     h.mcp_json_of(&["fake", "other"], 1);
+    *other_log.lock().unwrap() = Some(h.log_of("other"));
     std::fs::create_dir_all(h.repo().join(".krowk/agents")).unwrap();
     std::fs::write(h.repo().join(".krowk/agents/fake-only.md"), "---\nname: fake-only\ndescription: Echoes through fake.\ntools: Read, mcp__fake\n---\nEcho.\n").unwrap();
     let host = h.host(true, json!({}));
@@ -450,6 +464,7 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
     assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("other"), "its search finds nothing on the other server: {}", sent[0]);
     assert_eq!(sent[1], "other:echo was not run: agent fake-only reaches only the MCP tools its definition names — fake (any tool)", "refused before it ran, even in bypass mode");
     assert_eq!(sent[2], "echo: hi", "its own server answers");
+    assert_eq!(*started_before.lock().unwrap(), Some(false), "the other server was not started for the subagent: nothing reached it before the parent's call");
     let other = std::fs::read_to_string(h.log_of("other")).unwrap_or_default();
     assert!(!other.contains("sneaked"), "the refused call never reached the other server: {other}");
     // The session that started it reaches every server still, the other
@@ -457,4 +472,32 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
     let parent_sent = results_in(seen.iter().rfind(|b| !is_child(b)).unwrap());
     assert_eq!(parent_sent[1], "echo: from the parent", "{parent_sent:?}");
     assert!(std::fs::read_to_string(h.log_of("other")).unwrap().contains("tools/call"));
+}
+
+/// R-SUB-1 (ticket 25): a subagent whose definition names one MCP tool,
+/// `mcp__fake__echo`, finds that tool alone on its server and is refused
+/// its sibling, before the server sees the call.
+#[test]
+fn r_sub_1_a_subagent_limited_to_one_mcp_tool_cannot_call_its_sibling() {
+    let parent = script(vec![("subagent", json!({"description": "echo", "prompt": "echo hi", "agent": "echo-only"}))]);
+    let child = script(vec![
+        ("mcp_search", json!({"query": "filler echo"})),
+        ("mcp_call", json!({"tool": "fake:tool_2", "input": {"q": "sneaked"}})),
+        ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
+    ]);
+    let m = mock::serve(move |body, n| if is_child(body) { child(body, n) } else { parent(body, n) });
+    let h = Home::new("subagent-one-tool", &m.url);
+    h.mcp_json(2);
+    std::fs::create_dir_all(h.repo().join(".claude/agents")).unwrap();
+    std::fs::write(h.repo().join(".claude/agents/echo-only.md"), "---\nname: echo-only\ndescription: Echoes.\ntools: mcp__fake__echo\n---\nEcho.\n").unwrap();
+    let host = h.host(true, json!({}));
+    let r = run(&host, prompt(PermissionMode::BypassPermissions));
+    assert_eq!(r.result, "Done.");
+    let seen: Vec<Value> = m.seen.lock().unwrap().iter().map(|s| s.body.clone()).collect();
+    let sent = results_in(seen.iter().rfind(|b| is_child(b)).unwrap());
+    assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("tool_2"), "its search finds the one tool, not its sibling: {}", sent[0]);
+    assert_eq!(sent[1], "fake:tool_2 was not run: agent echo-only reaches only the MCP tools its definition names — fake:echo");
+    assert_eq!(sent[2], "echo: hi");
+    let log = std::fs::read_to_string(h.fake_log()).unwrap();
+    assert!(!log.contains("sneaked") && log.matches("tools/call").count() == 1, "only the allowed call reached the server: {log}");
 }
