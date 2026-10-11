@@ -445,7 +445,9 @@ fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
     // An approval, answered in the dialog. The dialog takes no key until it
     // has been up a moment (a key typed ahead is no answer).
     t.write(b"make the allowed file\r");
-    wait(&t, "allow once");
+    // On the screen, not in the bytes: the dialog's row is drawn over the
+    // one before it, and a cell the two share (a space) is not drawn again.
+    assert!(t.wait_on_screen("y allow once", Duration::from_secs(20)).is_some(), "no dialog: {}\nA: {:?}", t.screen(), host.stderr());
     assert!(!a.repo.join("allowed.txt").exists(), "A waits on B");
     std::thread::sleep(Duration::from_millis(600));
     t.write(b"y");
@@ -457,7 +459,7 @@ fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
     assert!(!t.text().contains("for this project"), "a viewer is not offered A's project rules");
     // The host caps remote prompts at its default mode: no switch offered.
     t.write(b"/mode plan\r");
-    wait(&t, "is the host's to change");
+    assert!(t.wait_on_screen("is the host's to change", Duration::from_secs(20)).is_some(), "no refusal: {}", t.screen());
     t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
 }
