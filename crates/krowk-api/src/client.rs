@@ -98,6 +98,34 @@ pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8]) -
     format!("krowk/registry/v1\n{method}\n{target}\n{timestamp}\n{}", sha256_hex(body)).into_bytes()
 }
 
+/// The millisecond a signed request carries: now, or one past the last this
+/// process signed with, whichever is later. A signature is deterministic,
+/// so two requests of one shape signed in one millisecond are one to the
+/// registry, which refuses the second as a replay (R-E2E-2); this
+/// process's tasks — a bridge and its daemon reading a session at once —
+/// never sign two so. Each step forward is a millisecond, far inside the
+/// registry's five minutes of skew.
+fn signing_ms() -> i64 {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static LAST: AtomicI64 = AtomicI64::new(0);
+    let now = jiff::Timestamp::now().as_millisecond();
+    let mut last = LAST.load(Ordering::Relaxed);
+    loop {
+        let next = now.max(last + 1);
+        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
+    }
+}
+
+/// Up to `max` milliseconds, from the clock's nanoseconds and this
+/// process's id: enough to part two processes that pause alike.
+fn jitter_ms(max: u64) -> u64 {
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.subsec_nanos());
+    (u64::from(nanos) ^ u64::from(std::process::id()).wrapping_mul(0x9e37_79b9)) % (max + 1)
+}
+
 /// The path and query of an absolute URL, which is what its request line
 /// carries and so what the registry sees and checks a signature over.
 fn request_target(url: &str) -> &str {
@@ -426,7 +454,10 @@ impl Client {
                 // changes nothing, so it is signed again a moment later; a
                 // write never is.
                 Err(e) if method == "GET" && signer.is_some() && e.code() == "signature_replayed" && attempt < attempts => {
-                    (self.sleep)(std::time::Duration::from_millis(2));
+                    // A moment unlike the other's: two processes that
+                    // collided, both signing again after the same pause,
+                    // would collide again.
+                    (self.sleep)(std::time::Duration::from_millis(2 + jitter_ms(20)));
                     last = Some(e);
                 }
                 Err(e) if attempts == 1 && method != "GET" && e.body.contains_key("stalled") => return Err(sent_once(e)),
@@ -458,8 +489,10 @@ impl Client {
             }
             if let Some(signer) = signer {
                 // Milliseconds, so two calls of the same shape a moment apart
-                // are two requests to the registry's replay check, not one.
-                let at = jiff::Timestamp::now().as_millisecond().to_string();
+                // are two requests to the registry's replay check, not one;
+                // and never a millisecond this process has signed with, so
+                // two of its tasks reading alike at once are two as well.
+                let at = signing_ms().to_string();
                 let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default()));
                 req = req.header("X-Krowk-Device", signer.device()).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
             }
@@ -1729,6 +1762,87 @@ mod boundary {
         fn sign(&self, _: &[u8]) -> [u8; 64] {
             [0; 64]
         }
+    }
+
+    /// A registry that keeps every signed request it answers, by device,
+    /// method, target and timestamp — what a deterministic signature is a
+    /// function of — and refuses one it has seen as a replay, as the
+    /// registry does. Each connection is one request, on a thread of its own.
+    fn replay_checking() -> (u16, Arc<Mutex<usize>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen: Arc<Mutex<std::collections::HashSet<String>>> = Arc::default();
+        let refused: Arc<Mutex<usize>> = Arc::default();
+        let count = Arc::clone(&refused);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let (seen, refused) = (Arc::clone(&seen), Arc::clone(&refused));
+                std::thread::spawn(move || {
+                    let mut reader = BufReader::new(stream.try_clone().unwrap());
+                    let mut head = Vec::new();
+                    loop {
+                        let mut line = String::new();
+                        if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                            break;
+                        }
+                        head.push(line.trim_end().to_string());
+                    }
+                    let header = |n: &str| head.iter().find_map(|l| l.split_once(':').filter(|(k, _)| k.eq_ignore_ascii_case(n)).map(|(_, v)| v.trim().to_string())).unwrap_or_default();
+                    let key = format!("{}\n{}\n{}", header("X-Krowk-Device"), head[0], header("X-Krowk-Timestamp"));
+                    let answer = if seen.lock().unwrap().insert(key) {
+                        respond("200 OK", "", "{}")
+                    } else {
+                        *refused.lock().unwrap() += 1;
+                        respond("401 Unauthorized", "", r#"{"error":{"code":"signature_replayed","message":"already accepted once"}}"#)
+                    };
+                    let _ = stream.write_all(answer.as_bytes());
+                });
+            }
+        });
+        (port, count)
+    }
+
+    /// R-E2E-2: a signature is deterministic, so a process's tasks reading
+    /// alike at once — a bridge and its daemon both reading a session —
+    /// used to sign one request twice in a millisecond, and the registry
+    /// refused the second as a replay; with no pause between attempts (as
+    /// here, the moment the retry signed in being the same) all three
+    /// attempts were refused and the read failed. Now no two requests this
+    /// process signs carry one millisecond, so none is refused.
+    #[test]
+    fn r_e2e_2_tasks_of_one_process_reading_alike_at_once_are_never_a_replay() {
+        let (port, refused) = replay_checking();
+        let c = Arc::new(no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), "krowk_sk_test")).signed_by(Arc::new(Signer)));
+        let reads: Vec<_> = (0..8)
+            .map(|_| {
+                let c = Arc::clone(&c);
+                std::thread::spawn(move || (0..25).map(|_| c.get_as_device::<Value>("/sessions/s1").map(|_| ())).collect::<Vec<_>>())
+            })
+            .collect();
+        let failed: Vec<Error> = reads.into_iter().flat_map(|t| t.join().unwrap()).filter_map(Result::err).collect();
+        assert!(failed.is_empty(), "{} of 200 reads failed, the first: {}", failed.len(), failed[0]);
+        assert_eq!(*refused.lock().unwrap(), 0, "no request was signed in a millisecond another had");
+    }
+
+    /// R-E2E-2: a write refused as a replay may have been the registry's
+    /// to act on once already, so it is never sent again, retries or not.
+    #[test]
+    fn r_e2e_2_a_write_refused_as_a_replay_is_sent_once() {
+        let (port, log) = server(vec![respond("401 Unauthorized", "", r#"{"error":{"code":"signature_replayed","message":"already accepted once"}}"#)]);
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), "krowk_sk_test")).signed_by(Arc::new(Signer));
+        let e = c.call_as_device::<Value>("PUT", "/sessions/s1", Some(json!({})), MAX_ATTEMPTS, Some("key".into())).unwrap_err();
+        assert_eq!(e.code(), "signature_replayed");
+        assert_eq!(log.lock().unwrap().len(), 1, "sent once");
+    }
+
+    /// R-E2E-2: the millisecond a request is signed with only moves on, one
+    /// at a time when the clock has not, and never far past the clock.
+    #[test]
+    fn r_e2e_2_each_signed_request_has_a_millisecond_of_its_own() {
+        let stamps: Vec<i64> = (0..1000).map(|_| signing_ms()).collect();
+        assert!(stamps.windows(2).all(|w| w[1] > w[0]), "rising");
+        assert!(stamps[999] - jiff::Timestamp::now().as_millisecond() < 2000, "within seconds of the clock");
     }
 
     /// R-REG-1: a call has five minutes in all and thirty seconds to

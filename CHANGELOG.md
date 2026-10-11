@@ -327,6 +327,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A synced session no longer fails to start syncing now and then with
+  "signature_replayed".** Two parts of krowk on one machine reading the
+  same session at the same moment, such as the sync host and the daemon,
+  could sign identical requests in the same millisecond. The registry
+  took the second for a replay and refused it, and the host stopped with
+  "the registry did not say whether it holds session …". Each request
+  krowk signs now carries a millisecond of its own.
 - **"Copied 2 lines" goes away by itself** after a few seconds, instead
   of staying in the status bar until the next key.
 - **What you said is on a band across the width again**, instead of a
