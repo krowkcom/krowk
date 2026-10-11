@@ -448,6 +448,13 @@ pub trait Engine: Send + Sync {
     fn busy(&self) -> bool {
         false
     }
+    /// Stops one of the backend's own agents alone, by the backend's id for
+    /// it (R-SUB-10): once the backend has taken the stop, the agent ends
+    /// as its events say. A backend that cannot answers `not_stoppable`,
+    /// with why.
+    fn stop_task<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(async move { Err(EngineError::new("not_stoppable", format!("this backend cannot stop one of its agents ({task_id}) alone — interrupt the session that started it to stop it with that turn"))) })
+    }
 }
 
 /// Resolves once `cancel` flips to true. A switch whose owner is gone never

@@ -1868,6 +1868,74 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
     assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
 }
 
+/// R-SUB-12, R-SUB-10: a viewer stops one of a Claude Code session's
+/// agents by its child session's id, as it stops a native child: the
+/// command reaches the daemon running the turn through the bridge, the
+/// daemon routes it to the host whose turn runs the child, and that host
+/// sends Claude Code `stop_task` for that agent alone. The child ends
+/// interrupted; the parent's turn goes on to its own result.
+#[tokio::test]
+async fn r_sub_12_a_viewer_stops_one_claude_agent() {
+    let w = World::new("claude-stop");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let sleeper = printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == "sleeper").unwrap()["task_id"].as_str().unwrap().to_string();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    // Where the recording stopped the sleeper, the fake waits for krowk to.
+    for m in &printed[init + 1..] {
+        let said_stopped = m["task_id"] == sleeper.as_str() && (m["patch"]["status"] == "killed" || m["status"] == "stopped");
+        match m["type"].as_str() {
+            _ if said_stopped && m["subtype"] == "task_updated" => scenario.push_str("@await-stop\n"),
+            _ if said_stopped => {}
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let session = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    v.commands.send(ask(Some(&session), "run two agents")).unwrap();
+    let started = |u: &viewer::Update| match u {
+        viewer::Update::Line(StreamLine::Log(e)) => match &e.body {
+            krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, backend_id: Some(t), .. } if *t == sleeper => Some(subagent_session_id.clone()),
+            _ => None,
+        },
+        _ => None,
+    };
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, |u| started(u).is_some()).await;
+    let child = got.iter().find_map(started).unwrap();
+    v.commands.send(Command::Interrupt { session_id: child.clone() }).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    let error = got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap();
+    assert_eq!(error, None, "the session's own Claude Code agent stops");
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let status = got.iter().find_map(|u| match u {
+        viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) => Some(r.status),
+        _ => None,
+    });
+    assert_eq!(status, Some(krowk_harness::protocol::TurnStatus::Completed), "the parent's turn goes on");
+    let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
+    let stops: Vec<&str> = fake.lines().filter_map(|l| l.strip_prefix("stop_task ")).collect();
+    assert_eq!(stops, [sleeper.as_str()], "that agent alone: {fake}");
+    let child_log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&child).join("events.jsonl")).unwrap();
+    assert!(child_log.contains("\"status\":\"interrupted\""), "the child ended interrupted: {child_log}");
+}
+
 /// R-SUB-6, R-SUB-7: Claude Code's agents, written as child sessions, ride
 /// the parent's chunks as krowk's own children do — the recorded parallel
 /// turn's two agents, on a session A's bridge syncs: every event of each
