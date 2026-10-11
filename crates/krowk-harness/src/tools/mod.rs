@@ -1265,14 +1265,19 @@ async fn background(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sa
 }
 
 /// What a failed command in the sandbox is told when git could not write
-/// the repository: `.git` is read-only there by design (R-PERM-3), so
-/// `git add`, `commit`, `checkout` and the like fail however they are
-/// asked, and a model that reads only "Read-only file system" tries again.
+/// the repository: `.git` is read-only there by design (R-PERM-3), outside
+/// a krowk worktree, so `git add`, `commit`, `checkout` and the like fail
+/// however they are asked, and a model that reads only "Read-only file
+/// system" tries again. git's English is matched; another locale's goes
+/// without the note.
 const GIT_FENCED: &str = "the sandbox keeps .git read-only, so git cannot stage, commit or move branches from inside it — that is by design, not a fault to work around: leave the changes in the working tree and ask the person to commit them";
 
-/// Whether a command's output says git failed to write the repository.
+/// Whether a command's output says git failed to write the repository: a
+/// line naming `.git` itself — not `.github` or `.gitignore` — and a write
+/// refused.
 fn git_fenced(out: &str) -> bool {
-    out.lines().any(|l| l.contains(".git") && (l.contains("Read-only file system") || l.contains("Permission denied") || l.contains("Operation not permitted")))
+    let names_git = |l: &str| l.match_indices(".git").any(|(i, _)| l[i + 4..].chars().next().is_none_or(|c| matches!(c, '/' | '\'' | '"' | ':' | ' ')));
+    out.lines().any(|l| names_git(l) && (l.contains("Read-only file system") || l.contains("Permission denied") || l.contains("Operation not permitted")))
 }
 
 async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
@@ -1386,7 +1391,10 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                 body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
                 return (body, true);
             }
-            if code != Some(0) && sandbox.is_some() && git_fenced(&text) {
+            // Only where krowk itself keeps `.git` read-only: the kernel's
+            // sandbox, outside a krowk worktree (which may commit, WT4) —
+            // a container's own permission errors are its own.
+            if code != Some(0) && sandbox.is_some_and(|p| p.kernel && p.git.is_empty()) && git_fenced(&text) {
                 body += &format!("\n{GIT_FENCED}");
             }
             (body, code != Some(0))
@@ -1412,7 +1420,7 @@ pub(crate) mod tests {
         for out in ["error: could not lock config file .git/config: Read-only file system", "fatal: Unable to create '/w/.git/index.lock': Read-only file system", "error: insufficient permission for adding an object to repository database .git/objects\nfatal: .git/objects/ab: Permission denied"] {
             assert!(git_fenced(out), "{out}");
         }
-        for out in ["src/main.rs: Read-only file system", "cat .git/HEAD\nref: refs/heads/main", ""] {
+        for out in ["src/main.rs: Read-only file system", ".github/workflows/ci.yml: Read-only file system", "sh: .gitignore: Permission denied", "cat .git/HEAD\nref: refs/heads/main", ""] {
             assert!(!git_fenced(out), "{out}");
         }
     }
