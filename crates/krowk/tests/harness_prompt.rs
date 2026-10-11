@@ -344,14 +344,14 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 }
 
 /// R-PRES-6: on a terminal, `krowk -p` reports working with the prompt's
-/// first line, then done once it answers; a failed turn ends in error with
+/// first line (a blank one before it skipped), then done once it answers; a failed turn ends in error with
 /// the failure's first line. The record is the root's, and nothing reaches
 /// stdout but the answer.
 #[cfg(unix)]
 #[test]
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     use krowk_tui::osc7501::State;
-    let prompt = "read README.md and summarise it in one line\nand nothing else";
+    let prompt = "\nread README.md and summarise it in one line\nand nothing else";
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("pres6", &m.url);
     let (err, stdout, st) = on_a_terminal(&b, &["-p", prompt, "--model", "claude-sonnet-4-6"]);
@@ -364,16 +364,16 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     let b = Sandbox::new("pres6err", &m.url);
     let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude-sonnet-4-6"]);
     assert!(!st.success(), "{err}");
-    // The failure's first line, as krowk prints it: the headline of its
-    // fix, cut where the provider's message broke the line.
+    // The failure's first line: its headline, what krowk prints first for
+    // it on a terminal, cut where the provider's message broke the line.
     let failed = "Anthropic refused the request (invalid_request_error: prompt is too long";
     assert_eq!(reports(&err), [root(State::Working, "hi"), root(State::Error, failed)], "{err:?}");
     assert!(stdout.is_empty(), "{stdout:?}");
 }
 
 /// R-PRES-6: with stderr in a file nothing is reported, and a terminal on
-/// stderr changes nothing on stdout, in any format: the same bytes but
-/// for what differs between any two runs (ids, times).
+/// stderr changes nothing on stdout, in any format: text byte for byte,
+/// JSON but for what differs between any two runs (ids, times).
 #[cfg(unix)]
 #[test]
 fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() {
@@ -389,11 +389,16 @@ fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() 
         let (on, stdout, st) = on_a_terminal(&b, &args);
         assert!(st.success() && reports(&on).len() == 2, "{format}: {on:?}");
         assert!(!stdout.contains(&0x1b), "{format}: nothing but the answer on stdout");
-        assert_eq!(steady(&String::from_utf8_lossy(&stdout)), steady(&String::from_utf8_lossy(&out.stdout)), "{format}");
+        assert!(!stdout.is_empty(), "{format}: the answer is on stdout");
+        if format == "text" {
+            assert_eq!(stdout, out.stdout, "text: byte for byte");
+        } else {
+            assert_eq!(steady(&String::from_utf8_lossy(&stdout)), steady(&String::from_utf8_lossy(&out.stdout)), "{format}");
+        }
     }
 }
 
-/// `out` with what no two runs share masked.
+/// JSON lines with what no two runs share masked.
 #[cfg(unix)]
 fn steady(out: &str) -> String {
     fn mask(v: &mut Value) {
