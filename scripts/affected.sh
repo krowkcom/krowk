@@ -8,12 +8,12 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 base=$(git merge-base HEAD "${QUICK_BASE:-origin/main}" 2>/dev/null || true)
 [ -n "$base" ] || { echo "all()"; exit 0; }
-files=$( { git diff --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
+files=$( { git diff --no-renames --name-only "$base"; git ls-files --others --exclude-standard; } | sort -u)
 [ -n "$files" ] || { echo "all()"; exit 0; }
 crates=()
 while IFS= read -r f; do
   case "$f" in
-    crates/*/*) c=${f#crates/}; crates+=("${c%%/*}") ;;
+    crates/*/*) c=${f#crates/}; c=${c%%/*}; [ -d "crates/$c" ] && crates+=("$c") ;;
     *.md) ;;
     *) echo "all()"; exit 0 ;;
   esac

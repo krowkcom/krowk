@@ -1,7 +1,8 @@
 //! Black-box cases for any krowk binary: what it printed, how it exited, and
 //! what it left on disk.
 //!
-//! The binary under test is `$KROWK_BIN`, defaulting to target/release/krowk.
+//! The binary under test is `$KROWK_BIN`, defaulting to target/release/krowk;
+//! `make golden` passes the one it built, on `$GOLDEN_PROFILE`.
 //! Each case's transcript is held byte for byte:
 //!
 //!     make golden          # build, stamped 0.0.0-golden, and check every case
