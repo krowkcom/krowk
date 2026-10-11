@@ -261,9 +261,11 @@ impl<C: ModelClient> NativeEngine<C> {
             if !ctx.compat.skills.is_empty() && offered(crate::compat::skills::TOOL) {
                 tool_defs.push(crate::compat::skills::definition());
             }
-            // However many MCP tools there are, two definitions (R-TOOL-3).
+            // However many MCP tools there are, two definitions (R-TOOL-3),
+            // naming the servers the turn reaches — a subagent's, when its
+            // definition names some.
             if !ctx.compat.mcp.is_empty() && offered(crate::mcp::SEARCH) && offered(crate::mcp::CALL) {
-                tool_defs.extend(ctx.compat.mcp.definitions());
+                tool_defs.extend(ctx.compat.mcp.definitions(&|server| reaches(&ctx, server, "*")));
             }
             if let Some(run) = &ctx.agent {
                 system = crate::subagent::system_prompt(&system, run);
@@ -734,8 +736,8 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
         None if name == crate::mcp::SEARCH && ctx.permission_mode == crate::protocol::PermissionMode::Plan => {
             (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
         }
-        None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
-        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t), &ctx.cancel).await,
+        None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t) || !reaches(ctx, s, t), &ctx.cancel).await,
+        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t) || !reaches(ctx, s, t), &ctx.cancel).await,
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
         // Its live output — a wait for a build slot — goes on its result.
         None => tools::execute(name, input, &tools::ToolEnv { live: Some((events, item_id)), ..*env }, ctx.gate.scope(opens)).await,
@@ -789,6 +791,14 @@ fn described(ctx: &TurnContext, env: &tools::ToolEnv<'_>, own: Option<SessionCal
         // Code's name for it: `Mcp(server:tool)` and `mcp__server__tool`
         // rules and hooks hold as they would there.
         let (server, tool) = crate::mcp::target(input)?;
+        // A subagent's call outside its definition's MCP allowlist is
+        // refused before a hook or a rule sees it, as a tool it was not
+        // offered is: no rule or hook's allow widens its list.
+        if let Some(run) = &ctx.agent
+            && !run.reaches(&server, &tool)
+        {
+            return Err((run.unreached(&server, &tool), true));
+        }
         let claude = format!("mcp__{server}__{tool}");
         (crate::permissions::Call { tool: claude.clone(), access: crate::permissions::Access::Mcp { server, tool }, subject: None }, claude, crate::mcp::arguments(input))
     } else if skill {
@@ -797,6 +807,13 @@ fn described(ctx: &TurnContext, env: &tools::ToolEnv<'_>, own: Option<SessionCal
     } else {
         (tools::describe(name, input, env)?, crate::permissions::rules::canonical(name), claude_input(name, input))
     })
+}
+
+/// Whether the turn reaches `server`'s `tool` (`*`: any of it): a
+/// subagent only what its definition's tools name, when they name any MCP
+/// (`AgentRun::reaches`); a session every server.
+fn reaches(ctx: &TurnContext, server: &str, tool: &str) -> bool {
+    ctx.agent.as_ref().is_none_or(|run| run.reaches(server, tool))
 }
 
 /// Whether a deny rule covers an MCP tool — `*` for the whole server:
@@ -926,7 +943,7 @@ mod tests {
         let budget = context_tokens_budget();
         for preset in PRESETS {
             let ts = Toolset { preset, custom_tools: false };
-            let (s, t, m) = (estimate_tokens(&system_prompt(std::path::Path::new("/"), &ts)), tools_tokens(&tools::definitions(&ts)), tools_tokens(&mcp.definitions()));
+            let (s, t, m) = (estimate_tokens(&system_prompt(std::path::Path::new("/"), &ts)), tools_tokens(&tools::definitions(&ts)), tools_tokens(&mcp.definitions(&|_| true)));
             println!("R-TOOL-3 context tokens: {}: system {s} + tools {t} + MCP {m} = {}", preset.name, s + t + m);
             assert!(s + t + m <= budget, "{}: {} tokens with MCP servers, over context.tokens' {budget}", preset.name, s + t + m);
         }

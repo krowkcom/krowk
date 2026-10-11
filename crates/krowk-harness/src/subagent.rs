@@ -175,8 +175,10 @@ pub struct AgentRun {
     pub name: Option<String>,
     /// The definition's body, after krowk's own prompt.
     pub instructions: String,
-    /// The tools it may use, krowk's names with the edit tool as `edit`;
-    /// none is every tool but `subagent`.
+    /// The tools it may use, krowk's names with the edit tool as `edit`,
+    /// and the MCP servers and tools it may reach as `mcp__<server>` and
+    /// `mcp__<server>__<tool>`; none is every tool but `subagent`, and every
+    /// server.
     pub tools: Option<Vec<String>>,
     /// The session that started it, and its log: what a hook is told the
     /// session is, as Claude Code tells a subagent's hooks — the
@@ -198,10 +200,38 @@ impl AgentRun {
         }
         match &self.tools {
             None => true,
+            // The MCP tools reach the servers the list names, and are
+            // offered when it names any (`reaches` says which).
+            Some(t) if name == crate::mcp::SEARCH || name == crate::mcp::CALL => t.iter().any(|a| a.starts_with(MCP_PREFIX)),
             Some(t) => t.iter().any(|a| a == name || (a == "edit" && name == edit)),
         }
     }
+
+    /// Whether it may reach `server`'s `tool` — `*` for any tool of it,
+    /// which is whether the server is started and named for it at all:
+    /// every one with no list, else the servers its list names whole and
+    /// those it names a tool of. Held at search, at call and at the
+    /// servers' start, under the parent's deny rules and hooks, which still
+    /// judge every call it may make.
+    pub fn reaches(&self, server: &str, tool: &str) -> bool {
+        let Some(t) = &self.tools else { return true };
+        t.iter().filter_map(|a| a.strip_prefix(MCP_PREFIX)).any(|a| match a.split_once("__") {
+            None => a == server,
+            Some((s, named)) => s == server && (tool == "*" || named == tool),
+        })
+    }
+
+    /// Why a call to `server`'s `tool` outside its list is refused, naming
+    /// what the list does reach, as `mcp_call` names a tool.
+    pub fn unreached(&self, server: &str, tool: &str) -> String {
+        let reached: Vec<String> = self.tools.iter().flatten().filter_map(|a| a.strip_prefix(MCP_PREFIX)).map(|a| a.split_once("__").map_or_else(|| format!("{a} (any tool)"), |(s, t)| format!("{s}:{t}"))).collect();
+        let agent = self.name.as_deref().map_or_else(|| "this subagent".to_string(), |n| format!("agent {n}"));
+        format!("{server}:{tool} was not run: {agent} reaches only the MCP tools its definition names — {}", reached.join(", "))
+    }
 }
+
+/// How an allowlist names an MCP server or tool, as Claude Code does.
+const MCP_PREFIX: &str = "mcp__";
 
 /// What a subagent is told after krowk's own system prompt: that only its
 /// last message goes back, then its definition's instructions.
@@ -1009,6 +1039,21 @@ mod tests {
         assert!(!AgentRun::default().allows(o, "str_replace") && !AgentRun::default().allows(k, "str_replace"));
         let asked = AgentRun { tools: Some(vec!["bash".into(), "bash_output".into(), "kill_bash".into()]), ..AgentRun::default() };
         assert!(asked.allows("bash", "str_replace") && !asked.allows(o, "str_replace") && !asked.allows(k, "str_replace"));
+    }
+
+    #[test]
+    fn r_sub_1_an_allowlist_naming_mcp_reaches_those_servers_and_tools_alone() {
+        let (search, call) = (crate::mcp::SEARCH, crate::mcp::CALL);
+        let every = AgentRun::default();
+        assert!(every.allows(search, "edit") && every.allows(call, "edit") && every.reaches("anything", "*") && every.reaches("anything", "tool"), "no list: every server, as before");
+        let none = AgentRun { tools: Some(vec!["read".into()]), ..AgentRun::default() };
+        assert!(!none.allows(search, "edit") && !none.allows(call, "edit") && !none.reaches("github", "*"), "a list naming no MCP: none");
+        let some = AgentRun { name: Some("triager".into()), tools: Some(vec!["read".into(), "mcp__github".into(), "mcp__linear__create_issue".into()]), ..AgentRun::default() };
+        assert!(some.allows(search, "edit") && some.allows(call, "edit") && !some.allows(SUBAGENT, "edit"), "offered both MCP tools, and still no subagent");
+        assert!(some.reaches("github", "*") && some.reaches("github", "get_pr"), "a whole server");
+        assert!(some.reaches("linear", "*") && some.reaches("linear", "create_issue") && !some.reaches("linear", "delete_issue"), "one tool of a server: started for it, its other tools out");
+        assert!(!some.reaches("sentry", "*") && !some.reaches("sentry", "get_issue") && !some.reaches("gith", "*"), "nor another server, nor one whose name begins alike");
+        assert_eq!(some.unreached("sentry", "get_issue"), "sentry:get_issue was not run: agent triager reaches only the MCP tools its definition names — github (any tool), linear:create_issue");
     }
 
     #[test]
