@@ -2123,10 +2123,12 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Tells every client about the agent definitions that were skipped.
+    /// Tells every client what reading the agent definitions found wrong:
+    /// a definition skipped, an MCP entry of one left out
+    /// (`agents::discover`, which words each line).
     async fn skipped(&self, session_id: &str, problems: Vec<String>) {
-        for why in problems {
-            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("an agent definition was skipped — {why}") }).await;
+        for text in problems {
+            self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
         }
     }
 

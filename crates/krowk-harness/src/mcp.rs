@@ -267,8 +267,10 @@ struct Live {
 }
 
 /// Whether a deny rule, or a subagent's allowlist, keeps the turn from
-/// `server`'s `tool` (`*`: the whole server).
-pub type Denied<'a> = &'a (dyn Fn(&str, &str) -> bool + Sync);
+/// `server`'s `tool` — or, `tool` none, from the whole server: a server
+/// whole is its own question, never a tool's name, so no tool a server
+/// lists can stand for all of it.
+pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 
 /// The session's MCP servers: configured up front, each started on its
 /// first use. Once started they are read without a lock, so one long call
@@ -361,7 +363,7 @@ impl Mcp {
     /// again.
     async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<Vec<&Live>, String> {
         let start_all = async {
-            let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, "*")).map(|(s, cell)| -> crate::engine::BoxFuture<'_, &Live> {
+            let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, None)).map(|(s, cell)| -> crate::engine::BoxFuture<'_, &Live> {
                 Box::pin(cell.get_or_init(move || async move {
                     let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
                         Ok(Ok((conn, listed))) => (Some(conn), listed, None),
@@ -393,7 +395,7 @@ impl Mcp {
             Err(e) => return (e, true),
         };
         let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
-        let visible = || live.iter().flat_map(|l| l.tools.iter().map(move |t| (*l, t))).filter(|(l, t)| !denied(&l.name, &t.name));
+        let visible = || live.iter().flat_map(|l| l.tools.iter().map(move |t| (*l, t))).filter(|(l, t)| !denied(&l.name, Some(&t.name)));
         let mut hits: Vec<(usize, &Live, &Tool)> = Vec::new();
         for (l, t) in visible() {
             let full = format!("{}:{}", l.name, t.name).to_lowercase();
@@ -451,7 +453,7 @@ impl Mcp {
             Ok(t) => t,
             Err(e) => return e,
         };
-        if denied(&server, &tool) {
+        if denied(&server, Some(&tool)) {
             return (format!("{server}:{tool} was not run: this turn may not reach it"), true);
         }
         let live = match self.started(denied, cancel).await {
@@ -518,7 +520,7 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
     let conn = Conn::open(&s.config, &s.cwd)?;
     conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}})).await?;
     conn.notify("notifications/initialized").await?;
-    let (mut tools, mut listed, mut big) = (Vec::new(), 0usize, 0usize);
+    let (mut tools, mut listed, mut big, mut unnamed) = (Vec::new(), 0usize, 0usize, 0usize);
     let mut left_out = None;
     let mut cursor: Option<Value> = None;
     for page in 1..=MAX_PAGES {
@@ -526,7 +528,10 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
         let r = conn.request("tools/list", params).await?;
         let got = r.get("tools").and_then(|t| t.as_array()).map_or(&[][..], |t| t.as_slice());
         for t in got {
-            let Some(name) = t.get("name").and_then(|n| n.as_str()).filter(|n| good_tool_name(n)) else { continue };
+            let Some(name) = t.get("name").and_then(|n| n.as_str()).filter(|n| good_tool_name(n)) else {
+                unnamed += 1;
+                continue;
+            };
             let schema = t.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"}));
             let description: String = t.get("description").and_then(|d| d.as_str()).unwrap_or_default().into();
             let schema_len = schema.to_string().len();
@@ -551,17 +556,19 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
             left_out = Some(format!("it listed more than {MAX_PAGES} pages of tools, so the rest were left out"));
         }
     }
-    if big > 0 {
-        let note = format!("{big} tool(s) with an input schema over {} KiB were left out", MAX_SCHEMA >> 10);
+    let notes = [(big > 0).then(|| format!("{big} tool(s) with an input schema over {} KiB were left out", MAX_SCHEMA >> 10)), (unnamed > 0).then(|| format!("{unnamed} tool(s) named with a control character, whitespace or `*`, or with no name, were left out"))];
+    for note in notes.into_iter().flatten() {
         left_out = Some(left_out.map_or(note.clone(), |l| format!("{l}; {note}")));
     }
     Ok((conn, (tools, left_out)))
 }
 
 /// A tool name as a server lists it, or the model gives it: printable, so
-/// the approval prompt that names it shows what it is.
+/// the approval prompt that names it shows what it is, and holding no `*`,
+/// which a rule and an allowlist read as every tool, so a tool named so
+/// could never be told from all of its server's.
 pub(crate) fn good_tool_name(n: &str) -> bool {
-    !n.is_empty() && n.len() <= 128 && !n.chars().any(|c| c.is_control() || c.is_whitespace())
+    !n.is_empty() && n.len() <= 128 && !n.chars().any(|c| c.is_control() || c.is_whitespace() || c == '*')
 }
 
 /// A connection to one server.
@@ -839,7 +846,7 @@ mod tests {
     #[test]
     fn r_tool_3_a_call_naming_a_control_character_is_refused_before_it_is_judged() {
         assert_eq!(target(&json!({"tool": "fake:echo"})).unwrap(), ("fake".into(), "echo".into()));
-        for bad in ["fake:echo\u{1b}[2J", "fake:a\nb", "fa ke:echo", "fake:", ":echo", "s_:x"] {
+        for bad in ["fake:echo\u{1b}[2J", "fake:a\nb", "fa ke:echo", "fake:", ":echo", "s_:x", "fake:*", "fake:get_*"] {
             assert!(target(&json!({"tool": bad})).is_err(), "{bad:?}");
         }
     }

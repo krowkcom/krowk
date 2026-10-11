@@ -207,24 +207,24 @@ impl AgentRun {
         }
     }
 
-    /// Whether it may reach `server`'s `tool` — `*` for any tool of it,
-    /// which is whether the server is started and named for it at all:
-    /// every one with no list, else the servers its list names whole and
-    /// those it names a tool of. Held at search, at call and at the
-    /// servers' start, under the parent's deny rules and hooks, which still
-    /// judge every call it may make.
-    pub fn reaches(&self, server: &str, tool: &str) -> bool {
+    /// Whether it may reach `server`'s `tool` — or, `tool` none, the
+    /// server at all, which is whether it is started and named for it:
+    /// every one with no list or with `mcp__*`, else the servers its list
+    /// names whole and those it names a tool of. Held at search, at call
+    /// and at the servers' start, under the parent's deny rules and hooks,
+    /// which still judge every call it may make.
+    pub fn reaches(&self, server: &str, tool: Option<&str>) -> bool {
         let Some(t) = &self.tools else { return true };
         t.iter().filter_map(|a| a.strip_prefix(MCP_PREFIX)).any(|a| match a.split_once("__") {
-            None => a == server,
-            Some((s, named)) => s == server && (tool == "*" || named == tool),
+            None => a == "*" || a == server,
+            Some((s, named)) => s == server && tool.is_none_or(|t| t == named),
         })
     }
 
     /// Why a call to `server`'s `tool` outside its list is refused, naming
     /// what the list does reach, as `mcp_call` names a tool.
     pub fn unreached(&self, server: &str, tool: &str) -> String {
-        let reached: Vec<String> = self.tools.iter().flatten().filter_map(|a| a.strip_prefix(MCP_PREFIX)).map(|a| a.split_once("__").map_or_else(|| format!("{a} (any tool)"), |(s, t)| format!("{s}:{t}"))).collect();
+        let reached: Vec<String> = self.tools.iter().flatten().filter_map(|a| a.strip_prefix(MCP_PREFIX)).map(|a| a.split_once("__").map_or_else(|| if a == "*" { "every server".into() } else { format!("{a} (any tool)") }, |(s, t)| format!("{s}:{t}"))).collect();
         let agent = self.name.as_deref().map_or_else(|| "this subagent".to_string(), |n| format!("agent {n}"));
         format!("{server}:{tool} was not run: {agent} reaches only the MCP tools its definition names — {}", reached.join(", "))
     }
@@ -1015,7 +1015,7 @@ mod tests {
 
     #[test]
     fn r_sub_5_the_definitions_listed_cost_every_call_a_bounded_amount() {
-        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, isolation: None, instructions: String::new(), path: PathBuf::new(), project: true };
+        let def = |i: usize, description: String| AgentDef { name: format!("agent-{i:02}"), description, model: None, tools: None, unread: Vec::new(), isolation: None, instructions: String::new(), path: PathBuf::new(), project: true };
         let long = format!("{}\n\nA second paragraph nobody lists.", "word ".repeat(200));
         let many: Vec<AgentDef> = (0..50).map(|i| def(i, long.clone())).collect();
         let text = describe(&many);
@@ -1045,14 +1045,17 @@ mod tests {
     fn r_sub_1_an_allowlist_naming_mcp_reaches_those_servers_and_tools_alone() {
         let (search, call) = (crate::mcp::SEARCH, crate::mcp::CALL);
         let every = AgentRun::default();
-        assert!(every.allows(search, "edit") && every.allows(call, "edit") && every.reaches("anything", "*") && every.reaches("anything", "tool"), "no list: every server, as before");
+        assert!(every.allows(search, "edit") && every.allows(call, "edit") && every.reaches("anything", None) && every.reaches("anything", Some("tool")), "no list: every server, as before");
         let none = AgentRun { tools: Some(vec!["read".into()]), ..AgentRun::default() };
-        assert!(!none.allows(search, "edit") && !none.allows(call, "edit") && !none.reaches("github", "*"), "a list naming no MCP: none");
+        assert!(!none.allows(search, "edit") && !none.allows(call, "edit") && !none.reaches("github", None), "a list naming no MCP: none");
         let some = AgentRun { name: Some("triager".into()), tools: Some(vec!["read".into(), "mcp__github".into(), "mcp__linear__create_issue".into()]), ..AgentRun::default() };
         assert!(some.allows(search, "edit") && some.allows(call, "edit") && !some.allows(SUBAGENT, "edit"), "offered both MCP tools, and still no subagent");
-        assert!(some.reaches("github", "*") && some.reaches("github", "get_pr"), "a whole server");
-        assert!(some.reaches("linear", "*") && some.reaches("linear", "create_issue") && !some.reaches("linear", "delete_issue"), "one tool of a server: started for it, its other tools out");
-        assert!(!some.reaches("sentry", "*") && !some.reaches("sentry", "get_issue") && !some.reaches("gith", "*"), "nor another server, nor one whose name begins alike");
+        assert!(some.reaches("github", None) && some.reaches("github", Some("get_pr")), "a whole server");
+        assert!(some.reaches("linear", None) && some.reaches("linear", Some("create_issue")) && !some.reaches("linear", Some("delete_issue")), "one tool of a server: started for it, its other tools out");
+        assert!(!some.reaches("linear", Some("*")), "a tool named `*` is that tool, never every tool");
+        assert!(!some.reaches("sentry", None) && !some.reaches("sentry", Some("get_issue")) && !some.reaches("gith", None), "nor another server, nor one whose name begins alike");
+        let all = AgentRun { tools: Some(vec!["read".into(), crate::agents::EVERY_MCP_SERVER.into()]), ..AgentRun::default() };
+        assert!(all.allows(call, "edit") && all.reaches("sentry", None) && all.reaches("sentry", Some("get_issue")), "`mcp__*`: every server");
         assert_eq!(some.unreached("sentry", "get_issue"), "sentry:get_issue was not run: agent triager reaches only the MCP tools its definition names — github (any tool), linear:create_issue");
     }
 

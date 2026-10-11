@@ -265,7 +265,7 @@ impl<C: ModelClient> NativeEngine<C> {
             // naming the servers the turn reaches — a subagent's, when its
             // definition names some.
             if !ctx.compat.mcp.is_empty() && offered(crate::mcp::SEARCH) && offered(crate::mcp::CALL) {
-                tool_defs.extend(ctx.compat.mcp.definitions(&|server| reaches(&ctx, server, "*")));
+                tool_defs.extend(ctx.compat.mcp.definitions(&|server| reaches(&ctx, server, None)));
             }
             if let Some(run) = &ctx.agent {
                 system = crate::subagent::system_prompt(&system, run);
@@ -795,7 +795,7 @@ fn described(ctx: &TurnContext, env: &tools::ToolEnv<'_>, own: Option<SessionCal
         // refused before a hook or a rule sees it, as a tool it was not
         // offered is: no rule or hook's allow widens its list.
         if let Some(run) = &ctx.agent
-            && !run.reaches(&server, &tool)
+            && !run.reaches(&server, Some(&tool))
         {
             return Err((run.unreached(&server, &tool), true));
         }
@@ -809,17 +809,20 @@ fn described(ctx: &TurnContext, env: &tools::ToolEnv<'_>, own: Option<SessionCal
     })
 }
 
-/// Whether the turn reaches `server`'s `tool` (`*`: any of it): a
+/// Whether the turn reaches `server`'s `tool` (none: the server at all): a
 /// subagent only what its definition's tools name, when they name any MCP
 /// (`AgentRun::reaches`); a session every server.
-fn reaches(ctx: &TurnContext, server: &str, tool: &str) -> bool {
+fn reaches(ctx: &TurnContext, server: &str, tool: Option<&str>) -> bool {
     ctx.agent.as_ref().is_none_or(|run| run.reaches(server, tool))
 }
 
-/// Whether a deny rule covers an MCP tool — `*` for the whole server:
+/// Whether a deny rule covers an MCP tool — none for the whole server:
 /// search leaves such a tool out, as Claude Code leaves it out of the tool
-/// list, and a server denied whole is never started.
-fn mcp_denied(ctx: &TurnContext, server: &str, tool: &str) -> bool {
+/// list, and a server denied whole is never started. The whole server is
+/// asked of the evaluator as its tool `*`, which only a rule naming all of
+/// the server matches; no tool is named so (`crate::mcp::good_tool_name`).
+fn mcp_denied(ctx: &TurnContext, server: &str, tool: Option<&str>) -> bool {
+    let tool = tool.unwrap_or("*");
     let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
     matches!(ctx.gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
 }
