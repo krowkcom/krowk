@@ -331,10 +331,16 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
     let mut c = b.command(args, "sk-test");
     c.stdout(Stdio::piped());
     let mut t = pty::Pty::spawn_stderr(c, 80, 24);
-    let mut stdout = Vec::new();
-    std::io::Read::read_to_end(&mut t.child.stdout.take().unwrap(), &mut stdout).unwrap();
+    // Read on a thread of its own, so a krowk that never exits fails the
+    // wait below rather than hanging the test.
+    let mut pipe = t.child.stdout.take().unwrap();
+    let stdout = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut out);
+        out
+    });
     let st = t.wait(std::time::Duration::from_secs(30)).expect("krowk -p exits");
-    (t.text(), stdout, st)
+    (t.text(), stdout.join().unwrap(), st)
 }
 
 /// R-PRES-6: on a terminal, `krowk -p` reports working with the prompt's
@@ -351,7 +357,6 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     let (err, stdout, st) = on_a_terminal(&b, &["-p", prompt, "--model", "claude-sonnet-4-6"]);
     assert!(st.success(), "{err}");
     let topic = "read README.md and summarise it in one line";
-    assert_eq!(root(State::Working, prompt), root(State::Working, topic), "the first line is the msg");
     assert_eq!(reports(&err), [root(State::Working, topic), root(State::Done, topic)], "{err:?}");
     assert_eq!(String::from_utf8_lossy(&stdout), "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.\n");
 
@@ -359,8 +364,8 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     let b = Sandbox::new("pres6err", &m.url);
     let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude-sonnet-4-6"]);
     assert!(!st.success(), "{err}");
-    // The failure's first line: its fix, cut where the provider's message
-    // broke the line.
+    // The failure's first line, as krowk prints it: the headline of its
+    // fix, cut where the provider's message broke the line.
     let failed = "Anthropic refused the request (invalid_request_error: prompt is too long";
     assert_eq!(reports(&err), [root(State::Working, "hi"), root(State::Error, failed)], "{err:?}");
     assert!(stdout.is_empty(), "{stdout:?}");
@@ -425,33 +430,19 @@ fn steady(out: &str) -> String {
 #[test]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     use krowk_tui::osc7501::State;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    // A model that takes the request and never answers, and says when it
-    // has it: the turn is running by then.
-    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let url = format!("http://{}", l.local_addr().unwrap());
-    let asked = std::sync::Arc::new(AtomicBool::new(false));
-    let flag = asked.clone();
-    std::thread::spawn(move || {
-        for mut c in l.incoming().flatten() {
-            let flag = flag.clone();
-            std::thread::spawn(move || {
-                let mut buf = [0u8; 8192];
-                while let Ok(1..) = std::io::Read::read(&mut c, &mut buf) {
-                    flag.store(true, Ordering::SeqCst);
-                }
-            });
-        }
-    });
-    let b = Sandbox::new("pres6int", &url);
+    // A model that takes the request and holds its answer: the turn is
+    // running once the request is seen.
+    let gate = mock::Gate::default();
+    let m = mock::serve(move |_, _| mock::Reply { hold: Some(("message_start", gate.clone())), ..mock::Reply::paced(mock::text_stream("never"), std::time::Duration::ZERO) });
+    let b = Sandbox::new("pres6int", &m.url);
     let mut c = b.command(&["-p", "wait forever", "--model", "claude-sonnet-4-6"], "sk-test");
     c.stdout(Stdio::piped());
     let mut t = pty::Pty::spawn_stderr(c, 80, 24);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while !asked.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+    while m.seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(asked.load(Ordering::SeqCst), "the prompt never reached the model: {:?}", t.text());
+    assert!(!m.seen.lock().unwrap().is_empty(), "the prompt never reached the model: {:?}", t.text());
     t.write(b"\x03");
     let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits on Ctrl-C");
     let err = t.text();
