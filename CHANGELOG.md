@@ -106,9 +106,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   list, and Esc goes back to the list with that one selected. `x` stops
   this subagent alone: the top line says `stopping…`, then `interrupted`,
   while the others and the turn carry on. When it can't be stopped — it
-  has already finished, or Codex runs it and krowk can't stop one of its
-  agents alone yet — the bottom line says why, as `x` in the Ctrl-G list
-  now does too, instead of nothing happening.
+  has already finished, or what runs it refuses — the bottom line says
+  why, as `x` in the Ctrl-G list now does too, instead of nothing
+  happening.
 - **Read a subagent's transcript from a device attached to a synced
   session.** In the TUI that `krowk sync attach` (or `krowk --resume` of a
   synced session) opens, Enter on a subagent in Ctrl-G now shows its
@@ -199,8 +199,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   (its question is taken back), for an agent still running in the
   background after its turn ended, and from a device following a synced
   session. If Claude Code refuses, or the stop can't reach it, the bottom
-  line says why and the agent keeps running. Codex agents still can't be
-  stopped one at a time.
+  line says why and the agent keeps running.
 - **Codex's agents are subagents of the session too.** Each agent Codex
   spawns during a turn gets its own session log, linked to yours: what it
   was asked first, then its messages, tool calls and results, then how it
@@ -216,6 +215,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   is still counted. This is built from Codex's published protocol, not
   checked against a live Codex yet, so tell us if a Codex agent shows up
   wrong.
+- **Answer a Codex agent's approvals as its own, and stop one Codex agent
+  alone.** When an agent Codex runs asks to run a command or change files,
+  or asks you a question, the request now shows as that agent's: its row
+  and transcript read `⚠ waiting on you`, and your answer goes back to that
+  agent. It used to show as the session's own. `x` on a Codex agent, in its
+  transcript or in the Ctrl-G list, now stops that agent alone, as it does
+  for Claude Code's: Codex is asked to interrupt that agent's turn, its row
+  reads `stopping…`, then `interrupted`, and the other agents and the turn
+  carry on. From another client or a device following the session, it
+  also works while an agent's approval waits on you, that agent's own
+  included (its question is taken back); in the TUI the approval prompt
+  takes your keys until you answer it. If Codex
+  refuses, or hasn't said yet which turn the agent runs, the bottom line
+  says why and the agent keeps running. Like the rest of krowk's Codex
+  agents, this is checked against Codex's published protocol, not against
+  a live Codex.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

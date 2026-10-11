@@ -5,9 +5,10 @@
 # — JSON-RPC over stdio, one object per line — replaying a recorded
 # scenario turn by turn. The messages are the ones a real `codex app-server`
 # 0.154.0 sent (`recorded/`), trimmed; the tests validate every one against
-# the pinned schema. `subagents.jsonl` is the exception: Codex's child
-# threads were never recorded — nobody has run them live — so it is written
-# from the pinned schema alone, and checked against it like the rest.
+# the pinned schema. The `subagent*.jsonl` scenarios are the exception:
+# Codex's child threads were never recorded — nobody has run them live — so
+# they are written from the pinned schema alone, and checked against it
+# like the rest.
 #
 # Written for the bash macOS ships (3.2): no associative arrays, no
 # fractional `read -t`. It reads krowk's lines by their leading `{"id":N,
@@ -40,6 +41,8 @@
 #   @tool-result <id>  a dynamicToolCall item/completed for <id>, carrying
 #                      the text of the last answer
 #   @await-interrupt   waits for krowk's turn/interrupt, and answers it
+#                      (every turn/interrupt is logged as `interrupt`, then
+#                      `interrupt-of <threadId> <turnId>`)
 #   @await-steer       waits for krowk's turn/steer, and takes it
 #   @refuse-steer      waits for krowk's turn/steer, and refuses it (the turn is ending)
 #   @sleep <seconds>   waits
@@ -173,6 +176,7 @@ side_request() {
     ;;
   turn/interrupt)
     log "interrupt"
+    log "interrupt-of $(field "$line" threadId) $(field "$line" turnId)"
     say "{\"id\":$id,\"result\":{}}"
     ;;
   "") ;;
@@ -245,6 +249,7 @@ play_turn() {
     "@await-interrupt")
       await turn/interrupt <&3
       log "interrupt"
+      log "interrupt-of $(field "$AWAITED" threadId) $(field "$AWAITED" turnId)"
       say "{\"id\":$(req_id "$AWAITED"),\"result\":{}}"
       ;;
     "@await-steer")
