@@ -429,6 +429,7 @@ impl Client {
                     (self.sleep)(std::time::Duration::from_millis(2));
                     last = Some(e);
                 }
+                Err(e) if attempts == 1 && method != "GET" && e.body.contains_key("stalled") => return Err(sent_once(e)),
                 Err(e) => {
                     if !e.retryable() || attempt == attempts {
                         return Err(e);
@@ -572,7 +573,7 @@ impl Client {
             // retry could help, and that the words say what happened.
             let who = if code == "network_unreachable" { "the registry" } else { "object storage" };
             let quiet = spoken(self.limits.quiet);
-            body.insert("detail".into(), json!(format!("{op} {url:?}: {who} stopped answering — nothing arrived for {quiet}")));
+            body.insert("detail".into(), json!(format!("{op} {url:?}: nothing arrived for {quiet}")));
             if code == "network_unreachable" {
                 body.insert("endpoint".into(), json!(url));
             }
@@ -836,6 +837,17 @@ fn unexpected_redirect(status: u16, endpoint: &str, location: &str) -> Error {
     );
     body.insert("retryable".into(), json!(false));
     Error { status, body }
+}
+
+/// A stall on a write sent once on purpose — acquiring a lease, say, where
+/// a second attempt is refused under a fence this device never heard. The
+/// registry may have acted on it, so "try again" is not the advice.
+fn sent_once(mut e: Error) -> Error {
+    let fix = e.fix();
+    let said = fix.split_once("; try again").map_or(fix.as_str(), |(said, _)| said);
+    e.body.insert("fix".into(), json!(format!("{said}; it may have been acted on, so it was not sent again — check the network or any proxy in between")));
+    e.body.insert("retryable".into(), json!(false));
+    e
 }
 
 fn malformed(status: u16, fix: &str) -> Error {
@@ -1781,15 +1793,19 @@ mod boundary {
     /// R-REG-1: acquiring a lease is sent once (architecture.md: a retry
     /// would be refused as held under a fence the client never heard), so
     /// one that goes quiet is reported, not made again — in words that say
-    /// the registry stopped answering, under the network's code.
+    /// the registry stopped answering, under the network's code, and with
+    /// no advice to try again, since the registry may have acted on it.
     #[test]
     fn r_reg_1_a_lease_acquire_that_goes_quiet_is_sent_once_and_says_the_registry_stopped_answering() {
         let (port, log) = scripted(vec![Act::Silent, Act::Answer(respond("200 OK", "", "{}"))]);
         let c = hushed(port, "krowk_sk_test").signed_by(Arc::new(Signer));
         let e = c.acquire_lease("x", "ab", 60, "production").unwrap_err();
         assert_eq!(log.lock().unwrap().len(), 1, "sent once");
-        assert_eq!((e.code().as_str(), e.status, e.retryable(), e.body.get("stalled")), ("network_unreachable", 0, true, Some(&json!(true))));
-        assert!(e.fix().starts_with("the registry stopped answering — nothing arrived for 300 ms"), "{}", e.fix());
+        assert_eq!((e.code().as_str(), e.status, e.retryable(), e.body.get("stalled")), ("network_unreachable", 0, false, Some(&json!(true))));
+        assert_eq!(
+            e.fix(),
+            "the registry stopped answering — nothing arrived for 300 ms, so the call was given up; it may have been acted on, so it was not sent again — check the network or any proxy in between"
+        );
         // A body that goes quiet part way is the same stall, not a body
         // this client could not read.
         let (port, _) = scripted(vec![Act::Part("HTTP/1.1 200 OK\r\nContent-Length: 40\r\n\r\n{\"slug\":".into())]);
