@@ -36,7 +36,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::replay::{self, Tail};
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
@@ -1216,6 +1216,15 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     }
     page.extend(placed.map(|(_, h)| h));
     if last {
+        // The status line's count is sent only as it changes: a client
+        // that comes to the session meanwhile is told it now, once caught up.
+        // Every host's: the one that ran its jobs may not be this client's.
+        let running: u32 = s.hosts.values().map(|h| h.background_of(session)).sum();
+        if running > 0 {
+            let line = StreamLine::Live(LiveEvent::Background { session_id: session.to_string(), running });
+            let json = serde_json::to_string(&line).expect("a stream line serializes");
+            page.push(line_out(&json, &line, session, None, 0, None));
+        }
         s.follow(session, host, client);
     }
     if let Some(id) = outbox.resynced(session, page, rest, last) {
