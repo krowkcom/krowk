@@ -38,7 +38,9 @@ fn all_sources() -> Vec<Box<dyn Source>> {
 /// Brings one native session's rows up to date from its log, right after a
 /// `krowk -p` turn: the same read and write an import does, for its log and
 /// for every subagent's under it (R-SUB-6), parents first, so each child
-/// links to the session that started it.
+/// links to the session that started it. A session whose rows are still
+/// its stub's stand-ins though its log is back — a restore cut short
+/// between the two — has them dropped first, so the log's replace them.
 #[cfg(feature = "harness")]
 pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result<(), Error> {
     let store_path = krowk_store::db_path(env).map_err(|e| store_fail(&e, ""))?.display().to_string();
@@ -55,6 +57,10 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
     let _lock = lock_store_waiting(&store_path, REFRESH_LOCK_WAIT)?;
     let conn = krowk_store::open(env).map_err(|e| store_fail(&e, &store_path))?;
     for r in &tree {
+        let from_log = std::path::Path::new(&r.path).file_name().is_some_and(|f| f == krowk_harness::log::EVENTS_FILE);
+        if from_log && krowk_store::holds_stand_ins(&conn, krowk_harness::project::HARNESS, &r.id).map_err(|e| store_fail(&e, &store_path))? {
+            krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, &r.id).map_err(|e| store_fail(&e, &store_path))?;
+        }
         let (thread, next, _) = src.read(env, r, "").map_err(|e| fail("import_failed", e.to_string()))?;
         krowk_store::Writer::new(&conn).ingest_with_cursor(&thread, &r.key(), &next).map_err(|e| store_fail(&e, &store_path))?;
     }
@@ -68,32 +74,41 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
 /// rows dropped first. Says which vintage it came from, and what the
 /// person should know about it.
 #[cfg(all(feature = "harness", unix))]
-pub(super) fn restore_native(ctx: &Ctx, session_id: &str, from: Option<&str>) -> Result<krowk_harness::vintage::Restored, Error> {
+pub(super) fn restore_native(ctx: &mut Ctx, session_id: &str, from: Option<&str>) -> Result<krowk_harness::vintage::Restored, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
     let (client, keys) = super::sync::vintage_keys(ctx)?;
-    let restored = match from {
-        Some(slug) => krowk_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug),
-        None => krowk_harness::vintage::restore(&client, &keys, &dir, session_id),
+    let restored = {
+        let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
+        match from {
+            Some(slug) => krowk_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug, &mut waiting),
+            None => krowk_harness::vintage::restore(&client, &keys, &dir, session_id, &mut waiting),
+        }
     }?;
-    // Restored by another krowk while this one waited: krowk.db is that
-    // one's to bring up to date, and dropping its rows again here could
-    // leave them dropped behind a cursor already past them.
-    if restored.already {
-        return Ok(restored);
+    // Restored by another krowk while this one waited: its rows are not
+    // dropped again, but projected all the same, which replaces stand-ins
+    // that krowk was stopped before replacing (`project_native`).
+    if !restored.already {
+        let conn = open_store(ctx)?;
+        krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
     }
-    let conn = open_store(ctx)?;
-    krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
-    drop(conn);
     project_native(ctx.io.env, session_id)?;
     Ok(restored)
 }
 
 /// Restores a native session named by its log id when it is archived, and
-/// says how it went; none for any other.
+/// says how it went; none for any other. One whose log is back but whose
+/// rows are still its stub's — a restore stopped before projecting it — is
+/// projected now.
 #[cfg(all(feature = "harness", unix))]
-pub(super) fn restore_archived(ctx: &Ctx, session_id: &str) -> Result<Option<krowk_harness::vintage::Restored>, Error> {
+pub(super) fn restore_archived(ctx: &mut Ctx, session_id: &str) -> Result<Option<krowk_harness::vintage::Restored>, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
     if !krowk_harness::vintage::is_archived(&dir, session_id) {
+        if krowk_harness::log::valid_id(session_id)
+            && dir.join(session_id).join(krowk_harness::log::EVENTS_FILE).is_file()
+            && krowk_store::holds_stand_ins(&open_store(ctx)?, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?
+        {
+            project_native(ctx.io.env, session_id)?;
+        }
         return Ok(None);
     }
     restore_native(ctx, session_id, None).map(Some)
@@ -944,11 +959,12 @@ pub fn show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     #[cfg(all(feature = "harness", unix))]
     if d.session.harness == krowk_harness::project::HARNESS {
         match restore_if_archived(ctx, &d.session.foreign_session_id) {
-            Ok(true) => {
+            // Read again either way: one a restore was stopped before
+            // projecting has just been projected, too.
+            Ok(_) => {
                 let conn = open_store(ctx)?;
                 d = load_by_id(ctx, &conn, &d.session.id)?;
             }
-            Ok(false) => {}
             Err(e) if !matches!(e.code().as_str(), "not_set_up" | "not_authenticated" | "network_unreachable") => return Err(e),
             Err(e) => match krowk_harness::log::sessions_dir(ctx.io.env).ok().and_then(|dir| krowk_harness::vintage::read_stub(&dir, &d.session.foreign_session_id)) {
                 Some(stub) => stub_only = Some((stub, e)),

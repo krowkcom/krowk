@@ -498,8 +498,9 @@ fn leave_stub(c: &Candidate) -> Result<(), String> {
 /// restoring it would quietly drop what was said since. Restored from any
 /// vintage but the recorded one, it says so, and why each it passed over
 /// was — a digest or a seal that did not check out included.
-pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<Restored, Error> {
-    let Some(_held) = hold(sessions, id)? else { return restored_meanwhile(sessions, id) };
+/// `waiting` is called before it waits for another krowk restoring it.
+pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Restored, Error> {
+    let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
     let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
     let current = client.week_vintage(&stub.week)?;
     let mut tried = Vec::new();
@@ -563,15 +564,50 @@ pub struct Restored {
 /// session at a time, across every krowk on the machine, so two never
 /// write its files over each other. None when, the lock had, the session
 /// is no longer archived — another restore brought it back meanwhile.
-fn hold(sessions: &Path, id: &str) -> Result<Option<std::fs::File>, Error> {
+/// `waiting` is called first when another krowk holds it. The lock is on
+/// the file opened, so it is checked to be the stub still at its path once
+/// had — a stub written again meanwhile is opened and locked afresh — and
+/// what a write cut short left beside the session's files is swept.
+fn hold(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Option<std::fs::File>, Error> {
+    use std::os::unix::fs::MetadataExt;
     let path = sessions.join(id).join(STUB_FILE);
-    let stub = match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(e) => return Err(restore_failed(format!("open {}: {e}", path.display()))),
-    };
-    stub.lock().map_err(|e| restore_failed(format!("lock {}: {e}", path.display())))?;
-    Ok(is_archived(sessions, id).then_some(stub))
+    loop {
+        let stub = match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(restore_failed(format!("open {}: {e}", path.display()))),
+        };
+        if stub.try_lock().is_err() {
+            waiting();
+            stub.lock().map_err(|e| restore_failed(format!("lock {}: {e}", path.display())))?;
+        }
+        let held = stub.metadata().map_err(|e| restore_failed(format!("stat {}: {e}", path.display())))?;
+        match std::fs::metadata(&path) {
+            Ok(now) if (now.dev(), now.ino()) != (held.dev(), held.ino()) => continue,
+            Ok(_) if is_archived(sessions, id) => {
+                sweep_temporaries(&sessions.join(id));
+                return Ok(Some(stub));
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// How old a write's temporary must be before a restore takes it for one a
+/// crash left behind, rather than one being written.
+const STALE_TEMPORARY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Removes the temporaries `write_private` left in `dir` — a krowk killed
+/// between writing one and renaming it — once they are past being written.
+fn sweep_temporaries(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stale = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMPORARY));
+        if name.starts_with('.') && name.ends_with(".tmp") && stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// What a restore that found the session already back says.
@@ -586,8 +622,8 @@ fn restored_meanwhile(sessions: &Path, id: &str) -> Result<Restored, Error> {
 /// or replaced, whichever the others hold: what a person picks when the
 /// one `restore` finds is not the one they want. A copy older than the stub
 /// records is restored here, since it was asked for by name, and said to be.
-pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str) -> Result<Restored, Error> {
-    let Some(_held) = hold(sessions, id)? else { return restored_meanwhile(sessions, id) };
+pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str, waiting: &mut dyn FnMut()) -> Result<Restored, Error> {
+    let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
     let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
     let all = week_vintages(client, &stub.week)?;
     let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| restore_failed(format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week)))?;
@@ -676,8 +712,12 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
     let mut f = o.open(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-    f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    let written = f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| format!("write {}: {e}", tmp.display())).and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display())));
+    // A write that did not land leaves nothing beside the file.
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -808,17 +848,48 @@ mod tests {
         let id = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
         std::fs::create_dir_all(dir.join(id)).unwrap();
         std::fs::write(dir.join(id).join(STUB_FILE), b"{}").unwrap();
-        let first = hold(&dir, id).unwrap().expect("archived");
+        let first = hold(&dir, id, &mut || {}).unwrap().expect("archived");
         let second = std::thread::spawn({
             let dir = dir.clone();
-            move || (hold(&dir, id).unwrap().is_none(), restored_meanwhile(&dir, id).unwrap().already)
+            move || {
+                let mut waited = false;
+                let held = hold(&dir, id, &mut || waited = true).unwrap();
+                (held.is_none(), waited, restored_meanwhile(&dir, id).unwrap().already)
+            }
         });
         std::thread::sleep(std::time::Duration::from_millis(100));
         assert!(!second.is_finished(), "waits while the first holds it");
         write_private(&dir.join(id).join(EVENTS_FILE), b"").unwrap();
         std::fs::remove_file(dir.join(id).join(STUB_FILE)).unwrap();
         drop(first);
-        assert_eq!(second.join().unwrap(), (true, true), "back, and not restored again");
+        assert_eq!(second.join().unwrap(), (true, true, true), "said it waited, then found it back, and did not restore it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A temporary a crash left beside a session's files goes at its next
+    /// restore once it is past being written; a fresh one, and the files
+    /// themselves, stay. A write that fails leaves none.
+    #[test]
+    fn r_vint_4_a_restore_sweeps_stale_temporaries_and_a_failed_write_leaves_none() {
+        let dir = scratch("sweep");
+        let id = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
+        let session = dir.join(id);
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join(STUB_FILE), b"{}").unwrap();
+        let (stale, fresh) = (session.join(".events.jsonl.1-0.tmp"), session.join(".events.jsonl.2-0.tmp"));
+        for t in [&stale, &fresh] {
+            std::fs::write(t, b"half").unwrap();
+        }
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - STALE_TEMPORARY * 2).unwrap();
+        drop(hold(&dir, id, &mut || {}).unwrap().expect("archived"));
+        assert!(!stale.exists() && fresh.exists() && session.join(STUB_FILE).exists());
+        std::fs::remove_file(&fresh).unwrap();
+        // A file where a directory must be: the rename fails.
+        std::fs::create_dir(session.join(EVENTS_FILE)).unwrap();
+        std::fs::write(session.join(EVENTS_FILE).join("x"), b"").unwrap();
+        assert!(write_private(&session.join(EVENTS_FILE), b"log").is_err());
+        let left: Vec<String> = std::fs::read_dir(&session).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect();
+        assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

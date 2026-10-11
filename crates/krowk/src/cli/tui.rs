@@ -294,8 +294,8 @@ fn restorer(ctx: &Ctx) -> krowk_tui::Restore {
             let (mut out, mut err) = (std::io::sink(), std::io::sink());
             let env = |k: &str| std::env::var(k).unwrap_or_default();
             let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
-            let quiet = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
-            sessions::restore_archived(&quiet, id).map(|r| r.map(|r| r.warnings).unwrap_or_default()).map_err(|e| e.fix())
+            let mut quiet = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
+            sessions::restore_archived(&mut quiet, id).map(|r| r.map(|r| r.warnings).unwrap_or_default()).map_err(|e| e.fix())
         }
         #[cfg(not(unix))]
         {

@@ -375,6 +375,10 @@ async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>,
     }
 }
 
+/// How long leaving waits for a restore that has put its session's files
+/// back to bring krowk.db up to date.
+const RESTORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// Under the prompt while an archived session comes back.
 const RESTORING: &str = "restoring from its vintage… · esc stops waiting";
 type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
@@ -577,7 +581,7 @@ async fn session(opts: Options) -> Outcome {
     {
         ui.resumed_in_daemon(&mut app, &id, replayed_to).await;
     }
-    let result = ui.run(&mut app, &mut term).await;
+    let result = ui.run_and_settle(&mut app, &mut term).await;
     ui.drain(&mut app);
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -2829,6 +2833,27 @@ impl<'h> Ui<'h> {
                     false => app.notice(&format!("session {id} was restored — /sessions continues it")),
                 }
             }
+        }
+    }
+
+    /// The TUI until it is left, then a restore under way settled
+    /// (`settle_restore`).
+    async fn run_and_settle<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
+        let result = self.run(app, term).await;
+        self.settle_restore().await;
+        result
+    }
+
+    /// Leaving with a restore under way. One that has put the session's
+    /// files back — its stub is gone — is given a moment to project them,
+    /// which its thread would not outlive krowk to do; one still fetching
+    /// is let go, and leaves the session archived to be restored next time.
+    /// Either way the next show or resume projects a session left
+    /// unprojected.
+    async fn settle_restore(&mut self) {
+        let Some(r) = self.restoring.take() else { return };
+        if !krowk_harness::vintage::is_archived(&self.sessions_dir, &r.id) {
+            let _ = tokio::time::timeout(RESTORE_SETTLE, r.done).await;
         }
     }
 

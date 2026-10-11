@@ -372,7 +372,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   TUI says when it's back without switching to it. If it can't be
   restored, the TUI says why and keeps the session you were in. Two
   restores of the same session, from the TUI or `krowk sessions restore`
-  in another terminal, take turns rather than writing over each other.
+  in another terminal, take turns rather than writing over each other;
+  the second says it is waiting. Quitting mid-restore never leaves a
+  session half back: the next `krowk sessions show` or resume of it
+  finishes the job.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

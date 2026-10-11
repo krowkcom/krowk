@@ -20,7 +20,18 @@ const DAY_MS: i64 = 86_400_000;
 
 /// A native session whose every event is `age_days` old, asking `prompt`.
 fn session(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64) -> String {
+    session_of(sessions, cwd, prompt, age_days, false)
+}
+
+/// `session`, the prompt in a turn of its own when `turned`, as a real
+/// one is: what leaves its stub a stand-in row per turn in krowk.db.
+fn session_of(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64, turned: bool) -> String {
     let (mut l, root) = SessionLog::create(sessions, cwd, "test").unwrap();
+    if turned {
+        let model = krowk_harness::protocol::ModelRef { instance: "anthropic".into(), model: "m".into() };
+        let wire_api = krowk_harness::protocol::WireApi::AnthropicMessages;
+        l.append(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api, permission_mode: krowk_harness::protocol::PermissionMode::Default, effort: None }).unwrap();
+    }
     l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(prompt) }).unwrap();
     l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "j".into(), item: Item::AssistantText { text: format!("answering {prompt}") } }).unwrap();
     drop(l);
@@ -303,5 +314,37 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
     let (ok, v, out) = m.krowk(&["sessions", "restore", &id, "--from", &old]);
     assert!(ok, "{out}");
     assert!(v["data"]["warnings"].to_string().contains("older copy"), "restored as asked, and said to be older: {out}");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// R-VINT-4: a restore stopped after putting the session's log back but
+/// before projecting it — krowk quit under it — leaves krowk.db holding the
+/// stub's stand-ins. Opening the session projects its log in their place.
+#[test]
+fn r_vint_4_a_session_left_unprojected_by_a_cut_short_restore_is_projected_when_opened() {
+    let root = std::env::temp_dir().join(format!("krowk-vintage-unprojected-{}", std::process::id()));
+    let (_registry, m, _, _) = synced_machine(&root);
+    let sessions = root.join(".krowk").join("sessions");
+    let id = session_of(&sessions, &root, "a turn of its own", 20, true);
+    let log_before = std::fs::read(sessions.join(&id).join(log::EVENTS_FILE)).unwrap();
+    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    assert!(ok, "{out}");
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+
+    // Unpacked, not projected: the log back, the stub gone, krowk.db as
+    // the stub left it.
+    std::fs::write(sessions.join(&id).join(log::EVENTS_FILE), &log_before).unwrap();
+    std::fs::remove_file(sessions.join(&id).join(krowk_harness::vintage::STUB_FILE)).unwrap();
+    let env = |k: &str| if k == "HOME" { root.display().to_string() } else { String::new() };
+    let conn = krowk_store::open(&env).unwrap();
+    assert!(krowk_store::holds_stand_ins(&conn, krowk_harness::project::HARNESS, &id).unwrap(), "the stub's rows");
+    drop(conn);
+
+    let (ok, v, out) = m.krowk(&["sessions", "show", &id]);
+    assert!(ok, "{out}");
+    assert!(v.to_string().contains("answering a turn of its own"), "shown from its log: {out}");
+    let conn = krowk_store::open(&env).unwrap();
+    assert!(!krowk_store::holds_stand_ins(&conn, krowk_harness::project::HARNESS, &id).unwrap(), "the stand-ins replaced");
     let _ = std::fs::remove_dir_all(&root);
 }

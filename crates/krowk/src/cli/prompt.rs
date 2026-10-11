@@ -456,12 +456,13 @@ pub(super) fn config_json() -> Result<serde_json::Value, Error> {
 /// sessions show` takes that resolves to a krowk session.
 pub(super) fn resolve_resume(ctx: &mut Ctx, sessions_dir: &std::path::Path, reference: &str) -> Result<String, Error> {
     let reference = reference.trim();
-    if log::valid_id(reference) && sessions_dir.join(reference).join(log::EVENTS_FILE).is_file() {
-        return Ok(reference.to_string());
-    }
-    // Resuming an archived session brings it back first (R-VINT-4).
+    // Resuming an archived session brings it back first (R-VINT-4), and
+    // one a restore was stopped before projecting is projected.
     #[cfg(unix)]
     if log::valid_id(reference) && sessions::restore_if_archived(ctx, reference)? {
+        return Ok(reference.to_string());
+    }
+    if log::valid_id(reference) && sessions_dir.join(reference).join(log::EVENTS_FILE).is_file() {
         return Ok(reference.to_string());
     }
     let conn = sessions::open_store(ctx)?;
