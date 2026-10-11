@@ -108,16 +108,17 @@ pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8]) -
 /// fast one corrected): the clock is taken again, so a fixed clock is used
 /// at once rather than once it catches up.
 fn signing_ms() -> i64 {
-    signing_ms_at(jiff::Timestamp::now().as_millisecond())
+    static LAST: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    signing_ms_at(&LAST, jiff::Timestamp::now().as_millisecond())
 }
 
-fn signing_ms_at(now: i64) -> i64 {
-    use std::sync::atomic::{AtomicI64, Ordering};
-    static LAST: AtomicI64 = AtomicI64::new(0);
-    let mut last = LAST.load(Ordering::Relaxed);
+/// `signing_ms` against the counter `last`, at the clock reading `now`.
+fn signing_ms_at(last_used: &std::sync::atomic::AtomicI64, now: i64) -> i64 {
+    use std::sync::atomic::Ordering;
+    let mut last = last_used.load(Ordering::Relaxed);
     loop {
         let next = if last - now > 1_000 { now } else { now.max(last + 1) };
-        match LAST.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
+        match last_used.compare_exchange_weak(last, next, Ordering::Relaxed, Ordering::Relaxed) {
             Ok(_) => return next,
             Err(seen) => last = seen,
         }
@@ -1845,7 +1846,8 @@ mod boundary {
     /// at a time when the clock has not, and never far past the clock.
     #[test]
     fn r_e2e_2_each_signed_request_has_a_millisecond_of_its_own() {
-        let stamps: Vec<i64> = (0..1000).map(|_| signing_ms()).collect();
+        let last = std::sync::atomic::AtomicI64::new(0);
+        let stamps: Vec<i64> = (0..1000).map(|_| signing_ms_at(&last, jiff::Timestamp::now().as_millisecond())).collect();
         assert!(stamps.windows(2).all(|w| w[1] > w[0]), "rising");
         assert!(stamps[999] - jiff::Timestamp::now().as_millisecond() < 2000, "within seconds of the clock");
     }
@@ -1854,10 +1856,11 @@ mod boundary {
     /// once, not once it catches up with the stamps the fast one gave.
     #[test]
     fn r_e2e_2_a_clock_set_back_is_used_at_once() {
+        let last = std::sync::atomic::AtomicI64::new(0);
         let fast = jiff::Timestamp::now().as_millisecond() + 10 * 60 * 1000;
-        assert!(signing_ms_at(fast) >= fast);
+        assert!(signing_ms_at(&last, fast) >= fast);
         let fixed = jiff::Timestamp::now().as_millisecond();
-        let after = signing_ms_at(fixed);
+        let after = signing_ms_at(&last, fixed);
         assert!(after - fixed < 1_000, "the corrected clock, not ten minutes ahead: {}", after - fixed);
     }
 
