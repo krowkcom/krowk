@@ -339,7 +339,7 @@ impl World {
     /// A's bridge with a direct listener, reading this node from a fake
     /// tailscaled at `ts`; `stop` kills the listener.
     fn bridge_direct(&self, a: &Device, session: &str, daemon: Arc<Client>, ts: &FakeTailscale, same_user: bool, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user, lan: false, lan_at: Vec::new(), stop: Some(stop) };
+        let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user, lan: false, lan_at: None, stop: Some(stop) };
         let tailnet = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet());
         self.bridge_with_direct(a, session, daemon, config, tailnet)
     }
@@ -347,7 +347,12 @@ impl World {
     /// A's bridge offering the LAN at 127.0.0.1 with no Tailscale on the
     /// machine (ticket 27): nothing answers at tailscaled's socket.
     fn bridge_lan(&self, a: &Device, session: &str, daemon: Arc<Client>, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        let config = direct::Config { socket: self.root.join("no-tailscaled.sock").into(), roster: ticket_roster(), same_user: false, lan: true, lan_at: vec![std::net::Ipv4Addr::LOCALHOST.into()], stop: Some(stop) };
+        self.bridge_lan_at(a, session, daemon, stop, Arc::new(|| vec![std::net::Ipv4Addr::LOCALHOST.into()]))
+    }
+
+    /// `bridge_lan`, its LAN addresses read from `at` as they move.
+    fn bridge_lan_at(&self, a: &Device, session: &str, daemon: Arc<Client>, stop: watch::Receiver<bool>, at: direct::LanAt) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
+        let config = direct::Config { socket: self.root.join("no-tailscaled.sock").into(), roster: ticket_roster(), same_user: false, lan: true, lan_at: Some(at), stop: Some(stop) };
         self.bridge_with_direct(a, session, daemon, config, None)
     }
 
@@ -1591,7 +1596,7 @@ async fn r_net_2_without_tailscale_the_session_moves_to_the_lan_and_r_net_3_only
     // The listener is found over mDNS by the session's tag alone.
     let (tx, mut found) = mpsc::unbounded_channel();
     let tag_of = krowk_harness::daemon::ws::uuid(&session);
-    tokio::task::spawn_blocking(move || krowk_harness::sync::mdns::browse(tag_of, Duration::from_secs(3), tx)).await.unwrap();
+    tokio::task::spawn_blocking(move || krowk_harness::sync::mdns::browse(tag_of, Duration::from_secs(3), true, tx)).await.unwrap();
     let mut advertised = Vec::new();
     while let Ok(c) = found.try_recv() {
         advertised.push(c.url);
@@ -1618,6 +1623,36 @@ async fn r_net_2_without_tailscale_the_session_moves_to_the_lan_and_r_net_3_only
         }
     }
     join_direct(&via, &session, &b, &real, &b.signing).await.expect("B's own ticket and key join, so each refusal above was the ticket's or the key's");
+}
+
+/// R-NET-2 (ticket 27): A's LAN address moves from 127.0.0.2 to 127.0.0.3
+/// after A took the session up, so B's welcome names an address nothing
+/// listens on any more. A follows the move — listens on the new address,
+/// lets the old one go, advertises the new one over mDNS — and B, its
+/// welcome's address refused, finds the new one over mDNS and moves onto
+/// it. Linux only: macOS answers on 127.0.0.1 alone.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn r_net_2_a_host_whose_lan_address_moves_is_found_again_over_mdns() {
+    let w = World::new("lan-moves");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let moved = Arc::new(AtomicBool::new(false));
+    let m = moved.clone();
+    let at: direct::LanAt = Arc::new(move || vec![if m.load(Ordering::SeqCst) { [127, 0, 0, 3] } else { [127, 0, 0, 2] }.into()]);
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_lan_at(&a, &session, w.daemon().await, kill_rx, at);
+    w.synced(&session).await;
+    moved.store(true, Ordering::SeqCst);
+    // Past A's next look at its addresses, and the old one's goodbye.
+    tokio::time::sleep(direct::LAN_CHECK + Duration::from_secs(2)).await;
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let got = until(&mut v, Duration::from_secs(30), &mut Vec::new(), direct_path).await;
+    let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).expect("B went direct");
+    assert!(via.starts_with("ws://127.0.0.3:"), "B moved onto {via}, not the address A moved to");
+    v.commands.send(w.prompt(Some(&session), "after the move")).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut Vec::new(), result_of).await;
 }
 
 /// Joins the direct listener at `via` as `b`'s viewer, with `ticket` and a

@@ -38,14 +38,23 @@ pub struct Config {
     /// advertise it over mDNS — with Tailscale or without it; never with
     /// `same_user`.
     pub lan: bool,
-    /// The LAN addresses to offer; empty for this machine's own: what
-    /// tailscaled says when it is up, else its interfaces' private IPv4
-    /// addresses.
-    pub lan_at: Vec<IpAddr>,
+    /// Where the LAN addresses to offer are read, at the start and every
+    /// `LAN_CHECK` after; None for this machine's own: what tailscaled says
+    /// when it is up, else its interfaces' private IPv4 addresses.
+    pub lan_at: Option<LanAt>,
     /// Stops the listener when it turns true; without it the listener goes
     /// with the bridge.
     pub stop: Option<watch::Receiver<bool>>,
 }
+
+/// A source of LAN addresses, for a test to move them.
+pub type LanAt = std::sync::Arc<dyn Fn() -> Vec<IpAddr> + Send + Sync>;
+
+/// How often a host offering the LAN reads its LAN addresses again: one it
+/// takes up is listened on and advertised over mDNS, one it lost is no
+/// longer, so a viewer whose welcome named the old address finds the new
+/// one over mDNS.
+pub const LAN_CHECK: Duration = Duration::from_secs(5);
 
 /// One address a viewer may dial the host at.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,12 +81,13 @@ pub struct Listening {
     pub dial: String,
     pub candidates: Vec<Candidate>,
     stop: Option<watch::Sender<bool>>,
-    /// The mDNS responder answering for the LAN addresses, while it lives.
-    _mdns: Option<super::mdns::Advertised>,
+    /// Whether the LAN is still followed (`follow_lan`), and so advertised.
+    following: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Drop for Listening {
     fn drop(&mut self) {
+        self.following.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(s) = &self.stop {
             let _ = s.send(true);
         }
@@ -145,14 +155,25 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         }
         tailnet = Some(ip);
     }
-    let mut advertised = Vec::new();
+    // Without Tailscale the bridge dials its own listener on loopback, so
+    // its uplink outlives a LAN address it loses; never offered to a viewer.
+    let mut origins = Vec::new();
+    if lan && status.is_none() {
+        let own = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0)).map_err(|e| format!("the direct listener could not be opened on loopback: {e}"))?;
+        origins.push(url(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), own.local_addr().map_err(|e| e.to_string())?.port()));
+        listeners.push(own);
+    }
+    let read_lan: LanAt = match (&c.lan_at, &status) {
+        (Some(at), _) => at.clone(),
+        (None, Some(_)) => {
+            let socket = c.socket.clone();
+            std::sync::Arc::new(move || tailscale::status(&socket).map(|s| s.lan()).unwrap_or_default())
+        }
+        (None, None) => std::sync::Arc::new(super::mdns::lan_addresses),
+    };
+    let mut bound = Vec::new();
     if lan {
-        let at = match (&c.lan_at, &status) {
-            (named, _) if !named.is_empty() => named.clone(),
-            (_, Some(status)) => status.lan(),
-            (_, None) => super::mdns::lan_addresses(),
-        };
-        for ip in at.into_iter().filter(|l| Some(*l) != tailnet) {
+        for ip in read_lan().into_iter().filter(|l| Some(*l) != tailnet) {
             // The same port, so a viewer's candidates name one listener; an
             // address taken there is simply not offered.
             let Ok(l) = TcpListener::bind((ip, port)) else { continue };
@@ -161,22 +182,15 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
             }
             listeners.push(l);
             candidates.push(Candidate { url: url(ip, port), via: "lan".into() });
-            if let IpAddr::V4(v4) = ip {
-                advertised.push(v4);
-            }
+            bound.push(ip);
         }
-        if listeners.is_empty() {
-            return Err(format!("{}, and this machine has no LAN address to listen on", down.unwrap_or_default()));
+        if candidates.is_empty() {
+            return Err(format!("{}, and no LAN address of this machine could be listened on", down.unwrap_or_default()));
         }
     }
-    let dial = candidates[0].url.clone();
-    // mDNS lets a viewer on the LAN find the listener by its session
-    // alone, beside the welcome's addresses; without it those still stand.
-    let mdns = match advertised.is_empty() {
-        true => None,
-        false => super::mdns::advertise(session, &advertised, port).map_err(|e| eprintln!("krowk: {e}; the LAN path is offered without it")).ok(),
-    };
-    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins: candidates.iter().map(|c| c.url.clone()).collect(), whois, pin: Some((session, host)) };
+    let dial = origins.first().unwrap_or(&candidates[0].url).clone();
+    origins.extend(candidates.iter().map(|c| c.url.clone()));
+    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins, whois, pin: Some((session, host)) };
     let (stop, rx) = match c.stop.clone() {
         Some(rx) => (None, rx),
         None => {
@@ -184,12 +198,81 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
             (Some(tx), rx)
         }
     };
+    let following = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let changes = if lan {
+        let (tx, changes) = tokio::sync::mpsc::unbounded_channel();
+        let (following, stopped) = (following.clone(), rx.clone());
+        std::thread::spawn(move || follow_lan(session, port, tailnet, bound, read_lan, tx, following, stopped));
+        Some(changes)
+    } else {
+        None
+    };
     std::thread::spawn(move || {
-        if let Err(e) = relay::run_until(listeners, config, rx) {
+        if let Err(e) = relay::run_changing(listeners, config, rx, changes) {
             eprintln!("krowk: the direct listener stopped: {e}");
         }
     });
-    Ok(Listening { dial, candidates, stop, _mdns: mdns })
+    Ok(Listening { dial, candidates, stop, following })
+}
+
+/// The LAN addresses as the machine moves (`LAN_CHECK`): each new one
+/// listened on, at the listener's port, and each lost one let go, and the
+/// mDNS advertisement kept to what is listened on. mDNS lets a viewer on
+/// the LAN find the listener by its session alone, beside the welcome's
+/// addresses, which name only those the session started with. Ends with
+/// the listener.
+#[allow(clippy::too_many_arguments)]
+fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: Vec<IpAddr>, read_lan: LanAt, changes: tokio::sync::mpsc::UnboundedSender<relay::Change>, following: std::sync::Arc<std::sync::atomic::AtomicBool>, stopped: watch::Receiver<bool>) {
+    let url = |ip: &IpAddr| match ip {
+        IpAddr::V6(v6) => format!("ws://[{v6}]:{port}"),
+        IpAddr::V4(v4) => format!("ws://{v4}:{port}"),
+    };
+    let advertise = |bound: &[IpAddr]| {
+        let v4: Vec<std::net::Ipv4Addr> = bound.iter().filter_map(|ip| if let IpAddr::V4(v4) = ip { Some(*v4) } else { None }).collect();
+        if v4.is_empty() {
+            return None;
+        }
+        super::mdns::advertise(session, &v4, port).map_err(|e| eprintln!("krowk: {e}; the LAN path is offered without it")).ok()
+    };
+    let mut advertised = advertise(&bound);
+    let on = || following.load(std::sync::atomic::Ordering::SeqCst) && !*stopped.borrow() && !changes.is_closed();
+    while on() {
+        let until = Instant::now() + LAN_CHECK;
+        while on() && Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        if !on() {
+            break;
+        }
+        let now: Vec<IpAddr> = read_lan().into_iter().filter(|l| Some(*l) != tailnet).collect();
+        // None read — tailscaled not answering this once, or no network at
+        // all — lets nothing go: a listener on an address that is gone
+        // costs nothing, and one let go too soon is a path lost.
+        if now.is_empty() {
+            continue;
+        }
+        let mut moved = false;
+        for ip in bound.clone().into_iter().filter(|ip| !now.contains(ip)) {
+            let _ = changes.send(relay::Change::Remove(url(&ip)));
+            bound.retain(|b| *b != ip);
+            moved = true;
+        }
+        let new: Vec<IpAddr> = now.into_iter().filter(|ip| !bound.contains(ip)).collect();
+        for ip in new {
+            let Ok(l) = TcpListener::bind((ip, port)) else { continue };
+            if changes.send(relay::Change::Add(l, url(&ip))).is_err() {
+                return;
+            }
+            bound.push(ip);
+            moved = true;
+        }
+        if moved {
+            // The old responder says goodbye as it goes; the new one
+            // announces what is listened on now.
+            drop(advertised.take());
+            advertised = advertise(&bound);
+        }
+    }
 }
 
 /// How long a viewer the host offered direct addresses may stay on the
