@@ -524,6 +524,11 @@ impl<W: Write> Term<W> {
         write!(self.buf.clone(), "\x1b]2;{title}\x07")
     }
 
+    /// An OSC 7501 report, as `osc7501` wrote it, with the next frame.
+    pub fn report(&mut self, report: &str) -> io::Result<()> {
+        self.buf.clone().write_all(report.as_bytes())
+    }
+
     /// One frame: `lines` into scrollback, then the live region redrawn as
     /// `rows` with the cursor at `caret` (column, row), all as one
     /// synchronized write.

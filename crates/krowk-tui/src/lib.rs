@@ -519,6 +519,9 @@ async fn session(opts: Options) -> Outcome {
     ui.rx = None;
     // The screen is left first, so leaving shows at once whatever is still
     // to be let go.
+    if let Some(clear) = ui.presence.clear() {
+        let _ = term.report(&clear);
+    }
     let _ = term.leave();
     ui.presence.finish();
     let mut out = term.into_inner();
@@ -656,7 +659,8 @@ struct Ui<'h> {
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
-    /// The window title and herdr's agent state.
+    /// The window title, the terminal's root record and herdr's agent
+    /// state.
     presence: presence::Presence,
     project: Option<Project>,
 }
@@ -1376,15 +1380,15 @@ impl<'h> Ui<'h> {
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let state = if !app.approvals.is_empty() {
-            presence::State::Blocked
-        } else if app.running() {
-            presence::State::Working
-        } else {
-            presence::State::Idle
+        let state = match app.approvals.first() {
+            Some(req) if !req.questions.is_empty() => presence::State::Asking,
+            Some(_) => presence::State::Blocked,
+            None if app.running() => presence::State::Working,
+            None => presence::State::Idle,
         };
-        if let Some(title) = self.presence.update(state, &self.last_prompt) {
-            term.title(&title)?;
+        if let Some(told) = self.presence.tell(state, &self.last_prompt) {
+            term.title(&told.title)?;
+            term.report(&told.report)?;
         }
         if std::mem::take(&mut app.wipe) {
             term.wipe()?;
@@ -1981,6 +1985,9 @@ impl<'h> Ui<'h> {
     /// what the person types next.
     fn give_up<W: Write>(&mut self, term: &mut Screen<W>) -> std::io::Result<()> {
         self.keys = None;
+        if let Some(clear) = self.presence.clear() {
+            term.report(&clear)?;
+        }
         self.presence.pause();
         term.finish()?;
         restore_terminal();
