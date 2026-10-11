@@ -144,6 +144,9 @@ const STATUS_WAIT: Duration = Duration::from_millis(1500);
 /// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
 /// that does.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
+/// How long "copied …" stays under the prompt: a mouse copy is followed by
+/// no key that would clear it.
+const COPIED_SHOWN: Duration = Duration::from_secs(3);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
 
@@ -502,7 +505,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -648,6 +651,8 @@ struct Ui<'h> {
     /// when: the same key again within `QUIT_CONFIRM` leaves, any other
     /// key forgets it.
     quit_armed: Option<(char, Instant)>,
+    /// The copy's flash and when it goes, unless something took its place.
+    copied: Option<(String, Instant)>,
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
@@ -972,6 +977,7 @@ struct Due {
     stall: Option<Instant>,
     retry: Option<Instant>,
     quit: Option<Instant>,
+    copied: Option<Instant>,
 }
 
 /// Whether the model's provider can be reached, as the loop finds out:
@@ -1029,7 +1035,7 @@ impl<'h> Ui<'h> {
         self.first_frame(app, term, &mut frames)?;
         loop {
             let due = self.due(app, &reach);
-            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit].into_iter().flatten().min();
+            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
@@ -1132,6 +1138,7 @@ impl<'h> Ui<'h> {
                 .then(|| (reach.last_activity + STALL).max(reach.stall_quiet_until.unwrap_or(now))),
             retry: app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY),
             quit: self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM),
+            copied: self.copied.as_ref().map(|(_, t)| *t),
         }
     }
 
@@ -1307,6 +1314,13 @@ impl<'h> Ui<'h> {
             app.flash = None;
             app.touch();
         }
+        if due.copied.is_some_and(|t| t <= now)
+            && let Some((said, _)) = self.copied.take()
+            && app.flash.as_ref() == Some(&said)
+        {
+            app.flash = None;
+            app.touch();
+        }
         Ok(())
     }
 
@@ -1335,18 +1349,23 @@ impl<'h> Ui<'h> {
         }
         // Before the view: the flash it leaves is in this frame, not the
         // next one, which an idle TUI may not draw for a while.
-        if let Some((what, text)) = app.copy.take() {
+        if let Some((_, text)) = app.copy.take() {
             // As written, tabs and all, but no escape or bidi control
             // reaches the place it is pasted.
             // The joiner that makes one emoji of several is kept too.
             let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
-            app.flash = Some(if text.len() > clipboard::MAX {
-                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
+            let said = if text.len() > clipboard::MAX {
+                format!("Too long to copy ({} KB)", text.len() / 1024)
             } else {
                 term.clipboard(&text)?;
                 clipboard::system(&text);
-                format!("copied {what} ({} lines)", text.lines().count())
-            });
+                match text.lines().count() {
+                    1 => "Copied 1 line".to_string(),
+                    n => format!("Copied {n} lines"),
+                }
+            };
+            self.copied = Some((said.clone(), Instant::now() + COPIED_SHOWN));
+            app.flash = Some(said);
         }
         // Scrollback's lines first: what they let go of (held tool blocks)
         // is then not in the live region too.
