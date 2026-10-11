@@ -2377,7 +2377,11 @@ fn root_record_is_cleared_while_a_vendors_login_has_the_terminal(screen: &str) {
     let before = reports(&login[..login.find("Press Enter to sign in to Claude").expect("the login's words")]);
     assert_eq!(before[before.len() - 2..], [root(State::Blocked(Kind::Auth), "Sign in to anthropic"), root(State::Clear, "")], "cleared before the login: {before:?}");
     let (got, _) = quit_reports(t);
-    assert!(got.ends_with(&[root(State::Idle, ""), root(State::Clear, "")]), "idle once signed in: {got:?}");
+    // Nothing while the login has the terminal; back, idle, perhaps after a
+    // frame of the sign-in the end of it closes a moment later.
+    let after = &got[before.len()..];
+    let idle = [root(State::Idle, ""), root(State::Clear, "")];
+    assert!(after == idle || after == [&[root(State::Blocked(Kind::Auth), "Sign in to anthropic")][..], &idle].concat(), "idle once signed in: {got:?}");
 }
 
 #[test]

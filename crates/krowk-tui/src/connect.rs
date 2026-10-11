@@ -152,14 +152,14 @@ impl AuthInteraction for Asker {
 
 /// What the root record says while `/connect` waits on the person: the
 /// provider by the name `krowk connect` takes (a vendor, or an instance
-/// there is, such as `claude:work`), and `a provider` until one is named
-/// or picked. Whatever else was named (a key pasted by mistake) is never
+/// there is or one of a provider's to add, such as `claude:work`), and
+/// `a provider` until one is named or picked. Whatever else was named (a key pasted by mistake) is never
 /// put in a title.
 pub fn sign_in(target: Option<&str>, instance: &dyn Fn(&str) -> bool) -> String {
     let target = target.map(str::trim).unwrap_or_default();
     match Vendor::parse(target) {
         Some(v) => format!("Sign in to {}", v.id()),
-        None if !target.is_empty() && instance(target) => format!("Sign in to {target}"),
+        None if !target.is_empty() && (instance(target) || target.split_once(':').is_some_and(|(p, _)| krowk_harness::connect::by_provider(p, false).is_some())) => format!("Sign in to {target}"),
         None => "Sign in to a provider".into(),
     }
 }
@@ -391,6 +391,7 @@ mod tests {
         assert_eq!(sign_in(None, &there), "Sign in to a provider");
         assert_eq!(sign_in(Some(" Anthropic "), &there), "Sign in to anthropic");
         assert_eq!(sign_in(Some("claude:work"), &there), "Sign in to claude:work");
+        assert_eq!(sign_in(Some("claude:second"), &there), "Sign in to claude:second", "an account to add");
         assert_eq!(sign_in(Some("sk-ant-api03-oops"), &there), "Sign in to a provider", "a key pasted by mistake is never shown");
         let mut f = Flow::new("Connect a provider", Vec::new(), None);
         f.sign_in = Some(sign_in(None, &there));
