@@ -124,6 +124,38 @@ fn r_oss_3_the_cargo_deny_policy_refuses_advisories_and_unknown_sources() {
     assert!(ci.contains("run: cargo deny check") && release.contains("run: cargo deny check"), "CI and the release both run cargo deny");
 }
 
+/// `.github/sigstore/signing-config.json`, as Sigstore's TUF repository
+/// published `signing_config.v0.2.json` in targets.json version 14
+/// (snapshot 166): Fulcio, Rekor v1 and the timestamp authority. A new hash
+/// here is a deliberate refresh from TUF, with the version it came from.
+const SIGNING_CONFIG_SHA256: &str = "9711a6d5375706957a4859af31c5866a4474f81f0544f9f4b76c9c4f4c8a539c";
+
+/// The release workflow's jobs, by name: each `  name:` line under `jobs:`
+/// to the next, with comment lines and heredocs (the release notes, which
+/// quote a `cargo install` for the reader) dropped.
+fn jobs(workflow: &str) -> Vec<(String, String)> {
+    let body = &workflow[workflow.find("\njobs:\n").expect("a jobs: section")..];
+    let mut jobs: Vec<(String, String)> = Vec::new();
+    let mut heredoc = false;
+    for line in body.lines().skip(2) {
+        if heredoc {
+            heredoc = line.trim() != "EOF";
+            continue;
+        }
+        heredoc = line.contains("<<EOF");
+        let name = line.strip_prefix("  ").and_then(|l| l.strip_suffix(':')).filter(|n| !n.starts_with(' ') && !n.starts_with('#'));
+        match (name, jobs.last_mut()) {
+            (Some(n), _) => jobs.push((n.to_string(), String::new())),
+            (None, Some((_, text))) if !line.trim_start().starts_with('#') => {
+                text.push_str(line);
+                text.push('\n');
+            }
+            _ => {}
+        }
+    }
+    jobs
+}
+
 #[test]
 fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_before_publishing() {
     let release = read(".github/workflows/release.yml");
@@ -131,14 +163,35 @@ fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_be
         release.contains("cosign sign-blob --yes --signing-config .github/sigstore/signing-config.json"),
         "the release signs with the signing config in the repository, not the one TUF serves on the day"
     );
-    let check = release.find("name: Check the signature as krowk upgrade will");
+    let jobs = jobs(&release);
+    let job = |name: &str| jobs.iter().find(|(n, _)| n == name).map(|(_, t)| t.as_str()).unwrap_or_else(|| panic!("release.yml has a `{name}` job"));
+    // Nothing a crate's build script, proc macro or test could do runs where
+    // the release's identity or its write access is.
+    for (name, text) in &jobs {
+        if text.contains("id-token: write") || text.contains("contents: write") {
+            assert!(!text.contains("cargo "), "the `{name}` job can sign or publish, and runs cargo");
+        }
+    }
+    for name in ["verifier", "verify"] {
+        assert!(!job(name).contains("write"), "the `{name}` job holds no write permission");
+    }
+    assert!(job("verifier").contains("cargo test --locked -p krowk --lib --no-run"), "the verifier is built, unprivileged, from this tag");
     assert!(
-        release.contains("r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it")
-            && check.is_some()
-            && check < release.find("name: Create the GitHub release"),
-        "the fresh bundle is checked by krowk upgrade's code before the release is created"
+        job("verify").contains("r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it"),
+        "the fresh bundle is checked by krowk upgrade's code"
     );
-    let config: serde_json::Value = serde_json::from_str(&read(".github/sigstore/signing-config.json")).unwrap();
+    assert!(job("sign").contains("needs: [check, dist, reproduce]"), "nothing is signed before the rebuild matched");
+    assert!(job("verify").contains("needs: [check, verifier, sign]"), "the check reads the bundles sign wrote");
+    let publish = job("publish");
+    let needs = publish.lines().find_map(|l| l.trim().strip_prefix("needs: ")).expect("publish names what it needs");
+    assert!(needs.contains("verify") && needs.contains("reproduce"), "publish waits for the check and the rebuild: {needs}");
+    assert!(!publish.contains("cosign sign-blob"), "publish signs nothing itself");
+
+    let raw = std::fs::read(root().join(".github/sigstore/signing-config.json")).unwrap();
+    use sha2::Digest;
+    let hash: String = sha2::Sha256::digest(&raw).iter().map(|b| format!("{b:02x}")).collect();
+    assert_eq!(hash, SIGNING_CONFIG_SHA256, "the signing config is TUF's as recorded; a refresh updates the constant and its version");
+    let config: serde_json::Value = serde_json::from_slice(&raw).unwrap();
     let logs = config["rekorTlogUrls"].as_array().unwrap();
     assert!(
         !logs.is_empty() && logs.iter().all(|l| l["url"] == "https://rekor.sigstore.dev" && l["majorApiVersion"] == 1),

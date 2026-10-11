@@ -195,16 +195,47 @@ jobs:
             echo "- \`$bin\` \`$want\`, rebuilt identically" >> "$GITHUB_STEP_SUMMARY"
           done
 
-  publish:
+  # The code `krowk upgrade` checks a signature with, compiled at this tag in
+  # a job that can sign nothing and write nothing: the dependencies' build
+  # scripts and proc macros run here, never beside the OIDC token or the
+  # release's write access. Only the test binary leaves it.
+  verifier:
+    needs: [check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97 --profile minimal
+          rustup default 1.97
+
+      - name: Build krowk's unit tests
+        run: |
+          set -euo pipefail
+          bin=$(cargo test --locked -p krowk --lib --no-run --message-format=json \
+            | jq -r 'select(.reason == "compiler-artifact" and .profile.test and .target.name == "krowk" and (.target.kind | index("lib"))) | .executable')
+          [[ -x "$bin" ]] || { echo "::error::no krowk unit-test binary was built" >&2; exit 1; }
+          mkdir -p verifier && cp "$bin" verifier/krowk-unit-tests
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: verifier
+          path: verifier/
+
+  # The one job that can mint the release's identity: it downloads what was
+  # built, runs cosign and nothing else, and hands the bundles on. No Rust
+  # build and no third-party code but cosign runs here.
+  sign:
     needs: [check, dist, reproduce]
     runs-on: ubuntu-latest
     permissions:
-      # Creates the release and uploads the archives to it.
-      contents: write
+      contents: read
       # Sigstore's keyless signing: GitHub's OIDC token names this workflow at
       # this tag, Fulcio certifies a one-use key for that identity, and the
-      # signature is logged in Rekor. No signing key exists to leak. npm's
-      # provenance takes the same token.
+      # signature is logged in Rekor. No signing key exists to leak.
       id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -215,10 +246,6 @@ jobs:
         with:
           name: dist
           path: dist
-
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: release-notes
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -242,7 +269,10 @@ jobs:
       # to Rekor v2 because Sigstore moved its default would be one no
       # shipped krowk upgrades to. .github/sigstore/signing-config.json is
       # TUF's signing_config.v0.2.json as it stood (Fulcio, Rekor v1, the
-      # timestamp authority); moving to Rekor v2 is a change to krowk first.
+      # timestamp authority); oss_hygiene pins its hash and TUF version.
+      # Runbook — sign fails on a service: refresh the file from TUF; if TUF's
+      # names Rekor v2 only, teach cli/upgrade/sigstore.rs Rekor v2 and ship
+      # that release first.
       - name: Sign
         run: |
           set -euo pipefail
@@ -251,20 +281,76 @@ jobs:
               --bundle "$file.sigstore.json" "$file"
           done
 
-      # The bundle just written, checked by the code `krowk upgrade` runs at
-      # this tag, before anything is published: a change in what cosign
-      # writes or Sigstore logs fails this release, not every krowk's next
-      # upgrade.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: signatures
+          path: dist/*.sigstore.json
+
+  # The bundles just written, checked by the code `krowk upgrade` runs at
+  # this tag (the verifier job's test binary), before anything is
+  # published: a change in what cosign writes or Sigstore logs fails this
+  # release, not every krowk's next upgrade. Read-only, like the build.
+  verify:
+    needs: [check, verifier, sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signatures
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: verifier
+          path: verifier
+
       - name: Check the signature as krowk upgrade will
         env:
           VERSION: ${{ needs.check.outputs.version }}
         run: |
           set -euo pipefail
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
-          KROWK_RELEASE_DIR="$PWD/dist" KROWK_RELEASE_VERSION="$VERSION" cargo test --locked -p krowk --lib \
+          chmod +x verifier/krowk-unit-tests
+          KROWK_RELEASE_DIR="$PWD/dist" KROWK_RELEASE_VERSION="$VERSION" verifier/krowk-unit-tests \
             cli::upgrade::sigstore::tests::r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it \
-            -- --ignored --exact
+            --ignored --exact
+
+  publish:
+    needs: [check, dist, reproduce, sign, verify]
+    runs-on: ubuntu-latest
+    permissions:
+      # Creates the release and uploads the archives to it.
+      contents: write
+      # npm's provenance: the OIDC token names this workflow at this tag on
+      # each package it publishes.
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release-notes
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: sbom
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: signatures
+          path: dist
 
       # A tag like v0.1.0-rc1 becomes a GitHub pre-release, and npm publishes
       # it under the `next` dist-tag rather than `latest`. Re-running on a tag
