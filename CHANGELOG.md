@@ -197,11 +197,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   row reads `stopping…`, then `interrupted`, and the other agents and the
   turn carry on. It still reads `interrupted` when the session is resumed
   later or opened on a device that attaches to it, rather than `failed`.
-  This also works for an agent waiting on your approval
-  (its question is taken back), for an agent still running in the
-  background after its turn ended, and from a device following a synced
-  session. If Claude Code refuses, or the stop can't reach it, the bottom
-  line says why and the agent keeps running.
+  This also works for an agent waiting on your approval (its question is
+  taken back), for an agent still running in the background after its turn
+  ended, and from a device following a synced session. If Claude Code
+  refuses, or the stop can't reach it, the bottom line says why and the
+  agent keeps running.
 - **Codex's agents are subagents of the session too.** Each agent Codex
   spawns during a turn gets its own session log, linked to yours: what it
   was asked first, then its messages, tool calls and results, then how it
