@@ -635,7 +635,9 @@ fn fx_in_home(name: &str) -> Fx {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         std::fs::write(p, body).unwrap();
     };
-    w("Documents/taxes.txt", &format!("{MARKER}-documents\n"));
+    // Named for this fixture: 9c's `find /` also reaches the copies a killed
+    // run left in some other checkout, which are not this home leaking.
+    w("Documents/taxes.txt", &format!("{MARKER}-documents {}\n", base.file_name().unwrap().to_string_lossy()));
     w("Documents/sub/passwords.kdbx", &format!("{MARKER}-kdbx\n"));
     git(&ws, &home, &["init", "-q"]);
     std::fs::write(ws.join("a.txt"), "hello\n").unwrap();
@@ -667,7 +669,9 @@ async fn r192b_9_r_perm_3_credentials_stay_hidden_with_the_workspace_inside_the_
         t.blocked(&format!("9b read tool ../{rel}"), !out.contains(MARKER), out);
     }
     let (out, _) = sh(&f, "ls -la ~ ../ ../Documents 2>&1; grep -r FAKE ~ 2>/dev/null; find / -name 'taxes.txt' 2>/dev/null | xargs cat 2>/dev/null").await;
-    t.blocked("9c search the home from inside it", !out.contains(MARKER) && !out.contains("taxes"), out);
+    let (docs, own) = (format!("{MARKER}-documents"),format!("{MARKER}-documents {}", f.base.file_name().unwrap().to_string_lossy()));
+    let leaked = out.lines().any(|l| l.contains(MARKER) && (l == own || !l.starts_with(&docs)));
+    t.blocked("9c search the home from inside it", !leaked && !out.contains("taxes"), out);
     let (out, _) = run(&f, GREP, json!({"pattern": "FAKE", "path": f.home})).await;
     t.blocked("9d grep tool over the home", !out.contains(MARKER), out);
     let (out, _) = sh(&f, "ln -s ../Documents docs; cat docs/taxes.txt 2>&1").await;
