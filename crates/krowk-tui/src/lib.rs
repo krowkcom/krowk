@@ -284,9 +284,6 @@ pub fn run(opts: Options) -> Outcome {
         }
         hook(info);
     }));
-    // A terminal gone from under a stuck TUI thread still ends it.
-    #[cfg(unix)]
-    hangup::watch(restore_terminal);
     let outcome = rt.block_on(session(opts));
     restore_terminal();
     // A readiness check still running (the person quit while the model was
@@ -897,7 +894,6 @@ fn next_tick(started: Instant, now: Instant, every: Duration) -> Instant {
     started + Duration::from_millis((n * tick) as u64)
 }
 
-/// The next of an optional stream, or never.
 /// A key reader on the terminal, unless it has hung up: crossterm's
 /// would wait for good on the reader it left spinning there (`hangup`).
 fn key_reader() -> Option<EventStream> {
@@ -906,6 +902,14 @@ fn key_reader() -> Option<EventStream> {
         return None;
     }
     Some(EventStream::new())
+}
+
+/// Whether the watchdog is ending the process (`hangup::ending`).
+fn ending() -> bool {
+    #[cfg(unix)]
+    return hangup::ending();
+    #[cfg(not(unix))]
+    false
 }
 
 /// Resolves once the terminal has hung up; never where that is not
@@ -917,6 +921,7 @@ async fn terminal_went() {
     std::future::pending::<()>().await
 }
 
+/// The next of an optional stream, or never.
 async fn next_key(keys: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
     match keys {
         Some(k) => std::future::poll_fn(|cx| Pin::new(&mut *k).poll_next(cx)).await,
@@ -1081,8 +1086,14 @@ impl<'h> Ui<'h> {
         let mut quitting = false;
         let mut hangups = Signals::hangups();
         let mut interrupts = Signals::interrupts();
+        // A loop stuck past a hangup or a signal still ends the process;
+        // one that returns has its own way out (`hangup`).
+        #[cfg(unix)]
+        let _armed = hangup::arm(restore_terminal);
         self.first_frame(app, term, &mut frames)?;
         loop {
+            #[cfg(unix)]
+            hangup::beat();
             let due = self.due(app, &reach);
             let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied].into_iter().flatten().min();
             tokio::select! {
@@ -1201,8 +1212,9 @@ impl<'h> Ui<'h> {
 
     /// SIGHUP or SIGTERM; true when the TUI stops now.
     async fn on_hangup(&mut self, app: &mut App, quitting: &mut bool) -> bool {
+        // Taken: the loop is not stuck, whatever this waits for.
         #[cfg(unix)]
-        hangup::took();
+        hangup::beat();
         // A turn in the daemon is the daemon's: the terminal
         // going takes nothing with it, and it runs on for
         // `krowk --resume` to follow (R-HOST-1).
@@ -1399,7 +1411,8 @@ impl<'h> Ui<'h> {
 
     fn draw<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         // A vendor's login has the terminal: what is owed waits for it.
-        if self.suspended {
+        // Nor anything once the watchdog has put it back to end the process.
+        if self.suspended || ending() {
             return Ok(());
         }
         // The resize event can trail the resize itself; a frame drawn for

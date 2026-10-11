@@ -347,9 +347,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   as soon as it goes. A turn running in the host daemon runs on there,
   for `krowk --resume` to pick up; one running in krowk itself is left as
   a second Ctrl-C leaves it, and the session is still saved. And should
-  krowk ever get stuck again, SIGHUP, or a SIGTERM it doesn't act on,
-  ends it within two seconds, with the terminal put back as far as it
-  still can be.
+  krowk ever get stuck again, a SIGHUP or SIGTERM it doesn't act on
+  within five seconds ends it, with the terminal put back as far as it
+  still can be. A krowk that does act on it stops exactly as before.
 - **The host daemon no longer keeps the terminal that started it open.**
   The daemon `krowk` starts in the background could inherit a terminal,
   pipe or file its starter had open without close-on-exec, and kept it
