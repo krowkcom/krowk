@@ -37,8 +37,9 @@ use std::time::{Duration, Instant};
 
 /// How long the loop, while it runs, may go without a beat after a hangup
 /// or a signal before it is taken to be stuck. Past any one turn of the
-/// loop that is not stuck: its slowest waits (a command to the host) are
-/// bounded at two seconds.
+/// loop that is not stuck: its slowest wait, the commands a flush sends
+/// the host (an interrupt and the steering queued), is bounded at three
+/// seconds in all.
 pub const STUCK: Duration = Duration::from_secs(5);
 
 /// Set once the terminal is seen to have hung up.

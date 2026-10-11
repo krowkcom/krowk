@@ -431,25 +431,36 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
 }
 
 /// The terminal closing under a TUI whose Claude Code turn answers no
-/// interrupt ends krowk within a few seconds all the same — one hangup is
-/// all a closed terminal sends — and takes Claude Code's process group
-/// with it.
+/// interrupt ends krowk all the same — one hangup is all a closed terminal
+/// sends — and takes Claude Code's process group with it: at once where
+/// the terminal is seen to go (Linux, exit 130 as a second Ctrl-C), and on
+/// the one SIGHUP alone, the terminal still there to see, as macOS has it:
+/// the interrupted turn ended, Claude Code stopped when it does not end it
+/// itself, and krowk out cleanly.
 #[test]
 fn a_closed_terminal_ends_the_tui_though_claude_code_never_answers_the_interrupt() {
-    let b = Sandbox::new("tui-closed");
-    b.json(&["providers", "add", "claude", "--json"], &[]);
-    let trusted = b.root.join("home/.krowk/trusted.json");
-    std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
-    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
-    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("hang.jsonl"))]);
-    let mut t = pty::Pty::spawn(cmd, 200, 30);
-    assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"work for a long time\r");
-    let (server, grandchild) = claude_pids(&b);
-    t.hang_up();
-    let st = t.wait(std::time::Duration::from_secs(8)).expect("the TUI outlived its terminal by 8 s");
-    assert_eq!(st.code(), Some(130), "left as a second Ctrl-C leaves: {st}");
-    assert!(gone(server) && gone(grandchild), "Claude Code's group outlived the TUI");
+    for closed in [true, false] {
+        let b = Sandbox::new(&format!("tui-closed-{closed}"));
+        b.json(&["providers", "add", "claude", "--json"], &[]);
+        let trusted = b.root.join("home/.krowk/trusted.json");
+        std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
+        std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+        let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("hang.jsonl"))]);
+        let mut t = pty::Pty::spawn(cmd, 200, 30);
+        assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
+        t.write(b"work for a long time\r");
+        let (server, grandchild) = claude_pids(&b);
+        if closed {
+            t.hang_up();
+        } else {
+            // SAFETY: a signal to the child this test started.
+            unsafe { libc::kill(t.child.id() as i32, libc::SIGHUP) };
+        }
+        let st = t.wait(std::time::Duration::from_secs(20)).expect("the TUI outlived its terminal by 20 s");
+        let left = if closed && cfg!(target_os = "linux") { Some(130) } else { Some(0) };
+        assert_eq!(st.code(), left, "closed {closed}: {st}");
+        assert!(gone(server) && gone(grandchild), "closed {closed}: Claude Code's group outlived the TUI");
+    }
 }
 
 /// R-SUB-3 for Claude Code's own agents, in the TUI: one the model runs in
