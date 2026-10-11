@@ -1401,6 +1401,11 @@ impl<'h> Ui<'h> {
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
         let (state, topic) = root_state(app, &self.last_prompt, self.ended.as_ref());
+        // The children's first: cleared at the turn's end before the root
+        // says it ended.
+        for report in self.presence.tell_children(app.child_records()) {
+            term.report(&report)?;
+        }
         if let Some(told) = self.presence.tell(state, topic) {
             term.title(&told.title)?;
             term.report(&told.report)?;

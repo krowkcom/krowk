@@ -677,6 +677,8 @@ pub struct Turn {
     pub tool_running: bool,
     /// Whether the session's first frame has arrived: steering needs its id.
     pub prompt_seen: bool,
+    /// `sub_clock` when it started: a child that ended after is the turn's.
+    pub subs_from: u64,
 }
 
 /// The most tool blocks a repeated run is counted over (`App::hold`).
@@ -2163,6 +2165,29 @@ impl App {
     /// facts are redrawn each second, counted from then (R-SUB-11).
     pub fn child_running_since(&self) -> Option<Instant> {
         self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).map(|s| s.started).min()
+    }
+
+    /// The turn's children as the terminal's records of them (R-PRES-4),
+    /// none once it is over: each running, or ended since the turn began,
+    /// once the parent's `subagent.started` has named it (its own lines can
+    /// come first), titled by its description, its state its `subagent.status`'s — an
+    /// approval or a question waiting blocks it, an interrupted one is
+    /// cleared. Children are one level deep (R-SUB-7), so each one's path
+    /// is its own session id.
+    pub fn child_records(&self) -> Vec<crate::presence::Child> {
+        use crate::osc7501::{Kind, State};
+        let Some(from) = self.turn.as_ref().map(|t| t.subs_from) else { return Vec::new() };
+        let mut children: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.call_id.is_some() && (s.status.is_none() || s.ended > from)).collect();
+        children.sort_by_key(|s| s.born);
+        let state = |s: &Sub| match (s.status, s.waiting) {
+            (None, None) => State::Working,
+            (None, Some(Waiting::Approval)) => State::Blocked(Kind::Permission),
+            (None, Some(Waiting::Question)) => State::Blocked(Kind::Question),
+            (Some(TurnStatus::Completed), _) => State::Done,
+            (Some(TurnStatus::Failed), _) => State::Error,
+            (Some(TurnStatus::Interrupted), _) => State::Clear,
+        };
+        children.into_iter().map(|s| crate::presence::Child { path: vec![s.session_id.clone()], title: s.description.clone(), state: state(s) }).collect()
     }
 
     /// Every child of the session: what the Agents overlay selects among.
@@ -3732,7 +3757,7 @@ impl App {
         self.answer.clear();
         self.blocks.clear();
         self.block = None;
-        self.turn = Some(Turn { started: now, want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: false });
+        self.turn = Some(Turn { started: now, want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: false, subs_from: self.sub_clock });
         self.dirty = true;
     }
 
@@ -5649,6 +5674,28 @@ mod tests {
         }
     }
 
+    /// R-PRES-4: the turn's children as records — a question waiting blocks
+    /// one on a question, its end done, error or cleared — and none once the
+    /// turn is over, nor in the next turn for those that ended before it.
+    #[test]
+    fn r_pres_4_the_turns_children_are_its_records_and_the_last_turns_are_not() {
+        use crate::osc7501::{Kind, State};
+        let mut a = app();
+        started_three(&mut a, RanBy::Krowk);
+        let states = |a: &App| a.child_records().into_iter().map(|c| (c.path.join("/"), c.title, c.state)).collect::<Vec<_>>();
+        let rec = |k: &str, state| (k.to_string(), format!("do {k}"), state);
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 1, waiting: Some(Waiting::Question), tokens: 0 }));
+        assert_eq!(states(&a), [rec("k1", State::Blocked(Kind::Question)), rec("k2", State::Working), rec("k3", State::Working)]);
+        for (k, status) in [("k1", TurnStatus::Completed), ("k2", TurnStatus::Failed), ("k3", TurnStatus::Interrupted)] {
+            a.on_line(&child_log(k, LogBody::TurnCompleted { turn_id: "v".into(), status, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
+        }
+        assert_eq!(states(&a), [rec("k1", State::Done), rec("k2", State::Error), rec("k3", State::Clear)]);
+        a.end_turn();
+        assert!(states(&a).is_empty(), "the turn over");
+        a.start_turn(Instant::now());
+        assert!(states(&a).is_empty(), "the last turn's children are not this one's");
+    }
+
     /// R-SUB-11: ← and → in the child view open the child before and after
     /// it in the Agents overlay's order, round the ends, and Esc goes back
     /// to the overlay with the one last open selected.
@@ -6283,7 +6330,7 @@ mod tests {
         // Above the prompt, at most 80; the prompt and the status line
         // take the whole width.
         let above = |rows: &[String]| rows.iter().take_while(|r| !r.starts_with(look::ARROW)).cloned().collect::<Vec<_>>();
-        a.turn = Some(Turn { started: Instant::now(), want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: true });
+        a.turn = Some(Turn { started: Instant::now(), want_interrupt: false, interrupt_sent: false, tool_running: false, prompt_seen: true, subs_from: 0 });
         a.editor.insert_str(&"word ".repeat(30));
         let lines = a.view(Instant::now()).0;
         let rows = text(&lines);
