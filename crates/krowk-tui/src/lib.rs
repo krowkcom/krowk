@@ -1228,22 +1228,16 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-        // Left on the root record for the person to read: done, or the
-        // failure's first line; an interrupt, or a refusal that is no news,
-        // is idle.
-        let failure = |e: &ErrorInfo| e.message.lines().next().filter(|l| !l.trim().is_empty()).unwrap_or(&self.last_prompt).to_string();
-        self.ended = match &r {
-            Ok(Some(res)) if res.status == TurnStatus::Completed => Some((presence::State::Done, self.last_prompt.clone())),
-            Ok(Some(res)) if res.status == TurnStatus::Failed => Some((presence::State::Error, res.error.as_ref().map_or_else(|| self.last_prompt.clone(), failure))),
-            Err(e) if e.code != "nothing_pending" && !(continued && e.code == "session_busy") => Some((presence::State::Error, failure(&e.info()))),
-            _ => None,
-        };
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
-        // news, nor one another client following the session runs.
+        // news, nor one another client following the session runs: nor
+        // does it touch how the turn that did run ended.
+        let no_news = matches!(&r, Err(e) if e.code == "nothing_pending" || (continued && e.code == "session_busy"));
+        if !no_news {
+            self.ended = turn_ended(&r, &self.last_prompt);
+        }
         if let Err(e) = r
-            && e.code != "nothing_pending"
-            && !(continued && e.code == "session_busy")
+            && !no_news
         {
             app.error(&e.info());
         }
@@ -3557,6 +3551,23 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     }
 }
 
+/// What a turn's end leaves on the root record (R-PRES-3): done with the
+/// topic, error with the failure's first line (the topic when it has
+/// none), and nothing, idle, after an interrupt or a turn whose result
+/// this client never got.
+fn turn_ended(r: &Result<Option<RunResult>, EngineError>, topic: &str) -> Option<(presence::State, String)> {
+    let failure = |e: Option<ErrorInfo>| {
+        let line = e.and_then(|e| e.message.lines().map(card::clean).find(|l| !l.trim().is_empty()));
+        (presence::State::Error, line.unwrap_or_else(|| topic.to_string()))
+    };
+    match r {
+        Ok(Some(res)) if res.status == TurnStatus::Completed => Some((presence::State::Done, topic.to_string())),
+        Ok(Some(res)) if res.status == TurnStatus::Failed => Some(failure(res.error.clone())),
+        Err(e) => Some(failure(Some(e.info()))),
+        _ => None,
+    }
+}
+
 /// Child `id`'s interrupt, sent with `execute`: it reads stopping at once,
 /// and the host's answer is waited for in `stops`, beside everything else
 /// the loop waits on, never in the key's handler (`stop_answered` takes
@@ -3584,6 +3595,25 @@ fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), Engi
 
 #[cfg(test)]
 mod tests {
+    /// R-PRES-3: done with the topic, error with the failure's first
+    /// line from either kind of failure, the topic when it has none, and
+    /// idle for an interrupt or no result.
+    #[test]
+    fn r_pres_3_a_turn_ends_done_error_or_idle() {
+        use super::{presence::State, turn_ended};
+        use krowk_harness::protocol::{ErrorInfo, ModelRef, RunResult, TurnStatus, Usage};
+        let res = |status, error| Ok(Some(RunResult { session_id: "s".into(), turn_id: "t".into(), status, is_error: false, result: String::new(), model: ModelRef { instance: "a".into(), model: "m".into() }, usage: Usage::default(), cost_usd: None, duration_ms: 1, num_model_calls: 1, error, unread_steers: Vec::new(), switch_offer: None, worktree: None }));
+        let info = |message: &str| Some(ErrorInfo { code: "x".into(), message: message.into(), http_status: None, resets_at_ms: None });
+        let ended = |s, m: &str| Some((s, m.to_string()));
+        assert_eq!(turn_ended(&res(TurnStatus::Completed, None), "fix it"), ended(State::Done, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("refused\nwhy")), "fix it"), ended(State::Error, "refused"));
+        assert_eq!(turn_ended(&Err(krowk_harness::engine::EngineError::new("x", "\n\u{202E}gone\nwhy")), "fix it"), ended(State::Error, "gone"), "its first line with something in it");
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, None), "fix it"), ended(State::Error, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("\u{202E}")), "fix it"), ended(State::Error, "fix it"));
+        assert_eq!(turn_ended(&res(TurnStatus::Interrupted, None), "fix it"), None);
+        assert_eq!(turn_ended(&Ok(None), "fix it"), None);
+    }
+
     /// R-SUB-7: the backend children the replayed branch cannot end, whose
     /// ends a resume reads whatever its bound (`children_to_read`): a Codex
     /// child, a Claude Code agent whose call nothing answers — never one
