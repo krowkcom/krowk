@@ -69,7 +69,15 @@ impl Open {
             IpAddr::V6(ip) if ip.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
             ip => ip,
         };
-        let _ = TcpStream::connect(SocketAddr::new(ip, addr.port()));
+        // Dialled until it connects: a dial refused for want of a
+        // descriptor would leave the accept blocked, and a stop waiting on
+        // it for ever. Ten seconds, then the stop goes on without.
+        for _ in 0..500 {
+            if TcpStream::connect(SocketAddr::new(ip, addr.port())).is_ok() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
     }
 
     fn stopping(&self) -> bool {
@@ -112,11 +120,13 @@ fn wait_out(pause: &mut std::time::Duration, what: &str, e: &io::Error) {
     thread::sleep(*pause);
 }
 
-/// Out of descriptors (EMFILE, ENFILE), memory (ENOMEM) or buffers
-/// (ENOBUFS, Linux's 105 and macOS's 55), or EAGAIN: gone in a moment.
+/// An accept error gone in a moment: out of descriptors, memory or
+/// buffers, EAGAIN, and the pending network errors accept(2) on Linux
+/// passes on and asks be retried like EAGAIN — everything but a listener
+/// that is no listener (EBADF, EFAULT, EINVAL, ENOTSOCK).
 fn temporary(e: &io::Error) -> bool {
-    let enobufs = if cfg!(target_os = "macos") { 55 } else { 105 };
-    matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::OutOfMemory) || e.raw_os_error().is_some_and(|n| [12, 23, 24, enobufs].contains(&n))
+    let enotsock = if cfg!(target_os = "macos") { 38 } else { 88 };
+    !e.raw_os_error().is_some_and(|n| [9, 14, 22, enotsock].contains(&n))
 }
 
 fn connection(open: &Open, handler: &Handler, stream: TcpStream, remote: SocketAddr) {

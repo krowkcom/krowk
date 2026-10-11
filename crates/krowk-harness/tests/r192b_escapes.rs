@@ -542,10 +542,10 @@ async fn r192b_5_isolation() {
     let quoted: Vec<String> = std::iter::once(program.display().to_string()).chain(args).map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect();
     let mut parent = std::process::Command::new("bash").arg("-c").arg(format!("{} & wait", quoted.join(" "))).current_dir(&f.ws).spawn().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while !running("sleep 9.875") && std::time::Instant::now() < deadline {
+    while !running("^sleep 9\\.875") && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(50));
     }
-    t.control("the sandboxed sleep started", running("sleep 9.875"), "no sleep 9.875");
+    t.control("the sandboxed sleep started", running("^sleep 9\\.875"), "no sleep 9.875");
     // SAFETY: SIGKILL to the child just spawned.
     unsafe { libc::kill(parent.id() as i32, libc::SIGKILL) };
     let _ = parent.wait();

@@ -37,7 +37,7 @@ impl Tmux {
         }
         let socket = format!("krowk-tui-{name}-{}", std::process::id());
         let conf = std::env::temp_dir().join(format!("{socket}.conf"));
-        std::fs::write(&conf, "set -g history-limit 100000\nset -g status off\n").unwrap();
+        std::fs::write(&conf, "set -g history-limit 100000\nset -g status off\nset -g default-shell /bin/sh\n").unwrap();
         let exec = if after.is_some() { "" } else { "exec " };
         let mut line = format!("cd '{}' && {before} {exec}env -i", cwd.display());
         for (k, v) in env {
