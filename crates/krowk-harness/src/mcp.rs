@@ -182,12 +182,7 @@ pub fn project_has_servers(root: &Path) -> bool {
 /// sane size: it is read before the trust question, so a FIFO or a device
 /// there must not hang the harness.
 fn read_project(root: &Path) -> Option<Value> {
-    let p = root.join(".mcp.json");
-    let meta = std::fs::symlink_metadata(&p).ok()?;
-    if !meta.is_file() || meta.len() > MAX_MCP_JSON {
-        return None;
-    }
-    serde_json::from_slice(&std::fs::read(&p).ok()?).ok()
+    serde_json::from_slice(&crate::permissions::settings::read_plain(&root.join(".mcp.json"), MAX_MCP_JSON, false).ok()?).ok()
 }
 
 /// A digest of the servers a repository's `.mcp.json` names, none when it
