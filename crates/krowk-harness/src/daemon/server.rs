@@ -27,9 +27,9 @@
 //! last one went away — is denied, so no turn waits on nobody. Everything runs on one thread, as the
 //! in-process host does: nothing here is shared across threads.
 //!
-//! It exits after the idle window with no client connected and no turn
-//! running (R-HOST-1), so nothing stays resident when unused; run as a
-//! service it has no window and stays.
+//! It exits after the idle window with no client connected, no turn
+//! running and no background job (R-HOST-1), so nothing stays resident
+//! when unused; run as a service it has no window and stays.
 
 use crate::engine::EngineError;
 use crate::host::{Host, HostConfig};
@@ -286,7 +286,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     loop {
         let (quiet, stopping) = {
             let s = state.borrow();
-            (s.clients.is_empty() && s.working == 0, s.stopping)
+            (s.clients.is_empty() && s.working == 0 && s.hosts.values().all(|h| h.running_jobs().is_empty()), s.stopping)
         };
         if stopping {
             eprintln!("asked to stop: exiting");
@@ -681,11 +681,18 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
             // its followers, and a sync bridge's chunks, have it (R-SUB-6).
             let own = line.session_id();
             let root = s.hubs.get_key_value(own).or_else(|| s.hubs.iter().find(|(_, h)| h.children.contains(own))).map(|(id, h)| (id.clone(), h.followers.clone()));
-            let Some((session, followers)) = root else { continue };
-            let seq = s.next_seq(&session);
-            let json = serde_json::to_string(&line).expect("a stream line serializes");
-            for f in followers {
-                s.send(f, &session, line_out(&json, &line, &session, None, seq, None));
+            if let Some((session, followers)) = root {
+                let seq = s.next_seq(&session);
+                let json = serde_json::to_string(&line).expect("a stream line serializes");
+                for f in followers {
+                    s.send(f, &session, line_out(&json, &line, &session, None, seq, None));
+                }
+            }
+            // A session's last job ended: its hub, kept for it, may go now,
+            // and the idle window start.
+            if matches!(line, StreamLine::Live(LiveEvent::Background { running: 0, .. })) {
+                s.tidy();
+                s.wake.notify_one();
             }
         }
     });
@@ -806,9 +813,12 @@ impl State {
     }
 
     /// Lets go of the sessions nothing follows or runs, and the hosts no
-    /// session of this daemon is on — each with its backend processes.
+    /// session of this daemon is on — each with its backend processes. A
+    /// session with background work running is kept, and its host with it:
+    /// letting the host go would stop its jobs, which outlive the client
+    /// that started them. Its count dropping to none tidies again.
     fn tidy(&mut self) {
-        self.hubs.retain(|_, h| h.running || h.in_flight > 0 || !h.followers.is_empty());
+        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || h.host.background_of(id) > 0);
         let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1).map(|(k, _)| k.clone()).collect();
         for k in idle {
             if let Some(h) = self.hosts.remove(&k) {
@@ -1218,8 +1228,9 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     if last {
         // The status line's count is sent only as it changes: a client
         // that comes to the session meanwhile is told it now, once caught up.
-        // Every host's: the one that ran its jobs may not be this client's.
-        let running: u32 = s.hosts.values().map(|h| h.background_of(session)).sum();
+        // The session's host's, as the live count is: the hub's, which a
+        // session with background work keeps (`tidy`).
+        let running = host.background_of(session);
         if running > 0 {
             let line = StreamLine::Live(LiveEvent::Background { session_id: session.to_string(), running });
             let json = serde_json::to_string(&line).expect("a stream line serializes");
