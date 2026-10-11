@@ -2487,3 +2487,125 @@ fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_inline() {
 fn r_pres_3_an_interrupted_turn_leaves_idle_never_done_fullscreen() {
     an_interrupted_turn_leaves_idle("fullscreen");
 }
+
+// ---- each subagent's record (OSC 7501) -----------------------------------
+
+/// The parent fans out three subagents, each held at its first answer
+/// until the test opens its gate: one edits the README, which asks; one is
+/// refused by the model's API and fails; one sleeps until it is stopped.
+fn three_children(gates: [mock::Gate; 3]) -> impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static {
+    move |body, n| {
+        let held = |r: mock::Reply, gate: &mock::Gate, at: &'static str| mock::Reply { pace: Some(Duration::from_millis(1)), hold: Some((at, gate.clone())), ..r };
+        let answered = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+        let task = body["messages"][0].to_string();
+        if body["system"].to_string().contains("You are a subagent") {
+            return match () {
+                // Slowed, so it is seen working again before it ends.
+                _ if task.contains("TASK-EDIT") && answered => mock::Reply::paced(mock::text_stream("Edited the readme."), Duration::from_millis(100)),
+                _ if task.contains("TASK-EDIT") => held(mock::edit_script(body, n), &gates[0], "message_start"),
+                _ if task.contains("TASK-FAIL") => held(mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "no"}})), &gates[1], "error"),
+                _ => held(mock::Reply::sse(&mock::text_stream("Slept.")), &gates[2], "message_start"),
+            };
+        }
+        if !body["tools"].as_array().into_iter().flatten().any(|t| t["name"] == "subagent") {
+            return mock::Reply::sse(&mock::text_stream("Fan out"));
+        }
+        if answered {
+            return mock::Reply::sse(&mock::text_stream("The three are back."));
+        }
+        let calls = [("edit the readme", "TASK-EDIT: edit README.md"), ("fail at once", "TASK-FAIL: fail"), ("sleep on it", "TASK-SLEEP: sleep")];
+        let mut out = String::from("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_calls\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-sonnet-4-6\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":20,\"output_tokens\":1}}}\n\n");
+        for (i, (description, prompt)) in calls.iter().enumerate() {
+            let input = serde_json::json!({"description": description, "prompt": prompt});
+            out += &format!("event: content_block_start\ndata: {}\n\n", serde_json::json!({"type": "content_block_start", "index": i, "content_block": {"type": "tool_use", "id": format!("toolu_agent{i}"), "name": "subagent", "input": {}}}));
+            out += &format!("event: content_block_delta\ndata: {}\n\n", serde_json::json!({"type": "content_block_delta", "index": i, "delta": {"type": "input_json_delta", "partial_json": input.to_string()}}));
+            out += &format!("event: content_block_stop\ndata: {}\n\n", serde_json::json!({"type": "content_block_stop", "index": i}));
+        }
+        mock::Reply::sse(&(out + "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":40}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n"))
+    }
+}
+
+/// Waits until the reports written so far satisfy `done`; false at `timeout`.
+fn reported_until(t: &pty::Pty, timeout: Duration, done: impl Fn(&[String]) -> bool) -> bool {
+    let deadline = Instant::now() + timeout;
+    while !done(&reports(&t.text())) {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Three native subagents: each its own record, under the last 12 hex
+/// digits of its session id and titled by its description, written once
+/// per change — working, blocked on its approval while the root is too,
+/// done, error, cleared when stopped alone — and every one cleared at the
+/// turn's end, before the root's report that the turn ended.
+fn each_subagent_is_a_record(screen: &str) {
+    use krowk_tui::osc7501::{encode, Kind, Report, State};
+    let gates: [mock::Gate; 3] = Default::default();
+    let (_m, b, mut t) = pres_pty("pres-children", screen, three_children(gates.clone()));
+    let child_reports = |rs: &[String], pat: &str| rs.iter().filter(|r| r.contains(":id=") && r.contains(pat)).count();
+    t.write(b"fan out\r");
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=working") == 3), "three working: {:?}", reports(&t.text()));
+    gates[0].open();
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=blocked:kind=permission") == 1 && rs.iter().any(|r| r == &root(State::Blocked(Kind::Permission), "fan out"))), "the approval: {:?}", reports(&t.text()));
+    for _ in 0..10 {
+        std::thread::sleep(Duration::from_millis(500));
+        t.write(b"y");
+        if reported_until(&t, Duration::from_secs(5), |rs| child_reports(rs, "state=done") == 1) {
+            break;
+        }
+    }
+    assert!(reported_until(&t, Duration::from_secs(5), |rs| child_reports(rs, "state=done") == 1), "the edit done: {:?}", reports(&t.text()));
+    gates[1].open();
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| child_reports(rs, "state=error") == 1), "the failure: {:?}", reports(&t.text()));
+    // The Agents overlay, on the one still running: x stops it alone.
+    t.write(b"\x07");
+    std::thread::sleep(Duration::from_millis(500));
+    t.write(b"x");
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last() == Some(&root(State::Idle, ""))), "the turn never ended: {:?}", reports(&t.text()));
+    gates[2].open();
+    let (got, _) = quit_reports(t);
+    // The children, by the parent's log.
+    let mut children = Vec::new();
+    for path in walk(&b.root.join("home/.krowk/sessions")).into_iter().filter(|p| p.ends_with("events.jsonl")) {
+        for line in std::fs::read_to_string(path).unwrap().lines() {
+            let ev: serde_json::Value = serde_json::from_str(line).unwrap();
+            if ev["type"] == "subagent.started" {
+                children.push((ev["description"].as_str().unwrap().to_string(), ev["subagentSessionId"].as_str().unwrap().to_string()));
+            }
+        }
+    }
+    children.sort();
+    assert_eq!(children.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["edit the readme", "fail at once", "sleep on it"]);
+    let ids: Vec<String> = children.iter().map(|(_, sid)| sid.replace('-', "")[20..].to_string()).collect();
+    assert!(ids.iter().all(|i| i.len() == 12) && ids[0] != ids[1] && ids[1] != ids[2] && ids[0] != ids[2], "{ids:?}");
+    let rec = |i: usize, state| encode(&Report { state, id: &[ids[i].as_str()], title: &children[i].0, ..Default::default() }).unwrap();
+    let of = |i: usize| got.iter().filter(|r| r.contains(&format!(":id={}", ids[i]))).cloned().collect::<Vec<_>>();
+    // Once per change: a tool or a token count alone writes nothing.
+    assert_eq!(of(0), [rec(0, State::Working), rec(0, State::Blocked(Kind::Permission)), rec(0, State::Working), rec(0, State::Done), rec(0, State::Clear)]);
+    assert_eq!(of(1), [rec(1, State::Working), rec(1, State::Error), rec(1, State::Clear)]);
+    assert_eq!(of(2), [rec(2, State::Working), rec(2, State::Clear)], "stopped alone, cleared");
+    let rooted: Vec<&String> = got.iter().filter(|r| !r.contains(":id=")).collect();
+    let ask = "fan out";
+    assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Idle, ""), &root(State::Clear, "")]);
+    let at = |r: &String| got.iter().position(|g| g == r).unwrap();
+    let root_blocked = at(&root(State::Blocked(Kind::Permission), ask));
+    assert!(root_blocked < at(&rec(0, State::Done)) && at(&rec(0, State::Blocked(Kind::Permission))) < got.iter().rposition(|g| g == &root(State::Working, ask)).unwrap(), "the root blocked while the child is: {got:?}");
+    let turn_over = got.iter().rposition(|g| g == &root(State::Idle, "")).unwrap();
+    for (i, (title, _)) in children.iter().enumerate() {
+        assert!(at(&rec(i, State::Clear)) < turn_over, "{title} cleared before the root's turn-end report: {got:?}");
+    }
+}
+
+#[test]
+fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_ends_inline() {
+    each_subagent_is_a_record("inline");
+}
+
+#[test]
+fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_ends_fullscreen() {
+    each_subagent_is_a_record("fullscreen");
+}
