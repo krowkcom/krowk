@@ -7,6 +7,9 @@
 
 #[path = "../../krowk-harness/tests/common/mock.rs"]
 mod mock;
+#[cfg(unix)]
+#[path = "common/pty.rs"]
+mod pty;
 
 use serde_json::Value;
 use std::path::PathBuf;
@@ -51,8 +54,12 @@ impl Sandbox {
     }
 
     fn krowk_with(&self, args: &[&str], key: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_krowk"))
-            .args(args)
+        self.command(args, key).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str], key: &str) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        c.args(args)
             .env_clear()
             .env("PATH", self.path())
             .env("HOME", self.root.join("home"))
@@ -60,9 +67,8 @@ impl Sandbox {
             .env("ANTHROPIC_API_KEY", key)
             .env("ANTHROPIC_BASE_URL", &self.url)
             .current_dir(self.root.join("repo"))
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdin(Stdio::null());
+        c
     }
 
     fn ok(&self, args: &[&str]) -> String {
@@ -303,4 +309,148 @@ fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
     let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits"]);
     let err = String::from_utf8_lossy(&out.stderr).into_owned();
     assert!(!out.status.success() && err.contains("bad_settings") && err.contains("permissions.deny"), "{err}");
+}
+
+// ---- R-PRES-6: the record `krowk -p` leaves on the terminal --------------
+
+/// The OSC 7501 reports in `out`, whole, in the order written.
+#[cfg(unix)]
+fn reports(out: &str) -> Vec<&str> {
+    out.match_indices("\x1b]7501;").map(|(at, _)| &out[at..at + out[at..].find("\x1b\\").map_or(out.len() - at, |e| e + 2)]).collect()
+}
+
+#[cfg(unix)]
+fn root(state: krowk_tui::osc7501::State, msg: &str) -> String {
+    krowk_tui::osc7501::encode(&krowk_tui::osc7501::Report { state, msg, ..Default::default() }).unwrap()
+}
+
+/// `krowk -p` with its stderr on a terminal and its stdout piped: the
+/// reports the terminal got, stdout, and the exit.
+#[cfg(unix)]
+fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::ExitStatus) {
+    let mut c = b.command(args, "sk-test");
+    c.stdout(Stdio::piped());
+    let mut t = pty::Pty::spawn_stderr(c, 80, 24);
+    // Read on a thread of its own, so a krowk that never exits fails the
+    // wait below rather than hanging the test.
+    let mut pipe = t.child.stdout.take().unwrap();
+    let stdout = std::thread::spawn(move || {
+        let mut out = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut pipe, &mut out);
+        out
+    });
+    let st = t.wait(std::time::Duration::from_secs(30)).expect("krowk -p exits");
+    (t.text(), stdout.join().unwrap(), st)
+}
+
+/// R-PRES-6: on a terminal, `krowk -p` reports working with the prompt's
+/// first line (a blank one before it skipped), then done once it answers; a failed turn ends in error with
+/// the failure's first line. The record is the root's, and nothing reaches
+/// stdout but the answer.
+#[cfg(unix)]
+#[test]
+fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
+    use krowk_tui::osc7501::State;
+    let prompt = "\nread README.md and summarise it in one line\nand nothing else";
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("pres6", &m.url);
+    let (err, stdout, st) = on_a_terminal(&b, &["-p", prompt, "--model", "claude-sonnet-4-6"]);
+    assert!(st.success(), "{err}");
+    let topic = "read README.md and summarise it in one line";
+    assert_eq!(reports(&err), [root(State::Working, topic), root(State::Done, topic)], "{err:?}");
+    assert_eq!(String::from_utf8_lossy(&stdout), "krowk turns agent output — screenshots, logs, diffs — into permalinks you can paste anywhere.\n");
+
+    let m = mock::serve(|_, _| mock::Reply::json(400, &serde_json::json!({"type": "error", "error": {"type": "invalid_request_error", "message": "prompt is too long\nby a mile"}})));
+    let b = Sandbox::new("pres6err", &m.url);
+    let (err, stdout, st) = on_a_terminal(&b, &["-p", "hi", "--model", "claude-sonnet-4-6"]);
+    assert!(!st.success(), "{err}");
+    // The failure's first line: its headline, what krowk prints first for
+    // it on a terminal, cut where the provider's message broke the line.
+    let failed = "Anthropic refused the request (invalid_request_error: prompt is too long";
+    assert_eq!(reports(&err), [root(State::Working, "hi"), root(State::Error, failed)], "{err:?}");
+    assert!(stdout.is_empty(), "{stdout:?}");
+}
+
+/// R-PRES-6: with stderr in a file nothing is reported, and a terminal on
+/// stderr changes nothing on stdout, in any format: text byte for byte,
+/// JSON but for what differs between any two runs (ids, times).
+#[cfg(unix)]
+#[test]
+fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("pres6file", &m.url);
+    for format in ["text", "json", "stream-json"] {
+        let args = ["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6", "--output-format", format];
+        let file = b.root.join(format!("stderr-{format}"));
+        let out = b.command(&args, "sk-test").stderr(std::fs::File::create(&file).unwrap()).output().unwrap();
+        assert!(out.status.success(), "{format}");
+        let err = std::fs::read(&file).unwrap();
+        assert!(!err.windows(6).any(|w| w == b"\x1b]7501"), "{format}: {}", String::from_utf8_lossy(&err));
+        let (on, stdout, st) = on_a_terminal(&b, &args);
+        assert!(st.success() && reports(&on).len() == 2, "{format}: {on:?}");
+        assert!(!stdout.contains(&0x1b), "{format}: nothing but the answer on stdout");
+        assert!(!stdout.is_empty(), "{format}: the answer is on stdout");
+        if format == "text" {
+            assert_eq!(stdout, out.stdout, "text: byte for byte");
+        } else {
+            assert_eq!(steady(&String::from_utf8_lossy(&stdout)), steady(&String::from_utf8_lossy(&out.stdout)), "{format}");
+        }
+    }
+}
+
+/// JSON lines with what no two runs share masked.
+#[cfg(unix)]
+fn steady(out: &str) -> String {
+    fn mask(v: &mut Value) {
+        match v {
+            Value::Object(o) => {
+                for (k, v) in o.iter_mut() {
+                    if k.ends_with("Ms") || k.ends_with("At") || k == "ts" {
+                        *v = Value::Null;
+                    }
+                    mask(v);
+                }
+            }
+            Value::Array(a) => a.iter_mut().for_each(mask),
+            // A UUID: a session's, a turn's, an item's.
+            Value::String(s) if s.len() == 36 && s.chars().filter(|c| *c == '-').count() == 4 => *s = "id".into(),
+            _ => {}
+        }
+    }
+    out.lines()
+        .map(|l| match serde_json::from_str::<Value>(l) {
+            Ok(mut v) => {
+                mask(&mut v);
+                v.to_string()
+            }
+            Err(_) => l.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// R-PRES-6: Ctrl-C on the terminal during the turn leaves idle, not
+/// error: the person stopped it.
+#[cfg(unix)]
+#[test]
+fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
+    use krowk_tui::osc7501::State;
+    // A model that takes the request and holds its answer: the turn is
+    // running once the request is seen.
+    let gate = mock::Gate::default();
+    let m = mock::serve(move |_, _| mock::Reply { hold: Some(("message_start", gate.clone())), ..mock::Reply::paced(mock::text_stream("never"), std::time::Duration::ZERO) });
+    let b = Sandbox::new("pres6int", &m.url);
+    let mut c = b.command(&["-p", "wait forever", "--model", "claude-sonnet-4-6"], "sk-test");
+    c.stdout(Stdio::piped());
+    let mut t = pty::Pty::spawn_stderr(c, 80, 24);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while m.seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(!m.seen.lock().unwrap().is_empty(), "the prompt never reached the model: {:?}", t.text());
+    t.write(b"\x03");
+    let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits on Ctrl-C");
+    let err = t.text();
+    assert!(!st.success() && err.contains("interrupted"), "{st}: {err:?}");
+    assert_eq!(reports(&err), [root(State::Working, "wait forever"), root(State::Idle, "wait forever")], "{err:?}");
 }
