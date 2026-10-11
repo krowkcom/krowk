@@ -24,6 +24,7 @@
 //! | `turn/steer` | krowk → codex | `Command::Steer`, into the running turn |
 //! | `turn/interrupt` | krowk → codex | `Command::Interrupt`; the process lives on for the next turn |
 //! | `item/*`, `thread/tokenUsage/updated` | codex → krowk | translated into krowk's events by `stream` (R-BACK-5) |
+//! | `thread/started`, another thread's `item/*`, `collabAgentToolCall`, `subAgentActivity` | codex → krowk | the session thread's direct children as child sessions, by `children` (R-SUB-7) — checked against the schema, not live |
 //! | `item/commandExecution/requestApproval`, `item/fileChange/requestApproval`, … | codex → krowk | judged by krowk's permission evaluator (`crate::permissions`), as `Bash(<command>)` and `Edit(<files>)` |
 //! | `item/tool/call` | codex → krowk | a call of krowk's own tools, answered by `crate::bridge` |
 //! | `item/tool/requestUserInput` | codex → krowk | the model's questions, asked of the person (`crate::ask`) and answered by question id |
@@ -53,6 +54,7 @@
 //! holds every source file and every run to that.
 
 pub mod auth;
+pub mod children;
 pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};
@@ -566,6 +568,14 @@ impl Engine for CodexEngine {
                 p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &self.instance.name).await
             }
             .await;
+            // krowk reads Codex only while a turn runs, and sends it nothing
+            // for an open child: one still open is no longer followed from
+            // here, though Codex may still run it (R-SUB-7).
+            let why = match &outcome {
+                Err(e) => format!("krowk stopped following it when the turn that ran it failed, before Codex said it finished ({}) — Codex may still be running it; what it does after this is not shown here", e.message),
+                Ok(_) => children::UNFINISHED.to_string(),
+            };
+            forward(&events, p.kids.turn_ended(&why)).await;
             // A process that died, or a turn that failed partway, is not
             // trusted with the next turn: that one starts clean on resume.
             if (outcome.is_err() || !p.alive())
@@ -771,6 +781,8 @@ struct Proc {
     /// The thread this process has open, and its transcript.
     thread: Option<String>,
     transcript: Option<String>,
+    /// The thread's child threads, as the session's children (R-SUB-7).
+    kids: children::Children,
 }
 
 #[cfg(unix)]
@@ -880,13 +892,18 @@ fn tail(s: &str) -> String {
 }
 
 /// A notification of Codex's during a turn on `thread`.
-async fn on_note(thread: &str, method: &str, params: &Value, (subs, t): (&mut stream::SubThreads, &mut Translator), (codex_turn, completed): (&mut Option<String>, &mut Option<Value>), limit: &mut Option<LimitStatus>, events: &Events) {
-    // Another thread's — a subagent Codex runs — is
-    // its own conversation, which Codex keeps; what
-    // its calls cost is the session's spend.
+async fn on_note(thread: &str, method: &str, params: &Value, (subs, kids, t): (&mut stream::SubThreads, &mut children::Children, &mut Translator), (codex_turn, completed): (&mut Option<String>, &mut Option<Value>), limit: &mut Option<LimitStatus>, events: &Events) {
+    // Another thread's — a subagent Codex runs — is its own conversation:
+    // what its calls cost is the session's spend, and a direct child's
+    // lines are its child session's (R-SUB-7).
     if method == "thread/started" || params.get("threadId").and_then(Value::as_str).is_some_and(|th| th != thread) {
         forward(events, subs.apply(thread, method, params).into_iter().collect()).await;
+        forward(events, kids.apply(thread, &t.model, method, params)).await;
         return;
+    }
+    // The thread's own spawns, and what it says of its children.
+    if matches!(method, "item/started" | "item/completed") {
+        forward(events, kids.apply(thread, &t.model, method, params)).await;
     }
     let of_turn = params.get("turnId").and_then(Value::as_str).or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
     if let (Some(mine), Some(theirs)) = (&*codex_turn, of_turn)
@@ -1060,7 +1077,7 @@ impl Proc {
                 }
             });
         }
-        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None };
+        let mut p = Proc { child, stdin, out, stderr, binary: b.binary.clone(), bypass, next: 0, exited: false, pid, group_done: false, billing: None, efforts: HashMap::new(), thread: None, transcript: None, kids: children::Children::default() };
         p.request("initialize", initialize_params(&ask.krowk_version), ask, INITIALIZE_TIMEOUT).await?;
         p.notify("initialized").await?;
         // Signed in, and to what, asked before a thread exists for a turn
@@ -1319,7 +1336,7 @@ impl Proc {
                                 let answer = ask.answer(&method, &params, &mut t, Some((events, &ctx.cancel))).await;
                                 self.reply(id, answer).await?;
                             }
-                            Msg::Note { method, params } => on_note(&thread, &method, &params, (&mut subs, &mut t), (&mut codex_turn, &mut completed), &mut limit, events).await,
+                            Msg::Note { method, params } => on_note(&thread, &method, &params, (&mut subs, &mut self.kids, &mut t), (&mut codex_turn, &mut completed), &mut limit, events).await,
                         }
                     }
                 }

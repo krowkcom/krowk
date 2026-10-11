@@ -201,6 +201,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   session. If Claude Code refuses, or the stop can't reach it, the bottom
   line says why and the agent keeps running. Codex agents still can't be
   stopped one at a time.
+- **Codex's agents are subagents of the session too.** Each agent Codex
+  spawns during a turn gets its own session log, linked to yours: what it
+  was asked first, then its messages, tool calls and results, then how it
+  ended. It shows as a subagent row in the TUI with the tool it is in and
+  its tokens, `[N subagents]` counts it, Ctrl-G lists it and Enter opens its
+  transcript, live. An agent it starts in turn lands in that agent's
+  transcript, not as a row of its own. Its spend stays on the session,
+  counted once, as before. Resuming the session shows each agent as it
+  ended. krowk only reads Codex during a turn, so it stops following an
+  agent still running when the turn ends: its row and log say so (marked
+  interrupted), though Codex may still be running it. What it does after
+  that isn't shown, even if a later turn talks to it again, but its spend
+  is still counted. This is built from Codex's published protocol, not
+  checked against a live Codex yet, so tell us if a Codex agent shows up
+  wrong.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

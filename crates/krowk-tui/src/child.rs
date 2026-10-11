@@ -223,6 +223,38 @@ pub fn read_log(path: &std::path::Path) -> Result<Vec<LogEvent>, String> {
     Ok(out)
 }
 
+/// The last complete event of the log at `path`, read from its end: how a
+/// child ended, without reading the whole of it. A last line cut
+/// mid-append is not complete, and the one before it is taken. None when
+/// the log has no complete line, or that line is no event.
+pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let mut window: u64 = 16 << 10;
+    loop {
+        let from = len.saturating_sub(window);
+        f.seek(SeekFrom::Start(from)).ok()?;
+        let mut bytes = Vec::new();
+        f.by_ref().take(len - from).read_to_end(&mut bytes).ok()?;
+        // Up to the last newline: what follows it is still being written.
+        // The last non-empty line before it is whole once a newline
+        // precedes it, or the window reaches the file's start.
+        let whole = bytes.iter().rposition(|&b| b == b'\n').map(|nl| &bytes[..nl]);
+        let end = whole.and_then(|w| w.iter().rposition(|&b| !b.is_ascii_whitespace())).map(|e| e + 1);
+        match (whole, end) {
+            (Some(w), Some(end)) => match w[..end].iter().rposition(|&b| b == b'\n') {
+                Some(start) => return serde_json::from_slice(&w[start + 1..end]).ok(),
+                None if from == 0 => return serde_json::from_slice(&w[..end]).ok(),
+                None => {}
+            },
+            _ if from == 0 => return None,
+            _ => {}
+        }
+        window *= 4;
+    }
+}
+
 fn clip(text: &str, width: u16) -> String {
     use unicode_segmentation::UnicodeSegmentation;
     use unicode_width::UnicodeWidthStr;
@@ -240,6 +272,28 @@ fn clip(text: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// R-SUB-7: a child's end is read off its log's last complete line,
+    /// however long the log and whatever half-written line follows it.
+    #[test]
+    fn r_sub_7_a_childs_last_event_is_read_from_its_logs_end() {
+        let dir = std::env::temp_dir().join(format!("krowk-last-event-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("events.jsonl");
+        let ev = |id: &str, body: LogBody| serde_json::to_string(&LogEvent { id: id.into(), parent_id: None, session_id: "k".into(), time_ms: 7, body }).unwrap();
+        let big = ev("big", LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: krowk_harness::protocol::Item::user("x".repeat(100_000)) });
+        let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: krowk_harness::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None });
+        std::fs::write(&path, format!("{big}\n{end}\n{{\"id\":\"half")).unwrap();
+        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "the half-written line is not complete");
+        std::fs::write(&path, format!("{end}\n{big}\n\n")).unwrap();
+        assert_eq!(last_event(&path).map(|e| e.id), Some("big".into()), "a line longer than the first window");
+        std::fs::write(&path, format!("{end}\n{}", "y".repeat(100_000))).unwrap();
+        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "behind a half-written line longer than the window");
+        std::fs::write(&path, "{\"id\":\"half").unwrap();
+        assert!(last_event(&path).is_none());
+        assert!(last_event(&dir.join("none")).is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     fn text(rows: &[Line<'_>]) -> Vec<String> {

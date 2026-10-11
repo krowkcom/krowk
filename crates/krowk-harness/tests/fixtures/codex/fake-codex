@@ -5,7 +5,9 @@
 # — JSON-RPC over stdio, one object per line — replaying a recorded
 # scenario turn by turn. The messages are the ones a real `codex app-server`
 # 0.154.0 sent (`recorded/`), trimmed; the tests validate every one against
-# the pinned schema.
+# the pinned schema. `subagents.jsonl` is the exception: Codex's child
+# threads were never recorded — nobody has run them live — so it is written
+# from the pinned schema alone, and checked against it like the rest.
 #
 # Written for the bash macOS ships (3.2): no associative arrays, no
 # fractional `read -t`. It reads krowk's lines by their leading `{"id":N,
@@ -41,6 +43,8 @@
 #   @await-steer       waits for krowk's turn/steer, and takes it
 #   @refuse-steer      waits for krowk's turn/steer, and refuses it (the turn is ending)
 #   @sleep <seconds>   waits
+#   @pause             waits FAKE_CODEX_PAUSE seconds when that is set: a
+#                      moment a test can look at the turn mid-way
 #   @exit <code>       exits mid-turn, as a crashed process would
 #   @exit-once <code>  the same, the first time only (a marker in CODEX_HOME)
 #   @grandchild        starts a background `sleep`, as a command Codex ran
@@ -254,6 +258,7 @@ play_turn() {
       say "{\"id\":$(req_id "$AWAITED"),\"error\":{\"code\":-32600,\"message\":\"no active turn to steer\"}}"
       ;;
     "@sleep "*) sleep "${line#@sleep }" ;;
+    "@pause") [ -z "${FAKE_CODEX_PAUSE:-}" ] || sleep "$FAKE_CODEX_PAUSE" ;;
     "@exit "*)
       log "exit ${line#@exit }"
       exit "${line#@exit }"
