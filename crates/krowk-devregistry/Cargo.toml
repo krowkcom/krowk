@@ -22,7 +22,6 @@ path = "src/main.rs"
 krowk-client = { path = "../krowk-client" }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 sha2 = "0.11"
-tiny_http = "0.12"
 
 [dev-dependencies]
 # The calls `krowk devices add` and `krowk sync join` make, so the device
