@@ -1242,7 +1242,10 @@ impl Shared {
         state.settle().await;
         // Only Claude Code says `Woke` (its idle loop is the one writing
         // between turns): a turn on another backend waits for none, or its
-        // first agent event would wait for ever. SV13: a Codex engine that
+        // first agent event would wait for ever. Codex says nothing between
+        // turns — krowk reads it only while one runs, and its children end
+        // with the turn that ran them (`codex::children`) — so nothing is
+        // queued ahead of its turn's writer. A Codex engine that ever
         // reports between turns through `Idle` must say `Woke` as a turn
         // takes over, and be given a `woke_from` here.
         let woke_from = (ran_by == RanBy::Claude).then(|| *state.woke.borrow());

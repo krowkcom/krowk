@@ -5,15 +5,17 @@
 //! a new host, approvals by krowk's modes, steering and an interrupt
 //! mid-turn, a crash mid-turn, two instances with their own homes and
 //! accounts, and the refusals — a looser sandbox, a missing login, a missing
-//! binary, an untrusted repository. Every message either side sent is
-//! checked against the schema pinned from the real `codex app-server`.
+//! binary, an untrusted repository; and Codex's child threads as child
+//! sessions, from a scenario written from the schema, not recorded live.
+//! Every message either side sent is checked against the schema pinned
+//! from the real `codex app-server`.
 
 #![cfg(unix)]
 
 use krowk_harness::host::{Host, HostConfig};
 use krowk_harness::instances::{InstanceKind, InstancesConfig, Registry};
 use krowk_harness::log;
-use krowk_harness::protocol::{Billing, Command, ContextRecord, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus, Usage, WireApi};
+use krowk_harness::protocol::{Billing, ChildState, Command, ContextRecord, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, TurnStatus, Usage, WireApi};
 use krowk_harness::trust;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -492,6 +494,68 @@ fn r_back_3_a_codex_that_crashes_mid_turn_fails_the_turn_and_the_next_one_resume
     });
 }
 
+/// R-SUB-7, R-SUB-8, R-SUB-9 — checked against the schema, not live: a
+/// parent thread spawning two child threads (`subagents.jsonl`, written
+/// from the pinned schema) yields two child sessions linked to it — each
+/// its own log, its root naming the parent and the parent's
+/// `subagent.started` naming it with `ranBy: codex` and its thread id —
+/// each starting with its spawn's prompt, its items its own and without
+/// usage, its end `subAgentActivity`'s; status frames for each, a tool's
+/// start among them, ending done; and the grandchild one of them spawns is
+/// no child of the session.
+#[test]
+fn r_sub_7_a_codex_parent_spawning_two_child_threads_has_two_child_sessions_each_its_prompt_first() {
+    const KIDS: [(&str, &str, &str); 2] = [("01a0d8df-0000-7000-8000-0000000000c1", "Ada", "Count the files in the repository and say how many."), ("01a0d8df-0000-7000-8000-0000000000c2", "Turing", "Read README.md and say what it is about.")];
+    let h = Home::new("subagents");
+    let home = h.signed_in("codex-team", "chatgpt team@example.com");
+    let host = h.host(vec![("codex:team", h.instance(&home, Some("subagents.jsonl"), &[]))], trust::allow_all());
+    rt().block_on(async {
+        let (lines, r) = run(&host, prompt(None, "run two agents", "codex:team/gpt-5.5", PermissionMode::Default)).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "Both agents are done."), "{r:?}");
+        let parent = h.events(&r.session_id);
+        let started: Vec<&LogBody> = parent.iter().map(|e| &e.body).filter(|b| matches!(b, LogBody::SubagentStarted { .. })).collect();
+        assert_eq!(started.len(), 2, "two children, the grandchild none: {started:?}");
+        for (i, (thread, nick, ask)) in KIDS.iter().enumerate() {
+            let LogBody::SubagentStarted { call_id: call, subagent_session_id: child, description, agent, ran_by, backend_id: backend, .. } = started[i] else { unreachable!() };
+            assert_eq!((call.as_str(), description.as_str(), *ran_by, backend.as_deref()), (format!("call-spawn-{}", i + 1).as_str(), *nick, RanBy::Codex, Some(*thread)));
+            assert_eq!(agent.as_deref(), Some(if i == 0 { "explorer" } else { "reviewer" }));
+            let log = h.events(child);
+            assert!(matches!(&log[0].body, LogBody::SessionStarted { parent_session_id: Some(p), .. } if *p == r.session_id), "{:?}", log[0]);
+            assert!(matches!(&log[1].body, LogBody::TurnStarted { .. }));
+            let got = items(&log);
+            assert_eq!(got[0], Item::user(*ask), "the spawn's prompt first, once: {got:?}");
+            assert!(!got[1..].iter().any(|i| matches!(i, Item::UserText { .. })), "Codex's echo of it is not logged again: {got:?}");
+            assert!(log.iter().all(|e| !matches!(&e.body, LogBody::ResponseCompleted { usage, .. } if *usage != Usage::default())), "its spend is the parent's");
+            assert!(matches!(&log.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Completed, .. }), "{:?}", log.last());
+            // Its frames: running, then done, its last.
+            let frames: Vec<(ChildState, Option<String>, i64)> = lines
+                .iter()
+                .filter_map(|l| match l {
+                    StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, tool, tokens, .. }) if session_id == child => Some((*status, tool.as_ref().map(|t| t.name.clone()), *tokens)),
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(frames.first().map(|f| f.0), Some(ChildState::Running), "{frames:?}");
+            assert_eq!(frames.last().map(|f| (f.0, f.2)), Some((ChildState::Done, if i == 0 { 420 } else { 300 })), "ends done, its tokens Codex's count: {frames:?}");
+            assert_eq!(frames.iter().filter(|f| f.0 != ChildState::Running).count(), 1);
+            if i == 0 {
+                let Item::ToolCall { name, .. } = &got[1] else { panic!("{got:?}") };
+                assert_eq!(name, "shell");
+                assert!(frames.iter().any(|f| f.1.as_deref() == Some("shell")), "the tool is on its status from its call: {frames:?}");
+                assert!(matches!(&got[2], Item::ToolResult { output, .. } if output == "README.md\nsrc\n"));
+            } else {
+                assert!(got.iter().any(|i| matches!(i, Item::ToolCall { name, input, .. } if name == "spawn_agent" && input["prompt"] == "Summarise the README in one word.")), "its own agent is in its transcript: {got:?}");
+                assert!(!got.iter().any(|i| matches!(i, Item::AssistantText { text } if text == "Greeting.")), "the grandchild's own lines are not");
+            }
+        }
+        // The parent's own spend still counts every thread's calls, once.
+        let metered = parent.iter().filter(|e| matches!(e.body, LogBody::SubagentResponse { .. })).count();
+        assert_eq!(metered, 3, "both children and the grandchild");
+        host.shutdown().await;
+    });
+}
+
 #[test]
 fn r_inst_1_two_codex_instances_with_their_own_homes_run_sessions_under_their_own_accounts() {
     let h = Home::new("instances");
@@ -611,7 +675,7 @@ fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schem
     let h = Home::new("schema");
     let home = h.signed_in("codex-team", "chatgpt team@example.com");
     rt().block_on(async {
-        for (scenario, mode) in [("tool_use.jsonl", PermissionMode::Default), ("approvals.jsonl", PermissionMode::AcceptEdits), ("interrupt.jsonl", PermissionMode::Default)] {
+        for (scenario, mode) in [("tool_use.jsonl", PermissionMode::Default), ("approvals.jsonl", PermissionMode::AcceptEdits), ("interrupt.jsonl", PermissionMode::Default), ("subagents.jsonl", PermissionMode::Default)] {
             let _ = std::fs::remove_file(home.join("fake-turns"));
             let host = h.host(vec![("codex:team", h.instance(&home, Some(scenario), &[("FAKE_CODEX_MCP", MCP)]))], trust::allow_all());
             let (_, r) = run_with(&host, prompt(None, "hi", "codex:team/gpt-5.5", mode), async |host: &Host, session: &str, n: usize| {
@@ -623,7 +687,7 @@ fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schem
             .await;
             let session = r.unwrap().unwrap().session_id;
             // The scenarios with a second turn: a resumed thread's messages too.
-            if scenario != "approvals.jsonl" {
+            if !matches!(scenario, "approvals.jsonl" | "subagents.jsonl") {
                 let (_, _) = run(&host, prompt(Some(&session), "again", "codex:team/gpt-5.5", mode)).await;
             }
             host.shutdown().await;

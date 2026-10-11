@@ -51,6 +51,10 @@ pub struct Translator {
     pub declined: HashMap<String, String>,
     /// The last error Codex reported that it will not retry.
     pub error: Option<Value>,
+    /// A child thread's (`codex::children`): its own `collabAgentToolCall`s
+    /// are tool calls of its transcript, where a grandchild shows. The
+    /// session's are not: each child is its own row, ended by its own end.
+    collab: bool,
 }
 
 #[derive(Debug)]
@@ -137,10 +141,26 @@ impl Translator {
         Translator { model: model.into(), ..Translator::default() }
     }
 
+    /// A child thread's translator: its collab calls are its tool calls.
+    pub fn child(model: &str) -> Translator {
+        Translator { collab: true, ..Translator::new(model) }
+    }
+
     /// The tool call an item is, when it is one: its name and input.
-    fn call(item: &Value) -> Option<(String, Value)> {
+    fn call(&self, item: &Value) -> Option<(String, Value)> {
         let args = || item.get("arguments").cloned().unwrap_or(Value::Null);
         Some(match str_of(item, "type") {
+            // `spawnAgent` as `spawn_agent`, Codex's own name for the tool.
+            "collabAgentToolCall" if self.collab => {
+                let tool: String = str_of(item, "tool").chars().flat_map(|c| if c.is_ascii_uppercase() { vec!['_', c.to_ascii_lowercase()] } else { vec![c] }).collect();
+                let mut input = json!({});
+                for k in ["prompt", "model"] {
+                    if let Some(v) = item.get(k).filter(|v| v.is_string()) {
+                        input[k] = v.clone();
+                    }
+                }
+                (tool, input)
+            }
             "commandExecution" => ("shell".into(), json!({"command": str_of(item, "command"), "cwd": str_of(item, "cwd")})),
             "fileChange" => {
                 let changes: Vec<Value> = item
@@ -204,6 +224,17 @@ impl Translator {
             },
             "dynamicToolCall" => (capped(&content_text(item.get("contentItems"))), item.get("success").and_then(Value::as_bool) == Some(false) || status == "failed"),
             "webSearch" => (item.get("results").filter(|r| !r.is_null()).map(|r| capped(&r.to_string())).unwrap_or_else(|| format!("searched: {}", str_of(item, "query"))), false),
+            // Each agent it reached and where that agent stands.
+            "collabAgentToolCall" => {
+                let states: Vec<String> = item
+                    .get("agentsStates")
+                    .and_then(Value::as_object)
+                    .map(|m| m.iter().map(|(th, st)| format!("{th}: {}{}", str_of(st, "status"), st.get("message").and_then(Value::as_str).map(|m| format!(" — {m}")).unwrap_or_default())).collect())
+                    .unwrap_or_default();
+                let receivers: Vec<&str> = item.get("receiverThreadIds").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).collect()).unwrap_or_default();
+                let text = if !states.is_empty() { states.join("\n") } else if !receivers.is_empty() { format!("agents: {}", receivers.join(", ")) } else { status.to_string() };
+                (capped(&text), status == "failed")
+            }
             _ => (String::new(), false),
         }
     }
@@ -224,7 +255,7 @@ impl Translator {
                 self.open.insert(codex_id, Open { id, kind: OpenKind::Reasoning(String::new()) });
             }
             _ => {
-                let Some((name, input)) = Translator::call(item) else { return };
+                let Some((name, input)) = self.call(item) else { return };
                 if str_of(item, "type") == "fileChange" {
                     self.note_changes(&codex_id, item);
                 }
@@ -248,7 +279,7 @@ impl Translator {
     fn complete(&mut self, item: &Value, out: &mut Vec<EngineEvent>) {
         let codex_id = str_of(item, "id").to_string();
         let kind = str_of(item, "type");
-        if !matches!(kind, "agentMessage" | "reasoning") && Translator::call(item).is_none() {
+        if !matches!(kind, "agentMessage" | "reasoning") && self.call(item).is_none() {
             return;
         }
         // An item Codex completes without having started it is started now.
