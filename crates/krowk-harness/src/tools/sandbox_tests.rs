@@ -270,9 +270,15 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
     let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
     assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().map(|o| o.status.success()).unwrap_or(false);
-    assert!(!alive, "a sandboxed command outlived its timeout");
+    // Asked until none runs, for up to three seconds: what the timeout
+    // killed goes when a loaded machine gets to it, and one that outlived
+    // it would still be there, its 7.31 seconds not up.
+    let alive = || std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().map(|o| o.status.success()).unwrap_or(false);
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while alive() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive(), "a sandboxed command outlived its timeout");
     let _ = std::fs::remove_dir_all(base);
 }
 

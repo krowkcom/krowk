@@ -58,6 +58,27 @@ impl Tally {
     }
 }
 
+/// Whether a process whose command line matches `pattern` (`pgrep -f`)
+/// runs now.
+fn running(pattern: &str) -> bool {
+    std::process::Command::new("pgrep").args(["-f", pattern]).output().map(|o| o.status.success()).unwrap_or(false)
+}
+
+/// Whether one still runs after `within`. Asked until none does: what the
+/// sandbox kills goes when a loaded machine gets to it, half a second or
+/// more, and one that escaped — each sleeps nine seconds and more — is
+/// still there when `within` is up.
+fn outlives(pattern: &str, within: Duration) -> bool {
+    let deadline = std::time::Instant::now() + within;
+    while running(pattern) {
+        if std::time::Instant::now() >= deadline {
+            return true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    false
+}
+
 /// A scratch base outside `/tmp`, a workspace in it that is a git
 /// repository, and a fake home with planted secrets.
 struct Fx {
@@ -504,9 +525,7 @@ async fn r192b_5_isolation() {
     t.blocked("5b session differs from the parent", !sid.is_empty() && sid != ours, out);
 
     let (out, _) = sh(&f, "setsid sleep 9.871 > /dev/null 2>&1 < /dev/null & (setsid -f sleep 9.872 &) ; nohup sleep 9.873 >/dev/null 2>&1 & disown; echo started").await;
-    tokio::time::sleep(Duration::from_millis(400)).await;
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 9.87"]).output().map(|o| o.status.success()).unwrap_or(false);
-    t.blocked("5c setsid/nohup children killed after the call", !alive, out);
+    t.blocked("5c setsid/nohup children killed after the call", !outlives("sleep 9.87", Duration::from_secs(5)), out);
 
     let (out, _) = sh(&f, "ls /dev/pts; python3 - <<'EOF' 2>&1\nimport fcntl, termios, os\nfor path in ['/dev/tty', '/proc/1/fd/0', '/proc/1/fd/1', '/proc/1/fd/2']:\n    try:\n        fd = os.open(path, os.O_RDWR)\n        fcntl.ioctl(fd, termios.TIOCSTI, b'x')\n        print('INJECTED', path)\n    except Exception as e:\n        print('refused', path, e)\nfor fd in (0, 1, 2):\n    try:\n        fcntl.ioctl(fd, termios.TIOCSTI, b'x'); print('INJECTED fd', fd)\n    except Exception as e:\n        print('refused fd', fd, e)\nEOF").await;
     t.blocked("5d TIOCSTI into a tty", !out.contains("INJECTED"), out);
@@ -516,14 +535,15 @@ async fn r192b_5_isolation() {
     let (program, args) = sandbox::bash(f.scope.sandbox.as_deref().unwrap(), "sleep 9.874 & sleep 9.875", &[]).unwrap();
     let quoted: Vec<String> = std::iter::once(program.display().to_string()).chain(args).map(|a| format!("'{}'", a.replace('\'', "'\\''"))).collect();
     let mut parent = std::process::Command::new("bash").arg("-c").arg(format!("{} & wait", quoted.join(" "))).current_dir(&f.ws).spawn().unwrap();
-    std::thread::sleep(Duration::from_millis(500));
-    let started = std::process::Command::new("pgrep").args(["-f", "sleep 9.875"]).output().map(|o| o.status.success()).unwrap_or(false);
-    t.control("the sandboxed sleep started", started, "no sleep 9.875");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !running("sleep 9.875") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    t.control("the sandboxed sleep started", running("sleep 9.875"), "no sleep 9.875");
     // SAFETY: SIGKILL to the child just spawned.
     unsafe { libc::kill(parent.id() as i32, libc::SIGKILL) };
     let _ = parent.wait();
-    std::thread::sleep(Duration::from_millis(500));
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 9.87[45]"]).output().map(|o| o.status.success()).unwrap_or(false);
+    let alive = outlives("sleep 9.87[45]", Duration::from_secs(5));
     let _ = std::process::Command::new("pkill").args(["-f", "sleep 9.87"]).status();
     t.blocked("5e nothing survives the parent's death (--die-with-parent)", !alive, "a sandboxed sleep outlived its parent");
     t.done();
