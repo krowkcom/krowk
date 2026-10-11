@@ -2175,10 +2175,10 @@ fn reported(t: &pty::Pty, n: usize, timeout: Duration) -> bool {
 /// Allows the call that waits, past the moment a key typed ahead is not
 /// taken as the answer: `y` again until the `n`th report says it was.
 fn allow(t: &mut pty::Pty, n: usize) {
-    for _ in 0..20 {
+    for _ in 0..5 {
         std::thread::sleep(Duration::from_millis(500));
         t.write(b"y");
-        if reported(t, n, Duration::from_secs(1)) {
+        if reported(t, n, Duration::from_secs(5)) {
             return;
         }
     }
