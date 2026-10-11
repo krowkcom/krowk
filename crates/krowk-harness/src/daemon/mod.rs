@@ -235,13 +235,19 @@ pub fn older(daemon: &str, mine: &str) -> bool {
 /// closes, its far side never told the session ended; or a pipe whose
 /// reader waits for an end that never comes.
 pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
-    detached(program, args, log, || Ok(()))
+    // SAFETY: the closure does nothing.
+    unsafe { detached(program, args, log, || Ok(())) }
 }
 
 /// `spawn_detached`, with `first` run in the child before the descriptors
 /// are marked: for a test, to leave one inherited as a careless starter
-/// would. `first` is async-signal-safe.
-fn detached(program: &Path, args: &[&str], log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
+/// would.
+///
+/// # Safety
+///
+/// `first` runs in the child between fork and exec: it may make only
+/// async-signal-safe calls, and must not allocate or take a lock.
+unsafe fn detached(program: &Path, args: &[&str], log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let out = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(log).map_err(|e| format!("{} cannot be opened: {e}", log.display()))?;
@@ -475,7 +481,8 @@ mod tests {
         let log = std::env::temp_dir().join(format!("krowk-detached-{}.log", std::process::id()));
         // SAFETY: fcntl is async-signal-safe, on a descriptor the child has.
         let leave_open = move || if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
-        let mut daemon = detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log, leave_open).unwrap();
+        // SAFETY: `leave_open` makes one fcntl call.
+        let mut daemon = unsafe { detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log, leave_open) }.unwrap();
         drop(write);
         let mut p = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one pollfd, for the length of the call.
