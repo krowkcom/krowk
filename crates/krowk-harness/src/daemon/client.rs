@@ -355,6 +355,15 @@ impl Client {
         }
     }
 
+    /// Follows a session from `after`, not waited for: what its log holds
+    /// after that event, then its frames as they come, all with what
+    /// arrives while no turn of this client's streams (`watch`). What a TUI
+    /// resuming a session asks when work of its goes on between turns — a
+    /// backend's agent run in the background.
+    pub fn attach_later(&self, session_id: &str, after: Option<&str>) {
+        let _ = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, None);
+    }
+
     /// Follows a session's running turn to its end, as though this client
     /// ran it: what its log holds after `after`, the turn so far, then each
     /// frame live, to `out`, answering the turn's result — none when no

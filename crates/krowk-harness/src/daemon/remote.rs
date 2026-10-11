@@ -171,6 +171,11 @@ impl Remote {
         self.current().leave(session_id);
     }
 
+    /// `Client::attach_later` on the daemon now.
+    pub fn attach_later(&self, session_id: &str, after: Option<&str>) {
+        self.current().attach_later(session_id, after);
+    }
+
     pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
         self.watch.subscribe()
     }
