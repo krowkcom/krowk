@@ -223,17 +223,19 @@ pub fn read_log(path: &std::path::Path) -> Result<Vec<LogEvent>, String> {
     Ok(out)
 }
 
-/// How much of a child's log's end is read for its last event, at most:
-/// a resume reads no whole child log (SV16), and an end — its
-/// `turn.completed` — is one short line.
+/// How much of a child's log's end is read for its end, at most: a resume
+/// reads no whole child log (SV16), and an end — its `turn.completed` — is
+/// one short line, at most a few after it.
 pub const END_WINDOW: u64 = 64 << 10;
 
-/// The last complete event of the log at `path`, read from its end: how a
-/// child ended, without reading the whole of it — never more than its last
-/// `END_WINDOW` bytes. A last line cut mid-append is not complete, and the
-/// one before it is taken. None when the log has no complete line in that
-/// window, or that line is no event.
-pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
+/// How the child whose log is at `path` ended: its last `turn.completed`,
+/// read from the log's end — never more than its last `END_WINDOW` bytes —
+/// with nothing after it but lines that do not start it again (a native
+/// child's `model.switched` follows its failed turn's end). A last line cut
+/// mid-append is not complete, and is passed over. None when no complete
+/// line in that window is its end, when a turn starts after it, or when a
+/// line is no event.
+pub fn last_end(path: &std::path::Path) -> Option<LogEvent> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
@@ -245,20 +247,22 @@ pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
         let mut bytes = Vec::new();
         f.by_ref().take(len - from).read_to_end(&mut bytes).ok()?;
         // Up to the last newline: what follows it is still being written.
-        // The last non-empty line before it is whole once a newline
-        // precedes it, or the window reaches the file's start.
-        let whole = bytes.iter().rposition(|&b| b == b'\n').map(|nl| &bytes[..nl]);
-        let end = whole.and_then(|w| w.iter().rposition(|&b| !b.is_ascii_whitespace())).map(|e| e + 1);
-        match (whole, end) {
-            (Some(w), Some(end)) => match w[..end].iter().rposition(|&b| b == b'\n') {
-                Some(start) => return serde_json::from_slice(&w[start + 1..end]).ok(),
-                None if from == 0 => return serde_json::from_slice(&w[..end]).ok(),
-                None => {}
-            },
-            _ if from == 0 => return None,
-            _ => {}
+        // A line is whole once a newline precedes it, or the window
+        // reaches the file's start.
+        let whole = bytes.iter().rposition(|&b| b == b'\n').map_or(&[][..], |nl| &bytes[..nl]);
+        let mut lines: Vec<&[u8]> = whole.split(|&b| b == b'\n').collect();
+        if from > 0 {
+            lines.remove(0);
         }
-        if window >= END_WINDOW {
+        for line in lines.into_iter().rev().filter(|l| !l.trim_ascii().is_empty()) {
+            let ev: LogEvent = serde_json::from_slice(line).ok()?;
+            match ev.body {
+                LogBody::TurnCompleted { .. } => return Some(ev),
+                LogBody::TurnStarted { .. } => return None,
+                _ => {}
+            }
+        }
+        if from == 0 || window >= END_WINDOW {
             return None;
         }
         window = (window * 4).min(END_WINDOW);
@@ -282,32 +286,39 @@ fn clip(text: &str, width: u16) -> String {
 
 #[cfg(test)]
 mod tests {
-    /// R-SUB-7: a child's end is read off its log's last complete line,
+    /// R-SUB-7: a child's end is read off its log's last complete lines,
     /// however long the log and whatever half-written line follows it —
-    /// never more than its last END_WINDOW bytes.
+    /// never more than its last END_WINDOW bytes (SV16).
     #[test]
-    fn r_sub_7_a_childs_last_event_is_read_from_its_logs_end() {
-        let dir = std::env::temp_dir().join(format!("krowk-last-event-{}", std::process::id()));
+    fn r_sub_7_a_childs_end_is_read_from_its_logs_end() {
+        use krowk_harness::protocol::{Item, ModelRef, SwitchReason, TurnStatus};
+        let dir = std::env::temp_dir().join(format!("krowk-last-end-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("events.jsonl");
         let ev = |id: &str, body: LogBody| serde_json::to_string(&LogEvent { id: id.into(), parent_id: None, session_id: "k".into(), time_ms: 7, body }).unwrap();
-        let said = |id: &str, n: usize| ev(id, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: krowk_harness::protocol::Item::user("x".repeat(n)) });
+        let said = |id: &str, n: usize| ev(id, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "i".into(), item: Item::user("x".repeat(n)) });
         let (big, huge) = (said("big", 30_000), said("huge", 100_000));
-        let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: krowk_harness::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
+        let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
+        let switched = ev("switched", LogBody::ModelSwitched { turn_id: None, from: None, to: ModelRef { instance: "a".into(), model: "b".into() }, reason: SwitchReason::Requested, detail: None });
+        let id = |path: &std::path::Path| last_end(path).map(|e| e.id);
         std::fs::write(&path, format!("{huge}\n{end}\n{{\"id\":\"half")).unwrap();
-        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "the half-written line is not complete");
+        assert_eq!(id(&path), Some("end".into()), "the half-written line is not complete");
         std::fs::write(&path, format!("{end}\n{big}\n\n")).unwrap();
-        assert_eq!(last_event(&path).map(|e| e.id), Some("big".into()), "a line longer than the first window");
+        assert_eq!(id(&path), Some("end".into()), "behind a line longer than the first window");
         std::fs::write(&path, format!("{end}\n{}", "y".repeat(30_000))).unwrap();
-        assert_eq!(last_event(&path).map(|e| e.id), Some("end".into()), "behind a half-written line longer than the first window");
+        assert_eq!(id(&path), Some("end".into()), "behind a half-written line longer than the first window");
+        std::fs::write(&path, format!("{end}\n{switched}\n")).unwrap();
+        assert_eq!(id(&path), Some("end".into()), "behind a line that does not start it again");
         // A resume reads no whole child log (SV16): past END_WINDOW, none.
         std::fs::write(&path, format!("{end}\n{huge}\n")).unwrap();
-        assert!(last_event(&path).is_none(), "a last line longer than the bound is not read whole");
+        assert_eq!(id(&path), None, "an end behind a line longer than the bound is not read");
         std::fs::write(&path, format!("{end}\n{}", "y".repeat(100_000))).unwrap();
-        assert!(last_event(&path).is_none(), "nor the log behind a half-written line past it");
+        assert_eq!(id(&path), None, "nor behind a half-written line past it");
+        std::fs::write(&path, format!("{big}\n")).unwrap();
+        assert_eq!(id(&path), None, "no end");
         std::fs::write(&path, "{\"id\":\"half").unwrap();
-        assert!(last_event(&path).is_none());
-        assert!(last_event(&dir.join("none")).is_none());
+        assert_eq!(id(&path), None);
+        assert_eq!(id(&dir.join("none")), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

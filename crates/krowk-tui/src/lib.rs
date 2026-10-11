@@ -3251,9 +3251,9 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
 
 /// The backend children of session `id` whose end its replayed `branch`
 /// cannot say, each once: a Codex child, which answers no call of the
-/// session's log, and one whose call nothing in the branch answers: read
-/// whatever the bound on how many a resume reads. Not one answered there,
-/// or started on a branch not replayed.
+/// session's log, and one whose call nothing in the branch answers —
+/// always read, whatever CHILD_ENDS_READ allows; never one the branch
+/// answers, or one started on a branch not replayed.
 fn unanswered_backend_children(id: &str, branch: &[&krowk_harness::protocol::LogEvent]) -> Vec<String> {
     use krowk_harness::protocol::{Item, LogBody, RanBy};
     let answered: std::collections::HashSet<&str> = branch
@@ -3306,27 +3306,31 @@ fn children_to_read(id: &str, branch: &[&krowk_harness::protocol::LogEvent], loc
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
-    use krowk_harness::protocol::LogEvent;
+    use krowk_harness::protocol::{LogBody, LogEvent};
     // The session's own last event: a synced history holds its children's
     // events too, and one of a child that ended after it may come last.
     let head = events.iter().rfind(|e| e.session_id == id).or(events.last()).map(|e| e.id.clone()).unwrap_or_default();
     let branch = log::branch(events, &head);
     // A child's end is in its own log, not the session's: its last
-    // complete line, read once from the file's end, never the whole file
-    // (`child::last_event`) — or, for a synced session, from its history,
-    // which holds its children's events too.
-    let mut last: std::collections::HashMap<&str, &LogEvent> = std::collections::HashMap::new();
+    // `turn.completed`, read once from the file's end, never the whole
+    // file (`child::last_end`) — or, for a synced session, from its
+    // history, which holds its children's events too.
+    let mut last: std::collections::HashMap<&str, Option<&LogEvent>> = std::collections::HashMap::new();
     if sessions_dir.is_none() {
         for e in events.iter().filter(|e| e.session_id != id) {
-            last.insert(&e.session_id, e);
+            match &e.body {
+                LogBody::TurnCompleted { .. } => _ = last.insert(&e.session_id, Some(e)),
+                LogBody::TurnStarted { .. } => _ = last.insert(&e.session_id, None),
+                _ => {}
+            }
         }
     }
     let mut read: std::collections::HashMap<String, Option<app::ChildEnd>> = std::collections::HashMap::new();
     let mut end_of = |kid: &str| -> Option<app::ChildEnd> {
         read.entry(kid.to_string())
             .or_insert_with(|| match sessions_dir {
-                Some(dir) => log::valid_id(kid).then(|| child::last_event(&dir.join(kid).join(log::EVENTS_FILE))).flatten().as_ref().and_then(app::ChildEnd::of),
-                None => last.get(kid).and_then(|e| app::ChildEnd::of(e)),
+                Some(dir) => log::valid_id(kid).then(|| child::last_end(&dir.join(kid).join(log::EVENTS_FILE))).flatten().as_ref().and_then(app::ChildEnd::of),
+                None => last.get(kid).copied().flatten().and_then(app::ChildEnd::of),
             })
             .clone()
     };
@@ -3344,8 +3348,14 @@ fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent],
     app.replay(&branch);
     // A child run in the background, its call answered at once, runs on
     // past it, and a batch still running answers none of its children:
-    // their ends too are their own logs'.
-    for kid in app.children_unended() {
+    // their ends too are their own logs' — the newest CHILD_ENDS_READ of
+    // them when each is a file to open, and every backend's child, as
+    // before.
+    let mut unended = app.children_unended();
+    if sessions_dir.is_some() && unended.len() > CHILD_ENDS_READ {
+        unended.drain(..unended.len() - CHILD_ENDS_READ);
+    }
+    for kid in app.backend_children_running().into_iter().chain(unended) {
         if let Some(e) = end_of(&kid) {
             app.child_logged_end(&kid, &e);
         }

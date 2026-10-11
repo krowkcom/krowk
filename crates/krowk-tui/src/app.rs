@@ -2691,8 +2691,11 @@ impl App {
     /// logs (`child_logged_end`) — a krowk child's background note is
     /// often never logged, and a batch still running answers none of its
     /// children until the last ends.
+    /// Oldest first.
     pub fn children_unended(&self) -> Vec<String> {
-        self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).map(|s| s.session_id.clone()).collect()
+        let mut unended: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).collect();
+        unended.sort_by_key(|s| s.born);
+        unended.into_iter().map(|s| s.session_id.clone()).collect()
     }
 
     /// A replay's finished children in the order they ended, by the log's
@@ -2790,7 +2793,8 @@ impl App {
                 s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
             }
         }
-        self.dirty = true;
+        // Ended at the log's last event, among the ends read before it.
+        self.order_ended();
     }
 
     /// Whatever of the streaming text never ended in a newline goes to
