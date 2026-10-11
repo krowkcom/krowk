@@ -782,7 +782,11 @@ impl ChildWatch {
     /// The watch of a turn's session when the turn is a subagent's: one
     /// with a parent.
     pub fn of<P>(parent: Option<&P>, session_id: &str) -> Option<ChildWatch> {
-        parent.map(|_| ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 })
+        parent.map(|_| ChildWatch::new(session_id))
+    }
+
+    pub fn new(session_id: &str) -> ChildWatch {
+        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 }
     }
 
     /// Takes in what the child's engine said at `now`: true when its state

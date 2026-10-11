@@ -844,6 +844,8 @@ async fn until_unprompted(watch: &mut broadcast::Receiver<StreamLine>, session: 
         match watch.recv().await.expect("the host is watched") {
             StreamLine::Live(LiveEvent::TurnUnprompted { session_id, reason }) if session_id == session => return (said, reason),
             l @ StreamLine::Live(LiveEvent::BackendAgents { .. }) => said.extend(agents_said(&[l])),
+            // A child of the session's, ending between turns.
+            l if l.session_id() != session => {}
             other => panic!("only between-turn frames are watched: {other:?}"),
         }
     }
@@ -1314,4 +1316,95 @@ fn r_steer_1_a_claude_that_cannot_cancel_steering_is_written_none_and_hands_it_b
         host.shutdown().await;
     }));
     assert!(!home.fake_log().contains(STEER), "never written");
+}
+
+/// R-SUB-7: a Claude Code agent's child session is held as a session
+/// running here while the agent runs, as a native child's turn is: a
+/// prompt to it is refused as busy, and an interrupt or a steer of it is
+/// answered for what it is — Claude Code's to run — rather than taken and
+/// dropped. Once it has ended, nothing holds it.
+#[test]
+fn r_sub_7_a_claude_agents_child_session_is_held_as_running_while_the_agent_runs() {
+    let home = Home::new("kids-held");
+    let dir = home.signed_in("cfg-work");
+    // The recorded parallel turn after `init`, a pause once both agents
+    // have started.
+    let raw = std::fs::read_to_string(fixture("recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let lines: Vec<&serde_json::Value> = printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true).collect();
+    let last_start = lines.iter().rposition(|m| m["subtype"] == "task_started" && m["task_type"] == "local_agent").unwrap();
+    let mut scenario = String::new();
+    for (i, m) in lines.iter().enumerate() {
+        scenario.push_str(&format!("{m}\n"));
+        if i == last_start {
+            scenario.push_str("@sleep 2\n");
+        }
+    }
+    let path = home.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    let host = Arc::new(home.host(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))], trust::allow_all()));
+    rt().block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let h = host.clone();
+        let turn = tokio::spawn(async move { h.execute(prompt(None, "run two agents", "claude:work/sonnet", PermissionMode::Default), tx).await });
+        let mut kids = Vec::new();
+        while kids.len() < 2 {
+            if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = rx.recv().await.expect("the turn goes on") {
+                kids.push(subagent_session_id);
+            }
+        }
+        let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        let code = |r: Result<Option<RunResult>, krowk_harness::engine::EngineError>| r.err().map(|e| e.code);
+        let out = || mpsc::channel(64).0;
+        for kid in &kids {
+            assert_eq!(code(host.execute(prompt(Some(kid), "hello", "claude:work/sonnet", PermissionMode::Default), out()).await).as_deref(), Some("session_busy"), "{kid}");
+            assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("not_stoppable"), "{kid}");
+            assert_eq!(code(host.execute(Command::Steer { session_id: kid.clone(), text: "not you".into(), images: Vec::new() }, out()).await).as_deref(), Some("not_steerable"), "{kid}");
+        }
+        let r = turn.await.unwrap().unwrap().unwrap();
+        assert_eq!(r.status, TurnStatus::Completed, "the parent's turn is untouched: {:?}", r.error);
+        drain.await.unwrap();
+        for kid in &kids {
+            assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("no_running_turn"), "{kid} let go once it ended");
+        }
+        host.shutdown().await;
+    });
+}
+
+/// R-SUB-7: a background agent that ends between turns ends its child
+/// there and then — its turn completed in its log, its last frame to the
+/// host's watchers — and lets go of the child's hold: it is no longer a
+/// session running here.
+#[test]
+fn r_sub_7_a_background_agent_ending_between_turns_ends_its_child_and_lets_it_go() {
+    let home = Home::new("bg-kid");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all());
+    let mut watch = host.watch();
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        let kid = lines.iter().find_map(|l| match l {
+            StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, backend_id: Some(b), .. }, .. }) if b == "a_bg_1" => Some(subagent_session_id.clone()),
+            _ => None,
+        });
+        let kid = kid.expect("the background agent is a child");
+        let out = || mpsc::channel(64).0;
+        let code = |r: Result<Option<RunResult>, krowk_harness::engine::EngineError>| r.err().map(|e| e.code);
+        assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("not_stoppable"), "running on past its turn");
+        // Between turns: its end, to the watchers, as the child's.
+        let mut ended = (false, false);
+        while ended != (true, true) {
+            match watch.recv().await.expect("the host is watched") {
+                StreamLine::Log(LogEvent { session_id, body: LogBody::TurnCompleted { status: TurnStatus::Completed, .. }, .. }) if session_id == kid => ended.0 = true,
+                StreamLine::Live(LiveEvent::SubagentStatus { session_id, status: krowk_harness::protocol::ChildState::Done, .. }) if session_id == kid => ended.1 = true,
+                _ => {}
+            }
+        }
+        assert_eq!(code(host.execute(Command::Interrupt { session_id: kid.clone() }, out()).await).as_deref(), Some("no_running_turn"), "let go once it ended");
+        let log = home.events(&kid);
+        assert!(matches!(log.last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Completed, .. })), "{log:?}");
+        host.shutdown().await;
+    }));
 }

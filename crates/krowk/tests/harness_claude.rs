@@ -472,3 +472,153 @@ fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begin
     assert!(st.success(), "{st}");
     assert_eq!(b.fake_log().lines().last(), Some("eof"), "Claude Code let go cleanly");
 }
+
+/// A recording of Claude Code (`recorded/<name>`) as a scenario for the
+/// fake: what it printed after `init`, its control lines and the replayed
+/// prompt left out — the fake prints its own `init` and replays the
+/// prompt itself. With the recording's `task_started` lines, for the test.
+fn recorded(b: &Sandbox, name: &str) -> (String, Vec<Value>) {
+    recorded_pausing(b, name, None)
+}
+
+/// `recorded`, with a pause of `pause` seconds once every agent has
+/// started: a moment in which they all run.
+fn recorded_pausing(b: &Sandbox, name: &str, pause: Option<u32>) -> (String, Vec<Value>) {
+    let raw = std::fs::read_to_string(fixture("recorded").join(name)).unwrap();
+    let printed: Vec<Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let lines: Vec<&Value> = printed[init + 1..].iter().filter(|m| !matches!(m["type"].as_str(), Some("control_request" | "control_response")) && m["isReplay"] != true).collect();
+    let last_start = lines.iter().rposition(|m| m["subtype"] == "task_started" && m["task_type"] == "local_agent");
+    let mut text = String::new();
+    for (i, m) in lines.iter().enumerate() {
+        text.push_str(&format!("{m}\n"));
+        if let Some(s) = pause.filter(|_| Some(i) == last_start) {
+            text.push_str(&format!("@sleep {s}\n"));
+        }
+    }
+    let path = b.root.join(name.replace(".txt", ".jsonl"));
+    std::fs::write(&path, text).unwrap();
+    let agents = lines.iter().filter(|m| m["subtype"] == "task_started" && m["task_type"] == "local_agent").map(|m| (*m).clone()).collect();
+    (path.display().to_string(), agents)
+}
+
+/// The children `krowk sessions` lists under `parent`, by krowk session id.
+fn listed_children(b: &Sandbox, parent: &str) -> Vec<String> {
+    let home = b.root.join("home").display().to_string();
+    let env = move |k: &str| if k == "HOME" { home.clone() } else { String::new() };
+    let conn = krowk_store::open(&env).unwrap();
+    let rows = krowk_store::list_sessions(&conn, "krowk", "", 50).unwrap();
+    let id = rows.iter().find(|r| r.foreign_session_id == parent).map(|r| r.id.clone()).unwrap_or_else(|| panic!("{parent} is listed"));
+    let mut kids: Vec<String> = krowk_store::descendant_session_ids(&conn, &id).unwrap().into_iter().map(|sid| rows.iter().find(|r| r.id == sid).unwrap().foreign_session_id.clone()).collect();
+    kids.sort();
+    kids
+}
+
+/// R-SUB-7, R-SUB-8, R-SUB-6: the two agents of the recorded parallel turn
+/// are two child sessions of it, as krowk's own are: each its own log under
+/// `sessions/`, its root naming the parent and the parent's
+/// `subagent.started` naming it with `ranBy: claude` and its `task_id`;
+/// the prompt first, its items, its end; its lines on the parent's stream
+/// under its own id; no usage of its own. Listed under the parent, and
+/// listed there again by `krowk sessions rebuild` from the logs alone.
+#[test]
+fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_and_rebuild_restores_the_tree() {
+    let b = Sandbox::new("agents");
+    b.json(&["providers", "add", "claude", "--json"], &[]);
+    let (scenario, agents) = recorded(&b, "agents_parallel.txt");
+    assert_eq!(agents.len(), 2);
+    let out = b.krowk(&["-p", "run two agents", "--model", "claude/sonnet", "--trust", "--output-format", "stream-json"], &[("FAKE_CLAUDE_SCENARIO", &scenario)]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let lines: Vec<Value> = String::from_utf8_lossy(&out.stdout).lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let result = lines.last().unwrap();
+    assert_eq!((result["type"].as_str(), result["status"].as_str()), (Some("result"), Some("completed")), "{result}");
+    let session = result["sessionId"].as_str().unwrap().to_string();
+    let parent = b.events(&session);
+    let started: Vec<&Value> = parent.iter().filter(|e| e["type"] == "subagent.started").collect();
+    assert_eq!(started.len(), 2, "one child for each agent, never more");
+    let mut kids = Vec::new();
+    for a in &agents {
+        let s = started.iter().find(|s| s["backendId"] == a["task_id"]).unwrap_or_else(|| panic!("{a}"));
+        assert_eq!((s["ranBy"].as_str(), &s["callId"], &s["description"]), (Some("claude"), &a["tool_use_id"], &a["description"]), "{s}");
+        let child = s["subagentSessionId"].as_str().unwrap().to_string();
+        let log = b.events(&child);
+        assert_eq!((log[0]["type"].as_str(), log[0]["parentSessionId"].as_str(), log[0]["agent"].as_str()), (Some("session.started"), Some(session.as_str()), Some("general-purpose")), "{}", log[0]);
+        assert_eq!(log[1]["type"], "turn.started");
+        let items: Vec<&Value> = log.iter().filter(|e| e["type"] == "item.completed").map(|e| &e["item"]).collect();
+        assert_eq!((items[0]["kind"].as_str(), &items[0]["text"]), (Some("userText"), &a["prompt"]), "the prompt first");
+        assert!(items.iter().any(|i| i["kind"] == "toolCall"), "its own calls: {items:?}");
+        assert!(log.iter().filter(|e| e["type"] == "response.completed").all(|e| e["usage"]["inputTokens"] == 0 && e["usage"]["outputTokens"] == 0), "its spend is the parent's");
+        let end = log.last().unwrap();
+        let want = if a["description"] == "sleeper" { "interrupted" } else { "completed" };
+        assert_eq!((end["type"].as_str(), end["status"].as_str()), (Some("turn.completed"), Some(want)), "{end}");
+        // The session names it before any line of its own is sent, and
+        // its turn has begun by then.
+        let at = |f: &dyn Fn(&Value) -> bool| lines.iter().position(f).unwrap();
+        let named = at(&|l| l["type"] == "subagent.started" && l["subagentSessionId"] == child.as_str());
+        let root = at(&|l| l["type"] == "session.started" && l["sessionId"] == child.as_str());
+        assert!(named < root && lines[root + 1]["type"] == "turn.started", "{child}: named at {named}, its root at {root}");
+        // Its lines rode the parent's stream, under its own id, whole.
+        let streamed: Vec<&str> = lines.iter().filter(|l| l["sessionId"] == child.as_str() && l["id"].is_string()).filter_map(|l| l["id"].as_str()).collect();
+        let logged: Vec<&str> = log.iter().filter_map(|e| e["id"].as_str()).collect();
+        assert_eq!(streamed, logged, "{child}");
+        kids.push(child);
+    }
+    kids.sort();
+    // The parent's own spend still counts each agent's calls, once.
+    assert!(parent.iter().any(|e| e["type"] == "subagent.response"));
+    assert_eq!(listed_children(&b, &session), kids, "`krowk -p` lists them under it at once");
+    std::fs::remove_file(b.data().join("sessions/krowk.db")).unwrap();
+    let out = b.krowk(&["sessions", "rebuild", "--yes"], &[]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(listed_children(&b, &session), kids, "the children hang from the parent again");
+}
+
+/// R-SUB-7, R-SUB-11: in the TUI, the recorded turn's two agents are two
+/// child rows and `[2 subagents]` while they run — never four, though the
+/// deprecated `backend.agents` names them too — and Enter on one in the
+/// Agents overlay opens its transcript, its prompt first.
+#[test]
+fn r_sub_7_the_tui_shows_claude_codes_two_agents_as_two_children_counted_once() {
+    let b = Sandbox::new("tui-agents");
+    b.json(&["providers", "add", "claude", "--json"], &[]);
+    let trusted = b.root.join("home/.krowk/trusted.json");
+    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    let (scenario, _) = recorded_pausing(&b, "agents_parallel.txt", Some(6));
+    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario)]);
+    let mut t = pty::Pty::spawn(cmd, 160, 40);
+    let secs = std::time::Duration::from_secs;
+    assert!(t.wait_for("anything", secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"run two agents\r");
+    assert!(t.wait_for("sleeper", secs(10)).is_some(), "both started: {:?}", t.text());
+    // The renderer draws what changed: a resize redraws the live region
+    // whole, rows and status bar as they are now.
+    let since = |t: &pty::Pty, mark: usize, needle: &str| {
+        (0..250).find_map(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            let now = String::from_utf8_lossy(&t.output()[mark..]).into_owned();
+            now.contains(needle).then_some(now)
+        })
+    };
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let mark = t.output().len();
+    t.resize(150, 40);
+    let redrawn = since(&t, mark, " help").expect("redrawn");
+    assert!(redrawn.contains("[2 subagents]"), "two children, counted once each: {redrawn:?}");
+    assert!(redrawn.contains("Agent read notes · general-purpose · running") && redrawn.contains("Agent sleeper · general-purpose · running"), "{redrawn:?}");
+    // Ctrl-G lists them as children; Enter opens the first, its prompt first.
+    let mark = t.output().len();
+    t.write(b"\x07");
+    let overlay = since(&t, mark, "enter").expect("the Agents overlay");
+    assert!(!overlay.contains("running in Claude Code"), "not the deprecated read-only list: {overlay:?}");
+    let mark = t.output().len();
+    t.write(b"\r");
+    let view = since(&t, mark, "Read the file notes.txt").expect("the child view, its prompt first");
+    assert!(view.contains("siblings") && view.contains("by Claude Code"), "its header and footer: {view:?}");
+    t.write(b"\x1b");
+    assert!(t.wait_for("Worked for", secs(15)).is_some(), "the turn ends: {:?}", t.text());
+    let all = t.text();
+    assert!(!all.contains("[4 subagents]") && !all.contains("[3 subagents]"), "each agent once: {all:?}");
+    t.write(b"\x04\x04");
+    let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
+    assert!(st.success(), "{st}");
+}
