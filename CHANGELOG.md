@@ -338,6 +338,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **The host daemon no longer keeps the terminal that started it open.**
+  The daemon `krowk` starts in the background could inherit a terminal,
+  pipe or file its starter had open without close-on-exec, and kept it
+  for its whole life: a terminal tab that wouldn't finish closing, or a
+  script waiting on a pipe that never ended. It now starts with nothing
+  open but its log and `/dev/null`.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

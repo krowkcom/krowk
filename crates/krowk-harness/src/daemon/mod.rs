@@ -225,7 +225,15 @@ pub fn older(daemon: &str, mine: &str) -> bool {
 
 /// Starts `program args…` as the daemon: in a session of its own
 /// (`setsid`), so closing the terminal that started it sends it no hangup,
-/// with stdin closed and stdout and stderr appended to `log`.
+/// with stdin closed and stdout and stderr appended to `log` — none of the
+/// three the terminal — and nothing else of this process's open: every
+/// descriptor past those three is closed as it execs.
+///
+/// That last is what a starter that opened something without
+/// close-on-exec, or inherited it so, would otherwise hand on for the
+/// daemon's whole life — the terminal it ran on, say, which then never
+/// closes, its far side never told the session ended; or a pipe whose
+/// reader waits for an end that never comes.
 pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
@@ -234,19 +242,53 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
     let mut cmd = std::process::Command::new(program);
     // In `/`, so the daemon pins no directory or mount for its life.
     cmd.args(args).current_dir("/").stdin(std::process::Stdio::null()).stdout(out).stderr(err);
-    // SAFETY: setsid is async-signal-safe, and nothing else runs between
-    // fork and exec.
+    // Read before the fork: sysconf is not async-signal-safe.
+    // SAFETY: sysconf only reads a limit.
+    let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
+    let limit = if limit < 0 { 1 << 16 } else { limit.min(1 << 20) as libc::c_int };
+    // SAFETY: setsid, close_range and fcntl are async-signal-safe, and
+    // nothing else runs between fork and exec.
     unsafe {
-        cmd.pre_exec(|| {
+        cmd.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
             }
+            close_on_exec_from_3(limit);
             Ok(())
         });
     }
     // Not waited for past its start: it outlives this process, and init
     // reaps it once this process is gone.
     cmd.spawn().map_err(|e| format!("{} cannot be run: {e}", program.display()))
+}
+
+/// Marks every descriptor from 3 up close-on-exec, between fork and exec:
+/// marked, not closed, so the pipe the standard library reports a failed
+/// exec on still does. Linux 5.11 and later in one call (`close_range`);
+/// elsewhere, macOS among them, and on an older kernel, one `fcntl` for
+/// each descriptor below `limit` — those past it cannot have been opened.
+/// Both are async-signal-safe.
+///
+/// # Safety
+///
+/// Only between fork and exec: it touches every descriptor the process
+/// has, whoever owns it.
+unsafe fn close_on_exec_from_3(limit: libc::c_int) {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // SAFETY: close_range takes plain integers and changes only flags.
+    if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC) } == 0 {
+        return;
+    }
+    for fd in 3..limit {
+        // SAFETY: fcntl on a descriptor that is not open fails with EBADF
+        // and changes nothing.
+        unsafe {
+            let flags = libc::fcntl(fd, libc::F_GETFD);
+            if flags >= 0 && flags & libc::FD_CLOEXEC == 0 {
+                libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC);
+            }
+        }
+    }
 }
 
 /// A runtime for the command line's one call, which has none of its own.
@@ -406,6 +448,33 @@ mod tests {
         }
         let e = [("KROWK_HOST_WS", "localhost".to_string())];
         assert!(websocket_addr(&env(&e), None).unwrap_err().contains("not an address"));
+    }
+
+    /// The daemon keeps nothing its starter had open past stdin, stdout and
+    /// stderr: a pipe's write end left open across exec here, as a
+    /// terminal's descriptor can be, is not open in it, so the pipe's
+    /// reader sees its end once the one here closes — not when the daemon
+    /// exits.
+    #[test]
+    fn r_host_1_the_daemon_holds_no_descriptor_its_starter_left_open_across_exec() {
+        use std::io::Read;
+        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+        let mut fds = [0; 2];
+        // SAFETY: pipe fills the two descriptors, which are owned below.
+        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "{}", std::io::Error::last_os_error());
+        // pipe(2) sets no close-on-exec: both ends would be inherited.
+        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        let log = std::env::temp_dir().join(format!("krowk-detached-{}.log", std::process::id()));
+        let mut daemon = spawn_detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log).unwrap();
+        drop(write);
+        let mut p = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        // SAFETY: one pollfd, for the length of the call.
+        let ready = unsafe { libc::poll(&mut p, 1, 5000) };
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        let _ = std::fs::remove_file(&log);
+        assert_eq!(ready, 1, "the pipe never ended: the daemon holds its write end");
+        assert_eq!(std::fs::File::from(read).read(&mut [0u8; 1]).unwrap(), 0, "its end, not data");
     }
 
     /// R-LAG-9's tripwire for the daemon's own serving code: no blocking
