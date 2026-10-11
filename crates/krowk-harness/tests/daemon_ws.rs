@@ -655,9 +655,11 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
 /// R-LAG-9: no file I/O on the daemon's thread during a turn. Every log
 /// append, context record and log read is made to take 40 ms, as on a disk
 /// that stalls; the turn, a tool call and an answer, writes a dozen of them.
-/// One of those left on the thread shows on the lateness probe (5 ms ticks)
-/// as 40 ms or more; off it, the thread stays on time while the turn waits
-/// for its writes.
+/// One of those left on the thread is said by the thread that waited it out
+/// (`stalls_on_daemon_thread`), with where it was made. The lateness probe
+/// (5 ms ticks) would show it as 40 ms or more, but a loaded machine holds
+/// the thread up as long with no write on it (36 ms on Linux under load,
+/// 130 ms on a macOS runner), so the probe's readings are said, not judged.
 #[test]
 fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -698,7 +700,8 @@ fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
         let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
         assert!(logged >= 6, "the turn logged its events: {logged}");
         assert!(took >= STALL * logged as u32, "each write waited out the stalling disk: {took:?} for {logged}");
-        assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn — a write on it? held {held:?}");
+        let on_thread = log::stalls_on_daemon_thread();
+        assert!(on_thread.is_empty(), "{} writes stalled the daemon's thread (held {late:?}: {held:?}), the first at:\n{}", on_thread.len(), on_thread[0]);
     });
     drop(slow);
     daemon.join().unwrap().unwrap();

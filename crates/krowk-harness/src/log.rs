@@ -287,9 +287,11 @@ pub fn pending_syncs() -> u64 {
 static OFF_THREAD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Sends the session log's blocking work to the blocking pool from here on:
-/// the host daemon's choice, as it starts.
+/// the host daemon's choice, as it starts, on the thread it serves on.
 pub fn off_thread() {
     OFF_THREAD.store(true, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(feature = "test-hooks")]
+    DAEMON_THREAD.set(true);
 }
 
 /// Runs `f` on the blocking pool in the host daemon, else where it is.
@@ -341,11 +343,34 @@ impl Drop for SlowDisk {
     }
 }
 
+#[cfg(feature = "test-hooks")]
+thread_local! {
+    /// The host daemon's own thread (`off_thread` marks it).
+    static DAEMON_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// For tests (`test-hooks`): where each stall of the slow disk taken on the
+/// host daemon's own thread was taken, a backtrace each.
+#[cfg(feature = "test-hooks")]
+static STALLED_ON_DAEMON: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// For tests (`test-hooks`): the log appends and reads the slow disk made
+/// wait on the host daemon's own thread, where each was made — what the
+/// lateness probe sees as the thread held, said by the thread itself rather
+/// than read off a clock a loaded machine also holds up (R-LAG-9).
+#[cfg(feature = "test-hooks")]
+pub fn stalls_on_daemon_thread() -> Vec<String> {
+    STALLED_ON_DAEMON.lock().unwrap_or_else(|p| p.into_inner()).clone()
+}
+
 fn slow_disk() {
     #[cfg(feature = "test-hooks")]
     {
         let us = SLOW_DISK.load(std::sync::atomic::Ordering::Relaxed);
         if us > 0 {
+            if DAEMON_THREAD.get() {
+                STALLED_ON_DAEMON.lock().unwrap_or_else(|p| p.into_inner()).push(std::backtrace::Backtrace::force_capture().to_string());
+            }
             std::thread::sleep(std::time::Duration::from_micros(us));
         }
     }
