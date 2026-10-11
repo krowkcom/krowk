@@ -226,7 +226,11 @@ jobs:
           path: dist
 
       # Pinned like every other tool here: the bundle `sign-blob` writes and
-      # the `verify-blob` command SECURITY.md gives are cosign 3's.
+      # the `verify-blob` command SECURITY.md gives are cosign 3's. `krowk
+      # upgrade` checks the bundle itself (crates/krowk/src/cli/upgrade/
+      # sigstore.rs) and reads only a Rekor v1 hashedrekord entry with its
+      # signed entry timestamp: a cosign that logs to Rekor v2 instead would
+      # make every krowk refuse to upgrade, so moving this pin checks that first.
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
           cosign-release: v3.1.3

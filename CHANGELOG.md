@@ -180,6 +180,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk upgrade` checks the release's signature, not only its
+  checksum.** Before it trusts `checksums.txt`, it now verifies the
+  release's Sigstore signature the way SECURITY.md's `cosign verify-blob`
+  does: signed by krowk's release workflow at the tag being installed,
+  with a certificate from Sigstore's Fulcio and an entry in the Rekor
+  transparency log. Someone who could swap the files on a GitHub release
+  can no longer swap both the archive and its checksum. A release that
+  fails is not installed (exit code 4, `unverified_release`). The install
+  script does the same with `cosign` when you have it installed, and
+  without it prints the command to check by hand.
 - **The running turn's label is in your terminal's text colour.**
   "Thinking…", "Responding…", "Running …" and the rest now show in the
   normal foreground (white on a dark theme). Only the spinner keeps the

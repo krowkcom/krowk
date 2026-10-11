@@ -114,9 +114,22 @@ verifies the same way, with its own bundle. The npm packages are published
 with npm provenance (npm 9.5 or later), which `npm audit signatures`
 checks.
 
-`krowk upgrade` and the installer check the archive against `checksums.txt`
-over HTTPS; they do not verify the signature yet. For a machine where that
-matters, verify as above and install the archive yourself.
+`krowk upgrade` checks the signature itself before it reads a line of
+`checksums.txt`: the certificate chains to Sigstore's Fulcio root, names this
+workflow at the tag it is installing, from GitHub's OIDC issuer, and signed
+those bytes, and Rekor's signed entry timestamp and inclusion proof for the
+entry verify against Rekor's key. The roots are Sigstore's
+`trusted_root.json`, embedded in the binary
+(`crates/krowk/src/cli/upgrade/trusted_root.json`) and replaced when Sigstore
+rotates them; a krowk built before a rotation refuses a release signed after
+it rather than installing it unchecked. Unlike cosign it does not check the
+certificate's CT-log SCT or the RFC 3161 timestamp.
+
+The installer checks the signature with `cosign verify-blob`, as above, when
+cosign is installed, and refuses the install if it fails; without cosign it
+checks the checksum only and prints the command. Releases before 0.12.0 were
+not signed. For a machine where that matters, install cosign first, or verify
+as above and install the archive yourself.
 
 ### Rebuilding a release
 
