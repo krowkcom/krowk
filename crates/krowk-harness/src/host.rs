@@ -123,6 +123,9 @@ pub(crate) struct Shared {
     backends: Mutex<HashMap<String, Backend>>,
     /// How long a session's backend process is kept without a turn.
     backend_idle: std::time::Duration,
+    /// How long the writer between turns lags each event (`SessionKids`):
+    /// none but in tests, standing for a slow disk.
+    between_lag: std::time::Duration,
     /// Approval requests waiting for a client's answer, every session's —
     /// a subagent's included.
     approvals: permissions::Approvals,
@@ -196,11 +199,11 @@ enum Told {
 
 impl SessionKids {
     /// The children of `session_id`, with their writer running.
-    fn new(session_id: &str, watch: broadcast::Sender<StreamLine>) -> SessionKids {
+    fn new(session_id: &str, watch: broadcast::Sender<StreamLine>, lag: std::time::Duration) -> SessionKids {
         let mut kids = SessionKids { state: Arc::default(), jobs: None, pen: Arc::default(), woke: Arc::new(watch::channel(0).0) };
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             let (tx, rx) = mpsc::unbounded_channel();
-            rt.spawn(write_between(rx, kids.clone(), watch, session_id.to_string()));
+            rt.spawn(write_between(rx, kids.clone(), watch, session_id.to_string(), lag));
             kids.jobs = Some(tx);
         }
         kids
@@ -228,7 +231,7 @@ impl SessionKids {
 /// The session's writer between turns (`SessionKids`): each event in the
 /// order it was said, until the backend and every turn let go of it. It
 /// holds no sender of its own queue, so it ends with them.
-async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKids, watch: broadcast::Sender<StreamLine>, session_id: String) {
+async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKids, watch: broadcast::Sender<StreamLine>, session_id: String, lag: std::time::Duration) {
     while let Some(job) = jobs.recv().await {
         match job {
             Told::Settle(done) => {
@@ -240,6 +243,9 @@ async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKid
                 drop(kids.pen.lock().await);
             }
             Told::Event(ev) => {
+                if !lag.is_zero() {
+                    tokio::time::sleep(lag).await;
+                }
                 for l in between(&kids.state, &session_id, *ev).await {
                     let _ = watch.send(l);
                 }
@@ -388,6 +394,7 @@ impl Host {
                 running: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
+                between_lag: std::time::Duration::ZERO,
                 approvals: permissions::Approvals::default(),
                 grants: Mutex::new(HashMap::new()),
                 started: Mutex::new(std::collections::HashSet::new()),
@@ -408,9 +415,14 @@ impl Host {
     /// How many sessions have work under way between turns — a backend's
     /// agents, a turn it began by itself — which goes with their process.
     pub fn background(&self) -> u32 {
+        self.background_sessions().len() as u32
+    }
+
+    /// Those sessions, by id.
+    pub fn background_sessions(&self) -> Vec<String> {
         let mut busy: std::collections::HashSet<String> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).iter().filter(|(_, b)| b.engine.busy()).map(|(id, _)| id.clone()).collect();
         busy.extend(self.shared.jobs.busy_sessions());
-        busy.len() as u32
+        busy.into_iter().collect()
     }
 
     /// Denies every approval request of these sessions still waiting: the
@@ -425,6 +437,14 @@ impl Host {
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {
         Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").backend_idle = idle;
+        self
+    }
+
+    /// For tests: the writer between turns takes `lag` over each event,
+    /// as on a slow disk, so what a turn waits for is still queued.
+    #[doc(hidden)]
+    pub fn with_between_lag(mut self, lag: std::time::Duration) -> Host {
+        Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").between_lag = lag;
         self
     }
 
@@ -686,7 +706,7 @@ impl Shared {
         // A session moved to another instance, or its instances changed: the
         // old engine's process is stopped with it when the last handle goes
         // (its drop kills it).
-        let children = SessionKids::new(session_id, self.watch.clone());
+        let children = SessionKids::new(session_id, self.watch.clone(), self.between_lag);
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
             _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),
@@ -1181,7 +1201,12 @@ impl Shared {
         };
         let state = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|b| b.children.clone())?;
         state.settle().await;
-        let woke_from = Some(*state.woke.borrow());
+        // Only Claude Code says `Woke` (its idle loop is the one writing
+        // between turns): a turn on another backend waits for none, or its
+        // first agent event would wait for ever. SV13: a Codex engine that
+        // reports between turns through `Idle` must say `Woke` as a turn
+        // takes over, and be given a `woke_from` here.
+        let woke_from = (ran_by == RanBy::Claude).then(|| *state.woke.borrow());
         let _pen = state.pen.clone().lock_owned().await;
         Some(Kids { shared: self.clone(), state, _pen, woke_from, sessions_dir: self.cfg.sessions_dir.clone(), cwd: plan.cwd.clone(), krowk_version: self.cfg.krowk_version.clone(), ran_by, permission_mode: plan.permission_mode, effort: plan.effort })
     }

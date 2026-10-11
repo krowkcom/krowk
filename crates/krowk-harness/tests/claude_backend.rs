@@ -1530,3 +1530,36 @@ fn r_sub_7_a_host_shut_down_ends_its_background_agents_child_before_it_returns()
         assert!(matches!(log.last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Interrupted, error: Some(e), .. }) if e.message.contains("shut down")), "{log:?}");
     }));
 }
+
+/// R-SUB-7: a prompt sent while a background agent's end is said but not
+/// yet written — the writer between turns behind, as on a slow disk —
+/// runs only once it is: the turn Claude Code began to answer the agent,
+/// which the prompt runs first, finds its child ended by its first line.
+#[test]
+fn r_sub_7_a_prompt_while_a_background_agents_end_is_still_queued_finds_its_child_ended() {
+    let home = Home::new("bg-queued");
+    let dir = home.signed_in("cfg-work");
+    let host = home.host(vec![("claude:work", home.instance(&dir, Some("background_agent.jsonl")))], trust::allow_all()).with_between_lag(std::time::Duration::from_millis(400));
+    within(Box::pin(async {
+        let (lines, r) = run(&host, prompt(None, "survey the repo in the background", "claude:work/sonnet", PermissionMode::Default)).await;
+        let first = r.unwrap().unwrap();
+        let kid = kid_of(&lines, "a_bg_1");
+        // Claude Code has printed the agent's end and the turn it begins.
+        while !home.fake_log().lines().any(|l| l.starts_with("out ") && l.contains("task-notification")) {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        let ended = |log: &[LogEvent]| matches!(log.last().map(|e| &e.body), Some(LogBody::TurnCompleted { .. }));
+        assert!(!ended(&home.events(&kid)), "its end is still queued: the case this is about");
+        let (tx, mut rx) = mpsc::channel(256);
+        let going = host.execute(prompt(Some(&first.session_id), "anything else?", "claude:work/sonnet", PermissionMode::Default), tx);
+        let (_, ended_first) = tokio::join!(going, async {
+            rx.recv().await.expect("the turn sends a line");
+            let at_first = ended(&home.events(&kid));
+            while rx.recv().await.is_some() {}
+            at_first
+        });
+        assert!(ended_first, "the agent's child ended before the turn ran");
+        host.shutdown().await;
+    }));
+}
