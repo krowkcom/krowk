@@ -17,6 +17,8 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
+#[path = "common/tmux.rs"]
+mod tmux;
 
 use krowk_client::e2e::{self, AccountKey};
 use krowk_client::keystore::Keystore;
@@ -346,48 +348,47 @@ fn r_sub_12_an_attached_tui_opens_a_childs_transcript_and_stops_it() {
     let started = view.until("the subagent", is("subagent.started"));
     let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
     view.until("the subagent's search", |v| v["type"] == "item.completed" && v["sessionId"] == child.as_str() && v["item"]["kind"] == "toolResult");
-    let mut cmd = c.command(&["sync", "attach", &session]);
-    cmd.env("TERM", "xterm-256color");
-    let mut t = pty::Pty::spawn(cmd, 120, 40);
-    // What the TUI has drawn since byte `from` of its output, once that holds `what`.
-    let since = |t: &pty::Pty, from: usize, what: &str| -> String {
+    // In tmux, so what is on the screen is read, not the bytes that drew it.
+    let mut env = c.env.clone();
+    env.push(("TERM".into(), "xterm-256color".into()));
+    let Some(tm) = tmux::Tmux::start("childview", 120, 40, &c.repo, &env, &["sync", "attach", &session]) else { return };
+    let until = |what: &str, ok: &dyn Fn(&str) -> bool| -> String {
         let deadline = Instant::now() + Duration::from_secs(40);
         loop {
-            let drawn = String::from_utf8_lossy(&t.output()[from..]).into_owned();
-            if drawn.contains(what) {
-                return drawn;
+            let screen = tm.screen();
+            if ok(&screen) {
+                return screen;
             }
-            assert!(Instant::now() < deadline, "no {what:?}: {drawn:?}\nA: {:?}", host.stderr());
+            assert!(Instant::now() < deadline, "no {what}: {screen}\nA: {:?}", host.stderr());
             std::thread::sleep(Duration::from_millis(50));
         }
     };
-    since(&t, 0, "Attached to a");
+    // The child view is open: its header first, its footer last, and
+    // nothing of the conversation or the Agents overlay on the screen.
+    let in_view = |s: &str| {
+        let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
+        rows.first().is_some_and(|r| r.contains("a slower look · by krowk")) && rows.last().is_some_and(|r| r.contains("esc back · ← → siblings · x stop")) && !s.contains("enter opens")
+    };
+    until("attach", &|s| s.contains("Attached to a"));
     assert!(!c.home.join(".krowk/sessions").join(&child).exists(), "C holds no log of the child");
-    let mark = t.output().len();
-    t.write(b"\x07");
-    since(&t, mark, "select");
-    let mark = t.output().len();
-    t.write(b"\r");
-    let drawn = since(&t, mark, "look slower");
-    assert!(!drawn.contains("could not be read"), "its history is read here: {drawn:?}");
-    // Its answer, begun now, drawn as it arrives.
-    let mark = t.output().len();
+    tm.keys(&["C-g"]);
+    until("the Agents overlay", &|s| s.contains("enter opens"));
+    tm.keys(&["Enter"]);
+    // Its history, read here: the parent's prompt, then its finished search.
+    let screen = until("the child's history", &|s| in_view(s) && s.contains("look slower") && s.contains("Find *"));
+    assert!(!screen.contains("could not be read"), "its history is read here: {screen}");
+    assert!(!screen.contains("slowword"), "nothing of its answer yet: {screen}");
+    // Its answer, begun only now, drawn in the view as it arrives.
     SLOWER.open();
-    since(&t, mark, "slowword");
-    t.write(b"x");
+    until("the answer, live in the view", &|s| in_view(s) && s.contains("slowword3"));
+    tm.keys(&["x"]);
     let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
     assert_eq!(ended["status"], "interrupted", "{ended}");
     let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
     let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&child).join("events.jsonl")).unwrap();
     assert!(log.contains("\"status\":\"interrupted\""), "stopped on A: {log}");
-    since(&t, mark, "interrupted");
-    // Esc back to the overlay, Esc out of it, and leave.
-    for key in [&b"\x1b"[..], b"\x1b", b"\x04\x04"] {
-        t.write(key);
-        std::thread::sleep(Duration::from_millis(300));
-    }
-    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "C leaves: {:?}", t.text());
+    until("the view saying so", &|s| in_view(s) && s.contains("interrupted after"));
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
