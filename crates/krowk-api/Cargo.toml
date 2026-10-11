@@ -10,7 +10,9 @@ publish.workspace = true
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 sha2 = "0.11"
-ureq = { version = "3", default-features = false, features = ["rustls", "platform-verifier", "json"] }
+# ~3.4: the transport the quiet limit wraps (R-REG-1) is ureq's `unversioned`
+# API, which a minor release may change.
+ureq = { version = "~3.4", default-features = false, features = ["rustls", "platform-verifier", "json"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]

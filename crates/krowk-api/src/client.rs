@@ -35,7 +35,7 @@ const MAX_BODY: u64 = 1 << 20;
 /// How long a call may go with nothing arriving and nothing sent before it
 /// is given up as stalled (R-REG-1): far past any pause a working server or
 /// proxy makes, and far short of the five minutes a call has in all.
-pub const QUIET: Duration = Duration::from_secs(30);
+const QUIET: Duration = Duration::from_secs(30);
 
 /// The proxy Go's ProxyFromEnvironment would pick: HTTPS_PROXY for an https
 /// registry, HTTP_PROXY for an http one, ALL_PROXY ignored, NO_PROXY honoured,
@@ -144,6 +144,7 @@ impl Client {
 
     /// This client, giving a call up once nothing has moved for `quiet`
     /// rather than `QUIET` — for a test that cannot wait half a minute.
+    #[doc(hidden)]
     pub fn quiet_after(mut self, quiet: Duration) -> Client {
         self.limits.quiet = quiet;
         self.agent = agent(&self.base_url, self.limits);
@@ -188,7 +189,7 @@ impl Client {
     /// `keyless`, every call given up after `limit`: for a call its caller
     /// can do without, which must not hold it up.
     pub(crate) fn keyless_within(&self, limit: Duration) -> Client {
-        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", Limits { global: limit, connect: limit, quiet: self.limits.quiet.min(limit) }) }
+        Client { sleep: self.sleep, ..Client::within(&self.base_url, "", Limits { global: limit, connect: limit, quiet: self.limits.quiet }) }
     }
 
     /// Reads back the key the client holds. A key the registry will not take
@@ -572,7 +573,9 @@ impl Client {
             let who = if code == "network_unreachable" { "the registry" } else { "object storage" };
             let quiet = spoken(self.limits.quiet);
             body.insert("detail".into(), json!(format!("{op} {url:?}: {who} stopped answering — nothing arrived for {quiet}")));
-            body.insert("endpoint".into(), json!(url));
+            if code == "network_unreachable" {
+                body.insert("endpoint".into(), json!(url));
+            }
             body.insert("fix".into(), json!(format!("{who} stopped answering — nothing arrived for {quiet}, so the call was given up; try again, and check the network or any proxy in between if it persists")));
             body.insert("stalled".into(), json!(true));
             body.insert("retryable".into(), json!(true));
@@ -1445,6 +1448,16 @@ mod boundary {
     /// `server`, with each connection given the next act (the last repeats).
     fn scripted(acts: Vec<Act>) -> (u16, Log) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        // A small receive buffer, which each connection takes from the
+        // listener, so an upload nobody reads backs up within megabytes.
+        #[cfg(unix)]
+        {
+            use std::os::fd::AsRawFd;
+            let size: libc::c_int = 4096;
+            // SAFETY: a valid socket, and an option value of the size given.
+            let set = unsafe { libc::setsockopt(listener.as_raw_fd(), libc::SOL_SOCKET, libc::SO_RCVBUF, (&size as *const libc::c_int).cast(), std::mem::size_of_val(&size) as libc::socklen_t) };
+            assert_eq!(set, 0);
+        }
         let port = listener.local_addr().unwrap().port();
         let log: Log = Arc::default();
         let seen = Arc::clone(&log);
@@ -1497,7 +1510,7 @@ mod boundary {
         format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n{body}", body.len())
     }
 
-    fn quiet(mut c: Client) -> Client {
+    fn no_wait(mut c: Client) -> Client {
         c.sleep = |_| {};
         c
     }
@@ -1548,7 +1561,7 @@ mod boundary {
     #[test]
     fn a_public_registry_never_dials_loopback_however_it_is_spelled() {
         let (port, _) = server(vec![respond("200 OK", "", "{}")]);
-        let c = quiet(Client::new("https://api.krowk.com/v1", ""));
+        let c = no_wait(Client::new("https://api.krowk.com/v1", ""));
         for target in [format!("http://127.0.0.1:{port}/"), format!("http://[::1]:{port}/"), format!("http://localhost:{port}/")] {
             let e = c.request_url::<Value>("GET", &target, None, 1, None, None).unwrap_err();
             assert_eq!(e.code(), "untrusted_endpoint", "{target}");
@@ -1564,7 +1577,7 @@ mod boundary {
             respond("302 Found", &format!("Location: http://127.0.0.1:{other}/x\r\n"), ""),
             respond("302 Found", "Location: http://evil.example/x\r\n", ""),
         ]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{port}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), ""));
         assert!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).is_ok());
         assert!(log.lock().unwrap()[1].starts_with("GET /v1/moved "));
         assert_eq!(c.request_url::<Value>("GET", &format!("http://127.0.0.1:{port}/v1/x"), None, 1, None, None).unwrap_err().code(), "unexpected_redirect");
@@ -1594,7 +1607,7 @@ mod boundary {
     fn an_upload_is_a_put_never_redirected_and_carries_no_transport_headers_from_the_registry() {
         let (storage, log) = server(vec![respond("200 OK", "", ""), respond("307 Temporary Redirect", "Location: http://127.0.0.1:1/x\r\n", "")]);
         let (api, _) = server(vec![respond("200 OK", "", "{}")]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
         let mut a = prepared(storage, "/put", &[("Host", "evil.example"), ("Transfer-Encoding", "chunked"), ("x-amz-meta-k", "v")]);
         c.put_bytes(&mut a, &spec()).unwrap();
         let first = log.lock().unwrap()[0].to_ascii_lowercase();
@@ -1608,7 +1621,7 @@ mod boundary {
         let (storage, log) = server(vec![respond("403 Forbidden", "", "<Error/>"), respond("200 OK", "", "")]);
         let fresh = format!(r#"{{"slug":"art_x","upload":{{"method":"PUT","url":"http://127.0.0.1:{storage}/second","headers":{{}}}}}}"#);
         let (api, api_log) = server(vec![respond("200 OK", "", &fresh)]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), ""));
         let mut a = prepared(storage, "/first", &[]);
         c.put_bytes(&mut a, &spec()).unwrap();
         let log = log.lock().unwrap();
@@ -1620,7 +1633,7 @@ mod boundary {
     fn one_idempotency_key_per_call_carried_by_every_attempt() {
         let run = r#"{"slug":"run_x","status":"open"}"#;
         let (api, log) = server(vec![respond("503 Service Unavailable", "", ""), respond("503 Service Unavailable", "", ""), respond("201 Created", "", run)]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
         c.create_run(&json!({})).unwrap();
         c.create_run(&json!({})).unwrap();
         let keys: Vec<String> = log
@@ -1636,7 +1649,7 @@ mod boundary {
     #[test]
     fn a_claim_token_is_sent_instead_of_the_key_never_beside_it() {
         let (api, log) = server(vec![respond("204 No Content", "", ""), respond("200 OK", "", "not json")]);
-        let c = quiet(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
+        let c = no_wait(Client::new(&format!("http://127.0.0.1:{api}/v1"), "krowk_sk_test"));
         c.take_down_artifact("art_x", "krowk_claim_y").unwrap();
         c.take_down_artifact("art_x", "").unwrap();
         let log = log.lock().unwrap();
@@ -1692,7 +1705,7 @@ mod boundary {
     /// A client of the scripted server on `port`, giving up after `SHORT`
     /// of silence and waiting no wall clock between attempts.
     fn hushed(port: u16, token: &str) -> Client {
-        quiet(Client::new(&format!("http://127.0.0.1:{port}/v1"), token).quiet_after(SHORT))
+        no_wait(Client::new(&format!("http://127.0.0.1:{port}/v1"), token).quiet_after(SHORT))
     }
 
     struct Signer;
@@ -1707,14 +1720,14 @@ mod boundary {
     }
 
     /// R-REG-1: a call has five minutes in all and thirty seconds to
-    /// connect, as before, and is given up after thirty seconds in which
-    /// nothing arrived.
+    /// connect, as before, and thirty seconds of quiet; one its caller can
+    /// do without has less of each.
     #[test]
-    fn r_reg_1_a_call_gives_up_on_thirty_seconds_of_silence_under_the_five_minute_ceiling() {
+    fn r_reg_1_the_limits_are_thirty_seconds_of_quiet_under_five_minutes() {
         let c = Client::new("https://api.krowk.com/v1", "");
         assert_eq!((c.limits.global, c.limits.connect, c.limits.quiet), (Duration::from_secs(300), Duration::from_secs(30), Duration::from_secs(30)));
         let k = c.keyless_within(Duration::from_secs(5)).limits;
-        assert_eq!((k.global, k.connect, k.quiet), (Duration::from_secs(5), Duration::from_secs(5), Duration::from_secs(5)));
+        assert_eq!((k.global, k.connect), (Duration::from_secs(5), Duration::from_secs(5)));
         assert_eq!((spoken(QUIET), spoken(SHORT)), ("30 s".to_string(), "300 ms".to_string()));
     }
 
@@ -1740,12 +1753,12 @@ mod boundary {
 
     /// R-REG-1: a download that keeps coming, however slowly, is never cut:
     /// one six times as long in all as the quiet limit, a piece at a time
-    /// a third of it apart, arrives whole — as one of three minutes would
-    /// under the thirty-second limit.
+    /// a quarter of it apart, arrives whole — as one of three minutes
+    /// would under the thirty-second limit.
     #[test]
     fn r_reg_1_a_download_that_keeps_coming_slowly_is_never_cut() {
-        let body: Vec<u8> = (0..18 * 1024).map(|i| (i % 251) as u8).collect();
-        let (port, log) = scripted(vec![Act::Trickle { body: body.clone(), n: 18, every: SHORT / 3 }]);
+        let body: Vec<u8> = (0..24 * 1024).map(|i| (i % 251) as u8).collect();
+        let (port, log) = scripted(vec![Act::Trickle { body: body.clone(), n: 24, every: SHORT / 4 }]);
         let c = hushed(port, "");
         let started = std::time::Instant::now();
         assert_eq!(c.get_blob(&format!("http://127.0.0.1:{port}/_storage/big"), 1 << 20).unwrap(), body);
@@ -1791,8 +1804,8 @@ mod boundary {
         let (port, log) = scripted(vec![Act::Deaf, Act::Answer(respond("200 OK", "", ""))]);
         let c = hushed(port, "");
         let upload = Upload { method: "PUT".into(), url: format!("http://127.0.0.1:{port}/_storage/chunk"), headers: None, expires_at: String::new() };
-        // More than loopback's buffers hold, so the writes back up.
-        c.put_blob(&upload, &vec![7u8; 64 << 20]).unwrap();
+        // More than the two ends' buffers hold, so the writes back up.
+        c.put_blob(&upload, &vec![7u8; 16 << 20]).unwrap();
         assert_eq!(log.lock().unwrap().len(), 2, "put twice");
     }
 }

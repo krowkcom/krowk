@@ -331,13 +331,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Code and Codex agents' tokens are kept on that line from now on, so
   sessions recorded before this still show none for them.
 - **A registry that stops answering costs 30 seconds, not five minutes.**
-  A call to the registry, or a chunk read from storage, that receives
-  nothing for 30 seconds is now given up. Before, it hung for five
-  minutes, so `krowk sync attach` or a host taking a session up looked
-  stuck. A call that is safe to repeat is tried again; `sync attach`
-  then carries on. One that isn't, like taking a session's lease, fails
-  with "the registry stopped answering". A large upload or download that
-  keeps moving, however slowly, is never cut.
+  A call to the registry or to storage that receives nothing for 30
+  seconds is now given up. Before, it hung for five minutes, so
+  `krowk sync attach` or a host taking a session up looked stuck. A call
+  that is safe to repeat is tried again; `sync attach` then carries on.
+  One that isn't, like taking a session's lease, fails with "the registry
+  stopped answering". A large upload or download that keeps moving is not
+  cut for being slow; only the five-minute limit on a whole call still
+  applies.
 
 ## [0.13.0] - 2026-10-07
 
