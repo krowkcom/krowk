@@ -407,9 +407,27 @@ fn r_sub_9_a_childs_line_before_its_task_started_yields_the_same_events_in_the_s
         assert!(before >= 2, "{call}: its messages held before it started");
     }
     // A count said before its agent started is not held: the next one,
-    // or its end's, says it.
-    let counts = |evs: Vec<EngineEvent>| evs.into_iter().filter(|e| !matches!(e, EngineEvent::BackendChild { event, .. } if matches!(**event, EngineEvent::Progress { .. }))).collect::<Vec<_>>();
-    let (want, got) = (counts(children(&recorded)), counts(children(&moved)));
+    // or its end's, says it. So the counts are checked apart — the moved
+    // run's are the end of the recorded run's, the last one included —
+    // and every other event in order.
+    let progress = |e: &EngineEvent| matches!(e, EngineEvent::BackendChild { event, .. } if matches!(**event, EngineEvent::Progress { .. }));
+    let counts = |evs: &[EngineEvent], task: &str| -> Vec<i64> {
+        evs.iter().filter_map(|e| match e {
+            EngineEvent::BackendChild { task_id, event } if task_id == task => match **event {
+                EngineEvent::Progress { tokens } => Some(tokens),
+                _ => None,
+            },
+            _ => None,
+        }).collect()
+    };
+    let (want, got) = (children(&recorded), children(&moved));
+    for (_, a) in agents(&lines) {
+        let task = a["task_id"].as_str().unwrap();
+        let (want, got) = (counts(&want, task), counts(&got, task));
+        assert!(!want.is_empty() && !got.is_empty() && want.ends_with(&got), "{task}: {got:?} the end of {want:?}");
+    }
+    let without = |evs: Vec<EngineEvent>| evs.into_iter().filter(|e| !progress(e)).collect::<Vec<_>>();
+    let (want, got) = (without(want), without(got));
     // Each child's own events are the same, in the same order. Across
     // children the order moves with the task_started: a child's held lines
     // are said as it starts, where the other's were said in between.

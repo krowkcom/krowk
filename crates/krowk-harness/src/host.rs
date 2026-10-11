@@ -331,9 +331,14 @@ impl ChildHeld {
 }
 
 impl Drop for ChildHeld {
+    /// Let go however it ended — in a turn, between turns, its log lost,
+    /// its process gone: no longer running here, and a request handed to
+    /// it (`Approvals::hand_to`) that its turn never forgot goes with it,
+    /// which the parent's turn's end no longer covers.
     fn drop(&mut self) {
         if let Some(s) = self.shared.upgrade() {
             s.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+            s.approvals.forget_session(&self.id);
         }
     }
 }
@@ -2235,6 +2240,7 @@ impl Writer<'_> {
     /// One event of a backend's running agent, as its own turn's
     /// (`child_line`). What is sent goes once the children are let go of:
     /// a stop or an approval takes them too.
+    ///
     /// An approval it asks for is answered under its session: the request
     /// waiting is handed to it before any client sees it. One of an agent
     /// krowk does not follow is the session's own, never lost.
@@ -2375,7 +2381,7 @@ impl Writer<'_> {
             }
             // Said between turns only, through the backend's `Idle`; an
             // agent's progress, only as that agent's.
-            EngineEvent::Unprompted { .. } | EngineEvent::Woke | EngineEvent::Progress { .. } => {}
+            EngineEvent::Unprompted { .. } | EngineEvent::Woke | EngineEvent::Progress { .. } | EngineEvent::AskedFor { .. } => {}
             // A backend's agent's own conversation, into its child session;
             // its calls are metered as `SubagentResponse` above, once.
             ev @ (EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. }) => self.backend_child(ev, session_id, model).await?,

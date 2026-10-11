@@ -127,6 +127,10 @@ pub enum EngineEvent {
     /// the backend counts them (Claude Code's `task_progress`), which its
     /// responses, carrying no usage, do not say.
     Progress { tokens: i64 },
+    /// Only inside `BackendChild`, right before its `Approval`: the call
+    /// the request `request_id` asks about (Claude Code's `tool_use_id`),
+    /// whose clock starts again once it is answered.
+    AskedFor { request_id: String, call_id: String },
     /// It ended, and nothing more of it follows: how, and why when the
     /// backend or krowk said.
     BackendChildEnded { task_id: String, status: crate::protocol::ChildState, error: Option<String> },

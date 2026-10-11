@@ -1383,19 +1383,10 @@ fn r_sub_7_a_claude_agents_child_session_is_held_as_running_while_the_agent_runs
     });
 }
 
-/// R-SUB-9: each Claude Code agent's `subagent.status`, from the recorded
-/// parallel turn: the tool it is in from its call, its tokens rising from
-/// Claude Code's count, and how it ended. The sleeper's `can_use_tool` is
-/// its own: an approval under its child session, answered as that session
-/// — not the parent's — which answers Claude Code, and its status waits on
-/// the person until then, its tool's clock starting again at the answer.
-#[test]
-fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_approval_is_its_own() {
-    use krowk_harness::protocol::{ApprovalDecision, ChildState, Waiting};
-    let home = Home::new("kids-status");
-    let dir = home.signed_in("cfg-work");
-    // The recorded turn after `init`, its asks played as asks and the rest
-    // of the control lines — krowk's to answer, or its answers — left out.
+/// The recorded parallel turn after `init` as a scenario, its asks played
+/// as asks and the rest of the control lines — krowk's to answer, or its
+/// answers — left out; and the recording's printed lines.
+fn asking(home: &Home) -> (PathBuf, Vec<serde_json::Value>) {
     let raw = std::fs::read_to_string(fixture("recorded/agents_parallel.txt")).unwrap();
     let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
     let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
@@ -1410,6 +1401,51 @@ fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_appro
     }
     let path = home.root.join("agents.jsonl");
     std::fs::write(&path, scenario).unwrap();
+    (path, printed)
+}
+
+/// R-SUB-9: a request handed to a Claude Code agent's child session goes
+/// with the child however that ends — here its turn dropped while it
+/// waited, and its process let go — and is not left waiting for ever.
+#[test]
+fn r_sub_9_a_claude_agents_request_is_forgotten_with_the_agent_when_its_turn_is_dropped() {
+    use krowk_harness::protocol::ApprovalDecision;
+    let home = Home::new("kids-forget");
+    let dir = home.signed_in("cfg-work");
+    let (path, _) = asking(&home);
+    let host = home.host_answering(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))]);
+    within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let req = {
+            let turn = host.execute(prompt(None, "run two agents", "claude:work/sonnet", PermissionMode::Default), tx);
+            tokio::pin!(turn);
+            loop {
+                tokio::select! {
+                    _ = &mut turn => panic!("the turn waits on the person"),
+                    Some(l) = rx.recv() => if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { break r },
+                }
+            }
+            // The turn is dropped here, its request never answered.
+        };
+        host.shutdown().await;
+        let answer = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+        let e = host.execute(answer, mpsc::channel(1).0).await.unwrap_err();
+        assert!(e.message.contains("has no approval request"), "forgotten, not left waiting: {}", e.message);
+    }));
+}
+
+/// R-SUB-9: each Claude Code agent's `subagent.status`, from the recorded
+/// parallel turn: the tool it is in from its call, its tokens rising from
+/// Claude Code's count, and how it ended. The sleeper's `can_use_tool` is
+/// its own: an approval under its child session, answered as that session
+/// — not the parent's — which answers Claude Code, and its status waits on
+/// the person until then, its tool's clock starting again at the answer.
+#[test]
+fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_approval_is_its_own() {
+    use krowk_harness::protocol::{ApprovalDecision, ChildState, Waiting};
+    let home = Home::new("kids-status");
+    let dir = home.signed_in("cfg-work");
+    let (path, printed) = asking(&home);
     let host = home.host_answering(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))]);
     let task = |d: &str| printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == d).unwrap()["task_id"].as_str().unwrap().to_string();
     let (reader, sleeper) = (task("read notes"), task("sleeper"));

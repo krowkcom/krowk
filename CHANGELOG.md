@@ -174,10 +174,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A Claude Code agent's row says what it is doing, and when it waits on
   you.** Like krowk's own subagents, its row now shows the tool it has been
   in for a while (`bash 12s`) and `⚠ waiting on you` when it asks for an
-  approval, and its tokens rise as
-  Claude Code counts them instead of staying at 0. An approval an agent
-  asks for now says which subagent asks, instead of passing for the
-  conversation's own; answering it clears the wait and the agent goes on.
+  approval, and its tokens rise as Claude Code counts them instead of
+  staying at 0. An approval an agent asks for now says which subagent
+  asks, instead of passing for the conversation's own; answering it clears
+  the wait and the agent goes on.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

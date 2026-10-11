@@ -104,6 +104,9 @@ pub struct Children {
     /// the order they were first held.
     held: HashMap<String, Held>,
     waiting: VecDeque<String>,
+    /// The last token count said of an agent not started yet, by the call
+    /// that starts it: said once it has, at most `WAITING` kept.
+    early: HashMap<String, i64>,
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -175,6 +178,9 @@ impl Children {
                 self.agents.insert(call.into(), Child { task_id: task.into(), translator: Some(Translator::child()), background: msg["is_backgrounded"] == true, answered: false, end: None, unlisted: false });
                 self.under.insert(call.into(), call.into());
                 self.release(call, out);
+                if let Some(tokens) = self.early.remove(call) {
+                    out.push(EngineEvent::BackendChild { task_id: task.into(), event: Box::new(EngineEvent::Progress { tokens }) });
+                }
             }
             "task_updated" => {
                 let patch = &msg["patch"];
@@ -221,11 +227,19 @@ impl Children {
     /// `task_notification`) counts them: its responses carry no usage, so
     /// this is where its status's count comes from (R-SUB-9). Its
     /// `last_tool_name` is not taken: it names a call the agent's own lines
-    /// already started, with no end to it.
-    fn progress(&self, task: &str, msg: &Value, out: &mut Vec<EngineEvent>) {
+    /// already started, with no end to it. Said of an agent not started
+    /// yet, the last count is kept for when it has, by the call that
+    /// starts it (`tool_use_id`).
+    fn progress(&mut self, task: &str, msg: &Value, out: &mut Vec<EngineEvent>) {
         let Some(tokens) = msg.pointer("/usage/total_tokens").and_then(Value::as_i64) else { return };
         if self.agents.values().any(|c| c.task_id == task && c.translator.is_some()) {
             out.push(EngineEvent::BackendChild { task_id: task.into(), event: Box::new(EngineEvent::Progress { tokens }) });
+            return;
+        }
+        let call = s(msg, "tool_use_id");
+        let known = self.agents.contains_key(call) || self.agents.values().any(|c| c.task_id == task);
+        if !call.is_empty() && !known && (self.early.len() < WAITING || self.early.contains_key(call)) {
+            self.early.insert(call.into(), tokens);
         }
     }
 
@@ -366,6 +380,7 @@ impl Children {
         if self.agents.is_empty() {
             self.held.clear();
             self.waiting.clear();
+            self.early.clear();
         }
         out
     }

@@ -1457,9 +1457,16 @@ impl Proc {
                     let tx = tx;
                     ask.answer(id, &msg["request"], Some((&tx, cancel))).await
                 };
+                let call = msg.pointer("/request/tool_use_id").and_then(Value::as_str).unwrap_or_default();
                 let told = async {
+                    let child = |ev| EngineEvent::BackendChild { task_id: task_id.clone(), event: Box::new(ev) };
                     while let Some(ev) = rx.recv().await {
-                        let _ = events.send(EngineEvent::BackendChild { task_id: task_id.clone(), event: Box::new(ev) }).await;
+                        if let EngineEvent::Approval(r) = &ev
+                            && !call.is_empty()
+                        {
+                            let _ = events.send(child(EngineEvent::AskedFor { request_id: r.request_id.clone(), call_id: call.into() })).await;
+                        }
+                        let _ = events.send(child(ev)).await;
                     }
                 };
                 tokio::join!(asked, told).0

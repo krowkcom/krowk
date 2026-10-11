@@ -774,6 +774,9 @@ pub(crate) struct ChildWatch {
     tools: Vec<(String, ChildTool)>,
     /// The requests waiting on the person, by request id.
     waiting: Vec<(String, Waiting)>,
+    /// The call each waiting request asks about, when the engine said
+    /// (`EngineEvent::AskedFor`).
+    asked: HashMap<String, String>,
     last_event_ms: i64,
     tokens: i64,
     /// A backend's agent: its items come whole, a call's result started
@@ -789,7 +792,7 @@ impl ChildWatch {
     }
 
     pub fn new(session_id: &str) -> ChildWatch {
-        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0, at_call: false }
+        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), asked: HashMap::new(), last_event_ms: krowk_store::now_ms(), tokens: 0, at_call: false }
     }
 
     /// The watch of a backend's agent (R-SUB-7), whose items come whole:
@@ -836,10 +839,20 @@ impl ChildWatch {
                 let before = self.waiting.len();
                 self.waiting.retain(|(r, _)| r != request_id);
                 let answered = self.waiting.len() != before;
-                if answered && let Some((_, t)) = self.tools.last_mut() {
+                // The call it asked about when known, else the latest.
+                let call = self.asked.remove(request_id);
+                let held = match &call {
+                    Some(c) => self.tools.iter_mut().find(|(id, _)| id == c),
+                    None => self.tools.last_mut(),
+                };
+                if answered && let Some((_, t)) = held {
                     t.started_ms = now;
                 }
                 answered
+            }
+            EngineEvent::AskedFor { request_id, call_id } => {
+                self.asked.insert(request_id.clone(), call_id.clone());
+                false
             }
             EngineEvent::ResponseCompleted { usage, .. } => {
                 self.tokens += usage.total();
@@ -948,6 +961,21 @@ mod tests {
         assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i2".into(), item: result }, 20));
         assert_eq!(frame(&w), (None, None, 1300));
         assert!(matches!(w.frame(ChildState::Done), LiveEvent::SubagentStatus { status: ChildState::Done, tool: None, waiting: None, tokens: 1300, .. }));
+        // Two calls in one message, the first asked about: its clock starts
+        // again at the answer, the other's runs on.
+        let mut w = ChildWatch::backend("k");
+        for (c, at) in [("c1", 2), ("c2", 3)] {
+            w.note(&EngineEvent::ItemCompleted { item_id: c.into(), item: Item::ToolCall { call_id: c.into(), name: "Bash".into(), input: serde_json::json!({}) } }, at);
+        }
+        assert!(!w.note(&EngineEvent::AskedFor { request_id: "r2".into(), call_id: "c1".into() }, 4));
+        w.note(&EngineEvent::Approval(req_for("r2")), 4);
+        w.note(&EngineEvent::ApprovalResolved { request_id: "r2".into(), decision: ApprovalDecision::Allow }, 9);
+        let started: Vec<(&str, i64)> = w.tools.iter().map(|(c, t)| (c.as_str(), t.started_ms)).collect();
+        assert_eq!(started, [("c1", 9), ("c2", 3)]);
+    }
+
+    fn req_for(id: &str) -> crate::protocol::ApprovalRequest {
+        crate::protocol::ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() }
     }
 
     #[test]
