@@ -100,8 +100,19 @@ impl Home {
     }
 
     fn host_publishing(&self, instances: Vec<(&str, InstanceKind)>, gate: trust::Gate, publisher: Option<krowk_harness::evidence::Publisher>) -> Host {
+        Host::new(self.config(instances, gate, publisher))
+    }
+
+    /// A host whose clients answer approval requests, as the TUI's does.
+    fn host_answering(&self, instances: Vec<(&str, InstanceKind)>) -> Host {
+        let mut cfg = self.config(instances, trust::allow_all(), None);
+        cfg.permissions.approvals = true;
+        Host::new(cfg)
+    }
+
+    fn config(&self, instances: Vec<(&str, InstanceKind)>, gate: trust::Gate, publisher: Option<krowk_harness::evidence::Publisher>) -> HostConfig {
         let cfg = InstancesConfig { instances: instances.into_iter().map(|(n, k)| (n.to_string(), k)).collect(), ..Default::default() };
-        Host::new(HostConfig {
+        HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.root.join("repo"),
             registry: Registry::resolve(&cfg, &self.env()),
@@ -114,7 +125,7 @@ impl Home {
             permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), ..Default::default() },
             agents: krowk_harness::subagent::AgentsConfig::none(),
             session: Default::default(),
-        })
+        }
     }
 
     fn events(&self, session_id: &str) -> Vec<LogEvent> {
@@ -1370,6 +1381,90 @@ fn r_sub_7_a_claude_agents_child_session_is_held_as_running_while_the_agent_runs
         }
         host.shutdown().await;
     });
+}
+
+/// R-SUB-9: each Claude Code agent's `subagent.status`, from the recorded
+/// parallel turn: the tool it is in from its call, its tokens rising from
+/// Claude Code's count, and how it ended. The sleeper's `can_use_tool` is
+/// its own: an approval under its child session, answered as that session
+/// — not the parent's — which answers Claude Code, and its status waits on
+/// the person until then, its tool's clock starting again at the answer.
+#[test]
+fn r_sub_9_a_claude_agents_status_follows_its_tools_tokens_and_end_and_its_approval_is_its_own() {
+    use krowk_harness::protocol::{ApprovalDecision, ChildState, Waiting};
+    let home = Home::new("kids-status");
+    let dir = home.signed_in("cfg-work");
+    // The recorded turn after `init`, its asks played as asks and the rest
+    // of the control lines — krowk's to answer, or its answers — left out.
+    let raw = std::fs::read_to_string(fixture("recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::new();
+    for m in &printed[init + 1..] {
+        match m["type"].as_str() {
+            Some("control_request") if m["request"]["subtype"] == "can_use_tool" => scenario.push_str(&format!("@ask {}\n", m["request"])),
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = home.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    let host = home.host_answering(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))]);
+    let task = |d: &str| printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == d).unwrap()["task_id"].as_str().unwrap().to_string();
+    let (reader, sleeper) = (task("read notes"), task("sleeper"));
+    let lines = within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let turn = host.execute(prompt(None, "run two agents", "claude:work/sonnet", PermissionMode::Default), tx);
+        let client = async {
+            let mut lines: Vec<StreamLine> = Vec::new();
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+                    let parent = lines.iter().find_map(|l| if let StreamLine::Log(LogEvent { session_id, body: LogBody::SubagentStarted { .. }, .. }) = l { Some(session_id.clone()) } else { None }).unwrap();
+                    let refused = host.execute(answer(&parent), mpsc::channel(1).0).await.unwrap_err();
+                    assert_eq!(refused.code, "no_approval_request", "not the parent's to answer");
+                    host.execute(answer(&req.session_id), mpsc::channel(1).0).await.unwrap();
+                }
+                lines.push(l);
+            }
+            lines
+        };
+        let (r, lines) = tokio::join!(turn, client);
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        host.shutdown().await;
+        lines
+    }));
+    let kid = |t: &str| kid_of(&lines, t);
+    let (reader_kid, sleeper_kid) = (kid(&reader), kid(&sleeper));
+    // Its frames, in order: (tool, waiting, tokens, status).
+    let frames = |k: &str| -> Vec<(Option<String>, Option<Waiting>, i64, ChildState)> {
+        lines.iter()
+            .filter_map(|l| match l {
+                StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, tool, waiting, tokens, .. }) if session_id == k => Some((tool.as_ref().map(|t| t.name.clone()), *waiting, *tokens, *status)),
+                _ => None,
+            })
+            .collect()
+    };
+    let r = frames(&reader_kid);
+    assert!(r.contains(&(Some("Read".into()), None, 12422, ChildState::Running)), "{r:?}");
+    assert_eq!(r.last(), Some(&(None, None, 13052, ChildState::Done)), "{r:?}");
+    let tokens: Vec<i64> = r.iter().map(|f| f.2).collect();
+    assert!(tokens.windows(2).all(|w| w[0] <= w[1]) && tokens[0] == 0, "rising: {tokens:?}");
+    let s = frames(&sleeper_kid);
+    let bash = (Some("Bash".to_string()), None, 12613, ChildState::Running);
+    let waits = (None, Some(Waiting::Approval), 12613, ChildState::Running);
+    let at = |f: &(Option<String>, Option<Waiting>, i64, ChildState)| s.iter().position(|x| x == f).unwrap_or_else(|| panic!("{f:?} in {s:?}"));
+    let (ran, waited) = (at(&bash), at(&waits));
+    assert!(ran < waited && s[waited + 1] == bash, "in Bash, waiting on the person, in Bash again once answered: {s:?}");
+    assert_eq!(s.last().map(|f| f.3), Some(ChildState::Interrupted), "stopped: {s:?}");
+    // The approval is the sleeper's, in its turn, and so is its answer.
+    let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).expect("asked");
+    let turn_of = |k: &str| home.events(k).iter().find_map(|e| if let LogBody::TurnStarted { turn_id, .. } = &e.body { Some(turn_id.clone()) } else { None }).unwrap();
+    assert_eq!((req.session_id.as_str(), req.turn_id.clone(), req.tool.as_str()), (sleeper_kid.as_str(), turn_of(&sleeper_kid), "Bash"));
+    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalResolved { session_id, request_id, decision: ApprovalDecision::Allow, .. }) if *session_id == sleeper_kid && *request_id == req.request_id)));
+    let fake = home.fake_log();
+    assert!(lines_of(&fake, "answer ").iter().any(|a| a.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
 }
 
 /// R-SUB-7: a background agent that ends between turns ends its child

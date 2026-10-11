@@ -189,7 +189,9 @@ impl Children {
                     self.finished(task, state(st), error, out);
                 }
             }
+            "task_progress" => self.progress(task, msg, out),
             "task_notification" => {
+                self.progress(task, msg, out);
                 let st = state(s(msg, "status"));
                 let error = (st == ChildState::Failed).then(|| Some(s(msg, "summary").to_string()).filter(|e| !e.is_empty())).flatten();
                 self.finished(task, st, error, out);
@@ -213,6 +215,33 @@ impl Children {
             "init" => self.unlisted(out),
             _ => {}
         }
+    }
+
+    /// The tokens a running agent has used, as `task_progress` (and its
+    /// `task_notification`) counts them: its responses carry no usage, so
+    /// this is where its status's count comes from (R-SUB-9). Its
+    /// `last_tool_name` is not taken: it names a call the agent's own lines
+    /// already started, with no end to it.
+    fn progress(&self, task: &str, msg: &Value, out: &mut Vec<EngineEvent>) {
+        let Some(tokens) = msg.pointer("/usage/total_tokens").and_then(Value::as_i64) else { return };
+        if self.agents.values().any(|c| c.task_id == task && c.translator.is_some()) {
+            out.push(EngineEvent::BackendChild { task_id: task.into(), event: Box::new(EngineEvent::Progress { tokens }) });
+        }
+    }
+
+    /// Which running agent a `can_use_tool` is of, by its task id: its
+    /// `agent_id` when that is one of them, else — a grandchild's, or a
+    /// binary that names none — the agent its `tool_use_id` was made in.
+    /// None for the conversation's own call.
+    pub fn asker(&self, agent_id: Option<&str>, tool_use_id: Option<&str>) -> Option<String> {
+        let open = |c: &&Child| c.translator.is_some();
+        if let Some(a) = agent_id
+            && let Some(c) = self.agents.values().filter(open).find(|c| c.task_id == a)
+        {
+            return Some(c.task_id.clone());
+        }
+        let ancestor = self.under.get(tool_use_id?)?;
+        self.agents.get(ancestor).filter(open).map(|c| c.task_id.clone())
     }
 
     /// Background agents no longer listed, whose end Claude Code never

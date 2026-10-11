@@ -119,8 +119,14 @@ pub enum EngineEvent {
     /// whole (a `ToolCall` completing is when its tool starts, the
     /// `ToolResult` when it ends; each item's started and completed come
     /// together), and its responses, which carry no usage — its calls are
-    /// metered once, as the parent's `SubagentResponse`.
+    /// metered once, as the parent's `SubagentResponse`. Its `Approval` and
+    /// `ApprovalResolved` too: a call it asks about is its own, sent under
+    /// its session (R-SUB-9), and its `Progress`.
     BackendChild { task_id: String, event: Box<EngineEvent> },
+    /// Only inside `BackendChild`: the tokens the agent has used so far, as
+    /// the backend counts them (Claude Code's `task_progress`), which its
+    /// responses, carrying no usage, do not say.
+    Progress { tokens: i64 },
     /// It ended, and nothing more of it follows: how, and why when the
     /// backend or krowk said.
     BackendChildEnded { task_id: String, status: crate::protocol::ChildState, error: Option<String> },
