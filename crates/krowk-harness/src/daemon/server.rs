@@ -670,7 +670,15 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
         loop {
             let line = match watch.recv().await {
                 Ok(l) => l,
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                // What was missed may be a last job's end, which tidies:
+                // tidied all the same, so nothing is held up for it.
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    let Some(state) = weak.upgrade() else { break };
+                    let mut s = state.borrow_mut();
+                    s.tidy();
+                    s.wake.notify_one();
+                    continue;
+                }
                 Err(_) => break,
             };
             let Some(state) = weak.upgrade() else { break };
@@ -814,12 +822,15 @@ impl State {
 
     /// Lets go of the sessions nothing follows or runs, and the hosts no
     /// session of this daemon is on — each with its backend processes. A
-    /// session with background work running is kept, and its host with it:
-    /// letting the host go would stop its jobs, which outlive the client
-    /// that started them. Its count dropping to none tidies again.
+    /// session with background work running on any host is kept, and a
+    /// host with jobs running is never let go: that would stop them, and
+    /// they outlive the client that started them, and the turns of the
+    /// session that run on another host since. A count dropping to none
+    /// tidies again.
     fn tidy(&mut self) {
-        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || h.host.background_of(id) > 0);
-        let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1).map(|(k, _)| k.clone()).collect();
+        let hosts = &self.hosts;
+        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || hosts.values().any(|x| x.background_of(id) > 0));
+        let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1 && h.running_jobs().is_empty()).map(|(k, _)| k.clone()).collect();
         for k in idle {
             if let Some(h) = self.hosts.remove(&k) {
                 tokio::task::spawn_local(async move { h.shutdown().await });
@@ -1228,9 +1239,10 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     if last {
         // The status line's count is sent only as it changes: a client
         // that comes to the session meanwhile is told it now, once caught up.
-        // The session's host's, as the live count is: the hub's, which a
-        // session with background work keeps (`tidy`).
-        let running = host.background_of(session);
+        // Over every host with work of the session's: the one that started
+        // its jobs (a `-p` client's) may not be the one its turns run on now,
+        // and is kept while they run (`tidy`). With one, the live figure.
+        let running: u32 = s.hosts.values().map(|h| h.background_of(session)).sum();
         if running > 0 {
             let line = StreamLine::Live(LiveEvent::Background { session_id: session.to_string(), running });
             let json = serde_json::to_string(&line).expect("a stream line serializes");
