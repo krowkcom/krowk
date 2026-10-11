@@ -5700,7 +5700,7 @@ mod tests {
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k2".into(), status: ChildState::Failed, tool: None, last_event_ms: 3, waiting: None, tokens: 900 }));
         assert_eq!(states(&a)[1], rec("k2", State::Error));
         for (k, status) in [("k1", TurnStatus::Completed), ("k3", TurnStatus::Interrupted)] {
-            a.on_line(&child_log(k, LogBody::TurnCompleted { turn_id: "v".into(), status, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
+            a.on_line(&child_log(k, LogBody::TurnCompleted { turn_id: "v".into(), status, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         }
         assert_eq!(states(&a), [rec("k1", State::Done), rec("k2", State::Error), rec("k3", State::Clear)]);
         a.end_turn();
