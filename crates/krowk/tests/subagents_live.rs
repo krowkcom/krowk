@@ -63,8 +63,8 @@ Do nothing else yourself. When they end, say in one line which finished and whic
 /// The second turn, prompted from the attached machine: two agents, one
 /// for it to stop.
 const TWO: &str = "Use the Agent tool twice in ONE message, so the two agents run in parallel in the foreground (not in the background). \
-Agent 1: subagent_type general-purpose, description \"napper\", prompt: \"Run exactly this Bash command in the foreground (not in the background), with timeout 300000: sleep 90. Then reply: napped.\" \
-Agent 2: subagent_type general-purpose, description \"waker\", prompt: \"Run this Bash command in the foreground: sleep 30 && echo awake. Then reply with its output.\" \
+Agent 1: subagent_type general-purpose, description \"napper\", prompt: \"Run exactly this Bash command in the foreground (not in the background), with timeout 300000: sleep 90 && touch napped.txt. Then reply: napped.\" \
+Agent 2: subagent_type general-purpose, description \"waker\", prompt: \"Run this Bash command in the foreground: sleep 30 && touch woke.txt. Then reply: woke.\" \
 Do nothing else yourself. When they end, say in one line which finished and which did not.";
 
 /// One machine's view of the run: its home, its repository, the variables
@@ -395,17 +395,20 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     // The attached client: B's TUI on the same session, through the relay.
     let tb = b.tui(&format!("{}-b", run.name), &["sync", "attach", &session]).expect("tmux");
     let attached = until(&tb, "B attached", 60, |s| s.contains("Attached to") && s.contains("Agent sleeper"));
+    // Its history, replayed from the chunks: the sleeper as it ended.
+    assert!(attached.lines().any(|l| l.contains("Agent sleeper") && l.contains("interrupted after")), "{attached}");
     capture(run.name, "b1-attached", &attached);
     prompt(&tb, TWO);
     // A prompt from another machine runs in the host's `default` mode at
-    // most: each agent's bash waits on an approval, answered here.
+    // most: each agent's bash, which writes a file, waits on an approval,
+    // answered here (R-SUB-12).
     let waiting = until(&tb, "the agents waiting on B", 120, |s| s.contains("Agent napper") && s.contains("waiting on you") && s.contains("allow once"));
     capture(run.name, "b2-waiting-on-you", &waiting);
     let mut answered = 0;
     while answered < 4 {
         std::thread::sleep(Duration::from_millis(800));
         if !tb.screen().contains("allow once") {
-            std::thread::sleep(Duration::from_secs(3));
+            std::thread::sleep(Duration::from_secs(8));
             if !tb.screen().contains("allow once") {
                 break;
             }
@@ -419,7 +422,7 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     until(&tb, "the napper's bash on B", 60, |s| s.lines().any(|l| l.contains("Agent napper") && l.contains("bash ")));
     let view = open(&tb, "napper");
     assert!(header(&view).contains(&format!("· by {} · running", run.by)), "{}", header(&view));
-    assert!(view.contains("sleep 90") && !view.contains("could not be read"), "its history, read on B: {view}");
+    assert!(view.contains("sleep 90 && touch napped.txt") && !view.contains("could not be read"), "its history, read on B: {view}");
     capture(run.name, "b3-napper-view", &view);
     tb.keys(&["x"]);
     let stopped = until(&tb, "the napper interrupted on B", 30, |s| in_view(s) && header(s).contains("interrupted after"));
@@ -433,6 +436,7 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     capture(run.name, "b6-turn-ended", &ended);
     assert_eq!(a.child_end(&session, "napper").1.as_deref(), Some("interrupted"), "the napper's log on A");
     assert_eq!(a.child_end(&session, "waker").1.as_deref(), Some("completed"), "the waker's log on A");
+    assert!(a.repo.join("woke.txt").exists() && !a.repo.join("napped.txt").exists(), "the waker's call ran on A, the napper's never finished");
     assert!(host.try_wait().unwrap().is_none(), "A still hosts: {}", std::fs::read_to_string(w.root.join("sync-host.log")).unwrap_or_default());
     let _ = host.kill();
     let _ = host.wait();
@@ -474,7 +478,7 @@ fn native(body: &Value, _: usize) -> mock::Reply {
         if answered {
             return mock::Reply::sse(&mock::text_stream("Done: the command ran."));
         }
-        let command = ["sleep 120", "sleep 95 && echo counted", "sleep 100 && cat notes.txt", "sleep 90", "sleep 30 && echo awake"].into_iter().find(|c| task.contains(c)).unwrap_or("true");
+        let command = ["sleep 120", "sleep 95 && echo counted", "sleep 100 && cat notes.txt", "sleep 90 && touch napped.txt", "sleep 30 && touch woke.txt"].into_iter().find(|c| task.contains(c)).unwrap_or("true");
         return mock::Reply::sse(&mock::tool_use("toolu_bash", "bash", &json!({"command": command, "timeout_ms": 300000})));
     }
     if answered {
@@ -484,7 +488,7 @@ fn native(body: &Value, _: usize) -> mock::Reply {
     let agents: &[(&str, &str)] = if last.contains("description \\\"sleeper\\\"") {
         &[("sleeper", "Run exactly this: sleep 120"), ("counter", "Run this: sleep 95 && echo counted"), ("reader", "Run this: sleep 100 && cat notes.txt")]
     } else if last.contains("description \\\"napper\\\"") {
-        &[("napper", "Run exactly this: sleep 90"), ("waker", "Run this: sleep 30 && echo awake")]
+        &[("napper", "Run exactly this: sleep 90 && touch napped.txt"), ("waker", "Run this: sleep 30 && touch woke.txt")]
     } else {
         return mock::Reply::sse(&mock::text_stream("ok"));
     };
