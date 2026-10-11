@@ -108,6 +108,13 @@ impl Home {
         Host::new(cfg)
     }
 
+    /// A host that publishes with `publisher`.
+    fn host_publishing(&self, instances: Vec<(&str, InstanceKind)>, publisher: krowk_harness::evidence::Publisher) -> Host {
+        let mut cfg = self.config(instances, trust::allow_all());
+        cfg.publisher = Some(publisher);
+        Host::new(cfg)
+    }
+
     fn config(&self, instances: Vec<(&str, InstanceKind)>, gate: trust::Gate) -> HostConfig {
         let cfg = InstancesConfig { instances: instances.into_iter().map(|(n, k)| (n.to_string(), k)).collect(), ..Default::default() };
         HostConfig {
@@ -666,6 +673,93 @@ fn r_sub_10_a_codex_childs_approval_is_its_own_and_stopping_another_interrupts_i
     });
 }
 
+/// R-SUB-10 — checked against the schema, not live: the child whose own
+/// approval waits on the person is stopped all the same — its translator
+/// lent to the question is no end of it — by `turn/interrupt` on its own
+/// thread and turn, written while the question waits; the question is
+/// taken back, declined to Codex, and the child ends interrupted while its
+/// sibling and the parent's turn go on.
+#[test]
+fn r_sub_10_a_codex_child_waiting_on_its_approval_is_stopped_and_its_question_taken_back() {
+    use krowk_harness::protocol::{ApprovalDecision, Waiting};
+    const ADA: (&str, &str) = ("01a0d8df-0000-7000-8000-0000000000c1", "01a0d8df-0000-7000-8000-0000000000d1");
+    const TURING: &str = "01a0d8df-0000-7000-8000-0000000000c2";
+    let h = Home::new("subagent-stop-asking");
+    let home = h.signed_in("codex-team", "chatgpt team@example.com");
+    let host = h.host_answering(vec![("codex:team", h.instance(&home, Some("subagent_stop_asking.jsonl"), &[]))]);
+    rt().block_on(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let turn = host.execute(prompt(None, "run two agents", "codex:team/gpt-5.5", PermissionMode::Default), tx);
+        let client = async {
+            let mut lines: Vec<StreamLine> = Vec::new();
+            let mut stopped = None;
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    // Nobody answers it: the child asking is stopped instead.
+                    stopped = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone() }, mpsc::channel(8).0).await);
+                }
+                lines.push(l);
+            }
+            (lines, stopped)
+        };
+        let (r, (lines, stopped)) = tokio::join!(turn, client);
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "Turing read the README; Ada was stopped."), "{r:?}");
+        assert!(matches!(stopped, Some(Ok(None))), "taken while it waited: {stopped:?}");
+        let (ada, turing) = (kid_of(&lines, ADA.0), kid_of(&lines, TURING));
+        let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).unwrap();
+        assert_eq!(req.session_id, ada);
+        assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalResolved { session_id, request_id, decision: ApprovalDecision::Deny, .. }) if *session_id == ada && *request_id == req.request_id)), "its question taken back");
+        let last = |k: &str| lines.iter().rev().find_map(|l| match l {
+            StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, waiting, .. }) if session_id == k => Some((*status, *waiting)),
+            _ => None,
+        });
+        assert_eq!(last(&ada), Some((ChildState::Interrupted, None::<Waiting>)));
+        assert_eq!(last(&turing).map(|f| f.0), Some(ChildState::Done));
+        let ended = |k: &str| h.events(k).iter().rev().find_map(|e| if let LogBody::TurnCompleted { status, .. } = &e.body { Some(*status) } else { None });
+        assert_eq!((ended(&ada), ended(&turing)), (Some(TurnStatus::Interrupted), Some(TurnStatus::Completed)));
+        // Her thread and turn alone, written before the declined answer.
+        let fake = h.fake_log();
+        assert_eq!(lines_of(&fake, "interrupt-of "), [format!("{} {}", ADA.0, ADA.1)], "{fake}");
+        let declined = fake.lines().position(|l| l.starts_with(r#"in {"id":"srv-1","result":{"decision":"decline"}}"#)).unwrap_or_else(|| panic!("declined: {fake}"));
+        assert!(fake.lines().position(|l| l.starts_with("interrupt-of ")).unwrap() < declined, "{fake}");
+        host.shutdown().await;
+    });
+}
+
+/// R-EVID-1, R-SUB-9 — checked against the schema, not live: a child
+/// thread's call of krowk's `publish` runs as the child's request, but the
+/// run it opens is logged in the parent's log — where the parent's next
+/// turn attaches to it — and what the publisher says for the person is the
+/// session's notice, not dropped as the child's.
+#[test]
+fn r_evid_1_a_codex_childs_publish_opens_the_sessions_run_and_its_notice_is_the_sessions() {
+    const ADA: &str = "01a0d8df-0000-7000-8000-0000000000c1";
+    let h = Home::new("subagent-publish");
+    let home = h.signed_in("codex-team", "chatgpt team@example.com");
+    let asked: Arc<std::sync::Mutex<Vec<krowk_harness::evidence::PublishRequest>>> = Arc::default();
+    let seen = asked.clone();
+    let publisher: krowk_harness::evidence::Publisher = Arc::new(move |r: &krowk_harness::evidence::PublishRequest| {
+        seen.lock().unwrap().push(r.clone());
+        Ok(krowk_harness::evidence::Published { text: "Artifact art_1 — README.md".into(), run: Some("run_1".into()), for_person: vec!["published README.md to run_1".into()] })
+    });
+    let host = h.host_publishing(vec![("codex:team", h.instance(&home, Some("subagent_publish.jsonl"), &[]))], publisher);
+    rt().block_on(async {
+        let (lines, r) = run(&host, prompt(None, "publish the README", "codex:team/gpt-5.5", PermissionMode::AcceptEdits)).await;
+        let r = r.unwrap().unwrap();
+        assert_eq!((r.status, r.result.as_str()), (TurnStatus::Completed, "Ada published the README."), "{r:?}");
+        let asked = asked.lock().unwrap().clone();
+        assert_eq!((asked.len(), asked[0].session_id.as_str(), asked[0].files.clone()), (1, r.session_id.as_str(), vec!["README.md".to_string()]));
+        let runs: Vec<String> = h.events(&r.session_id).into_iter().filter_map(|e| if let LogBody::RunOpened { run, .. } = e.body { Some(run) } else { None }).collect();
+        assert_eq!(runs, ["run_1"], "in the parent's log");
+        assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Notice { session_id, text, .. }) if *session_id == r.session_id && text == "published README.md to run_1")), "the session's notice: {lines:?}");
+        let ada = kid_of(&lines, ADA);
+        assert!(h.events(&ada).iter().all(|e| !matches!(e.body, LogBody::RunOpened { .. })));
+        assert!(items(&h.events(&ada)).iter().any(|i| matches!(i, Item::ToolResult { output, is_error: false, .. } if output.contains("Artifact art_1"))), "the call is hers");
+        host.shutdown().await;
+    });
+}
+
 #[test]
 fn r_inst_1_two_codex_instances_with_their_own_homes_run_sessions_under_their_own_accounts() {
     let h = Home::new("instances");
@@ -785,7 +879,7 @@ fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schem
     let h = Home::new("schema");
     let home = h.signed_in("codex-team", "chatgpt team@example.com");
     rt().block_on(async {
-        for (scenario, mode) in [("tool_use.jsonl", PermissionMode::Default), ("approvals.jsonl", PermissionMode::AcceptEdits), ("interrupt.jsonl", PermissionMode::Default), ("subagents.jsonl", PermissionMode::Default), ("subagent_requests.jsonl", PermissionMode::Default)] {
+        for (scenario, mode) in [("tool_use.jsonl", PermissionMode::Default), ("approvals.jsonl", PermissionMode::AcceptEdits), ("interrupt.jsonl", PermissionMode::Default), ("subagents.jsonl", PermissionMode::Default), ("subagent_requests.jsonl", PermissionMode::Default), ("subagent_stop_asking.jsonl", PermissionMode::Default), ("subagent_publish.jsonl", PermissionMode::AcceptEdits)] {
             let _ = std::fs::remove_file(home.join("fake-turns"));
             let host = h.host(vec![("codex:team", h.instance(&home, Some(scenario), &[("FAKE_CODEX_MCP", MCP)]))], trust::allow_all());
             let (_, r) = run_with(&host, prompt(None, "hi", "codex:team/gpt-5.5", mode), async |host: &Host, session: &str, n: usize| {
@@ -797,7 +891,7 @@ fn r_back_3_every_message_krowk_sends_and_codex_answers_matches_the_pinned_schem
             .await;
             let session = r.unwrap().unwrap().session_id;
             // The scenarios with a second turn: a resumed thread's messages too.
-            if !matches!(scenario, "approvals.jsonl" | "subagents.jsonl" | "subagent_requests.jsonl") {
+            if !matches!(scenario, "approvals.jsonl" | "subagents.jsonl" | "subagent_requests.jsonl" | "subagent_stop_asking.jsonl" | "subagent_publish.jsonl") {
                 let (_, _) = run(&host, prompt(Some(&session), "again", "codex:team/gpt-5.5", mode)).await;
             }
             host.shutdown().await;

@@ -1036,6 +1036,16 @@ async fn finish(t: &mut Translator, events: &Events) {
     forward(events, out).await;
 }
 
+/// What answering a child's request said, as the child's event — but a
+/// publish's notice and the run it opened, which are the session's: the
+/// person's to read, and the parent's log's to hold for its next turn.
+fn as_childs(thread: &str, ev: EngineEvent) -> EngineEvent {
+    match ev {
+        EngineEvent::Notice { .. } | EngineEvent::RunOpened { .. } => ev,
+        ev => EngineEvent::BackendChild { task_id: thread.into(), event: Box::new(ev) },
+    }
+}
+
 async fn forward(events: &Events, out: Vec<EngineEvent>) {
     for ev in out {
         let _ = events.send(ev).await;
@@ -1415,13 +1425,14 @@ impl Proc {
         let (tx, mut rx) = mpsc::channel(4);
         // The turn's interrupt, or a stop of this child.
         let (mine, theirs) = watch::channel(*cancel.borrow());
-        let call = str_of(params, "itemId").to_string();
+        // The call it asks about: an approval's item, a krowk tool's call.
+        let call = Some(str_of(params, "itemId")).filter(|i| !i.is_empty()).unwrap_or(str_of(params, "callId")).to_string();
         let asked = async {
             let tx = tx;
             ask.answer(method, params, &mut lent, Some((&tx, &theirs))).await
         };
         let told = async {
-            let child = |ev| EngineEvent::BackendChild { task_id: thread.clone(), event: Box::new(ev) };
+            let child = |ev| as_childs(&thread, ev);
             while let Some(ev) = rx.recv().await {
                 if let EngineEvent::Approval(r) = &ev
                     && !call.is_empty()
@@ -1840,6 +1851,16 @@ mod tests {
             stop_answer(&stopper, "kid", grace).await.unwrap();
         };
         tokio::join!(turn, asks);
+    }
+
+    /// R-SUB-9, R-EVID-1: what answering a child's request says is the
+    /// child's, but a publish's notice and the run it opened stay the
+    /// session's.
+    #[test]
+    fn r_sub_9_a_childs_request_is_its_own_but_a_publishs_notice_and_run_are_the_sessions() {
+        assert!(matches!(as_childs("kid", EngineEvent::Notice { text: "x".into() }), EngineEvent::Notice { .. }));
+        assert!(matches!(as_childs("kid", EngineEvent::RunOpened { run: "run_1".into() }), EngineEvent::RunOpened { .. }));
+        assert!(matches!(as_childs("kid", EngineEvent::Progress { tokens: 1 }), EngineEvent::BackendChild { task_id, .. } if task_id == "kid"));
     }
 
     #[test]

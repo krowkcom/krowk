@@ -5,10 +5,10 @@
 # — JSON-RPC over stdio, one object per line — replaying a recorded
 # scenario turn by turn. The messages are the ones a real `codex app-server`
 # 0.154.0 sent (`recorded/`), trimmed; the tests validate every one against
-# the pinned schema. `subagents.jsonl` and `subagent_requests.jsonl` are the
-# exception: Codex's child threads were never recorded — nobody has run them
-# live — so they are written from the pinned schema alone, and checked
-# against it like the rest.
+# the pinned schema. The `subagent*.jsonl` scenarios are the exception:
+# Codex's child threads were never recorded — nobody has run them live — so
+# they are written from the pinned schema alone, and checked against it
+# like the rest.
 #
 # Written for the bash macOS ships (3.2): no associative arrays, no
 # fractional `read -t`. It reads krowk's lines by their leading `{"id":N,
