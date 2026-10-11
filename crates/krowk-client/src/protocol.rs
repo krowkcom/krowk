@@ -1306,6 +1306,11 @@ pub struct HostStatus {
     /// (before 0.14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background: Option<u32>,
+    /// Those sessions, by id: a client resuming one learns whether work of
+    /// its — a backend's agent run in the background — still goes on here.
+    /// None from a daemon that does not name them (before 0.14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_sessions: Option<Vec<String>>,
     /// The sessions it has run since it started, newest first.
     pub sessions: Vec<HostSession>,
 }

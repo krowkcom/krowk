@@ -624,6 +624,7 @@ fn status(s: &State) -> HostStatus {
         queued_bytes: s.clients.values().map(|c| c.outbox.bytes() as u64).sum(),
         caught_up: s.caught_up,
         background: Some(s.hosts.values().map(|h| h.background()).sum()),
+        background_sessions: Some(s.hosts.values().flat_map(|h| h.background_sessions()).collect()),
         sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32 }).collect(),
     }
 }
@@ -674,8 +675,13 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
             };
             let Some(state) = weak.upgrade() else { break };
             let mut s = state.borrow_mut();
-            let session = line.session_id().to_string();
-            let Some(followers) = s.hubs.get(&session).map(|h| h.followers.clone()) else { continue };
+            // A child's line between turns — a backend's agent run in the
+            // background — is its parent's session's, as a turn's are
+            // (`publish`): numbered with the parent's and sent in it, so
+            // its followers, and a sync bridge's chunks, have it (R-SUB-6).
+            let own = line.session_id();
+            let root = s.hubs.get_key_value(own).or_else(|| s.hubs.iter().find(|(_, h)| h.children.contains(own))).map(|(id, h)| (id.clone(), h.followers.clone()));
+            let Some((session, followers)) = root else { continue };
             let seq = s.next_seq(&session);
             let json = serde_json::to_string(&line).expect("a stream line serializes");
             for f in followers {

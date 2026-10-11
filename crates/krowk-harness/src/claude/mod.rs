@@ -538,6 +538,11 @@ impl Engine for ClaudeEngine {
     fn run_turn<'a>(&'a self, mut ctx: TurnContext, events: Events) -> BoxFuture<'a, Result<TurnEnd, EngineError>> {
         Box::pin(async move {
             self.wake().await;
+            // Where between turns ends: what the idle loop said is before
+            // this turn's events.
+            if let Some(tell) = &self.tell {
+                tell(EngineEvent::Woke);
+            }
             let mut slot = self.proc.lock().await;
             let want = Launch {
                 model: ctx.model.model.clone(),

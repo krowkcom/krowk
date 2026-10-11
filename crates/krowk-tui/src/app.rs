@@ -229,6 +229,10 @@ struct Sub {
     backend_id: Option<String>,
     /// `x` was taken for it and its end has not come yet.
     stopping: bool,
+    /// Its end was presumed, not said (`end_backend_children`): its own
+    /// lines, should more come, say it runs, and its logged end replaces
+    /// this one.
+    presumed: bool,
 }
 
 /// A child's item under way: its start, and the text it has streamed.
@@ -269,6 +273,7 @@ impl Sub {
             ran_by: RanBy::Krowk,
             backend_id: None,
             stopping: false,
+            presumed: false,
         }
     }
 
@@ -276,6 +281,9 @@ impl Sub {
     /// log's times when `at_ms`, the log's time of its end, is given, else
     /// by this client's clock.
     fn end(&mut self, status: TurnStatus, at_ms: Option<i64>, tick: u64) {
+        if std::mem::take(&mut self.presumed) {
+            (self.status, self.took, self.ended) = (None, None, 0);
+        }
         if self.status.is_none() {
             self.status = Some(status);
         }
@@ -1928,6 +1936,11 @@ impl App {
         self.sub_clock += 1;
         let tick = self.sub_clock;
         let Some(s) = self.child(sid) else { return };
+        // Its end was only presumed: anything more of it says it runs, and
+        // its own end below replaces the presumed one.
+        if std::mem::take(&mut s.presumed) {
+            (s.status, s.took, s.ended) = (None, None, 0);
+        }
         // Anything live from a running child is news of it: frames are not
         // sent per delta, so a child streaming text is not quiet. Not a
         // frame itself: its own stamp says when, however late it arrives
@@ -2517,7 +2530,8 @@ impl App {
                 }
                 let call = self.calls.iter().position(|c| &c.call_id == call_id).map(|i| self.calls.remove(i));
                 if let Some(i) = self.subs.iter().position(|s| s.call_id.as_deref() == Some(call_id.as_str())) {
-                    return self.answer_sub(i, output, *is_error, at_ms);
+                    let backgrounded = call.as_ref().is_some_and(|c| c.input["run_in_background"] == true);
+                    return self.answer_sub(i, output, *is_error, at_ms, backgrounded);
                 }
                 match call {
                     Some(c) => self.commit_tool(&c.name, &c.input, output, *is_error),
@@ -2531,12 +2545,19 @@ impl App {
     /// and it kept for the Agents overlay, which lists every child. Unless
     /// it runs on, it has ended, as its result says when its own lines did
     /// not (a replayed log holds none of them).
-    fn answer_sub(&mut self, i: usize, output: &str, is_error: bool, at_ms: i64) {
+    ///
+    /// A backend's agent its call ran in the background (`backgrounded`)
+    /// runs on too, until its own end comes as its child's lines do,
+    /// between turns or in a later one — or, replayed, from its own log
+    /// (`backend_children_running`).
+    fn answer_sub(&mut self, i: usize, output: &str, is_error: bool, at_ms: i64, backgrounded: bool) {
         let mut s = self.subs.remove(i);
         // Started in the background, or moved there by a steer (R-STEER-3,
         // R-STEER-4): its end comes as a note, which names it as its line did.
         s.background = output.starts_with("started background agent ") || output.starts_with("moved to background as agent ");
-        if s.background {
+        if backgrounded && s.ran_by != RanBy::Krowk && s.status.is_none() {
+            s.background = true;
+        } else if s.background {
             self.background_agents.insert(s.session_id.clone(), s.description.clone());
         } else {
             let interrupted = output.starts_with("the subagent was interrupted") || output.starts_with("not run: the turn was interrupted");
@@ -2550,6 +2571,38 @@ impl App {
         }
         self.commit_sub(&s, output, is_error);
         self.past.push(s);
+    }
+
+    /// The backend's agents run in the background that nothing has ended
+    /// yet: a replayed session's, whose ends are in their own logs, not in
+    /// the session's.
+    pub fn backend_children_running(&self) -> Vec<String> {
+        self.past.iter().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()).map(|s| s.session_id.clone()).collect()
+    }
+
+    /// The backend's agents left running by a replay with nothing to run
+    /// them any more — their process gone with no end written — ended
+    /// interrupted, at the replay's last event. Presumed: a line of one
+    /// that comes after all says it runs, and its logged end replaces this.
+    pub fn end_backend_children(&mut self) {
+        let at_ms = self.replayed_ms;
+        for s in self.past.iter_mut().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()) {
+            self.sub_clock += 1;
+            s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
+            s.presumed = true;
+        }
+        self.dirty = true;
+    }
+
+    /// How many turns of the session have completed here.
+    pub fn turns_completed(&self) -> u32 {
+        self.turns
+    }
+
+    /// Child `sid` ended as its own log says, at `at_ms`.
+    pub fn child_logged_end(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
+        self.ended(sid, status, at_ms);
+        self.dirty = true;
     }
 
     /// The subagents whose calls were never answered, their turn over:
@@ -3033,10 +3086,13 @@ impl App {
                 // Every child running, and the backend's agents that are no
                 // child of it: each agent at work for the session, once.
                 StatusItem::Subagents => {
-                    let running = (self.subs.iter().filter(|s| s.status.is_none()).count() + self.backend_only().count()) as u32;
+                    // A backend's agent its call ran in the background runs
+                    // on past it, until its own end (R-SUB-7).
+                    let at_work = || self.subs.iter().chain(self.past.iter().filter(|s| s.ran_by != RanBy::Krowk)).filter(|s| s.status.is_none());
+                    let running = (at_work().count() + self.backend_only().count()) as u32;
                     // Of those, the ones an approval or a question of theirs
                     // waits on the person for (R-SUB-11).
-                    let waiting = self.subs.iter().filter(|s| s.status.is_none() && s.waiting.is_some()).count();
+                    let waiting = at_work().filter(|s| s.waiting.is_some()).count();
                     if running > 0 {
                         let waiting = if waiting > 0 { format!(" · {waiting} waiting") } else { String::new() };
                         parts.push(part(Rank::Subagents, format!("[{}{waiting}]", plural(running, "subagent"))));
@@ -5017,6 +5073,59 @@ mod tests {
         a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }));
         a.on_line(&agents(vec![agent("t2", "sleeper"), agent("t3", "survey")]));
         assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
+    }
+
+    /// R-SUB-9: a Claude Code agent its call ran in the background answers
+    /// that call at once ("Async agent launched"), and runs on: its row
+    /// stays running, counted, through the turn's end and between turns,
+    /// until its own end comes as its child's lines — not at its call's
+    /// result. Replayed, its end is read from its own log, or, nothing
+    /// running it any more, it ends interrupted.
+    #[test]
+    fn r_sub_9_a_claude_background_agents_row_runs_until_its_own_end_not_its_calls_result() {
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        let launched = |a: &mut App, live: bool| {
+            let ev = |body: LogBody| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
+            a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ic".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "survey", "prompt": "look around", "run_in_background": true}) } }), live);
+            a.on_log(&ev(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "survey".into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some("a_bg_1".into()) }), live);
+            a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ir".into(), item: Item::ToolResult { call_id: "c1".into(), output: "Async agent launched successfully.".into(), is_error: false } }), live);
+            a.on_log(&ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }), live);
+        };
+        let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        launched(&mut a, true);
+        assert!(a.status_bar().contains("[1 subagent]"), "running on past its call and its turn: {}", a.status_bar());
+        assert!(a.child_running_since().is_some());
+        // Between turns: its frames, then its end, as its child's.
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 5, waiting: None, tokens: 0 }));
+        assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 2000, error: None, reported_cost_usd: None }));
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Done, tool: None, last_event_ms: 6, waiting: None, tokens: 0 }));
+        assert!(!a.status_bar().contains("subagent"), "ended by its own end: {}", a.status_bar());
+        assert!(a.child_running_since().is_none());
+        // Replayed: its end is in its own log, read for it.
+        let mut r = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
+        launched(&mut r, false);
+        assert_eq!(r.backend_children_running(), ["k1"]);
+        r.child_logged_end("k1", TurnStatus::Completed, 2000);
+        assert!(r.backend_children_running().is_empty() && r.child_running_since().is_none(), "ended as its log says");
+        // Replayed with no end in its log and nothing running it any more:
+        // ended interrupted, not left running.
+        let mut gone = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
+        gone.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        launched(&mut gone, false);
+        gone.end_backend_children();
+        assert!(gone.backend_children_running().is_empty() && !gone.status_bar().contains("subagent"), "{}", gone.status_bar());
+        assert_eq!(gone.children()[0].status, Some(TurnStatus::Interrupted));
+        // Presumed only (a synced viewer's host away for a moment): a line
+        // of it says it runs, and its logged end replaces the presumed one.
+        gone.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 7, waiting: None, tokens: 0 }));
+        assert_eq!(gone.backend_children_running(), ["k1"], "running again");
+        gone.end_backend_children();
+        gone.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 4000, error: None, reported_cost_usd: None }));
+        assert_eq!(gone.children()[0].status, Some(TurnStatus::Completed), "its own end, not the presumed one");
+        assert_eq!(gone.children()[0].took, Some(Duration::from_millis(4000)));
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {

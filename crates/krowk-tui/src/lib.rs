@@ -136,6 +136,9 @@ const SLOW: &str = "host_slow";
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
 /// that does.
+/// How long resuming a session waits for the daemon to say whether its
+/// background agents still run there.
+const STATUS_WAIT: Duration = Duration::from_millis(1500);
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
@@ -353,7 +356,7 @@ async fn session(opts: Options) -> Outcome {
         match read_session(&sessions_dir, id) {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
-                runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
+                runs_in = replay(&mut app, id, &events, &opts.host.registry, Some(&sessions_dir)).unwrap_or(runs_in);
                 resumed(&mut app, id, opts.daemon.is_some());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
@@ -365,7 +368,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(o) = opts.sync {
         match synced::open(o).await {
             Ok(s) => {
-                replay(&mut app, &s.id, &s.history, &opts.host.registry);
+                replay(&mut app, &s.id, &s.history, &opts.host.registry, None);
                 app.session_id = Some(s.id.clone());
                 app.log_dir = None;
                 // Said once the relay says whether the host is there
@@ -467,6 +470,8 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        continuing: false,
+        following_bg: None,
         pasting: None,
         pastes: Default::default(),
         looked_in: None,
@@ -490,14 +495,10 @@ async fn session(opts: Options) -> Outcome {
         runs_in: runs_in.clone(),
         started_in,
         permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
-    // A resumed session still running in the daemon is followed from where
-    // its log left off: the turn so far, then live. One that is not left no
-    // child running: its log's unanswered children ended with it (with no
-    // daemon, `resumed` said so already).
-    match opts.resume.clone() {
-        Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
-        Some(_) if has_daemon => app.end_replayed_children(matches!(ui.host, link::Link::Local(_))),
-        _ => {}
+    if let Some(id) = opts.resume.clone()
+        && has_daemon
+    {
+        ui.resumed_in_daemon(&mut app, &id, replayed_to).await;
     }
     let result = ui.run(&mut app, &mut term).await;
     ui.drain(&mut app);
@@ -525,6 +526,14 @@ async fn session(opts: Options) -> Outcome {
     }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+}
+
+/// A session followed only for its background agents: its id, and, once
+/// the turn its backend began to answer them was asked for here, the count
+/// of its turns completed then.
+struct FollowingBg {
+    id: String,
+    answered_at: Option<u32>,
 }
 
 struct Ui<'h> {
@@ -555,6 +564,12 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// The turn running is a `continue` this client sent.
+    continuing: bool,
+    /// The session followed only for its background agents
+    /// (`follow_background`), until none is left and the turn Claude Code
+    /// begins to answer them has run (`FollowingBg`).
+    following_bg: Option<FollowingBg>,
     /// A paste being read and made ready, off the runtime's thread (the
     /// clipboard, or the files dropped), and the editor's mark for where it
     /// goes; the ones asked for after it, waiting their turn.
@@ -1119,6 +1134,7 @@ impl<'h> Ui<'h> {
     /// stops now, `quitting`.
     async fn on_turn_end(&mut self, app: &mut App, r: Result<Option<RunResult>, EngineError>, reach: &mut Reach, quitting: bool) -> bool {
         self.turn = None;
+        let continued = std::mem::take(&mut self.continuing);
         if let Some(n) = self.host.take_note() {
             app.note(&n);
         }
@@ -1129,6 +1145,7 @@ impl<'h> Ui<'h> {
             }
         }
         self.follow(app);
+        self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
             std::thread::spawn(move || project(&id));
@@ -1150,9 +1167,10 @@ impl<'h> Ui<'h> {
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
-        // news.
+        // news, nor one another client following the session runs.
         if let Err(e) = r
             && e.code != "nothing_pending"
+            && !(continued && e.code == "session_busy")
         {
             app.error(&e.info());
         }
@@ -1571,6 +1589,14 @@ impl<'h> Ui<'h> {
             synced::Event::Host(h) => {
                 status.host = Some(h);
                 app.say_attached();
+                // A backend's agent runs in the host's process: with no
+                // host on the session, nothing says it goes on, and it is
+                // presumed ended. Presumed only: a line of it, should the
+                // host come back with it running, says it runs, and its
+                // logged end replaces this one.
+                if !h {
+                    app.end_backend_children();
+                }
             }
             synced::Event::Path(p) => status.path = Some(p),
             synced::Event::Note(n) => app.notice(&n),
@@ -1599,6 +1625,62 @@ impl<'h> Ui<'h> {
         }
         app.notice(&format!("{what} is the host's to change: this session runs on another machine, and prompts from here run in its default mode (plan, if it is in plan)"));
         true
+    }
+
+    /// The session resumed at start, with a daemon: one still running there
+    /// is followed from where its log left off — the turn so far, then
+    /// live. One that is not left no child running: its log's unanswered
+    /// children ended with it (with no daemon, `resumed` said so already),
+    /// and its background agents go on only while the daemon runs them.
+    async fn resumed_in_daemon(&mut self, app: &mut App, id: &str, replayed_to: Option<String>) {
+        if self.live.iter().any(|l| l == id) {
+            return self.reattach(app, id, replayed_to);
+        }
+        app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+        self.follow_background(app, id, replayed_to.as_deref()).await;
+    }
+
+    /// A resumed session whose backend's agents its log leaves at work
+    /// between turns, in the daemon. Kept running only while the daemon
+    /// says work of the session still goes on there; then the daemon is
+    /// asked to send this client the session's frames from the last event
+    /// replayed, as one of its followers, so their rows and transcripts go
+    /// on as they run (R-SUB-7), until none is left (`let_go_background`).
+    /// Otherwise the process that ran them is gone — killed, the machine
+    /// restarted — with no end written: they end interrupted, as a local
+    /// session's do.
+    async fn follow_background(&mut self, app: &mut App, id: &str, after: Option<&str>) {
+        let Some(remote) = self.host.remote() else { return };
+        if app.backend_children_running().is_empty() {
+            return;
+        }
+        // Not known — an older daemon, one that does not answer in time —
+        // and they are taken to run: followed, and their end said by the
+        // daemon if it has one, rather than ended on a guess.
+        let asked = tokio::time::timeout(STATUS_WAIT, remote.status()).await;
+        let gone = matches!(asked, Ok(Ok(krowk_harness::protocol::HostStatus { background_sessions: Some(ref busy), .. })) if !busy.iter().any(|b| b == id));
+        if gone {
+            return app.end_backend_children();
+        }
+        remote.attach_later(id, after);
+        self.following_bg = Some(FollowingBg { id: id.to_string(), answered_at: None });
+    }
+
+    /// Following a session only for its background agents
+    /// (`follow_background`): once none is left, the turn its backend began
+    /// to answer them asked for here (`go_on`) and a turn of the session
+    /// completed since — that one, or the one another client ran first —
+    /// and no turn of this client's runs, the daemon stops sending it here,
+    /// so this TUI does not go on mirroring the session's later turns.
+    /// Not before: the last client to leave a session nothing runs lets its
+    /// backend go, and the turn answering the agents with it.
+    fn let_go_background(&mut self, app: &App) {
+        let done = self.following_bg.as_ref().is_some_and(|f| f.answered_at.is_some_and(|at| app.turns_completed() > at));
+        if done && self.turn.is_none() && app.backend_children_running().is_empty()
+            && let Some(f) = self.following_bg.take()
+        {
+            self.host.leave(&f.id);
+        }
     }
 
     /// Follows `id`'s turn running in the daemon as though this TUI had
@@ -1642,6 +1724,9 @@ impl<'h> Ui<'h> {
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
+        // This client's own turn of the session: it follows it from here
+        // as any client that runs one does.
+        self.following_bg = None;
         let (host, quiet) = (self.host, !app.backend_agents_running() && !app.unprompted);
         self.turn = Some(Box::pin(async move {
             host.renew(quiet).await;
@@ -1654,13 +1739,21 @@ impl<'h> Ui<'h> {
     /// A turn the backend began by itself runs as soon as none of the
     /// TUI's own does. A prompt sent first runs it ahead of itself, and a
     /// `continue` left over is then refused quietly (`nothing_pending`).
+    /// A TUI following a session only for its background agents runs it
+    /// too: another client may have run it first, and then the host says
+    /// so (`session_busy`, not shown); if none is left, it is this one's.
     fn go_on(&mut self, app: &mut App) {
+        self.let_go_background(app);
         if self.turn.is_some() || !std::mem::take(&mut app.unprompted) {
             return;
+        }
+        if let Some(f) = &mut self.following_bg {
+            f.answered_at = Some(app.turns_completed());
         }
         let Some(session_id) = app.session_id.clone() else { return };
         let (tx, rx) = mpsc::channel(1024);
         self.turn = Some(Box::pin(self.host.execute(Command::Continue { session_id, budget: self.budget }, tx)));
+        self.continuing = true;
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
     }
@@ -2030,7 +2123,7 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Modes && plain && let Some(done) = self.modes_key(app, k) {
             return done;
         }
-        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k) {
+        if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k).await {
             return done;
         }
         if app.overlay == Overlay::Models && plain && let Some(done) = self.models_key(app, k).await {
@@ -2293,14 +2386,14 @@ impl<'h> Ui<'h> {
     }
 
     /// `/sessions` takes the arrows and enter while it is open.
-    fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+    async fn sessions_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
         match k.code {
             KeyCode::Up => app.resume_at = app.resume_at.saturating_sub(1),
             KeyCode::Down => app.resume_at = (app.resume_at + 1).min(app.resumable.len().saturating_sub(1)),
             KeyCode::Enter => {
                 app.overlay = Overlay::None;
                 if let Some(r) = app.resumable.get(app.resume_at).cloned() {
-                    self.resume(app, &r.id);
+                    self.resume(app, &r.id).await;
                 }
             }
             _ => return None,
@@ -2452,7 +2545,7 @@ impl<'h> Ui<'h> {
     /// Continues session `id` in place of the one shown: its conversation
     /// replayed under what is on screen, and the next prompt sent to it, on
     /// the model it last ran on.
-    fn resume(&mut self, app: &mut App, id: &str) {
+    async fn resume(&mut self, app: &mut App, id: &str) {
         if !self.can_resume(app) {
             return;
         }
@@ -2482,12 +2575,13 @@ impl<'h> Ui<'h> {
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
-        replay(app, id, &events, &self.host.registry());
+        replay(app, id, &events, &self.host.registry(), Some(&self.sessions_dir));
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {
             app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+            self.follow_background(app, id, events.last().map(|e| e.id.as_str())).await;
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -2545,6 +2639,7 @@ impl<'h> Ui<'h> {
     /// The session shown, left for another: kept to be listed on the way
     /// out, and its last prompt no longer the title's.
     fn leave(&mut self, app: &mut App) {
+        self.following_bg = None;
         // The daemon stops sending it here: no frame of it is taken for the
         // next session's.
         if let Some(old) = &app.session_id {
@@ -2958,7 +3053,7 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 let id = t["/sessions ".len()..].trim().to_string();
-                self.resume(app, &id);
+                self.resume(app, &id).await;
                 return false;
             }
             "/mode" => {
@@ -3084,9 +3179,21 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
 
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
-fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry) -> Option<PathBuf> {
+fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
     app.replay(&log::branch(events, &head));
+    // A backend's agent run in the background ends in its own log, not
+    // the session's: read from there, or from a synced session's history,
+    // which holds its children's events too.
+    for kid in app.backend_children_running() {
+        let own = match sessions_dir {
+            Some(dir) => read_child(dir, &kid).unwrap_or_default(),
+            None => events.iter().filter(|e| e.session_id == kid).cloned().collect(),
+        };
+        if let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, .. }, .. }) = own.last() {
+            app.child_logged_end(&kid, *status, *time_ms);
+        }
+    }
     // A turn logged on a name since renamed is on the new name.
     for old in registry.renamed.keys() {
         app.renamed(old, &registry.current(old));
