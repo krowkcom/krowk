@@ -12,9 +12,10 @@
 //! 6. Esc goes back, and the conversation is as it was.
 //!
 //! Then the same session, synced through `krowk relay serve` and a
-//! stand-in registry, is attached from a second machine's TUI (`krowk sync
-//! attach`), which opens a child of a turn it prompted and stops it on the
-//! host (R-SUB-12).
+//! stand-in registry, is attached from a second device's TUI (`krowk sync
+//! attach`; a krowk home and keys of its own, on this computer), which
+//! answers the approvals of a turn it prompted, opens one of its children
+//! and stops it on the host (R-SUB-12).
 //!
 //! Twice: on the Claude Code backend, and on a native session. Both are
 //! ignored by default — each takes minutes, the Claude Code one spends real
@@ -24,12 +25,15 @@
 //!     KROWK_LIVE_CAPTURES=/tmp/captures \
 //!       cargo test -p krowk --features harness --test subagents_live -- --ignored --nocapture
 //!
-//! The Claude Code run needs `claude` on PATH and a Claude Code config
-//! directory that is signed in (`KROWK_LIVE_CLAUDE_CONFIG`, an instance's
-//! `configDir`; its model `KROWK_LIVE_CLAUDE_MODEL`, Haiku unless named);
-//! without them it is skipped, saying so. The native run has a stand-in
-//! Anthropic API play the model, so its moves are scripted while the TUI,
-//! host, engine, bash and sync are real.
+//! Both need tmux. The Claude Code run needs `claude` on PATH and a Claude
+//! Code config directory that `claude auth status` says is signed in
+//! (`KROWK_LIVE_CLAUDE_CONFIG`, an instance's `configDir`; its model
+//! `KROWK_LIVE_CLAUDE_MODEL`, Haiku unless named); without them it is
+//! skipped, saying so. Claude Code keeps its own record of the run's
+//! sessions in that directory (`projects/`, its history), as for any
+//! session run on it: an account kept for such runs is the one to name.
+//! The native run has a stand-in Anthropic API play the model, so its moves
+//! are scripted while the TUI, host, engine, bash and sync are real.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -136,7 +140,18 @@ struct World {
     account: AccountKey,
     people: std::sync::Mutex<People>,
     _registry: krowk_devregistry::Running,
-    relay_serve: Child,
+    _relay_serve: Killed,
+}
+
+/// A process this test started, killed when dropped: a failed step leaves
+/// none of them running.
+struct Killed(Child);
+
+impl Drop for Killed {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
 
 impl World {
@@ -152,23 +167,27 @@ impl World {
         let keys = root.join("ticket-keys.json");
         std::fs::write(&keys, json!({"ticketKeys": {e2e::hex(&krowk_devregistry::TICKET_KID): e2e::hex(&krowk_devregistry::ticket_public_key())}}).to_string()).unwrap();
         let addr = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
-        let relay_serve = Command::new(env!("CARGO_BIN_EXE_krowk"))
-            .args(["relay", "serve", "--ticket-keys"])
-            .arg(&keys)
-            .args(["--addr", &addr.to_string()])
-            .env_clear()
-            .env("HOME", root.join("relay-home"))
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(std::fs::File::create(root.join("relay.log")).unwrap())
-            .spawn()
-            .unwrap();
+        let mut relay_serve = Killed(
+            Command::new(env!("CARGO_BIN_EXE_krowk"))
+                .args(["relay", "serve", "--ticket-keys"])
+                .arg(&keys)
+                .args(["--addr", &addr.to_string()])
+                .env_clear()
+                .env("HOME", root.join("relay-home"))
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(std::fs::File::create(root.join("relay.log")).unwrap())
+                .spawn()
+                .unwrap(),
+        );
+        // Listening, and still running: what answers on the port is it.
         let deadline = Instant::now() + Duration::from_secs(20);
-        while std::net::TcpStream::connect(addr).is_err() {
-            assert!(Instant::now() < deadline, "krowk relay serve listens: {}", std::fs::read_to_string(root.join("relay.log")).unwrap_or_default());
+        while std::net::TcpStream::connect(addr).is_err() || relay_serve.0.try_wait().unwrap().is_some() {
+            let why = std::fs::read_to_string(root.join("relay.log")).unwrap_or_default();
+            assert!(Instant::now() < deadline && relay_serve.0.try_wait().unwrap().is_none(), "krowk relay serve listens: {why}");
             std::thread::sleep(Duration::from_millis(50));
         }
-        World { name: name.into(), root, api, relay: format!("ws://{addr}"), account: AccountKey::generate(), people: Default::default(), _registry: registry, relay_serve }
+        World { name: name.into(), root, api, relay: format!("ws://{addr}"), account: AccountKey::generate(), people: Default::default(), _registry: registry, _relay_serve: relay_serve }
     }
 
     /// A machine on the person's device list, with `config` as its
@@ -212,8 +231,6 @@ impl World {
 
 impl Drop for World {
     fn drop(&mut self) {
-        let _ = self.relay_serve.kill();
-        let _ = self.relay_serve.wait();
         if std::env::var_os("KROWK_LIVE_KEEP").is_none() {
             let _ = std::fs::remove_dir_all(&self.root);
         }
@@ -333,8 +350,8 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     assert!(made.status.success(), "A makes the session: {}", String::from_utf8_lossy(&made.stderr));
     let session = std::fs::read_dir(a.sessions()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).find(|n| n.len() == 36).expect("a session was logged");
     let host_log = std::fs::File::create(w.root.join("sync-host.log")).unwrap();
-    let mut host = a.command(&["sync", "host", &session]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(host_log).spawn().unwrap();
-    let ta = a.tui(&format!("{}-a", run.name), &["--resume", &session]).expect("tmux");
+    let mut host = Killed(a.command(&["sync", "host", &session]).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(host_log).spawn().unwrap());
+    let ta = a.tui(&format!("{}-a", run.name), &["--resume", &session]).expect("tmux, checked before the run");
     until(&ta, "A's prompt", 30, |s| s.contains("Plan, search, build anything"));
 
     // 1. Three agents, the rows' facts once the sleeper's bash has run a minute.
@@ -393,7 +410,7 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     capture(run.name, "08-conversation", &conversation);
 
     // The attached client: B's TUI on the same session, through the relay.
-    let tb = b.tui(&format!("{}-b", run.name), &["sync", "attach", &session]).expect("tmux");
+    let tb = b.tui(&format!("{}-b", run.name), &["sync", "attach", &session]).expect("tmux, checked before the run");
     let attached = until(&tb, "B attached", 60, |s| s.contains("Attached to") && s.contains("Agent sleeper"));
     // Its history, replayed from the chunks: the sleeper as it ended.
     assert!(attached.lines().any(|l| l.contains("Agent sleeper") && l.contains("interrupted after")), "{attached}");
@@ -404,20 +421,19 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     // answered here (R-SUB-12).
     let waiting = until(&tb, "the agents waiting on B", 120, |s| s.contains("Agent napper") && s.contains("waiting on you") && s.contains("allow once"));
     capture(run.name, "b2-waiting-on-you", &waiting);
-    let mut answered = 0;
-    while answered < 4 {
+    // Each card answered once: `y`, then the card's question gone or
+    // another's in its place before the next. The dialog takes no key
+    // until it has been up a moment.
+    let card = |s: &str| s.lines().find(|l| l.contains("allow Bash")).map(str::trim).map(String::from);
+    let mut answered = Vec::new();
+    while answered.len() < 2 {
+        let asked = card(&until(&tb, "an approval on B", 30, |s| card(s).is_some_and(|c| !answered.contains(&c)))).unwrap_or_default();
         std::thread::sleep(Duration::from_millis(800));
-        if !tb.screen().contains("allow once") {
-            std::thread::sleep(Duration::from_secs(8));
-            if !tb.screen().contains("allow once") {
-                break;
-            }
-            continue;
-        }
         tb.keys(&["y"]);
-        answered += 1;
+        until(&tb, "the approval answered", 30, |s| card(s).as_ref() != Some(&asked));
+        answered.push(asked);
     }
-    assert!(answered >= 2, "both agents' calls approved on B");
+    assert!(answered.iter().any(|c| c.contains("napper")) && answered.iter().any(|c| c.contains("waker")), "both agents' calls approved on B: {answered:?}");
     // The napper's bash running, then opened and stopped from B.
     until(&tb, "the napper's bash on B", 60, |s| s.lines().any(|l| l.contains("Agent napper") && l.contains("bash ")));
     let view = open(&tb, "napper");
@@ -437,9 +453,16 @@ fn check(run: &Run, w: &World, a: &Machine, b: &Machine, model: &str) {
     assert_eq!(a.child_end(&session, "napper").1.as_deref(), Some("interrupted"), "the napper's log on A");
     assert_eq!(a.child_end(&session, "waker").1.as_deref(), Some("completed"), "the waker's log on A");
     assert!(a.repo.join("woke.txt").exists() && !a.repo.join("napped.txt").exists(), "the waker's call ran on A, the napper's never finished");
-    assert!(host.try_wait().unwrap().is_none(), "A still hosts: {}", std::fs::read_to_string(w.root.join("sync-host.log")).unwrap_or_default());
-    let _ = host.kill();
-    let _ = host.wait();
+    assert!(host.0.try_wait().unwrap().is_none(), "A still hosts: {}", std::fs::read_to_string(w.root.join("sync-host.log")).unwrap_or_default());
+}
+
+/// Whether tmux is here to run the TUIs in, said when it is not.
+fn tmux_here() -> bool {
+    let here = Command::new("tmux").arg("-V").output().is_ok();
+    if !here {
+        eprintln!("skipped: tmux is not installed");
+    }
+    here
 }
 
 /// `claude` on PATH: the directory it is in.
@@ -450,17 +473,29 @@ fn claude_dir() -> Option<PathBuf> {
 #[test]
 #[ignore = "live: minutes long, spends Claude Code tokens; run with --ignored and KROWK_LIVE_CLAUDE_CONFIG"]
 fn r_sub_10_r_sub_11_r_sub_12_live_claude_code_three_agents_one_stopped_in_the_tui_and_one_from_an_attached_tui() {
+    if !tmux_here() {
+        return;
+    }
     let Some(config) = std::env::var_os("KROWK_LIVE_CLAUDE_CONFIG").map(PathBuf::from).filter(|d| d.is_dir()) else {
-        eprintln!("skipped: KROWK_LIVE_CLAUDE_CONFIG names no signed-in Claude Code config directory");
+        eprintln!("skipped: KROWK_LIVE_CLAUDE_CONFIG names no Claude Code config directory");
         return;
     };
     let Some(bin) = claude_dir() else {
         eprintln!("skipped: claude is not on PATH");
         return;
     };
+    let path = format!("{}:/usr/bin:/bin", bin.display());
+    // Signed in, as Claude Code itself says: krowk never reads its
+    // credentials (R-BACK-2), and nor does this.
+    let claude = |args: &[&str]| Command::new(bin.join("claude")).args(args).env_clear().env("PATH", &path).env("HOME", std::env::var_os("HOME").unwrap_or_default()).env("CLAUDE_CONFIG_DIR", &config).stdin(Stdio::null()).output();
+    if !claude(&["auth", "status"]).is_ok_and(|o| o.status.success()) {
+        eprintln!("skipped: `claude auth status` says {} is not signed in", config.display());
+        return;
+    }
+    let version = claude(&["--version"]).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    capture("claude", "00-version", &version);
     let model = std::env::var("KROWK_LIVE_CLAUDE_MODEL").unwrap_or_else(|_| "haiku".into());
     let w = World::new("claude");
-    let path = format!("{}:/usr/bin:/bin", bin.display());
     let instances = json!({"claude:live": {"kind": "claude-code", "configDir": config}});
     // A in the fullscreen TUI, B inline: the view in both screens.
     let a = w.machine("a", json!({"instances": instances, "tui": {"screen": "fullscreen"}, "permissions": {"defaultMode": "bypassPermissions"}}), &[("PATH", path.clone())]);
@@ -513,6 +548,9 @@ fn tool_calls(calls: &[(String, Value)]) -> String {
 #[test]
 #[ignore = "live: minutes long; run with --ignored"]
 fn r_sub_10_r_sub_11_r_sub_12_live_native_three_agents_one_stopped_in_the_tui_and_one_from_an_attached_tui() {
+    if !tmux_here() {
+        return;
+    }
     let m = mock::serve(native);
     let w = World::new("native");
     let path = "/usr/bin:/bin".to_string();
