@@ -1685,6 +1685,86 @@ fn r_sub_10_an_agent_waiting_on_an_approval_is_stopped_and_its_question_taken_ba
     assert!(at("stop_task ") < denied, "{fake}");
 }
 
+/// R-SUB-10: a sibling stopped while one agent's question waits on the
+/// person. The stop is written at once, but nothing reads what Claude Code
+/// says until the question is answered: the interrupt is taken, never
+/// refused for want of an answer, and once the person answers, the
+/// stopped agent ends interrupted and the turn goes on.
+#[test]
+fn r_sub_10_a_sibling_stopped_while_an_agents_question_waits_ends_once_it_is_answered() {
+    use krowk_harness::protocol::{ApprovalDecision, ChildState};
+    let home = Home::new("kids-stop-sibling");
+    let dir = home.signed_in("cfg-work");
+    // The recorded turn, the reader still running when the sleeper asks:
+    // its end left for the fake to say at the stop, and its `Agent`
+    // call's result after the sleeper's question.
+    let raw = std::fs::read_to_string(fixture("recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let task = |d: &str| printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == d).unwrap();
+    let (reader, reader_call) = (task("read notes")["task_id"].as_str().unwrap().to_string(), task("read notes")["tool_use_id"].as_str().unwrap().to_string());
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::new();
+    let mut answered = None;
+    for m in &printed[init + 1..] {
+        let reader_ended = m["task_id"] == reader.as_str() && matches!(m["subtype"].as_str(), Some("task_updated" | "task_notification"));
+        let reader_answered = m["parent_tool_use_id"].is_null() && m["message"]["content"][0]["tool_use_id"] == reader_call.as_str();
+        match m["type"].as_str() {
+            _ if reader_ended => {}
+            _ if reader_answered => answered = Some(m.to_string()),
+            Some("control_request") if m["request"]["subtype"] == "can_use_tool" => {
+                scenario.push_str(&format!("@ask {}\n", m["request"]));
+                scenario.push_str(&format!("{}\n", answered.take().expect("the reader's result comes before the question")));
+            }
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = home.root.join("sibling.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    let host = home.host_answering(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))]);
+    let fake_log = home.log_file();
+    let (lines, r, answer) = within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let turn = host.execute(prompt(None, "run two agents", "claude:work/sonnet", PermissionMode::Default), tx);
+        let client = async {
+            let mut lines: Vec<StreamLine> = Vec::new();
+            let mut answer = None;
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    let kid = kid_of(&lines, &reader);
+                    let stop = host.execute(Command::Interrupt { session_id: kid }, mpsc::channel(8).0);
+                    let approve = async {
+                        // Written to Claude Code while the question waits;
+                        // then the person answers.
+                        while !std::fs::read_to_string(&fake_log).unwrap_or_default().lines().any(|l| l.starts_with("stop_task ")) {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        }
+                        let a = Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+                        host.execute(a, mpsc::channel(1).0).await.unwrap();
+                    };
+                    answer = Some(tokio::join!(stop, approve).0);
+                }
+                lines.push(l);
+            }
+            (lines, answer.expect("the sleeper asked"))
+        };
+        let (r, (lines, answer)) = tokio::join!(turn, client);
+        host.shutdown().await;
+        (lines, r.unwrap().unwrap(), answer)
+    }));
+    assert!(matches!(answer, Ok(None)), "taken, not refused: {:?}", answer.err());
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    let kid = kid_of(&lines, &reader);
+    let last = lines.iter().rev().find_map(|l| match l {
+        StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, .. }) if *session_id == kid => Some(*status),
+        _ => None,
+    });
+    assert_eq!(last, Some(ChildState::Interrupted));
+    assert!(matches!(home.events(&kid).last().map(|e| &e.body), Some(LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. })));
+    assert_eq!(lines_of(&home.fake_log(), "stop_task "), std::slice::from_ref(&reader));
+}
+
 /// R-SUB-10: a `stop_task` Claude Code refuses is an interrupt answered
 /// `not_stoppable`, with Claude Code's words for why, and nothing else
 /// happens to the turn.

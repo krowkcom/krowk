@@ -702,10 +702,13 @@ impl ClaudeEngine {
 
 /// A stop of one agent handed to the running process, answered once
 /// Claude Code answers it — by then it has said the agent was killed,
-/// which ends its child. Not sent, or refused, it is `not_stoppable` with
-/// why. Each wait has its own `grace`: to be written, then, from the
-/// write, to be answered — a stop written late is not said to be
-/// unanswered early.
+/// which ends its child. Not written, or refused, it is `not_stoppable`
+/// with why. Each wait has its own `grace`: to be written, then, from the
+/// write, to be answered. Written and not answered in time, it is taken:
+/// Claude Code may have stopped the agent already with nothing reading
+/// what it said — another agent's question holding the turn — and the
+/// agent's end says how it went, where a refusal would offer to stop it
+/// again.
 async fn stop_answer(status: &Status, task_id: &str, grace: Duration) -> Result<(), EngineError> {
     let refused = |why: &str| EngineError::new("not_stoppable", format!("Claude Code did not stop that agent: {why}"));
     let ((sent, written), (done, answer)) = (oneshot::channel(), oneshot::channel());
@@ -721,7 +724,7 @@ async fn stop_answer(status: &Status, task_id: &str, grace: Duration) -> Result<
         Ok(Ok(Ok(()))) => Ok(()),
         Ok(Ok(Err(why))) => Err(refused(&why)),
         Ok(Err(_)) => Err(refused("its process ended before it answered")),
-        Err(_) => Err(refused(&format!("it was sent the stop and has not answered within {} seconds — if it stops the agent after all, the agent's end says so", grace.as_secs()))),
+        Err(_) => Ok(()),
     }
 }
 
@@ -2023,7 +2026,8 @@ mod tests {
     /// R-SUB-10: a stop's answer is waited for from when it was written,
     /// not from when it was handed over: one written late in the first
     /// wait still gets the whole second. One nothing writes is said not
-    /// sent; one written and never answered is said sent.
+    /// sent; one written and not answered in time is taken, its agent's
+    /// end left to say how it went.
     #[tokio::test]
     async fn r_sub_10_a_stops_answer_is_waited_for_from_its_write() {
         let grace = Duration::from_millis(200);
@@ -2045,8 +2049,7 @@ mod tests {
             drop(ask.done);
         });
         assert!(stop_answer(&status, "a1", grace).await.is_ok());
-        let e = stop_answer(&status, "a1", grace).await.unwrap_err();
-        assert!(e.code == "not_stoppable" && e.message.contains("it was sent the stop and has not answered"), "{e}");
+        assert!(stop_answer(&status, "a1", grace).await.is_ok(), "written, and not answered: taken");
         process.abort();
         // Handed over, never written: not sent.
         let (tx, _rx) = mpsc::unbounded_channel();
