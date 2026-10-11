@@ -186,11 +186,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Code agent, in its transcript or in the Ctrl-G list, now stops that agent
   alone. It used to say krowk couldn't. Claude Code is asked to stop it: its
   row reads `stopping…`, then `interrupted`, and the other agents and the
-  turn carry on. This also works for an agent still running in the
+  turn carry on. This also works for an agent waiting on your approval
+  (its question is taken back), for an agent still running in the
   background after its turn ended, and from a device following a synced
-  session. If Claude Code refuses or doesn't answer, the bottom line says
-  why and the agent keeps running. Codex agents still can't be stopped one
-  at a time.
+  session. If Claude Code refuses, or the stop can't reach it, the bottom
+  line says why and the agent keeps running. Codex agents still can't be
+  stopped one at a time.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

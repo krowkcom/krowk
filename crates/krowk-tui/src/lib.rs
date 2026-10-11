@@ -2247,12 +2247,8 @@ impl<'h> Ui<'h> {
     /// on meanwhile (`stops`): Claude Code answers a stop once the turn
     /// has sent it.
     fn stop_child(&mut self, app: &mut App, id: String, in_view: bool) {
-        app.stopping(&id);
         let host = self.host;
-        self.stops.push(Box::pin(async move {
-            let answer = host.execute(Command::Interrupt { session_id: id.clone() }, mpsc::channel(1).0).await.map(|_| ());
-            (id, in_view, answer)
-        }));
+        queue_stop(&mut self.stops, app, id, in_view, move |cmd| async move { host.execute(cmd, mpsc::channel(1).0).await.map(|_| ()) });
     }
 
     /// The trust question for a routed backend. It is answered by one
@@ -3398,18 +3394,28 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
     }
 }
 
-/// The host's answer to child `id`'s interrupt: taken — or sent to a host
-/// slow to answer, which has it — the child reads stopping; refused, it
-/// no longer does, and why is said in the child view's footer when
-/// `in_view`, else as a notice.
+/// Child `id`'s interrupt, sent with `execute`: it reads stopping at once,
+/// and the host's answer is waited for in `stops`, beside everything else
+/// the loop waits on, never in the key's handler (`stop_answered` takes
+/// it). Nothing here waits on the host, so there is no slow answer to
+/// tell apart, as `Ui::command` must.
+fn queue_stop<'h, F: Future<Output = Result<(), EngineError>> + 'h>(stops: &mut Vec<StopFuture<'h>>, app: &mut App, id: String, in_view: bool, execute: impl FnOnce(Command) -> F) {
+    app.stopping(&id);
+    let answer = execute(Command::Interrupt { session_id: id.clone() });
+    stops.push(Box::pin(async move { (id, in_view, answer.await) }));
+}
+
+/// The host's answer to child `id`'s interrupt: taken, the child reads
+/// stopping until its end arrives; refused, it no longer does, and why is
+/// said in the child view's footer when `in_view`, else as a notice.
 fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), EngineError>) {
     match answer {
-        Err(e) if e.code != SLOW => {
+        Ok(()) => app.stopping(id),
+        Err(e) => {
             app.not_stopping(id);
             let why = format!("not stopped: {}", e.message);
             if in_view { app.child_say(&why) } else { app.notice(&why) }
         }
-        _ => app.stopping(id),
     }
 }
 
@@ -3450,7 +3456,7 @@ mod tests {
 
     /// R-SUB-10: an interrupt the host refuses — `not_stoppable`, with why —
     /// is said in the child view's footer, and the child no longer reads
-    /// stopping; one sent to a slow host does.
+    /// stopping.
     #[test]
     fn r_sub_10_a_refused_interrupt_says_why_in_the_footer_and_nothing_reads_stopping() {
         use super::*;
@@ -3467,24 +3473,63 @@ mod tests {
         let shown = rows(&mut app);
         assert_eq!(shown[7], "⚠ not stopped: its backend cannot stop one agent alone", "{shown:?}");
         assert!(!shown[0].contains("stopping"), "{shown:?}");
-        stop_answered(&mut app, "k1", true, Err(EngineError::new(SLOW, "slow")));
-        assert!(rows(&mut app)[0].contains("· stopping…"), "sent, to a host slow to answer: {:?}", rows(&mut app));
     }
 
-    /// R-SUB-10: interrupts of children are waited for together with
-    /// everything else the loop waits on (`first_of`): the one answered
-    /// first is taken, the others stay, and none means never.
+    /// R-SUB-10: `x` on a child sends its interrupt without waiting for
+    /// the answer (`queue_stop`): the child reads stopping at once, and the
+    /// loop goes on — here running the turn, which a host in this process
+    /// answers a backend's stop from, as Claude Code's turn writes
+    /// `stop_task`. The answer is taken once it comes (`first_of`); one
+    /// that is refused clears stopping and says why.
     #[tokio::test]
-    async fn r_sub_10_child_stops_are_waited_for_beside_the_loop_not_in_it() {
-        use std::{future::Future, pin::Pin, time::Duration};
-        let mut stops: Vec<Pin<Box<dyn Future<Output = &str>>>> = vec![
-            Box::pin(async { tokio::time::sleep(Duration::from_secs(60)).await; "slow" }),
-            Box::pin(async { "k2" }),
-        ];
-        assert_eq!(super::first_of(&mut stops).await, "k2");
-        assert_eq!(stops.len(), 1, "the slow one still waits");
-        let mut none: Vec<Pin<Box<dyn Future<Output = &str>>>> = Vec::new();
-        assert!(tokio::time::timeout(Duration::from_millis(20), super::first_of(&mut none)).await.is_err(), "nothing to wait for: never");
+    async fn r_sub_10_x_on_a_child_answers_once_the_loop_runs_the_turn() {
+        use super::*;
+        use krowk_harness::protocol::{LogBody, LogEvent, ModelRef};
+        use std::{cell::Cell, rc::Rc};
+        let mut app = App::new(Editor::new(None), 80, Settings::default(), None, None);
+        let model = ModelRef { instance: "claude".into(), model: "haiku".into() };
+        for k in ["k1", "k2"] {
+            app.on_line(&StreamLine::Log(LogEvent { id: format!("e{k}"), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("c{k}"), subagent_session_id: k.into(), description: format!("do {k}"), agent: None, model: model.clone(), ran_by: krowk_harness::protocol::RanBy::Claude, backend_id: Some(format!("a{k}")) } }));
+        }
+        app.open_child("k1", Ok(Vec::new()));
+        let rows = |app: &mut App| app.child_rows(100, 8, None).unwrap().iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<_>>();
+        // The host answers a stop only once the turn has run: it is the
+        // turn that sends it.
+        let ran = Rc::new(tokio::sync::Notify::new());
+        let turned = Rc::new(Cell::new(false));
+        let execute = |refuse: bool| {
+            let (ran, turned) = (ran.clone(), turned.clone());
+            move |cmd: Command| async move {
+                assert!(matches!(cmd, Command::Interrupt { .. }));
+                if !turned.get() {
+                    ran.notified().await;
+                }
+                if refuse { Err(EngineError::new("not_stoppable", "Claude Code did not stop that agent: no")) } else { Ok(()) }
+            }
+        };
+        let mut stops: Vec<StopFuture<'_>> = Vec::new();
+        queue_stop(&mut stops, &mut app, "k1".into(), true, execute(false));
+        assert!(rows(&mut app)[0].contains("· stopping…"), "at once: {:?}", rows(&mut app));
+        // The loop: the stop waits beside the turn, which runs.
+        let turn = async {
+            turned.set(true);
+            ran.notify_waiters();
+            std::future::pending::<()>().await
+        };
+        tokio::pin!(turn);
+        let (id, in_view, answer) = tokio::select! {
+            a = first_of(&mut stops) => a,
+            _ = &mut turn => unreachable!(),
+        };
+        stop_answered(&mut app, &id, in_view, answer);
+        assert!(stops.is_empty() && rows(&mut app)[0].contains("· stopping…"), "taken: stopping until its end: {:?}", rows(&mut app));
+        // A refusal clears it, and says why.
+        app.open_child("k2", Ok(Vec::new()));
+        queue_stop(&mut stops, &mut app, "k2".into(), true, execute(true));
+        let (id, in_view, answer) = first_of(&mut stops).await;
+        stop_answered(&mut app, &id, in_view, answer);
+        let shown = rows(&mut app);
+        assert!(!shown[0].contains("stopping") && shown[7].contains("not stopped: Claude Code did not stop that agent: no"), "{shown:?}");
     }
 
     #[test]

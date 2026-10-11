@@ -1635,6 +1635,56 @@ fn r_sub_10_interrupting_one_claude_agent_stops_it_alone_and_the_turn_goes_on() 
     assert_eq!(last(&kid_of(&lines, &reader)), (Some(ChildState::Done), Some(TurnStatus::Completed)));
 }
 
+/// R-SUB-10: an agent waiting on the person's approval is stopped all the
+/// same: the stop is written while the question waits, the question is
+/// taken back — resolved, so the agent no longer reads waiting — and the
+/// agent ends interrupted while the parent's turn goes on.
+#[test]
+fn r_sub_10_an_agent_waiting_on_an_approval_is_stopped_and_its_question_taken_back() {
+    use krowk_harness::protocol::{ApprovalDecision, ChildState};
+    let home = Home::new("kids-stop-asking");
+    let dir = home.signed_in("cfg-work");
+    let (path, printed) = asking(&home);
+    let sleeper = printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == "sleeper").unwrap()["task_id"].as_str().unwrap().to_string();
+    let host = home.host_answering(vec![("claude:work", home.instance(&dir, Some(path.to_str().unwrap())))]);
+    let (lines, r, answer) = within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let turn = host.execute(prompt(None, "run two agents", "claude:work/sonnet", PermissionMode::Default), tx);
+        let client = async {
+            let mut lines: Vec<StreamLine> = Vec::new();
+            let mut answer = None;
+            while let Some(l) = rx.recv().await {
+                if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &l {
+                    // Nobody answers it: the agent is stopped instead.
+                    answer = Some(host.execute(Command::Interrupt { session_id: req.session_id.clone() }, mpsc::channel(8).0).await);
+                }
+                lines.push(l);
+            }
+            (lines, answer.expect("the sleeper asked"))
+        };
+        let (r, (lines, answer)) = tokio::join!(turn, client);
+        host.shutdown().await;
+        (lines, r.unwrap().unwrap(), answer)
+    }));
+    assert!(matches!(answer, Ok(None)), "taken while it waited: {:?}", answer.err());
+    assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
+    let kid = kid_of(&lines, &sleeper);
+    let req = lines.iter().find_map(|l| if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l { Some(r.clone()) } else { None }).unwrap();
+    assert_eq!(req.session_id, kid);
+    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::ApprovalResolved { session_id, request_id, decision: ApprovalDecision::Deny, .. }) if *session_id == kid && *request_id == req.request_id)), "its question taken back");
+    let last = lines.iter().rev().find_map(|l| match l {
+        StreamLine::Live(LiveEvent::SubagentStatus { session_id, status, waiting, .. }) if *session_id == kid => Some((*status, *waiting)),
+        _ => None,
+    });
+    assert_eq!(last, Some((ChildState::Interrupted, None)));
+    let fake = home.fake_log();
+    assert_eq!(lines_of(&fake, "stop_task "), std::slice::from_ref(&sleeper), "{fake}");
+    // Written while the question waited, before its answer.
+    let at = |p: &str| fake.lines().position(|l| l.starts_with(p)).unwrap_or_else(|| panic!("{p} in {fake}"));
+    let denied = fake.lines().position(|l| l.starts_with("answer ") && l.contains(r#""behavior":"deny""#)).unwrap_or_else(|| panic!("denied: {fake}"));
+    assert!(at("stop_task ") < denied, "{fake}");
+}
+
 /// R-SUB-10: a `stop_task` Claude Code refuses is an interrupt answered
 /// `not_stoppable`, with Claude Code's words for why, and nothing else
 /// happens to the turn.
