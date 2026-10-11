@@ -660,8 +660,11 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
 /// (5 ms ticks) would show it as 40 ms or more, but a loaded machine holds
 /// the thread up as long with no write on it (36 ms on Linux under load,
 /// 130 ms on a macOS runner), so the probe's readings are said, not judged.
+/// The thread waiting for a write made elsewhere (a `block_on`) is not
+/// said here: that is `r_lag_9_no_blocking_io_on_the_daemons_thread`'s
+/// tripwire, and the five-second tool's lateness bound above.
 #[test]
-fn r_lag_9_a_turn_on_a_stalling_disk_leaves_the_daemon_thread_on_time() {
+fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let m = mock::serve(|body, _| {
         let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();

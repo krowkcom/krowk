@@ -2045,7 +2045,7 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     let b = Sandbox::new("fullscreen");
     b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
     // The shell stays once krowk leaves, so all it printed leaving is read.
-    let Some(tm) = Tmux::start_around("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&", Some("exec sleep 600")) else { return };
+    let Some(tm) = Tmux::start_around("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&", Some("echo krowk-exit=$?; exec sleep 600")) else { return };
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "1", "on the alternate screen");
     tm.keys(&["write it all out", "Enter"]);
@@ -2092,13 +2092,11 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     assert!(tm.wait_gone("Copied 2 lines", Duration::from_secs(10)).is_some(), "the flash stayed:\n{}", tm.screen());
     tm.keys(&["C-d", "C-d"]);
     assert!(tm.wait_for("krowk --resume", Duration::from_secs(10)).is_some(), "{}", tm.screen());
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    while tm.tmux(&["display", "-p", "-t", "t", "#{pane_current_command}"]).trim() != "sleep" {
-        assert!(std::time::Instant::now() < deadline, "krowk left, the shell after it: {}", tm.screen());
-        std::thread::sleep(Duration::from_millis(40));
-    }
+    // krowk left, and well: the shell after it says how.
+    assert!(tm.wait_for("krowk-exit=", Duration::from_secs(10)).is_some(), "krowk left, the shell after it: {}", tm.screen());
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "0", "the shell's screen back");
     let history = tm.history();
+    assert!(history.contains("krowk-exit=0"), "krowk exited 0: {history}");
     assert!(history.find("shell-was-here").unwrap() < history.find("write it all out").unwrap(), "printed under what the shell had: {history}");
     let want: Vec<String> = mock::numbered_lines(120).lines().map(String::from).collect();
     let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
