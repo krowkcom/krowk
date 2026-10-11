@@ -83,6 +83,16 @@ pub struct Listening {
     stop: Option<watch::Sender<bool>>,
     /// Whether the LAN is still followed (`follow_lan`), and so advertised.
     following: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// What it offers now, the LAN addresses as `follow_lan` last found them.
+    now: std::sync::Arc<std::sync::Mutex<Vec<Candidate>>>,
+}
+
+impl Listening {
+    /// The addresses to name in a welcome: those listened on now, so a
+    /// viewer arriving after the machine moved races where it is.
+    pub fn candidates_now(&self) -> Vec<Candidate> {
+        self.now.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
 }
 
 impl Drop for Listening {
@@ -199,10 +209,11 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         }
     };
     let following = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let now = std::sync::Arc::new(std::sync::Mutex::new(candidates.clone()));
     let changes = if lan {
         let (tx, changes) = tokio::sync::mpsc::unbounded_channel();
-        let (following, stopped) = (following.clone(), rx.clone());
-        std::thread::spawn(move || follow_lan(session, port, tailnet, bound, read_lan, tx, following, stopped));
+        let (following, stopped, now) = (following.clone(), rx.clone(), now.clone());
+        std::thread::spawn(move || follow_lan(session, port, tailnet, bound, read_lan, tx, following, stopped, now));
         Some(changes)
     } else {
         None
@@ -212,7 +223,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
             eprintln!("krowk: the direct listener stopped: {e}");
         }
     });
-    Ok(Listening { dial, candidates, stop, following })
+    Ok(Listening { dial, candidates, stop, following, now })
 }
 
 /// The LAN addresses as the machine moves (`LAN_CHECK`): each new one
@@ -222,7 +233,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
 /// addresses, which name only those the session started with. Ends with
 /// the listener.
 #[allow(clippy::too_many_arguments)]
-fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: Vec<IpAddr>, read_lan: LanAt, changes: tokio::sync::mpsc::UnboundedSender<relay::Change>, following: std::sync::Arc<std::sync::atomic::AtomicBool>, stopped: watch::Receiver<bool>) {
+fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: Vec<IpAddr>, read_lan: LanAt, changes: tokio::sync::mpsc::UnboundedSender<relay::Change>, following: std::sync::Arc<std::sync::atomic::AtomicBool>, stopped: watch::Receiver<bool>, offered: std::sync::Arc<std::sync::Mutex<Vec<Candidate>>>) {
     let url = |ip: &IpAddr| match ip {
         IpAddr::V6(v6) => format!("ws://[{v6}]:{port}"),
         IpAddr::V4(v4) => format!("ws://{v4}:{port}"),
@@ -259,7 +270,9 @@ fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: 
         }
         let new: Vec<IpAddr> = now.into_iter().filter(|ip| !bound.contains(ip)).collect();
         for ip in new {
-            let Ok(l) = TcpListener::bind((ip, port)) else { continue };
+            // Made ready to accept here, so the relay takes it as it is:
+            // an address is advertised only once something listens there.
+            let Ok(l) = TcpListener::bind((ip, port)).and_then(|l| l.set_nonblocking(true).map(|()| l)) else { continue };
             if changes.send(relay::Change::Add(l, url(&ip))).is_err() {
                 return;
             }
@@ -267,6 +280,10 @@ fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: 
             moved = true;
         }
         if moved {
+            let mut o = offered.lock().unwrap_or_else(|e| e.into_inner());
+            o.retain(|c| c.via != "lan");
+            o.extend(bound.iter().map(|ip| Candidate { url: url(ip), via: "lan".into() }));
+            drop(o);
             // The old responder says goodbye as it goes; the new one
             // announces what is listened on now.
             drop(advertised.take());

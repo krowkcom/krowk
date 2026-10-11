@@ -1626,14 +1626,14 @@ async fn r_net_2_without_tailscale_the_session_moves_to_the_lan_and_r_net_3_only
 }
 
 /// R-NET-2 (ticket 27): A's LAN address moves from 127.0.0.2 to 127.0.0.3
-/// after A took the session up, so B's welcome names an address nothing
-/// listens on any more. A follows the move — listens on the new address,
-/// lets the old one go, advertises the new one over mDNS — and B, its
-/// welcome's address refused, finds the new one over mDNS and moves onto
-/// it. Linux only: macOS answers on 127.0.0.1 alone.
+/// after A took the session up. A follows the move: it listens on the new
+/// address and no longer on the old, advertises the new one over mDNS —
+/// where a viewer welcomed before the move finds it — and names it in the
+/// welcomes it gives after, so B, attaching now, moves onto it. Linux only:
+/// macOS answers on 127.0.0.1 alone.
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn r_net_2_a_host_whose_lan_address_moves_is_found_again_over_mdns() {
+async fn r_net_2_a_host_whose_lan_address_moves_listens_offers_and_advertises_the_new_one() {
     let w = World::new("lan-moves");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (_d, session) = first_turn(&w).await;
@@ -1651,6 +1651,16 @@ async fn r_net_2_a_host_whose_lan_address_moves_is_found_again_over_mdns() {
     let got = until(&mut v, Duration::from_secs(30), &mut Vec::new(), direct_path).await;
     let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).expect("B went direct");
     assert!(via.starts_with("ws://127.0.0.3:"), "B moved onto {via}, not the address A moved to");
+    let port = via.rsplit(':').next().unwrap();
+    assert!(std::net::TcpStream::connect(format!("127.0.0.2:{port}")).is_err(), "A still listens on the address it lost");
+    let (tx, mut found) = mpsc::unbounded_channel();
+    let tag_of = krowk_harness::daemon::ws::uuid(&session);
+    tokio::task::spawn_blocking(move || krowk_harness::sync::mdns::browse(tag_of, Duration::from_secs(3), true, tx)).await.unwrap();
+    let mut advertised = Vec::new();
+    while let Ok(c) = found.try_recv() {
+        advertised.push(c.url);
+    }
+    assert!(advertised.contains(&via) && !advertised.iter().any(|u| u.starts_with("ws://127.0.0.2:")), "mDNS should name the new address alone: {advertised:?}");
     v.commands.send(w.prompt(Some(&session), "after the move")).unwrap();
     until(&mut v, Duration::from_secs(15), &mut Vec::new(), result_of).await;
 }
