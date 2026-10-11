@@ -209,10 +209,10 @@ fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_o
 /// R-SUB-7, R-SUB-11 through the daemon: a second TUI resuming a session
 /// whose Claude Code agent runs in the background, between turns, shows
 /// that agent running — not done at its call's result — and follows it:
-/// its end, which comes with no turn running, reaches that TUI too. Then,
-/// no agent of the session left, it stops following: the turn Claude Code
-/// begins is the first TUI's to run, and the second neither runs it (no
-/// `session_busy`) nor mirrors it.
+/// its end, which comes with no turn running, reaches that TUI too, then
+/// the turn Claude Code begins to answer it, which one of the two runs and
+/// the other is refused without a word (`session_busy`). That turn over,
+/// it stops following: a later prompt of the first is not mirrored.
 #[test]
 fn r_sub_7_a_tui_resuming_a_session_follows_its_background_agent_between_turns() {
     let d = Daemon::new("bgfollow");
@@ -225,14 +225,37 @@ fn r_sub_7_a_tui_resuming_a_session_follows_its_background_agent_between_turns()
     assert!(b.wait_for("survey the repo · general-purpose · in the background", secs(10)).is_some(), "{:?}", b.text());
     assert!(b.wait_for("done in", secs(15)).is_some(), "its end, between turns: {:?}", b.text());
     b.write(b"\x1b");
-    assert!(a.wait_for("The agent is done: the repo is small.", secs(15)).is_some(), "the first TUI runs Claude Code's turn: {:?}", a.text());
+    for t in [&a, &b] {
+        assert!(t.wait_for("The agent is done: the repo is small.", secs(15)).is_some(), "Claude Code's turn: {:?}", t.text());
+    }
+    std::thread::sleep(Duration::from_millis(1000));
+    a.write(b"and one more thing\r");
+    assert!(a.wait_for("and one more thing", secs(10)).is_some(), "{:?}", a.text());
     std::thread::sleep(Duration::from_millis(1500));
-    assert!(!b.text().contains("session_busy"), "{:?}", b.text());
-    assert!(!b.text().contains("The agent is done"), "no longer following once its agent ended: {:?}", b.text());
+    assert!(!b.text().contains("session_busy") && !a.text().contains("session_busy"), "{:?}", b.text());
+    assert!(!b.text().contains("and one more thing"), "no longer following once that turn ran: {:?}", b.text());
     for t in [&mut a, &mut b] {
         t.write(b"\x04\x04");
         assert!(t.wait(secs(10)).is_some());
     }
+}
+
+/// R-SUB-7: the TUI that ran the session gone, the second, following it
+/// for its background agent, runs the turn Claude Code begins to answer
+/// it: it does not let go of the session first, which would let its
+/// backend go with that turn.
+#[test]
+fn r_sub_7_a_tui_following_a_background_agent_alone_runs_the_turn_that_answers_it() {
+    let d = Daemon::new("bgalone");
+    let (mut a, parent) = background_agent_started(&d);
+    let secs = Duration::from_secs;
+    let mut b = pty::Pty::spawn(claude_cmd(&d, &["--resume", &parent]), 160, 30);
+    assert!(b.wait_for("[1 subagent]", secs(10)).is_some(), "{:?}", b.text());
+    a.write(b"\x04\x04");
+    assert!(a.wait(secs(10)).is_some());
+    assert!(b.wait_for("The agent is done: the repo is small.", secs(20)).is_some(), "run here: {:?}", b.text());
+    b.write(b"\x04\x04");
+    assert!(b.wait(secs(10)).is_some());
 }
 
 /// R-SUB-7: a background agent whose log never got an end — its process

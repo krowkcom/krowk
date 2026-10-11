@@ -136,6 +136,9 @@ const SLOW: &str = "host_slow";
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
 /// that does.
+/// How long resuming a session waits for the daemon to say whether its
+/// background agents still run there.
+const STATUS_WAIT: Duration = Duration::from_millis(1500);
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
@@ -525,6 +528,14 @@ async fn session(opts: Options) -> Outcome {
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
 }
 
+/// A session followed only for its background agents: its id, and, once
+/// the turn its backend began to answer them was asked for here, the count
+/// of its turns completed then.
+struct FollowingBg {
+    id: String,
+    answered_at: Option<u32>,
+}
+
 struct Ui<'h> {
     host: &'h link::Link,
     /// Sessions running in the daemon when the TUI opened: `/sessions`
@@ -556,8 +567,9 @@ struct Ui<'h> {
     /// The turn running is a `continue` this client sent.
     continuing: bool,
     /// The session followed only for its background agents
-    /// (`follow_background`), until none is left.
-    following_bg: Option<String>,
+    /// (`follow_background`), until none is left and the turn Claude Code
+    /// begins to answer them has run (`FollowingBg`).
+    following_bg: Option<FollowingBg>,
     /// A paste being read and made ready, off the runtime's thread (the
     /// clipboard, or the files dropped), and the editor's mark for where it
     /// goes; the ones asked for after it, waiting their turn.
@@ -1133,6 +1145,7 @@ impl<'h> Ui<'h> {
             }
         }
         self.follow(app);
+        self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
             std::thread::spawn(move || project(&id));
@@ -1577,8 +1590,10 @@ impl<'h> Ui<'h> {
                 status.host = Some(h);
                 app.say_attached();
                 // A backend's agent runs in the host's process: with no
-                // host on the session, nothing says it goes on. Its real
-                // end, should the host come back with it, replaces this.
+                // host on the session, nothing says it goes on, and it is
+                // presumed ended. Presumed only: a line of it, should the
+                // host come back with it running, says it runs, and its
+                // logged end replaces this one.
                 if !h {
                     app.end_backend_children();
                 }
@@ -1639,25 +1654,32 @@ impl<'h> Ui<'h> {
         if app.backend_children_running().is_empty() {
             return;
         }
-        let busy = remote.status().await.ok().and_then(|s| s.background_sessions).unwrap_or_default();
-        if busy.iter().any(|b| b == id) {
-            remote.attach_later(id, after);
-            self.following_bg = Some(id.to_string());
-        } else {
-            app.end_backend_children();
+        // Not known — an older daemon, one that does not answer in time —
+        // and they are taken to run: followed, and their end said by the
+        // daemon if it has one, rather than ended on a guess.
+        let asked = tokio::time::timeout(STATUS_WAIT, remote.status()).await;
+        let gone = matches!(asked, Ok(Ok(krowk_harness::protocol::HostStatus { background_sessions: Some(ref busy), .. })) if !busy.iter().any(|b| b == id));
+        if gone {
+            return app.end_backend_children();
         }
+        remote.attach_later(id, after);
+        self.following_bg = Some(FollowingBg { id: id.to_string(), answered_at: None });
     }
 
     /// Following a session only for its background agents
-    /// (`follow_background`): once none is left, and no turn of this
-    /// client's runs, the daemon stops sending it here, so this TUI does
-    /// not go on mirroring the session's later turns.
+    /// (`follow_background`): once none is left, the turn its backend began
+    /// to answer them asked for here (`go_on`) and a turn of the session
+    /// completed since — that one, or the one another client ran first —
+    /// and no turn of this client's runs, the daemon stops sending it here,
+    /// so this TUI does not go on mirroring the session's later turns.
+    /// Not before: the last client to leave a session nothing runs lets its
+    /// backend go, and the turn answering the agents with it.
     fn let_go_background(&mut self, app: &App) {
-        if self.turn.is_none()
-            && app.backend_children_running().is_empty()
-            && let Some(id) = self.following_bg.take()
+        let done = self.following_bg.as_ref().is_some_and(|f| f.answered_at.is_some_and(|at| app.turns_completed() > at));
+        if done && self.turn.is_none() && app.backend_children_running().is_empty()
+            && let Some(f) = self.following_bg.take()
         {
-            self.host.leave(&id);
+            self.host.leave(&f.id);
         }
     }
 
@@ -1717,13 +1739,16 @@ impl<'h> Ui<'h> {
     /// A turn the backend began by itself runs as soon as none of the
     /// TUI's own does. A prompt sent first runs it ahead of itself, and a
     /// `continue` left over is then refused quietly (`nothing_pending`).
-    /// A TUI following a session only for its background agents leaves
-    /// that turn to the client that runs the session; its next prompt
-    /// runs it first.
+    /// A TUI following a session only for its background agents runs it
+    /// too: another client may have run it first, and then the host says
+    /// so (`session_busy`, not shown); if none is left, it is this one's.
     fn go_on(&mut self, app: &mut App) {
         self.let_go_background(app);
-        if self.turn.is_some() || self.following_bg.is_some() || !std::mem::take(&mut app.unprompted) {
+        if self.turn.is_some() || !std::mem::take(&mut app.unprompted) {
             return;
+        }
+        if let Some(f) = &mut self.following_bg {
+            f.answered_at = Some(app.turns_completed());
         }
         let Some(session_id) = app.session_id.clone() else { return };
         let (tx, rx) = mpsc::channel(1024);

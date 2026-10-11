@@ -229,6 +229,10 @@ struct Sub {
     backend_id: Option<String>,
     /// `x` was taken for it and its end has not come yet.
     stopping: bool,
+    /// Its end was presumed, not said (`end_backend_children`): its own
+    /// lines, should more come, say it runs, and its logged end replaces
+    /// this one.
+    presumed: bool,
 }
 
 /// A child's item under way: its start, and the text it has streamed.
@@ -269,6 +273,7 @@ impl Sub {
             ran_by: RanBy::Krowk,
             backend_id: None,
             stopping: false,
+            presumed: false,
         }
     }
 
@@ -276,6 +281,9 @@ impl Sub {
     /// log's times when `at_ms`, the log's time of its end, is given, else
     /// by this client's clock.
     fn end(&mut self, status: TurnStatus, at_ms: Option<i64>, tick: u64) {
+        if std::mem::take(&mut self.presumed) {
+            (self.status, self.took, self.ended) = (None, None, 0);
+        }
         if self.status.is_none() {
             self.status = Some(status);
         }
@@ -1928,6 +1936,11 @@ impl App {
         self.sub_clock += 1;
         let tick = self.sub_clock;
         let Some(s) = self.child(sid) else { return };
+        // Its end was only presumed: anything more of it says it runs, and
+        // its own end below replaces the presumed one.
+        if std::mem::take(&mut s.presumed) {
+            (s.status, s.took, s.ended) = (None, None, 0);
+        }
         // Anything live from a running child is news of it: frames are not
         // sent per delta, so a child streaming text is not quiet. Not a
         // frame itself: its own stamp says when, however late it arrives
@@ -2569,14 +2582,21 @@ impl App {
 
     /// The backend's agents left running by a replay with nothing to run
     /// them any more — their process gone with no end written — ended
-    /// interrupted, at the replay's last event.
+    /// interrupted, at the replay's last event. Presumed: a line of one
+    /// that comes after all says it runs, and its logged end replaces this.
     pub fn end_backend_children(&mut self) {
         let at_ms = self.replayed_ms;
         for s in self.past.iter_mut().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()) {
             self.sub_clock += 1;
             s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
+            s.presumed = true;
         }
         self.dirty = true;
+    }
+
+    /// How many turns of the session have completed here.
+    pub fn turns_completed(&self) -> u32 {
+        self.turns
     }
 
     /// Child `sid` ended as its own log says, at `at_ms`.
@@ -5093,10 +5113,19 @@ mod tests {
         // Replayed with no end in its log and nothing running it any more:
         // ended interrupted, not left running.
         let mut gone = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
+        gone.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
         launched(&mut gone, false);
         gone.end_backend_children();
         assert!(gone.backend_children_running().is_empty() && !gone.status_bar().contains("subagent"), "{}", gone.status_bar());
         assert_eq!(gone.children()[0].status, Some(TurnStatus::Interrupted));
+        // Presumed only (a synced viewer's host away for a moment): a line
+        // of it says it runs, and its logged end replaces the presumed one.
+        gone.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 7, waiting: None, tokens: 0 }));
+        assert_eq!(gone.backend_children_running(), ["k1"], "running again");
+        gone.end_backend_children();
+        gone.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 4000, error: None, reported_cost_usd: None }));
+        assert_eq!(gone.children()[0].status, Some(TurnStatus::Completed), "its own end, not the presumed one");
+        assert_eq!(gone.children()[0].took, Some(Duration::from_millis(4000)));
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {
