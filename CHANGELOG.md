@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **krowk tells your terminal whether it is working or waiting on you.**
+  Beside the window title, the TUI now sends an OSC 7501 report (the
+  Program Status Protocol) each time its state changes: working while a
+  turn runs, blocked while an approval or the agent's questions wait on
+  you, idle otherwise. While working or blocked, its message is the prompt
+  as the title shows it (its first line, cut short).
+  Terminals and agent inboxes that read it, such as Rex, can list krowk
+  with its status without guessing from the title's glyphs. Leaving krowk,
+  stopping it with Ctrl-Z, or handing the terminal to a provider's own
+  sign-in under `/connect` clears what it reported, and krowk reports it
+  again once it has the terminal back. A terminal that doesn't know the
+  sequence ignores it.
 - **`krowk -p` leaves a record of how it ended on your terminal.** A
   terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
   now shows a `krowk -p` you started in another tab as working while its

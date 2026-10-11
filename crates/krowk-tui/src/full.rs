@@ -206,6 +206,11 @@ impl<W: Write> Full<W> {
         write!(self.buf.clone(), "\x1b]2;{title}\x07")
     }
 
+    /// An OSC 7501 report, as `osc7501` wrote it, with the next frame.
+    pub fn report(&mut self, report: &str) -> io::Result<()> {
+        self.buf.clone().write_all(report.as_bytes())
+    }
+
     pub fn steady(&mut self, on: bool) -> io::Result<()> {
         if std::mem::replace(&mut self.steady, on) != on {
             self.buf.clone().write_all(if on { BLINK_OFF } else { CURSOR_DEFAULT })?;

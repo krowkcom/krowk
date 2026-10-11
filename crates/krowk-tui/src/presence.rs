@@ -4,7 +4,11 @@
 //! a call waits for a yes) and, inside herdr (a workspace manager for
 //! coding agents, which sets `HERDR_PANE_ID`), the pane's agent state, so
 //! herdr lists krowk as an agent with its status and notifies on it.
+//! Beside the title, in the same write, the same state as the terminal's
+//! root record for krowk (OSC 7501, `osc7501`): what a terminal or an inbox
+//! that keeps one reads instead of the title's glyphs.
 
+use crate::osc7501;
 use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
@@ -13,7 +17,10 @@ use std::time::Duration;
 pub enum State {
     Idle,
     Working,
+    /// An approval waits.
     Blocked,
+    /// The agent's questions wait.
+    Asking,
 }
 
 impl State {
@@ -21,9 +28,25 @@ impl State {
         match self {
             State::Idle => "idle",
             State::Working => "working",
-            State::Blocked => "blocked",
+            State::Blocked | State::Asking => "blocked",
         }
     }
+
+    fn record(self) -> osc7501::State {
+        match self {
+            State::Idle => osc7501::State::Idle,
+            State::Working => osc7501::State::Working,
+            State::Blocked => osc7501::State::Blocked(osc7501::Kind::Permission),
+            State::Asking => osc7501::State::Blocked(osc7501::Kind::Question),
+        }
+    }
+}
+
+/// What to write for a change, together: the window title and the root
+/// record's report.
+pub struct Told {
+    pub title: String,
+    pub report: String,
 }
 
 /// The last state told, so each change is told once.
@@ -145,15 +168,35 @@ impl Presence {
         self.told = None;
     }
 
-    /// The title to set now, if `state` and `topic` differ from what was
-    /// last told; herdr is told in the background, and never waited on.
+    /// The report that clears every record krowk made, when it made one:
+    /// written on the way out and into a job stop, when the person is back
+    /// at the shell and nothing krowk reported is current. `pause` or
+    /// `finish` after it has the state told again from scratch.
+    pub fn clear(&self) -> Option<String> {
+        self.told.as_ref()?;
+        osc7501::encode(&osc7501::Report { state: osc7501::State::Clear, ..Default::default() })
+    }
+
+    /// The title alone, of `tell`: what the title's own tests hold.
+    #[cfg(test)]
     pub fn update(&mut self, state: State, topic: &str) -> Option<String> {
-        let topic: String = crate::card::clean(topic.lines().next().unwrap_or_default()).chars().take(48).collect();
+        self.tell(state, topic).map(|t| t.title)
+    }
+
+    /// The title to set now and the root record's report, if `state` and
+    /// `topic` differ from what was last told; herdr is told in the
+    /// background, and never waited on. The report's msg is the topic the
+    /// title shows: none while idle, the prompt done with.
+    pub fn tell(&mut self, state: State, topic: &str) -> Option<Told> {
+        let topic: String = match state {
+            State::Idle => String::new(),
+            _ => crate::card::clean(topic.lines().next().unwrap_or_default()).chars().take(48).collect(),
+        };
         let now = (state, topic);
         if self.told.as_ref() == Some(&now) {
             return None;
         }
-        let state_changed = self.told.as_ref().is_none_or(|(s, _)| *s != now.0);
+        let state_changed = self.told.as_ref().is_none_or(|(s, _)| s.herdr() != now.0.herdr());
         if state_changed && let (Some(pane), Some(r)) = (&self.pane, &self.herdr) {
             r.send(&["pane", "report-agent", pane, "--source", "krowk", "--agent", "krowk", "--state", now.0.herdr()]);
         }
@@ -161,13 +204,14 @@ impl Presence {
             (State::Idle, _) | (_, true) => match now.0 {
                 State::Idle => "✳ krowk".to_string(),
                 State::Working => "◑ krowk".to_string(),
-                State::Blocked => "✋ krowk".to_string(),
+                State::Blocked | State::Asking => "✋ krowk".to_string(),
             },
             (State::Working, false) => format!("◑ {}", now.1),
-            (State::Blocked, false) => format!("✋ {}", now.1),
+            (State::Blocked | State::Asking, false) => format!("✋ {}", now.1),
         };
+        let report = osc7501::encode(&osc7501::Report { state: now.0.record(), msg: &now.1, ..Default::default() }).unwrap_or_default();
         self.told = Some(now);
-        Some(title)
+        Some(Told { title, report })
     }
 }
 
@@ -184,6 +228,23 @@ mod tests {
         assert_eq!(p.update(State::Blocked, "fix the failing test").as_deref(), Some("✋ fix the failing test"));
         assert_eq!(p.update(State::Working, "evil\x1b]0;x\x07").as_deref(), Some("◑ evil]0;x"), "no escape reaches the title");
         assert_eq!(p.update(State::Working, "txt.\u{202E}exe").as_deref(), Some("◑ txt.exe"), "nor a control that reorders it");
+    }
+
+    #[test]
+    fn r_pres_2_the_root_record_follows_the_title_and_is_cleared_once_told() {
+        use osc7501::{Kind, Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let mut p = Presence::from_env(&|_| String::new());
+        assert_eq!(p.clear(), None, "nothing told, nothing to clear");
+        assert_eq!(p.tell(State::Idle, "an old prompt").unwrap().report, root(Rec::Idle, ""), "idle names no prompt");
+        assert!(p.tell(State::Idle, "another").is_none(), "nor is told again for one");
+        assert_eq!(p.tell(State::Working, "fix it\nnow").unwrap().report, root(Rec::Working, "fix it"));
+        assert_eq!(p.tell(State::Blocked, "fix it").unwrap().report, root(Rec::Blocked(Kind::Permission), "fix it"));
+        assert_eq!(p.tell(State::Asking, "fix it").unwrap().report, root(Rec::Blocked(Kind::Question), "fix it"));
+        assert_eq!(p.clear(), Some(root(Rec::Clear, "")));
+        p.release();
+        assert_eq!(p.clear(), None, "a job stop clears once");
+        assert_eq!(p.tell(State::Asking, "fix it").unwrap().title, "✋ fix it", "told again from scratch");
     }
 
     #[test]

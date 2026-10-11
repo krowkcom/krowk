@@ -2147,3 +2147,158 @@ fn fullscreen_takes_the_alternate_screen_and_gives_everything_back() {
     assert!(out.find("\x1b[?1049l").unwrap() < out.rfind("Directory").unwrap(), "the header printed again on the shell's screen: {out:?}");
     assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "bracketed paste off and the cursor back, last: {out:?}");
 }
+
+// ---- the terminal's root record (OSC 7501) ----------------------------------
+
+/// Every OSC 7501 report written, in order.
+fn reports(out: &str) -> Vec<String> {
+    out.match_indices("\x1b]7501;").map(|(i, _)| out[i..].split_inclusive("\x1b\\").next().unwrap_or_default().to_string()).collect()
+}
+
+/// The root record's report for `state` with `msg`, as krowk writes it.
+fn root(state: krowk_tui::osc7501::State, msg: &str) -> String {
+    krowk_tui::osc7501::encode(&krowk_tui::osc7501::Report { state, msg, ..Default::default() }).unwrap()
+}
+
+/// Waits until `n` reports have been written; false at `timeout`.
+fn reported(t: &pty::Pty, n: usize, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    while reports(&t.text()).len() < n {
+        if Instant::now() > deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    true
+}
+
+/// Allows the call that waits, past the moment a key typed ahead is not
+/// taken as the answer: `y` again until the `n`th report says it was.
+fn allow(t: &mut pty::Pty, n: usize) {
+    for _ in 0..5 {
+        std::thread::sleep(Duration::from_millis(500));
+        t.write(b"y");
+        if reported(t, n, Duration::from_secs(5)) {
+            return;
+        }
+    }
+    panic!("the yes was never taken: {:?}", reports(&t.text()));
+}
+
+/// krowk on a bare terminal, on `screen`, its prompt up.
+fn pres_pty(name: &str, screen: &str, script: impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static) -> (mock::Mock, Sandbox, pty::Pty) {
+    let m = mock::serve(script);
+    let b = Sandbox::new(&format!("{name}-{screen}"));
+    b.config(serde_json::json!({"tui": {"screen": screen}}));
+    let t = pty::Pty::spawn(b.command(&m.url, &[]), 100, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "no prompt: {:?}", t.text());
+    (m, b, t)
+}
+
+/// Quits with Ctrl-D twice and gives every report written.
+fn quit_reports(mut t: pty::Pty) -> (Vec<String>, String) {
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "{:?}", t.text());
+    let out = t.text();
+    (reports(&out), out)
+}
+
+/// `mock::edit_script`, with a plain answer to a call that offers no
+/// edit tool (the session's title), and the answer after the edit slowed,
+/// so the turn is seen working again before it ends: a state that comes
+/// and goes between two frames is never drawn, nor reported.
+fn edit_or_answer(body: &serde_json::Value, n: usize) -> mock::Reply {
+    let has_result = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+    let edits = body["tools"].as_array().into_iter().flatten().any(|t| ["str_replace", "apply_patch", "search_replace"].iter().any(|e| t["name"] == *e));
+    match (edits, has_result) {
+        (true, true) => mock::Reply::paced(mock::fixture("turn2_answer.sse"), Duration::from_millis(100)),
+        (true, false) => mock::edit_script(body, n),
+        (false, _) => mock::Reply::sse(&mock::text_stream("Editing the readme")),
+    }
+}
+
+/// A prompt, its approval and the answer: each change reported once, in
+/// the frame that sets the window title, and every record cleared on the
+/// way out, after the last report.
+fn root_record_follows_a_turn(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-turn", screen, edit_or_answer);
+    t.write(b"edit the readme\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
+    allow(&mut t, 4);
+    assert!(reported(&t, 5, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    assert!(t.wait_for("tokens", Duration::from_secs(10)).is_some());
+    let (got, out) = quit_reports(t);
+    let ask = "edit the readme";
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(State::Blocked(Kind::Permission), ask), root(State::Working, ask), root(State::Idle, ""), root(State::Clear, "")]);
+    // Right after the window title that says the same, in the same write.
+    let mut from = 0;
+    for (r, glyph) in got[..5].iter().zip(["✳ krowk", "◑ edit the readme", "✋ edit the readme", "◑ edit the readme", "✳ krowk"]) {
+        let at = from + out[from..].find(r.as_str()).unwrap();
+        assert!(out[..at].ends_with(&format!("\x1b]2;{glyph}\x07")), "{r:?} not right after the title {glyph:?}: {out:?}");
+        from = at + r.len();
+    }
+    assert!(out.rfind("\x1b]7501;") < out.rfind("\x1b[23;2t"), "cleared before the title is given back");
+}
+
+#[test]
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_idle_inline() {
+    root_record_follows_a_turn("inline");
+}
+
+#[test]
+fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_idle_fullscreen() {
+    root_record_follows_a_turn("fullscreen");
+}
+
+/// The agent's questions report blocked on a question, and an interrupt
+/// idle.
+fn root_record_waits_on_a_question(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let input = serde_json::json!({"questions": [{"question": "Which way?", "header": "Way", "options": [{"label": "Left"}, {"label": "Right"}]}]});
+    let (_m, _b, mut t) = pres_pty("pres-ask", screen, move |_, _| mock::Reply::sse(&mock::tool_use("toolu_01Ask", "ask_user", &input)));
+    t.write(b"ask me\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no question reported: {:?}", reports(&t.text()));
+    t.write(b"\x03");
+    assert!(reported(&t, 4, Duration::from_secs(10)), "the interrupt was not reported: {:?}", reports(&t.text()));
+    let (got, _) = quit_reports(t);
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, "ask me"), root(State::Blocked(Kind::Question), "ask me"), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_2_a_question_reports_blocked_on_a_question_inline() {
+    root_record_waits_on_a_question("inline");
+}
+
+#[test]
+fn r_pres_2_a_question_reports_blocked_on_a_question_fullscreen() {
+    root_record_waits_on_a_question("fullscreen");
+}
+
+/// A job stop clears every record, and coming back reports the state
+/// again: here an approval still waiting.
+fn root_record_is_cleared_at_a_job_stop_and_told_again_on_resume(screen: &str) {
+    use krowk_tui::osc7501::{Kind, State};
+    let (_m, _b, mut t) = pres_pty("pres-stop", screen, edit_or_answer);
+    t.write(b"edit the readme\r");
+    assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
+    // Ctrl-Z: the stop is dropped here (see the keyboard protocol's test),
+    // so krowk gives the terminal up and takes it back at once.
+    t.write(b"\x1a");
+    assert!(reported(&t, 5, Duration::from_secs(10)), "nothing reported on the way back: {:?}", reports(&t.text()));
+    allow(&mut t, 6);
+    assert!(reported(&t, 7, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
+    let (got, _) = quit_reports(t);
+    let (ask, blocked) = ("edit the readme", State::Blocked(Kind::Permission));
+    assert_eq!(got, [root(State::Idle, ""), root(State::Working, ask), root(blocked, ask), root(State::Clear, ""), root(blocked, ask), root(State::Working, ask), root(State::Idle, ""), root(State::Clear, "")]);
+}
+
+#[test]
+fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_inline() {
+    root_record_is_cleared_at_a_job_stop_and_told_again_on_resume("inline");
+}
+
+#[test]
+fn r_pres_2_a_job_stop_clears_the_records_and_resuming_reports_again_fullscreen() {
+    root_record_is_cleared_at_a_job_stop_and_told_again_on_resume("fullscreen");
+}

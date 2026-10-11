@@ -62,6 +62,13 @@ impl<W: Write> Screen<W> {
         }
     }
 
+    pub fn report(&mut self, report: &str) -> io::Result<()> {
+        match self {
+            Screen::Full(t) => t.report(report),
+            Screen::Inline(t) => t.report(report),
+        }
+    }
+
     pub fn clipboard(&mut self, text: &str) -> io::Result<()> {
         match self {
             Screen::Full(t) => t.clipboard(text),
