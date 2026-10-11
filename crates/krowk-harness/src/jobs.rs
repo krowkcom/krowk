@@ -206,6 +206,21 @@ impl Jobs {
         lock(&self.table).sessions.iter().filter(|(_, s)| s.jobs.iter().any(|j| j.status == Status::Running)).map(|(id, _)| id.clone()).collect()
     }
 
+    /// Every job running, as (session, id), by session then id: what a
+    /// shutdown would stop.
+    pub fn running_all(&self) -> Vec<(String, String)> {
+        let t = lock(&self.table);
+        let mut all: Vec<(String, String)> = t.sessions.iter().flat_map(|(s, ss)| ss.jobs.iter().filter(|j| j.status == Status::Running).map(move |j| (s.clone(), j.id.clone()))).collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.len().cmp(&b.1.len())).then(a.1.cmp(&b.1)));
+        all
+    }
+
+    /// What the status line counts for `session` now: told to a client
+    /// that comes to it between changes.
+    pub fn counted(&self, session: &str) -> usize {
+        lock(&self.table).sessions.get(session).map_or(0, counted)
+    }
+
     /// A background child of `session` started (R-STEER-3): counted with
     /// its jobs.
     pub fn agent_started(&self, session: &str) {
@@ -470,6 +485,19 @@ pub fn noted(text: &str) -> Option<(&str, &str)> {
     let id = head.strip_prefix("id=\"")?.split('"').next()?;
     let status = head.split("status=\"").nth(1)?.split('"').next()?;
     Some((id, status))
+}
+
+/// The jobs of `running` (`Jobs::running_all`) as a person reads they are
+/// stopped, ended by `how`: `current`'s by id alone, another session's
+/// with its id. None when none runs.
+pub fn stopped_line(running: &[(String, String)], current: Option<&str>, how: &str) -> Option<String> {
+    let names: Vec<String> = running.iter().map(|(s, id)| if Some(s.as_str()) == current { id.clone() } else { format!("{id} of session {s}") }).collect();
+    let (what, verbs) = match names.len() {
+        0 => return None,
+        1 => ("background job", "is still running, and stops"),
+        _ => ("background jobs", "are still running, and stop"),
+    };
+    Some(format!("{what} {} {verbs} {how}", names.join(", ")))
 }
 
 /// Whether a note's id names a job (`b1`), not a child session.
