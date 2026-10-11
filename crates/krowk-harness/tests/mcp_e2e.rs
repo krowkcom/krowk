@@ -2,7 +2,8 @@
 //! stand-in Anthropic API and a stand-in stdio MCP server
 //! (`fixtures/mcp/fake-mcp`, a bash script): a repository's `.mcp.json`,
 //! what trust turns on, the two deferred meta-tools the model is offered,
-//! and the permission rules its calls are judged by.
+//! the permission rules its calls are judged by, and the servers a
+//! subagent's definition lets it reach.
 #![cfg(unix)]
 
 #[path = "common/mock.rs"]
@@ -55,9 +56,23 @@ impl Home {
 
     /// A `.mcp.json` naming the stand-in server as `fake`, listing `tools`.
     fn mcp_json(&self, tools: usize) {
+        self.mcp_json_of(&["fake"], tools);
+    }
+
+    /// A `.mcp.json` naming the stand-in server once by each of `names`,
+    /// each logging to its own file (`log_of`).
+    fn mcp_json_of(&self, names: &[&str], tools: usize) {
         let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
-        let body = json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.fake_log()}}}});
-        std::fs::write(self.repo().join(".mcp.json"), body.to_string()).unwrap();
+        let servers: serde_json::Map<String, Value> = names.iter().map(|n| (n.to_string(), json!({"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.log_of(n)}}))).collect();
+        std::fs::write(self.repo().join(".mcp.json"), json!({"mcpServers": servers}).to_string()).unwrap();
+    }
+
+    /// Where the stand-in server named `name` logs what it reads.
+    fn log_of(&self, name: &str) -> PathBuf {
+        match name {
+            "fake" => self.fake_log(),
+            n => self.root.join(format!("{n}-mcp.log")),
+        }
     }
 
     fn host(&self, trusted: bool, user: Value) -> Host {
@@ -153,11 +168,15 @@ fn run(host: &Host, cmd: Command) -> RunResult {
 /// Every tool result the model was sent, in order.
 fn results(m: &mock::Mock) -> Vec<String> {
     let seen = m.seen.lock().unwrap();
-    let last = seen.last().unwrap().body["messages"]
+    results_in(&seen.last().unwrap().body)
+}
+
+/// Every tool result one request carries, in order.
+fn results_in(body: &Value) -> Vec<String> {
+    body["messages"]
         .as_array()
         .unwrap()
-        .clone();
-    last.iter()
+        .iter()
         .flat_map(|msg| msg["content"].as_array().cloned().unwrap_or_default())
         .filter(|b| b["type"] == "tool_result")
         .map(|b| match &b["content"] {
@@ -390,4 +409,52 @@ fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
     let r = run(&host, prompt(PermissionMode::BypassPermissions));
     assert_eq!(r.result, "Done.");
     assert_eq!(results(&m)[0], "echo: over http");
+}
+
+/// Whether a request is a subagent's: its system prompt says so.
+fn is_child(body: &Value) -> bool {
+    body["system"].to_string().contains("You are a subagent")
+}
+
+/// R-SUB-1 (ticket 25): a subagent whose definition names one MCP server
+/// is offered the MCP tools for it alone — its search finds nothing on the
+/// other, its call there is refused before it runs, and the other is never
+/// started for it — while the session that started it still reaches both.
+#[test]
+fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
+    let parent = script(vec![
+        ("subagent", json!({"description": "echo", "prompt": "echo hi through fake", "agent": "fake-only"})),
+        ("mcp_call", json!({"tool": "other:echo", "input": {"text": "from the parent"}})),
+    ]);
+    let child = script(vec![
+        ("mcp_search", json!({"query": "echo"})),
+        ("mcp_call", json!({"tool": "other:echo", "input": {"text": "sneaked"}})),
+        ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
+    ]);
+    let m = mock::serve(move |body, n| if is_child(body) { child(body, n) } else { parent(body, n) });
+    let h = Home::new("subagent-allowlist", &m.url);
+    h.mcp_json_of(&["fake", "other"], 1);
+    std::fs::create_dir_all(h.repo().join(".krowk/agents")).unwrap();
+    std::fs::write(h.repo().join(".krowk/agents/fake-only.md"), "---\nname: fake-only\ndescription: Echoes through fake.\ntools: Read, mcp__fake\n---\nEcho.\n").unwrap();
+    let host = h.host(true, json!({}));
+    let r = run(&host, prompt(PermissionMode::BypassPermissions));
+    assert_eq!(r.result, "Done.");
+    let seen: Vec<Value> = m.seen.lock().unwrap().iter().map(|s| s.body.clone()).collect();
+    let children: Vec<&Value> = seen.iter().filter(|b| is_child(b)).collect();
+    let tools: Vec<&Value> = children[0]["tools"].as_array().unwrap().iter().collect();
+    let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["read", "mcp_search", "mcp_call"], "its list, and the MCP tools for the server it names");
+    let search = tools.iter().find(|t| t["name"] == "mcp_search").unwrap()["description"].as_str().unwrap();
+    assert!(search.contains("(fake)") && !search.contains("other"), "only its server is named to it: {search}");
+    let sent = results_in(children.last().unwrap());
+    assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("other"), "its search finds nothing on the other server: {}", sent[0]);
+    assert_eq!(sent[1], "other:echo was not run: agent fake-only reaches only the MCP tools its definition names — fake (any tool)", "refused before it ran, even in bypass mode");
+    assert_eq!(sent[2], "echo: hi", "its own server answers");
+    let other = std::fs::read_to_string(h.log_of("other")).unwrap_or_default();
+    assert!(!other.contains("sneaked"), "the refused call never reached the other server: {other}");
+    // The session that started it reaches every server still, the other
+    // started for it now.
+    let parent_sent = results_in(seen.iter().rfind(|b| !is_child(b)).unwrap());
+    assert_eq!(parent_sent[1], "echo: from the parent", "{parent_sent:?}");
+    assert!(std::fs::read_to_string(h.log_of("other")).unwrap().contains("tools/call"));
 }
