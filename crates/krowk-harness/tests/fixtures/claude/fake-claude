@@ -36,6 +36,8 @@
 #                      `success` (or refused, with FAKE_CLAUDE_STOP_TASK)
 #   @await-steer       waits for a `user` line from krowk, as steering
 #                      written mid-turn
+#   @queue             waits for a `user` line from krowk and queues it,
+#                      unread, for an interrupt that asks to cancel it
 #   @replay            prints that line back, as `--replay-user-messages`
 #                      does once the model reads it
 #   @sleep <seconds>   waits
@@ -303,6 +305,21 @@ await_steer() {
   done
 }
 
+queue_steer() {
+  local u
+  while readline; do
+    case "$LINE" in
+    '{"type":"control_request"'*) control "$LINE" || true ;;
+    '{"type":"user"'*)
+      u="$(uuid_of "$LINE")"
+      QUEUED="${QUEUED:+$QUEUED,}\"$u\""
+      log "queued $u"
+      return 0
+      ;;
+    esac
+  done
+}
+
 # A line of krowk's printed back, as `--replay-user-messages` does.
 replay() {
   emit "${1%\}},\"isReplay\":true}"
@@ -342,6 +359,7 @@ play() {
     @await-interrupt) await_interrupt ;;
     @await-stop) await_stop ;;
     @await-steer) await_steer ;;
+    @queue) queue_steer ;;
     @replay) replay "$STEER" ;;
     '@sleep '*) sleep "${l#@sleep }" ;;
     '@exit '*) exit "${l#@exit }" ;;

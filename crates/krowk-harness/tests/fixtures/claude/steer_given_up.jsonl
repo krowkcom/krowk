@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"id":"msg_story","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"A story."}],"usage":{"input_tokens":3,"output_tokens":2}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+@await-steer
+@queue
+{"type":"result","subtype":"success","is_error":false,"result":"A story.","session_id":"{{SESSION}}"}

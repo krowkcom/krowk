@@ -1302,6 +1302,60 @@ fn r_steer_1_an_interrupted_turn_hands_back_steering_claude_code_never_read() {
     assert!(!lines_of(&fake, "in ").iter().any(|l| l.contains(r#""content":"second""#)), "never written: {fake}");
 }
 
+/// R-STEER-1: steering written that Claude Code begins no turn to read
+/// within ten seconds of the `result` is given up on with an interrupt
+/// that cancels it (`cancel_queued`): the turn completes at that result,
+/// and only what the interrupt's answer names cancelled goes back. One
+/// Claude Code took, and did not cancel, it reads; it is not handed back
+/// as well.
+#[test]
+fn r_steer_1_steering_given_up_on_after_the_result_is_cancelled_and_only_what_was_cancelled_handed_back() {
+    let home = Home::new("steer-given-up");
+    let dir = home.signed_in("cfg");
+    let host = home.host(vec![("claude", home.instance(&dir, Some("steer_given_up.jsonl")))], trust::allow_all());
+    let log = home.log_file();
+    within(Box::pin(async {
+        let (tx, mut rx) = mpsc::channel(4096);
+        let exec = host.execute(prompt(None, "write a story", "claude/haiku", PermissionMode::Default), tx);
+        tokio::pin!(exec);
+        let mut session = String::new();
+        let (mut first, mut second) = (false, false);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
+        let steer = |session: &str, text: &str| Command::Steer { session_id: session.into(), text: text.into(), images: Vec::new() };
+        let result = loop {
+            tokio::select! {
+                biased;
+                Some(line) = rx.recv() => {
+                    if let StreamLine::Log(ev) = &line {
+                        session.clone_from(&ev.session_id);
+                    }
+                    if matches!(&line, StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item: Item::AssistantText { .. }, .. }, .. })) && !first {
+                        first = true;
+                        let (stx, _srx) = mpsc::channel(8);
+                        host.execute(steer(&session, "taken"), stx).await.unwrap();
+                    }
+                }
+                r = &mut exec => break r.unwrap().unwrap(),
+                // Once the fake has taken the first: the second, which it queues.
+                _ = tick.tick(), if first && !second => {
+                    if std::fs::read_to_string(&log).unwrap_or_default().lines().any(|l| l.starts_with("steer ")) {
+                        second = true;
+                        let (stx, _srx) = mpsc::channel(8);
+                        host.execute(steer(&session, "cancelled"), stx).await.unwrap();
+                    }
+                }
+            }
+        };
+        assert_eq!((result.status, result.result.as_str()), (TurnStatus::Completed, "A story."), "{result:?}");
+        assert_eq!(result.unread_steers, ["cancelled"], "only what the interrupt cancelled");
+        host.shutdown().await;
+    }));
+    let fake = home.fake_log();
+    let queued = lines_of(&fake, "queued ");
+    assert_eq!(queued.len(), 1, "{fake}");
+    assert!(fake.lines().any(|l| l == format!("cancelled \"{}\"", queued[0])), "the interrupt cancelled it: {fake}");
+}
+
 /// The lines of the fake's log with a prefix, e.g. `in ` or `steer `.
 fn lines_of(log: &str, prefix: &str) -> Vec<String> {
     log.lines().filter_map(|l| l.strip_prefix(prefix)).map(String::from).collect()
