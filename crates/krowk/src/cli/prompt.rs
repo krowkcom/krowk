@@ -18,6 +18,7 @@ use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, 
 use std::collections::HashMap;
 use krowk_harness::subagent::{AgentsConfig, Models};
 use krowk_harness::trust;
+use krowk_tui::osc7501::{self, Report, State};
 use std::io::{IsTerminal, Read};
 use std::sync::Arc;
 
@@ -137,7 +138,37 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         agents: agents_config(ctx.io.env),
         session,
     };
+    // R-PRES-6: the run's record, on stderr when that is a terminal: working
+    // now, and what it came to right before krowk exits, left behind for a
+    // person who started it in another tab.
+    let topic = prompt.clone();
+    report(ctx, State::Working, &topic);
     let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
+    let ran = turn(ctx, cfg, opts);
+    match &ran {
+        Ok(()) => report(ctx, State::Done, &topic),
+        Err(e) if e.code() == "interrupted" => report(ctx, State::Idle, &topic),
+        Err(e) => report(ctx, State::Error, &e.fix()),
+    }
+    ran
+}
+
+/// One OSC 7501 report of the root record, on stderr and only on a
+/// terminal: a file or a pipe would keep the bytes as text. Never stdout,
+/// which holds the answer in the format asked for.
+fn report(ctx: &mut Ctx, state: State, msg: &str) {
+    if !ctx.io.err_tty {
+        return;
+    }
+    if let Some(r) = osc7501::encode(&Report { state, msg, ..Report::default() }) {
+        let _ = ctx.io.stderr.write_all(r.as_bytes());
+        let _ = ctx.io.stderr.flush();
+    }
+}
+
+/// The turn, from its start to what krowk exits with.
+fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), Error> {
+    let format = opts.format;
     let outcome = if ctx.f.daemon { on_daemon(ctx, &cfg.cwd.clone(), opts)? } else { headless::run(cfg, opts, ctx.io.stdout) };
     let _ = ctx.io.stdout.flush();
     // A kept worktree is named: in the result, when one was printed as
