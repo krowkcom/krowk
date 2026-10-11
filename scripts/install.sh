@@ -280,12 +280,14 @@ release_base_url() {
 # verify_checksum is not best-effort. These bytes are about to be made executable
 # and put on PATH, so a checksums.txt that will not download, does not name the
 # archive, or names a different digest all end the install — there is no path
-# through this function that installs an unverified binary.
+# through this function that installs an unverified binary. Its signature is
+# checked first, where cosign is there to check it (verify_signature).
 verify_checksum() {
-  local tmp_dir="$1" archive="$2"
+  local tmp_dir="$1" archive="$2" base_url="$3" version="$4"
   local expected actual
 
   step "Verifying the download"
+  verify_signature "$base_url" "$tmp_dir" "$version"
 
   # scripts/dist.sh writes `<digest>  <name>`; a binary-mode digest writes `*<name>`.
   expected=$(checksum_for "$tmp_dir" "$archive")
@@ -314,6 +316,51 @@ fetch_checksums() {
 
 checksum_for() {
   awk -v f="$2" '$2 == f || $2 == ("*" f) {print $1; exit}' "$1/checksums.txt"
+}
+
+# signed_since says whether a version was released with checksums.txt signed:
+# every release from 0.12.0 (its release candidates included) carries
+# checksums.txt.sigstore.json, and none before it does.
+signed_since() {
+  local major minor
+  IFS=. read -r major minor _ <<<"$1"
+  ((major > 0 || minor >= 12))
+}
+
+# verify_signature checks checksums.txt is the one the release workflow signed
+# (R-OSS-3), with cosign when it is installed, as SECURITY.md does by hand: the
+# signature, its certificate's identity (the release workflow at this tag) and
+# its Rekor entry. cosign is not required — a container's `curl | bash` has
+# none — so without it the checksum alone is checked, over HTTPS, and the
+# command that would check the rest is printed. With it, a signature that does
+# not verify, or a signed release's bundle that will not download, ends the
+# install like a checksum mismatch.
+verify_signature() {
+  local base_url="$1" tmp_dir="$2" version="$3" identity why
+  identity="https://github.com/${REPO}/.github/workflows/release.yml@refs/tags/v${version}"
+  if ! signed_since "$version"; then
+    note "krowk ${version} predates signed releases, so only its checksum is checked."
+    return
+  fi
+  if ! command -v cosign >/dev/null 2>&1; then
+    note "cosign is not installed, so the release's signature on checksums.txt is not checked; the checksum is. To check it too:"
+    note "  cosign verify-blob checksums.txt --bundle checksums.txt.sigstore.json \\"
+    note "    --certificate-identity ${identity} \\"
+    note "    --certificate-oidc-issuer https://token.actions.githubusercontent.com"
+    note "  (both files are at ${base_url}/; SECURITY.md → Verifying a release)"
+    return
+  fi
+  if ! curl_run -fsSL "${base_url}/checksums.txt.sigstore.json" -o "${tmp_dir}/checksums.txt.sigstore.json"; then
+    why=$(curl_reason)
+    error "checksums.txt.sigstore.json would not download from ${base_url}${why:+ (${why})}, and krowk ${version} was released signed. Nothing is installed."
+  fi
+  if ! cosign verify-blob "${tmp_dir}/checksums.txt" --bundle "${tmp_dir}/checksums.txt.sigstore.json" \
+    --certificate-identity "$identity" \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com >"${tmp_dir}/cosign.log" 2>&1; then
+    sed 's/^/    /' "${tmp_dir}/cosign.log" >&2
+    error "checksums.txt is not signed by ${REPO}'s release workflow at v${version} (cosign, above). Nothing is installed. Report this at https://github.com/${REPO}/issues"
+  fi
+  info "Signature verified: checksums.txt is the release workflow's at v${version}"
 }
 
 # truthy says whether a CI variable is set to something that means yes: CI
@@ -450,7 +497,7 @@ download_binaries() {
     error "Could not download ${base_url}/${archive}${why:+ (${why})}. Check that ${version} is a released version: https://github.com/${REPO}/releases"
   fi
 
-  verify_checksum "$tmp_dir" "$archive"
+  verify_checksum "$tmp_dir" "$archive" "$base_url" "$version"
 
   if [[ "$ext" == "zip" ]]; then
     command -v unzip >/dev/null 2>&1 || error "unzip is needed to open ${archive} and is not installed"
