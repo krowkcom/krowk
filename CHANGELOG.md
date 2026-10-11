@@ -327,6 +327,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`krowk worktrees remove` no longer needs `--force` once a worktree's
+  branch is merged.** A commit already on `origin`'s default branch, or
+  with the same change there (a rebased or rebase-merged PR), no longer
+  counts as ahead, so `krowk worktrees list` and a kept worktree's report
+  stop showing merged work as unsaved. Squash-merged branches still read
+  as ahead. Nothing is fetched: run `git fetch` first if origin moved.
 - **"Copied 2 lines" goes away by itself** after a few seconds, instead
   of staying in the status bar until the next key.
 - **What you said is on a band across the width again**, instead of a

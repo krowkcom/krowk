@@ -28,7 +28,9 @@
 //!
 //! - **`list`**: each worktree git lists under the root — branch, base,
 //!   commits ahead of the base, uncommitted changes, session, age, and
-//!   whether a live session holds it.
+//!   whether a live session holds it. Commits on `origin`'s default
+//!   branch, or with an equivalent patch there, are saved, not ahead
+//!   (`super::ahead`, WT17).
 //! - **`remove`**: refused while a live session holds it, and, unless
 //!   forced, while it has uncommitted changes or commits ahead of its base.
 //!   A forced removal of one with uncommitted changes saves them first:
@@ -422,7 +424,7 @@ fn describe(repo: &Repo, common: &Path, main: &Path, hex: &str, e: &Entry, judge
 /// `l.ahead`, and `l.dirty` where its directory is there, read from git.
 fn judged(l: &mut Listed) {
     l.ahead = match (&l.base, &l.head) {
-        (Some(base), Some(head)) => query(&l.common).ok().and_then(|mut c| read(c.args(["rev-list", "--count", &format!("{base}..{head}")]), "rev-list").ok()).and_then(|n| n.parse().ok()),
+        (Some(base), Some(head)) => super::ahead(&l.common, base, head).ok(),
         _ => None,
     };
     // Its status needs no base.
@@ -965,6 +967,66 @@ mod tests {
         drop(held);
         assert!(remove(&root, &w.hex, false).is_ok());
         assert_eq!(remove(&root, "0badf00d", false), Err(Refusal::NotFound("0badf00d".into())));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A worktree whose branch was merged into origin's main — rebased
+    /// then merged with a merge commit, or rebase-merged — is removed
+    /// unforced, its branch kept; one with a commit origin lacks is still
+    /// refused, 1 commit ahead.
+    #[test]
+    fn wt17_a_merged_worktree_is_removed_without_force() {
+        if !has_git() {
+            eprintln!("git is not installed: skipping");
+            return;
+        }
+        let (base, main, root) = repo("wt17-merged");
+        let origin = base.join("origin.git");
+        git_ok(&base, &["init", "-q", "--bare", "-b", "main", origin.to_str().unwrap()]);
+        git_ok(&main, &["remote", "add", "origin", origin.to_str().unwrap()]);
+        git_ok(&main, &["push", "-q", "origin", "main"]);
+        let other = base.join("other");
+        git_ok(&base, &["clone", "-q", origin.to_str().unwrap(), other.to_str().unwrap()]);
+        let commit = |dir: &Path, file: &str| {
+            std::fs::write(dir.join(file), format!("{file}\n")).unwrap();
+            git_ok(dir, &["add", file]);
+            git_ok(dir, &["commit", "-q", "-m", file]);
+        };
+        // Lands on origin's main as a PR would, from another clone: main
+        // moved on first, so the branch is rebased onto it.
+        let land = |w: &super::super::Worktree, merge_commit: bool| {
+            git_ok(&main, &["push", "-q", "origin", &w.branch()]);
+            git_ok(&other, &["fetch", "-q", "origin"]);
+            git_ok(&other, &["checkout", "-q", "-B", "main", "origin/main"]);
+            commit(&other, &format!("moved-{}", w.hex));
+            git_ok(&other, &["checkout", "-q", "-B", "pr", &format!("origin/{}", w.branch())]);
+            git_ok(&other, &["rebase", "-q", "main"]);
+            git_ok(&other, &["checkout", "-q", "main"]);
+            if merge_commit {
+                git_ok(&other, &["merge", "-q", "--no-ff", "-m", "merge", "pr"]);
+            } else {
+                git_ok(&other, &["merge", "-q", "--ff-only", "pr"]);
+            }
+            git_ok(&other, &["push", "-q", "origin", "main"]);
+            git_ok(&main, &["fetch", "-q", "origin"]);
+        };
+        for merge_commit in [true, false] {
+            let w = create(&main, &root, "s").unwrap();
+            commit(&w.path, &format!("{}-1.txt", w.hex));
+            commit(&w.path, &format!("{}-2.txt", w.hex));
+            assert_eq!(row(&root, &w.path).ahead, Some(2));
+            land(&w, merge_commit);
+            assert_eq!(row(&root, &w.path).ahead, Some(0), "merge commit: {merge_commit}");
+            assert!(remove(&root, &w.hex, false).is_ok(), "merge commit: {merge_commit}");
+            assert!(!w.path.exists());
+            assert_eq!(git_ok(&main, &["rev-list", "--count", &format!("main..{}", w.branch())]), "2", "the branch is kept");
+        }
+        let w = create(&main, &root, "s").unwrap();
+        commit(&w.path, "landed.txt");
+        land(&w, true);
+        commit(&w.path, "unsaved.txt");
+        assert!(matches!(remove(&root, &w.hex, false), Err(Refusal::Changed(l)) if l.ahead == Some(1)));
+        assert!(w.path.exists());
         let _ = std::fs::remove_dir_all(&base);
     }
 
