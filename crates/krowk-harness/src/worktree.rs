@@ -838,12 +838,18 @@ pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
 /// a branch merged with a merge commit or rebase-merged counts none. A
 /// squash merge leaves no matching patch, so its commits still count.
 /// With no such tip, the commits in `base..head`. Read from local refs:
-/// nothing is fetched.
+/// nothing is fetched, not even a partial clone's missing blobs.
 pub(crate) fn ahead(dir: &Path, base: &str, head: &str) -> Result<usize, Error> {
+    let count = |not: &[&str]| -> Result<usize, Error> { Ok(read(query(dir)?.args(["rev-list", "--count", head]).args(not), "rev-list")?.parse().unwrap_or(0)) };
     let Some(tip) = default_tip(dir) else {
-        return Ok(read(query(dir)?.args(["rev-list", "--count", &format!("{base}..{head}")]), "rev-list")?.parse().unwrap_or(0));
+        return count(&[&format!("^{base}")]);
     };
-    let cherry = read(query(dir)?.args(["cherry", &tip, head, base]), "cherry")?;
+    // Patch ids diff every commit the tip has past the branch, so only
+    // when some commit is neither in the base nor reachable from the tip.
+    if count(&[&format!("^{base}"), &format!("^{tip}")])? == 0 {
+        return Ok(0);
+    }
+    let cherry = read(query(dir)?.env("GIT_NO_LAZY_FETCH", "1").args(["cherry", &tip, head, base]), "cherry")?;
     Ok(cherry.lines().filter(|l| l.starts_with('+')).count())
 }
 
