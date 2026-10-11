@@ -77,6 +77,12 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     if let Some(r) = &resumed {
         trust_as.set(&r.worktree);
     }
+    // The daemon trusts only a repository on the trusted list, so `--trust`
+    // has nothing to reach it with.
+    #[cfg(unix)]
+    if ctx.f.daemon && ctx.f.trust {
+        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
+    }
     if ctx.f.daemon && (ctx.f.own_worktree || resumed.is_some()) {
         return Err(fail("bad_flag", "a session in a worktree of its own runs in this process, which holds the worktree and finishes it when the run ends, and --daemon runs the turn in the host daemon — drop --daemon"));
     }
@@ -148,7 +154,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     match &ran {
         Ok(()) => report(ctx, State::Done, &topic),
         Err(e) if e.code() == "interrupted" => report(ctx, State::Idle, &topic),
-        Err(e) => report(ctx, State::Error, &e.fix()),
+        Err(e) => report(ctx, State::Error, &crate::output::headline(e)),
     }
     ran
 }
@@ -204,13 +210,8 @@ fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), E
 }
 
 /// `--daemon`: the turn is the host daemon's, started first when none runs.
-/// The daemon trusts only a repository on the trusted list, so `--trust`
-/// has nothing to reach it with.
 #[cfg(unix)]
 fn on_daemon(ctx: &mut Ctx, cwd: &std::path::Path, opts: headless::Options) -> Result<headless::Outcome, Error> {
-    if ctx.f.trust {
-        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
-    }
     let spawn = super::host::spawner(ctx)?;
     Ok(headless::run_on_daemon(ctx.io.env, cwd, super::VERSION, &spawn, opts, ctx.io.stdout))
 }
