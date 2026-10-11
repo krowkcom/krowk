@@ -3557,7 +3557,7 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
 /// this client never got.
 fn turn_ended(r: &Result<Option<RunResult>, EngineError>, topic: &str) -> Option<(presence::State, String)> {
     let failure = |e: Option<ErrorInfo>| {
-        let line = e.and_then(|e| e.message.lines().map(card::clean).find(|l| !l.trim().is_empty()));
+        let line = e.and_then(|e| e.message.lines().map(|l| card::clean(&l.replace('\t', " "))).find(|l| !l.trim().is_empty()));
         (presence::State::Error, line.unwrap_or_else(|| topic.to_string()))
     };
     match r {
@@ -3608,6 +3608,7 @@ mod tests {
         assert_eq!(turn_ended(&res(TurnStatus::Completed, None), "fix it"), ended(State::Done, "fix it"));
         assert_eq!(turn_ended(&res(TurnStatus::Failed, info("refused\nwhy")), "fix it"), ended(State::Error, "refused"));
         assert_eq!(turn_ended(&Err(krowk_harness::engine::EngineError::new("x", "\n\u{202E}gone\nwhy")), "fix it"), ended(State::Error, "gone"), "its first line with something in it");
+        assert_eq!(turn_ended(&res(TurnStatus::Failed, info("no\tway")), "fix it"), ended(State::Error, "no way"), "a tab a space");
         assert_eq!(turn_ended(&res(TurnStatus::Failed, None), "fix it"), ended(State::Error, "fix it"));
         assert_eq!(turn_ended(&res(TurnStatus::Failed, info("\u{202E}")), "fix it"), ended(State::Error, "fix it"));
         assert_eq!(turn_ended(&res(TurnStatus::Interrupted, None), "fix it"), None);
