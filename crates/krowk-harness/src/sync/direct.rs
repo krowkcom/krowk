@@ -34,9 +34,14 @@ pub struct Config {
     pub roster: Roster,
     /// Also require tailscaled to name the far end as this tailnet user.
     pub same_user: bool,
-    /// Offer this machine's LAN address too (`KROWK_DIRECT_LAN=1`); never
-    /// with `same_user`.
+    /// Offer this machine's LAN address too (`KROWK_DIRECT_LAN=1`), and
+    /// advertise it over mDNS — with Tailscale or without it; never with
+    /// `same_user`.
     pub lan: bool,
+    /// The LAN addresses to offer; empty for this machine's own: what
+    /// tailscaled says when it is up, else its interfaces' private IPv4
+    /// addresses.
+    pub lan_at: Vec<IpAddr>,
     /// Stops the listener when it turns true; without it the listener goes
     /// with the bridge.
     pub stop: Option<watch::Receiver<bool>>,
@@ -53,7 +58,12 @@ pub struct Candidate {
 impl Candidate {
     /// How a path over it is named on screen.
     pub fn path(&self) -> &'static str {
-        if self.via == "lan" { "direct over LAN" } else { "direct over Tailscale" }
+        if self.on_lan() { "direct over LAN" } else { "direct over Tailscale" }
+    }
+
+    /// An address on the LAN: the host's own, or one mDNS answered with.
+    pub fn on_lan(&self) -> bool {
+        matches!(self.via.as_str(), "lan" | "mdns")
     }
 }
 
@@ -62,6 +72,8 @@ pub struct Listening {
     pub dial: String,
     pub candidates: Vec<Candidate>,
     stop: Option<watch::Sender<bool>>,
+    /// The mDNS responder answering for the LAN addresses, while it lives.
+    _mdns: Option<super::mdns::Advertised>,
 }
 
 impl Drop for Listening {
@@ -99,41 +111,71 @@ pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
 }
 
 /// Reads this node from tailscaled and listens on its tailnet address (and
-/// LAN address), on one port. Errors say why there is no direct path; the
-/// session then goes by the relay alone.
+/// LAN address), on one port; with the LAN offered, Tailscale not running
+/// leaves the LAN alone, advertised over mDNS too. Errors say why there is
+/// no direct path; the session then goes by the relay alone.
 pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) -> Result<Listening, String> {
-    let status = running(&c.socket)?;
-    // Only a tailnet address is listened on, whatever the LocalAPI says: on
-    // macOS it is a port on 127.0.0.1 that anyone may bind once the app
-    // quits, and an answer of 0.0.0.0 would put plain ws:// on every
-    // network, past KROWK_DIRECT_LAN.
-    let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
-    let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
-    let whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(&status)? }) } else { None };
-    let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
-    let port = first.local_addr().map_err(|e| e.to_string())?.port();
-    let url = |ip: IpAddr| match ip {
+    // Never the LAN with the same-user check: tailscaled knows no one on
+    // the LAN, so every LAN connection would be turned away.
+    let lan = c.lan && !c.same_user;
+    let (status, down) = match running(&c.socket) {
+        Ok(s) => (Some(s), None),
+        Err(why) if lan => (None, Some(why)),
+        Err(why) => return Err(why),
+    };
+    let url = |ip: IpAddr, port: u16| match ip {
         IpAddr::V6(v6) => format!("ws://[{v6}]:{port}"),
         IpAddr::V4(v4) => format!("ws://{v4}:{port}"),
     };
-    let dial = url(ip);
-    let mut candidates = vec![Candidate { url: dial.clone(), via: "tailscale".into() }];
-    if let Some(name) = status.magic_dns() {
-        candidates.push(Candidate { url: format!("ws://{name}:{port}"), via: "magicdns".into() });
+    let (mut listeners, mut candidates, mut port, mut whois, mut tailnet) = (Vec::new(), Vec::new(), 0, None, None);
+    if let Some(status) = &status {
+        // Only a tailnet address is listened on, whatever the LocalAPI
+        // says: on macOS it is a port on 127.0.0.1 that anyone may bind
+        // once the app quits, and an answer of 0.0.0.0 would put plain
+        // ws:// on every network, past KROWK_DIRECT_LAN.
+        let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
+        let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
+        whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(status)? }) } else { None };
+        let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
+        port = first.local_addr().map_err(|e| e.to_string())?.port();
+        listeners.push(first);
+        candidates.push(Candidate { url: url(ip, port), via: "tailscale".into() });
+        if let Some(name) = status.magic_dns() {
+            candidates.push(Candidate { url: format!("ws://{name}:{port}"), via: "magicdns".into() });
+        }
+        tailnet = Some(ip);
     }
-    let mut listeners = vec![first];
-    // Never with the same-user check: tailscaled knows no one on the LAN,
-    // so every LAN connection would be turned away.
-    if c.lan && !c.same_user {
-        for lan in status.lan().into_iter().filter(|l| *l != ip) {
+    let mut advertised = Vec::new();
+    if lan {
+        let at = match (&c.lan_at, &status) {
+            (named, _) if !named.is_empty() => named.clone(),
+            (_, Some(status)) => status.lan(),
+            (_, None) => super::mdns::lan_addresses(),
+        };
+        for ip in at.into_iter().filter(|l| Some(*l) != tailnet) {
             // The same port, so a viewer's candidates name one listener; an
             // address taken there is simply not offered.
-            if let Ok(l) = TcpListener::bind((lan, port)) {
-                listeners.push(l);
-                candidates.push(Candidate { url: url(lan), via: "lan".into() });
+            let Ok(l) = TcpListener::bind((ip, port)) else { continue };
+            if port == 0 {
+                port = l.local_addr().map_err(|e| e.to_string())?.port();
+            }
+            listeners.push(l);
+            candidates.push(Candidate { url: url(ip, port), via: "lan".into() });
+            if let IpAddr::V4(v4) = ip {
+                advertised.push(v4);
             }
         }
+        if listeners.is_empty() {
+            return Err(format!("{}, and this machine has no LAN address to listen on", down.unwrap_or_default()));
+        }
     }
+    let dial = candidates[0].url.clone();
+    // mDNS lets a viewer on the LAN find the listener by its session
+    // alone, beside the welcome's addresses; without it those still stand.
+    let mdns = match advertised.is_empty() {
+        true => None,
+        false => super::mdns::advertise(session, &advertised, port).map_err(|e| eprintln!("krowk: {e}; the LAN path is offered without it")).ok(),
+    };
     let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins: candidates.iter().map(|c| c.url.clone()).collect(), whois, pin: Some((session, host)) };
     let (stop, rx) = match c.stop.clone() {
         Some(rx) => (None, rx),
@@ -147,7 +189,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
             eprintln!("krowk: the direct listener stopped: {e}");
         }
     });
-    Ok(Listening { dial, candidates, stop })
+    Ok(Listening { dial, candidates, stop, _mdns: mdns })
 }
 
 /// How long a viewer the host offered direct addresses may stay on the
@@ -248,7 +290,7 @@ impl Unreached {
 pub fn unreached_line(session: &str, device: &DeviceId, candidates: &[Candidate], same_user: bool) -> String {
     let at = candidates.iter().map(|c| c.url.trim_start_matches("ws://")).collect::<Vec<_>>().join(", ");
     let short: String = device.to_string().chars().take(8).collect();
-    let why = if candidates.iter().any(|c| c.via != "lan") { "if it is on this tailnet, a firewall here or the tailnet's access policy may be refusing the port" } else { "a firewall here may be refusing the port" };
+    let why = if candidates.iter().any(|c| !c.on_lan()) { "if it is on this tailnet, a firewall here or the tailnet's access policy may be refusing the port" } else { "a firewall here may be refusing the port" };
     let check = if same_user { ", or the same-user check (KROWK_TAILSCALE_SAME_USER) turned it away" } else { "" };
     let mac = if cfg!(target_os = "macos") { " — on macOS, allow incoming connections for krowk under System Settings → Network → Firewall → Options" } else { "" };
     format!("krowk: session {session}: device {short} stays on the relay — nothing it sent reached this machine's direct addresses ({at}); {why}{check}{mac}")

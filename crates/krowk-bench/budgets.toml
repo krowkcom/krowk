@@ -252,7 +252,15 @@ unit = "bytes"
 # template, apply-back, `krowk worktrees`, `--worktree`; no new crate)
 # adds 388,608: 15,022,216 (14.33 MiB), and 15,028,888 on the release
 # runner. Raised 13.50 -> 14.75 MiB, leaving 437,608.
-max = { x86_64-linux = 15_466_496 }
+# Main measured 15,596,296 (14.87 MiB) before ticket 27, already 129,800
+# over 14.75 MiB (bench runs on release only). Direct paths on the LAN
+# without Tailscale add mdns-sd (the responder and browser: its daemon
+# thread, RFC 6762's probing, announcing and caching) and if-addrs, with
+# flume, socket-pktinfo, spin and fastrand under them: 349,568 bytes,
+# 15,945,864 (15.21 MiB). iroh, the ticket's other half, was measured at
+# about 6.9 MB alone and is not built. Raised 14.75 -> 15.50 MiB, leaving
+# 307,064.
+max = { x86_64-linux = 16_252_928 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

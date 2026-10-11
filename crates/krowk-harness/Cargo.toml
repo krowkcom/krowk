@@ -76,6 +76,17 @@ futures-util = { version = "0.3", default-features = false, features = ["sink"] 
 # `tailscale-localapi` crate, which brings hyper, its body and connection
 # crates and chrono for two GETs. So Tailscale costs no crate, and nothing
 # of it links on Windows, where `sync` is not built.
+# Direct paths on the LAN without Tailscale (ticket 27, sync/mdns.rs): the
+# host advertises its listener over mDNS and a viewer finds it there.
+# mdns-sd is pure Rust on std sockets and its own thread — no runtime, no
+# resolver — and adds flume, if-addrs, socket-pktinfo, spin and fastrand
+# (mio and socket2 are linked already); `if-addrs` is the one it reads the
+# interfaces with, named here for the host's own LAN addresses. No `log`,
+# no async channel. Hand-rolling RFC 6762's probing, announcing and
+# answering on every interface would be a responder of our own on a
+# multicast socket. Measured in full.size (crates/krowk-bench/budgets.toml).
+mdns-sd = { version = "0.21", default-features = false }
+if-addrs = "0.15"
 # Batches are zstd-compressed before they would be encrypted (R-LAG-5).
 # Pure Rust at level "fastest" (about zstd's 1): no C toolchain for a
 # cross build, and one crate against zstd-sys's libzstd; the batches are

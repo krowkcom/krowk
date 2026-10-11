@@ -107,15 +107,19 @@ fn relay_for(asked: &str, base_url: &str) -> String {
 /// also requires tailscaled to name the far end as this tailnet user
 /// (R-NET-3). The LAN address is offered only with `KROWK_DIRECT_LAN=1`: it
 /// is off the tailnet, so plain `ws://` there is reachable by the whole
-/// network.
+/// network. With it, a machine without Tailscale offers the LAN alone,
+/// advertised over mDNS.
 fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::direct::Config>, Error> {
     let socket = krowk_harness::sync::tailscale::socket(ctx.io.env);
     // A named file that does not read is a mistake said at once, Tailscale
     // up or not.
     let named = named_ticket_keys(ctx)?;
+    let (same_user, lan) = (ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", ctx.env("KROWK_DIRECT_LAN") == "1");
+    // With the LAN offered, Tailscale not running leaves the LAN, found
+    // over mDNS too (ticket 27); the listener says if there is none.
     let roster = match krowk_harness::sync::direct::running(&socket) {
-        Ok(_) => named.map_or_else(|| fetched_ticket_keys(ctx, api), Ok),
-        Err(why) => Err(why),
+        Err(why) if !lan || same_user => Err(why),
+        _ => named.map_or_else(|| fetched_ticket_keys(ctx, api), Ok),
     };
     let roster = match roster {
         Ok(roster) => roster,
@@ -124,7 +128,7 @@ fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::dir
             return Ok(None);
         }
     };
-    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user: ctx.env("KROWK_TAILSCALE_SAME_USER") == "1", lan: ctx.env("KROWK_DIRECT_LAN") == "1", stop: None }))
+    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: Vec::new(), stop: None }))
 }
 
 /// Where the registry's ticket keys are kept between hostings, in krowk's
