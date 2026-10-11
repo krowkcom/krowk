@@ -1348,17 +1348,20 @@ impl<'h> Ui<'h> {
         }
         // Before the view: the flash it leaves is in this frame, not the
         // next one, which an idle TUI may not draw for a while.
-        if let Some((what, text)) = app.copy.take() {
+        if let Some((_, text)) = app.copy.take() {
             // As written, tabs and all, but no escape or bidi control
             // reaches the place it is pasted.
             // The joiner that makes one emoji of several is kept too.
             let text: String = text.chars().filter(|&c| matches!(c, '\n' | '\t' | '\u{200D}') || (!c.is_control() && !card::is_bidi(c))).collect();
             let said = if text.len() > clipboard::MAX {
-                format!("{what} is too long to copy ({} KB)", text.len() / 1024)
+                format!("Too long to copy ({} KB)", text.len() / 1024)
             } else {
                 term.clipboard(&text)?;
                 clipboard::system(&text);
-                format!("copied {what} ({} lines)", text.lines().count())
+                match text.lines().count() {
+                    1 => "Copied 1 line".to_string(),
+                    n => format!("Copied {n} lines"),
+                }
             };
             self.copied = Some((said.clone(), Instant::now() + COPIED_SHOWN));
             app.flash = Some(said);

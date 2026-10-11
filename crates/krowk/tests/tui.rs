@@ -2085,10 +2085,10 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     mouse(&tm, &format!("\x1b[<32;6;{y}M"));
     mouse(&tm, &format!("\x1b[<32;13;{}M", y + 1));
     mouse(&tm, &format!("\x1b[<0;13;{}m", y + 1));
-    assert!(tm.wait_for("copied the selection (2 lines)", Duration::from_secs(5)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("Copied 2 lines", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["show-buffer"]), "line 00110: the quick brown fox jumps over the lazy dog again\nline 00111:");
     // No key follows a mouse copy: its flash goes by itself.
-    assert!(tm.wait_gone("copied the selection", Duration::from_secs(10)).is_some(), "the flash stayed:\n{}", tm.screen());
+    assert!(tm.wait_gone("Copied 2 lines", Duration::from_secs(10)).is_some(), "the flash stayed:\n{}", tm.screen());
     // The pane kept once krowk is gone, to read what it left.
     tm.tmux(&["set-option", "-t", "t", "remain-on-exit", "on"]);
     tm.keys(&["C-d", "C-d"]);
