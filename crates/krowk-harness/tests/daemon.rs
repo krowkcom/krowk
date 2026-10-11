@@ -495,13 +495,16 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
 
 /// R-STEER-2: a job outlives the client whose turn started it, the idle
 /// window included; a client that follows the session after it left is
-/// told the count once caught up, before anything changes it; and once
-/// the job ends the daemon lets the session go and exits after its window.
+/// told the count once caught up, before anything changes it; a turn of
+/// the session on another host (a TUI's, which answers approvals) leaves
+/// the job running on the first; and once it ends the daemon lets the
+/// session go and exits after its window.
 #[test]
 fn r_steer_2_a_job_outlives_its_client_and_a_later_follower_is_told_the_count_at_once() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
-            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 3", "run_in_background": true})),
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 10", "run_in_background": true})),
+            3 => mock::tool_use("t2", "kill_bash", &serde_json::json!({"id": "b1"})),
             _ => mock::text_stream("Started."),
         })
     });
@@ -533,10 +536,33 @@ fn r_steer_2_a_job_outlives_its_client_and_a_later_follower_is_told_the_count_at
             seen.push(line);
         };
         assert_eq!(count, (r.session_id.clone(), 1), "after {} lines caught up", seen.len());
+        // The follower's turn runs on its own host: the job's is kept.
+        let mut cmd = home.prompt("and now?");
+        if let Command::Prompt { session_id, .. } = &mut cmd {
+            *session_id = Some(r.session_id.clone());
+        }
+        let (ttx, _trx) = mpsc::channel(1024);
+        assert_eq!(b.execute(cmd, ttx).await.unwrap().unwrap().status, TurnStatus::Completed);
+        drop(b);
+        // Another `-p` client, on the job's host, finds it running and stops it.
+        let c = home.client().await;
+        let mut cmd = home.prompt("stop it");
+        if let Command::Prompt { session_id, permission_mode, .. } = &mut cmd {
+            *session_id = Some(r.session_id.clone());
+            *permission_mode = PermissionMode::BypassPermissions;
+        }
+        let (ctx, mut crx) = mpsc::channel(1024);
+        c.execute(cmd, ctx).await.unwrap().unwrap();
+        let mut lines = Vec::new();
+        while let Ok(l) = crx.try_recv() {
+            lines.push(l);
+        }
+        let (output, _) = tool_result(&lines).expect("kill_bash ran");
+        assert!(output.contains("stopped background job b1"), "{output}");
     });
     // With no client left, the job's end lets the daemon go after its window.
     drop(rt);
-    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let deadline = std::time::Instant::now() + Duration::from_secs(8);
     while !daemon.is_finished() {
         assert!(std::time::Instant::now() < deadline, "the daemon stayed once the job ended");
         std::thread::sleep(Duration::from_millis(20));
