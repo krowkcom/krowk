@@ -160,8 +160,9 @@ pub struct SyncStore {
     /// ("" for none), which its finalize checks again.
     pub vintage_replaces: HashMap<(String, String), String>,
     /// Vintages a later one replaced: kept, bytes and all, as the registry
-    /// keeps them for its retention window, and no longer the week's.
-    pub vintages_replaced: std::collections::HashSet<(String, String)>,
+    /// keeps them for its retention window, and no longer the week's: when
+    /// each was replaced, which the replaced listing is ordered by.
+    pub vintages_replaced: HashMap<(String, String), Timestamp>,
     /// Workspace and slug → a transport artifact (a handoff's bundle):
     /// the session it moves, its bytes' upload, and when it lapses.
     pub transports: HashMap<(String, String), Transport>,
@@ -1099,7 +1100,7 @@ fn serialize_vintage(week: &str, c: &Chunk) -> Vec<(String, Json)> {
 
 /// The week's ready vintage in a workspace: its slug.
 fn current_vintage(s: &SyncStore, workspace: &str, week: &str) -> Option<String> {
-    s.vintages.iter().find(|(k, (wk, c))| k.0 == workspace && wk == week && c.ready && !s.vintages_replaced.contains(*k)).map(|((_, slug), _)| slug.clone())
+    s.vintages.iter().find(|(k, (wk, c))| k.0 == workspace && wk == week && c.ready && !s.vintages_replaced.contains_key(*k)).map(|((_, slug), _)| slug.clone())
 }
 
 fn vintage_conflict(week: &str) -> Resp {
@@ -1214,7 +1215,8 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
             return Err(vintage_conflict(&week));
         }
         if let Some(old) = current_vintage(&s.sync, &workspace, &week) {
-            s.sync.vintages_replaced.insert((workspace.clone(), old));
+            let now = s.now();
+            s.sync.vintages_replaced.insert((workspace.clone(), old), now);
         }
         let (_, c) = s.sync.vintages.get_mut(&(workspace, slug.to_owned())).ok_or_else(not_found)?;
         c.ready = true;
@@ -1224,27 +1226,80 @@ pub fn finalize_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> R
     run().unwrap_or_else(|r| r)
 }
 
-/// The workspace's ready vintages, the week's alone when `week` is given,
-/// each with the URL its bytes are read from.
+/// The workspace's ready vintages, the week's alone when `week` is given
+/// and those of weeks past `after` when that is, each with the URL its
+/// bytes are read from. With `replaced`, one week's replaced vintages
+/// instead, newest replacement first, as the registry keeps them for its
+/// retention window: a week is required, and there is no paging.
 pub fn list_vintages(app: &App, req: &Req, site: &str) -> Resp {
     let workspace = match active(app, req).and_then(|_| gate(req)) {
         Ok(w) => w,
         Err(r) => return r,
     };
-    let week = req.query_get("week");
+    let (week, after, replaced) = (req.query_get("week"), req.query_get("after"), !req.query_get("replaced").is_empty());
+    if replaced && week.is_empty() {
+        return parameter_missing("week");
+    }
     let s = app.lock();
-    let mut ready: Vec<(&String, &Chunk)> =
-        s.sync.vintages.iter().filter(|(k, (wk, c))| k.0 == workspace && c.ready && !s.sync.vintages_replaced.contains(*k) && (week.is_empty() || *wk == week)).map(|(_, (wk, c))| (wk, c)).collect();
-    ready.sort_by(|a, b| a.0.cmp(b.0));
+    let mut ready: Vec<(&String, &Chunk, Option<Timestamp>)> = s
+        .sync
+        .vintages
+        .iter()
+        .filter(|(k, (wk, c))| k.0 == workspace && c.ready && s.sync.vintages_replaced.contains_key(*k) == replaced && (week.is_empty() || *wk == week) && (after.is_empty() || *wk > after))
+        .map(|(k, (wk, c))| (wk, c, s.sync.vintages_replaced.get(k).copied()))
+        .collect();
+    ready.sort_by(|a, b| a.0.cmp(b.0).then(b.2.cmp(&a.2)));
     let page = ready
         .into_iter()
-        .map(|(wk, c)| {
+        .map(|(wk, c, replaced_at)| {
             let mut j = serialize_vintage(wk, c);
+            if let Some(at) = replaced_at {
+                j.push(("replaced_at".to_owned(), Json::str(rfc3339_nano(at))));
+            }
             j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", c.storage_key))));
             Json::map_of(j)
         })
         .collect();
     Resp::json(200, &Json::map([("vintages", Json::Arr(page))]))
+}
+
+/// A replaced vintage made its week's current one again, and the current
+/// one replaced in its place (the registry's
+/// Vintages::RestorationsController#create). One that is not replaced is
+/// refused as `vintage_conflict`. An Idempotency-Key the restoration was
+/// answered under answers again without swapping back.
+pub fn restore_vintage(app: &App, req: &mut Req, slug: &str, signer: &str) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let attempt = crate::artifacts::idempotency_key(req)?;
+        let mut s = app.lock();
+        named(&s.sync, &person(req), signer)?;
+        let key = (workspace.clone(), slug.to_owned());
+        let (week, c) = s.sync.vintages.get(&key).ok_or_else(not_found)?;
+        let week = week.clone();
+        if let Some(attempt) = &attempt
+            && let Some((found, matches)) = s.replay("vintage_restoration", &workspace, attempt, slug)
+        {
+            if !matches {
+                return Err(crate::errors::key_reused(&found.artifact));
+            }
+            return Ok(Resp::json(200, &Json::map_of(serialize_vintage(&week, c))));
+        }
+        if !c.ready || !s.sync.vintages_replaced.contains_key(&key) {
+            return Err(error(409, "vintage_conflict", &format!("{slug} is not a replaced vintage — only one a newer vintage took the place of can be restored"), None));
+        }
+        let now = s.now();
+        if let Some(current) = current_vintage(&s.sync, &workspace, &week) {
+            s.sync.vintages_replaced.insert((workspace.clone(), current), now);
+        }
+        s.sync.vintages_replaced.remove(&key);
+        if let Some(attempt) = &attempt {
+            s.remember("vintage_restoration", &workspace, attempt, crate::store::Answered { request_hash: slug.to_owned(), artifact: slug.to_owned(), run: String::new() });
+        }
+        let (_, c) = s.sync.vintages.get(&key).ok_or_else(not_found)?;
+        Ok(Resp::json(200, &Json::map_of(serialize_vintage(&week, c))))
+    };
+    run().unwrap_or_else(|r| r)
 }
 
 fn serialize_transport(t: &Transport) -> Vec<(String, Json)> {

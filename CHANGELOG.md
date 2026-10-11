@@ -177,6 +177,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   there, since that device has no log of the subagent. `x` in it stops the
   subagent on the host. Text the subagent was in the middle of writing
   when you attached shows once that answer is finished.
+- **`krowk sessions vintage` lists the vintages the registry keeps.**
+  Each week's current vintage, and the ones a newer vintage replaced,
+  which the registry keeps for a while. Give it an archived session's id
+  to see its week, with the vintage it was archived into marked, or an
+  ISO week like `2026-W40`. `krowk sessions restore <id> --from
+  <vintage>` restores the session from the one you name.
 
 ### Changed
 
@@ -338,6 +344,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **An archived session is restored even after its week's vintage lost
+  it.** If another machine replaced a week's vintage with one that dropped
+  sessions, restoring one of them used to fail, saying the vintage did
+  not hold it. krowk now reads the vintage the session was archived into
+  first, then the week's current one, then the replaced ones the registry
+  still keeps.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

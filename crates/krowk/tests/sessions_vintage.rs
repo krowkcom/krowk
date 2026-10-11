@@ -166,3 +166,77 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert_eq!(api.put_vintage(&week, b"stale", Some(&vintage.slug)).unwrap_err().code(), "vintage_conflict");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// A stand-in machine with sync set up at `root`, the registry it syncs
+/// through, the registry client signed as it, and its user keys.
+fn synced_machine(root: &Path) -> (krowk_devregistry::Running, Machine, krowk_api::Client, krowk_client::user_key::UserKeys) {
+    let _ = std::fs::remove_dir_all(root);
+    std::fs::create_dir_all(root).unwrap();
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+    let m = Machine { home: root.to_path_buf(), api_url: format!("{}/v1", registry.url()) };
+    let (ok, _, out) = m.krowk(&["sync", "init", "--save", root.join("kit.txt").to_str().unwrap()]);
+    assert!(ok, "{out}");
+    let ks = Keystore::new(&root.join(".krowk"));
+    let keys = ks.user_keys().unwrap().expect("a user key");
+    let api = krowk_api::Client::new(&m.api_url, TOKEN).signed_by(e2e::DeviceSigner::new(ks.device().unwrap().unwrap().id(), ks.signing_key().unwrap()).shared());
+    (registry, m, api, keys)
+}
+
+/// R-VINT-4: a restore reads the vintage the session went into, by the
+/// slug its stub recorded, even once a replacement that lost it took the
+/// week's place; a stub that recorded none falls back from the week's
+/// current vintage to its replaced ones. `krowk sessions vintage` lists
+/// both, and `--from` restores from the one named.
+#[test]
+fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_replacement_lost_it() {
+    let root = std::env::temp_dir().join(format!("krowk-vintage-replaced-{}", std::process::id()));
+    let (_registry, m, api, keys) = synced_machine(&root);
+    let sessions = root.join(".krowk").join("sessions");
+    let a = session(&sessions, &root, "the first of the week", 20);
+    let b = session(&sessions, &root, "the second of the week", 20);
+    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    assert!(ok, "{out}");
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    let stub = krowk_harness::vintage::read_stub(&sessions, &a).unwrap();
+    let (week, kept) = (stub.week.clone(), stub.vintage.clone());
+
+    // Another machine's bad merge: a replacement holding neither session.
+    let generation = Keystore::new(&root.join(".krowk")).device_list().unwrap().unwrap().generation();
+    let empty = e2e::seal_vintage(&keys, generation, &week, &krowk_harness::vintage::pack(&Default::default())).unwrap();
+    let lost = api.put_vintage(&week, &empty, Some(&kept)).unwrap().slug;
+    // A stub from before stubs recorded their vintage.
+    let b_stub = sessions.join(&b).join(krowk_harness::vintage::STUB_FILE);
+    let mut unrecorded: Value = serde_json::from_slice(&std::fs::read(&b_stub).unwrap()).unwrap();
+    unrecorded["vintage"] = Value::String(String::new());
+    std::fs::write(&b_stub, serde_json::to_vec(&unrecorded).unwrap()).unwrap();
+
+    let (ok, v, out) = m.krowk(&["sessions", "vintage", &a]);
+    assert!(ok, "{out}");
+    let listed: Vec<(String, bool, bool)> = v["data"]["vintages"].as_array().unwrap().iter().map(|r| (r["slug"].as_str().unwrap().to_owned(), r["current"] == true, r["recorded"] == true)).collect();
+    assert_eq!(listed, vec![(lost.clone(), true, false), (kept.clone(), false, true)], "the current one, then the one it replaced, which the stub names: {out}");
+    let (ok, v, out) = m.krowk(&["sessions", "vintage"]);
+    assert!(ok && v["data"]["vintages"].as_array().unwrap().len() == 2, "every week's, replaced ones included: {out}");
+
+    let (ok, v, out) = m.krowk(&["sessions", "restore", &a]);
+    assert!(ok, "{out}");
+    assert_eq!(v["data"]["vintage"], kept.as_str(), "from the vintage it went into: {out}");
+    assert!(sessions.join(&a).join(log::EVENTS_FILE).is_file());
+
+    let (ok, _, out) = m.krowk(&["sessions", "restore", &b, "--from", &lost]);
+    assert!(!ok && out.contains("does not hold session"), "the vintage named is the one read: {out}");
+    let (ok, v, out) = m.krowk(&["sessions", "restore", &b]);
+    assert!(ok, "{out}");
+    assert_eq!(v["data"]["vintage"], kept.as_str(), "the week's current one lost it, so a replaced one is read: {out}");
+    assert!(sessions.join(&b).join(log::EVENTS_FILE).is_file());
+
+    // The registry's restoration: the replaced vintage is the week's again,
+    // the one that lost the sessions kept as replaced, and a current one
+    // has nothing to be restored over.
+    assert_eq!(api.restore_vintage(&kept).unwrap().slug, kept);
+    assert_eq!(api.week_vintage(&week).unwrap().unwrap().slug, kept);
+    assert_eq!(api.replaced_vintages(&week).unwrap().into_iter().map(|v| v.slug).collect::<Vec<_>>(), vec![lost]);
+    assert_eq!(api.restore_vintage(&kept).unwrap_err().code(), "vintage_conflict");
+    let _ = std::fs::remove_dir_all(&root);
+}
+

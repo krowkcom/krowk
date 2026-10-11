@@ -242,6 +242,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "vintages"]) if get => sync::list_vintages(a, req, &site(req, &a.site)),
         ("PUT" | "PATCH", ["v1", "vintages", slug, "finalization"]) => sync::signed(a, req, |a, req, by| sync::finalize_vintage(a, req, slug, by)),
+        ("POST", ["v1", "vintages", slug, "restoration"]) => sync::signed(a, req, |a, req, by| sync::restore_vintage(a, req, slug, by)),
         ("POST", ["v1", "sessions", id, "transports"]) => {
             let site = site(req, &a.site);
             sync::signed(a, req, |a, req, by| sync::declare_transport(a, req, id, &site, by))

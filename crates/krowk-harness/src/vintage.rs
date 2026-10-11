@@ -19,12 +19,15 @@
 //! summary, directory, dates, models and every turn's tokens, which is what
 //! the listing, search and cost read (R-VINT-3) — and the two log files go.
 //!
-//! **Restoring** (`restore`) is the reverse: the stub's week is fetched,
-//! checked against its digest, opened and unpacked, the session's two files
-//! are written back, and the stub goes (R-VINT-4).
+//! **Restoring** (`restore`) is the reverse: the vintage the stub names is
+//! fetched — else its week's current one, else one the registry still keeps
+//! after a newer one replaced it — checked against its digest, opened and
+//! unpacked, the session's two files are written back, and the stub goes
+//! (R-VINT-4).
 
 use crate::log::{self, CONTEXT_FILE, EVENTS_FILE};
 use crate::protocol::LogEvent;
+use krowk_api::sync::Vintage;
 use krowk_api::Client;
 use krowk_client::e2e;
 use krowk_client::user_key::UserKeys;
@@ -377,9 +380,23 @@ pub struct Keys {
 /// as replaced, and its sessions.
 fn fetch(client: &Client, keys: &Keys, week: &str) -> Result<Option<(String, Week)>, String> {
     let Some(v) = client.week_vintage(week).map_err(|e| e.fix())? else { return Ok(None) };
-    let sealed = client.read_vintage(&v).map_err(|e| e.fix())?;
-    let packed = e2e::open_vintage(&sealed, week, &keys.user).map_err(|e| e.to_string())?;
-    Ok(Some((v.slug, unpack(&packed)?)))
+    let lines = open(client, keys, &v)?;
+    Ok(Some((v.slug, lines)))
+}
+
+/// A listed vintage, current or replaced, read, checked and opened.
+fn open(client: &Client, keys: &Keys, v: &Vintage) -> Result<Week, String> {
+    let sealed = client.read_vintage(v).map_err(|e| e.fix())?;
+    let packed = e2e::open_vintage(&sealed, &v.week, &keys.user).map_err(|e| e.to_string())?;
+    unpack(&packed)
+}
+
+/// Every vintage of a week the registry keeps: its current one first, then
+/// those it replaced, newest replacement first.
+pub fn week_vintages(client: &Client, week: &str) -> Result<Vec<Vintage>, String> {
+    let mut all: Vec<Vintage> = client.week_vintage(week).map_err(|e| e.fix())?.into_iter().collect();
+    all.extend(client.replaced_vintages(week).map_err(|e| e.fix())?);
+    Ok(all)
 }
 
 /// A session archived by a run: its id and the week it went into.
@@ -466,12 +483,67 @@ fn leave_stub(c: &Candidate) -> Result<(), String> {
     Ok(())
 }
 
-/// Brings an archived session back (R-VINT-4): its week's vintage fetched,
-/// checked and opened, its two files written back, the stub removed.
-pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<(), String> {
+/// Brings an archived session back (R-VINT-4) and says which vintage it
+/// came from: fetched, checked and opened, its two files written back, the
+/// stub removed. The vintage it went into is read first — the slug its stub
+/// recorded, still its week's or replaced since — then the week's current
+/// one, then the week's replaced ones, newest first: a replacement that
+/// lost the session leaves it in the vintage it replaced for as long as
+/// the registry keeps that one. When the current one is the recorded one,
+/// or the stub records none, and holds the session, nothing else is asked.
+pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<String, String> {
     let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
-    let (_, lines) = fetch(client, keys, &stub.week)?.ok_or_else(|| format!("the registry holds no vintage for {}, where session {id} was archived", stub.week))?;
-    let line = lines.get(id).ok_or_else(|| format!("the vintage for {} does not hold session {id} — the registry may have served an older one", stub.week))?;
+    let current = client.week_vintage(&stub.week).map_err(|e| e.fix())?;
+    let mut tried = Vec::new();
+    if let Some(v) = current.as_ref().filter(|v| stub.vintage.is_empty() || v.slug == stub.vintage)
+        && let Some(line) = holding(client, keys, v, id, &mut tried)
+    {
+        return unpack_session(sessions, id, &line).map(|()| v.slug.clone());
+    }
+    let replaced = client.replaced_vintages(&stub.week).map_err(|e| e.fix())?;
+    let (recorded, rest): (Vec<Vintage>, Vec<Vintage>) = replaced.into_iter().partition(|v| v.slug == stub.vintage);
+    let read_first = tried.first().map(|(slug, _)| slug.clone());
+    for v in recorded.iter().chain(current.iter().filter(|v| Some(&v.slug) != read_first.as_ref())).chain(&rest) {
+        if let Some(line) = holding(client, keys, v, id, &mut tried) {
+            return unpack_session(sessions, id, &line).map(|()| v.slug.clone());
+        }
+    }
+    if tried.is_empty() {
+        return Err(format!("the registry keeps no vintage for {}, where session {id} was archived", stub.week));
+    }
+    let why: Vec<String> = tried.into_iter().map(|(slug, why)| format!("{slug}: {why}")).collect();
+    Err(format!("no vintage of {} the registry keeps holds session {id} ({})", stub.week, why.join("; ")))
+}
+
+/// Brings an archived session back from vintage `slug` of its week, current
+/// or replaced, whichever the others hold: what a person picks when the
+/// one `restore` finds is not the one they want.
+pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str) -> Result<String, String> {
+    let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
+    let all = week_vintages(client, &stub.week)?;
+    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week))?;
+    let mut tried = Vec::new();
+    let line = holding(client, keys, v, id, &mut tried).ok_or_else(|| format!("vintage {slug} {}", tried.pop().map(|(_, why)| why).unwrap_or_default()))?;
+    unpack_session(sessions, id, &line).map(|()| v.slug.clone())
+}
+
+/// Session `id`'s line in vintage `v`, or why there is none, kept in
+/// `tried` against its slug.
+fn holding(client: &Client, keys: &Keys, v: &Vintage, id: &str, tried: &mut Vec<(String, String)>) -> Option<Line> {
+    match open(client, keys, v) {
+        Ok(mut lines) => lines.remove(id).or_else(|| {
+            tried.push((v.slug.clone(), format!("does not hold session {id}")));
+            None
+        }),
+        Err(e) => {
+            tried.push((v.slug.clone(), e));
+            None
+        }
+    }
+}
+
+/// Writes a session's two files back from its line, then removes its stub.
+fn unpack_session(sessions: &Path, id: &str, line: &Line) -> Result<(), String> {
     let dir = sessions.join(id);
     write_private(&dir.join(CONTEXT_FILE), line.context.as_bytes())?;
     write_private(&dir.join(EVENTS_FILE), line.events.as_bytes())?;

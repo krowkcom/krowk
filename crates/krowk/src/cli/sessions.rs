@@ -62,18 +62,24 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
 }
 
 /// Brings an archived native session back into its directory and into
-/// krowk.db (R-VINT-4): fetched from its week's vintage, opened, written
-/// back, then projected as a `krowk -p` turn's log is, the archive's
-/// stand-in rows dropped first.
+/// krowk.db (R-VINT-4): fetched from the vintage it went into — or from
+/// vintage `from` of its week, when one is named — opened, written back,
+/// then projected as a `krowk -p` turn's log is, the archive's stand-in
+/// rows dropped first. Says which vintage it came from.
 #[cfg(all(feature = "harness", unix))]
-pub(super) fn restore_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
+pub(super) fn restore_native(ctx: &Ctx, session_id: &str, from: Option<&str>) -> Result<String, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
     let (client, keys) = super::sync::vintage_keys(ctx)?;
-    krowk_harness::vintage::restore(&client, &keys, &dir, session_id).map_err(|e| fail("restore_failed", e))?;
+    let slug = match from {
+        Some(slug) => krowk_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug),
+        None => krowk_harness::vintage::restore(&client, &keys, &dir, session_id),
+    }
+    .map_err(|e| fail("restore_failed", e))?;
     let conn = open_store(ctx)?;
     krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
     drop(conn);
-    project_native(ctx.io.env, session_id)
+    project_native(ctx.io.env, session_id)?;
+    Ok(slug)
 }
 
 /// Restores a native session named by its log id when it is archived; a
@@ -84,7 +90,7 @@ pub(super) fn restore_if_archived(ctx: &Ctx, session_id: &str) -> Result<bool, E
     if !krowk_harness::vintage::is_archived(&dir, session_id) {
         return Ok(false);
     }
-    restore_native(ctx, session_id)?;
+    restore_native(ctx, session_id, None)?;
     Ok(true)
 }
 
@@ -139,15 +145,104 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     emit_data(ctx, json!({ "archived": rows, "due": true }), format!("{n} session{} archived", if n == 1 { "" } else { "s" }))
 }
 
-/// `krowk sessions restore <id>`: an archived session back on the machine.
+/// `krowk sessions restore <id> [--from <vintage>]`: an archived session
+/// back on the machine, from the vintage it went into, or from the one of
+/// its week `--from` names (`krowk sessions vintage <id>` lists them).
 #[cfg(all(feature = "harness", unix))]
 pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
     let id = native_arg(ctx, args, "restore")?;
-    if !restore_if_archived(ctx, &id)? {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if !krowk_harness::vintage::is_archived(&dir, &id) {
         return Err(fail("not_archived", format!("session {id} is not archived on this machine")));
     }
-    emit_data(ctx, json!({ "restored": id }), format!("session {id} restored"))
+    let from = ctx.f.from.trim().to_string();
+    let slug = restore_native(ctx, &id, Some(from.as_str()).filter(|f| !f.is_empty()))?;
+    emit_data(ctx, json!({ "restored": id, "vintage": slug }), format!("session {id} restored from vintage {slug}"))
+}
+
+/// `krowk sessions vintage [<id>|<week>]`: the vintages the registry keeps
+/// — each week's current one, and those a newer one replaced, which it
+/// keeps for a while — for one archived session's week, one ISO week, or
+/// every week. For a session, the one its stub recorded is marked.
+#[cfg(all(feature = "harness", unix))]
+pub fn vintage(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    check_os()?;
+    let (weeks, stub) = match args {
+        [] => (None, None),
+        [w] if is_iso_week(w.trim()) => (Some(vec![w.trim().to_string()]), None),
+        _ => {
+            let id = native_arg(ctx, args, "vintage")?;
+            let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+            let stub = krowk_harness::vintage::read_stub(&dir, &id).ok_or_else(|| fail("not_archived", format!("session {id} is not archived on this machine, so it is in no vintage — `krowk sessions vintage <week>` lists a week's")))?;
+            (Some(vec![stub.week.clone()]), Some((id, stub)))
+        }
+    };
+    let client = super::sync::keyed_client(ctx, "listing vintages")?;
+    let weeks = match weeks {
+        Some(w) => w,
+        None => {
+            let (mut all, mut after) = (Vec::new(), None::<String>);
+            loop {
+                let page = client.list_vintages(after.as_deref())?;
+                all.extend(page.vintages.into_iter().map(|v| v.week));
+                match page.next {
+                    Some(n) if Some(&n) != after.as_ref() => after = Some(n),
+                    _ => break,
+                }
+            }
+            all
+        }
+    };
+    let mut rows = Vec::new();
+    for week in &weeks {
+        rows.extend(client.week_vintage(week)?);
+        rows.extend(client.replaced_vintages(week)?);
+    }
+    let recorded = stub.as_ref().map(|(_, s)| s.vintage.clone()).unwrap_or_default();
+    let json_rows: Vec<Value> = rows
+        .iter()
+        .map(|v| {
+            let mut j = json!({ "slug": v.slug, "week": v.week, "current": v.replaced_at.is_empty(), "byte_size": v.byte_size, "created_at": v.created_at });
+            if !v.replaced_at.is_empty() {
+                j["replaced_at"] = json!(v.replaced_at);
+            }
+            if stub.is_some() {
+                j["recorded"] = json!(v.slug == recorded);
+            }
+            j
+        })
+        .collect();
+    let n = rows.len();
+    let summary = format!("{n} vintage{}", if n == 1 { "" } else { "s" });
+    if ctx.format != Format::Human {
+        let mut data = json!({ "vintages": json_rows });
+        if let Some((id, s)) = &stub {
+            data["session"] = json!(id);
+            data["week"] = json!(s.week);
+        }
+        return emit_data(ctx, data, summary);
+    }
+    if rows.is_empty() {
+        let _ = writeln!(ctx.io.stdout, "no vintages{}", stub.as_ref().map_or(String::new(), |(_, s)| format!(" for {}", s.week)));
+        return Ok(());
+    }
+    for v in &rows {
+        let state = if v.replaced_at.is_empty() { "current".to_string() } else { format!("replaced {}", cell(&v.replaced_at)) };
+        let mark = if !recorded.is_empty() && v.slug == recorded { "  ← where it was archived" } else { "" };
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}{mark}", cell(&v.week), cell(&v.slug), output::human_bytes(v.byte_size as i64), state);
+    }
+    if let Some((id, _)) = &stub {
+        let _ = writeln!(ctx.io.stdout, "\n`krowk sessions restore {id} --from <vintage>` restores it from one of them");
+    }
+    Ok(())
+}
+
+/// Whether `s` names an ISO week, `2026-W40`.
+#[cfg(all(feature = "harness", unix))]
+fn is_iso_week(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 8 && b[..4].iter().all(u8::is_ascii_digit) && &b[4..6] == b"-W" && b[6..].iter().all(u8::is_ascii_digit)
 }
 
 /// `krowk sessions pin|unpin <id>`: a pinned session is never archived.
