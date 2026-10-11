@@ -38,6 +38,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   finished answer you haven't read stands apart from krowk at rest. Your
   next key press puts it back to idle. An interrupted turn goes straight to
   idle. The window title and herdr say idle as before.
+- **Each subagent shows on your terminal as its own record.** When a turn
+  fans out to subagents, the TUI reports each one beside krowk itself over
+  OSC 7501, titled by its description: working, waiting on an approval or
+  a question, done or failed. So a terminal that lists records can show
+  the one subagent that waits on you while the others work. A subagent you
+  stop is removed at once, and every subagent's record is removed when the
+  turn ends, before krowk reports it done or failed.
 - **`krowk -p` leaves a record of how it ended on your terminal.** A
   terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
   now shows a `krowk -p` you started in another tab as working while its
