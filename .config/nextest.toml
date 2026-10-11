@@ -25,6 +25,14 @@ switch = { max-threads = 1 }
 # A hung test is named after a minute and stopped after five.
 slow-timeout = { period = "60s", terminate-after = 5 }
 
+# The long tail starts first. The symlink-race tests run thousands of tool
+# calls each (up to two minutes) and the relay ones half a minute or more;
+# started last, as they were, the rest of the run waited on them. Started
+# first, they run alongside it.
+[[profile.default.overrides]]
+filter = "binary(r192b_escapes) | binary(relay_conformance) | binary(relay_invariant) | binary(sync_attach)"
+priority = 100
+
 [[profile.default.overrides]]
 filter = "binary(claude_backend)"
 test-group = "claude-backend"
@@ -66,3 +74,17 @@ filter = """
     | (binary(daemon_ws) & test(/^r_lag_4_r_lag_10_/))
 """
 retries = { backoff = "fixed", count = 2, delay = "1s" }
+
+# `make quick-check`, the edit loop: every test but the five that take a
+# minute or more, each a race or a relay run many times over. `make check`
+# and `make signoff` run them.
+[profile.quick]
+default-filter = """
+    not (
+        (binary(r192b_escapes) & (
+            test(=r192b_3_planted_secrets_stay_unreadable)
+            | test(=r192b_3_write_tool_symlink_race_stays_in_the_workspace)
+            | test(=r192b_9_r_perm_3_credentials_stay_hidden_with_the_workspace_inside_the_home)
+            | test(=r192b_14_r_perm_3_parent_symlink_races_and_hardlinks)))
+        | (binary(relay_conformance) & test(=r_relay_1_a_workspaces_own_tickets_cannot_crowd_another_channels_host_out)))
+"""
