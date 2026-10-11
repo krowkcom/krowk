@@ -144,14 +144,20 @@ const COMMAND_WAIT: Duration = Duration::from_secs(2);
 /// together: what is not sent by then is sent at the next retry. One turn
 /// of the loop never waits past it on the host (`hangup::STUCK`).
 const FLUSH_WAIT: Duration = Duration::from_secs(3);
+/// The least of `FLUSH_WAIT` a steer is sent with. A wait cut short is read
+/// as the host being slow to answer a command it has, so one sent with
+/// next to no time could be dropped unwritten and still read as sent; with
+/// less left it waits for the next retry.
+const STEER_FLOOR: Duration = Duration::from_millis(250);
 /// How long a local turn interrupted by SIGHUP or SIGTERM is given to end.
 /// A closed terminal sends one SIGHUP and nobody is left to press a second
 /// Ctrl-C, so past it the turn is let go as that would let it go: a turn
 /// that never ends on the interrupt cannot keep krowk running with nothing
-/// to show it on. Past the backends' own 10 s (Claude Code and Codex are
-/// stopped when they have not ended an interrupted turn by then), so a
-/// turn they end is recorded ended, and this is the backstop.
-const HANGUP_WAIT: Duration = Duration::from_secs(15);
+/// to show it on. Past the backends' own worst case — Claude Code's
+/// receipt of the interrupt may take its 5 s grace, and its 10 s to end
+/// the turn start from that receipt — so a turn they end is recorded
+/// ended, and this is the backstop.
+const HANGUP_WAIT: Duration = Duration::from_secs(20);
 /// How long resuming a session waits for the daemon to say whether its
 /// background agents still run there.
 const STATUS_WAIT: Duration = Duration::from_millis(1500);
@@ -1939,7 +1945,7 @@ impl<'h> Ui<'h> {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
-            if left().is_zero() {
+            if left() < STEER_FLOOR {
                 break;
             }
             let images = app.images_for(&text);
