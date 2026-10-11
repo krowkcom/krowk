@@ -341,7 +341,7 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     // One option per row: an unbounded page would hang the terminal building
     // them, so the picker only fires on a paged list.
     if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT {
-        let id = pick_session(&rows, now)?;
+        let id = pick_session(&rows, now, &archived_rows(ctx, &rows))?;
         let _ = writeln!(ctx.io.stdout, "krowk sessions show {id}");
         return Ok(());
     }
@@ -734,7 +734,18 @@ fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now
 
 /// The picker offers only rows already in the store, which is what makes it
 /// safe to offer.
-pub(super) fn pick_session(rows: &[SessionRow], now: i64) -> Result<String, Error> {
+/// The rows of `rows` that are krowk sessions archived on this machine,
+/// by row id: the pickers mark them, since picking one restores it first.
+pub(super) fn archived_rows(ctx: &Ctx, rows: &[SessionRow]) -> BTreeSet<String> {
+    #[cfg(all(feature = "harness", unix))]
+    if let Ok(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
+        return rows.iter().filter(|r| r.harness == krowk_harness::project::HARNESS && krowk_harness::vintage::is_archived(&dir, &r.foreign_session_id)).map(|r| r.id.clone()).collect();
+    }
+    let _ = (ctx, rows);
+    BTreeSet::new()
+}
+
+pub(super) fn pick_session(rows: &[SessionRow], now: i64, archived: &BTreeSet<String>) -> Result<String, Error> {
     let labels: Vec<String> = rows
         .iter()
         .map(|r| {
@@ -746,7 +757,11 @@ pub(super) fn pick_session(rows: &[SessionRow], now: i64) -> Result<String, Erro
             if !hm.is_empty() {
                 label += &format!("  —  {hm}");
             }
-            label + &format!("  ·  {:<13}  ·  {}", relative_time(r.time_updated, now), short_id(&r.id))
+            label += &format!("  ·  {:<13}  ·  {}", relative_time(r.time_updated, now), short_id(&r.id));
+            if archived.contains(&r.id) {
+                label += "  ·  archived";
+            }
+            label
         })
         .collect();
     let picked = inquire::Select::new("Pick a session", labels.clone())

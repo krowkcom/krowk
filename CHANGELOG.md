@@ -354,6 +354,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sync.** It used to fail, because the session can't be restored there.
   It now shows what this machine keeps of it (title, first prompt, models,
   turns and cost) and says the full session needs sync set up.
+- **Both session pickers list and restore archived sessions.** `/sessions`
+  in the TUI now lists the archived sessions started in the directory,
+  marked "archived", and `krowk --resume` marks them too. Picking one
+  restores it from its vintage first, as `krowk --resume <id>` does. If
+  it can't be restored, the TUI says why and keeps the session you were
+  in.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

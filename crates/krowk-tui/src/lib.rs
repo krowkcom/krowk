@@ -196,6 +196,10 @@ pub struct Options {
     /// a thread of its own after each turn, while the person reads the
     /// answer, so leaving has little or nothing left to write.
     pub project: Option<Project>,
+    /// Brings an archived session back from its vintage before `/sessions`
+    /// continues it (R-VINT-4), or says why it could not. Run on a thread
+    /// of its own: it reads the registry.
+    pub restore: Option<Restore>,
     /// A session another machine runs, to follow through sync (`krowk sync
     /// attach`, `krowk --resume` of a synced id): its history is drawn
     /// first, and prompts, approvals and interrupts go to its host.
@@ -212,6 +216,8 @@ pub struct Daemon {
 }
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
+
+pub type Restore = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 
 /// What the TUI routes once it is up (`Host::route_model`).
 pub struct Route {
@@ -505,7 +511,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -671,6 +677,7 @@ struct Ui<'h> {
     /// person's next key: what the root record says while nothing runs.
     ended: Option<(presence::State, String)>,
     project: Option<Project>,
+    restore: Option<Restore>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -2654,6 +2661,19 @@ impl<'h> Ui<'h> {
         if app.session_id.as_deref() == Some(id) {
             app.notice(&format!("session {id} is the one shown"));
             return;
+        }
+        // An archived one comes back from its vintage first, as `krowk
+        // --resume` brings it back (R-VINT-4); one that cannot leaves the
+        // session shown as it was, and says why.
+        if krowk_harness::vintage::is_archived(&self.sessions_dir, id) {
+            let Some(restore) = self.restore.clone() else {
+                return app.notice(&format!("session {id} is archived — bring it back with krowk sessions restore {id}"));
+            };
+            let owned = id.to_string();
+            let restored = tokio::task::spawn_blocking(move || restore(&owned)).await.unwrap_or_else(|e| Err(e.to_string()));
+            if let Err(e) = restored {
+                return app.notice(&format!("session {id} is archived and was not restored: {e}"));
+            }
         }
         // Read before anything is let go: a log that cannot be read leaves
         // the session shown as it was.
