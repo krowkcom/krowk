@@ -2542,7 +2542,7 @@ fn reported_until(t: &pty::Pty, timeout: Duration, done: impl Fn(&[String]) -> b
 /// digits of its session id and titled by its description, written once
 /// per change — working, blocked on its approval while the root is too,
 /// done, error, cleared when stopped alone — and every one cleared at the
-/// turn's end, before the root's report that the turn ended.
+/// turn's end, before the root's done.
 fn each_subagent_is_a_record(screen: &str) {
     use krowk_tui::osc7501::{encode, Kind, Report, State};
     let gates: [mock::Gate; 4] = Default::default();
@@ -2566,12 +2566,12 @@ fn each_subagent_is_a_record(screen: &str) {
     // it is cleared while the turn still runs.
     let mark = t.output().len();
     t.write(b"\x07");
-    assert!(says(&t, mark, "enter", Duration::from_secs(10)), "no Agents overlay: {:?}", t.text());
+    assert!(says(&t, mark, "enter opens", Duration::from_secs(10)), "no Agents overlay: {:?}", t.text());
     t.write(b"x");
     assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last().is_some_and(|r| r.starts_with("\x1b]7501;state=clear:app=krowk:id="))), "the stop not reported: {:?}", reports(&t.text()));
     let stopped = reports(&t.text()).len();
     gates[3].open();
-    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last() == Some(&root(State::Idle, ""))), "the turn never ended: {:?}", reports(&t.text()));
+    assert!(reported_until(&t, Duration::from_secs(20), |rs| rs.last() == Some(&root(State::Done, "fan out"))), "the turn never ended: {:?}", reports(&t.text()));
     gates[2].open();
     let (got, _) = quit_reports(t);
     // The children, by the parent's log.
@@ -2597,16 +2597,16 @@ fn each_subagent_is_a_record(screen: &str) {
     assert_eq!(got[stopped - 1], rec(2, State::Clear), "cleared when stopped, the turn still running");
     let rooted: Vec<&String> = got.iter().filter(|r| !r.contains(":id=")).collect();
     let ask = "fan out";
-    assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Idle, ""), &root(State::Clear, "")]);
+    assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Done, ask), &root(State::Clear, "")]);
     let at = |r: &String| got.iter().position(|g| g == r).unwrap();
     // Both blocked before either says it works again.
     let (root_blocked, child_blocked) = (at(&root(State::Blocked(Kind::Permission), ask)), at(&rec(0, State::Blocked(Kind::Permission))));
     let again = |from: usize, r: &String| from + got[from..].iter().position(|g| g == r).unwrap();
     let back = again(root_blocked, &root(State::Working, ask)).min(again(child_blocked, &rec(0, State::Working)));
     assert!(root_blocked < back && child_blocked < back, "the root blocked while the child is: {got:?}");
-    let turn_over = got.iter().rposition(|g| g == &root(State::Idle, "")).unwrap();
+    let done = at(&root(State::Done, ask));
     for (i, (title, _)) in children.iter().enumerate() {
-        assert!(at(&rec(i, State::Clear)) < turn_over, "{title} cleared before the root's turn-end report: {got:?}");
+        assert!(at(&rec(i, State::Clear)) < done, "{title} cleared before the root's done: {got:?}");
     }
 }
 

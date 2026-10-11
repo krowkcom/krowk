@@ -681,7 +681,7 @@ pub struct Turn {
     pub tool_running: bool,
     /// Whether the session's first frame has arrived: steering needs its id.
     pub prompt_seen: bool,
-    /// `sub_clock` when it started: a child that ended after is the turn's.
+    /// `sub_clock` when it started: a child started after is the turn's.
     pub subs_from: u64,
 }
 
@@ -5686,7 +5686,16 @@ mod tests {
     fn r_pres_4_the_turns_children_are_its_records_and_the_last_turns_are_not() {
         use crate::osc7501::{Kind, State};
         let mut a = app();
-        started_three(&mut a, RanBy::Krowk);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        // Its own lines before the parent's log names it: no record yet.
+        a.on_line(&child_log("k1", LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: None }));
+        assert_eq!(a.agent_count(), 1);
+        assert!(a.child_records().is_empty(), "untitled until named");
+        let model = ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() };
+        for (call, kid) in [("c1", "k1"), ("c2", "k2"), ("c3", "k3")] {
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: format!("do {kid}"), agent: None, model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }));
+        }
         let states = |a: &App| a.child_records().into_iter().map(|c| (c.path.join("/"), c.title, c.state)).collect::<Vec<_>>();
         let rec = |k: &str, state| (k.to_string(), format!("do {k}"), state);
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 1, waiting: Some(Waiting::Question), tokens: 0 }));
