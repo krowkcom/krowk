@@ -203,6 +203,26 @@ impl Pty {
         None
     }
 
+    /// The screen the output draws, a row a line, as far as the TUI's own
+    /// drawing goes (`screen`). What `wait_for` cannot see: a frame draws
+    /// only the cells that changed, so a row's words can arrive with a cell
+    /// the frame before left in place between them, never in one run.
+    pub fn screen(&self) -> String {
+        screen(&self.output(), self.size)
+    }
+
+    /// As `wait_for`, on the screen.
+    pub fn wait_on_screen(&self, needle: &str, timeout: Duration) -> Option<Instant> {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if self.screen().contains(needle) {
+                return Some(Instant::now());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
     /// Whether the child is still running, asked without waiting for it
     /// or touching it.
     pub fn alive(&mut self) -> bool {
@@ -268,6 +288,103 @@ impl Drop for Pty {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+/// `out` played onto a `cols` by `rows` screen that starts blank with the
+/// cursor at the top left (where the CSI 6n answer puts it): text, CR, LF
+/// (scrolling at the bottom), backspace, the cursor moves and erases the
+/// TUI draws with (CSI A B C D G H J K, ESC 7 and 8, autowrap on and off);
+/// every other sequence, colour and OSC included, is read and dropped. A
+/// character is one cell. The rows, trailing blanks trimmed, a line each.
+pub fn screen(out: &[u8], (cols, rows): (u16, u16)) -> String {
+    let (w, h) = (cols as usize, rows as usize);
+    let mut grid = vec![vec![' '; w]; h];
+    let (mut x, mut y, mut saved, mut wrap) = (0usize, 0usize, (0usize, 0usize), true);
+    let text = String::from_utf8_lossy(out);
+    let mut chars = text.chars().peekable();
+    let down = |grid: &mut Vec<Vec<char>>, y: &mut usize| {
+        if *y + 1 < h {
+            *y += 1;
+        } else {
+            grid.remove(0);
+            grid.push(vec![' '; w]);
+        }
+    };
+    while let Some(c) = chars.next() {
+        match c {
+            '\r' => x = 0,
+            '\n' => down(&mut grid, &mut y),
+            '\x08' => x = x.saturating_sub(1),
+            '\x1b' => match chars.next() {
+                Some('[') => {
+                    let mut params = String::new();
+                    let fin = loop {
+                        match chars.next() {
+                            Some(p) if ('\x20'..='\x3f').contains(&p) => params.push(p),
+                            other => break other,
+                        }
+                    };
+                    let private = params.starts_with(['?', '>', '<', '=']);
+                    let n: Vec<usize> = params.trim_start_matches(['?', '>', '<', '=']).split(';').map(|p| p.parse().unwrap_or(0)).collect();
+                    let n0 = n[0].max(1);
+                    match fin {
+                        Some('h' | 'l') if private && params == "?7" => wrap = fin == Some('h'),
+                        _ if private => {}
+                        Some('A') => y = y.saturating_sub(n0),
+                        Some('B') => y = (y + n0).min(h - 1),
+                        Some('C') => x = (x + n0).min(w - 1),
+                        Some('D') => x = x.saturating_sub(n0),
+                        Some('G') => x = (n0 - 1).min(w - 1),
+                        Some('H' | 'f') => (y, x) = ((n0 - 1).min(h - 1), (n.get(1).copied().unwrap_or(1).max(1) - 1).min(w - 1)),
+                        Some('J') => {
+                            let (from, to) = match n[0] {
+                                0 => (y * w + x, w * h),
+                                1 => (0, y * w + x + 1),
+                                _ => (0, w * h),
+                            };
+                            for i in from..to.min(w * h) {
+                                grid[i / w][i % w] = ' ';
+                            }
+                        }
+                        Some('K') => {
+                            let (from, to) = match n[0] {
+                                0 => (x, w),
+                                1 => (0, x + 1),
+                                _ => (0, w),
+                            };
+                            grid[y][from..to.min(w)].fill(' ');
+                        }
+                        _ => {}
+                    }
+                }
+                // OSC: to BEL or ST.
+                Some(']') => {
+                    while let Some(o) = chars.next() {
+                        if o == '\x07' || (o == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                Some('7') => saved = (x, y),
+                Some('8') => (x, y) = saved,
+                _ => {}
+            },
+            c if c < ' ' => {}
+            c => {
+                if x >= w {
+                    if wrap {
+                        x = 0;
+                        down(&mut grid, &mut y);
+                    } else {
+                        x = w - 1;
+                    }
+                }
+                grid[y][x] = c;
+                x += 1;
+            }
+        }
+    }
+    grid.iter().map(|r| r.iter().collect::<String>().trim_end().to_string()).collect::<Vec<_>>().join("\n")
 }
 
 fn count(hay: &[u8], needle: &[u8]) -> usize {

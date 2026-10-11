@@ -364,7 +364,16 @@ impl World {
     fn run_bridge(&self, o: host::Options, daemon: Arc<Client>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let (stop, stop_rx) = watch::channel(false);
         let (cp, cp_rx) = mpsc::unbounded_channel();
-        (stop, cp, tokio::spawn(host::run(o, daemon, stop_rx, cp_rx)))
+        // A bridge that ends with an error says it on stderr, which a test
+        // waiting on what the bridge should have done shows when it fails.
+        let run = async move {
+            let r = host::run(o, daemon, stop_rx, cp_rx).await;
+            if let Err(e) = &r {
+                eprintln!("the bridge ended: {e}");
+            }
+            r
+        };
+        (stop, cp, tokio::spawn(run))
     }
 
     fn viewer(&self, b: &Device, session: &str) -> viewer::Options {
@@ -388,18 +397,22 @@ impl World {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             let (api, id, keys, chain) = (api.clone(), id.clone(), self.keys(), self.chain());
-            let ready = tokio::task::spawn_blocking(move || -> Option<bool> {
-                let s = api.show_sync_session(&id).ok()?;
-                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).ok()?;
-                let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index).ok()?;
-                Some(s.lease.is_some() && index.checkpoint.is_some() && index.head.is_some())
+            // What the registry last said, for a failure to name.
+            let ready = tokio::task::spawn_blocking(move || -> Result<bool, String> {
+                let s = api.show_sync_session(&id).map_err(|e| e.to_string())?;
+                let key = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld)?;
+                let index = krowk_harness::sync::store::open_index(&key, &id, &s.sealed_index)?;
+                match (s.lease.is_some(), index.checkpoint.is_some(), index.head.is_some()) {
+                    (true, true, true) => Ok(true),
+                    (lease, checkpoint, head) => Err(format!("lease {lease}, checkpoint {checkpoint}, head {head}")),
+                }
             })
             .await
             .unwrap();
-            if ready == Some(true) {
+            if ready == Ok(true) {
                 return;
             }
-            assert!(Instant::now() < deadline, "the bridge never synced the session");
+            assert!(Instant::now() < deadline, "the bridge never synced the session: the registry's last word {ready:?}");
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     }

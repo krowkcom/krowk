@@ -233,6 +233,10 @@ async fn r_perm_3_a_sandboxed_command_gets_only_the_allowlisted_environment() {
     let _ = std::fs::remove_dir_all(base);
 }
 
+/// Shell: process `$p`'s descriptors in `$b`, `0 1 2 ` style, once three
+/// readings 50 ms apart agree (at most five seconds of trying).
+const SETTLED_FDS: &str = "a=; n=0; for i in $(seq 100); do ls /proc/$p/fd > /tmp/fds; b=$(sort -n /tmp/fds | tr '\\n' ' '); if [ \"$b\" = \"$a\" ]; then n=$((n+1)); [ $n -ge 2 ] && break; else n=0; fi; a=$b; sleep 0.05; done";
+
 #[tokio::test(flavor = "current_thread")]
 async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session() {
     if !enforced("r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_session") {
@@ -247,8 +251,11 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     let (base, ws, scope) = setup("sbx-fd", Profile::Workspace);
     // The descriptors of a process the shell starts outside any pipeline —
     // listing the shell's own from inside one would catch that pipeline's
-    // pipe, still open while it forks — written to a file, not a pipe.
-    let (out, err) = bash(&ws, &scope, "sleep 5 & p=$!; ls /proc/$p/fd > /tmp/fds; ls -l /proc/$p/fd > /tmp/fdl; kill $p; sort -n /tmp/fds | tr '\\n' ' '; echo; ps -o sid= -p $$; echo $$; cat /tmp/fdl").await;
+    // pipe, still open while it forks — written to a file, not a pipe. Read
+    // until three readings agree: `sleep` starting up holds a descriptor of
+    // its own a moment (the loader's cache, the locale's alias file), which
+    // a loaded machine can catch it with; one it inherited stays.
+    let (out, err) = bash(&ws, &scope, &format!("sleep 5 & p=$!; {SETTLED_FDS}; ls -l /proc/$p/fd > /tmp/fdl; kill $p; echo \"$b\"; ps -o sid= -p $$; echo $$; cat /tmp/fdl")).await;
     unsafe { libc::close(fd) };
     let mut lines = out.lines();
     assert_eq!(lines.next(), Some("0 1 2 "), "{out}");
@@ -263,9 +270,19 @@ async fn r_perm_3_a_sandboxed_command_inherits_no_descriptor_and_has_its_own_ses
     let env = ToolEnv { cwd: &ws, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: None, steers: None };
     let (out, err) = execute(BASH, &json!({"command": "sleep 7.31 & sleep 7.31", "timeout_ms": 300}), &env, scope.clone()).await;
     assert!(err && out.contains("timed out") && started.elapsed() < Duration::from_secs(3), "{out}");
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let alive = std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().map(|o| o.status.success()).unwrap_or(false);
-    assert!(!alive, "a sandboxed command outlived its timeout");
+    // Asked until none runs, for up to three seconds: what the timeout
+    // killed goes when a loaded machine gets to it, and one that outlived
+    // it would still be there, its 7.31 seconds not up.
+    let alive = || {
+        let out = std::process::Command::new("pgrep").args(["-f", "sleep 7.31"]).output().expect("pgrep runs");
+        assert!(matches!(out.status.code(), Some(0 | 1)), "pgrep could not answer: {}", String::from_utf8_lossy(&out.stderr));
+        out.status.success()
+    };
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    while alive() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!alive(), "a sandboxed command outlived its timeout");
     let _ = std::fs::remove_dir_all(base);
 }
 

@@ -412,9 +412,10 @@ mod tests {
     /// call there unless marked `// blocking:` with why, above the
     /// statement or function it covers — at start, on the way out, or
     /// inside `spawn_blocking`. A substring scan, so a tripwire, not the
-    /// enforcement: that is the lateness probe in `tests/daemon_ws.rs`,
-    /// which fails when anything — here, in the host, in a tool — holds the
-    /// daemon's thread past 30 ms while sessions stream.
+    /// enforcement: that is `tests/daemon_ws.rs` — the lateness probe,
+    /// which fails when anything (here, in the host, in a tool) holds the
+    /// daemon's thread past 30 ms while a tool blocks, and the slow disk,
+    /// whose stalls say when one was waited out on the daemon's thread.
     #[test]
     fn r_lag_9_no_blocking_io_on_the_daemons_thread() {
         const BLOCKING: [&str; 11] = ["std::fs::", "std::thread::sleep", "std::os::unix::net::", "std::io::stdin", "std::net::TcpStream", "File::open", "File::create", "OpenOptions::new", "read_events(", ".block_on(", "sync_data("];
