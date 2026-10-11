@@ -23,6 +23,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sign-in under `/connect` clears what it reported, and krowk reports it
   again once it has the terminal back. A terminal that doesn't know the
   sequence ignores it.
+- **`/connect` tells your terminal it is waiting on your sign-in.** While
+  its overlay is up, krowk reports blocked on auth (OSC 7501), with the
+  message "Sign in to" the provider you named or picked, and the window
+  title shows the same (inside herdr, krowk shows as blocked). An approval
+  that comes up meanwhile is reported instead until you answer it. Closing
+  or hiding the overlay, whatever came of it, reports what krowk is doing
+  otherwise; a provider's own sign-in that takes the terminal still clears
+  the record until krowk has it back.
 - **`krowk -p` leaves a record of how it ended on your terminal.** A
   terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
   now shows a `krowk -p` you started in another tab as working while its
