@@ -828,9 +828,38 @@ pub fn finish(wt: &Worktree) -> Result<Finished, Error> {
         remove(wt, false)?;
         return Ok(Finished::Removed);
     }
-    let range = format!("{}..{head}", wt.base);
-    let commits = read(query(&wt.path)?.args(["rev-list", "--count", &range]), "rev-list")?.parse().unwrap_or(0);
+    let commits = ahead(&wt.path, &wt.base, &head)?;
     Ok(Finished::Kept { commits, dirty: !status.is_empty() })
+}
+
+/// The commits `head` has that are not saved (WT17): neither in `base`
+/// nor on the default branch's remote tip (`default_tip`), whether
+/// reachable from it or with an equivalent patch there (`git cherry`), so
+/// a branch merged with a merge commit or rebase-merged counts none. A
+/// squash merge leaves no matching patch, so its commits still count.
+/// With no such tip, the commits in `base..head`. Read from local refs:
+/// nothing is fetched, not even a partial clone's missing blobs.
+pub(crate) fn ahead(dir: &Path, base: &str, head: &str) -> Result<usize, Error> {
+    let count = |not: &[&str]| -> Result<usize, Error> { Ok(read(query(dir)?.args(["rev-list", "--count", head]).args(not), "rev-list")?.parse().unwrap_or(0)) };
+    let Some(tip) = default_tip(dir) else {
+        return count(&[&format!("^{base}")]);
+    };
+    // Patch ids diff every commit the tip has past the branch, so only
+    // when some commit is neither in the base nor reachable from the tip.
+    if count(&[&format!("^{base}"), &format!("^{tip}")])? == 0 {
+        return Ok(0);
+    }
+    let cherry = read(query(dir)?.env("GIT_NO_LAZY_FETCH", "1").args(["cherry", &tip, head, base]), "cherry")?;
+    Ok(cherry.lines().filter(|l| l.starts_with('+')).count())
+}
+
+/// The first of `origin/HEAD`, `origin/main` and `origin/master` that
+/// names a commit.
+fn default_tip(dir: &Path) -> Option<String> {
+    ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"].into_iter().find_map(|r| {
+        let mut c = query(dir).ok()?;
+        read(c.args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]), "rev-parse").ok()
+    })
 }
 
 /// `finish` for a subagent's worktree (WT13): unchanged, it is removed
