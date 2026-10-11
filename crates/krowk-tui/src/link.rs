@@ -51,6 +51,12 @@ impl Remote {
     fn watch(&self) -> broadcast::Receiver<StreamLine> {
         match *self {}
     }
+    pub async fn status(&self) -> Result<krowk_harness::protocol::HostStatus, EngineError> {
+        match *self {}
+    }
+    pub fn attach_later(&self, _: &str, _: Option<&str>) {
+        match *self {}
+    }
 }
 
 pub enum Link {
