@@ -47,3 +47,21 @@ lto = false
 codegen-units = 256
 incremental = true
 strip = false
+
+# `make golden` under `make signoff`: the quick build in a directory of its
+# own, so a golden run neither replaces the `krowk` that `make dev` links nor
+# relinks target/release. The cases compare output, and the quick build
+# writes the same output, two release links faster. full.yml holds the
+# release build to the cases after the merge (GOLDEN_PROFILE=release).
+[profile.golden]
+inherits = "quick"
+
+# Builds and tests while working: line tables, so a panic still names the
+# line, and no debuginfo at all for dependencies. Full debuginfo made every
+# one of the ~70 test binaries slower to compile and to link, for a debugger
+# few runs ever attach.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
