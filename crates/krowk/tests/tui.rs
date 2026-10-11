@@ -2044,7 +2044,8 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     let m = streamed(120, Duration::from_micros(100));
     let b = Sandbox::new("fullscreen");
     b.config(serde_json::json!({"tui": {"screen": "fullscreen"}}));
-    let Some(tm) = Tmux::start_after("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&") else { return };
+    // The shell stays once krowk leaves, so all it printed leaving is read.
+    let Some(tm) = Tmux::start_around("fullscreen", 100, 30, &b.root.join("repo"), &b.env(&m.url), &[], "echo shell-was-here &&", Some("exec sleep 600")) else { return };
     assert!(tm.wait_for("Plan, search, build anything", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "1", "on the alternate screen");
     tm.keys(&["write it all out", "Enter"]);
@@ -2089,10 +2090,13 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     assert_eq!(tm.tmux(&["show-buffer"]), "line 00110: the quick brown fox jumps over the lazy dog again\nline 00111:");
     // No key follows a mouse copy: its flash goes by itself.
     assert!(tm.wait_gone("Copied 2 lines", Duration::from_secs(10)).is_some(), "the flash stayed:\n{}", tm.screen());
-    // The pane kept once krowk is gone, to read what it left.
-    tm.tmux(&["set-option", "-t", "t", "remain-on-exit", "on"]);
     tm.keys(&["C-d", "C-d"]);
     assert!(tm.wait_for("krowk --resume", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while tm.tmux(&["display", "-p", "-t", "t", "#{pane_current_command}"]).trim() != "sleep" {
+        assert!(std::time::Instant::now() < deadline, "krowk left, the shell after it: {}", tm.screen());
+        std::thread::sleep(Duration::from_millis(40));
+    }
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "0", "the shell's screen back");
     let history = tm.history();
     assert!(history.find("shell-was-here").unwrap() < history.find("write it all out").unwrap(), "printed under what the shell had: {history}");

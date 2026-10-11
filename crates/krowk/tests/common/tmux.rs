@@ -20,6 +20,16 @@ impl Tmux {
     /// As `start`, with `before` run in the shell first — output a person's
     /// terminal already holds when they type `krowk`.
     pub fn start_after(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str], before: &str) -> Option<Tmux> {
+        Tmux::start_around(name, cols, rows, cwd, env, args, before, None)
+    }
+
+    /// As `start_after`, with the shell still there once krowk has left,
+    /// running `after`, as a person's is: what krowk printed on its way out
+    /// is all read. A pane whose process has gone is torn down as tmux
+    /// hears it went, and what was still unread on its terminal then is lost
+    /// with it, however `remain-on-exit` is set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_around(name: &str, cols: u16, rows: u16, cwd: &Path, env: &[(String, String)], args: &[&str], before: &str, after: Option<&str>) -> Option<Tmux> {
         if Command::new("tmux").arg("-V").output().is_err() {
             assert!(!cfg!(target_os = "linux") || std::env::var_os("CI").is_none(), "tmux is not installed, and CI on Linux must run this check");
             eprintln!("skipped: tmux is not installed");
@@ -28,13 +38,17 @@ impl Tmux {
         let socket = format!("krowk-tui-{name}-{}", std::process::id());
         let conf = std::env::temp_dir().join(format!("{socket}.conf"));
         std::fs::write(&conf, "set -g history-limit 100000\nset -g status off\n").unwrap();
-        let mut line = format!("cd '{}' && {before} exec env -i", cwd.display());
+        let exec = if after.is_some() { "" } else { "exec " };
+        let mut line = format!("cd '{}' && {before} {exec}env -i", cwd.display());
         for (k, v) in env {
             line += &format!(" {k}='{v}'");
         }
         line += &format!(" '{}'", env!("CARGO_BIN_EXE_krowk"));
         for a in args {
             line += &format!(" '{a}'");
+        }
+        if let Some(after) = after {
+            line += &format!("; {after}");
         }
         let st = Command::new("tmux")
             .args(["-L", &socket, "-f"])
