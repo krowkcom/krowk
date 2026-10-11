@@ -178,6 +178,7 @@ impl Presence {
     }
 
     /// The title alone, of `tell`: what the title's own tests hold.
+    #[cfg(test)]
     pub fn update(&mut self, state: State, topic: &str) -> Option<String> {
         self.tell(state, topic).map(|t| t.title)
     }
