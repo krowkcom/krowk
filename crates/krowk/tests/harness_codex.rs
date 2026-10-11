@@ -414,3 +414,28 @@ fn r_sub_7_the_tui_shows_codexs_two_child_threads_as_two_children() {
     let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
     assert!(st.success(), "{st}");
 }
+
+/// R-SUB-7 — checked against the schema, not live: the two-agent Codex
+/// turn, then a resume in the TUI: both children read done, as their own
+/// logs say — not interrupted with no result, though no call of the
+/// parent's log answers them.
+#[test]
+fn r_sub_7_a_resumed_codex_session_shows_its_finished_children_done() {
+    let b = Sandbox::new("tui-resume-children");
+    b.json(&["providers", "add", "codex", "--name", "team", "--json"], &[]);
+    let out = b.json(&["-p", "run two agents", "--model", "codex:team/gpt-5.5", "--trust", "--output-format", "json"], &[("FAKE_CODEX_SCENARIO", &scenario("subagents.jsonl"))]);
+    let session = out["sessionId"].as_str().unwrap().to_string();
+    let trusted = b.root.join("home/.krowk/trusted.json");
+    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    let cmd = b.command(&["--resume", &session], &[("TERM", "xterm-256color")]);
+    let mut t = pty::Pty::spawn(cmd, 160, 40);
+    let secs = std::time::Duration::from_secs;
+    assert!(t.wait_for("Turing", secs(10)).is_some(), "{:?}", t.text());
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let all = t.text();
+    assert!(all.contains("Agent Ada · explorer · done in") && all.contains("Agent Turing · reviewer · done in"), "{all:?}");
+    assert!(!all.contains("no result") && !all.contains("interrupted"), "{all:?}");
+    t.write(b"\x04\x04");
+    let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
+    assert!(st.success(), "{st}");
+}

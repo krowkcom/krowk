@@ -233,6 +233,9 @@ struct Sub {
     /// lines, should more come, say it runs, and its logged end replaces
     /// this one.
     presumed: bool,
+    /// Why it ended, as its own log's end said: a backend's child that
+    /// answers no call of the parent's says this, not "no result".
+    reason: Option<String>,
 }
 
 /// A child's item under way: its start, and the text it has streamed.
@@ -274,6 +277,7 @@ impl Sub {
             backend_id: None,
             stopping: false,
             presumed: false,
+            reason: None,
         }
     }
 
@@ -905,6 +909,11 @@ pub struct App {
     child_order_running: usize,
     /// The time of the last event a replay read.
     replayed_ms: Option<i64>,
+    /// How a replayed session's backend children ended, read from their
+    /// own logs before the replay (`child_ends_logged`): a Codex child
+    /// answers no call of the parent's log, so the parent's end of turn
+    /// takes its end from here.
+    logged_ends: HashMap<String, (TurnStatus, i64, Option<String>)>,
     /// The agents a backend runs by itself (Claude Code's `Agent` tool),
     /// as it last listed them: counted and listed, never driven from here.
     backend_agents: Vec<BackendAgent>,
@@ -1046,6 +1055,7 @@ impl App {
             child_order: Vec::new(),
             child_order_running: 0,
             replayed_ms: None,
+            logged_ends: HashMap::new(),
             backend_agents: Vec::new(),
             background: 0,
             background_agents: HashMap::new(),
@@ -1979,7 +1989,8 @@ impl App {
                     s.tokens += usage.total();
                     s.calls += 1;
                 }
-                LogBody::TurnCompleted { status, duration_ms, .. } => {
+                LogBody::TurnCompleted { status, duration_ms, error, .. } => {
+                    s.reason = error.as_ref().map(|e| e.message.clone());
                     s.status = Some(*status);
                     s.took = Some(Duration::from_millis(*duration_ms));
                     s.ended = tick;
@@ -2622,6 +2633,12 @@ impl App {
         self.turns
     }
 
+    /// How the session's backend children ended, by session id, as their
+    /// own logs say: read before a replay, whose turn ends take them.
+    pub fn child_ends_logged(&mut self, ends: HashMap<String, (TurnStatus, i64, Option<String>)>) {
+        self.logged_ends = ends;
+    }
+
     /// Child `sid` ended as its own log says, at `at_ms`.
     pub fn child_logged_end(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
         self.ended(sid, status, at_ms);
@@ -2635,15 +2652,27 @@ impl App {
         for mut s in std::mem::take(&mut self.subs) {
             self.calls.retain(|c| s.call_id.as_deref() != Some(c.call_id.as_str()));
             self.sub_clock += 1;
-            // A backend's child its own lines ended done needs no result:
-            // a Codex child answers no call of the parent's log — its spawn
+            // A backend's child its own lines ended needs no result: a
+            // Codex child answers no call of the parent's log — its spawn
             // returns at once, and it runs on to its own end (R-SUB-7).
-            let done = s.ran_by != RanBy::Krowk && s.status == Some(TurnStatus::Completed) && !s.presumed;
+            // Replayed, that end is read from its own log.
+            if s.ran_by != RanBy::Krowk
+                && (s.status.is_none() || s.presumed)
+                && let Some((status, at, reason)) = self.logged_ends.remove(&s.session_id)
+            {
+                (s.status, s.took, s.ended, s.presumed) = (None, None, 0, false);
+                s.end(status, Some(at), self.sub_clock);
+                s.reason = reason;
+            }
+            let own = (s.ran_by != RanBy::Krowk && !s.presumed).then_some(s.status).flatten();
             s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
-            if done {
-                self.commit_sub(&s, "", false);
-            } else {
-                self.commit_sub(&s, "no result — the turn stopped first", true);
+            match own {
+                Some(TurnStatus::Completed) => self.commit_sub(&s, "", false),
+                Some(how) => {
+                    let why = s.reason.clone().unwrap_or_else(|| if how == TurnStatus::Failed { "it failed".into() } else { "it was interrupted".into() });
+                    self.commit_sub(&s, &why, true);
+                }
+                None => self.commit_sub(&s, "no result — the turn stopped first", true),
             }
             self.past.push(s);
         }
@@ -5125,13 +5154,59 @@ mod tests {
         assert!(rows.iter().any(|r| r.contains("Agent Ada · explorer · running")) && rows.iter().any(|r| r.contains("Agent Turing · explorer · running")), "{rows:?}");
         a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
         assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
+        // The other is no longer followed once the turn ends: its own end says why.
+        a.on_line(&child_log("k2", LogBody::TurnCompleted { turn_id: "v".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: Some(stopped_following()), reported_cost_usd: None }));
         a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
         let done = a.past.iter().find(|s| s.session_id == "k1").unwrap();
         assert_eq!(done.status, Some(TurnStatus::Completed), "done as its own lines said");
         assert_eq!(a.past.iter().find(|s| s.session_id == "k2").unwrap().status, Some(TurnStatus::Interrupted));
         let all = text(&a.take_pending()).join("\n");
-        assert!(all.contains("Agent Ada · explorer · done in"), "{all}");
-        assert_eq!(all.matches("no result — the turn stopped first").count(), 1, "only the one still open: {all}");
+        assert!(all.contains("Agent Ada · explorer · done in") && all.contains("krowk stopped following it"), "each as its own log says: {all}");
+        assert!(!all.contains("no result"), "{all}");
+    }
+
+    fn stopped_following() -> ErrorInfo {
+        ErrorInfo { code: "agent_ended".into(), message: "krowk stopped following it when the turn that ran it ended".into(), http_status: None, resets_at_ms: None }
+    }
+
+    /// R-SUB-7: replayed, a Codex child — whose spawn the parent's log does
+    /// not answer — ends as its own log says, read before the replay: done
+    /// is done, not interrupted with no result.
+    #[test]
+    fn r_sub_7_a_resumed_session_shows_its_codex_children_as_their_own_logs_ended() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        let model = ModelRef { instance: "codex".into(), model: "gpt-5.5".into() };
+        let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
+        let mut evs = vec![at(1, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None })];
+        for (ms, child, what) in [(2, "k1", "Ada"), (3, "k2", "Turing")] {
+            evs.push(at(ms, LogBody::SubagentStarted { turn_id: "t".into(), call_id: format!("call-{child}"), subagent_session_id: child.into(), description: what.into(), agent: None, model: model.clone(), ran_by: RanBy::Codex, backend_id: Some(format!("thread-{child}")) }));
+        }
+        evs.push(at(9000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9000, error: None, reported_cost_usd: None }));
+        a.child_ends_logged(HashMap::from([("k1".to_string(), (TurnStatus::Completed, 6002, None)), ("k2".to_string(), (TurnStatus::Failed, 4003, Some("model refused".to_string())))]));
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        let of = |sid: &str| a.past.iter().find(|s| s.session_id == sid).map(|s| (s.status, s.took)).unwrap();
+        assert_eq!(of("k1"), (Some(TurnStatus::Completed), Some(Duration::from_millis(6000))));
+        assert_eq!(of("k2"), (Some(TurnStatus::Failed), Some(Duration::from_millis(4000))));
+        let all = text(&a.take_pending()).join("\n");
+        assert!(all.contains("Agent Ada · done in 6.0s") && all.contains("model refused") && !all.contains("no result"), "{all}");
+    }
+
+    /// R-SUB-7: a Claude Code agent whose call the turn never answered, but
+    /// whose own log ended — interrupted with its turn, saying why — is
+    /// committed with that reason rather than "no result".
+    #[test]
+    fn r_sub_7_a_claude_agent_unanswered_at_the_turns_end_says_its_own_end() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i1".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "…"}) } }));
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: None, model, ran_by: RanBy::Claude, backend_id: Some("a1".into()) }));
+        let why = ErrorInfo { code: "agent_ended".into(), message: "the turn that ran it ended before Claude Code said it finished".into(), http_status: None, resets_at_ms: None };
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 500, error: Some(why), reported_cost_usd: None }));
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        let all = text(&a.take_pending()).join("\n");
+        assert!(all.contains("Agent sleeper · interrupted after") && all.contains("before Claude Code said it finished") && !all.contains("no result"), "{all}");
     }
 
     /// R-SUB-9: a Claude Code agent its call ran in the background answers

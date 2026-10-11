@@ -3226,15 +3226,29 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+    let own_log = |kid: &str| match sessions_dir {
+        Some(dir) => read_child(dir, kid).unwrap_or_default(),
+        None => events.iter().filter(|e| e.session_id == kid).cloned().collect(),
+    };
+    // A backend's child that answers no call of the session's log — a
+    // Codex child, whose spawn returns at once — ends in its own log: read
+    // from there before the replay, whose turn ends take it.
+    let mut ends = std::collections::HashMap::new();
+    for e in events.iter().filter(|e| e.session_id == id) {
+        if let krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id: kid, ran_by, .. } = &e.body
+            && *ran_by != krowk_harness::protocol::RanBy::Krowk
+            && let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, error, .. }, .. }) = own_log(kid).last()
+        {
+            ends.insert(kid.clone(), (*status, *time_ms, error.as_ref().map(|e| e.message.clone())));
+        }
+    }
+    app.child_ends_logged(ends);
     app.replay(&log::branch(events, &head));
     // A backend's agent run in the background ends in its own log, not
     // the session's: read from there, or from a synced session's history,
     // which holds its children's events too.
     for kid in app.backend_children_running() {
-        let own = match sessions_dir {
-            Some(dir) => read_child(dir, &kid).unwrap_or_default(),
-            None => events.iter().filter(|e| e.session_id == kid).cloned().collect(),
-        };
+        let own = own_log(&kid);
         if let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, .. }, .. }) = own.last() {
             app.child_logged_end(&kid, *status, *time_ms);
         }
