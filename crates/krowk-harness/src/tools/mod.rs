@@ -1417,7 +1417,7 @@ pub(crate) mod tests {
     /// git's own words; another file's error, or a `.git` read, is not.
     #[test]
     fn r_perm_3_git_failing_on_a_read_only_git_dir_is_recognised() {
-        for out in ["error: could not lock config file .git/config: Read-only file system", "fatal: Unable to create '/w/.git/index.lock': Read-only file system", "error: insufficient permission for adding an object to repository database .git/objects\nfatal: .git/objects/ab: Permission denied"] {
+        for out in ["error: could not lock config file .git/config: Read-only file system", "fatal: Unable to create '/w/.git/index.lock': Read-only file system", "error: cannot lock ref 'refs/heads/x': Unable to create '/w/.git/refs/heads/x.lock': Read-only file system"] {
             assert!(git_fenced(out), "{out}");
         }
         for out in ["src/main.rs: Read-only file system", ".github/workflows/ci.yml: Read-only file system", "sh: .gitignore: Permission denied", "cat .git/HEAD\nref: refs/heads/main", ""] {
