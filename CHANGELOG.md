@@ -31,6 +31,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   or hiding the overlay, whatever came of it, reports what krowk is doing
   otherwise; a provider's own sign-in that takes the terminal still clears
   the record until krowk has it back.
+- **The TUI leaves a turn's end on your terminal until you are back.** A
+  terminal or agent inbox that reads OSC 7501 now shows a turn that
+  completed as done, with the prompt's first line, and one that failed as
+  failed, with the first line of what went wrong, rather than idle, so a
+  finished answer you haven't read stands apart from krowk at rest. Your
+  next key press puts it back to idle. An interrupted turn goes straight to
+  idle. The window title and herdr say idle as before.
 - **`krowk -p` leaves a record of how it ended on your terminal.** A
   terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
   now shows a `krowk -p` you started in another tab as working while its
