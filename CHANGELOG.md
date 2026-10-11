@@ -185,14 +185,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   at once, with what the command printed so far or what the subagents
   already finished. It can check on the command later with `bash_output`,
   and each subagent still running reports back when it's done. Anything
-  that finishes within two seconds just finishes.
+  that finishes within two seconds just finishes. The two seconds count
+  from when the agent asked, so a build that waited for a build slot moves
+  as soon as it starts, and once one command has moved, the next ones the
+  agent asked for in the same step move straight away.
 - **Steering reaches a Claude Code turn while it runs.** A message you send
   while Claude Code works used to wait until its whole turn ended, then come
   back into your prompt. Now it goes to Claude Code at once, and the model
   reads it at its next step, usually as soon as the running tool call
   returns. It appears in the conversation where the model read it. One sent
   as the model writes its last answer is read right after, in the same
-  turn. Interrupting still gives back what Claude Code never read.
+  turn. Interrupting still gives back what Claude Code never read. If
+  Claude Code hasn't picked a message up ten seconds after it finished,
+  krowk cancels it and gives it back, so it is never both read and
+  returned to your prompt.
 - **Groundwork for watching and stopping each Claude Code agent from the
   TUI.** Seeing what each agent Claude Code starts is doing, and stopping
   one while the others go on, is on its way. It is built against a
