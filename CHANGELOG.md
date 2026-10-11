@@ -177,7 +177,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   approval, and its tokens rise as Claude Code counts them instead of
   staying at 0. An approval an agent asks for now says which subagent
   asks, instead of passing for the conversation's own; answering it clears
-  the wait and the agent goes on.
+  the wait and the agent goes on. A device following a synced session can
+  answer a subagent's approval too, as it answers the session's own; it
+  used to be told the approval is answered on the host. If nobody answers
+  one from a turn started on that device, it is denied after five minutes,
+  as the session's own are.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

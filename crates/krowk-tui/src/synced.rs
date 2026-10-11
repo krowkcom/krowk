@@ -118,7 +118,7 @@ pub async fn open(o: Options) -> Result<Opened, String> {
     let state = Arc::new(Mutex::new(State::default()));
     let watch = broadcast::channel(256).0;
     let (events_tx, events) = mpsc::unbounded_channel();
-    let pump = Pump { state: state.clone(), watch: watch.clone(), events: events_tx, session: id.clone() };
+    let pump = Pump { state: state.clone(), watch: watch.clone(), events: events_tx };
     tokio::spawn(async move {
         while let Some(batch) = v.updates.recv().await {
             for u in batch {
@@ -205,9 +205,6 @@ struct Pump {
     state: Arc<Mutex<State>>,
     watch: broadcast::Sender<StreamLine>,
     events: mpsc::UnboundedSender<Event>,
-    /// The synced session: a subagent's approval names its own, which the
-    /// host refuses a viewer's answer to.
-    session: String,
 }
 
 impl Pump {
@@ -279,12 +276,6 @@ impl Pump {
     /// its logged end when that comes caught up rather than live; or, its
     /// `result` never sent, when the next turn starts or the host goes.
     async fn line(&self, l: StreamLine, live: bool) {
-        if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = &l
-            && r.session_id != self.session
-        {
-            let _ = self.events.send(Event::Note(format!("a subagent asks to {} — it is answered on the host", r.summary)));
-            return;
-        }
         let to = {
             let mut s = lock(&self.state);
             let starts = matches!(&l, StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }));
@@ -364,7 +355,7 @@ mod tests {
     fn pump() -> (Pump, mpsc::UnboundedReceiver<Event>, Arc<Mutex<State>>) {
         let state = Arc::new(Mutex::new(State::default()));
         let (events, rx) = mpsc::unbounded_channel();
-        (Pump { state: state.clone(), watch: broadcast::channel(16).0, events, session: "s".into() }, rx, state)
+        (Pump { state: state.clone(), watch: broadcast::channel(16).0, events }, rx, state)
     }
 
     fn ev(id: &str, body: LogBody) -> serde_json::Value {
@@ -442,15 +433,16 @@ mod tests {
         assert!(done_rx.try_recv().is_err(), "the prompt is still queued, not ended as taken");
     }
 
-    /// D11: a subagent's approval names its own session, whose answer the
-    /// host refuses a viewer: it is said, not offered.
+    /// D11, R-SUB-12: a subagent's approval names its own session, which
+    /// the host lets a viewer answer for the session's own children: it is
+    /// offered as the session's is, and the card says which subagent asks.
     #[tokio::test]
-    async fn d11_a_subagents_approval_is_not_offered_to_a_viewer() {
+    async fn d11_a_subagents_approval_is_offered_to_a_viewer() {
         let (p, mut rx, _) = pump();
         let mut watch = p.watch.subscribe();
         let req = ApprovalRequest { session_id: "sub".into(), turn_id: "t".into(), request_id: "r".into(), tool: "bash".into(), input: serde_json::json!({}), summary: "run ls".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
-        p.update(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(req)))).await;
-        assert!(watch.try_recv().is_err(), "no dialog");
-        assert!(matches!(rx.try_recv(), Ok(Event::Note(n)) if n.contains("answered on the host")));
+        p.update(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(req.clone())))).await;
+        assert!(matches!(watch.try_recv(), Ok(StreamLine::Live(LiveEvent::ApprovalRequested(r))) if r == req), "offered");
+        assert!(rx.try_recv().is_err(), "no note that it is the host's");
     }
 }
