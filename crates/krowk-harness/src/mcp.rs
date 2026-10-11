@@ -65,6 +65,12 @@ const MAX_OUTPUT: usize = 30_000;
 /// One message from a server may be at most this long: a server that
 /// never ends a line cannot fill the memory.
 const MAX_MESSAGE: u64 = 16 << 20;
+/// What a stdio server may write that is not a JSON-RPC message while one
+/// request waits, in lines and in bytes: a few lines of a banner or of
+/// logging pass, a server writing nothing else is stopped long before
+/// `CALL_TIMEOUT`. Its notifications are messages, and do not count.
+const MAX_JUNK_LINES: usize = 1000;
+const MAX_JUNK_BYTES: usize = 1 << 20;
 /// What one server's `tools/list` may add up to, over at most this many
 /// pages: the list is held for the session, and a server that pages
 /// forever must not hold the turn until `START_TIMEOUT`.
@@ -644,7 +650,20 @@ impl Conn {
                     if !line.ends_with('\n') && read as u64 == MAX_MESSAGE {
                         return Err(format!("the server sent a message over {} MiB", MAX_MESSAGE >> 20));
                     }
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else { continue };
+                    // A line that is no JSON-RPC message — a banner, a log
+                    // line on the wrong stream — is passed over, but only so
+                    // many: a server writing nothing else would otherwise
+                    // hold the call to CALL_TIMEOUT. It is stopped, as one cut
+                    // off is (`cut` stays set).
+                    let Some(v) = serde_json::from_str::<Value>(&line).ok().filter(|v| v.is_object()) else {
+                        junk += 1;
+                        junk_bytes += read;
+                        if junk > MAX_JUNK_LINES || junk_bytes > MAX_JUNK_BYTES {
+                            io.kill();
+                            return Err(format!("it wrote {junk} lines that are not JSON-RPC ({} KiB) while krowk waited for its answer, so it was stopped", junk_bytes >> 10));
+                        }
+                        continue;
+                    };
                     if is_answer(&v, id) {
                         break v;
                     }
@@ -797,7 +816,7 @@ mod tests {
         assert!(checked);
         std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"evil": {"command": "evil"}}}).to_string()).unwrap();
         let cfg = crate::permissions::Config { krowk_dir: Some(base.join("krowk")), trusted: Some(std::sync::Arc::new(move |_: &Path| checked)), ..Default::default() };
-        let names: Vec<String> = discover(&cfg, &repo).into_iter().map(|s| s.name).collect();
+        let names: Vec<String> = discover(&cfg, &repo).0.into_iter().map(|s| s.name).collect();
         assert!(names.is_empty(), "the swapped-in servers were loaded: {names:?}");
         // The file as trusted loads.
         std::fs::write(repo.join(".mcp.json"), json!({"mcpServers": {"good": {"command": "good"}}}).to_string()).unwrap();
