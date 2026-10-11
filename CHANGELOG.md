@@ -14,7 +14,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **An agent definition can name the MCP servers its subagent may use.**
   In its `tools:` list, `mcp__github` gives the subagent the whole
   `github` server and `mcp__linear__create_issue` that one tool, as in
-  Claude Code; `Mcp(github)` and `Mcp(linear:create_issue)` work too. Such
+  Claude Code; `Mcp(github)` and `Mcp(linear:create_issue)` work too, and
+  `mcp__*` gives it every server. A name krowk can't read, such as the
+  pattern `mcp__github__get_*`, is left out with a notice. Such
   a subagent gets `mcp_search` and `mcp_call` for those alone: its
   searches find nothing elsewhere, a call to any other server or tool is
   refused before it runs, and a server it can't use isn't started for it.
