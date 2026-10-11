@@ -103,11 +103,26 @@ fn id(segments: &[&str]) -> Option<Option<String>> {
 
 /// The first line, without a control or an invisible formatting character
 /// (the spec refuses the first, and the second can make one name read as
-/// another), cut at a character boundary to `max` bytes.
+/// another), cut at a character boundary to `max` bytes. Any line break
+/// ends the line, a tab is a space, and the joiners stay, or an emoji
+/// sequence or a Persian word falls apart.
 fn text_field(text: &str, max: usize) -> String {
-    let line = crate::card::clean(text.lines().next().unwrap_or_default());
+    let line = text.split(['\n', '\r', '\x0b', '\x0c', '\u{85}', '\u{2028}', '\u{2029}']).next().unwrap_or_default();
+    let line: String = line.chars().map(|c| if c == '\t' { ' ' } else { c }).filter(|c| !c.is_control() && !invisible(*c)).collect();
     let line = line.trim();
     line[..line.floor_char_boundary(max)].trim_end().to_string()
+}
+
+/// The format characters that reorder or hide text, and the ones that
+/// show as nothing: Unicode's default-ignorables but for the joiners and
+/// the variation selectors, which only shape what is there.
+fn invisible(c: char) -> bool {
+    !matches!(c, '\u{200C}' | '\u{200D}')
+        && matches!(c,
+            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}' | '\u{1160}' | '\u{17B4}' | '\u{17B5}' | '\u{180E}'
+            | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{206F}' | '\u{3164}'
+            | '\u{FEFF}' | '\u{FFA0}' | '\u{FFF0}'..='\u{FFFB}' | '\u{1BCA0}'..='\u{1BCA3}' | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0000}'..='\u{E0FFF}')
 }
 
 #[cfg(test)]
@@ -165,12 +180,18 @@ mod tests {
 
     #[test]
     fn r_pres_1_no_control_or_reordering_character_reaches_the_decoded_text() {
-        for evil in ["evil\x1b]0;x\x07 tail", "a\tb\x7fc\u{85}d\u{9b}e", "txt.\u{202E}exe", "\u{200B}\u{FEFF}hidden\u{2066}"] {
+        let hidden = |c: char| matches!(c, '\0'..='\x1f' | '\x7f'..='\u{9f}' | '\u{AD}' | '\u{2028}' | '\u{2029}' | '\u{202A}'..='\u{202E}' | '\u{200B}' | '\u{2066}'..='\u{2069}' | '\u{FEFF}' | '\u{E0000}'..='\u{E007F}');
+        for evil in ["evil\x1b]0;x\x07 tail", "a\x7fc\u{9b}e", "txt.\u{202E}exe", "\u{200B}\u{FEFF}hidden\u{2066}", "soft\u{AD}ok\u{E0001}\u{E0041}"] {
             let r = encode(&Report { state: State::Working, title: evil, msg: evil, ..Default::default() }).unwrap();
             for key in ["title", "msg"] {
                 let text = field(&r, key).unwrap();
-                assert!(!text.chars().any(|c| c.is_control() || crate::card::is_bidi(c)), "{key} of {evil:?} decoded to {text:?}");
+                assert!(!text.chars().any(hidden), "{key} of {evil:?} decoded to {text:?}");
             }
+        }
+        assert_eq!(field(&root(State::Done, "a\tb"), "msg").as_deref(), Some("a b"), "a tab is a space");
+        assert_eq!(field(&root(State::Done, "👩\u{200D}💻 done ❤\u{FE0F}"), "msg").as_deref(), Some("👩\u{200D}💻 done ❤\u{FE0F}"), "joiners and selectors stay");
+        for brk in ["\r", "\u{85}", "\u{2028}", "\u{2029}", "\x0b"] {
+            assert_eq!(field(&root(State::Done, &format!("approve{brk}rm -rf /")), "msg").as_deref(), Some("approve"), "{brk:?} ends the line");
         }
         let r = encode(&Report { state: State::Working, title: "first\nsecond", msg: "fix the test\r\nand more\n", ..Default::default() }).unwrap();
         assert_eq!(field(&r, "title").as_deref(), Some("first"));
@@ -180,13 +201,15 @@ mod tests {
 
     #[test]
     fn r_pres_1_long_texts_are_cut_at_a_character_boundary_and_the_report_stays_small() {
-        let msg = "é".repeat(5 * 1024) + "x"; // 10 KB and a byte
-        let title = "ü".repeat(150); // 300 bytes
-        let id = ["abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345", "abcdefghijklmnopqrstuvwxyz012345", "0123456789ab"];
+        // Three-byte characters, so neither limit falls on a boundary.
+        let msg = "€".repeat(10 * 1024 / 3 + 1); // 10 KB
+        let title = "€".repeat(100); // 300 bytes
+        let wide = "a".repeat(32);
+        let id = [wide.as_str(), &wide, &wide, &"a".repeat(29)]; // 128 bytes, the most an id holds
         let r = encode(&Report { state: State::Blocked(Kind::Permission), id: &id, title: &title, msg: &msg }).unwrap();
-        let (m, t) = (field(&r, "msg").unwrap(), field(&r, "title").unwrap());
-        assert!(m.len() <= MSG_MAX && m.len() > MSG_MAX - 4 && m.chars().all(|c| c == 'é'), "{} bytes", m.len());
-        assert_eq!(t, "ü".repeat(96), "192 bytes");
+        assert_eq!(field(&r, "msg").unwrap(), "€".repeat(682), "2046 bytes, not 2048 of a cut character");
+        assert_eq!(field(&r, "title").unwrap(), "€".repeat(64), "192 bytes");
+        assert_eq!(field(&root(State::Done, &"é".repeat(5 * 1024)), "msg").unwrap().len(), MSG_MAX);
         assert!(r.len() < 4096, "{} bytes", r.len());
         assert!(r.split_once("msg=").unwrap().1.len() - 2 <= 2732, "the encoded msg within its limit");
     }
