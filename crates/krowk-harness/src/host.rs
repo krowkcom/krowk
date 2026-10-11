@@ -123,8 +123,9 @@ pub(crate) struct Shared {
     backends: Mutex<HashMap<String, Backend>>,
     /// How long a session's backend process is kept without a turn.
     backend_idle: std::time::Duration,
-    /// How long the writer between turns lags each event (`SessionKids`):
-    /// none but in tests, standing for a slow disk.
+    /// How long the writer between turns lags each event (`SessionKids`),
+    /// standing for a slow disk: tests only (`test-hooks`).
+    #[cfg(feature = "test-hooks")]
     between_lag: std::time::Duration,
     /// Approval requests waiting for a client's answer, every session's —
     /// a subagent's included.
@@ -199,7 +200,7 @@ enum Told {
 
 impl SessionKids {
     /// The children of `session_id`, with their writer running.
-    fn new(session_id: &str, watch: broadcast::Sender<StreamLine>, lag: std::time::Duration) -> SessionKids {
+    fn new(session_id: &str, watch: broadcast::Sender<StreamLine>, lag: Lag) -> SessionKids {
         let mut kids = SessionKids { state: Arc::default(), jobs: None, pen: Arc::default(), woke: Arc::new(watch::channel(0).0) };
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             let (tx, rx) = mpsc::unbounded_channel();
@@ -231,7 +232,16 @@ impl SessionKids {
 /// The session's writer between turns (`SessionKids`): each event in the
 /// order it was said, until the backend and every turn let go of it. It
 /// holds no sender of its own queue, so it ends with them.
-async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKids, watch: broadcast::Sender<StreamLine>, session_id: String, lag: std::time::Duration) {
+/// How long the writer between turns lags each event: a duration with
+/// `test-hooks`, nothing otherwise.
+#[cfg(feature = "test-hooks")]
+type Lag = std::time::Duration;
+#[cfg(not(feature = "test-hooks"))]
+type Lag = ();
+
+async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKids, watch: broadcast::Sender<StreamLine>, session_id: String, lag: Lag) {
+    #[cfg(not(feature = "test-hooks"))]
+    let () = lag;
     while let Some(job) = jobs.recv().await {
         match job {
             Told::Settle(done) => {
@@ -243,6 +253,7 @@ async fn write_between(mut jobs: mpsc::UnboundedReceiver<Told>, kids: SessionKid
                 drop(kids.pen.lock().await);
             }
             Told::Event(ev) => {
+                #[cfg(feature = "test-hooks")]
                 if !lag.is_zero() {
                     tokio::time::sleep(lag).await;
                 }
@@ -394,6 +405,7 @@ impl Host {
                 running: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
+                #[cfg(feature = "test-hooks")]
                 between_lag: std::time::Duration::ZERO,
                 approvals: permissions::Approvals::default(),
                 grants: Mutex::new(HashMap::new()),
@@ -440,9 +452,10 @@ impl Host {
         self
     }
 
-    /// For tests: the writer between turns takes `lag` over each event,
-    /// as on a slow disk, so what a turn waits for is still queued.
-    #[doc(hidden)]
+    /// For tests (`test-hooks`): the writer between turns takes `lag` over
+    /// each event, as on a slow disk, so what a turn waits for is still
+    /// queued.
+    #[cfg(feature = "test-hooks")]
     pub fn with_between_lag(mut self, lag: std::time::Duration) -> Host {
         Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").between_lag = lag;
         self
@@ -706,7 +719,11 @@ impl Shared {
         // A session moved to another instance, or its instances changed: the
         // old engine's process is stopped with it when the last handle goes
         // (its drop kills it).
-        let children = SessionKids::new(session_id, self.watch.clone(), self.between_lag);
+        #[cfg(feature = "test-hooks")]
+        let lag = self.between_lag;
+        #[cfg(not(feature = "test-hooks"))]
+        let lag = ();
+        let children = SessionKids::new(session_id, self.watch.clone(), lag);
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
             _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),
