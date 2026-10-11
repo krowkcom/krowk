@@ -1697,6 +1697,26 @@ fn ids_of(events: &[serde_json::Value], of: &str) -> Vec<String> {
     events.iter().filter(|e| e["sessionId"] == of).filter_map(|e| e["id"].as_str().map(String::from)).collect()
 }
 
+/// Waits until the parent's chunks hold the logs of `sessions` whole, each
+/// in its log's order, and returns what they hold. The logs are read again
+/// each time, so an event logged late is waited for rather than missed; and
+/// the wait is judged on a read begun after `wait` has passed, never on one
+/// begun before it, so a read the registry is slow to answer is not taken
+/// for chunks missing.
+async fn chunks_hold(w: &World, session: &str, sessions: &[&str], wait: Duration) -> Vec<serde_json::Value> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let late = Instant::now() > deadline;
+        let rest = at_rest(w, session).await.unwrap_or_default();
+        let short: Vec<_> = sessions.iter().map(|s| (*s, log_ids(w, s))).filter(|(s, ids)| ids_of(&rest, s) != *ids).collect();
+        if short.is_empty() {
+            return rest;
+        }
+        assert!(!late, "the chunks hold, of the logs {:?}, only {:?}", short, short.iter().map(|(s, _)| ids_of(&rest, s)).collect::<Vec<_>>());
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// R-SUB-12, R-SUB-6: B stops a subagent of the session it follows, by
 /// the child's id, while the parent's turn — started at A's terminal, in
 /// another directory than the bridge's — goes on and ends. B can stop
@@ -1769,16 +1789,8 @@ async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     assert!(!other_log.contains("interrupted"), "the other session was never reached");
 
     // R-SUB-6: the child's events ride the parent's chunks.
+    let rest = chunks_hold(&w, &session, &[&session, &child], Duration::from_secs(30)).await;
     let (parent_ids, child_ids) = (log_ids(&w, &session), log_ids(&w, &child));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let rest = loop {
-        let rest = at_rest(&w, &session).await.unwrap_or_default();
-        if ids_of(&rest, &session) == parent_ids && ids_of(&rest, &child) == child_ids {
-            break rest;
-        }
-        assert!(Instant::now() < deadline, "the chunks hold {:?} of the parent's {parent_ids:?} and {:?} of the child's {child_ids:?}", ids_of(&rest, &session), ids_of(&rest, &child));
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
     assert!(rest.iter().all(|e| e["sessionId"] == session || e["sessionId"] == child), "nothing of another session");
     let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
     let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
@@ -1980,16 +1992,9 @@ async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_child
         _ => None,
     }).collect();
     assert_eq!(kids.len(), 2, "two children of Claude Code's");
+    let all: Vec<&str> = std::iter::once(session.as_str()).chain(kids.iter().map(String::as_str)).collect();
+    let rest = chunks_hold(&w, &session, &all, Duration::from_secs(30)).await;
     let parent_ids = log_ids(&w, &session);
-    let deadline = Instant::now() + Duration::from_secs(15);
-    let rest = loop {
-        let rest = at_rest(&w, &session).await.unwrap_or_default();
-        if ids_of(&rest, &session) == parent_ids && kids.iter().all(|k| ids_of(&rest, k) == log_ids(&w, k)) {
-            break rest;
-        }
-        assert!(Instant::now() < deadline, "the chunks hold {:?} of the parent's {parent_ids:?}, and of the children {:?}", ids_of(&rest, &session), kids.iter().map(|k| (ids_of(&rest, k).len(), log_ids(&w, k).len())).collect::<Vec<_>>());
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    };
     let events: Vec<krowk_harness::protocol::LogEvent> = rest.iter().map(|e| serde_json::from_value(e.clone()).unwrap()).collect();
     let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
     assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the children's events left out");
@@ -2054,15 +2059,6 @@ async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_
     let ended = ended.await.expect("the parent's follower gets the child's turn.completed");
     assert!(matches!(ended.body, krowk_harness::protocol::LogBody::TurnCompleted { status: krowk_harness::protocol::TurnStatus::Completed, .. }));
     // The chunks: the child's log whole, its end last.
-    let ids = log_ids(&w, &kid);
-    assert_eq!(ids.last(), Some(&ended.id));
-    let deadline = Instant::now() + Duration::from_secs(15);
-    loop {
-        let rest = at_rest(&w, &session).await.unwrap_or_default();
-        if ids_of(&rest, &kid) == ids {
-            break;
-        }
-        assert!(Instant::now() < deadline, "the chunks hold {:?} of the child's {ids:?}", ids_of(&rest, &kid));
-        tokio::time::sleep(Duration::from_millis(250)).await;
-    }
+    assert_eq!(log_ids(&w, &kid).last(), Some(&ended.id));
+    chunks_hold(&w, &session, &[&kid], Duration::from_secs(30)).await;
 }
