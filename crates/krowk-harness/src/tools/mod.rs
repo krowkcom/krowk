@@ -250,14 +250,14 @@ pub struct ToolEnv<'a> {
     /// The session's background jobs, and its id: none, and bash runs in
     /// the foreground only.
     pub jobs: Option<(&'a crate::jobs::Jobs, &'a str)>,
-    /// The turn's steering: a foreground bash call that has run
-    /// `MOVE_AFTER` with the person's steer waiting is moved to the
-    /// background (R-STEER-4). None, and it is waited for.
+    /// The turn's steering: a foreground bash call asked for `MOVE_AFTER`
+    /// ago with the person's steer waiting is moved to the background
+    /// (R-STEER-4). None, and it is waited for.
     pub steers: Option<&'a crate::engine::Steers>,
 }
 
-/// How long a foreground bash call runs before a steer moves it to the
-/// background rather than wait for it (R-STEER-4).
+/// How long after a foreground bash call is asked for a steer moves it to
+/// the background rather than wait for it (R-STEER-4).
 pub const MOVE_AFTER: Duration = Duration::from_secs(2);
 
 /// Parses a call's input, or answers why it cannot.
@@ -1261,6 +1261,9 @@ async fn background(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sa
 async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
+    // What a steer's `MOVE_AFTER` counts from: the call, not the command,
+    // so one that waited for a build slot is moved as soon as it starts.
+    let asked = tokio::time::Instant::now();
     let mut started = match start(&i.command, env, sandbox).await {
         Ok(s) => s,
         Err(e) => return (e, true),
@@ -1269,12 +1272,12 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let _slot = started.slot.take();
     let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
-    // A steer moves it to the background once it has run `MOVE_AFTER`
-    // (R-STEER-4), where the session keeps jobs.
+    // A steer moves it to the background once it was asked for
+    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs.
     let movable = env.jobs.zip(env.steers);
     let moving = async {
         let Some((_, steers)) = movable else { return std::future::pending().await };
-        tokio::time::sleep(MOVE_AFTER).await;
+        tokio::time::sleep_until(asked + MOVE_AFTER).await;
         steers.steered().await;
     };
     tokio::pin!(moving);
@@ -1814,6 +1817,35 @@ pub(crate) mod tests {
         // A heavy command gets the cores split between the slots.
         let (out, _) = run(BASH, &json!({"command": "make --version >/dev/null && echo $CARGO_BUILD_JOBS"}), &env).await;
         assert_eq!(out, "3\nexit code 0");
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// R-STEER-4: a call's two seconds count from when it was asked for, so
+    /// one steered while it waited for a build slot is moved as soon as it
+    /// starts, not two seconds after.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn r_steer_4_a_call_steered_while_it_waits_for_a_build_slot_is_moved_once_it_starts() {
+        let d = dir("build-slot-steer");
+        if !std::process::Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success()) {
+            eprintln!("make is not installed: skipping");
+            return;
+        }
+        let b = builds(&d, 1);
+        let held = b.pool.as_ref().unwrap().try_take().unwrap().expect("free");
+        let (jobs, steers) = (crate::jobs::Jobs::new(d.join("sessions")), crate::engine::Steers::default());
+        steers.push("stop, say hi".into()).unwrap();
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: Some(&b), live: None, env: &[], jobs: Some((&jobs, "s-1")), steers: Some(&steers) };
+        let started = std::time::Instant::now();
+        let freed = async {
+            tokio::time::sleep(Duration::from_millis(2500)).await;
+            drop(held);
+        };
+        let input = json!({"command": "make --version >/dev/null && sleep 5"});
+        let ((out, err), ()) = tokio::join!(run(BASH, &input, &env), freed);
+        assert!(!err && out.contains("moved to background as job b1 because the person sent a message"), "{out}");
+        assert!(started.elapsed() < Duration::from_millis(4000), "moved as it started, at 2.5 s: {:?}", started.elapsed());
+        jobs.shutdown().await;
         let _ = std::fs::remove_dir_all(d);
     }
 
