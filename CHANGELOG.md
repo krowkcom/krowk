@@ -44,10 +44,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   subagents.** A device following the session with `krowk sync attach`
   (and the apps, later) may now interrupt a subagent of that session by
   the subagent's id, and only that subagent stops: the rest of the turn
-  goes on. It reaches only the subagents the session's own log started,
-  and only to stop them: another session, an id the device made up, or
-  steering or answering a subagent is refused as before. It works whichever
-  directory the subagent's session was started from.
+  goes on. It reaches only the subagents the session's own log started:
+  another session, an id the device made up, or steering a subagent is
+  refused as before. It works whichever directory the subagent's session
+  was started from.
 - **The subagent view can take the whole screen and give it back.** In the
   inline screen it fills the terminal without switching to the alternate
   screen, so tmux, SSH and phone terminals still get only plain output.
@@ -195,11 +195,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Code agent, in its transcript or in the Ctrl-G list, now stops that agent
   alone. It used to say krowk couldn't. Claude Code is asked to stop it: its
   row reads `stopping…`, then `interrupted`, and the other agents and the
-  turn carry on. This also works for an agent waiting on your approval
-  (its question is taken back), for an agent still running in the
-  background after its turn ended, and from a device following a synced
-  session. If Claude Code refuses, or the stop can't reach it, the bottom
-  line says why and the agent keeps running.
+  turn carry on. It still reads `interrupted` when the session is resumed
+  later or opened on a device that attaches to it, rather than `failed`.
+  This also works for an agent waiting on your approval (its question is
+  taken back), for an agent still running in the background after its turn
+  ended, and from a device following a synced session. If Claude Code
+  refuses, or the stop can't reach it, the bottom line says why and the
+  agent keeps running.
 - **Codex's agents are subagents of the session too.** Each agent Codex
   spawns during a turn gets its own session log, linked to yours: what it
   was asked first, then its messages, tool calls and results, then how it

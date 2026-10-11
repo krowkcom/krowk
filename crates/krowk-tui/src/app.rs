@@ -397,6 +397,11 @@ fn ran_by(r: RanBy) -> &'static str {
 const TOOL_FACT: Duration = Duration::from_secs(10);
 const QUIET_FACT: Duration = Duration::from_secs(30);
 
+/// How Claude Code answers the Agent call of an agent `stop_task` stopped
+/// (SV0's recording, and SV15's live run): a replayed session's one word
+/// that the agent was interrupted, where its own lines are not read.
+const CLAUDE_AGENT_STOPPED: &str = "[Request interrupted by user";
+
 /// This client's clock at `now` (ms since the epoch): the time now, moved
 /// by how far `now` is from now, so a frame drawn for a later instant
 /// reads later.
@@ -2590,7 +2595,9 @@ impl App {
         } else if s.background {
             self.background_agents.insert(s.session_id.clone(), s.description.clone());
         } else {
-            let interrupted = output.starts_with("the subagent was interrupted") || output.starts_with("not run: the turn was interrupted");
+            let interrupted = output.starts_with("the subagent was interrupted")
+                || output.starts_with("not run: the turn was interrupted")
+                || (s.ran_by == RanBy::Claude && output.starts_with(CLAUDE_AGENT_STOPPED));
             let how = match (is_error, interrupted) {
                 (false, _) => TurnStatus::Completed,
                 (true, true) => TurnStatus::Interrupted,
@@ -5740,6 +5747,31 @@ mod tests {
             assert_eq!(row.contains("interrupted after 26s"), !running, "local {local}: {rows:?}");
             let all = text(&a.view(Instant::now()).0).join("\n");
             assert_eq!(all.contains("x interrupts"), running, "local {local}: x only while it may run: {all}");
+        }
+    }
+
+    /// R-SUB-10: a Claude Code agent stopped with `x` reads interrupted
+    /// when the session is resumed or attached, not failed: its call's
+    /// result, all a replay reads of it, is Claude Code's "[Request
+    /// interrupted by user for tool use]", an error. A krowk child's error
+    /// in the same words is still a failure.
+    #[test]
+    fn r_sub_10_a_replayed_claude_agent_stopped_reads_interrupted_not_failed() {
+        let at = |ms: i64, body: LogBody| LogEvent { id: format!("e{ms}"), parent_id: None, session_id: "s".into(), time_ms: ms, body };
+        let model = ModelRef { instance: "claude".into(), model: "haiku".into() };
+        for (ran_by, how) in [(RanBy::Claude, "interrupted after 12s"), (RanBy::Krowk, "failed after 12s")] {
+            let evs = [
+                at(0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }),
+                at(1000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i1".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "sleep 120"}) } }),
+                at(1001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: None, model: model.clone(), ran_by, backend_id: None }),
+                at(13_001, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "[Request interrupted by user for tool use]".into(), is_error: true } }),
+            ];
+            let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+            a.replay(&evs.iter().collect::<Vec<_>>());
+            a.take_pending();
+            a.open_agents();
+            let rows = listed(&a);
+            assert!(rows.len() == 1 && rows[0].contains(&format!("Agent sleeper · {how}")), "{ran_by:?}: {rows:?}");
         }
     }
 
