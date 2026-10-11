@@ -1301,14 +1301,14 @@ impl Proc {
                     gone = true;
                     drain = Some(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
-                _ = drained => return self.ended_early(t, events, interrupted).await,
+                _ = drained => return self.ended_early(t, events, interrupted, (given_up.is_some(), before.take())).await,
                 // Steering, written as it arrives (R-STEER-1): Claude Code
                 // reads it at its next call, and replays it when it does.
                 _ = poll.tick(), if !interrupted && given_up.is_none() && cancel_queued => {
                     self.steer(&ctx.steers, &ctx.session_dir, &mut grace, receipt_required, (&mut receipt, &mut deadline, &mut given_up)).await?;
                 }
                 msg = next_line(&mut queued, &mut self.out) => {
-                    let Some(msg) = msg else { return self.ended_early(t, events, interrupted).await };
+                    let Some(msg) = msg else { return self.ended_early(t, events, interrupted, (given_up.is_some(), before.take())).await };
                     match msg["type"].as_str() {
                         Some("control_request") => self.answer(&msg, ask, events, &ctx.cancel).await?,
                         Some("control_response") => {
@@ -1341,12 +1341,19 @@ impl Proc {
 
     /// Claude Code went before the turn's `result`: what it said is
     /// finished, and the turn ends interrupted when it was asked to, else
-    /// failed, saying how it went.
-    async fn ended_early(&mut self, t: &mut Translator, events: &Events, interrupted: bool) -> Result<TurnEnd, EngineError> {
+    /// failed, saying how it went. Gone after the `result` the turn was
+    /// given up at (`given_up`), before the interrupt was answered, the
+    /// turn completes at that result, and with nothing named cancelled all
+    /// its steering goes back.
+    async fn ended_early(&mut self, t: &mut Translator, events: &Events, interrupted: bool, (given_up, before): (bool, Option<String>)) -> Result<TurnEnd, EngineError> {
         finish(t, events).await;
         let e = self.died("before the turn finished");
         if interrupted {
             return Ok(TurnEnd::Interrupted);
+        }
+        if given_up {
+            self.wind_up(before, events).await;
+            return Ok(TurnEnd::Completed);
         }
         Err(e)
     }
