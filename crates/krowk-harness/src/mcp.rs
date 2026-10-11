@@ -246,8 +246,13 @@ impl Approval {
 
 /// A config error with what it quoted taken out: serde names the value it
 /// could not read, and a server's `env` or `headers` may hold a secret.
+/// Everything from the first quote to the last goes, so a quote escaped
+/// inside the value cannot put part of it outside.
 fn unquoted(e: &str) -> String {
-    e.split('"').enumerate().map(|(i, p)| if i % 2 == 1 { "…" } else { p }).collect::<Vec<_>>().join("\"")
+    match (e.find('"'), e.rfind('"')) {
+        (Some(a), Some(b)) if a < b => format!("{}\"…\"{}", &e[..a], &e[b + 1..]),
+        _ => e.to_string(),
+    }
 }
 
 /// Whether a repository's `.mcp.json` names a server: one of the things
@@ -732,9 +737,9 @@ impl Conn {
                     // many: a server writing nothing else would otherwise
                     // hold the call to CALL_TIMEOUT. It is stopped, as one cut
                     // off is (`cut` stays set).
-                    // An object with no `jsonrpc` — a JSON log line — is
-                    // no message either.
-                    let Some(v) = serde_json::from_str::<Value>(&line).ok().filter(|v| v.get("jsonrpc").is_some()) else {
+                    // An object with neither `jsonrpc` nor `id` — a JSON
+                    // log line — is no message either.
+                    let Some(v) = serde_json::from_str::<Value>(&line).ok().filter(|v| v.get("jsonrpc").is_some() || v.get("id").is_some()) else {
                         junk += 1;
                         junk_bytes += read;
                         if junk > MAX_JUNK_LINES || junk_bytes > MAX_JUNK_BYTES {
@@ -1006,6 +1011,9 @@ mod tests {
         std::fs::write(base.join("repo/.mcp.json"), json!({"mcpServers": {"s": {"command": "x", "env": "TOKEN=hunter2"}}}).to_string()).unwrap();
         let (_, skipped) = discover(&cfg, &app);
         assert!(skipped.len() == 1 && !skipped[0].contains("hunter2"), "{skipped:?}");
+        std::fs::write(base.join("repo/.mcp.json"), json!({"mcpServers": {"s": {"command": "x", "env": "TOK\"EN=hunter2"}}}).to_string()).unwrap();
+        let (_, skipped) = discover(&cfg, &app);
+        assert!(skipped.len() == 1 && !skipped[0].contains("hunter2") && skipped[0].contains("expected"), "a quote inside the value: {skipped:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }
