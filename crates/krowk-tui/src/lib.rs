@@ -134,11 +134,11 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
-/// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
-/// that does.
 /// How long resuming a session waits for the daemon to say whether its
 /// background agents still run there.
 const STATUS_WAIT: Duration = Duration::from_millis(1500);
+/// How long a Ctrl-C or Ctrl-D that would leave krowk waits for the second
+/// that does.
 const QUIT_CONFIRM: Duration = Duration::from_millis(1500);
 /// How many earlier sessions `/sessions` lists.
 const RESUMABLE: usize = 30;
