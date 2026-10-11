@@ -493,15 +493,15 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
     daemon.join().unwrap().unwrap();
 }
 
-/// R-STEER-2: the count of a session's background work is sent as it
-/// changes, so a client that follows the session between changes — its
-/// job started by another client's turn, now over — is told it once
-/// caught up, before anything changes it.
+/// R-STEER-2: a job outlives the client whose turn started it, the idle
+/// window included; a client that follows the session after it left is
+/// told the count once caught up, before anything changes it; and once
+/// the job ends the daemon lets the session go and exits after its window.
 #[test]
-fn r_steer_2_following_a_session_whose_job_runs_is_told_the_count_at_once() {
+fn r_steer_2_a_job_outlives_its_client_and_a_later_follower_is_told_the_count_at_once() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
-            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 30", "run_in_background": true})),
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "sleep 3", "run_in_background": true})),
             _ => mock::text_stream("Started."),
         })
     });
@@ -509,6 +509,7 @@ fn r_steer_2_following_a_session_whose_job_runs_is_told_the_count_at_once() {
     let daemon = home.serve(Some(Duration::from_millis(300)));
     let rt = rt();
     rt.block_on(async {
+        // `krowk -p --daemon`: the turn starts the job, and the client goes.
         let a = home.client().await;
         let (tx, _rx) = mpsc::channel(1024);
         let mut cmd = home.prompt("start a job");
@@ -517,6 +518,9 @@ fn r_steer_2_following_a_session_whose_job_runs_is_told_the_count_at_once() {
         }
         let r = a.execute(cmd, tx).await.unwrap().unwrap();
         assert_eq!(r.status, TurnStatus::Completed);
+        drop(a);
+        // Past the idle window: the job still runs, and the daemon with it.
+        tokio::time::sleep(Duration::from_millis(600)).await;
         let b = home.client_answering(true).await;
         let (btx, mut brx) = mpsc::channel(1024);
         assert!(!b.attach(&r.session_id, None, btx).await.unwrap(), "no turn runs");
@@ -529,9 +533,14 @@ fn r_steer_2_following_a_session_whose_job_runs_is_told_the_count_at_once() {
             seen.push(line);
         };
         assert_eq!(count, (r.session_id.clone(), 1), "after {} lines caught up", seen.len());
-        a.stop(true).await.unwrap();
     });
+    // With no client left, the job's end lets the daemon go after its window.
     drop(rt);
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    while !daemon.is_finished() {
+        assert!(std::time::Instant::now() < deadline, "the daemon stayed once the job ended");
+        std::thread::sleep(Duration::from_millis(20));
+    }
     daemon.join().unwrap().unwrap();
 }
 
