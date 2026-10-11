@@ -235,6 +235,13 @@ pub fn older(daemon: &str, mine: &str) -> bool {
 /// closes, its far side never told the session ended; or a pipe whose
 /// reader waits for an end that never comes.
 pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
+    detached(program, args, log, || Ok(()))
+}
+
+/// `spawn_detached`, with `first` run in the child before the descriptors
+/// are marked: for a test, to leave one inherited as a careless starter
+/// would. `first` is async-signal-safe.
+fn detached(program: &Path, args: &[&str], log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let out = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(log).map_err(|e| format!("{} cannot be opened: {e}", log.display()))?;
@@ -249,6 +256,7 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
     // SAFETY: setsid, close_range and fcntl are async-signal-safe, and
     // nothing else runs between fork and exec.
     unsafe {
+        cmd.pre_exec(first);
         cmd.pre_exec(move || {
             if libc::setsid() < 0 {
                 return Err(std::io::Error::last_os_error());
@@ -266,8 +274,9 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
 /// marked, not closed, so the pipe the standard library reports a failed
 /// exec on still does. Linux 5.11 and later in one call (`close_range`);
 /// elsewhere, macOS among them, and on an older kernel, one `fcntl` for
-/// each descriptor below `limit` — those past it cannot have been opened.
-/// Both are async-signal-safe.
+/// each descriptor below `limit`, the open-files limit (at most 2^20). One
+/// past it — opened before the limit was lowered — is missed there: no
+/// async-signal-safe call lists what is open. Both are async-signal-safe.
 ///
 /// # Safety
 ///
@@ -276,7 +285,7 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
 unsafe fn close_on_exec_from_3(limit: libc::c_int) {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     // SAFETY: close_range takes plain integers and changes only flags.
-    if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_uint, libc::c_uint::MAX, libc::CLOSE_RANGE_CLOEXEC) } == 0 {
+    if unsafe { libc::syscall(libc::SYS_close_range, 3 as libc::c_long, libc::c_uint::MAX as libc::c_long, libc::CLOSE_RANGE_CLOEXEC as libc::c_long) } == 0 {
         return;
     }
     for fd in 3..limit {
@@ -458,14 +467,15 @@ mod tests {
     #[test]
     fn r_host_1_the_daemon_holds_no_descriptor_its_starter_left_open_across_exec() {
         use std::io::Read;
-        use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
-        let mut fds = [0; 2];
-        // SAFETY: pipe fills the two descriptors, which are owned below.
-        assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0, "{}", std::io::Error::last_os_error());
-        // pipe(2) sets no close-on-exec: both ends would be inherited.
-        let (read, write) = unsafe { (OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1])) };
+        use std::os::fd::AsRawFd;
+        // Close-on-exec here, as it is made, so no other test's child forked
+        // meanwhile takes it; left open across exec in this one child only.
+        let (mut read, write) = std::io::pipe().unwrap();
+        let fd = write.as_raw_fd();
         let log = std::env::temp_dir().join(format!("krowk-detached-{}.log", std::process::id()));
-        let mut daemon = spawn_detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log).unwrap();
+        // SAFETY: fcntl is async-signal-safe, on a descriptor the child has.
+        let leave_open = move || if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
+        let mut daemon = detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log, leave_open).unwrap();
         drop(write);
         let mut p = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one pollfd, for the length of the call.
@@ -474,7 +484,7 @@ mod tests {
         let _ = daemon.wait();
         let _ = std::fs::remove_file(&log);
         assert_eq!(ready, 1, "the pipe never ended: the daemon holds its write end");
-        assert_eq!(std::fs::File::from(read).read(&mut [0u8; 1]).unwrap(), 0, "its end, not data");
+        assert_eq!(read.read(&mut [0u8; 1]).unwrap(), 0, "its end, not data");
     }
 
     /// R-LAG-9's tripwire for the daemon's own serving code: no blocking

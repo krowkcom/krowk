@@ -53,15 +53,20 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
     // SAFETY: plain libc calls on descriptors this function owns; every
     // return value is checked before the descriptor is used.
     unsafe {
+        // Close-on-exec, as the standard library opens everything: a child
+        // that inherited the master would hold its own terminal open past
+        // `hang_up`. Asked for as it is opened, so a fork on another of the
+        // test's threads in between cannot take it; macOS's posix_openpt
+        // takes no such flag, so there it is set just after.
+        #[cfg(target_os = "linux")]
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
+        #[cfg(not(target_os = "linux"))]
         let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
         if master < 0 {
             return Err(std::io::Error::last_os_error());
         }
         let master = OwnedFd::from_raw_fd(master);
-        // Close-on-exec, as the standard library opens everything: neither
-        // posix_openpt nor open here takes the flag everywhere, and a child
-        // that inherited the master would hold its own terminal open past
-        // `hang_up`.
+        #[cfg(not(target_os = "linux"))]
         cloexec(master.as_raw_fd())?;
         if libc::grantpt(master.as_raw_fd()) != 0 || libc::unlockpt(master.as_raw_fd()) != 0 {
             return Err(std::io::Error::last_os_error());
@@ -70,22 +75,22 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
         if name.is_null() {
             return Err(std::io::Error::last_os_error());
         }
-        let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+        let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY | libc::O_CLOEXEC);
         if slave < 0 {
             return Err(std::io::Error::last_os_error());
         }
         let slave = OwnedFd::from_raw_fd(slave);
-        cloexec(slave.as_raw_fd())?;
         set_size(master.as_raw_fd(), cols, rows);
         Ok((master, slave))
     }
 }
 
-/// Sets close-on-exec on `fd`.
+/// Sets close-on-exec on `fd`, where it cannot be asked for at open.
 ///
 /// # Safety
 ///
 /// `fd` is an open descriptor.
+#[cfg(not(target_os = "linux"))]
 unsafe fn cloexec(fd: i32) -> std::io::Result<()> {
     if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
         return Err(std::io::Error::last_os_error());
