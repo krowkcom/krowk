@@ -204,7 +204,7 @@ fn self_upgrade(dest: &Path, version: &str) -> Result<Vec<String>, Error> {
         fail(
             "unverified_release",
             format!(
-                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install with `curl -fsSL https://krowk.com/install | bash`, or verify the release by hand (SECURITY.md → Verifying a release)"
+                "checksums.txt on release v{version} is not signed by krowk's release workflow: {why} — nothing was installed. If this krowk is older than a change to Sigstore's keys, install cosign (https://docs.sigstore.dev/cosign/system_config/installation/) and reinstall with `curl -fsSL https://krowk.com/install | KROWK_REQUIRE_SIGNATURE=1 bash`, which checks the signature with it, or verify the release by hand (SECURITY.md → Verifying a release)"
             ),
         )
     })?;
