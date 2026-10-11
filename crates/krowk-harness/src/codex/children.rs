@@ -15,8 +15,9 @@
 //! `collabAgentToolCall` `spawnAgent` names (`senderThreadId` the session's
 //! thread, `receiverThreadIds` the child), one whose `thread/started` names
 //! it as the spawner (`source.subAgent.thread_spawn.parent_thread_id`, at
-//! depth 1), or one its `subAgentActivity` item names (`agentThreadId`). It
-//! starts at the first of these. Its prompt is the spawn's: the
+//! depth 1), or one its `subAgentActivity` item names (`agentThreadId`)
+//! whose `agentPath` is one segment under the root's (`/root/<name>`; a
+//! deeper path is a grandchild's). It starts at the first of these. Its prompt is the spawn's: the
 //! `spawnAgent` naming it, else the one spawn of the session's still in
 //! progress, which names its thread only once it is done; else the child's
 //! own first `userMessage`, the input Codex gave it. Its description is
@@ -34,9 +35,10 @@
 //! the parent sent it since, its `userText`.
 //!
 //! **A line before its start** is held, per thread, at most `HOLD` lines a
-//! thread (the oldest dropped, and said after the prompt) and `WAITING`
-//! threads, the one held longest going whole, until the thread is known a
-//! child — released after its prompt — or known none, or the turn ends.
+//! thread (the oldest dropped) and `WAITING` threads (the one held longest
+//! going whole, its count kept), until the thread is known a child —
+//! released after its prompt, and what was dropped of it said there — or
+//! known none, or the turn ends.
 //!
 //! **A grandchild** — a thread a child spawns, or any other thread Codex
 //! starts (a review, a compaction, depth above 1) — is no child of the
@@ -47,9 +49,17 @@
 //! `interrupted`, or a collab call of the session's (a `wait`, say) whose
 //! `agentsStates` says it ended: `completed` done, `interrupted` and
 //! `shutdown` interrupted, `errored` and `notFound` failed — whichever
-//! comes first. krowk reads Codex only while a turn runs, so a child the
-//! parent's turn did not see end ends with it, interrupted, with why; its
-//! late lines in a later turn are dropped.
+//! comes first. krowk reads Codex only while a turn runs, and sends Codex
+//! nothing for a child at the turn's end: a child the parent's turn did not
+//! see end is no longer followed from there — ended in its log as
+//! interrupted, saying so (`UNFINISHED`) — though Codex may still be
+//! running it. What it does later is not shown; its spend still is, as the
+//! session's, whenever a later turn reads it. A later turn that spawns,
+//! messages or resumes it again (a `spawnAgent`, `sendInput`,
+//! `followupTask` or `resumeAgent` naming it, a `subAgentActivity`
+//! `interacted`) does not reopen it: its child session has ended, and its
+//! lines are dropped. Reopening one would need a second turn in a child
+//! log the host has closed, which no backend does yet.
 
 use super::stream::Translator;
 use crate::engine::EngineEvent;
@@ -63,8 +73,11 @@ pub const HOLD: usize = 256;
 /// goes, whole.
 pub const WAITING: usize = 32;
 
-/// Why a child still open at its parent's turn's end ended.
-pub const UNFINISHED: &str = "the turn that ran it ended before Codex said it finished — krowk reads Codex only while a turn runs";
+/// Why a child still open at its parent's turn's end is no longer followed.
+pub const UNFINISHED: &str = "krowk stopped following it when the turn that ran it ended, before Codex said it finished — Codex may still be running it; what it does after this is not shown here, and its spend is still counted";
+
+/// How many evicted threads' dropped lines are remembered.
+const LOST: usize = 256;
 
 /// The note in a child's transcript where lines held for it were dropped:
 /// krowk's words, not the child's.
@@ -106,6 +119,9 @@ pub struct Children {
     spawning: Vec<(String, String)>,
     held: HashMap<String, Held>,
     waiting: VecDeque<String>,
+    /// Threads whose held lines went whole past `WAITING`: how many, said
+    /// if the thread starts after all. At most `LOST`, the oldest going.
+    lost: VecDeque<(String, usize)>,
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -243,10 +259,18 @@ impl Children {
                 if th.is_empty() || self.others.contains(th) {
                     return;
                 }
+                // Only a path one segment under the root's names a direct
+                // child: a deeper one is a grandchild's, never started here.
+                let direct = s(it, "agentPath").split('/').filter(|p| !p.is_empty()).count() == 2;
+                let start = |c: &mut Children, out: &mut Vec<EngineEvent>| {
+                    if direct || c.kids.contains_key(th) {
+                        c.start(th, None, model, out);
+                    }
+                };
                 match s(it, "kind") {
-                    "started" | "interacted" => self.start(th, None, model, out),
+                    "started" | "interacted" => start(self, out),
                     kind @ ("completed" | "interrupted") => {
-                        self.start(th, None, model, out);
+                        start(self, out);
                         self.end(th, if kind == "completed" { ChildState::Done } else { ChildState::Interrupted }, None, out);
                     }
                     _ => {}
@@ -263,6 +287,7 @@ impl Children {
             self.others.insert(thread.into());
             self.held.remove(thread);
             self.waiting.retain(|w| w != thread);
+            self.lost.retain(|(t, _)| t != thread);
         }
     }
 
@@ -312,8 +337,12 @@ impl Children {
             if !self.held.contains_key(thread) {
                 if self.waiting.len() == WAITING
                     && let Some(oldest) = self.waiting.pop_front()
+                    && let Some(h) = self.held.remove(&oldest)
                 {
-                    self.held.remove(&oldest);
+                    if self.lost.len() == LOST {
+                        self.lost.pop_front();
+                    }
+                    self.lost.push_back((oldest, h.lines.len() + h.dropped));
                 }
                 self.waiting.push_back(thread.into());
             }
@@ -361,10 +390,13 @@ impl Children {
     /// Lines held for `thread`, now that it is a child: what was dropped
     /// said first, in its transcript.
     fn release(&mut self, thread: &str, out: &mut Vec<EngineEvent>) {
-        let Some(h) = self.held.remove(thread) else { return };
+        let lost: usize = self.lost.iter().filter(|(t, _)| t == thread).map(|(_, n)| n).sum();
+        self.lost.retain(|(t, _)| t != thread);
+        let h = self.held.remove(thread).unwrap_or_default();
         self.waiting.retain(|w| w != thread);
-        if h.dropped > 0 {
-            let note = format!("{DROPPED}{} of this agent's first lines came before Codex said it started, more than krowk holds, and are not in this transcript.</dropped-lines>", h.dropped);
+        let dropped = h.dropped + lost;
+        if dropped > 0 {
+            let note = format!("{DROPPED}{} of this agent's first lines came before Codex said it started, more than krowk holds, and are not in this transcript.</dropped-lines>", dropped);
             out.extend(item(thread, Item::user(note)));
         }
         for (method, params) in h.lines {
@@ -396,6 +428,7 @@ impl Children {
         self.waiting.clear();
         self.spawning.clear();
         self.said.clear();
+        self.lost.clear();
         out
     }
 }
@@ -501,10 +534,11 @@ mod tests {
         assert_eq!(ends(&evs), [("kid-1", ChildState::Done)]);
     }
 
-    /// R-SUB-7: a child the parent's turn did not see end ends with it,
-    /// interrupted, saying why, and once.
+    /// R-SUB-7: a child the parent's turn did not see end is no longer
+    /// followed after it — its log ended as interrupted, saying why, once —
+    /// and a later turn naming it again does not reopen it.
     #[test]
-    fn r_sub_7_a_codex_child_still_open_ends_with_its_parents_turn() {
+    fn r_sub_7_a_codex_child_still_open_is_no_longer_followed_after_its_parents_turn() {
         let mut c = Children::default();
         feed(&mut c, &two_children());
         let rest = c.turn_ended(UNFINISHED);
@@ -512,6 +546,11 @@ mod tests {
         assert_eq!(ends(&rest).len(), 1, "kid-1 had ended");
         assert!(c.turn_ended(UNFINISHED).is_empty(), "once");
         assert!(feed(&mut c, &[note("item/completed", "kid-2", json!({"type": "agentMessage", "id": "late", "text": "late"}))]).is_empty() && c.held.is_empty(), "a late line is dropped");
+        let again = [
+            note("item/completed", OWN, json!({"type": "subAgentActivity", "id": "s9", "kind": "interacted", "agentThreadId": "kid-2", "agentPath": "/root/turing"})),
+            note("item/completed", OWN, json!({"type": "collabAgentToolCall", "id": "f", "tool": "followupTask", "senderThreadId": OWN, "receiverThreadIds": ["kid-2"], "status": "completed", "agentsStates": {}})),
+        ];
+        assert!(feed(&mut c, &again).is_empty(), "not reopened");
     }
 
     /// R-SUB-7, R-SUB-8: a child no spawn named yet takes its own first
@@ -543,6 +582,28 @@ mod tests {
         // of it is held or followed.
         let evs = feed(&mut c, &[("thread/started".into(), json!({"thread": {"id": "review", "source": {"subAgent": "review"}}})), note("item/completed", "review", json!({"type": "agentMessage", "id": "r", "text": "x"}))]);
         assert!(evs.is_empty() && c.held.is_empty());
+    }
+
+    /// R-SUB-7: a `subAgentActivity` deeper than one segment under the
+    /// root names a grandchild, never started; a thread whose held lines
+    /// went whole past `WAITING` says how many when it starts after all.
+    #[test]
+    fn r_sub_7_a_deep_agent_path_starts_no_child_and_an_evicted_threads_lines_are_said() {
+        let mut c = Children::default();
+        let deep = json!({"type": "subAgentActivity", "id": "s", "kind": "started", "agentThreadId": "grand", "agentPath": "/root/ada/hopper"});
+        assert!(feed(&mut c, &[note("item/completed", OWN, deep)]).is_empty());
+        let done = json!({"type": "subAgentActivity", "id": "s2", "kind": "completed", "agentThreadId": "grand", "agentPath": "/root/ada/hopper"});
+        assert!(feed(&mut c, &[note("item/completed", OWN, done)]).is_empty(), "nor ended");
+        // The first thread's three lines go whole once 32 others are held.
+        let line = |th: &str, i: usize| note("item/completed", th, json!({"type": "agentMessage", "id": format!("{th}-{i}"), "text": "x"}));
+        let mut lines: Vec<(String, Value)> = (0..3).map(|i| line("first", i)).collect();
+        lines.extend((0..WAITING).map(|i| line(&format!("other-{i}"), 0)));
+        assert!(feed(&mut c, &lines).is_empty());
+        assert!(!c.held.contains_key("first"));
+        let got = items(&feed(&mut c, &[note("item/completed", OWN, spawn("call", OWN, &["first"], "late start"))]), "first");
+        assert_eq!(got[0], Item::user("late start"));
+        assert!(matches!(&got[1], Item::UserText { text, .. } if text.starts_with(DROPPED) && text.contains("3 of this agent's first lines")), "{got:?}");
+        assert_eq!(got.len(), 2);
     }
 
     /// R-SUB-9: a child's tool starts at its call item, before its result:
