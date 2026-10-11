@@ -152,10 +152,14 @@ impl AuthInteraction for Asker {
 
 /// What the root record says while `/connect` waits on the person: the
 /// provider by the name `krowk connect` takes (a vendor, or an instance
-/// such as `claude:work`), until one is named or picked a provider.
-pub fn sign_in(provider: Option<&str>) -> String {
-    match provider.map(str::trim).filter(|p| !p.is_empty()) {
-        Some(p) => format!("Sign in to {}", Vendor::parse(p).map_or(p, |v| v.id())),
+/// there is, such as `claude:work`), and `a provider` until one is named
+/// or picked. Whatever else was named (a key pasted by mistake) is never
+/// put in a title.
+pub fn sign_in(target: Option<&str>, instance: &dyn Fn(&str) -> bool) -> String {
+    let target = target.map(str::trim).unwrap_or_default();
+    match Vendor::parse(target) {
+        Some(v) => format!("Sign in to {}", v.id()),
+        None if !target.is_empty() && instance(target) => format!("Sign in to {target}"),
         None => "Sign in to a provider".into(),
     }
 }
@@ -236,7 +240,7 @@ impl Flow {
         let answer = match self.ask.as_mut().map(|a| &mut a.kind) {
             Some(Kind::Select { at, options }) => {
                 if self.sign_in.is_some() && options.iter().map(String::as_str).eq(Vendor::ALL.map(Vendor::label)) {
-                    self.sign_in = Some(sign_in(Some(Vendor::ALL[*at].id())));
+                    self.sign_in = Some(format!("Sign in to {}", Vendor::ALL[*at].id()));
                 }
                 Answer::Choice(*at)
             }
@@ -383,11 +387,13 @@ mod tests {
 
     #[test]
     fn r_pres_5_the_sign_in_names_the_provider_named_or_picked() {
-        assert_eq!(sign_in(None), "Sign in to a provider");
-        assert_eq!(sign_in(Some(" Anthropic ")), "Sign in to anthropic");
-        assert_eq!(sign_in(Some("claude:work")), "Sign in to claude:work");
+        let there = |t: &str| t == "claude:work";
+        assert_eq!(sign_in(None, &there), "Sign in to a provider");
+        assert_eq!(sign_in(Some(" Anthropic "), &there), "Sign in to anthropic");
+        assert_eq!(sign_in(Some("claude:work"), &there), "Sign in to claude:work");
+        assert_eq!(sign_in(Some("sk-ant-api03-oops"), &there), "Sign in to a provider", "a key pasted by mistake is never shown");
         let mut f = Flow::new("Connect a provider", Vec::new(), None);
-        f.sign_in = Some(sign_in(None));
+        f.sign_in = Some(sign_in(None, &there));
         let (reply, _answer) = sync::channel();
         f.asked(Ask::Select { message: "Connect which provider?".into(), options: Vendor::ALL.map(|v| v.label().to_string()).to_vec() }, reply);
         f.step(2);

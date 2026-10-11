@@ -911,7 +911,6 @@ async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> O
     }
 }
 
-/// The next of a sign-in's messages, or never; none once its thread is gone.
 /// The session's state for the title and the root record, and its topic:
 /// the provider signed in to while `/connect`'s overlay is up and waits on
 /// the person (hidden, or closed, it no longer does), else the prompt.
@@ -923,6 +922,7 @@ fn root_state<'a>(app: &'a App, last_prompt: &'a str) -> (presence::State, &'a s
     }
 }
 
+/// The next of a sign-in's messages, or never; none once its thread is gone.
 async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Option<connect::Msg> {
     match rx {
         Some(r) => r.recv().await,
@@ -2791,7 +2791,7 @@ impl<'h> Ui<'h> {
         };
         let mut flow = connect::Flow::new(title, intro, prefer);
         if let connect::Job::Connect(target) = &job {
-            flow.sign_in = Some(connect::sign_in(target.as_deref()));
+            flow.sign_in = Some(connect::sign_in(target.as_deref(), &|t| self.host.registry().instances.contains_key(t)));
         }
         app.flow = Some(flow);
         app.overlay = Overlay::Connect;
@@ -3695,7 +3695,7 @@ mod tests {
             p.tell(state, topic).map(|t| t.report)
         };
         let mut flow = connect::Flow::new("Connect a provider", Vec::new(), None);
-        flow.sign_in = Some(connect::sign_in(Some("anthropic")));
+        flow.sign_in = Some(connect::sign_in(Some("anthropic"), &|_| false));
         app.flow = Some(flow);
         app.overlay = Overlay::Connect;
         let auth = root(Rec::Blocked(Kind::Auth), "Sign in to anthropic");
