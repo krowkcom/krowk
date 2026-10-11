@@ -105,8 +105,10 @@ pub struct Children {
     held: HashMap<String, Held>,
     waiting: VecDeque<String>,
     /// The last token count said of an agent not started yet, by the call
-    /// that starts it: said once it has, at most `WAITING` kept.
-    early: HashMap<String, i64>,
+    /// that starts it, with its task id: said once it has, at most
+    /// `WAITING` kept. Gone at any task's start for that call, and at the
+    /// end of a task no agent is.
+    early: HashMap<String, (String, i64)>,
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -159,6 +161,12 @@ impl Children {
 
     fn system(&mut self, msg: &Value, out: &mut Vec<EngineEvent>) {
         let task = s(msg, "task_id");
+        let early = match s(msg, "subtype") {
+            // A shell's or a grandchild's start takes its call's count too:
+            // never one of the session's agents', it is never said.
+            "task_started" => self.early.remove(s(msg, "tool_use_id")),
+            _ => None,
+        };
         match s(msg, "subtype") {
             "task_started" if own(msg) => {
                 let call = s(msg, "tool_use_id");
@@ -178,7 +186,7 @@ impl Children {
                 self.agents.insert(call.into(), Child { task_id: task.into(), translator: Some(Translator::child()), background: msg["is_backgrounded"] == true, answered: false, end: None, unlisted: false });
                 self.under.insert(call.into(), call.into());
                 self.release(call, out);
-                if let Some(tokens) = self.early.remove(call) {
+                if let Some((_, tokens)) = early {
                     out.push(EngineEvent::BackendChild { task_id: task.into(), event: Box::new(EngineEvent::Progress { tokens }) });
                 }
             }
@@ -191,6 +199,7 @@ impl Children {
                 }
                 let st = s(patch, "status");
                 if !matches!(st, "" | "pending" | "running") {
+                    self.early.retain(|_, (t, _)| t != task);
                     let error = patch.get("error").and_then(Value::as_str).map(String::from);
                     self.finished(task, state(st), error, out);
                 }
@@ -198,6 +207,7 @@ impl Children {
             "task_progress" => self.progress(task, msg, out),
             "task_notification" => {
                 self.progress(task, msg, out);
+                self.early.retain(|_, (t, _)| t != task);
                 let st = state(s(msg, "status"));
                 let error = (st == ChildState::Failed).then(|| Some(s(msg, "summary").to_string()).filter(|e| !e.is_empty())).flatten();
                 self.finished(task, st, error, out);
@@ -236,10 +246,12 @@ impl Children {
             out.push(EngineEvent::BackendChild { task_id: task.into(), event: Box::new(EngineEvent::Progress { tokens }) });
             return;
         }
+        // A call made inside an agent's conversation starts a grandchild
+        // or a shell, never one of the session's agents.
         let call = s(msg, "tool_use_id");
-        let known = self.agents.contains_key(call) || self.agents.values().any(|c| c.task_id == task);
+        let known = self.agents.contains_key(call) || self.under.contains_key(call) || self.agents.values().any(|c| c.task_id == task);
         if !call.is_empty() && !known && (self.early.len() < WAITING || self.early.contains_key(call)) {
-            self.early.insert(call.into(), tokens);
+            self.early.insert(call.into(), (task.into(), tokens));
         }
     }
 
@@ -542,6 +554,37 @@ mod tests {
         c.apply(&says("call_2", "late2", json!({"type": "tool_use", "id": "x", "name": "Bash", "input": {}})));
         c.apply(&result("call_0", "y", "late result"));
         assert_eq!(c.held.len(), 1, "only the line of an agent never started");
+    }
+
+    /// R-SUB-9: the count kept for an agent not started yet goes at any
+    /// task's start for its call — a shell's, a grandchild's — and at the
+    /// end of a task no agent is, so tasks that are no agent of the
+    /// session never fill it, and a later agent's early count is kept.
+    #[test]
+    fn r_sub_9_an_early_count_is_kept_only_for_an_agent_still_to_start() {
+        let mut c = Children::default();
+        let progress = |task: &str, call: &str, n: i64| json!({"type": "system", "subtype": "task_progress", "task_id": task, "tool_use_id": call, "usage": {"total_tokens": n}});
+        let mut bg = started("b1", "call_b", 1, false);
+        bg["is_backgrounded"] = json!(true);
+        c.apply(&bg);
+        c.apply(&says("call_b", "m1", json!({"type": "tool_use", "id": "call_g", "name": "Agent", "input": {}})));
+        for i in 0..WAITING + 8 {
+            let (task, call) = (format!("sh{i}"), format!("call_sh{i}"));
+            c.apply(&progress(&task, &call, 10));
+            let mut shell = json!({"type": "system", "subtype": "task_started", "task_id": task, "tool_use_id": call, "task_type": "local_bash", "owned_by_subagent": true});
+            if i % 2 == 0 {
+                c.apply(&shell);
+            } else {
+                shell = json!({"type": "system", "subtype": "task_notification", "task_id": task, "status": "completed"});
+                c.apply(&shell);
+            }
+        }
+        c.apply(&progress("g1", "call_g", 99));
+        assert!(c.early.is_empty(), "no shell's or grandchild's count kept: {:?}", c.early);
+        c.apply(&progress("a2", "call_a2", 1234));
+        let evs = c.apply(&started("a2", "call_a2", 1, false));
+        assert!(evs.iter().any(|e| matches!(e, EngineEvent::BackendChild { task_id, event } if task_id == "a2" && matches!(**event, EngineEvent::Progress { tokens: 1234 }))), "{evs:?}");
+        assert!(c.early.is_empty());
     }
 
     #[test]

@@ -416,11 +416,13 @@ fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool)
 
 /// The requests the bridge denies by itself (`deny_late`): of a turn a
 /// viewer started (`turns`), or of a child that turn started (`children`,
-/// each child by the turn its `subagent.started` was logged in) — once
-/// nobody has been here to answer for `APPROVAL_WAIT` (`alone`), and the
-/// request has waited as long (`waited`).
-fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, children: &HashMap<String, String>, alone: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
-    let remote = |r: &ApprovalRequest| turns.contains(&r.turn_id) || children.get(&r.session_id).is_some_and(|t| turns.contains(t));
+/// each child by the turn its `subagent.started` was logged in) while that
+/// turn is still the session's `current` one — a background agent asking
+/// in a later turn, begun at the host's terminal, is that turn's to wait
+/// on — once nobody has been here to answer for `APPROVAL_WAIT` (`alone`),
+/// and the request has waited as long (`waited`).
+fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
+    let remote = |r: &ApprovalRequest| turns.contains(&r.turn_id) || children.get(&r.session_id).is_some_and(|t| turns.contains(t) && current == Some(t.as_str()));
     approvals.values().filter(|(r, t)| alone && remote(r) && waited(*t)).map(|(r, _)| r).collect()
 }
 
@@ -553,6 +555,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         stored,
         children: HashSet::new(),
         child_turns: HashMap::new(),
+        current_turn: None,
         turn_running: false,
         handing: false,
         handoff: None,
@@ -669,6 +672,9 @@ struct Hosting {
     /// The turn each of those was started in: a viewer's turn's children's
     /// requests are denied late as the turn's own are.
     child_turns: HashMap<String, String>,
+    /// The session's own turn running now: a child counts as a viewer's
+    /// turn's only while that turn runs.
+    current_turn: Option<String>,
     /// Whether a turn is running, which a handoff waits out.
     turn_running: bool,
     /// A handoff under way: another is refused meanwhile, and so is every
@@ -746,12 +752,16 @@ impl Hosting {
             // child ending is no end of the turn a handoff waits out.
             let own = e.session_id == self.o.session;
             match &e.body {
-                LogBody::TurnCompleted { .. } => {
+                LogBody::TurnCompleted { turn_id, .. } => {
                     self.turn_running &= !own;
+                    if own && self.current_turn.as_ref() == Some(turn_id) {
+                        self.current_turn = None;
+                    }
                     let _ = self.jobs.send(Write::Flush);
                 }
-                LogBody::TurnStarted { permission_mode, .. } if own => {
+                LogBody::TurnStarted { permission_mode, turn_id, .. } if own => {
                     self.mode = *permission_mode;
+                    self.current_turn = (!stored).then(|| turn_id.clone());
                     // A turn the log already held, with no end, ended with
                     // the host it ran on: not one running here.
                     self.turn_running = !stored;
@@ -868,7 +878,7 @@ impl Hosting {
     async fn deny_late(&mut self) {
         let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let alone = self.alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT);
-        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, &self.child_turns, alone, |t| t.elapsed() > APPROVAL_WAIT).into_iter().cloned().collect();
+        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, |t| t.elapsed() > APPROVAL_WAIT).into_iter().cloned().collect();
         for r in late {
             self.approvals.remove(&r.request_id);
             let (tx, _) = mpsc::channel(1);
@@ -1308,9 +1318,14 @@ mod tests {
         let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("own", "s", "remote"), req("kid", "k1", "k1-turn"), req("local-kid", "k2", "k2-turn"), req("local", "s", "terminal")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
         let turns = HashSet::from(["remote".to_string()]);
         let children = HashMap::from([("k1".to_string(), "remote".to_string()), ("k2".to_string(), "terminal".to_string())]);
-        let ids = |alone: bool, waited: bool| late(&approvals, &turns, &children, alone, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
-        assert_eq!(ids(true, true), ["kid", "own"], "the viewer's turn's, and its child's");
-        assert!(ids(false, true).is_empty() && ids(true, false).is_empty());
+        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(Some("remote"), true, true), ["kid", "own"], "the viewer's turn's, and its child's while that turn runs");
+        assert!(ids(Some("remote"), false, true).is_empty() && ids(Some("remote"), true, false).is_empty());
+        // A background agent of the viewer's turn asking in a later turn
+        // begun at the host's terminal, or between turns: the person there
+        // is not overruled.
+        assert_eq!(ids(Some("terminal"), true, true), ["own"]);
+        assert_eq!(ids(None, true, true), ["own"]);
     }
 
     /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
