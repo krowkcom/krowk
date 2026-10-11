@@ -84,8 +84,21 @@ impl Pty {
     /// Starts `cmd` on a new terminal `cols` by `rows`.
     pub fn spawn(mut cmd: Command, cols: u16, rows: u16) -> Pty {
         let (master, slave) = open_pty(cols, rows).expect("open a pseudo-terminal");
+        cmd.stdin(Stdio::from(slave.try_clone().unwrap())).stdout(Stdio::from(slave.try_clone().unwrap()));
+        Pty::start(cmd, master, slave, (cols, rows))
+    }
+
+    /// Starts `cmd` with only its stderr on a new terminal, still its
+    /// controlling one (Ctrl-C written here interrupts it): stdin and
+    /// stdout are what `cmd` says.
+    pub fn spawn_stderr(cmd: Command, cols: u16, rows: u16) -> Pty {
+        let (master, slave) = open_pty(cols, rows).expect("open a pseudo-terminal");
+        Pty::start(cmd, master, slave, (cols, rows))
+    }
+
+    fn start(mut cmd: Command, master: OwnedFd, slave: OwnedFd, size: (u16, u16)) -> Pty {
         let slave_fd = slave.as_raw_fd();
-        cmd.stdin(Stdio::from(slave.try_clone().unwrap())).stdout(Stdio::from(slave.try_clone().unwrap())).stderr(Stdio::from(slave));
+        cmd.stderr(Stdio::from(slave));
         // SAFETY: only async-signal-safe calls between fork and exec.
         unsafe {
             cmd.pre_exec(move || {
@@ -146,7 +159,7 @@ impl Pty {
                 }
             }
         });
-        Pty { master, child, seen, started, size: (cols, rows) }
+        Pty { master, child, seen, started, size }
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
