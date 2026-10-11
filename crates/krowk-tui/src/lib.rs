@@ -353,7 +353,7 @@ async fn session(opts: Options) -> Outcome {
         match read_session(&sessions_dir, id) {
             Ok(events) => {
                 replayed_to = events.last().map(|e| e.id.clone());
-                runs_in = replay(&mut app, id, &events, &opts.host.registry).unwrap_or(runs_in);
+                runs_in = replay(&mut app, id, &events, &opts.host.registry, Some(&sessions_dir)).unwrap_or(runs_in);
                 resumed(&mut app, id, opts.daemon.is_some());
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(e) },
@@ -365,7 +365,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(o) = opts.sync {
         match synced::open(o).await {
             Ok(s) => {
-                replay(&mut app, &s.id, &s.history, &opts.host.registry);
+                replay(&mut app, &s.id, &s.history, &opts.host.registry, None);
                 app.session_id = Some(s.id.clone());
                 app.log_dir = None;
                 // Said once the relay says whether the host is there
@@ -467,6 +467,7 @@ async fn session(opts: Options) -> Outcome {
         suspended: false,
         checks: None,
         pr: None,
+        continuing: false,
         pasting: None,
         pastes: Default::default(),
         looked_in: None,
@@ -496,7 +497,10 @@ async fn session(opts: Options) -> Outcome {
     // daemon, `resumed` said so already).
     match opts.resume.clone() {
         Some(id) if live.contains(&id) => ui.reattach(&mut app, &id, replayed_to.clone()),
-        Some(_) if has_daemon => app.end_replayed_children(matches!(ui.host, link::Link::Local(_))),
+        Some(id) if has_daemon => {
+            app.end_replayed_children(matches!(ui.host, link::Link::Local(_)));
+            ui.follow_background(&app, &id, replayed_to.as_deref());
+        }
         _ => {}
     }
     let result = ui.run(&mut app, &mut term).await;
@@ -555,6 +559,8 @@ struct Ui<'h> {
     checks: Option<ChecksFuture>,
     /// The branch checked out and its pull request, being read.
     pr: Option<PrFuture>,
+    /// The turn running is a `continue` this client sent.
+    continuing: bool,
     /// A paste being read and made ready, off the runtime's thread (the
     /// clipboard, or the files dropped), and the editor's mark for where it
     /// goes; the ones asked for after it, waiting their turn.
@@ -1119,6 +1125,7 @@ impl<'h> Ui<'h> {
     /// stops now, `quitting`.
     async fn on_turn_end(&mut self, app: &mut App, r: Result<Option<RunResult>, EngineError>, reach: &mut Reach, quitting: bool) -> bool {
         self.turn = None;
+        let continued = std::mem::take(&mut self.continuing);
         if let Some(n) = self.host.take_note() {
             app.note(&n);
         }
@@ -1150,9 +1157,10 @@ impl<'h> Ui<'h> {
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
-        // news.
+        // news, nor one another client following the session runs.
         if let Err(e) = r
             && e.code != "nothing_pending"
+            && !(continued && e.code == "session_busy")
         {
             app.error(&e.info());
         }
@@ -1606,6 +1614,19 @@ impl<'h> Ui<'h> {
     /// then live, to its result.
     /// `after` is the last event the replay drew: what the log gained since
     /// comes from the daemon, never read here a second time.
+    /// A resumed session whose backend's agents its log leaves at work
+    /// between turns, in the daemon: the daemon is asked to send this
+    /// client the session's frames from the last event replayed, as one of
+    /// its followers, so their rows and transcripts go on as they run
+    /// (R-SUB-7).
+    fn follow_background(&self, app: &App, id: &str, after: Option<&str>) {
+        if let Some(remote) = self.host.remote()
+            && !app.backend_children_running().is_empty()
+        {
+            remote.attach_later(id, after);
+        }
+    }
+
     fn reattach(&mut self, app: &mut App, id: &str, after: Option<String>) {
         let Some(client) = self.host.remote() else { return };
         let (tx, rx) = mpsc::channel(1024);
@@ -1661,6 +1682,7 @@ impl<'h> Ui<'h> {
         let Some(session_id) = app.session_id.clone() else { return };
         let (tx, rx) = mpsc::channel(1024);
         self.turn = Some(Box::pin(self.host.execute(Command::Continue { session_id, budget: self.budget }, tx)));
+        self.continuing = true;
         self.rx = Some(rx);
         app.start_turn(std::time::Instant::now());
     }
@@ -2482,12 +2504,13 @@ impl<'h> Ui<'h> {
         app.forget_session();
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
-        replay(app, id, &events, &self.host.registry());
+        replay(app, id, &events, &self.host.registry(), Some(&self.sessions_dir));
         if self.live.iter().any(|l| l == id) {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {
             app.end_replayed_children(matches!(self.host, link::Link::Local(_)));
+            self.follow_background(app, id, events.last().map(|e| e.id.as_str()));
         }
         // Where that session's agent was at work, not this one's.
         self.look_for_pr(app);
@@ -3084,9 +3107,21 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
 
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
-fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry) -> Option<PathBuf> {
+fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
     app.replay(&log::branch(events, &head));
+    // A backend's agent run in the background ends in its own log, not
+    // the session's: read from there, or from a synced session's history,
+    // which holds its children's events too.
+    for kid in app.backend_children_running() {
+        let own = match sessions_dir {
+            Some(dir) => read_child(dir, &kid).unwrap_or_default(),
+            None => events.iter().filter(|e| e.session_id == kid).cloned().collect(),
+        };
+        if let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, .. }, .. }) = own.last() {
+            app.child_logged_end(&kid, *status, *time_ms);
+        }
+    }
     // A turn logged on a name since renamed is on the new name.
     for old in registry.renamed.keys() {
         app.renamed(old, &registry.current(old));

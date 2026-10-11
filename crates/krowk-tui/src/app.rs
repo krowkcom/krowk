@@ -2517,7 +2517,7 @@ impl App {
                 }
                 let call = self.calls.iter().position(|c| &c.call_id == call_id).map(|i| self.calls.remove(i));
                 if let Some(i) = self.subs.iter().position(|s| s.call_id.as_deref() == Some(call_id.as_str())) {
-                    let backgrounded = live && call.as_ref().is_some_and(|c| c.input["run_in_background"] == true);
+                    let backgrounded = call.as_ref().is_some_and(|c| c.input["run_in_background"] == true);
                     return self.answer_sub(i, output, *is_error, at_ms, backgrounded);
                 }
                 match call {
@@ -2533,10 +2533,10 @@ impl App {
     /// it runs on, it has ended, as its result says when its own lines did
     /// not (a replayed log holds none of them).
     ///
-    /// A backend's agent its call ran in the background (`backgrounded`,
-    /// read live) runs on too, until its own end comes as its child's
-    /// lines do, between turns or in a later one. Replayed, its end is
-    /// not in the parent's log, and it is taken as its result says.
+    /// A backend's agent its call ran in the background (`backgrounded`)
+    /// runs on too, until its own end comes as its child's lines do,
+    /// between turns or in a later one — or, replayed, from its own log
+    /// (`backend_children_running`).
     fn answer_sub(&mut self, i: usize, output: &str, is_error: bool, at_ms: i64, backgrounded: bool) {
         let mut s = self.subs.remove(i);
         // Started in the background, or moved there by a steer (R-STEER-3,
@@ -2558,6 +2558,19 @@ impl App {
         }
         self.commit_sub(&s, output, is_error);
         self.past.push(s);
+    }
+
+    /// The backend's agents run in the background that nothing has ended
+    /// yet: a replayed session's, whose ends are in their own logs, not in
+    /// the session's.
+    pub fn backend_children_running(&self) -> Vec<String> {
+        self.past.iter().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()).map(|s| s.session_id.clone()).collect()
+    }
+
+    /// Child `sid` ended as its own log says, at `at_ms`.
+    pub fn child_logged_end(&mut self, sid: &str, status: TurnStatus, at_ms: i64) {
+        self.ended(sid, status, at_ms);
+        self.dirty = true;
     }
 
     /// The subagents whose calls were never answered, their turn over:
@@ -5034,7 +5047,7 @@ mod tests {
     /// that call at once ("Async agent launched"), and runs on: its row
     /// stays running, counted, through the turn's end and between turns,
     /// until its own end comes as its child's lines — not at its call's
-    /// result. Replayed, where its own lines are not, its result ends it.
+    /// result. Replayed, its end is read from its own log.
     #[test]
     fn r_sub_9_a_claude_background_agents_row_runs_until_its_own_end_not_its_calls_result() {
         let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
@@ -5058,10 +5071,12 @@ mod tests {
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Done, tool: None, last_event_ms: 6, waiting: None, tokens: 0 }));
         assert!(!a.status_bar().contains("subagent"), "ended by its own end: {}", a.status_bar());
         assert!(a.child_running_since().is_none());
-        // Replayed: its result is all there is of it.
+        // Replayed: its end is in its own log, read for it.
         let mut r = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
         launched(&mut r, false);
-        assert!(r.child_running_since().is_none(), "a replayed agent is not left running");
+        assert_eq!(r.backend_children_running(), ["k1"]);
+        r.child_logged_end("k1", TurnStatus::Completed, 2000);
+        assert!(r.backend_children_running().is_empty() && r.child_running_since().is_none(), "ended as its log says");
     }
 
     fn child_log(session: &str, body: LogBody) -> StreamLine {

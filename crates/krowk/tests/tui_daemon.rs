@@ -205,3 +205,54 @@ fn r_lag_9_a_10k_token_answer_from_the_daemon_lands_in_tmux_scrollback_exactly_o
     assert_eq!(history.matches("\nwrite it all out\n").count(), 1, "{history}");
     assert_eq!(history.matches("esc to interrupt").count(), 0, "a live row leaked into scrollback");
 }
+
+/// R-SUB-7, R-SUB-11 through the daemon: a second TUI resuming a session
+/// whose Claude Code agent runs in the background, between turns, shows
+/// that agent running — not done at its call's result — and follows it:
+/// its end, which comes with no turn running, reaches that TUI too, and
+/// the turn Claude Code then begins, which the first TUI runs, is no error
+/// in the second.
+#[test]
+fn r_sub_7_a_tui_resuming_a_session_follows_its_background_agent_between_turns() {
+    let d = Daemon::new("bgfollow");
+    let root = d.sandbox.root.clone();
+    let fixtures = Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude");
+    // The agent's lines a few seconds after its turn: time for the second
+    // TUI to resume the session first.
+    let scenario = std::fs::read_to_string(fixtures.join("background_agent.jsonl")).unwrap().replacen("@by-itself\n", "@by-itself\n@sleep 4\n", 1);
+    std::fs::write(root.join("background.jsonl"), scenario).unwrap();
+    let mut add = d.command("http://127.0.0.1:9", &["providers", "add", "claude", "--json"]);
+    assert!(add.output().unwrap().status.success());
+    std::fs::write(root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [root.join("repo")]}).to_string()).unwrap();
+    let cmd = |args: &[&str]| {
+        let mut c = d.command("http://127.0.0.1:9", args);
+        c.env("FAKE_CLAUDE_SCENARIO", root.join("background.jsonl"));
+        c
+    };
+    let secs = Duration::from_secs;
+    let mut a = pty::Pty::spawn(cmd(&["--model", "claude/sonnet"]), 160, 30);
+    assert!(a.wait_for(" help", secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"survey the repo in the background\r");
+    assert!(a.wait_for("launched", secs(10)).is_some(), "{:?}", a.text());
+    // The session, not its child.
+    let sessions = root.join("home/.krowk/sessions");
+    let parent = std::fs::read_dir(&sessions).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.len() == 36).find(|n| {
+        let first = std::fs::read_to_string(sessions.join(n).join("events.jsonl")).unwrap_or_default();
+        first.lines().next().is_some_and(|l| !l.contains("parentSessionId\":\""))
+    });
+    let parent = parent.expect("the session");
+    let mut b = pty::Pty::spawn(cmd(&["--resume", &parent]), 160, 30);
+    assert!(b.wait_for("[1 subagent]", secs(10)).is_some(), "running, not done at its result: {:?}", b.text());
+    b.write(b"\x07");
+    assert!(b.wait_for("survey the repo · general-purpose · in the background", secs(10)).is_some(), "{:?}", b.text());
+    assert!(b.wait_for("survey the repo · general-purpose · done in", secs(15)).is_some(), "its end, between turns: {:?}", b.text());
+    b.write(b"\x1b");
+    assert!(b.wait_for("The agent is done: the repo is small.", secs(15)).is_some(), "the turn the first TUI ran: {:?}", b.text());
+    assert!(a.wait_for("The agent is done: the repo is small.", secs(10)).is_some(), "{:?}", a.text());
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(!b.text().contains("session_busy"), "{:?}", b.text());
+    for t in [&mut a, &mut b] {
+        t.write(b"\x04\x04");
+        assert!(t.wait(secs(10)).is_some());
+    }
+}
