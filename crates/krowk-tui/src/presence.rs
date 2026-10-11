@@ -6,7 +6,8 @@
 //! herdr lists krowk as an agent with its status and notifies on it.
 //! Beside the title, in the same write, the same state as the terminal's
 //! root record for krowk (OSC 7501, `osc7501`): what a terminal or an inbox
-//! that keeps one reads instead of the title's glyphs.
+//! that keeps one reads instead of the title's glyphs, and one thing they
+//! don't say: how the last turn ended, done or error, until the next key.
 
 use crate::osc7501;
 use std::process::{Child, Command, Stdio};
@@ -23,6 +24,12 @@ pub enum State {
     Asking,
     /// `/connect`'s overlay is up, waiting on the person's sign-in.
     SigningIn,
+    /// The last turn completed, and no key was pressed since: idle to the
+    /// title and herdr, done to the root record.
+    Done,
+    /// The last turn failed, and no key was pressed since; its topic is
+    /// the failure.
+    Error,
 }
 
 impl State {
@@ -42,7 +49,7 @@ impl State {
 
     fn herdr(self) -> &'static str {
         match self {
-            State::Idle => "idle",
+            State::Idle | State::Done | State::Error => "idle",
             State::Working => "working",
             State::Blocked | State::Asking | State::SigningIn => "blocked",
         }
@@ -55,6 +62,8 @@ impl State {
             State::Blocked => osc7501::State::Blocked(osc7501::Kind::Permission),
             State::Asking => osc7501::State::Blocked(osc7501::Kind::Question),
             State::SigningIn => osc7501::State::Blocked(osc7501::Kind::Auth),
+            State::Done => osc7501::State::Done,
+            State::Error => osc7501::State::Error,
         }
     }
 }
@@ -204,10 +213,12 @@ impl Presence {
     /// `topic` differ from what was last told; herdr is told in the
     /// background, and never waited on. The report's msg is the topic the
     /// title shows: none while idle, the prompt done with; the provider
-    /// signed in to while signing in.
+    /// signed in to while signing in; for an error the failure's first
+    /// line, whole, which the title doesn't show.
     pub fn tell(&mut self, state: State, topic: &str) -> Option<Told> {
         let topic: String = match state {
             State::Idle => String::new(),
+            State::Error => crate::card::clean(topic.lines().next().unwrap_or_default()),
             _ => crate::card::clean(topic.lines().next().unwrap_or_default()).chars().take(48).collect(),
         };
         let now = (state, topic);
@@ -219,8 +230,8 @@ impl Presence {
             r.send(&["pane", "report-agent", pane, "--source", "krowk", "--agent", "krowk", "--state", now.0.herdr()]);
         }
         let title = match (now.0, now.1.is_empty()) {
-            (State::Idle, _) | (_, true) => match now.0 {
-                State::Idle => "✳ krowk".to_string(),
+            (State::Idle | State::Done | State::Error, _) | (_, true) => match now.0 {
+                State::Idle | State::Done | State::Error => "✳ krowk".to_string(),
                 State::Working => "◑ krowk".to_string(),
                 State::Blocked | State::Asking | State::SigningIn => "✋ krowk".to_string(),
             },
@@ -283,6 +294,20 @@ mod tests {
         assert_eq!(tell(None, false).map(|t| t.1), Some(root(Rec::Blocked(Kind::Auth), sign_in)));
         assert_eq!(State::of(None, false, true), State::Working, "the overlay closed, what it would otherwise be");
         assert_eq!(State::of(None, false, false), State::Idle);
+    }
+
+    #[test]
+    fn r_pres_3_a_turn_ends_done_or_error_on_the_record_and_idle_to_the_title_and_herdr() {
+        use osc7501::{Report, State as Rec};
+        let root = |state, msg| osc7501::encode(&Report { state, msg, ..Default::default() }).unwrap();
+        let mut p = Presence::from_env(&|_| String::new());
+        let done = p.tell(State::Done, "fix it\nnow").unwrap();
+        assert_eq!((done.title.as_str(), done.report), ("✳ krowk", root(Rec::Done, "fix it")));
+        let failure = format!("{} — run it again\nwhy", "x".repeat(60));
+        let error = p.tell(State::Error, &failure).unwrap();
+        assert_eq!((error.title.as_str(), error.report), ("✳ krowk", root(Rec::Error, &failure[..failure.find('\n').unwrap()])), "the whole first line, longer than the title's");
+        assert_eq!(p.tell(State::Idle, "fix it").unwrap().report, root(Rec::Idle, ""));
+        assert!([State::Done, State::Error].iter().all(|s| s.herdr() == "idle"), "herdr hears idle, as before");
     }
 
     #[test]

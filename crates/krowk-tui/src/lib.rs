@@ -108,7 +108,7 @@ use krowk_harness::engine::EngineError;
 use krowk_harness::host::{Host, HostConfig, Pricer};
 use krowk_harness::instances::Asked;
 use krowk_harness::log;
-use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
+use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, BudgetLimits, Command, Effort, ErrorInfo, ModelRef, PermissionMode, RunResult, StreamLine, TurnStatus};
 use net::Target;
 use ratatui::layout::Size;
 use settings::Settings;
@@ -505,7 +505,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -662,6 +662,9 @@ struct Ui<'h> {
     /// The window title, the terminal's root record and herdr's agent
     /// state.
     presence: presence::Presence,
+    /// How the last turn ended, done or error with its message, until the
+    /// person's next key: what the root record says while nothing runs.
+    ended: Option<(presence::State, String)>,
     project: Option<Project>,
 }
 
@@ -914,10 +917,12 @@ async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> O
 /// The session's state for the title and the root record, and its topic:
 /// the provider signed in to while `/connect`'s overlay is up and waits on
 /// the person (hidden, or closed, it no longer does), else the prompt.
-fn root_state<'a>(app: &'a App, last_prompt: &'a str) -> (presence::State, &'a str) {
+/// At rest, how the last turn `ended`, until the next key (R-PRES-3).
+fn root_state<'a>(app: &'a App, last_prompt: &'a str, ended: Option<&'a (presence::State, String)>) -> (presence::State, &'a str) {
     let sign_in = app.flow.as_ref().filter(|_| app.overlay == Overlay::Connect).and_then(|f| f.sign_in.as_deref());
     match presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), app.running()) {
         presence::State::SigningIn => (presence::State::SigningIn, sign_in.unwrap_or_default()),
+        presence::State::Idle => ended.map_or((presence::State::Idle, last_prompt), |(s, msg)| (*s, msg)),
         state => (state, last_prompt),
     }
 }
@@ -1223,6 +1228,16 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
+        // Left on the root record for the person to read: done, or the
+        // failure's first line; an interrupt, or a refusal that is no news,
+        // is idle.
+        let failure = |e: &ErrorInfo| e.message.lines().next().filter(|l| !l.trim().is_empty()).unwrap_or(&self.last_prompt).to_string();
+        self.ended = match &r {
+            Ok(Some(res)) if res.status == TurnStatus::Completed => Some((presence::State::Done, self.last_prompt.clone())),
+            Ok(Some(res)) if res.status == TurnStatus::Failed => Some((presence::State::Error, res.error.as_ref().map_or_else(|| self.last_prompt.clone(), failure))),
+            Err(e) if e.code != "nothing_pending" && !(continued && e.code == "session_busy") => Some((presence::State::Error, failure(&e.info()))),
+            _ => None,
+        };
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
         // news, nor one another client following the session runs.
@@ -1391,7 +1406,7 @@ impl<'h> Ui<'h> {
         let skip = rows.len().saturating_sub(usize::from(term.size().height));
         rows.drain(..skip);
         caret.1 = caret.1.saturating_sub(skip as u16);
-        let (state, topic) = root_state(app, &self.last_prompt);
+        let (state, topic) = root_state(app, &self.last_prompt, self.ended.as_ref());
         if let Some(told) = self.presence.tell(state, topic) {
             term.title(&told.title)?;
             term.report(&told.report)?;
@@ -1863,6 +1878,11 @@ impl<'h> Ui<'h> {
 
     /// One terminal event. True when it asks for a connectivity probe.
     async fn on_event<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>, ev: Event, quitting: &mut bool) -> std::io::Result<bool> {
+        // A key, any key, and the turn's end has been seen: the root record
+        // goes back to idle.
+        if matches!(&ev, Event::Key(k) if k.kind != KeyEventKind::Release) && self.ended.take().is_some() {
+            app.touch();
+        }
         match ev {
             Event::Key(k) if k.kind != KeyEventKind::Release && k.code == KeyCode::Char('z') && k.modifiers.contains(KeyModifiers::CONTROL) => self.suspend(app, term)?,
             // Fullscreen's conversation scrolls under the pinned footer.
@@ -3691,7 +3711,7 @@ mod tests {
         let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
         let mut p = presence::Presence::from_env(&|_| String::new());
         let mut tell = |app: &App| {
-            let (state, topic) = root_state(app, "fix it");
+            let (state, topic) = root_state(app, "fix it", None);
             p.tell(state, topic).map(|t| t.report)
         };
         let mut flow = connect::Flow::new("Connect a provider", Vec::new(), None);
