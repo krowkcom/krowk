@@ -2635,8 +2635,16 @@ impl App {
         for mut s in std::mem::take(&mut self.subs) {
             self.calls.retain(|c| s.call_id.as_deref() != Some(c.call_id.as_str()));
             self.sub_clock += 1;
+            // A backend's child its own lines ended done needs no result:
+            // a Codex child answers no call of the parent's log — its spawn
+            // returns at once, and it runs on to its own end (R-SUB-7).
+            let done = s.ran_by != RanBy::Krowk && s.status == Some(TurnStatus::Completed) && !s.presumed;
             s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
-            self.commit_sub(&s, "no result — the turn stopped first", true);
+            if done {
+                self.commit_sub(&s, "", false);
+            } else {
+                self.commit_sub(&s, "no result — the turn stopped first", true);
+            }
             self.past.push(s);
         }
     }
@@ -5096,6 +5104,34 @@ mod tests {
         a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None }));
         a.on_line(&agents(vec![agent("t2", "sleeper"), agent("t3", "survey")]));
         assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
+    }
+
+    /// R-SUB-7: Codex's two child threads are two running rows and
+    /// `[2 subagents]`, though no call of the parent's log names them; one
+    /// that ended done by its own lines is committed done at the parent's
+    /// end, and one still open there as before, with no result.
+    #[test]
+    fn r_sub_7_codexs_child_threads_are_rows_counted_once_and_end_as_their_own_lines_say() {
+        let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, Some(ModelRef { instance: "codex".into(), model: "gpt-5.5".into() }), None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        a.start_turn(Instant::now());
+        let model = ModelRef { instance: "codex".into(), model: "gpt-5.5".into() };
+        for (call, child, what) in [("call-spawn-1", "k1", "Ada"), ("call-spawn-2", "k2", "Turing")] {
+            a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: Some("explorer".into()), model: model.clone(), ran_by: RanBy::Codex, backend_id: Some(format!("thread-{child}")) }));
+            a.on_line(&child_log(child, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: Some("s".into()), agent: Some("explorer".into()) }));
+        }
+        assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().any(|r| r.contains("Agent Ada · explorer · running")) && rows.iter().any(|r| r.contains("Agent Turing · explorer · running")), "{rows:?}");
+        a.on_line(&child_log("k1", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 900, error: None, reported_cost_usd: None }));
+        assert!(a.status_bar().contains("[1 subagent]"), "{}", a.status_bar());
+        a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None }));
+        let done = a.past.iter().find(|s| s.session_id == "k1").unwrap();
+        assert_eq!(done.status, Some(TurnStatus::Completed), "done as its own lines said");
+        assert_eq!(a.past.iter().find(|s| s.session_id == "k2").unwrap().status, Some(TurnStatus::Interrupted));
+        let all = text(&a.take_pending()).join("\n");
+        assert!(all.contains("Agent Ada · explorer · done in"), "{all}");
+        assert_eq!(all.matches("no result — the turn stopped first").count(), 1, "only the one still open: {all}");
     }
 
     /// R-SUB-9: a Claude Code agent its call ran in the background answers
