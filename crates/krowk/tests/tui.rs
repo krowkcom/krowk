@@ -1147,7 +1147,7 @@ fn slash_offers_commands_and_skills_and_a_skill_reaches_the_model() {
     tm.keys(&["Enter"]);
     assert!(tm.wait_for("→ /greet", Duration::from_secs(5)).is_some(), "{}", tm.screen());
     tm.keys(&["the team", "Enter"]);
-    assert!(tm.wait_for("Loaded the greet skill", Duration::from_secs(10)).is_some(), "{}", tm.screen());
+    assert!(tm.wait_for("Skill greet", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     assert!(tm.wait_for("tokens", Duration::from_secs(10)).is_some(), "{}", tm.screen());
     let seen = m.seen.lock().unwrap();
     let first = seen.iter().find(|s| s.body["messages"].is_array()).expect("the model was asked").body["messages"].to_string();
