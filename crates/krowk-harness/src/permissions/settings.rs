@@ -242,8 +242,11 @@ pub(crate) fn read_plain(path: &Path, max: u64, follow: bool) -> std::io::Result
     o.read(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NONBLOCK | if follow { 0 } else { libc::O_NOFOLLOW });
+    // Off unix there is no O_NOFOLLOW: the link is refused before the open.
     #[cfg(not(unix))]
-    let _ = follow;
+    if !follow && std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "it is a symbolic link"));
+    }
     let f = o.open(path)?;
     let meta = f.metadata()?;
     if !meta.is_file() {

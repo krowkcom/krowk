@@ -147,7 +147,7 @@ pub fn discover(cfg: &crate::permissions::Config, cwd: &Path) -> (Vec<Server>, V
             let config = match ServerConfig::deserialize(c) {
                 Ok(c) => c,
                 Err(e) => {
-                    skipped.push(format!("the MCP server {name} in {source} was skipped: {}", crate::http::clip(&e.to_string(), 200)));
+                    skipped.push(format!("the MCP server {name} in {source} was skipped: {}", crate::http::clip(&unquoted(&e.to_string()), 200)));
                     continue;
                 }
             };
@@ -216,7 +216,9 @@ impl Approval {
         let mut a = Approval::default();
         let mut take = |v: &Value| {
             let names = |k: &str| v.get(k).and_then(|l| l.as_array()).map(|l| l.iter().filter_map(|n| n.as_str().map(String::from)).collect::<Vec<_>>());
-            if let Some(on) = names("enabledMcpjsonServers") {
+            // Claude Code writes `[]` into every project it has opened: an
+            // empty list is no list, or it would turn every server off.
+            if let Some(on) = names("enabledMcpjsonServers").filter(|l| !l.is_empty()) {
                 a.enabled.get_or_insert_with(Vec::new).extend(on);
             }
             a.disabled.extend(names("disabledMcpjsonServers").unwrap_or_default());
@@ -240,6 +242,12 @@ impl Approval {
         let named = |l: &[String]| l.iter().any(|n| n == name);
         !named(&self.disabled) && (self.all == Some(true) || self.enabled.as_deref().is_none_or(named))
     }
+}
+
+/// A config error with what it quoted taken out: serde names the value it
+/// could not read, and a server's `env` or `headers` may hold a secret.
+fn unquoted(e: &str) -> String {
+    e.split('"').enumerate().map(|(i, p)| if i % 2 == 1 { "…" } else { p }).collect::<Vec<_>>().join("\"")
 }
 
 /// Whether a repository's `.mcp.json` names a server: one of the things
@@ -608,7 +616,8 @@ enum Conn {
     /// Line-delimited JSON-RPC on the child's stdin and stdout, one request
     /// at a time. A request cut off by an interrupt may leave half a line
     /// either way, so the connection is not used again (`cut`).
-    Stdio { io: tokio::sync::Mutex<StdioIo>, next: AtomicU64, cut: AtomicBool },
+    /// `junked` when it was stopped for writing what is not JSON-RPC.
+    Stdio { io: tokio::sync::Mutex<StdioIo>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
     Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64 },
@@ -671,7 +680,7 @@ impl Conn {
                     .map_err(|e| format!("{cmd} could not be started: {e}"))?;
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, child }), next, cut: AtomicBool::new(false) })
+                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, child }), next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
             }
             (kind, ..) => Err(format!("it names neither a command nor a url for its transport ({})", kind.unwrap_or("stdio"))),
         }
@@ -699,9 +708,12 @@ impl Conn {
         };
         let msg = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
         let answer = match self {
-            Conn::Stdio { io, cut, .. } => {
+            Conn::Stdio { io, cut, junked, .. } => {
                 let mut io = io.lock().await;
                 if cut.swap(true, Ordering::AcqRel) {
+                    if junked.load(Ordering::Acquire) {
+                        return Err("it was stopped earlier this turn for writing lines that are not JSON-RPC, so it is not used again this turn".into());
+                    }
                     return Err("an earlier call to this server was cut off mid-message (an interrupt, or a pipe that broke), so it is not used again this turn".into());
                 }
                 write_line(&mut io.stdin, &msg).await?;
@@ -720,11 +732,14 @@ impl Conn {
                     // many: a server writing nothing else would otherwise
                     // hold the call to CALL_TIMEOUT. It is stopped, as one cut
                     // off is (`cut` stays set).
-                    let Some(v) = serde_json::from_str::<Value>(&line).ok().filter(|v| v.is_object()) else {
+                    // An object with no `jsonrpc` — a JSON log line — is
+                    // no message either.
+                    let Some(v) = serde_json::from_str::<Value>(&line).ok().filter(|v| v.get("jsonrpc").is_some()) else {
                         junk += 1;
                         junk_bytes += read;
                         if junk > MAX_JUNK_LINES || junk_bytes > MAX_JUNK_BYTES {
                             io.kill();
+                            junked.store(true, Ordering::Release);
                             return Err(format!("it wrote {junk} lines that are not JSON-RPC ({} KiB) while krowk waited for its answer, so it was stopped", junk_bytes >> 10));
                         }
                         continue;
@@ -941,6 +956,10 @@ mod tests {
         let (base, app, cfg) = approval_repo("approval");
         let names = || discover(&cfg, &app).0.into_iter().map(|s| s.name).collect::<Vec<_>>();
         assert_eq!(names(), ["a", "b", "c"], "trusted and named by no list: all of them, as the trust question covered");
+        // Claude Code's own entry for every project it has opened: empty
+        // lists, which turn nothing off.
+        std::fs::write(base.join("claude/.claude.json"), json!({"projects": {app.display().to_string(): {"enabledMcpjsonServers": [], "disabledMcpjsonServers": []}}}).to_string()).unwrap();
+        assert_eq!(names(), ["a", "b", "c"], "an empty enabled list is no list");
         // The person's dialog answers, in ~/.claude.json under the directory
         // Claude Code was started in.
         let claude_json = |v: Value| std::fs::write(base.join("claude/.claude.json"), json!({"projects": {app.display().to_string(): v}}).to_string()).unwrap();
@@ -982,6 +1001,11 @@ mod tests {
         assert_eq!(skipped.len(), 2, "{skipped:?}");
         assert!(skipped.iter().any(|w| w.contains("\"a__b\" in .mcp.json") && w.contains("no __")), "{skipped:?}");
         assert!(skipped.iter().any(|w| w.contains("args in .mcp.json was skipped: invalid type")), "{skipped:?}");
+        // What serde quotes from a config — an env written as one string,
+        // a token in it — is not repeated in the notice.
+        std::fs::write(base.join("repo/.mcp.json"), json!({"mcpServers": {"s": {"command": "x", "env": "TOKEN=hunter2"}}}).to_string()).unwrap();
+        let (_, skipped) = discover(&cfg, &app);
+        assert!(skipped.len() == 1 && !skipped[0].contains("hunter2"), "{skipped:?}");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

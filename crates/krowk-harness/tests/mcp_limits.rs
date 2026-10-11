@@ -238,7 +238,21 @@ fn r_tool_3_a_server_writing_only_junk_fails_the_call_long_before_its_timeout() 
     // Stopped, it is not used again this turn.
     let (again, err) = call(&m, "noisy:echo");
     let _ = std::fs::remove_dir_all(&b);
-    assert!(err && again.contains("not used again"), "{again}");
+    assert!(err && again.contains("not used again") && again.contains("not JSON-RPC"), "{again}");
+}
+
+/// JSON log lines — objects with no `jsonrpc` — are no messages either: a
+/// server writing only those is stopped too.
+#[test]
+fn r_tool_3_a_server_writing_only_json_logs_is_stopped_too() {
+    let b = base("jsonlogs");
+    let s = caller(&b, r#"while :; do echo '{"level":30,"msg":"still working"}'; done"#);
+    let m = Mcp::new(vec![server("pino", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let started = std::time::Instant::now();
+    let (out, err) = call(&m, "pino:echo");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(started.elapsed() < Duration::from_secs(20), "the call took {:?}", started.elapsed());
+    assert!(err && out.contains("not JSON-RPC"), "{out}");
 }
 
 #[test]
