@@ -525,6 +525,11 @@ async fn session(opts: Options) -> Outcome {
     let _ = term.leave();
     ui.presence.finish();
     let mut out = term.into_inner();
+    // This process's jobs go with it, which is said where the person
+    // looks as krowk exits: the daemon's run on.
+    if let Some(line) = krowk_harness::jobs::stopped_line(&host.running_jobs(), app.session_id.as_deref(), "with this krowk") {
+        let _ = write!(out, "! {line}\r\n");
+    }
     if let Some(id) = &app.session_id {
         let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
     }

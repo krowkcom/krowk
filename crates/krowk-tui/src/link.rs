@@ -165,6 +165,12 @@ impl Link {
     pub async fn shutdown(&self) {
         self.host().shutdown().await;
     }
+
+    /// The background jobs `shutdown` stops, as (session, id): this
+    /// process's. The daemon's run on.
+    pub fn running_jobs(&self) -> Vec<(String, String)> {
+        self.host().running_jobs()
+    }
 }
 
 /// A prompt the host daemon would lose its images from, refused here: the

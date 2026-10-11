@@ -450,6 +450,18 @@ impl Host {
         busy.into_iter().collect()
     }
 
+    /// `session`'s count of background work running here — its jobs and
+    /// background children — as the status line has it (`background`).
+    pub fn background_of(&self, session: &str) -> u32 {
+        self.shared.jobs.counted(session) as u32
+    }
+
+    /// Every background job running here, as (session, id): what
+    /// `shutdown` stops.
+    pub fn running_jobs(&self) -> Vec<(String, String)> {
+        self.shared.jobs.running_all()
+    }
+
     /// Denies every approval request of these sessions still waiting: the
     /// daemon's, when the last client that could answer them went away.
     pub fn deny_waiting(&self, sessions: &[String]) {

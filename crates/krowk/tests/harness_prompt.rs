@@ -161,6 +161,34 @@ fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() 
     assert_eq!(after["harness"], "krowk");
 }
 
+/// R-STEER-2: `krowk -p` stops the jobs still running when its one prompt
+/// is answered, and stderr names them; a job that ended in the turn left
+/// its note, which krowk.db keeps as krowk's, never the person's.
+#[test]
+fn r_steer_2_krowk_p_names_a_job_it_stops_at_exit_and_krowk_db_keeps_a_note_as_krowks() {
+    let m = mock::serve(|_, n| {
+        mock::Reply::sse(&match n {
+            0 => mock::tool_use("t1", "bash", &serde_json::json!({"command": "echo hi", "run_in_background": true})),
+            1 => mock::tool_use("t2", "bash", &serde_json::json!({"command": "sleep 30", "run_in_background": true})),
+            2 => mock::tool_use("t3", "bash", &serde_json::json!({"command": "sleep 1"})),
+            _ => mock::text_stream("done"),
+        })
+    });
+    let b = Sandbox::new("job-exit", &m.url);
+    let started = std::time::Instant::now();
+    let out = b.krowk(&["-p", "start two jobs", "--model", "claude-sonnet-4-6", "--permission-mode", "bypassPermissions"]);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("! background job b2 is still running, and stops with this run: krowk -p does not wait for background jobs"), "{err}");
+    assert!(!err.contains("b1"), "the job that ended is not named: {err}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20), "not the 30 s the job would have run");
+    let id = krowk_sessions(&b)[0]["foreign_session_id"].as_str().unwrap().to_string();
+    let shown = b.json(&["sessions", "show", &id, "--json"])["data"].clone();
+    let said = |role: &str| shown["messages"].as_array().unwrap().iter().filter(|m| m["role"] == role).map(|m| m.to_string()).collect::<Vec<_>>();
+    assert!(said("system").iter().any(|m| m.contains("background-done id=")), "the note is krowk's: {shown}");
+    assert_eq!(said("user").len(), 1, "the prompt alone is the person's: {:?}", said("user"));
+}
+
 #[test]
 fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     let b = Sandbox::new("flags", "http://127.0.0.1:9");
