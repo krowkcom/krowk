@@ -923,9 +923,13 @@ impl Capture {
     }
 
     /// Takes off the end the bytes of a character not yet whole, and
-    /// returns them.
+    /// returns them. With nothing cut, head and tail are one run, and a
+    /// character may start in the one and end in the other.
     pub(crate) fn split_partial(&mut self) -> Vec<u8> {
-        let end: Vec<u8> = if self.tail.is_empty() { self.head.clone() } else { self.tail.iter().copied().collect() };
+        let end: Vec<u8> = match self.dropped {
+            0 => self.head.iter().chain(&self.tail).copied().collect(),
+            _ => self.tail.iter().copied().collect(),
+        };
         // Back from the end to the character's first byte: the length it
         // says against the bytes there are.
         let partial = (1..=end.len().min(3))
@@ -937,7 +941,7 @@ impl Capture {
                 })
             })
             .unwrap_or(0);
-        let mut out: Vec<u8> = (0..partial).filter_map(|_| if self.tail.is_empty() { self.head.pop() } else { self.tail.pop_back() }).collect();
+        let mut out: Vec<u8> = (0..partial).filter_map(|_| self.tail.pop_back().or_else(|| self.head.pop())).collect();
         out.reverse();
         out
     }
@@ -1400,6 +1404,19 @@ pub(crate) mod tests {
         assert_eq!(split(&"ab→".as_bytes()[..4]), ("ab".to_string(), "→".as_bytes()[..2].to_vec()));
         assert_eq!(split(&"é".as_bytes()[..1]), (String::new(), vec![0xC3]));
         assert_eq!(split(b"plain\n"), ("plain\n".to_string(), Vec::new()));
+    }
+
+    /// R-STEER-4: a character split where the kept head gives way to the
+    /// tail, with nothing cut between them, is given up whole too.
+    #[test]
+    fn r_steer_4_a_character_across_the_head_and_the_tail_is_given_up_whole() {
+        let mut c = Capture::new(8);
+        // "abc" and the arrow's first byte fill the head; its second is the tail's.
+        c.push(&"abc→".as_bytes()[..5]);
+        assert_eq!((c.split_partial(), c.render()), ("→".as_bytes()[..2].to_vec(), "abc".to_string()));
+        let mut c = Capture::new(8);
+        c.push("abc→".as_bytes());
+        assert_eq!((c.split_partial(), c.render()), (Vec::new(), "abc→".to_string()), "whole");
     }
 
     #[test]
