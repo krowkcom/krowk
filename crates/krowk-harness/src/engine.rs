@@ -246,7 +246,7 @@ struct SteerQueue {
     waiting: Vec<Steer>,
     closed: bool,
     /// A call was moved to the background for the steering waiting
-    /// (R-STEER-4): the step's later calls are moved at once. Cleared when
+    /// (R-STEER-4): the step's later calls are moved sooner. Cleared when
     /// that steering is taken.
     moved: bool,
 }
@@ -339,7 +339,7 @@ impl Steers {
     }
 
     /// Whether a call was moved for the steering waiting: one after it in
-    /// the same step is moved without its two seconds.
+    /// the same step is moved after a moment, not its two seconds.
     pub fn has_moved(&self) -> bool {
         self.lock().moved
     }

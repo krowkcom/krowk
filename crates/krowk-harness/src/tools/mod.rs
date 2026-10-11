@@ -259,6 +259,10 @@ pub struct ToolEnv<'a> {
 /// How long after a foreground bash call is asked for a steer moves it to
 /// the background rather than wait for it (R-STEER-4).
 pub const MOVE_AFTER: Duration = Duration::from_secs(2);
+/// The same, once a call before it in the step was moved for the same
+/// steer: long enough that a command that is over at once (`ls`, `git
+/// status`) just answers.
+pub const MOVE_SOON: Duration = Duration::from_millis(200);
 
 /// Parses a call's input, or answers why it cannot.
 fn parse_input<T: for<'de> Deserialize<'de>>(name: &str, input: &Value) -> Result<T, (String, bool)> {
@@ -1273,14 +1277,13 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
     // A steer moves it to the background once it was asked for
-    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs; at once
-    // when a call before it in the step was moved for the same steer.
+    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs; after
+    // `MOVE_SOON` when a call before it in the step was moved for the same
+    // steer.
     let movable = env.jobs.zip(env.steers);
     let moving = async {
         let Some((_, steers)) = movable else { return std::future::pending().await };
-        if !steers.has_moved() {
-            tokio::time::sleep_until(asked + MOVE_AFTER).await;
-        }
+        tokio::time::sleep_until(asked + if steers.has_moved() { MOVE_SOON } else { MOVE_AFTER }).await;
         steers.steered().await;
     };
     tokio::pin!(moving);
@@ -1854,20 +1857,23 @@ pub(crate) mod tests {
     }
 
     /// R-STEER-4: once a steer has moved one call, the next long call of the
-    /// step is moved at once; once the steer is taken, the next waits its
-    /// two seconds again, and a short one just finishes.
+    /// step is moved after a moment, and one over at once just answers;
+    /// once the steer is taken, the next waits its two seconds again, and a
+    /// short one just finishes.
     #[cfg(unix)]
     #[tokio::test(flavor = "current_thread")]
-    async fn r_steer_4_after_a_move_the_steps_next_long_call_is_moved_at_once() {
+    async fn r_steer_4_after_a_move_the_steps_next_long_call_is_moved_in_a_moment() {
         let d = dir("move-next");
         let (jobs, steers) = (crate::jobs::Jobs::new(d.join("sessions")), crate::engine::Steers::default());
         steers.push("stop, say hi".into()).unwrap();
         let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: Some((&jobs, "s-1")), steers: Some(&steers) };
         let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
         assert!(out.contains("as job b1"), "{out}");
+        let (out, err) = run(BASH, &json!({"command": "echo quick"}), &env).await;
+        assert_eq!((out.as_str(), err), ("quick\nexit code 0", false), "over at once: not a job");
         let started = std::time::Instant::now();
         let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
-        assert!(out.contains("as job b2") && started.elapsed() < Duration::from_secs(1), "at once: {out} {:?}", started.elapsed());
+        assert!(out.contains("as job b2") && started.elapsed() < Duration::from_secs(1), "in a moment: {out} {:?}", started.elapsed());
         // The next step takes the steer; another arrives.
         steers.take();
         steers.push("and then this".into()).unwrap();

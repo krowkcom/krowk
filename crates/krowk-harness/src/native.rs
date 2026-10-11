@@ -460,9 +460,9 @@ impl<C: ModelClient> NativeEngine<C> {
 
 /// A batch of subagent calls, run together. A steer moves the children
 /// still running to the background once the batch has run `MOVE_AFTER`
-/// (R-STEER-4), or at once when a call before it in the step was moved
-/// for the same steer: their calls answer at once, and their summaries
-/// arrive as notes.
+/// (R-STEER-4), or `MOVE_SOON` when a call before it in the step was
+/// moved for the same steer: their calls answer at once, and their
+/// summaries arrive as notes.
 async fn fan_out<'a>(ctx: &TurnContext, runs: Vec<BoxFuture<'a, (String, bool)>>) -> Vec<(String, bool)> {
     let Some(s) = &ctx.subagents else { return join_all(runs).await };
     s.batch_starts();
@@ -471,9 +471,7 @@ async fn fan_out<'a>(ctx: &TurnContext, runs: Vec<BoxFuture<'a, (String, bool)>>
     tokio::select! {
         out = &mut all => out,
         _ = async {
-            if !ctx.steers.has_moved() {
-                tokio::time::sleep(tools::MOVE_AFTER).await;
-            }
+            tokio::time::sleep(if ctx.steers.has_moved() { tools::MOVE_SOON } else { tools::MOVE_AFTER }).await;
             ctx.steers.steered().await;
         } => {
             ctx.steers.moved_one();

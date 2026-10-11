@@ -188,7 +188,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   that finishes within two seconds just finishes. The two seconds count
   from when the agent asked, so a build that waited for a build slot moves
   as soon as it starts, and once one command has moved, the next ones the
-  agent asked for in the same step move straight away.
+  agent asked for in the same step move after a moment rather than two
+  seconds.
 - **Steering reaches a Claude Code turn while it runs.** A message you send
   while Claude Code works used to wait until its whole turn ended, then come
   back into your prompt. Now it goes to Claude Code at once, and the model
