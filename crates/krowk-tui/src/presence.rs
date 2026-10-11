@@ -89,15 +89,17 @@ pub struct Child {
 impl Child {
     /// Its report in `state`: the id the last 12 hex digits of each session
     /// id on its path (a UUIDv7's random part; the leading digits are a
-    /// time its siblings share), a grandchild's under its parent's. None
-    /// for a path past the id's limits: it goes unreported.
+    /// time its siblings share), all 32 when those are zeros (no random
+    /// source to make them), a grandchild's under its parent's. None for a
+    /// path past the id's limits: it goes unreported.
     fn report(&self, state: osc7501::State) -> Option<String> {
         let segments: Vec<String> = self
             .path
             .iter()
             .map(|sid| {
-                let hex: Vec<char> = sid.chars().filter(char::is_ascii_hexdigit).collect();
-                hex[hex.len().saturating_sub(12)..].iter().collect()
+                let hex: String = sid.chars().filter(char::is_ascii_hexdigit).collect();
+                let tail = &hex[hex.len().saturating_sub(12)..];
+                if tail.bytes().all(|b| b == b'0') { hex.clone() } else { tail.to_string() }
             })
             .collect();
         let id: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -376,6 +378,8 @@ mod tests {
         let mut p = Presence::from_env(&|_| String::new());
         assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Working)]), [rec(&["5f2e8d6b1a07"], "review", Rec::Working)], "the last 12 hex digits");
         assert!(p.tell_children(vec![child(&[sid], "review", Rec::Working)]).is_empty(), "nothing new, nothing told");
+        let unrandom = "0199a3c2-7e10-7a3b-8000-000000000000";
+        assert_eq!(Child { path: vec![unrandom.into()], title: String::new(), state: Rec::Clear }.report(Rec::Clear).unwrap(), rec(&["0199a3c27e107a3b8000000000000000"], "", Rec::Clear), "no random part: the whole id");
         let deep = child(&[sid, "0199a3c2-7e11-7000-8000-00000000beef"], "dig", Rec::Blocked(Kind::Permission));
         assert_eq!(p.tell_children(vec![child(&[sid], "review", Rec::Working), deep.clone()]), [rec(&["5f2e8d6b1a07", "00000000beef"], "dig", Rec::Blocked(Kind::Permission))], "a grandchild under its parent");
         let nine: Vec<String> = (0..9).map(|i| format!("0199a3c2-7e11-7000-8000-00000000000{i}")).collect();

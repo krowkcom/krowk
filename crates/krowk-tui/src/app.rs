@@ -222,6 +222,9 @@ struct Sub {
     tool: Option<ChildTool>,
     last_event_ms: Option<i64>,
     waiting: Option<Waiting>,
+    /// Where that frame said it stands, and `sub_clock` then: an end it
+    /// says comes before its log's, or, its log not written, instead of it.
+    said: Option<(ChildState, u64)>,
     /// The item it is streaming, and its text so far: what a child view
     /// opened in the middle of it starts from.
     streaming: Option<Streaming>,
@@ -307,6 +310,7 @@ impl Sub {
             tool: None,
             last_event_ms: None,
             waiting: None,
+            said: None,
             streaming: None,
             ran_by: RanBy::Krowk,
             backend_id: None,
@@ -2074,6 +2078,7 @@ impl App {
                 // Its stamp, or what arrived since, whichever is later.
                 s.last_event_ms = running.then(|| s.last_event_ms.map_or(*last_event_ms, |ms| ms.max(*last_event_ms)));
                 s.waiting = waiting.filter(|_| running);
+                s.said = Some((*status, tick));
             }
             _ => return,
         }
@@ -2170,22 +2175,31 @@ impl App {
     /// The turn's children as the terminal's records of them (R-PRES-4),
     /// none once it is over: each running, or ended since the turn began,
     /// once the parent's `subagent.started` has named it (its own lines can
-    /// come first), titled by its description, its state its `subagent.status`'s — an
-    /// approval or a question waiting blocks it, an interrupted one is
-    /// cleared. Children are one level deep (R-SUB-7), so each one's path
-    /// is its own session id.
+    /// come first), titled by its description. Its state is its
+    /// `subagent.status`'s — an approval or a question waiting blocks it —
+    /// its end its log's, else its frame's; an interrupted one is cleared.
+    /// Children are one level deep (R-SUB-7), so each one's path is its own
+    /// session id.
     pub fn child_records(&self) -> Vec<crate::presence::Child> {
         use crate::osc7501::{Kind, State};
         let Some(from) = self.turn.as_ref().map(|t| t.subs_from) else { return Vec::new() };
-        let mut children: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.call_id.is_some() && (s.status.is_none() || s.ended > from)).collect();
+        // Its end and when: its log's, else its frame's.
+        let end = |s: &Sub| match (s.status, s.said) {
+            (Some(how), _) => Some((how, s.ended)),
+            (None, Some((ChildState::Done, at))) => Some((TurnStatus::Completed, at)),
+            (None, Some((ChildState::Failed, at))) => Some((TurnStatus::Failed, at)),
+            (None, Some((ChildState::Interrupted, at))) => Some((TurnStatus::Interrupted, at)),
+            (None, _) => None,
+        };
+        let mut children: Vec<&Sub> = self.subs.iter().chain(&self.past).filter(|s| s.call_id.is_some() && end(s).is_none_or(|(_, at)| at > from)).collect();
         children.sort_by_key(|s| s.born);
-        let state = |s: &Sub| match (s.status, s.waiting) {
-            (None, None) => State::Working,
+        let state = |s: &Sub| match (end(s), s.waiting) {
+            (Some((TurnStatus::Completed, _)), _) => State::Done,
+            (Some((TurnStatus::Failed, _)), _) => State::Error,
+            (Some((TurnStatus::Interrupted, _)), _) => State::Clear,
             (None, Some(Waiting::Approval)) => State::Blocked(Kind::Permission),
             (None, Some(Waiting::Question)) => State::Blocked(Kind::Question),
-            (Some(TurnStatus::Completed), _) => State::Done,
-            (Some(TurnStatus::Failed), _) => State::Error,
-            (Some(TurnStatus::Interrupted), _) => State::Clear,
+            (None, None) => State::Working,
         };
         children.into_iter().map(|s| crate::presence::Child { path: vec![s.session_id.clone()], title: s.description.clone(), state: state(s) }).collect()
     }
@@ -5686,7 +5700,15 @@ mod tests {
         let rec = |k: &str, state| (k.to_string(), format!("do {k}"), state);
         a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k1".into(), status: ChildState::Running, tool: None, last_event_ms: 1, waiting: Some(Waiting::Question), tokens: 0 }));
         assert_eq!(states(&a), [rec("k1", State::Blocked(Kind::Question)), rec("k2", State::Working), rec("k3", State::Working)]);
-        for (k, status) in [("k1", TurnStatus::Completed), ("k2", TurnStatus::Failed), ("k3", TurnStatus::Interrupted)] {
+        // A tool and a token count alone change no record.
+        let mut told = crate::presence::Presence::default();
+        told.tell_children(a.child_records());
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k2".into(), status: ChildState::Running, tool: Some(ChildTool { name: "bash".into(), started_ms: 2 }), last_event_ms: 2, waiting: None, tokens: 900 }));
+        assert!(told.tell_children(a.child_records()).is_empty(), "nothing to tell");
+        // Its end as its frame says it, its log not written.
+        a.on_line(&live(LiveEvent::SubagentStatus { session_id: "k2".into(), status: ChildState::Failed, tool: None, last_event_ms: 3, waiting: None, tokens: 900 }));
+        assert_eq!(states(&a)[1], rec("k2", State::Error));
+        for (k, status) in [("k1", TurnStatus::Completed), ("k3", TurnStatus::Interrupted)] {
             a.on_line(&child_log(k, LogBody::TurnCompleted { turn_id: "v".into(), status, usage: Usage::default(), duration_ms: 1_000, error: None, reported_cost_usd: None }));
         }
         assert_eq!(states(&a), [rec("k1", State::Done), rec("k2", State::Error), rec("k3", State::Clear)]);

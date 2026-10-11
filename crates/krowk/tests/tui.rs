@@ -2592,8 +2592,11 @@ fn each_subagent_is_a_record(screen: &str) {
     let ask = "fan out";
     assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Idle, ""), &root(State::Clear, "")]);
     let at = |r: &String| got.iter().position(|g| g == r).unwrap();
-    let root_blocked = at(&root(State::Blocked(Kind::Permission), ask));
-    assert!(root_blocked < at(&rec(0, State::Done)) && at(&rec(0, State::Blocked(Kind::Permission))) < got.iter().rposition(|g| g == &root(State::Working, ask)).unwrap(), "the root blocked while the child is: {got:?}");
+    // Both blocked before either says it works again.
+    let (root_blocked, child_blocked) = (at(&root(State::Blocked(Kind::Permission), ask)), at(&rec(0, State::Blocked(Kind::Permission))));
+    let again = |from: usize, r: &String| from + got[from..].iter().position(|g| g == r).unwrap();
+    let back = again(root_blocked, &root(State::Working, ask)).min(again(child_blocked, &rec(0, State::Working)));
+    assert!(root_blocked < back && child_blocked < back, "the root blocked while the child is: {got:?}");
     let turn_over = got.iter().rposition(|g| g == &root(State::Idle, "")).unwrap();
     for (i, (title, _)) in children.iter().enumerate() {
         assert!(at(&rec(i, State::Clear)) < turn_over, "{title} cleared before the root's turn-end report: {got:?}");
