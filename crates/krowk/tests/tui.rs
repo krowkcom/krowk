@@ -620,6 +620,25 @@ fn sigterm_and_sighup_restore_the_terminal_and_record_the_session() {
     }
 }
 
+/// The terminal closing under it — a window closed, an SSH link dropped —
+/// ends krowk within a few seconds, idle or with a turn that never
+/// answers: nothing is left behind holding a session no terminal shows.
+#[test]
+fn a_closed_terminal_ends_krowk_idle_or_mid_turn() {
+    for busy in [false, true] {
+        let (url, asked) = silent_provider("wait forever");
+        let b = Sandbox::new(&format!("closed-{busy}"));
+        let mut t = pty::Pty::spawn(b.command(&url, &[]), 80, 24);
+        assert!(t.wait_for("Claude Opus 5.5 (anthropic) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+        if busy {
+            t.write(b"wait forever\r");
+            assert!(until(&asked, Duration::from_secs(10)), "the prompt never reached the provider: {:?}", t.text());
+        }
+        t.hang_up();
+        assert!(t.wait(Duration::from_secs(5)).is_some(), "busy {busy}: krowk outlived its terminal by 5 s");
+    }
+}
+
 #[test]
 fn a_second_ctrl_c_leaves_at_once_but_still_records_the_session_and_exits_130() {
     let (url, asked) = silent_provider("wait forever");

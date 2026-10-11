@@ -47,6 +47,8 @@ pub mod osc7501;
 pub mod editor;
 pub mod full;
 pub mod help;
+#[cfg(unix)]
+mod hangup;
 pub mod look;
 pub mod net;
 pub mod paste;
@@ -282,6 +284,9 @@ pub fn run(opts: Options) -> Outcome {
         }
         hook(info);
     }));
+    // A terminal gone from under a stuck TUI thread still ends it.
+    #[cfg(unix)]
+    hangup::watch(restore_terminal);
     let outcome = rt.block_on(session(opts));
     restore_terminal();
     // A readiness check still running (the person quit while the model was
@@ -893,6 +898,25 @@ fn next_tick(started: Instant, now: Instant, every: Duration) -> Instant {
 }
 
 /// The next of an optional stream, or never.
+/// A key reader on the terminal, unless it has hung up: crossterm's
+/// would wait for good on the reader it left spinning there (`hangup`).
+fn key_reader() -> Option<EventStream> {
+    #[cfg(unix)]
+    if hangup::gone() {
+        return None;
+    }
+    Some(EventStream::new())
+}
+
+/// Resolves once the terminal has hung up; never where that is not
+/// watched.
+async fn terminal_went() {
+    #[cfg(unix)]
+    hangup::went().await;
+    #[cfg(not(unix))]
+    std::future::pending::<()>().await
+}
+
 async fn next_key(keys: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
     match keys {
         Some(k) => std::future::poll_fn(|cx| Pin::new(&mut *k).poll_next(cx)).await,
@@ -1049,7 +1073,7 @@ impl<'h> Ui<'h> {
     }
 
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
-        self.keys = Some(EventStream::new());
+        self.keys = key_reader();
         let mut frames = Frames::default();
         // One probe at start, so a machine that is offline says so before
         // anybody types into it.
@@ -1063,6 +1087,14 @@ impl<'h> Ui<'h> {
             let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied].into_iter().flatten().min();
             tokio::select! {
                 biased;
+                // The terminal hung up: nobody is left to answer, nor any
+                // key to read (`hangup`), so a turn here is not waited for —
+                // left as a second Ctrl-C leaves it. One in the daemon runs
+                // on there.
+                _ = terminal_went() => {
+                    self.abandoned = app.running() && self.host.remote().is_none() && self.host.synced().is_none();
+                    return Ok(());
+                }
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
                 // command's, not krowk's (with the TUI's own terminal raw,
                 // they arrive as keys instead). One can land a moment after
@@ -1169,6 +1201,8 @@ impl<'h> Ui<'h> {
 
     /// SIGHUP or SIGTERM; true when the TUI stops now.
     async fn on_hangup(&mut self, app: &mut App, quitting: &mut bool) -> bool {
+        #[cfg(unix)]
+        hangup::took();
         // A turn in the daemon is the daemon's: the terminal
         // going takes nothing with it, and it runs on for
         // `krowk --resume` to follow (R-HOST-1).
@@ -1981,7 +2015,7 @@ impl<'h> Ui<'h> {
         }
         term.resize(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
         if self.keys.is_none() {
-            self.keys = Some(EventStream::new());
+            self.keys = key_reader();
         }
         app.set_width(inner(w));
         app.set_rows(h);
@@ -2035,7 +2069,7 @@ impl<'h> Ui<'h> {
         let _ = out.flush();
         let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
         term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
-        self.keys = Some(EventStream::new());
+        self.keys = key_reader();
         app.set_width(inner(w));
         app.set_rows(h);
         Ok(())

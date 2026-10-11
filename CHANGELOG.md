@@ -338,6 +338,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **krowk no longer outlives a closed terminal.** Closing the window or
+  losing the SSH link while a turn ran could leave krowk running with
+  nothing to show it on, ignoring `kill` and using a whole CPU core,
+  until `kill -9`. The library krowk reads keys with loops for good on a
+  terminal that has gone, and once krowk waited on it, it stopped
+  noticing anything. krowk now watches the terminal itself and leaves
+  as soon as it goes. A turn running in the host daemon runs on there,
+  for `krowk --resume` to pick up; one running in krowk itself is left as
+  a second Ctrl-C leaves it, and the session is still saved. And should
+  krowk ever get stuck again, SIGHUP, or a SIGTERM it doesn't act on,
+  ends it within two seconds, with the terminal put back as far as it
+  still can be.
 - **The host daemon no longer keeps the terminal that started it open.**
   The daemon `krowk` starts in the background could inherit a terminal,
   pipe or file its starter had open without close-on-exec, and kept it
