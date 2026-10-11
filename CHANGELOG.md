@@ -223,7 +223,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   transcript or in the Ctrl-G list, now stops that agent alone, as it does
   for Claude Code's: Codex is asked to interrupt that agent's turn, its row
   reads `stopping…`, then `interrupted`, and the other agents and the turn
-  carry on. It works while another agent's approval waits on you. If Codex
+  carry on. From another client or a device following the session, it
+  also works while an agent's approval waits on you, that agent's own
+  included (its question is taken back); in the TUI the approval prompt
+  takes your keys until you answer it. If Codex
   refuses, or hasn't said yet which turn the agent runs, the bottom line
   says why and the agent keeps running. Like the rest of krowk's Codex
   agents, this is checked against Codex's published protocol, not against
