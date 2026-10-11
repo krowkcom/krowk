@@ -394,13 +394,13 @@ fn ran_by(r: RanBy) -> &'static str {
 
 /// How long a child's tool runs, and how long nothing arrives from it,
 /// before its row says so (R-SUB-11).
+const TOOL_FACT: Duration = Duration::from_secs(10);
+const QUIET_FACT: Duration = Duration::from_secs(30);
+
 /// How Claude Code answers the Agent call of an agent `stop_task` stopped
 /// (SV0's recording, and SV15's live run): a replayed session's one word
 /// that the agent was interrupted, where its own lines are not read.
 const CLAUDE_AGENT_STOPPED: &str = "[Request interrupted by user";
-
-const TOOL_FACT: Duration = Duration::from_secs(10);
-const QUIET_FACT: Duration = Duration::from_secs(30);
 
 /// This client's clock at `now` (ms since the epoch): the time now, moved
 /// by how far `now` is from now, so a frame drawn for a later instant
