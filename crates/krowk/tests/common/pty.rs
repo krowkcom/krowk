@@ -34,6 +34,9 @@ struct Seen {
     /// Turns of the reader's loop, each counted once what it read is in
     /// `out`: one past a moment means everything read before it is there.
     turns: u64,
+    /// Set by `hang_up`: the reader lets go of its master descriptors at
+    /// its next turn.
+    hang_up: bool,
 }
 
 pub struct Pty {
@@ -55,6 +58,11 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
             return Err(std::io::Error::last_os_error());
         }
         let master = OwnedFd::from_raw_fd(master);
+        // Close-on-exec, as the standard library opens everything: neither
+        // posix_openpt nor open here takes the flag everywhere, and a child
+        // that inherited the master would hold its own terminal open past
+        // `hang_up`.
+        cloexec(master.as_raw_fd())?;
         if libc::grantpt(master.as_raw_fd()) != 0 || libc::unlockpt(master.as_raw_fd()) != 0 {
             return Err(std::io::Error::last_os_error());
         }
@@ -67,9 +75,22 @@ fn open_pty(cols: u16, rows: u16) -> std::io::Result<(OwnedFd, OwnedFd)> {
             return Err(std::io::Error::last_os_error());
         }
         let slave = OwnedFd::from_raw_fd(slave);
+        cloexec(slave.as_raw_fd())?;
         set_size(master.as_raw_fd(), cols, rows);
         Ok((master, slave))
     }
+}
+
+/// Sets close-on-exec on `fd`.
+///
+/// # Safety
+///
+/// `fd` is an open descriptor.
+unsafe fn cloexec(fd: i32) -> std::io::Result<()> {
+    if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 fn set_size(fd: i32, cols: u16, rows: u16) {
@@ -125,7 +146,14 @@ impl Pty {
                 // it has caught up.
                 let mut fd = libc::pollfd { fd: reader.as_raw_fd(), events: libc::POLLIN, revents: 0 };
                 // SAFETY: one pollfd, on a descriptor this thread owns.
-                if unsafe { libc::poll(&mut fd, 1, 10) } <= 0 {
+                let ready = unsafe { libc::poll(&mut fd, 1, 10) } > 0;
+                if log.lock().unwrap().hang_up {
+                    let mut s = log.lock().unwrap();
+                    s.closed = true;
+                    s.turns += 1;
+                    return;
+                }
+                if !ready {
                     log.lock().unwrap().turns += 1;
                     continue;
                 }
@@ -172,6 +200,26 @@ impl Pty {
         // SAFETY: a signal to our own child.
         unsafe {
             libc::kill(self.child.id() as i32, libc::SIGWINCH);
+        }
+    }
+
+    /// Closes the terminal from its far side, as a terminal emulator's
+    /// window closing does: every master descriptor goes, so the child's
+    /// session gets SIGHUP and its reads of the terminal fail. The reader
+    /// drops its own at its next turn; this one is swapped for /dev/null
+    /// in place, so the descriptor `write` and `drain` use stays valid.
+    pub fn hang_up(&mut self) {
+        self.drain();
+        self.seen.lock().unwrap().hang_up = true;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !self.seen.lock().unwrap().closed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let null = File::open("/dev/null").unwrap();
+        // SAFETY: both descriptors are open and this struct's; dup2 closes
+        // the master's in the same step.
+        unsafe {
+            libc::dup2(null.as_raw_fd(), self.master.as_raw_fd());
         }
     }
 
