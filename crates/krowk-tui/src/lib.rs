@@ -3307,7 +3307,9 @@ fn children_to_read(id: &str, branch: &[&krowk_harness::protocol::LogEvent], loc
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
     use krowk_harness::protocol::LogEvent;
-    let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
+    // The session's own last event: a synced history holds its children's
+    // events too, and one of a child that ended after it may come last.
+    let head = events.iter().rfind(|e| e.session_id == id).or(events.last()).map(|e| e.id.clone()).unwrap_or_default();
     let branch = log::branch(events, &head);
     // A child's end is in its own log, not the session's: its last
     // complete line, read once from the file's end, never the whole file
@@ -3340,13 +3342,15 @@ fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent],
     }
     app.child_ends_logged(ends);
     app.replay(&branch);
-    // A backend's agent run in the background, its call answered at once,
-    // runs on past it: its end too is its own log's.
-    for kid in app.backend_children_running() {
+    // A child run in the background, its call answered at once, runs on
+    // past it, and a batch still running answers none of its children:
+    // their ends too are their own logs'.
+    for kid in app.children_unended() {
         if let Some(e) = end_of(&kid) {
             app.child_logged_end(&kid, &e);
         }
     }
+    app.order_ended();
     // A turn logged on a name since renamed is on the new name.
     for old in registry.renamed.keys() {
         app.renamed(old, &registry.current(old));
@@ -3584,7 +3588,12 @@ mod tests {
             parent.push(ev("s", 10 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{i}"), item: Item::ToolCall { call_id: call.clone(), name: "subagent".into(), input: serde_json::json!({}) } }));
             parent.push(ev("s", 1000 + i as i64, LogBody::SubagentStarted { turn_id: "t".into(), call_id: call, subagent_session_id: kid, description: ["sleeper", "counter", "agent"][i].into(), agent: None, model: model.clone(), ran_by, backend_id: None }));
         }
-        // Answered together, at the batch's end.
+        // And one in the background, answered at once; its note never
+        // logged, the session's process gone before its next turn.
+        parent.push(ev("s", 1500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i3".into(), item: Item::ToolCall { call_id: "c3".into(), name: "subagent".into(), input: serde_json::json!({"run_in_background": true}) } }));
+        parent.push(ev("s", 1501, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c3".into(), subagent_session_id: id(4), description: "surveyor".into(), agent: None, model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }));
+        parent.push(ev("s", 1502, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: format!("started background agent {}", id(4)), is_error: false } }));
+        // The batch answered together, at its end.
         for (i, is_error) in [true, false, true].into_iter().enumerate() {
             parent.push(ev("s", 101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{i}"), item: Item::ToolResult { call_id: format!("c{i}"), output: if is_error { "the subagent was interrupted".into() } else { "ok".into() }, is_error } }));
         }
@@ -3598,6 +3607,7 @@ mod tests {
             ev(&id(1), 61_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: used, duration_ms: 60_000, error: None, reported_cost_usd: None, reported_tokens: None }),
             ev(&id(2), 96_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: used, duration_ms: 95_000, error: None, reported_cost_usd: None, reported_tokens: None }),
             ev(&id(3), 63_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Interrupted, usage: Usage::default(), duration_ms: 62_000, error: Some(stopped), reported_cost_usd: None, reported_tokens: Some(12_000) }),
+            ev(&id(4), 140_000, LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: used, duration_ms: 138_000, error: None, reported_cost_usd: None, reported_tokens: None }),
         ];
         // Each child's log: much more than the window read, then its end.
         let said = |sid: &str| ev(sid, 2000, LogBody::ItemCompleted { turn_id: "u".into(), item_id: "o".into(), item: Item::user("x".repeat(40_000)) });
@@ -3608,10 +3618,11 @@ mod tests {
             let lines: Vec<String> = (0..4).map(|_| serde_json::to_string(&said(kid)).unwrap()).chain([serde_json::to_string(end).unwrap()]).collect();
             std::fs::write(dir.join(kid).join(log::EVENTS_FILE), lines.join("\n") + "\n").unwrap();
         }
-        // An attached client's history holds its children's events too,
-        // before the parent's turn that ran them ends.
+        // An attached client's history holds its children's events too:
+        // the batch's before the parent's turn that ran them ends, the
+        // background child's after it, last.
         let (last, before) = parent.split_last().unwrap();
-        let history: Vec<LogEvent> = before.iter().cloned().chain(ends.iter().flat_map(|e| [said(&e.session_id), e.clone()])).chain([last.clone()]).collect();
+        let history: Vec<LogEvent> = before.iter().cloned().chain(ends[..3].iter().flat_map(|e| [said(&e.session_id), e.clone()])).chain([last.clone(), said(&id(4)), ends[3].clone()]).collect();
         let registry = krowk_harness::instances::Registry::resolve(&krowk_harness::instances::InstancesConfig::default(), &|_| String::new());
         for (local, events) in [(true, &parent), (false, &history)] {
             let mut app = App::new(Editor::new(None), 120, Settings::default(), None, None);
@@ -3620,6 +3631,12 @@ mod tests {
             for row in ["Agent sleeper · interrupted after 1m0s · 60 tokens", "Agent counter · done in 1m35s · 60 tokens", "Agent agent · interrupted after 1m2s · 12k tokens"] {
                 assert!(shown.contains(row), "local {local}, {row}: {shown}");
             }
+            if local {
+                app.end_replayed_children(true);
+            }
+            app.open_agents();
+            let rows: Vec<String> = app.view(std::time::Instant::now()).0.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).filter(|r| r.contains("Agent ")).collect();
+            assert!(rows[0].contains("Agent surveyor · done in 2m18s · 60 tokens"), "local {local}: the background child as it ended, newest: {rows:?}");
         }
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -210,6 +210,9 @@ struct Sub {
     /// the Agents overlay's order. `ended` is 0 until it has.
     born: u64,
     ended: u64,
+    /// When it ended, in the log's time, when that is known: a replay's
+    /// children are listed in the order they ended (`order_ended`).
+    ended_ms: Option<i64>,
     /// Its `subagent.started`'s time: how long a replayed child took is
     /// read from the log, where its own lines are not.
     started_ms: Option<i64>,
@@ -299,6 +302,7 @@ impl Sub {
             background: false,
             born: 0,
             ended: 0,
+            ended_ms: None,
             started_ms: None,
             tool: None,
             last_event_ms: None,
@@ -317,10 +321,11 @@ impl Sub {
     /// by this client's clock.
     fn end(&mut self, status: TurnStatus, at_ms: Option<i64>, tick: u64) {
         if std::mem::take(&mut self.presumed) {
-            (self.status, self.took, self.ended) = (None, None, 0);
+            (self.status, self.took, self.ended, self.ended_ms) = (None, None, 0, None);
         }
         if self.status.is_none() {
             self.status = Some(status);
+            self.ended_ms = self.ended_ms.or(at_ms);
         }
         if self.took.is_none() {
             self.took = Some(match (self.started_ms, at_ms) {
@@ -337,6 +342,7 @@ impl Sub {
     /// presumed of it before: that is how it ended.
     fn end_as(&mut self, e: &ChildEnd, tick: u64) {
         self.status = Some(e.status);
+        self.ended_ms = Some(e.at_ms);
         self.took = Some(Duration::from_millis(e.took_ms));
         self.tokens = self.tokens.max(e.tokens);
         self.reason.clone_from(&e.reason);
@@ -1996,7 +2002,7 @@ impl App {
         // Its end was only presumed: anything more of it says it runs, and
         // its own end below replaces the presumed one.
         if std::mem::take(&mut s.presumed) {
-            (s.status, s.took, s.ended) = (None, None, 0);
+            (s.status, s.took, s.ended, s.ended_ms) = (None, None, 0, None);
         }
         // Anything live from a running child is news of it: frames are not
         // sent per delta, so a child streaming text is not quiet. Not a
@@ -2041,6 +2047,7 @@ impl App {
                     s.status = Some(*status);
                     s.took = Some(Duration::from_millis(*duration_ms));
                     s.ended = tick;
+                    s.ended_ms = Some(ev.time_ms);
                 }
                 _ => {}
             },
@@ -2679,6 +2686,30 @@ impl App {
         self.past.iter().filter(|s| s.background && s.ran_by != RanBy::Krowk && s.status.is_none()).map(|s| s.session_id.clone()).collect()
     }
 
+    /// The children nothing has ended yet, whoever ran them: a call out, or
+    /// run on in the background. Replayed, their ends may be in their own
+    /// logs (`child_logged_end`) — a krowk child's background note is
+    /// often never logged, and a batch still running answers none of its
+    /// children until the last ends.
+    pub fn children_unended(&self) -> Vec<String> {
+        self.subs.iter().chain(&self.past).filter(|s| s.status.is_none()).map(|s| s.session_id.clone()).collect()
+    }
+
+    /// A replay's finished children in the order they ended, by the log's
+    /// times, as they were live: a batch's are answered in the order they
+    /// were called, whenever each ended. Their places among the session's
+    /// ends are kept, so any end after the replay comes later still.
+    pub fn order_ended(&mut self) {
+        let mut ended: Vec<&mut Sub> = self.subs.iter_mut().chain(self.past.iter_mut()).filter(|s| s.ended > 0).collect();
+        let mut ticks: Vec<u64> = ended.iter().map(|s| s.ended).collect();
+        ticks.sort_unstable();
+        ended.sort_by_key(|s| (s.ended_ms.unwrap_or(i64::MAX), s.ended));
+        for (s, tick) in ended.into_iter().zip(ticks) {
+            s.ended = tick;
+        }
+        self.dirty = true;
+    }
+
     /// The backend's agents left running by a replay with nothing to run
     /// them any more — their process gone with no end written — ended
     /// interrupted, at the replay's last event. Presumed: a line of one
@@ -2730,7 +2761,8 @@ impl App {
             {
                 s.end_as(&e, self.sub_clock);
             }
-            let own = (s.ran_by != RanBy::Krowk && !s.presumed).then_some(s.status).flatten();
+            // Its own end, from its lines or its log, needs no result.
+            let own = (!s.presumed).then_some(s.status).flatten();
             s.end(TurnStatus::Interrupted, at_ms, self.sub_clock);
             match own {
                 Some(TurnStatus::Completed) => self.commit_sub(&s, "", false),
@@ -3562,6 +3594,7 @@ impl App {
         self.approval_expanded = false;
         self.subs.clear();
         self.past.clear();
+        self.logged_ends.clear();
         self.agent_pick = None;
         self.agent_sel = 0;
         self.replayed_ms = None;
@@ -5879,9 +5912,47 @@ mod tests {
             assert!(shown.contains(row), "{row}: {shown}");
         }
         assert!(!shown.contains("unread · done in 1m39s ·"), "no tokens where none were read: {shown}");
+        a.order_ended();
         a.open_agents();
         let rows = listed(&a);
         assert!(rows.iter().any(|r| r.contains("Agent sleeper · interrupted after 1m0s · 60 tokens")), "the overlay too: {rows:?}");
+        // Newest end first, as live, not the batch's answers' order.
+        let order: Vec<&str> = rows.iter().filter_map(|r| ["sleeper", "counter", "reader", "agent", "unread"].into_iter().find(|n| r.contains(&format!("Agent {n} ·")))).collect();
+        assert_eq!(order, ["reader", "unread", "counter", "agent", "sleeper"], "{rows:?}");
+    }
+
+    /// R-SUB-11 (SV16): replayed mid-batch — attached, or the session's
+    /// process gone — a child that ended while its siblings ran is drawn
+    /// ended, as it was live, though nothing answered its call; and one
+    /// whose own end was read keeps it when the turn's end sweeps up
+    /// what was left unanswered, krowk's own child too.
+    #[test]
+    fn r_sub_11_a_replayed_child_its_batch_never_answered_ends_as_its_own_log_says() {
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        let mut evs = three_children();
+        evs.truncate(evs.len() - 2);
+        a.replay(&evs.iter().collect::<Vec<_>>());
+        assert_eq!(a.children_unended(), ["k1", "k2", "k3"]);
+        a.child_logged_end("k2", &ChildEnd { status: TurnStatus::Completed, at_ms: 7002, took_ms: 5000, tokens: 300, reason: None });
+        assert_eq!(a.children_unended(), ["k1", "k3"]);
+        assert!(a.status_bar().contains("[2 subagents]"), "{}", a.status_bar());
+        let live: String = text(&a.view(Instant::now()).0).join("\n");
+        assert!(live.contains("Agent read the docs · done in 5.0s · 300 tokens"), "{live}");
+        a.end_replayed_children(true);
+        let shown = text(&a.take_pending()).join("\n");
+        assert!(shown.contains("Agent read the docs · done in 5.0s · 300 tokens") && shown.contains("Agent find the tests · interrupted after"), "{shown}");
+        assert_eq!(shown.matches("no result").count(), 2, "only the two whose ends were not read: {shown}");
+    }
+
+    /// SV16: a backend child's view says the tokens its backend counted
+    /// where its own turn's usage, its parent's spend, is empty.
+    #[test]
+    fn r_sub_9_a_backend_childs_turn_says_the_tokens_its_backend_counted() {
+        let mut a = App::new(Editor::new(None), 100, Settings::default(), None, None);
+        let end = LogEvent { id: "e".into(), parent_id: None, session_id: "k1".into(), time_ms: 0, body: LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1000, error: None, reported_cost_usd: None, reported_tokens: Some(12_400) } };
+        a.replay(&[&end]);
+        let shown = text(&a.take_pending()).join("\n");
+        assert!(shown.contains("Worked for 1.0s · 12k tokens"), "{shown}");
     }
 
     /// R-SUB-11: the overlay's selection stays on its child as the list

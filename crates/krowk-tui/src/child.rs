@@ -237,7 +237,8 @@ pub fn last_event(path: &std::path::Path) -> Option<LogEvent> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
-    let mut window: u64 = 16 << 10;
+    // An end is a few hundred bytes: most reads stop at the first window.
+    let mut window: u64 = 4 << 10;
     loop {
         let from = len.saturating_sub(window);
         f.seek(SeekFrom::Start(from)).ok()?;
