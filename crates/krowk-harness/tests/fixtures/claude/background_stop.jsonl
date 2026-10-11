@@ -1,0 +1,12 @@
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_bg_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_bg_agent","name":"Agent","input":{"description":"survey the repo","subagent_type":"general-purpose","prompt":"look around","run_in_background":true}}],"usage":{"input_tokens":4,"output_tokens":9}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"a_bg_1","task_type":"local_agent","description":"survey the repo"}],"session_id":"{{SESSION}}"}
+{"type":"system","subtype":"task_started","task_id":"a_bg_1","tool_use_id":"toolu_bg_agent","description":"survey the repo","subagent_type":"general-purpose","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent","prompt":"look around","session_id":"{{SESSION}}"}
+{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_bg_agent","type":"tool_result","content":[{"type":"text","text":"Async agent launched successfully."}]}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_bg_2","type":"message","role":"assistant","content":[{"type":"text","text":"launched"}],"usage":{"input_tokens":6,"output_tokens":2}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"launched","session_id":"{{SESSION}}","total_cost_usd":0.01}
+---
+@by-itself
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_bg_sub","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_bg_read","name":"Read","input":{"file_path":"README.md"}}],"usage":{"input_tokens":3000,"output_tokens":600}},"parent_tool_use_id":"toolu_bg_agent","session_id":"{{SESSION}}"}
+@await-stop
+{"type":"system","subtype":"background_tasks_changed","tasks":[],"session_id":"{{SESSION}}"}
+---

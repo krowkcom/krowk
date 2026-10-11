@@ -106,9 +106,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   list, and Esc goes back to the list with that one selected. `x` stops
   this subagent alone: the top line says `stopping…`, then `interrupted`,
   while the others and the turn carry on. When it can't be stopped — it
-  has already finished, or Claude Code or Codex runs it and krowk can't
-  stop one of their agents alone yet — the bottom line says why, as `x` in
-  the Ctrl-G list now does too, instead of nothing happening.
+  has already finished, or Codex runs it and krowk can't stop one of its
+  agents alone yet — the bottom line says why, as `x` in the Ctrl-G list
+  now does too, instead of nothing happening.
 
 ### Changed
 
@@ -182,6 +182,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   used to be told the approval is answered on the host. If nobody answers
   one from a turn started on that device, it is denied after five minutes,
   as the session's own are.
+- **Stop one Claude Code agent and let the rest carry on.** `x` on a Claude
+  Code agent, in its transcript or in the Ctrl-G list, now stops that agent
+  alone. It used to say krowk couldn't. Claude Code is asked to stop it: its
+  row reads `stopping…`, then `interrupted`, and the other agents and the
+  turn carry on. This also works for an agent waiting on your approval
+  (its question is taken back), for an agent still running in the
+  background after its turn ended, and from a device following a synced
+  session. If Claude Code refuses, or the stop can't reach it, the bottom
+  line says why and the agent keeps running. Codex agents still can't be
+  stopped one at a time.
 
 - **The TUI is fullscreen, and the prompt stays at the bottom.** krowk now
   takes the terminal's alternate screen. The prompt and status line stay on

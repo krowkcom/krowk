@@ -322,8 +322,9 @@ impl Sub {
     }
 
     /// Why `x` cannot stop it, when it cannot (R-SUB-10): it has ended, it
-    /// was sent its interrupt already, or what ran it is not krowk, whose
-    /// backend half is not built yet.
+    /// was sent its interrupt already, or Codex runs it, whose backend half
+    /// is not built yet. krowk's own and Claude Code's are sent it; a host
+    /// that cannot stop one answers why.
     fn unstoppable(&self) -> Option<String> {
         if self.status.is_some() {
             return Some("that subagent has finished — nothing of it is running to interrupt".into());
@@ -331,7 +332,7 @@ impl Sub {
         if self.stopping {
             return Some("already stopping — its end is on the way".into());
         }
-        (self.ran_by != RanBy::Krowk).then(|| format!("{} runs that subagent, and krowk cannot stop one of its agents alone yet — Ctrl-C stops the whole turn, its agents with it", ran_by(self.ran_by)))
+        (self.ran_by == RanBy::Codex).then(|| format!("{} runs that subagent, and krowk cannot stop one of its agents alone yet — Ctrl-C stops the whole turn, its agents with it", ran_by(self.ran_by)))
     }
 
     /// Its state, its facts while it runs, its tokens and cost.
@@ -2221,6 +2222,15 @@ impl App {
     pub fn stopping(&mut self, sid: &str) {
         if let Some(s) = self.child(sid) {
             s.stopping = true;
+            self.dirty = true;
+        }
+    }
+
+    /// Child `sid`'s interrupt was refused: it runs on, and `x` may be
+    /// tried again.
+    pub fn not_stopping(&mut self, sid: &str) {
+        if let Some(s) = self.child(sid) {
+            s.stopping = false;
             self.dirty = true;
         }
     }
@@ -5472,7 +5482,8 @@ mod tests {
     /// description, agent, what ran it and its facts, live — `⚠ waiting on
     /// you` while it waits on an approval — and `x` stops it: it reads
     /// stopping, then how it ended. Ended, or run by a backend krowk cannot
-    /// stop one agent of yet, `x` sends nothing and the footer says why.
+    /// stop one agent of yet (Codex), `x` sends nothing and the footer says
+    /// why; Claude Code's is sent (R-SUB-10).
     #[test]
     fn r_sub_10_r_sub_11_the_header_says_who_ran_it_and_waiting_and_x_says_why_it_stops_nothing() {
         let mut a = app();
@@ -5497,18 +5508,26 @@ mod tests {
         // Ended: nothing to send, and the footer says so.
         assert_eq!(a.child_to_stop(), None);
         assert!(rows(&mut a)[7].contains("finished — nothing of it is running"), "{:?}", rows(&mut a));
-        // Run by Claude Code: said, not sent.
+        // Run by Codex: said, not sent.
         let mut b = app();
-        started_three(&mut b, RanBy::Claude);
+        started_three(&mut b, RanBy::Codex);
         b.open_child("k1", Ok(Vec::new()));
-        assert!(rows(&mut b)[0].starts_with("do k1 · explorer · by Claude Code · running"), "{:?}", rows(&mut b));
+        assert!(rows(&mut b)[0].starts_with("do k1 · explorer · by Codex · running"), "{:?}", rows(&mut b));
         assert_eq!(b.child_to_stop(), None);
-        assert!(rows(&mut b)[7].starts_with("⚠ Claude Code runs that subagent, and krowk cannot stop one of its agents alone yet"), "{:?}", rows(&mut b));
+        assert!(rows(&mut b)[7].starts_with("⚠ Codex runs that subagent, and krowk cannot stop one of its agents alone yet"), "{:?}", rows(&mut b));
         // The overlay's x says the same, as a notice.
         b.child = None;
         b.open_agents();
         assert_eq!(b.agent_to_interrupt(), None);
-        assert!(text(&b.take_pending()).iter().any(|r| r.contains("Claude Code runs that subagent")));
+        assert!(text(&b.take_pending()).iter().any(|r| r.contains("Codex runs that subagent")));
+        // Run by Claude Code: sent, in the view and from the overlay.
+        let mut c = app();
+        started_three(&mut c, RanBy::Claude);
+        c.open_child("k1", Ok(Vec::new()));
+        assert_eq!(c.child_to_stop().as_deref(), Some("k1"));
+        c.child = None;
+        c.open_agents();
+        assert_eq!(c.agent_to_interrupt().as_deref(), Some("k1"));
     }
 
     /// R-SUB-11: frames are not sent per delta, so what streams from a

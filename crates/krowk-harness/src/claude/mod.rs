@@ -42,6 +42,7 @@
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |
+//! | `stop_task` | krowk → claude | a `Command::Interrupt` of one agent's child session: the agent alone stops (`task_updated` `killed`, `task_notification` `stopped`), then the answer; the parent's turn goes on |
 //!
 //! **Between turns** the process is not silent: an agent the model started
 //! with Claude Code's `Agent` tool (`run_in_background`) runs on, asks
@@ -122,6 +123,10 @@ const INITIALIZE_TIMEOUT: Duration = Duration::from_secs(60);
 const INTERRUPT_GRACE: Duration = Duration::from_secs(10);
 /// With `interrupt_receipt_v1`, how long an interrupt may go unacknowledged.
 const RECEIPT_GRACE: Duration = Duration::from_secs(5);
+/// How long a `stop_task` waits to be written — one handed to a process
+/// nothing reads (a turn it began, waiting for the host) is given up on,
+/// and never sent late — and then, once written, for Claude Code's answer.
+const STOP_GRACE: Duration = Duration::from_secs(10);
 /// How long a process that was asked to exit (stdin closed) gets.
 const EXIT_GRACE: Duration = Duration::from_secs(5);
 /// The end of stderr kept for a failure's words.
@@ -418,6 +423,19 @@ struct Status {
     meter: Mutex<Meter>,
     /// The agents' own conversations, as their events (R-SUB-7).
     children: Mutex<Children>,
+    /// Where a stop of one agent is handed to the running process, read by
+    /// whichever of a turn and the idle loop holds it (R-SUB-10); none
+    /// before the first process.
+    stopper: Mutex<Option<mpsc::UnboundedSender<StopAsk>>>,
+}
+
+/// A stop of one agent, by its task id: told once it is written to
+/// Claude Code (`sent`), then Claude Code's answer (`done`) — its words
+/// when it refused.
+struct StopAsk {
+    task_id: String,
+    sent: oneshot::Sender<()>,
+    done: oneshot::Sender<Result<(), String>>,
 }
 
 #[derive(Debug, Clone)]
@@ -442,6 +460,10 @@ impl Status {
 
     fn children(&self) -> std::sync::MutexGuard<'_, Children> {
         self.children.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn stopper(&self) -> std::sync::MutexGuard<'_, Option<mpsc::UnboundedSender<StopAsk>>> {
+        self.stopper.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// `clear`, with what it ends told to `tell`: whether anything was.
@@ -650,6 +672,12 @@ impl Engine for ClaudeEngine {
     fn busy(&self) -> bool {
         self.status.pending().is_some() || !self.status.agents().is_empty()
     }
+
+    /// `stop_task` (R-SUB-10), handed to whichever of a turn and the idle
+    /// loop reads the process (`stop_answer`).
+    fn stop_task<'a>(&'a self, task_id: &'a str) -> BoxFuture<'a, Result<(), EngineError>> {
+        Box::pin(stop_answer(&self.status, task_id, STOP_GRACE))
+    }
 }
 
 impl ClaudeEngine {
@@ -672,6 +700,34 @@ impl ClaudeEngine {
     }
 }
 
+/// A stop of one agent handed to the running process, answered once
+/// Claude Code answers it — by then it has said the agent was killed,
+/// which ends its child. Not written, or refused, it is `not_stoppable`
+/// with why. Each wait has its own `grace`: to be written, then, from the
+/// write, to be answered. Written and not answered in time, it is taken:
+/// Claude Code may have stopped the agent already with nothing reading
+/// what it said — another agent's question holding the turn — and the
+/// agent's end says how it went, where a refusal would offer to stop it
+/// again.
+async fn stop_answer(status: &Status, task_id: &str, grace: Duration) -> Result<(), EngineError> {
+    let refused = |why: &str| EngineError::new("not_stoppable", format!("Claude Code did not stop that agent: {why}"));
+    let ((sent, written), (done, answer)) = (oneshot::channel(), oneshot::channel());
+    let handed = status.stopper().as_ref().is_some_and(|s| s.send(StopAsk { task_id: task_id.to_string(), sent, done }).is_ok());
+    if !handed {
+        return Err(refused("its process is not running"));
+    }
+    // Gone without a word: not written, and `answer` says why.
+    if tokio::time::timeout(grace, written).await.is_err() {
+        return Err(refused(&format!("nothing read Claude Code to send it the stop within {} seconds, so it was not sent", grace.as_secs())));
+    }
+    match tokio::time::timeout(grace, answer).await {
+        Ok(Ok(Ok(()))) => Ok(()),
+        Ok(Ok(Err(why))) => Err(refused(&why)),
+        Ok(Err(_)) => Err(refused("its process ended before it answered")),
+        Err(_) => Ok(()),
+    }
+}
+
 /// Between turns: the process read until the next turn wants it — what
 /// Claude Code asks answered under the last turn's permissions, its agents
 /// kept and metered — or until Claude Code begins a turn by itself, which
@@ -688,6 +744,10 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
         let msg = tokio::select! {
             biased;
             _ = &mut stop => return,
+            Some(s) = p.stops.recv() => {
+                p.stop_task(s).await;
+                continue;
+            }
             m = p.out.recv() => m,
         };
         let Some(msg) = msg else {
@@ -709,7 +769,9 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
                     return;
                 }
             }
-            Some("control_response") => {}
+            Some("control_response") => {
+                p.stop_answered(&msg);
+            }
             _ => {
                 if let Some(agents) = p.track(&msg) {
                     say(EngineEvent::BackendAgents { agents });
@@ -900,6 +962,10 @@ struct Proc {
     /// Its `init` announced `interrupt_cancel_queued_v1`: an interrupt can
     /// cancel the steering it has not read, so steering is written to it.
     cancel_queued: bool,
+    /// Stops of one agent handed to this process (`Status::stopper`), and
+    /// those sent, by request id, waiting for Claude Code's answer.
+    stops: mpsc::UnboundedReceiver<StopAsk>,
+    stopping: std::collections::HashMap<String, oneshot::Sender<Result<(), String>>>,
 }
 
 /// A steer written to Claude Code: the `uuid` its line carried, which a
@@ -1018,6 +1084,8 @@ impl Proc {
                 }
             }
         });
+        let (stopper, stops) = mpsc::unbounded_channel();
+        *status.stopper() = Some(stopper);
         let stderr = Arc::new(Mutex::new(String::new()));
         if let Some(mut err) = child.stderr.take() {
             let keep = stderr.clone();
@@ -1060,6 +1128,8 @@ impl Proc {
             origins: false,
             unread: Vec::new(),
             cancel_queued: false,
+            stops,
+            stopping: Default::default(),
         };
         // An agent's own text is forwarded too, not only its tool calls:
         // its transcript is a child session's (R-SUB-7).
@@ -1117,7 +1187,9 @@ impl Proc {
                         }
                         return Ok(r.get("response").cloned().unwrap_or(Value::Null));
                     }
-                    Some("control_response") => {}
+                    Some("control_response") => {
+                        self.stop_answered(&msg);
+                    }
                     // What goes on while it answers — a turn Claude Code
                     // began, an agent's lines — is kept for the turn that
                     // reads it next.
@@ -1173,12 +1245,12 @@ impl Proc {
         }
         let (mut queued, mut why, mut owed, mut before) = self.take_begun(prompt.is_some());
         let mut interrupted = false;
-        // What `init` announced: an interrupt is acknowledged, and can
-        // cancel the steering not read yet, so steering is written.
-        let (mut receipt_required, mut cancel_queued) = (false, self.cancel_queued);
+        // What `init` announced, once it has (`announce`): an interrupt is
+        // acknowledged, and can cancel the steering not read yet, so
+        // steering is written.
+        let mut said: Option<(bool, bool)> = None;
         let mut receipt: Option<String> = None;
         let mut deadline: Option<tokio::time::Instant> = None;
-        let mut announced = false;
         let mut gone = false;
         let mut drain: Option<tokio::time::Instant> = None;
         let mut grace: Option<(tokio::time::Instant, stream::Outcome)> = None;
@@ -1187,6 +1259,7 @@ impl Proc {
         let result = loop {
             let until = crate::engine::sleep_until(deadline);
             let drained = crate::engine::sleep_until(drain);
+            let (receipt_required, cancel_queued) = said.unwrap_or((false, self.cancel_queued));
             tokio::select! {
                 biased;
                 _ = cancelled(&mut ctx.cancel), if !interrupted => {
@@ -1195,6 +1268,8 @@ impl Proc {
                     receipt = Some(id);
                     deadline = Some(until);
                 }
+                // A stop of one agent (R-SUB-10), sent as it is handed over.
+                Some(s) = self.stops.recv() => self.stop_task(s).await,
                 _ = until => {
                     // Claude Code did not stop in time: the process goes, the
                     // turn keeps what it made, the session continues on --resume.
@@ -1209,11 +1284,7 @@ impl Proc {
                     gone = true;
                     drain = Some(tokio::time::Instant::now() + DRAIN_GRACE);
                 }
-                _ = drained => {
-                    finish(t, events).await;
-                    let e = self.died("before the turn finished");
-                    return if interrupted { Ok(TurnEnd::Interrupted) } else { Err(e) };
-                }
+                _ = drained => return self.ended_early(t, events, interrupted).await,
                 // Steering, written as it arrives (R-STEER-1): Claude Code
                 // reads it at its next call, and replays it when it does.
                 _ = poll.tick(), if !interrupted && cancel_queued => {
@@ -1222,27 +1293,17 @@ impl Proc {
                     }
                 }
                 msg = next_line(&mut queued, &mut self.out) => {
-                    let Some(msg) = msg else {
-                        finish(t, events).await;
-                        let e = self.died("before the turn finished");
-                        if interrupted {
-                            return Ok(TurnEnd::Interrupted);
-                        }
-                        return Err(e);
-                    };
+                    let Some(msg) = msg else { return self.ended_early(t, events, interrupted).await };
                     match msg["type"].as_str() {
                         Some("control_request") => self.answer(&msg, ask, events, &ctx.cancel).await?,
                         Some("control_response") => {
-                            if let Some(o) = receipted(&msg, &mut receipt, &mut grace, &mut deadline) {
+                            if let Some(o) = self.responded(&msg, &mut receipt, &mut grace, &mut deadline) {
                                 break o;
                             }
                         }
                         _ => {
                             self.conversation(&msg, t, events, &mut grace).await?;
-                            if !announced && let Some(init) = t.init.clone() {
-                                announced = true;
-                                (receipt_required, cancel_queued) = self.came_up(&init, ask, events, b, instance).await?;
-                            }
+                            self.announce(t, &mut said, ask, events, b, instance).await?;
                             if let Some(o) = t.outcome.take()
                                 && let Some(o) = self.goes_on(o, prompt.is_some(), &mut owed, (&mut why, &mut before), (!interrupted).then_some(&mut grace), ctx, events).await?
                             {
@@ -1261,6 +1322,18 @@ impl Proc {
             return Ok(TurnEnd::Completed);
         }
         Err(failed(&result, t.limit.as_ref(), instance))
+    }
+
+    /// Claude Code went before the turn's `result`: what it said is
+    /// finished, and the turn ends interrupted when it was asked to, else
+    /// failed, saying how it went.
+    async fn ended_early(&mut self, t: &mut Translator, events: &Events, interrupted: bool) -> Result<TurnEnd, EngineError> {
+        finish(t, events).await;
+        let e = self.died("before the turn finished");
+        if interrupted {
+            return Ok(TurnEnd::Interrupted);
+        }
+        Err(e)
     }
 
     /// A line of the conversation: its agents kept, its items sent on, and
@@ -1295,6 +1368,47 @@ impl Proc {
         }
         self.send(&json!({"type": "control_request", "request_id": id.clone(), "request": req})).await?;
         Ok((id, tokio::time::Instant::now() + if receipt_required { RECEIPT_GRACE } else { INTERRUPT_GRACE }))
+    }
+
+    /// Sends `stop_task` for one agent (R-SUB-10); Claude Code's answer
+    /// goes to whoever asked (`stop_answered`). One given up on before it
+    /// was read is not sent: a stop answered `not_stoppable` never happens
+    /// later.
+    async fn stop_task(&mut self, StopAsk { task_id, sent, done }: StopAsk) {
+        if done.is_closed() {
+            return;
+        }
+        let id = self.request_id();
+        match self.send(&json!({"type": "control_request", "request_id": id, "request": {"subtype": "stop_task", "task_id": task_id}})).await {
+            Ok(()) => {
+                let _ = sent.send(());
+                self.stopping.insert(id, done);
+            }
+            Err(e) => {
+                let _ = done.send(Err(e.message));
+            }
+        }
+    }
+
+    /// A `control_response` in a turn: a `stop_task`'s answer goes to whoever
+    /// asked, and the interrupt's ends the wait for it (`receipted`).
+    fn responded(&mut self, msg: &Value, receipt: &mut Option<String>, grace: &mut Option<(tokio::time::Instant, stream::Outcome)>, deadline: &mut Option<tokio::time::Instant>) -> Option<stream::Outcome> {
+        if self.stop_answered(msg) {
+            return None;
+        }
+        receipted(msg, receipt, grace, deadline)
+    }
+
+    /// Whether `msg` answers a `stop_task`, which then goes to whoever
+    /// asked: done, or Claude Code's words for why not.
+    fn stop_answered(&mut self, msg: &Value) -> bool {
+        let Some(done) = msg.pointer("/response/request_id").and_then(Value::as_str).and_then(|id| self.stopping.remove(id)) else { return false };
+        let r = &msg["response"];
+        let _ = done.send(match r["subtype"] == "error" {
+            true => Err(r["error"].as_str().unwrap_or("no reason given").to_string()),
+            false => Ok(()),
+        });
+        true
     }
 
     /// Writes the steering queued since the last look. Returns the `result`
@@ -1445,7 +1559,9 @@ impl Proc {
 
     /// Answers a `control_request` of Claude Code's. An approved
     /// ExitPlanMode or EnterPlanMode moves it to default or plan for what
-    /// follows.
+    /// follows. While the person decides, a stop of one agent is still
+    /// sent (`sending_stops`); one of the agent asking takes its question
+    /// back, as an interrupt of the turn does.
     async fn answer(&mut self, msg: &Value, ask: &Answers, events: &Events, cancel: &tokio::sync::watch::Receiver<bool>) -> Result<(), EngineError> {
         let id = msg["request_id"].as_str().unwrap_or_default();
         let answer = match self.asker(&msg["request"]) {
@@ -1453,9 +1569,11 @@ impl Proc {
                 // An agent's call: its request and its answer are the
                 // agent's events, sent under its own session (R-SUB-9).
                 let (tx, mut rx) = mpsc::channel(4);
+                // The turn's interrupt, or a stop of this agent.
+                let (mine, theirs) = tokio::sync::watch::channel(*cancel.borrow());
                 let asked = async {
                     let tx = tx;
-                    ask.answer(id, &msg["request"], Some((&tx, cancel))).await
+                    ask.answer(id, &msg["request"], Some((&tx, &theirs))).await
                 };
                 let call = msg.pointer("/request/tool_use_id").and_then(Value::as_str).unwrap_or_default();
                 let told = async {
@@ -1469,9 +1587,10 @@ impl Proc {
                         let _ = events.send(child(ev)).await;
                     }
                 };
-                tokio::join!(asked, told).0
+                let both = async { tokio::join!(asked, told).0 };
+                self.sending_stops(both, Some((&task_id, &mine)), cancel).await
             }
-            None => ask.answer(id, &msg["request"], Some((events, cancel))).await,
+            None => self.sending_stops(ask.answer(id, &msg["request"], Some((events, cancel))), None, cancel).await,
         };
         if msg.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool")
             && answer.pointer("/response/response/behavior").and_then(Value::as_str) == Some("allow")
@@ -1485,6 +1604,35 @@ impl Proc {
         self.send(&answer).await
     }
 
+    /// Waits for `answering` — a request the person may take minutes over —
+    /// writing each stop of one agent handed over meanwhile (R-SUB-10).
+    /// `mine` is the agent asking and its question's cancel: a stop of it,
+    /// or the turn's interrupt, takes the question back.
+    async fn sending_stops<T>(&mut self, answering: impl std::future::Future<Output = T>, mine: Option<(&str, &tokio::sync::watch::Sender<bool>)>, cancel: &tokio::sync::watch::Receiver<bool>) -> T {
+        tokio::pin!(answering);
+        let mut turn = cancel.clone();
+        let mut followed = mine.is_none();
+        loop {
+            tokio::select! {
+                biased;
+                t = &mut answering => return t,
+                _ = cancelled(&mut turn), if !followed => {
+                    followed = true;
+                    if let Some((_, m)) = mine {
+                        let _ = m.send(true);
+                    }
+                }
+                Some(s) = self.stops.recv() => {
+                    let asking = mine.filter(|(task, _)| *task == s.task_id);
+                    self.stop_task(s).await;
+                    if let Some((_, m)) = asking {
+                        let _ = m.send(true);
+                    }
+                }
+            }
+        }
+    }
+
     /// The running agent a `can_use_tool` is of, by task id: Claude Code
     /// names it (`agent_id`, recorded with 2.1.289), and the call it asks
     /// about (`tool_use_id`) was made in its conversation.
@@ -1493,6 +1641,18 @@ impl Proc {
             return None;
         }
         self.status.children().asker(req["agent_id"].as_str(), req["tool_use_id"].as_str())
+    }
+
+    /// Once the turn's `init` has come (`came_up`), what it said of an
+    /// interrupt, in `said`.
+    async fn announce(&mut self, t: &Translator, said: &mut Option<(bool, bool)>, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<(), EngineError> {
+        if said.is_some() {
+            return Ok(());
+        }
+        if let Some(init) = t.init.clone() {
+            *said = Some(self.came_up(&init, ask, events, b, instance).await?);
+        }
+        Ok(())
     }
 
     /// Claude Code's `init`: its mode taken, then the turn announced. What
@@ -1861,6 +2021,44 @@ mod tests {
         assert_eq!(stopped_why(&Ok(TurnEnd::Interrupted)), INTERRUPTED);
         assert_eq!(stopped_why(&Ok(TurnEnd::Completed)), EXITED);
         assert_eq!(stopped_why(&Err(EngineError::new("backend_failed", "x"))), FAILED);
+    }
+
+    /// R-SUB-10: a stop's answer is waited for from when it was written,
+    /// not from when it was handed over: one written late in the first
+    /// wait still gets the whole second. One nothing writes is said not
+    /// sent; one written and not answered in time is taken, its agent's
+    /// end left to say how it went.
+    #[tokio::test]
+    async fn r_sub_10_a_stops_answer_is_waited_for_from_its_write() {
+        let grace = Duration::from_millis(200);
+        let status = Arc::new(Status::default());
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        *status.stopper() = Some(tx);
+        let process = tokio::spawn(async move {
+            // Written at 150 ms, answered at 300 ms: past the first grace
+            // counted from the hand-over, inside the second.
+            let ask: StopAsk = rx.recv().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            ask.sent.send(()).unwrap();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            ask.done.send(Ok(())).unwrap();
+            // Written, never answered.
+            let ask: StopAsk = rx.recv().await.unwrap();
+            ask.sent.send(()).unwrap();
+            tokio::time::sleep(Duration::from_secs(5)).await;
+            drop(ask.done);
+        });
+        assert!(stop_answer(&status, "a1", grace).await.is_ok());
+        assert!(stop_answer(&status, "a1", grace).await.is_ok(), "written, and not answered: taken");
+        process.abort();
+        // Handed over, never written: not sent.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        *status.stopper() = Some(tx);
+        let e = stop_answer(&status, "a1", grace).await.unwrap_err();
+        assert!(e.message.contains("so it was not sent"), "{e}");
+        // No process.
+        *status.stopper() = None;
+        assert!(stop_answer(&status, "a1", grace).await.unwrap_err().message.contains("its process is not running"));
     }
 
     #[test]

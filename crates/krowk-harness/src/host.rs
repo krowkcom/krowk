@@ -150,8 +150,16 @@ struct Running {
     /// over, since the turn holds the log.
     switch: Option<ModelRef>,
     /// A backend's agent (R-SUB-7): its turn is the backend's, which krowk
-    /// can neither steer nor, yet, stop alone.
-    backend_child: bool,
+    /// cannot steer, and stops by asking the backend (R-SUB-10).
+    backend_child: Option<BackendTask>,
+}
+
+/// A backend's agent, as the backend knows it: the session whose backend
+/// runs it, and the backend's id for it.
+#[derive(Clone)]
+struct BackendTask {
+    parent: String,
+    task_id: String,
 }
 
 /// A backend's own agents as the session's children (R-SUB-7): each one's
@@ -323,8 +331,8 @@ struct ChildHeld {
 }
 
 impl ChildHeld {
-    fn new(shared: &Arc<Shared>, id: &str) -> ChildHeld {
-        let running = Running { cancel: Arc::new(watch::channel(false).0), steers: Steers::default(), switch: None, backend_child: true };
+    fn new(shared: &Arc<Shared>, id: &str, task: BackendTask) -> ChildHeld {
+        let running = Running { cancel: Arc::new(watch::channel(false).0), steers: Steers::default(), switch: None, backend_child: Some(task) };
         shared.running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), running);
         ChildHeld { shared: Arc::downgrade(shared), id: id.to_string() }
     }
@@ -562,17 +570,26 @@ impl Host {
                 shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, budget.unwrap_or_default(), out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
-            // is interrupted alone, by its own id (R-SUB-2).
+            // is interrupted alone, by its own id (R-SUB-2); a backend's
+            // agent by asking its backend to stop it, which ends its child
+            // as the backend then says (R-SUB-10).
             Command::Interrupt { session_id } => {
-                let running = shared.running.lock().unwrap_or_else(|e| e.into_inner());
-                match running.get(&session_id) {
-                    Some(r) if r.backend_child => Err(EngineError::new("not_stoppable", format!("session {session_id} is an agent its session's backend runs, which krowk cannot stop alone yet — interrupt the session that started it to stop it with that turn"))),
-                    Some(r) => {
-                        let _ = r.cancel.send(true);
-                        Ok(None)
+                let task = {
+                    let running = shared.running.lock().unwrap_or_else(|e| e.into_inner());
+                    match running.get(&session_id) {
+                        Some(Running { backend_child: Some(t), .. }) => t.clone(),
+                        Some(r) => {
+                            let _ = r.cancel.send(true);
+                            return Ok(None);
+                        }
+                        None => return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),
                     }
-                    None => Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),
-                }
+                };
+                let engine = shared.backends.lock().unwrap_or_else(|e| e.into_inner()).get(&task.parent).map(|b| b.engine.clone());
+                let Some(engine) = engine else {
+                    return Err(EngineError::new("not_stoppable", format!("session {session_id} is an agent of a backend that is no longer running — interrupt the session that started it")));
+                };
+                engine.stop_task(&task.task_id).await.map(|()| None)
             }
             // Queued for the engine's next step; it comes back in the log as
             // a `userText` item where the turn took it.
@@ -581,7 +598,7 @@ impl Host {
                     return Err(EngineError::new("empty_prompt", "the steering text is empty"));
                 }
                 let decoded = images::decode(&images)?;
-                let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| (r.backend_child, r.steers.clone()));
+                let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| (r.backend_child.is_some(), r.steers.clone()));
                 if let Some((true, _)) = steers {
                     return Err(EngineError::new("not_steerable", format!("session {session_id} is an agent its session's backend runs, and takes nothing from krowk while it runs — steer the session that started it")));
                 }
@@ -1652,7 +1669,7 @@ impl Registration {
         if running.contains_key(id) {
             return Err(EngineError::new("session_busy", format!("session {id} has a turn running here already — wait for it, or steer it")));
         }
-        running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: false });
+        running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: None });
         self.id = Some(id.to_string());
         // A background job's note, held for this turn, is read first.
         self.shared.jobs.attach(id, &self.steers);
@@ -2215,7 +2232,7 @@ impl Writer<'_> {
                 return Ok(());
             }
         };
-        let here = ChildHeld::new(&k.shared, &child);
+        let here = ChildHeld::new(&k.shared, &child, BackendTask { parent: session_id.to_string(), task_id: task_id.clone() });
         let (state, ran_by) = (k.state.state.clone(), k.ran_by);
         let turn_id = krowk_store::new_id();
         let begun = LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: self.provider.clone(), wire_api: self.wire, permission_mode: k.permission_mode, effort: k.effort };

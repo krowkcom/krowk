@@ -19,6 +19,8 @@
 #                         could make it; the --permission-mode given otherwise
 #   FAKE_CLAUDE_CAPABILITIES  the capabilities init announces, as JSON strings
 #                         joined by commas; an older binary's fewer
+#   FAKE_CLAUDE_STOP_TASK  `refuse`: a `stop_task` is answered with an error,
+#                         and the agent runs on
 #
 # A scenario is turns separated by lines holding `---`. Each user line from
 # krowk plays the next turn: `system/init` first, then each line of the turn:
@@ -29,6 +31,9 @@
 #   @await-interrupt   waits for krowk's interrupt, and acknowledges it; a
 #                      `user` line read meanwhile is queued, and cancelled
 #                      by an interrupt that asks (`cancel_queued`)
+#   @await-stop        waits for krowk's `stop_task`, and answers it as
+#                      recorded: the agent `killed`, then `stopped`, then
+#                      `success` (or refused, with FAKE_CLAUDE_STOP_TASK)
 #   @await-steer       waits for a `user` line from krowk, as steering
 #                      written mid-turn
 #   @replay            prints that line back, as `--replay-user-messages`
@@ -198,6 +203,18 @@ control() {
     esac
     return 1
     ;;
+  *'"subtype":"stop_task"'*)
+    local re='"task_id":"([^"]+)"' task=""
+    [[ $line =~ $re ]] && task="${BASH_REMATCH[1]}"
+    log "stop_task $task"
+    if [ "${FAKE_CLAUDE_STOP_TASK:-}" = refuse ]; then
+      emit "{\"type\":\"control_response\",\"response\":{\"subtype\":\"error\",\"request_id\":\"$id\",\"error\":\"stop_task is not available in this mode\"}}"
+      return 0
+    fi
+    emit "{\"type\":\"system\",\"subtype\":\"task_updated\",\"task_id\":\"$task\",\"patch\":{\"status\":\"killed\"},\"session_id\":\"$SESSION\"}"
+    emit "{\"type\":\"system\",\"subtype\":\"task_notification\",\"task_id\":\"$task\",\"status\":\"stopped\",\"summary\":\"stopped\",\"session_id\":\"$SESSION\"}"
+    ack "$id"
+    ;;
   *) ack "$id" ;;
   esac
   return 0
@@ -261,6 +278,18 @@ await_interrupt() {
   done
 }
 
+await_stop() {
+  while readline; do
+    case "$LINE" in
+    '{"type":"control_request"'*'"subtype":"stop_task"'*)
+      control "$LINE"
+      return 0
+      ;;
+    '{"type":"control_request"'*) control "$LINE" || true ;;
+    esac
+  done
+}
+
 await_steer() {
   while readline; do
     case "$LINE" in
@@ -311,6 +340,7 @@ play() {
     '@ask '*) ask "${l#@ask }" ;;
     '@tool_result '*) tool_result "${l#@tool_result }" ;;
     @await-interrupt) await_interrupt ;;
+    @await-stop) await_stop ;;
     @await-steer) await_steer ;;
     @replay) replay "$STEER" ;;
     '@sleep '*) sleep "${l#@sleep }" ;;
