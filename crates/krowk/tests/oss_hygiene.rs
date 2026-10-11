@@ -123,3 +123,25 @@ fn r_oss_3_the_cargo_deny_policy_refuses_advisories_and_unknown_sources() {
     let ci = read(".github/workflows/ci.yml");
     assert!(ci.contains("run: cargo deny check") && release.contains("run: cargo deny check"), "CI and the release both run cargo deny");
 }
+
+#[test]
+fn r_oss_3_releases_are_logged_where_krowk_upgrade_can_check_them_and_checked_before_publishing() {
+    let release = read(".github/workflows/release.yml");
+    assert!(
+        release.contains("cosign sign-blob --yes --signing-config .github/sigstore/signing-config.json"),
+        "the release signs with the signing config in the repository, not the one TUF serves on the day"
+    );
+    let check = release.find("name: Check the signature as krowk upgrade will");
+    assert!(
+        release.contains("r_oss_3_the_release_being_published_verifies_as_krowk_upgrade_will_check_it")
+            && check.is_some()
+            && check < release.find("name: Create the GitHub release"),
+        "the fresh bundle is checked by krowk upgrade's code before the release is created"
+    );
+    let config: serde_json::Value = serde_json::from_str(&read(".github/sigstore/signing-config.json")).unwrap();
+    let logs = config["rekorTlogUrls"].as_array().unwrap();
+    assert!(
+        !logs.is_empty() && logs.iter().all(|l| l["url"] == "https://rekor.sigstore.dev" && l["majorApiVersion"] == 1),
+        "only Rekor v1, the log whose entries krowk upgrade reads: {logs:?}"
+    );
+}
