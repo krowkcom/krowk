@@ -60,7 +60,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   step. A command runs the way it would in the foreground, in the sandbox
   when there is one. Up to 8 run at once per session, and they stop when
   krowk's host does: `krowk -p`, and a TUI not on the host daemon, name
-  the ones they stop on the way out. The status line shows `[N background]`
+  the ones they stop on the way out. On the daemon they outlive the krowk
+  that started them, and the daemon stays up until they end. The status line shows `[N background]`
   while any run, and a second krowk following the session in the daemon
   gets the count at once, not at the next change. A command's end, as the
   agent is told it, is stored as krowk's in your session history, never as
