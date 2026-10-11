@@ -1273,11 +1273,14 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
     let Started { mut child, out: mut so, err: mut se, mut group, slot: _, slot_note } = started;
     let mut cap = Capture::new(BASH_MAX_OUTPUT);
     // A steer moves it to the background once it was asked for
-    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs.
+    // `MOVE_AFTER` ago (R-STEER-4), where the session keeps jobs; at once
+    // when a call before it in the step was moved for the same steer.
     let movable = env.jobs.zip(env.steers);
     let moving = async {
         let Some((_, steers)) = movable else { return std::future::pending().await };
-        tokio::time::sleep_until(asked + MOVE_AFTER).await;
+        if !steers.has_moved() {
+            tokio::time::sleep_until(asked + MOVE_AFTER).await;
+        }
         steers.steered().await;
     };
     tokio::pin!(moving);
@@ -1331,7 +1334,8 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
         (status.and_then(|s| s.ok()).and_then(|s| s.code()), held_open)
     };
     let ran = tokio::time::timeout(timeout, run).await;
-    if moved && let Some((jobs, session)) = env.jobs {
+    if moved && let Some(((jobs, session), steers)) = env.jobs.zip(env.steers) {
+        steers.moved_one();
         // A character the command is part way through goes to the job,
         // unread, rather than half into the answer.
         let unread = cap.split_partial();
@@ -1845,6 +1849,30 @@ pub(crate) mod tests {
         let ((out, err), ()) = tokio::join!(run(BASH, &input, &env), freed);
         assert!(!err && out.contains("moved to background as job b1 because the person sent a message"), "{out}");
         assert!(started.elapsed() < Duration::from_millis(4000), "moved as it started, at 2.5 s: {:?}", started.elapsed());
+        jobs.shutdown().await;
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    /// R-STEER-4: once a steer has moved one call, the next long call of the
+    /// step is moved at once; once the steer is taken, the next waits its
+    /// two seconds again, and a short one just finishes.
+    #[cfg(unix)]
+    #[tokio::test(flavor = "current_thread")]
+    async fn r_steer_4_after_a_move_the_steps_next_long_call_is_moved_at_once() {
+        let d = dir("move-next");
+        let (jobs, steers) = (crate::jobs::Jobs::new(d.join("sessions")), crate::engine::Steers::default());
+        steers.push("stop, say hi".into()).unwrap();
+        let env = ToolEnv { cwd: &d, permission_mode: PermissionMode::BypassPermissions, edit: EditTool::StrReplace, evidence: None, builds: None, live: None, env: &[], jobs: Some((&jobs, "s-1")), steers: Some(&steers) };
+        let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
+        assert!(out.contains("as job b1"), "{out}");
+        let started = std::time::Instant::now();
+        let (out, _) = run(BASH, &json!({"command": "sleep 5"}), &env).await;
+        assert!(out.contains("as job b2") && started.elapsed() < Duration::from_secs(1), "at once: {out} {:?}", started.elapsed());
+        // The next step takes the steer; another arrives.
+        steers.take();
+        steers.push("and then this".into()).unwrap();
+        let (out, err) = run(BASH, &json!({"command": "sleep 1; echo done"}), &env).await;
+        assert_eq!((out.as_str(), err), ("done\nexit code 0", false));
         jobs.shutdown().await;
         let _ = std::fs::remove_dir_all(d);
     }
