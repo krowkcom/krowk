@@ -3222,35 +3222,65 @@ fn read_child(sessions_dir: &std::path::Path, id: &str) -> Result<Vec<krowk_harn
     child::read_log(&sessions_dir.join(id).join(log::EVENTS_FILE)).map_err(|e| format!("session {id} could not be read: {e}"))
 }
 
+/// The backend children of session `id` whose end its replayed `branch`
+/// cannot say, each once: a Codex child, which answers no call of the
+/// session's log, and one whose call nothing in the branch answers. A
+/// child answered there, or started on a branch not replayed, is not read.
+fn unanswered_backend_children(id: &str, branch: &[&krowk_harness::protocol::LogEvent]) -> Vec<String> {
+    use krowk_harness::protocol::{Item, LogBody, RanBy};
+    let answered: std::collections::HashSet<&str> = branch
+        .iter()
+        .filter_map(|e| match &e.body {
+            LogBody::ItemCompleted { item: Item::ToolResult { call_id, .. }, .. } if e.session_id == id => Some(call_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    let mut kids: Vec<String> = Vec::new();
+    for e in branch.iter().filter(|e| e.session_id == id) {
+        if let LogBody::SubagentStarted { subagent_session_id: kid, ran_by, call_id, .. } = &e.body
+            && (*ran_by == RanBy::Codex || (*ran_by != RanBy::Krowk && !answered.contains(call_id.as_str())))
+            && !kids.contains(kid)
+        {
+            kids.push(kid.clone());
+        }
+    }
+    kids
+}
+
 /// Session `id`'s conversation into `app`, which continues it; the
 /// directory it was started in.
 fn replay(app: &mut App, id: &str, events: &[krowk_harness::protocol::LogEvent], registry: &krowk_harness::instances::Registry, sessions_dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    use krowk_harness::protocol::{LogBody, LogEvent};
     let head = events.last().map(|e| e.id.clone()).unwrap_or_default();
-    let own_log = |kid: &str| match sessions_dir {
-        Some(dir) => read_child(dir, kid).unwrap_or_default(),
-        None => events.iter().filter(|e| e.session_id == kid).cloned().collect(),
+    let branch = log::branch(events, &head);
+    // A backend child's end is in its own log, not the session's: its last
+    // complete line, read once from the file's end — or, for a synced
+    // session, from its history, which holds its children's events too.
+    let mut read: std::collections::HashMap<String, Option<LogEvent>> = std::collections::HashMap::new();
+    let mut last_of = |kid: &str| -> Option<LogEvent> {
+        read.entry(kid.to_string())
+            .or_insert_with(|| match sessions_dir {
+                Some(dir) => log::valid_id(kid).then(|| child::last_event(&dir.join(kid).join(log::EVENTS_FILE))).flatten(),
+                None => events.iter().rfind(|e| e.session_id == kid).cloned(),
+            })
+            .clone()
     };
-    // A backend's child that answers no call of the session's log — a
-    // Codex child, whose spawn returns at once — ends in its own log: read
-    // from there before the replay, whose turn ends take it.
+    // One the replay's turn ends cannot end from the session's log — a
+    // Codex child, whose spawn returns at once — is ended from its own,
+    // read before the replay so its turn's end takes it.
     let mut ends = std::collections::HashMap::new();
-    for e in events.iter().filter(|e| e.session_id == id) {
-        if let krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id: kid, ran_by, .. } = &e.body
-            && *ran_by != krowk_harness::protocol::RanBy::Krowk
-            && let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, error, .. }, .. }) = own_log(kid).last()
-        {
-            ends.insert(kid.clone(), (*status, *time_ms, error.as_ref().map(|e| e.message.clone())));
+    for kid in unanswered_backend_children(id, &branch) {
+        if let Some(LogEvent { time_ms, body: LogBody::TurnCompleted { status, error, .. }, .. }) = last_of(&kid) {
+            ends.insert(kid, (status, time_ms, error.map(|e| e.message)));
         }
     }
     app.child_ends_logged(ends);
-    app.replay(&log::branch(events, &head));
-    // A backend's agent run in the background ends in its own log, not
-    // the session's: read from there, or from a synced session's history,
-    // which holds its children's events too.
+    app.replay(&branch);
+    // A backend's agent run in the background, its call answered at once,
+    // runs on past it: its end too is its own log's.
     for kid in app.backend_children_running() {
-        let own = own_log(&kid);
-        if let Some(krowk_harness::protocol::LogEvent { time_ms, body: krowk_harness::protocol::LogBody::TurnCompleted { status, .. }, .. }) = own.last() {
-            app.child_logged_end(&kid, *status, *time_ms);
+        if let Some(LogEvent { time_ms, body: LogBody::TurnCompleted { status, .. }, .. }) = last_of(&kid) {
+            app.child_logged_end(&kid, status, time_ms);
         }
     }
     // A turn logged on a name since renamed is on the new name.
@@ -3446,6 +3476,30 @@ fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), Engi
 
 #[cfg(test)]
 mod tests {
+    /// R-SUB-7: on resume only the backend children the replayed branch
+    /// cannot end are read — a Codex child, a Claude Code agent whose call
+    /// nothing answers — never one its `Agent` result answered, krowk's
+    /// own, or one on a branch not replayed.
+    #[test]
+    fn r_sub_7_a_resume_reads_only_the_children_its_branch_cannot_end() {
+        use krowk_harness::protocol::{Item, LogBody, LogEvent, ModelRef, RanBy};
+        let model = ModelRef { instance: "x".into(), model: "y".into() };
+        let ev = |id: &str, parent: Option<&str>, body: LogBody| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: "s".into(), time_ms: 0, body };
+        let started = |kid: &str, call: &str, ran_by| LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: kid.into(), description: kid.into(), agent: None, model: model.clone(), ran_by, backend_id: None };
+        let events = vec![
+            ev("e1", None, started("codex-kid", "spawn-1", RanBy::Codex)),
+            ev("e2", Some("e1"), started("claude-answered", "c1", RanBy::Claude)),
+            ev("e3", Some("e2"), LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false } }),
+            ev("e4", Some("e3"), started("claude-unanswered", "c2", RanBy::Claude)),
+            ev("e5", Some("e4"), started("krowk-own", "c3", RanBy::Krowk)),
+            // A branch the head does not follow.
+            ev("e6", Some("e3"), started("abandoned", "c4", RanBy::Codex)),
+            ev("e7", Some("e5"), started("codex-kid", "spawn-1", RanBy::Codex)),
+        ];
+        let branch = krowk_harness::log::branch(&events, "e7");
+        assert_eq!(super::unanswered_backend_children("s", &branch), ["codex-kid", "claude-unanswered"]);
+    }
+
     #[test]
     fn r_sub_11_an_approval_waiting_under_the_child_view_gets_its_keys_or_is_said_to_wait() {
         use super::*;

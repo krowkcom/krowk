@@ -568,8 +568,9 @@ impl Engine for CodexEngine {
                 p.turn(Steer { text: prompt, images, from_krowk: false }, &mut ctx, &ask, &events, &self.instance.name).await
             }
             .await;
-            // krowk reads Codex only while a turn runs: a child thread still
-            // open ends with the turn that ran it (R-SUB-7).
+            // krowk reads Codex only while a turn runs, and sends it nothing
+            // for an open child: one still open is no longer followed from
+            // here, though Codex may still run it (R-SUB-7).
             let why = match &outcome {
                 Err(e) => format!("krowk stopped following it when the turn that ran it failed, before Codex said it finished ({}) — Codex may still be running it; what it does after this is not shown here", e.message),
                 Ok(_) => children::UNFINISHED.to_string(),
