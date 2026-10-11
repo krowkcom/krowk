@@ -265,6 +265,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **"copied the selection" goes away by itself** after a few seconds,
+  instead of staying in the status bar until the next key.
 - **What you said is on a band across the width again**, instead of a
   background behind each row's text.
 - **A prompt with images is no longer sent to an older host daemon that
