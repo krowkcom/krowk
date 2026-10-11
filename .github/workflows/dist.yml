@@ -57,8 +57,8 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal --target ${{ matrix.target }}
-          rustup default 1.97
+          rustup toolchain install 1.97.1 --profile minimal --target ${{ matrix.target }}
+          rustup default 1.97.1
 
       # zig is the C toolchain for the bundled SQLite and ring on every target
       # but Apple's, which builds with the macOS SDK the runner carries.

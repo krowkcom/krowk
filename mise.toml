@@ -1,6 +1,9 @@
 # The toolchains that build and release krowk, pinned so `make check` works on
-# a clean checkout without a global default set. Rust matches the workspace's
-# rust-version.
+# a clean checkout without a global default set. Rust is the exact point
+# release, here and in every workflow (.github/actions/setup and the rest):
+# the workspace's rust-version is the minimum it builds with, but two builds
+# of one tag are byte-identical only on one compiler (R-OSS-3, the release's
+# `reproduce` job), so a patch release is taken on purpose, in one commit.
 #
 # zig and node are one step further out: they are what turns a tag into
 # downloadable bytes (zig is the cross C toolchain cargo-zigbuild drives, and
@@ -16,7 +19,7 @@
 # cargo-nextest runs `make test` (.config/nextest.toml says how). CI installs
 # the same version.
 [tools]
-rust = { version = "1.97", mr_boxington = true }
+rust = { version = "1.97.1", mr_boxington = true }
 mr-boxington = "1.19.0"
 "aqua:nextest-rs/nextest/cargo-nextest" = "0.9.146"
 zig = "0.16.0"

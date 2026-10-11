@@ -83,8 +83,8 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
 
       # R-OSS-3: the same advisory and licence check as a pull request, run
       # again at the tag, because an advisory published since the last merge
@@ -162,8 +162,8 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal --target "$TARGET"
-          rustup default 1.97
+          rustup toolchain install 1.97.1 --profile minimal --target "$TARGET"
+          rustup default 1.97.1
 
       - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
         with:
