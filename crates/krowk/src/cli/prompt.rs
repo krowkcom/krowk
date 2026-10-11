@@ -147,7 +147,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // R-PRES-6: the run's record, on stderr when that is a terminal: working
     // now, and what it came to right before krowk exits, left behind for a
     // person who started it in another tab.
-    let topic = prompt.clone();
+    // Its first line with text: a prompt piped in may open on a blank one.
+    let topic = prompt.trim_start().to_string();
     report(ctx, State::Working, &topic);
     let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
     let ran = turn(ctx, cfg, opts);
