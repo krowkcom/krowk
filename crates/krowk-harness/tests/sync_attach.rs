@@ -1869,3 +1869,66 @@ async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_child
         assert!(matches!(first_item, Some(krowk_harness::protocol::Item::UserText { .. })), "its prompt first: {first_item:?}");
     }
 }
+
+/// R-SUB-6, R-SUB-7 through the daemon: a Claude Code agent run in the
+/// background goes on after its turn, and what it does between turns —
+/// its items and its end, written by the session's writer — reaches the
+/// parent's followers and the bridge's chunks as the parent's session's,
+/// as its lines in a turn do. Its child's log, whole, is in the chunks,
+/// its turn completed last, so a viewer, a move or a rebuild does not show
+/// it running forever.
+#[tokio::test]
+async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_and_chunks() {
+    let w = World::new("claude-bg-kid");
+    let a = w.device("machine-a");
+    let fixture = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/background_agent.jsonl")).unwrap();
+    let hello = "{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n";
+    let path = w.root.join("background.jsonl");
+    std::fs::write(&path, format!("{hello}{fixture}")).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let run = async |c: Command| {
+        let (tx, mut rx) = mpsc::channel(4096);
+        tokio::spawn(async move { while rx.recv().await.is_some() {} });
+        d.execute(c, tx).await.unwrap().unwrap()
+    };
+    let first = run(ask(None, "say hello")).await;
+    let session = first.session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut watch = d.watch();
+    let second = run(ask(Some(&session), "survey the repo in the background")).await;
+    assert_eq!(second.status, krowk_harness::protocol::TurnStatus::Completed, "{second:?}");
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    let kid = parent.iter().find_map(|e| match &e.body {
+        krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, backend_id: Some(_), .. } => Some(subagent_session_id.clone()),
+        _ => None,
+    });
+    let kid = kid.expect("the background agent is a child");
+    // The follower: the child's end, between turns.
+    let ended = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match watch.recv().await {
+                Ok(StreamLine::Log(e)) if e.session_id == kid && matches!(e.body, krowk_harness::protocol::LogBody::TurnCompleted { .. }) => return e,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(e) => panic!("{e}"),
+            }
+        }
+    });
+    let ended = ended.await.expect("the parent's follower gets the child's turn.completed");
+    assert!(matches!(ended.body, krowk_harness::protocol::LogBody::TurnCompleted { status: krowk_harness::protocol::TurnStatus::Completed, .. }));
+    // The chunks: the child's log whole, its end last.
+    let ids = log_ids(&w, &kid);
+    assert_eq!(ids.last(), Some(&ended.id));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let rest = at_rest(&w, &session).await.unwrap_or_default();
+        if ids_of(&rest, &kid) == ids {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the chunks hold {:?} of the child's {ids:?}", ids_of(&rest, &kid));
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
