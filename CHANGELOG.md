@@ -15,10 +15,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   terminal that reads OSC 7501, the Program Status Protocol (Ghostty, Rex),
   now shows a `krowk -p` you started in another tab as working while its
   turn runs, then done, failed (with the first line of what went wrong) or,
-  after Ctrl-C, idle, and keeps that once krowk has exited. The report goes
-  to stderr, and only when stderr is a terminal: a stderr sent to a file or
-  a pipe gets nothing, and stdout is the same as before in every
-  `--output-format`. Other terminals ignore the sequence.
+  after Ctrl-C, idle, and keeps done or failed once krowk has exited. The
+  report goes to stderr, and only when stderr is a terminal: a stderr sent
+  to a file or a pipe gets nothing, and stdout is the same as before in
+  every `--output-format`. Other terminals ignore the sequence.
 - **Background commands.** The agent can run a command in the background
   (`bash` with `run_in_background`) and keep working: a dev server, a long
   test run, a build. It reads the output later with `bash_output` and stops
