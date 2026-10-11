@@ -6,7 +6,7 @@
 //! cut-off (14 days by default), groups them by the ISO week of their last
 //! event, and for each week writes the week's vintage: JSONL, one line per
 //! session holding its `events.jsonl` and `context.jsonl` verbatim,
-//! zstd-compressed and sealed under the account key (`e2e::seal_vintage`)
+//! zstd-compressed and sealed under the user key (`e2e::seal_vintage`)
 //! (R-VINT-1). A week that already has a vintage is read, opened and merged
 //! first, and the new one names the one it replaces, so two machines
 //! archiving the same week never drop each other's sessions: the registry
@@ -26,7 +26,8 @@
 use crate::log::{self, CONTEXT_FILE, EVENTS_FILE};
 use crate::protocol::LogEvent;
 use krowk_api::Client;
-use krowk_client::e2e::{self, AccountKey};
+use krowk_client::e2e;
+use krowk_client::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -364,12 +365,20 @@ pub fn unpack(packed: &[u8]) -> Result<BTreeMap<String, Line>, String> {
 /// A week's sessions, by id.
 pub type Week = BTreeMap<String, Line>;
 
+/// What vintages are sealed and opened with: the person's user keys, and
+/// the generation the verified device list names as current, which a new
+/// vintage is sealed under.
+pub struct Keys {
+    pub user: UserKeys,
+    pub generation: u32,
+}
+
 /// The week's vintage as the registry holds it, opened: its slug, to name
 /// as replaced, and its sessions.
-fn fetch(client: &Client, account: &AccountKey, week: &str) -> Result<Option<(String, Week)>, String> {
+fn fetch(client: &Client, keys: &Keys, week: &str) -> Result<Option<(String, Week)>, String> {
     let Some(v) = client.week_vintage(week).map_err(|e| e.fix())? else { return Ok(None) };
     let sealed = client.read_vintage(&v).map_err(|e| e.fix())?;
-    let packed = e2e::open_vintage(&sealed, week, account).map_err(|e| e.to_string())?;
+    let packed = e2e::open_vintage(&sealed, week, &keys.user).map_err(|e| e.to_string())?;
     Ok(Some((v.slug, unpack(&packed)?)))
 }
 
@@ -393,14 +402,14 @@ pub struct Run {
 /// `now_ms`, week by week, and stamps a run that finished. A week that
 /// fails leaves its sessions exactly as they were — no stub, the log files
 /// in place — and ends the run.
-pub fn archive(client: &Client, account: &AccountKey, sessions: &Path, now_ms: i64, idle_days: u64) -> Run {
+pub fn archive(client: &Client, keys: &Keys, sessions: &Path, now_ms: i64, idle_days: u64) -> Run {
     let mut weeks: BTreeMap<String, Vec<Candidate>> = BTreeMap::new();
     for c in candidates(sessions, now_ms, idle_days as i64 * DAY_MS) {
         weeks.entry(c.week.clone()).or_default().push(c);
     }
     let mut run = Run::default();
     for (week, group) in weeks {
-        let slug = match store_week(client, account, &week, &group) {
+        let slug = match store_week(client, keys, &week, &group) {
             Ok(slug) => slug,
             Err(e) => {
                 run.failed = Some(e);
@@ -425,16 +434,16 @@ pub fn archive(client: &Client, account: &AccountKey, sessions: &Path, now_ms: i
 
 /// Writes the week's vintage with `group` merged into whatever it already
 /// holds, reading again when another machine replaced it meanwhile.
-fn store_week(client: &Client, account: &AccountKey, week: &str, group: &[Candidate]) -> Result<String, String> {
+fn store_week(client: &Client, keys: &Keys, week: &str, group: &[Candidate]) -> Result<String, String> {
     for _ in 0..MERGE_TRIES {
-        let (replaces, mut lines) = match fetch(client, account, week)? {
+        let (replaces, mut lines) = match fetch(client, keys, week)? {
             Some((slug, lines)) => (Some(slug), lines),
             None => (None, BTreeMap::new()),
         };
         for c in group {
             lines.insert(c.id.clone(), Line::new(&c.id, c.events.clone(), c.context.clone()));
         }
-        let sealed = e2e::seal_vintage(account, week, &pack(&lines));
+        let sealed = e2e::seal_vintage(&keys.user, keys.generation, week, &pack(&lines)).map_err(|e| e.to_string())?;
         match client.put_vintage(week, &sealed, replaces.as_deref()) {
             Ok(v) => return Ok(v.slug),
             Err(e) if e.code() == "vintage_conflict" => continue,
@@ -459,9 +468,9 @@ fn leave_stub(c: &Candidate) -> Result<(), String> {
 
 /// Brings an archived session back (R-VINT-4): its week's vintage fetched,
 /// checked and opened, its two files written back, the stub removed.
-pub fn restore(client: &Client, account: &AccountKey, sessions: &Path, id: &str) -> Result<(), String> {
+pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<(), String> {
     let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
-    let (_, lines) = fetch(client, account, &stub.week)?.ok_or_else(|| format!("the registry holds no vintage for {}, where session {id} was archived", stub.week))?;
+    let (_, lines) = fetch(client, keys, &stub.week)?.ok_or_else(|| format!("the registry holds no vintage for {}, where session {id} was archived", stub.week))?;
     let line = lines.get(id).ok_or_else(|| format!("the vintage for {} does not hold session {id} — the registry may have served an older one", stub.week))?;
     let dir = sessions.join(id);
     write_private(&dir.join(CONTEXT_FILE), line.context.as_bytes())?;
@@ -590,7 +599,8 @@ mod tests {
         let url = format!("http://{}/v1", dead.local_addr().unwrap());
         drop(dead);
         let client = Client::new(&url, "krowk_sk_dead_000000000000000000000000");
-        let run = archive(&client, &AccountKey::generate(), &dir, krowk_store::now_ms(), 14);
+        let keys = Keys { user: UserKeys::new(krowk_client::user_key::UserKey::first(), []).unwrap(), generation: 1 };
+        let run = archive(&client, &keys, &dir, krowk_store::now_ms(), 14);
         assert!(run.archived.is_empty() && run.failed.is_some(), "{run:?}");
         assert_eq!(std::fs::read(dir.join(&id).join(EVENTS_FILE)).unwrap(), before);
         assert!(!dir.join(&id).join(STUB_FILE).exists());

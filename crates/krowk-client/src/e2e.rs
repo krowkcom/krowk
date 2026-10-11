@@ -407,49 +407,73 @@ pub fn open_session_index(blob: &[u8], session: &[u8; 16], key: &SessionKey) -> 
     cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
-/// The format byte of a sealed vintage.
+/// The format byte of a vintage sealed under the account key, before the
+/// user key: refused by name, since no machine holds that key any more.
 pub const VINTAGE_V1: u8 = 1;
 
-/// A vintage — one ISO week of archived sessions — sealed for the registry
-/// to keep: `version | suite | key nonce | vintage key sealed + tag | nonce
-/// | ciphertext + tag`. Each vintage has a fresh random key, wrapped under
-/// the account key inside the blob itself, so any device holding the
-/// account key opens it and the registry holds nothing beside the bytes.
+/// The format byte of a vintage sealed under the user key.
+pub const VINTAGE_V2: u8 = 2;
+
+/// A vintage sealed under the person's user key (format 2): `version | suite
+/// | generation | key nonce | vintage key sealed + tag | nonce | ciphertext +
+/// tag`. A fresh key per vintage, wrapped under the user key of the
+/// generation current when it is sealed, as a session key is — so any of
+/// the person's devices opens it by walking down its user keys, a vintage
+/// sealed before a rotation still opens after it, and a device removed
+/// since holds no generation sealed after its removal.
 ///
-/// Both layers bind a label of their own, the version, the suite and the
-/// week (`2026-W38`) as associated data: a vintage served for another week,
-/// or a wrapped session key presented as a vintage's, does not open. A
-/// registry can still serve an older vintage for the same week; what that
-/// costs is a session the reader then does not find in it, which is
-/// refused by name, never a session read wrong.
-pub fn seal_vintage(account: &AccountKey, week: &str, plaintext: &[u8]) -> Vec<u8> {
-    let head = [VINTAGE_V1, SUITE_XCHACHA20_POLY1305];
+/// Both layers bind a label of their own, the version, the suite, the
+/// generation, the user key's id and the week as associated data: a vintage
+/// served for another week, under another person's key, or with its
+/// generation changed, does not open.
+pub fn seal_vintage(keys: &UserKeys, current_generation: u32, week: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    let user = keys.newest();
+    if user.generation() < current_generation {
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again", user.generation())));
+    }
+    let head = [VINTAGE_V2, SUITE_XCHACHA20_POLY1305];
+    let generation = user.generation().to_be_bytes();
     let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(random());
     let key_nonce: [u8; NONCE] = random();
-    let key_aad = [&b"krowk/vintage-key/v1"[..], &head, week.as_bytes()].concat();
-    let wrapped = cipher(&account.0).encrypt(&XNonce::from(key_nonce), Payload { msg: &key[..], aad: &key_aad }).expect("sealing 32 bytes cannot fail");
+    let key_aad = [&b"krowk/vintage-key/v2"[..], &head, &generation, &user.id().0, week.as_bytes()].concat();
+    let wrapped = cipher(user.as_bytes()).encrypt(&XNonce::from(key_nonce), Payload { msg: &key[..], aad: &key_aad }).expect("sealing 32 bytes cannot fail");
     let nonce: [u8; NONCE] = random();
-    let aad = [&b"krowk/vintage/v1"[..], &head, week.as_bytes()].concat();
+    let aad = [&b"krowk/vintage/v2"[..], &head, &generation, &user.id().0, week.as_bytes()].concat();
     let sealed = cipher(&key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a vintage is far below XChaCha's limit");
-    [&head[..], &key_nonce, &wrapped, &nonce, &sealed].concat()
+    Ok([&head[..], &generation, &key_nonce, &wrapped, &nonce, &sealed].concat())
 }
 
-pub fn open_vintage(blob: &[u8], week: &str, account: &AccountKey) -> Result<Vec<u8>, Error> {
-    let refused = || err(format!("the vintage for {week} does not open with this account key: it was changed, or belongs to another week or account"));
-    let body = 2 + NONCE + KEY + TAG;
-    if blob.len() < body + NONCE + TAG || blob[0] != VINTAGE_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
-        return Err(match blob.first() {
-            Some(&v) if v > VINTAGE_V1 => err(format!("the vintage is format {v}, newer than this krowk reads — upgrade krowk")),
-            _ => refused(),
-        });
+/// A vintage, opened under the user key of the generation it names. One
+/// sealed under the old account key (format 1) is refused by name: the
+/// account key went with the clean break, and the registry's production
+/// deployment never stored one.
+pub fn open_vintage(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, Error> {
+    match blob.first() {
+        Some(&VINTAGE_V1) => Err(err(format!("the vintage for {week} was sealed under the old account key, from before the user key, which this krowk no longer reads"))),
+        Some(&VINTAGE_V2) => open_vintage_v2(blob, week, keys),
+        Some(&v) if v > VINTAGE_V2 => Err(err(format!("the vintage is format {v}, newer than this krowk reads — upgrade krowk"))),
+        _ => Err(err(format!("the vintage for {week} is not one this krowk reads"))),
     }
-    let key_nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
-    let key_aad = [&b"krowk/vintage-key/v1"[..], &blob[..2], week.as_bytes()].concat();
-    let key = zeroize::Zeroizing::new(cipher(&account.0).decrypt(&XNonce::from(key_nonce), Payload { msg: &blob[2 + NONCE..body], aad: &key_aad }).map_err(|_| refused())?);
-    let key: [u8; KEY] = key[..].try_into().map_err(|_| refused())?;
-    let key = zeroize::Zeroizing::new(key);
+}
+
+fn open_vintage_v2(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, Error> {
+    let refused = || err(format!("the vintage for {week} does not open with your user key: it was changed, or belongs to another week or person"));
+    let body = 2 + 4 + NONCE + KEY + TAG;
+    if blob.len() < body + NONCE + TAG || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(refused());
+    }
+    let generation = u32::from_be_bytes(blob[2..6].try_into().expect("four bytes"));
+    let held = keys.newest().generation();
+    if generation == 0 || generation > held {
+        return Err(err(format!("the vintage for {week} is sealed under user key generation {generation}, which this device does not hold (it holds up to {held})")));
+    }
+    let user = keys.open(generation)?;
+    let key_nonce: [u8; NONCE] = blob[6..6 + NONCE].try_into().expect("24 bytes");
+    let key_aad = [&b"krowk/vintage-key/v2"[..], &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
+    let key = zeroize::Zeroizing::new(cipher(user.as_bytes()).decrypt(&XNonce::from(key_nonce), Payload { msg: &blob[6 + NONCE..body], aad: &key_aad }).map_err(|_| refused())?);
+    let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(key[..].try_into().map_err(|_| refused())?);
     let nonce: [u8; NONCE] = blob[body..body + NONCE].try_into().expect("24 bytes");
-    let aad = [&b"krowk/vintage/v1"[..], &blob[..2], week.as_bytes()].concat();
+    let aad = [&b"krowk/vintage/v2"[..], &blob[..2], &blob[2..6], &user.id().0, week.as_bytes()].concat();
     cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
@@ -1635,22 +1659,31 @@ mod tests {
         assert!(late.open(&d.seal(b"four", false).unwrap()).unwrap_err().0.contains("before the chunk ahead of it"));
     }
 
-    /// A vintage opens with the account key for its own week only, and
-    /// holds no byte of what it seals in the clear.
+    /// Ticket 41: a vintage is sealed under the user key at the current
+    /// generation, opens on any device holding that generation — after a
+    /// rotation too — and only for its own week and person; one of format 1,
+    /// under the old account key, is refused by name.
     #[test]
-    fn r_vint_1_a_vintage_is_ciphertext_and_opens_only_for_its_week_and_account() {
-        let account = AccountKey::generate();
-        let plain = b"{\"id\":\"a session\",\"events\":\"the secret prompt\"}";
-        let blob = seal_vintage(&account, "2026-W38", plain);
-        assert!(!blob.windows(10).any(|w| w == &b"secret pro"[..]), "no plaintext in the sealed bytes");
-        assert_eq!(open_vintage(&blob, "2026-W38", &account).unwrap(), plain);
-        assert!(open_vintage(&blob, "2026-W39", &account).is_err(), "served for another week");
-        assert!(open_vintage(&blob, "2026-W38", &AccountKey::generate()).is_err(), "another account");
-        let mut changed = blob.clone();
-        *changed.last_mut().unwrap() ^= 1;
-        assert!(open_vintage(&changed, "2026-W38", &account).is_err(), "a changed byte");
-        let mut newer = blob;
-        newer[0] = 9;
-        assert!(open_vintage(&newer, "2026-W38", &account).unwrap_err().0.contains("upgrade krowk"));
+    fn r_vint_1_a_vintage_sealed_under_the_user_key_opens_after_a_rotation() {
+        let (g1, plain) = (UserKey::first(), b"the week's sessions".as_slice());
+        let g2 = g1.next().unwrap();
+        let before = UserKeys::new(g1.clone(), []).unwrap();
+        let blob = seal_vintage(&before, 1, "2026-W38", plain).unwrap();
+        assert!(!blob.windows(plain.len()).any(|w| w == plain), "ciphertext");
+        assert_eq!(open_vintage(&blob, "2026-W38", &before).unwrap(), plain);
+        let after = UserKeys::new(g2.clone(), [g2.wrap_previous(&g1).unwrap()]).unwrap();
+        assert_eq!(open_vintage(&blob, "2026-W38", &after).unwrap(), plain, "a vintage sealed before a rotation opens after it");
+        assert!(open_vintage(&blob, "2026-W39", &after).is_err(), "another week");
+        assert!(open_vintage(&blob, "2026-W38", &UserKeys::new(UserKey::first(), []).unwrap()).is_err(), "another person");
+        let mut regenerated = blob.clone();
+        regenerated[5] = 2;
+        assert!(open_vintage(&regenerated, "2026-W38", &after).is_err(), "its generation changed");
+        assert!(seal_vintage(&before, 2, "2026-W38", plain).unwrap_err().0.contains("generation"), "never under a generation the list has moved past");
+        let newer = seal_vintage(&after, 2, "2026-W38", plain).unwrap();
+        assert!(open_vintage(&newer, "2026-W38", &before).unwrap_err().0.contains("does not hold"), "a device without the generation");
+        let mut old = blob.clone();
+        old[0] = VINTAGE_V1;
+        assert!(open_vintage(&old, "2026-W38", &after).unwrap_err().0.contains("old account key"), "format 1 is refused by name");
     }
+
 }

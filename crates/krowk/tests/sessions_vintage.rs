@@ -5,7 +5,7 @@
 
 #![cfg(all(feature = "harness", unix))]
 
-use krowk_client::e2e::{self, AccountKey};
+use krowk_client::e2e;
 use krowk_client::keystore::Keystore;
 use krowk_harness::log::{self, SessionLog};
 use krowk_harness::protocol::{Item, LogBody, LogEvent};
@@ -14,8 +14,6 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-#[path = "common/device_list.rs"]
-mod device_list;
 
 const TOKEN: &str = "krowk_sk_vintage_000000000000000000000";
 const DAY_MS: i64 = 86_400_000;
@@ -57,6 +55,8 @@ impl Machine {
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .env("KROWK_API_URL", &self.api_url)
             .env("KROWK_TOKEN", TOKEN)
+            .env("KROWK_DEVICE_NAME", "this machine")
+            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
             .current_dir(&self.home)
             .output()
             .unwrap();
@@ -104,12 +104,16 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
     let m = Machine { home: root.clone(), api_url: format!("{}/v1", registry.url()) };
 
-    // This machine has joined sync: an account key, its own device, on the
-    // person's device list with the key it runs on.
-    let account = AccountKey::generate();
+    // Ticket 41: this machine set sync up with `krowk sync init` and
+    // nothing else — a user key and a device list, no account key.
+    let kit = root.join("kit.txt");
+    let (ok, _, out) = m.krowk(&["sync", "init", "--save", kit.to_str().unwrap()]);
+    assert!(ok, "{out}");
     let ks = Keystore::new(&root.join(".krowk"));
-    ks.recover(AccountKey::from_bytes(*account.as_bytes())).unwrap();
-    let api = device_list::start(&m.api_url, TOKEN, &ks, "this machine");
+    assert!(ks.account().unwrap().is_none(), "no account key: the clean break");
+    let keys = ks.user_keys().unwrap().expect("a user key");
+    let me = ks.device().unwrap().unwrap().id();
+    let api = krowk_api::Client::new(&m.api_url, TOKEN).signed_by(e2e::DeviceSigner::new(me, ks.signing_key().unwrap()).shared());
 
     let sessions = root.join(".krowk").join("sessions");
     let old = session(&sessions, &root, "the idle session's secret prompt", 20);
@@ -133,9 +137,11 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     assert_eq!(stub.vintage, vintage.slug, "the stub names its vintage");
     let sealed = api.read_vintage(&vintage).unwrap();
     assert!(!sealed.windows(6).any(|w| w == b"secret"), "no plaintext on the server");
-    let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&sealed, &week, &account).unwrap()).unwrap();
+    assert_eq!(sealed[0], e2e::VINTAGE_V2, "sealed under the user key");
+    let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&sealed, &week, &keys).unwrap()).unwrap();
     assert!(plain.contains_key(&old) && plain.len() == 1);
-    assert!(e2e::open_vintage(&sealed, &week, &AccountKey::generate()).is_err(), "only the account key opens it");
+    let stranger = krowk_client::user_key::UserKeys::new(krowk_client::user_key::UserKey::first(), []).unwrap();
+    assert!(e2e::open_vintage(&sealed, &week, &stranger).is_err(), "only the person's user key opens it");
 
     // R-VINT-4: opening it brings it back, byte for byte.
     let (ok, v, out) = m.krowk(&["sessions", "show", &old]);
@@ -154,7 +160,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let merged = api.week_vintage(&week).unwrap().expect("the week's vintage");
     assert_ne!(merged.slug, vintage.slug, "replaced");
     assert_eq!(api.read_vintage(&vintage).unwrap(), sealed, "the replaced vintage's bytes are kept");
-    let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&api.read_vintage(&merged).unwrap(), &week, &account).unwrap()).unwrap();
+    let plain = krowk_harness::vintage::unpack(&e2e::open_vintage(&api.read_vintage(&merged).unwrap(), &week, &keys).unwrap()).unwrap();
     assert!(plain.contains_key(&old) && plain.contains_key(&sibling), "one vintage holds the week's sessions");
     // A replacement that did not read the week's latest is refused.
     assert_eq!(api.put_vintage(&week, b"stale", Some(&vintage.slug)).unwrap_err().code(), "vintage_conflict");

@@ -68,8 +68,8 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
 #[cfg(all(feature = "harness", unix))]
 pub(super) fn restore_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
-    let (client, account) = super::sync::vintage_keys(ctx)?;
-    krowk_harness::vintage::restore(&client, &account, &dir, session_id).map_err(|e| fail("restore_failed", e))?;
+    let (client, keys) = super::sync::vintage_keys(ctx)?;
+    krowk_harness::vintage::restore(&client, &keys, &dir, session_id).map_err(|e| fail("restore_failed", e))?;
     let conn = open_store(ctx)?;
     krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
     drop(conn);
@@ -118,8 +118,8 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if ctx.f.weekly && !krowk_harness::vintage::due(&dir, now) {
         return emit_data(ctx, json!({ "archived": [], "due": false }), "not due: the last archive ran less than a week ago".into());
     }
-    let (client, account) = super::sync::vintage_keys(ctx)?;
-    let run = krowk_harness::vintage::archive(&client, &account, &dir, now, days);
+    let (client, keys) = super::sync::vintage_keys(ctx)?;
+    let run = krowk_harness::vintage::archive(&client, &keys, &dir, now, days);
     // The weeks stored before a failure are archived: their bodies leave
     // krowk.db whether or not the rest of the run went through.
     let done = run.archived;
