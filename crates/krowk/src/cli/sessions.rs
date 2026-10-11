@@ -75,6 +75,12 @@ pub(super) fn restore_native(ctx: &Ctx, session_id: &str, from: Option<&str>) ->
         Some(slug) => krowk_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug),
         None => krowk_harness::vintage::restore(&client, &keys, &dir, session_id),
     }?;
+    // Restored by another krowk while this one waited: krowk.db is that
+    // one's to bring up to date, and dropping its rows again here could
+    // leave them dropped behind a cursor already past them.
+    if restored.already {
+        return Ok(restored);
+    }
     let conn = open_store(ctx)?;
     krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
     drop(conn);

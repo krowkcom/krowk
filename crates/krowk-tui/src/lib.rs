@@ -319,7 +319,42 @@ type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
 type PasteFuture = Pin<Box<dyn Future<Output = paste::Pasted>>>;
-type RestoreFuture = Pin<Box<dyn Future<Output = (String, Result<Vec<String>, String>)>>>;
+type RestoreFuture = Pin<Box<dyn Future<Output = Result<Vec<String>, String>>>>;
+
+/// An archived session `/sessions` picked, coming back from its vintage.
+/// It runs on a thread of its own rather than the runtime's blocking pool,
+/// so leaving krowk never waits for it: the runtime's shutdown would.
+struct Restoring {
+    id: String,
+    /// Someone is waiting on it, so it is continued once it is back; not
+    /// after esc, Ctrl-C, another session or `/new`, which leave it to
+    /// finish and say so.
+    wanted: bool,
+    done: RestoreFuture,
+}
+
+impl Restoring {
+    fn start(id: &str, restore: Restore) -> Restoring {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = id.to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(restore(&task));
+        });
+        Restoring { id: id.to_string(), wanted: true, done: Box::pin(async move { rx.await.unwrap_or_else(|_| Err("the restore stopped before it finished".into())) }) }
+    }
+}
+
+/// The restore under way finished, with its session's id; never, while
+/// none runs.
+async fn finish_restore(r: &mut Option<Restoring>) -> (String, Result<Vec<String>, String>) {
+    match r {
+        Some(r) => {
+            let out = (&mut r.done).await;
+            (r.id.clone(), out)
+        }
+        None => std::future::pending().await,
+    }
+}
 
 /// What the TUI looks up off the runtime's thread between keys, one of
 /// them done.
@@ -331,12 +366,12 @@ enum LookedUp {
 
 /// The first of the pull request lookup, the readiness checks and the
 /// restore to finish; never, while none runs.
-async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>, restoring: &mut Option<RestoreFuture>) -> LookedUp {
+async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>, restoring: &mut Option<Restoring>) -> LookedUp {
     tokio::select! {
         biased;
         (branch, found) = finish(pr) => LookedUp::Pr(branch, found),
         reports = finish(checks) => LookedUp::Checks(reports),
-        (id, r) = finish(restoring) => LookedUp::Restored(id, r),
+        (id, r) = finish_restore(restoring) => LookedUp::Restored(id, r),
     }
 }
 
@@ -705,8 +740,8 @@ struct Ui<'h> {
     restore: Option<Restore>,
     /// An archived session `/sessions` picked, coming back from its vintage
     /// off the runtime's thread: keys, frames and Ctrl-C go on meanwhile,
-    /// and it is continued once it is back.
-    restoring: Option<RestoreFuture>,
+    /// and it is continued once it is back, if still wanted.
+    restoring: Option<Restoring>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -2092,7 +2127,7 @@ impl<'h> Ui<'h> {
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         app.touch();
         // A restore under way stays said under the prompt, key or not.
-        app.flash = self.restoring.is_some().then(|| RESTORING.into());
+        app.flash = self.waiting_on_restore().then(|| RESTORING.into());
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
         if let Some(done) = self.view_key(app, k).await {
             return done;
@@ -2606,8 +2641,8 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                 } else if app.running() {
                     self.interrupt(app).await;
-                } else if self.restoring.is_some() {
-                    self.stop_restoring(app);
+                } else if self.waiting_on_restore() {
+                    self.stop_waiting(app);
                 }
             }
             KeyCode::Char('y') if ctrl => copy(app),
@@ -2651,10 +2686,10 @@ impl<'h> Ui<'h> {
                 return true;
             }
             self.interrupt(app).await;
-        } else if self.restoring.is_some() {
-            self.stop_restoring(app);
         } else if !app.editor.is_empty() {
             app.editor.clear();
+        } else if self.waiting_on_restore() {
+            self.stop_waiting(app);
         } else if self.held.is_some() || app.trust_question.is_some() {
             // What is waiting on the route or the trust question
             // comes back unsent; Ctrl-C twice more then quits.
@@ -2701,16 +2736,19 @@ impl<'h> Ui<'h> {
             let Some(restore) = self.restore.clone() else {
                 return app.notice(&format!("session {id} is archived — bring it back with krowk sessions restore {id}"));
             };
-            if self.restoring.is_some() {
-                return app.notice("another session is still being restored — esc stops waiting for it");
+            // One restore at a time: the same session picked again waits
+            // on the one under way rather than starting a second.
+            match &mut self.restoring {
+                Some(r) if r.id == id => {
+                    r.wanted = true;
+                    app.notice(&format!("session {id} is still being restored — it opens once it is back"));
+                }
+                Some(r) => app.notice(&format!("session {} is still being restored — pick {id} again once it is back", r.id)),
+                None => self.restoring = Some(Restoring::start(id, restore)),
             }
-            let owned = id.to_string();
-            app.flash = Some(RESTORING.into());
-            self.restoring = Some(Box::pin(async move {
-                let task = owned.clone();
-                let r = tokio::task::spawn_blocking(move || restore(&task)).await.unwrap_or_else(|e| Err(e.to_string()));
-                (owned, r)
-            }));
+            if self.waiting_on_restore() {
+                app.flash = Some(RESTORING.into());
+            }
             return;
         }
         // Read before anything is let go: a log that cannot be read leaves
@@ -2731,6 +2769,8 @@ impl<'h> Ui<'h> {
             }
             _ => {}
         }
+        // Another session wanted instead: a restore waited on is let go.
+        self.stop_waiting(app);
         self.leave(app);
         app.forget_session();
         app.model = None;
@@ -2770,8 +2810,9 @@ impl<'h> Ui<'h> {
     /// An archived session `/sessions` picked is back, or is not: continued,
     /// what the copy it came from warrants said first; or why not said, the
     /// session shown left as it was.
+    /// One no longer waited on is only said to be back, never switched to.
     async fn on_restored(&mut self, app: &mut App, id: &str, r: Result<Vec<String>, String>) {
-        self.restoring = None;
+        let wanted = self.restoring.take().is_some_and(|r| r.wanted);
         if app.flash.as_deref() == Some(RESTORING) {
             app.flash = None;
         }
@@ -2781,17 +2822,30 @@ impl<'h> Ui<'h> {
                 for w in &warnings {
                     app.notice(w);
                 }
-                Box::pin(self.resume(app, id)).await;
+                // Still waited on, and nothing since holds the session shown
+                // — a turn begun meanwhile does — it is continued.
+                match wanted && self.resume_waits(app).is_none() {
+                    true => Box::pin(self.resume(app, id)).await,
+                    false => app.notice(&format!("session {id} was restored — /sessions continues it")),
+                }
             }
         }
     }
 
-    /// Stops waiting for a restore under way: it may still finish, and
-    /// leave the session restored for the next `/sessions`.
-    fn stop_restoring(&mut self, app: &mut App) {
-        self.restoring = None;
-        app.flash = None;
-        app.notice("stopped waiting for the restore — should it still finish, /sessions continues the session from here");
+    /// Whether a restore under way is still waited on.
+    fn waiting_on_restore(&self) -> bool {
+        self.restoring.as_ref().is_some_and(|r| r.wanted)
+    }
+
+    /// Stops waiting for a restore under way: it goes on, and says so when
+    /// it is back, but nothing switches to it.
+    fn stop_waiting(&mut self, app: &mut App) {
+        let Some(r) = self.restoring.as_mut().filter(|r| r.wanted) else { return };
+        r.wanted = false;
+        if app.flash.as_deref() == Some(RESTORING) {
+            app.flash = None;
+        }
+        app.notice(&format!("session {} goes on being restored in the background — /sessions continues it once it is back", r.id));
     }
 
     /// `/new`: a fresh session in place of the one shown, on the same
@@ -2806,6 +2860,7 @@ impl<'h> Ui<'h> {
         if !self.can_resume(app) {
             return;
         }
+        self.stop_waiting(app);
         self.leave(app);
         // The one the next prompt goes to, else the one shown — the
         // resumed session's at start — rather than one routed afresh.
@@ -2856,7 +2911,15 @@ impl<'h> Ui<'h> {
     /// the session shown. The model routed at start is not: a session
     /// resumed meanwhile has its own, which the route then leaves alone.
     fn can_resume(&self, app: &mut App) -> bool {
-        let waits = if app.running() {
+        let Some(waits) = self.resume_waits(app) else { return true };
+        app.notice_keys(&format!("that waits for {waits}"));
+        false
+    }
+
+    /// What another session taking the one shown's place waits for, if
+    /// anything.
+    fn resume_waits(&self, app: &App) -> Option<&'static str> {
+        Some(if app.running() {
             "the running turn to finish — `esc` interrupts it"
         } else if app.offer.is_some() {
             "the question above — `y` or `n`"
@@ -2867,10 +2930,8 @@ impl<'h> Ui<'h> {
         } else if app.backend_agents_running() {
             "the agents running in the background — `ctrl-g` lists them"
         } else {
-            return true;
-        };
-        app.notice_keys(&format!("that waits for {waits}"));
-        false
+            return None;
+        })
     }
 
     fn open_models(&mut self, app: &mut App) {

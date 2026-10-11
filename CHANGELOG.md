@@ -367,8 +367,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   marked "archived", and `krowk --resume` marks them too. Picking one
   restores it from its vintage first, as `krowk --resume <id>` does. In
   the TUI the restore runs in the background, so typing and scrolling keep
-  working; Esc or Ctrl-C stops waiting for it. If it can't be restored,
-  the TUI says why and keeps the session you were in.
+  working. Esc, Ctrl-C on an empty prompt, `/new` or picking another
+  session stops waiting for it: it finishes in the background, and the
+  TUI says when it's back without switching to it. If it can't be
+  restored, the TUI says why and keeps the session you were in. Two
+  restores of the same session, from the TUI or `krowk sessions restore`
+  in another terminal, take turns rather than writing over each other.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

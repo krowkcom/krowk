@@ -295,6 +295,7 @@ fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
 
     let (ok, _, out) = m.krowk(&["sessions", "restore", &id]);
     assert!(!ok && out.contains("older copy") && out.contains(&old), "refused, naming the vintage and what is older: {out}");
+    assert!(out.contains(&format!("krowk sessions restore {id} --from {old}")), "and how to restore it anyway: {out}");
     let (ok, _, out) = m.krowk(&["sessions", "show", &id]);
     assert!(!ok && out.contains("\"restore_failed\""), "not shown past as a stub: {out}");
     assert!(stub_path.is_file() && !sessions.join(&id).join(log::EVENTS_FILE).exists(), "left archived");
