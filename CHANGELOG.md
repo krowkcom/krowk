@@ -349,17 +349,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sessions, restoring one of them used to fail, saying the vintage did
   not hold it. krowk now reads the vintage the session was archived into
   first, then the week's current one, then the replaced ones the registry
-  still keeps.
+  still keeps. A copy older than the stub on this machine records (fewer
+  turns, or last active earlier) is never restored on its own, so a lost
+  or rolled-back vintage can't quietly undo what you said since; name it
+  with `krowk sessions restore <id> --from <vintage>` to restore it
+  anyway. When the session comes from any vintage but the one it was
+  archived into, krowk warns and says why it skipped each of the others,
+  including one whose digest didn't match.
 - **`krowk sessions show` shows an archived session on a machine without
   sync.** It used to fail, because the session can't be restored there.
   It now shows what this machine keeps of it (title, first prompt, models,
-  turns and cost) and says the full session needs sync set up.
+  turns and cost) and says the full session needs sync set up. The same
+  goes when the registry can't be reached. Any other failure to restore,
+  such as a vintage that doesn't check out, still fails.
 - **Both session pickers list and restore archived sessions.** `/sessions`
   in the TUI now lists the archived sessions started in the directory,
   marked "archived", and `krowk --resume` marks them too. Picking one
-  restores it from its vintage first, as `krowk --resume <id>` does. If
-  it can't be restored, the TUI says why and keeps the session you were
-  in.
+  restores it from its vintage first, as `krowk --resume <id>` does. In
+  the TUI the restore runs in the background, so typing and scrolling keep
+  working; Esc or Ctrl-C stops waiting for it. If it can't be restored,
+  the TUI says why and keeps the session you were in.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

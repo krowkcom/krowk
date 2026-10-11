@@ -28,7 +28,7 @@
 use crate::log::{self, CONTEXT_FILE, EVENTS_FILE};
 use crate::protocol::LogEvent;
 use krowk_api::sync::Vintage;
-use krowk_api::Client;
+use krowk_api::{fail, Client, Error};
 use krowk_client::e2e;
 use krowk_client::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
@@ -393,9 +393,9 @@ fn open(client: &Client, keys: &Keys, v: &Vintage) -> Result<Week, String> {
 
 /// Every vintage of a week the registry keeps: its current one first, then
 /// those it replaced, newest replacement first.
-pub fn week_vintages(client: &Client, week: &str) -> Result<Vec<Vintage>, String> {
-    let mut all: Vec<Vintage> = client.week_vintage(week).map_err(|e| e.fix())?.into_iter().collect();
-    all.extend(client.replaced_vintages(week).map_err(|e| e.fix())?);
+pub fn week_vintages(client: &Client, week: &str) -> Result<Vec<Vintage>, Error> {
+    let mut all: Vec<Vintage> = client.week_vintage(week)?.into_iter().collect();
+    all.extend(client.replaced_vintages(week)?);
     Ok(all)
 }
 
@@ -491,40 +491,123 @@ fn leave_stub(c: &Candidate) -> Result<(), String> {
 /// lost the session leaves it in the vintage it replaced for as long as
 /// the registry keeps that one. When the current one is the recorded one,
 /// or the stub records none, and holds the session, nothing else is asked.
-pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<String, String> {
-    let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
-    let current = client.week_vintage(&stub.week).map_err(|e| e.fix())?;
+///
+/// A copy older than the stub records — fewer turns, or last active
+/// earlier — is never restored: it is what a replacement that lost the
+/// newer copy leaves behind, or what a registry rolled back serves, and
+/// restoring it would quietly drop what was said since. Restored from any
+/// vintage but the recorded one, it says so, and why each it passed over
+/// was — a digest or a seal that did not check out included.
+pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<Restored, Error> {
+    let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
+    let current = client.week_vintage(&stub.week)?;
     let mut tried = Vec::new();
     if let Some(v) = current.as_ref().filter(|v| stub.vintage.is_empty() || v.slug == stub.vintage)
-        && let Some(line) = holding(client, keys, v, id, &mut tried)
+        && let Some(line) = current_enough(client, keys, &stub, v, id, &mut tried)
     {
-        return unpack_session(sessions, id, &line).map(|()| v.slug.clone());
+        unpack_session(sessions, id, &line).map_err(restore_failed)?;
+        return Ok(Restored { vintage: v.slug.clone(), warnings: Vec::new() });
     }
-    let replaced = client.replaced_vintages(&stub.week).map_err(|e| e.fix())?;
+    // A listing that fails keeps its code — the registry unreachable is
+    // not the session lost — and what was read before it.
+    let replaced = client.replaced_vintages(&stub.week).map_err(|e| match tried.is_empty() {
+        true => e,
+        false => fail(&e.code(), failed(&stub.week, id, &tried, &format!("its replaced vintages could not be listed: {}", e.fix()))),
+    })?;
     let (recorded, rest): (Vec<Vintage>, Vec<Vintage>) = replaced.into_iter().partition(|v| v.slug == stub.vintage);
     let read_first = tried.first().map(|(slug, _)| slug.clone());
     for v in recorded.iter().chain(current.iter().filter(|v| Some(&v.slug) != read_first.as_ref())).chain(&rest) {
-        if let Some(line) = holding(client, keys, v, id, &mut tried) {
-            return unpack_session(sessions, id, &line).map(|()| v.slug.clone());
+        if let Some(line) = current_enough(client, keys, &stub, v, id, &mut tried) {
+            unpack_session(sessions, id, &line).map_err(restore_failed)?;
+            let mut warnings = Vec::new();
+            if !stub.vintage.is_empty() && v.slug != stub.vintage && !tried.iter().any(|(s, _)| *s == stub.vintage) {
+                warnings.push(format!("session {id} was archived into vintage {}, which the registry no longer keeps", stub.vintage));
+            }
+            warnings.extend(tried.iter().map(|(slug, why)| format!("session {id} was restored from vintage {}, not {slug}: {slug} {why}", v.slug)));
+            return Ok(Restored { vintage: v.slug.clone(), warnings });
         }
     }
-    if tried.is_empty() {
-        return Err(format!("the registry keeps no vintage for {}, where session {id} was archived", stub.week));
+    Err(restore_failed(failed(&stub.week, id, &tried, "")))
+}
+
+fn restore_failed(why: String) -> Error {
+    fail("restore_failed", why)
+}
+
+/// Why no vintage of `week` gave session `id` back: each one read, and why
+/// it was passed over, and `more` when there is more to say.
+fn failed(week: &str, id: &str, tried: &[(String, String)], more: &str) -> String {
+    let mut why: Vec<String> = tried.iter().map(|(slug, why)| format!("{slug} {why}")).collect();
+    if !more.is_empty() {
+        why.push(more.to_owned());
     }
-    let why: Vec<String> = tried.into_iter().map(|(slug, why)| format!("{slug}: {why}")).collect();
-    Err(format!("no vintage of {} the registry keeps holds session {id} ({})", stub.week, why.join("; ")))
+    match why.is_empty() {
+        true => format!("the registry keeps no vintage for {week}, where session {id} was archived"),
+        false => format!("no vintage of {week} the registry keeps gave session {id} back ({})", why.join("; ")),
+    }
+}
+
+/// A restore's outcome: the vintage the session came from, and what the
+/// person should know about it — said on stderr, or in the TUI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Restored {
+    pub vintage: String,
+    pub warnings: Vec<String>,
 }
 
 /// Brings an archived session back from vintage `slug` of its week, current
 /// or replaced, whichever the others hold: what a person picks when the
-/// one `restore` finds is not the one they want.
-pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str) -> Result<String, String> {
-    let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
+/// one `restore` finds is not the one they want. A copy older than the stub
+/// records is restored here, since it was asked for by name, and said to be.
+pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str) -> Result<Restored, Error> {
+    let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
     let all = week_vintages(client, &stub.week)?;
-    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week))?;
+    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| restore_failed(format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week)))?;
     let mut tried = Vec::new();
-    let line = holding(client, keys, v, id, &mut tried).ok_or_else(|| format!("vintage {slug} {}", tried.pop().map(|(_, why)| why).unwrap_or_default()))?;
-    unpack_session(sessions, id, &line).map(|()| v.slug.clone())
+    let line = holding(client, keys, v, id, &mut tried).ok_or_else(|| restore_failed(format!("vintage {slug} {}", tried.pop().map(|(_, why)| why).unwrap_or_default())))?;
+    let warnings = older_than_stub(&stub, &line).map(|why| format!("session {id} was restored from vintage {slug}, which {why}")).into_iter().collect();
+    unpack_session(sessions, id, &line).map_err(restore_failed)?;
+    Ok(Restored { vintage: v.slug.clone(), warnings })
+}
+
+/// Session `id`'s line in vintage `v` when it is no older than the stub
+/// records; else none, and why kept in `tried`.
+fn current_enough(client: &Client, keys: &Keys, stub: &Stub, v: &Vintage, id: &str, tried: &mut Vec<(String, String)>) -> Option<Line> {
+    let line = holding(client, keys, v, id, tried)?;
+    match older_than_stub(stub, &line) {
+        Some(why) => {
+            tried.push((v.slug.clone(), why));
+            None
+        }
+        None => Some(line),
+    }
+}
+
+/// How a session's copy in a vintage is older than its stub records — fewer
+/// turns, or last active earlier — or none when it is not.
+fn older_than_stub(stub: &Stub, line: &Line) -> Option<String> {
+    let Ok(events) = line.events.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str::<LogEvent>).collect::<Result<Vec<_>, _>>() else {
+        return Some("holds a copy whose log does not read".to_owned());
+    };
+    let (last, turns) = (last_active(&events), Stub::of(&events, &stub.week, 0).map_or(0, |s| s.turns.len()));
+    let mut older = Vec::new();
+    if turns < stub.turns.len() {
+        older.push(format!("{turns} turn(s) where the stub records {}", stub.turns.len()));
+    }
+    if last < stub.last_active_ms {
+        older.push(format!("last active {} before the stub says", ago(stub.last_active_ms - last)));
+    }
+    (!older.is_empty()).then(|| format!("holds an older copy ({})", older.join(", ")))
+}
+
+/// A gap between two moments, as a person reads it.
+fn ago(ms: i64) -> String {
+    match ms.max(0) / 1000 {
+        s if s < 120 => format!("{s}s"),
+        s if s < 2 * 3600 => format!("{}m", s / 60),
+        s if s < 2 * 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
 }
 
 /// Session `id`'s line in vintage `v`, or why there is none, kept in

@@ -221,6 +221,7 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     let (ok, v, out) = m.krowk(&["sessions", "restore", &a]);
     assert!(ok, "{out}");
     assert_eq!(v["data"]["vintage"], kept.as_str(), "from the vintage it went into: {out}");
+    assert_eq!(v["data"]["warnings"], serde_json::json!([]), "the recorded one, so nothing to say: {out}");
     assert!(sessions.join(&a).join(log::EVENTS_FILE).is_file());
 
     let (ok, _, out) = m.krowk(&["sessions", "restore", &b, "--from", &lost]);
@@ -228,6 +229,8 @@ fn r_vint_4_a_restore_finds_the_session_in_the_vintage_it_went_into_when_a_repla
     let (ok, v, out) = m.krowk(&["sessions", "restore", &b]);
     assert!(ok, "{out}");
     assert_eq!(v["data"]["vintage"], kept.as_str(), "the week's current one lost it, so a replaced one is read: {out}");
+    let warned = v["data"]["warnings"].to_string();
+    assert!(warned.contains(&format!("not {lost}")) && warned.contains("does not hold session"), "and it says which it passed over, and why: {out}");
     assert!(sessions.join(&b).join(log::EVENTS_FILE).is_file());
 
     // The registry's restoration: the replaced vintage is the week's again,
@@ -264,5 +267,40 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
     assert_eq!(v["data"]["archived"]["error"]["code"], "not_set_up", "{out}");
     assert!(v["data"]["archived"]["summary"].as_str().unwrap().contains("asked on the synced machine"), "{out}");
     assert!(dir.join(krowk_harness::vintage::STUB_FILE).is_file() && !dir.join(log::EVENTS_FILE).exists(), "left archived");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// R-VINT-4: a copy older than the stub records — a replacement lost the
+/// newer one, or a registry rolled the week back — is never restored by
+/// itself, and opening the session fails rather than showing the stub past
+/// it. Named with `--from`, it is restored, and said to be older.
+#[test]
+fn r_vint_4_a_copy_older_than_the_stub_is_refused_unless_named() {
+    let root = std::env::temp_dir().join(format!("krowk-vintage-stale-{}", std::process::id()));
+    let (_registry, m, _, _) = synced_machine(&root);
+    let sessions = root.join(".krowk").join("sessions");
+    let id = session(&sessions, &root, "continued after it was restored", 20);
+    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    assert!(ok, "{out}");
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    let old = krowk_harness::vintage::read_stub(&sessions, &id).unwrap().vintage;
+    // As if it was restored, continued a day, and archived again into a
+    // vintage the registry no longer serves.
+    let stub_path = sessions.join(&id).join(krowk_harness::vintage::STUB_FILE);
+    let mut newer: Value = serde_json::from_slice(&std::fs::read(&stub_path).unwrap()).unwrap();
+    newer["lastActiveMs"] = Value::from(newer["lastActiveMs"].as_i64().unwrap() + DAY_MS);
+    newer["vintage"] = Value::String("art_gone".into());
+    std::fs::write(&stub_path, serde_json::to_vec(&newer).unwrap()).unwrap();
+
+    let (ok, _, out) = m.krowk(&["sessions", "restore", &id]);
+    assert!(!ok && out.contains("older copy") && out.contains(&old), "refused, naming the vintage and what is older: {out}");
+    let (ok, _, out) = m.krowk(&["sessions", "show", &id]);
+    assert!(!ok && out.contains("\"restore_failed\""), "not shown past as a stub: {out}");
+    assert!(stub_path.is_file() && !sessions.join(&id).join(log::EVENTS_FILE).exists(), "left archived");
+
+    let (ok, v, out) = m.krowk(&["sessions", "restore", &id, "--from", &old]);
+    assert!(ok, "{out}");
+    assert!(v["data"]["warnings"].to_string().contains("older copy"), "restored as asked, and said to be older: {out}");
     let _ = std::fs::remove_dir_all(&root);
 }

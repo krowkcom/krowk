@@ -57,7 +57,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     } else if ctx.f.resume_pick {
         Some(pick(ctx)?)
     } else {
-        match ctx.f.resume.as_str() {
+        match ctx.f.resume.clone().as_str() {
             "" => None,
             r => Some(prompt::resolve_resume(ctx, &sessions_dir, r)?),
         }
@@ -284,7 +284,8 @@ impl Projector {
 /// restore `krowk --resume` runs, on the TUI's own thread. That thread
 /// outlives `ctx`, so it reads the process's environment, as `Projector`
 /// does, with this command's flags; what the restore would print goes
-/// nowhere, since the TUI owns the terminal, and its failure is said there.
+/// nowhere, since the TUI owns the terminal: its warnings and its failure
+/// are said there.
 fn restorer(ctx: &Ctx) -> krowk_tui::Restore {
     let f = ctx.f.clone();
     Arc::new(move |id: &str| {
@@ -294,7 +295,7 @@ fn restorer(ctx: &Ctx) -> krowk_tui::Restore {
             let env = |k: &str| std::env::var(k).unwrap_or_default();
             let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
             let quiet = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
-            sessions::restore_if_archived(&quiet, id).map(|_| ()).map_err(|e| e.fix())
+            sessions::restore_archived(&quiet, id).map(|r| r.map(|r| r.warnings).unwrap_or_default()).map_err(|e| e.fix())
         }
         #[cfg(not(unix))]
         {
@@ -307,7 +308,7 @@ fn restorer(ctx: &Ctx) -> krowk_tui::Restore {
 /// `krowk --resume`: the sessions picker, over krowk's own sessions. An
 /// archived one is marked, and comes back from its vintage once picked, as
 /// `krowk --resume <id>` brings it back (R-VINT-4).
-fn pick(ctx: &Ctx) -> Result<String, Error> {
+fn pick(ctx: &mut Ctx) -> Result<String, Error> {
     let conn = sessions::open_store(ctx)?;
     let rows = krowk_store::list_sessions(&conn, krowk_harness::project::HARNESS, "", sessions::DEFAULT_SESSION_LIMIT as i64)
         .map_err(|e| sessions::store_fail(&e, &sessions::db_path_string(ctx)))?;

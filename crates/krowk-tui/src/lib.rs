@@ -217,7 +217,9 @@ pub struct Daemon {
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
 
-pub type Restore = Arc<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
+/// Restores an archived session: what the person should know about the
+/// copy it came back from, or why it did not.
+pub type Restore = Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>;
 
 /// What the TUI routes once it is up (`Host::route_model`).
 pub struct Route {
@@ -317,6 +319,29 @@ type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
 type PasteFuture = Pin<Box<dyn Future<Output = paste::Pasted>>>;
+type RestoreFuture = Pin<Box<dyn Future<Output = (String, Result<Vec<String>, String>)>>>;
+
+/// What the TUI looks up off the runtime's thread between keys, one of
+/// them done.
+enum LookedUp {
+    Pr(String, Option<pr::Pr>),
+    Checks(Vec<krowk_harness::readiness::Report>),
+    Restored(String, Result<Vec<String>, String>),
+}
+
+/// The first of the pull request lookup, the readiness checks and the
+/// restore to finish; never, while none runs.
+async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>, restoring: &mut Option<RestoreFuture>) -> LookedUp {
+    tokio::select! {
+        biased;
+        (branch, found) = finish(pr) => LookedUp::Pr(branch, found),
+        reports = finish(checks) => LookedUp::Checks(reports),
+        (id, r) = finish(restoring) => LookedUp::Restored(id, r),
+    }
+}
+
+/// Under the prompt while an archived session comes back.
+const RESTORING: &str = "restoring from its vintage… · esc stops waiting";
 type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
 
 /// A daemon of an older krowk replaced as krowk starts, when it can be;
@@ -511,7 +536,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -678,6 +703,10 @@ struct Ui<'h> {
     ended: Option<(presence::State, String)>,
     project: Option<Project>,
     restore: Option<Restore>,
+    /// An archived session `/sessions` picked, coming back from its vintage
+    /// off the runtime's thread: keys, frames and Ctrl-C go on meanwhile,
+    /// and it is continued once it is back.
+    restoring: Option<RestoreFuture>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -1099,11 +1128,7 @@ impl<'h> Ui<'h> {
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
                 p = finish_paste(&mut self.pasting) => self.on_pasted(app, p),
                 (id, in_view, answer) = first_of(&mut self.stops) => stop_answered(app, &id, in_view, answer),
-                (branch, found) = finish(&mut self.pr) => self.on_pr(app, branch, found),
-                reports = finish(&mut self.checks) => {
-                    self.checks = None;
-                    self.marked(app, reports);
-                }
+                done = looked_up(&mut self.pr, &mut self.checks, &mut self.restoring) => self.on_looked_up(app, done).await,
                 r = finish(&mut self.routing) => self.on_routing(app, r, &mut reach),
                 ok = finish(&mut reach.probe) => {
                     reach.probe = None;
@@ -2066,7 +2091,8 @@ impl<'h> Ui<'h> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         app.touch();
-        app.flash = None;
+        // A restore under way stays said under the prompt, key or not.
+        app.flash = self.restoring.is_some().then(|| RESTORING.into());
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
         if let Some(done) = self.view_key(app, k).await {
             return done;
@@ -2580,6 +2606,8 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                 } else if app.running() {
                     self.interrupt(app).await;
+                } else if self.restoring.is_some() {
+                    self.stop_restoring(app);
                 }
             }
             KeyCode::Char('y') if ctrl => copy(app),
@@ -2623,6 +2651,8 @@ impl<'h> Ui<'h> {
                 return true;
             }
             self.interrupt(app).await;
+        } else if self.restoring.is_some() {
+            self.stop_restoring(app);
         } else if !app.editor.is_empty() {
             app.editor.clear();
         } else if self.held.is_some() || app.trust_question.is_some() {
@@ -2665,15 +2695,23 @@ impl<'h> Ui<'h> {
         // An archived one comes back from its vintage first, as `krowk
         // --resume` brings it back (R-VINT-4); one that cannot leaves the
         // session shown as it was, and says why.
+        // It reads the registry, so it runs as a task the loop waits on,
+        // and the session is continued when it is back (`on_restored`).
         if krowk_harness::vintage::is_archived(&self.sessions_dir, id) {
             let Some(restore) = self.restore.clone() else {
                 return app.notice(&format!("session {id} is archived — bring it back with krowk sessions restore {id}"));
             };
-            let owned = id.to_string();
-            let restored = tokio::task::spawn_blocking(move || restore(&owned)).await.unwrap_or_else(|e| Err(e.to_string()));
-            if let Err(e) = restored {
-                return app.notice(&format!("session {id} is archived and was not restored: {e}"));
+            if self.restoring.is_some() {
+                return app.notice("another session is still being restored — esc stops waiting for it");
             }
+            let owned = id.to_string();
+            app.flash = Some(RESTORING.into());
+            self.restoring = Some(Box::pin(async move {
+                let task = owned.clone();
+                let r = tokio::task::spawn_blocking(move || restore(&task)).await.unwrap_or_else(|e| Err(e.to_string()));
+                (owned, r)
+            }));
+            return;
         }
         // Read before anything is let go: a log that cannot be read leaves
         // the session shown as it was.
@@ -2715,6 +2753,45 @@ impl<'h> Ui<'h> {
         if let Some(m) = self.model.clone() {
             self.owe_trust(app, &m);
         }
+    }
+
+    /// A lookup done, handed to what waits on it.
+    async fn on_looked_up(&mut self, app: &mut App, done: LookedUp) {
+        match done {
+            LookedUp::Pr(branch, found) => self.on_pr(app, branch, found),
+            LookedUp::Checks(reports) => {
+                self.checks = None;
+                self.marked(app, reports);
+            }
+            LookedUp::Restored(id, r) => self.on_restored(app, &id, r).await,
+        }
+    }
+
+    /// An archived session `/sessions` picked is back, or is not: continued,
+    /// what the copy it came from warrants said first; or why not said, the
+    /// session shown left as it was.
+    async fn on_restored(&mut self, app: &mut App, id: &str, r: Result<Vec<String>, String>) {
+        self.restoring = None;
+        if app.flash.as_deref() == Some(RESTORING) {
+            app.flash = None;
+        }
+        match r {
+            Err(e) => app.notice(&format!("session {id} is archived and was not restored: {e}")),
+            Ok(warnings) => {
+                for w in &warnings {
+                    app.notice(w);
+                }
+                Box::pin(self.resume(app, id)).await;
+            }
+        }
+    }
+
+    /// Stops waiting for a restore under way: it may still finish, and
+    /// leave the session restored for the next `/sessions`.
+    fn stop_restoring(&mut self, app: &mut App) {
+        self.restoring = None;
+        app.flash = None;
+        app.notice("stopped waiting for the restore — should it still finish, /sessions continues the session from here");
     }
 
     /// `/new`: a fresh session in place of the one shown, on the same
