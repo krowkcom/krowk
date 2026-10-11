@@ -406,7 +406,28 @@ fn r_sub_9_a_childs_line_before_its_task_started_yields_the_same_events_in_the_s
         let before = moved[..to].iter().filter(|m| m["parent_tool_use_id"] == *call && m["type"] == "assistant").count();
         assert!(before >= 2, "{call}: its messages held before it started");
     }
+    // A count said before its agent started is kept and said once it has:
+    // the counts are checked apart, the same for each agent, and every
+    // other event in order.
+    let progress = |e: &EngineEvent| matches!(e, EngineEvent::BackendChild { event, .. } if matches!(**event, EngineEvent::Progress { .. }));
+    let counts = |evs: &[EngineEvent], task: &str| -> Vec<i64> {
+        evs.iter().filter_map(|e| match e {
+            EngineEvent::BackendChild { task_id, event } if task_id == task => match **event {
+                EngineEvent::Progress { tokens } => Some(tokens),
+                _ => None,
+            },
+            _ => None,
+        }).collect()
+    };
     let (want, got) = (children(&recorded), children(&moved));
+    for (_, a) in agents(&lines) {
+        let task = a["task_id"].as_str().unwrap();
+        let (want, got) = (counts(&want, task), counts(&got, task));
+        assert!(!want.is_empty(), "{task}");
+        assert_eq!(got, want, "{task}: a count said before it started is said once it has");
+    }
+    let without = |evs: Vec<EngineEvent>| evs.into_iter().filter(|e| !progress(e)).collect::<Vec<_>>();
+    let (want, got) = (without(want), without(got));
     // Each child's own events are the same, in the same order. Across
     // children the order moves with the task_started: a child's held lines
     // are said as it starts, where the other's were said in between.
@@ -473,4 +494,60 @@ fn r_sub_9_a_background_agent_is_a_child_whose_prompt_comes_from_task_started_an
     let first_result = s.iter().position(|m| m["type"] == "result").unwrap();
     let second_init = s.iter().enumerate().position(|(i, m)| i > first_result && m["subtype"] == "init").unwrap();
     assert!(children(&s[..second_init]).iter().any(|e| matches!(e, EngineEvent::BackendChildEnded { .. })));
+}
+
+/// R-SUB-9: each agent's token count is Claude Code's, from its
+/// `task_progress` and then its `task_notification` — its responses carry
+/// none — rising, and only while it runs.
+#[test]
+fn r_sub_9_a_childs_tokens_are_claude_codes_count_from_its_progress_and_its_end() {
+    let lines = recording("agents_parallel.txt");
+    let evs = children(&stream(&lines));
+    let id = |d: &str| agents(&lines).into_iter().find(|(_, a)| a["description"] == d).unwrap().1["task_id"].as_str().unwrap().to_string();
+    let counts = |task: &str| -> Vec<i64> {
+        evs.iter()
+            .filter_map(|e| match e {
+                EngineEvent::BackendChild { task_id, event } if task_id == task => match **event {
+                    EngineEvent::Progress { tokens } => Some(tokens),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(counts(&id("read notes")), [12422, 13052], "its progress, then its end's count");
+    // Stopped: its notification carries no usage.
+    assert_eq!(counts(&id("sleeper")), [12613]);
+    let reader = id("read notes");
+    let end = evs.iter().position(|e| matches!(e, EngineEvent::BackendChildEnded { task_id, .. } if *task_id == reader)).unwrap();
+    let last = evs.iter().rposition(|e| matches!(e, EngineEvent::BackendChild { task_id, event } if *task_id == reader && matches!(**event, EngineEvent::Progress { .. }))).unwrap();
+    assert!(last < end, "counted before it ends");
+}
+
+/// R-SUB-9: a `can_use_tool` is the agent's that asks — by its `agent_id`,
+/// or, a binary naming none, by the call it asks about, which was made in
+/// that agent's conversation — and the conversation's own call is nobody's.
+#[test]
+fn r_sub_9_a_childs_can_use_tool_is_found_its_agent_by_agent_id_or_by_its_call() {
+    let lines = recording("agents_parallel.txt");
+    let sleeper = agents(&lines).into_iter().find(|(_, a)| a["description"] == "sleeper").unwrap().1["task_id"].as_str().unwrap().to_string();
+    let mut c = Children::default();
+    let mut ask = None;
+    for l in &lines {
+        let Line::Printed(m) = l else { continue };
+        if m.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool") {
+            ask = Some(m["request"].clone());
+            break;
+        }
+        if !matches!(m["type"].as_str(), Some("control_request" | "control_response")) {
+            c.apply(m);
+        }
+    }
+    let ask = ask.expect("the sleeper asks");
+    let (agent, call) = (ask["agent_id"].as_str(), ask["tool_use_id"].as_str());
+    assert_eq!(c.asker(agent, call).as_deref(), Some(sleeper.as_str()), "by its agent_id");
+    assert_eq!(c.asker(None, call).as_deref(), Some(sleeper.as_str()), "by the call it asks about");
+    assert_eq!(c.asker(Some("not_an_agent"), call).as_deref(), Some(sleeper.as_str()));
+    assert_eq!(c.asker(None, Some("toolu_the_conversations_own")), None);
+    assert_eq!(c.asker(None, None), None);
 }

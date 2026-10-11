@@ -292,6 +292,14 @@ impl Approvals {
         self.lock().remove(id);
     }
 
+    /// Makes the request `id` one of `session_id`'s: a backend's agent asks
+    /// through its session's turn, and is answered as itself (R-SUB-9).
+    pub fn hand_to(&self, id: &str, session_id: &str) {
+        if let Some(w) = self.lock().get_mut(id) {
+            w.session_id = session_id.to_string();
+        }
+    }
+
     /// Answers the request `id` of `session_id`: with `answers` when it
     /// asked questions.
     pub fn answer(&self, session_id: &str, id: &str, decision: ApprovalDecision, answers: Vec<QuestionAnswer>) -> Result<(), String> {

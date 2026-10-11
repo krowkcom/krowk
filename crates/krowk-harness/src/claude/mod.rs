@@ -37,7 +37,7 @@
 //! | subtype | direction | what krowk does |
 //! |---|---|---|
 //! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
-//! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput` |
+//! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
 //! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`): a `gh` post carrying a bare krowk card link is denied, whatever the mode and the person's allow rules |
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
@@ -1447,7 +1447,32 @@ impl Proc {
     /// ExitPlanMode or EnterPlanMode moves it to default or plan for what
     /// follows.
     async fn answer(&mut self, msg: &Value, ask: &Answers, events: &Events, cancel: &tokio::sync::watch::Receiver<bool>) -> Result<(), EngineError> {
-        let answer = ask.answer(msg["request_id"].as_str().unwrap_or_default(), &msg["request"], Some((events, cancel))).await;
+        let id = msg["request_id"].as_str().unwrap_or_default();
+        let answer = match self.asker(&msg["request"]) {
+            Some(task_id) => {
+                // An agent's call: its request and its answer are the
+                // agent's events, sent under its own session (R-SUB-9).
+                let (tx, mut rx) = mpsc::channel(4);
+                let asked = async {
+                    let tx = tx;
+                    ask.answer(id, &msg["request"], Some((&tx, cancel))).await
+                };
+                let call = msg.pointer("/request/tool_use_id").and_then(Value::as_str).unwrap_or_default();
+                let told = async {
+                    let child = |ev| EngineEvent::BackendChild { task_id: task_id.clone(), event: Box::new(ev) };
+                    while let Some(ev) = rx.recv().await {
+                        if let EngineEvent::Approval(r) = &ev
+                            && !call.is_empty()
+                        {
+                            let _ = events.send(child(EngineEvent::AskedFor { request_id: r.request_id.clone(), call_id: call.into() })).await;
+                        }
+                        let _ = events.send(child(ev)).await;
+                    }
+                };
+                tokio::join!(asked, told).0
+            }
+            None => ask.answer(id, &msg["request"], Some((events, cancel))).await,
+        };
         if msg.pointer("/request/subtype").and_then(Value::as_str) == Some("can_use_tool")
             && answer.pointer("/response/response/behavior").and_then(Value::as_str) == Some("allow")
         {
@@ -1458,6 +1483,16 @@ impl Proc {
             }
         }
         self.send(&answer).await
+    }
+
+    /// The running agent a `can_use_tool` is of, by task id: Claude Code
+    /// names it (`agent_id`, recorded with 2.1.289), and the call it asks
+    /// about (`tool_use_id`) was made in its conversation.
+    fn asker(&self, req: &Value) -> Option<String> {
+        if req["subtype"] != "can_use_tool" {
+            return None;
+        }
+        self.status.children().asker(req["agent_id"].as_str(), req["tool_use_id"].as_str())
     }
 
     /// Claude Code's `init`: its mode taken, then the turn announced. What

@@ -1993,8 +1993,11 @@ impl App {
                 None => s.unpriced = true,
             },
             // Each replaces the last; an ended child's says nothing more.
-            StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, .. }) => {
+            StreamLine::Live(LiveEvent::SubagentStatus { status, tool, last_event_ms, waiting, tokens, .. }) => {
                 let running = *status == ChildState::Running;
+                // A backend's agent's responses carry no usage: its count
+                // is the backend's, on its status.
+                s.tokens = s.tokens.max(*tokens);
                 s.tool = tool.clone().filter(|_| running);
                 // Its stamp, or what arrived since, whichever is later.
                 s.last_event_ms = running.then(|| s.last_event_ms.map_or(*last_event_ms, |ms| ms.max(*last_event_ms)));
@@ -5364,6 +5367,31 @@ mod tests {
         let ended = row(&a, 60.0);
         assert!(!ended.contains("bash") && !ended.contains("quiet") && !ended.contains("waiting"), "{ended}");
         assert!(!a.status_bar().contains("waiting"), "{}", a.status_bar());
+    }
+
+    /// R-SUB-9: a Claude Code child's responses carry no usage, so its
+    /// row's tokens are its status's count, its last one at its end, and a
+    /// frame saying less takes nothing away.
+    #[test]
+    fn r_sub_9_a_claude_childs_row_counts_the_tokens_its_status_says() {
+        let mut a = App::new(Editor::new(None), 120, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
+        a.on_line(&log(LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }));
+        let t0 = Instant::now();
+        a.start_turn(t0);
+        let model = ModelRef { instance: "claude".into(), model: "sonnet".into() };
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "…"}) } }));
+        a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: Some("general-purpose".into()), model, ran_by: RanBy::Claude, backend_id: Some("a1".into()) }));
+        a.on_line(&child_log("k1", LogBody::ResponseCompleted { turn_id: "u".into(), response_id: None, model: "m".into(), usage: Usage::default(), stop_reason: None, item_ids: vec![] }));
+        let ms = super::wall_ms(t0);
+        let status = |tokens: i64, status: ChildState| live(LiveEvent::SubagentStatus { session_id: "k1".into(), status, tool: None, last_event_ms: ms, waiting: None, tokens });
+        a.on_line(&status(1200, ChildState::Running));
+        let row = listed_at(&a, t0).join("\n");
+        assert!(row.contains("1.2k tokens"), "{row}");
+        a.on_line(&status(1500, ChildState::Done));
+        let row = listed_at(&a, t0).join("\n");
+        assert!(row.contains("1.5k tokens"), "{row}");
+        a.on_line(&status(0, ChildState::Done));
+        assert!(listed_at(&a, t0).join("\n").contains("1.5k tokens"), "a frame saying less takes nothing away");
     }
 
     /// Three children started on `a`'s turn — k1, k2, k3, by `ran_by` —

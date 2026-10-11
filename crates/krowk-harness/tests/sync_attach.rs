@@ -1798,8 +1798,74 @@ fn fake_claude(w: &World, scenario: &Path) -> InstancesConfig {
     std::fs::write(config.join("fake-login"), "").unwrap();
     let mut env = std::collections::BTreeMap::new();
     env.insert("FAKE_CLAUDE_SCENARIO".to_string(), scenario.display().to_string());
+    env.insert("FAKE_CLAUDE_LOG".to_string(), w.root.join("fake-claude.log").display().to_string());
     let kind = krowk_harness::instances::InstanceKind::ClaudeCode { binary: Some(bin.display().to_string()), config_dir: Some(config.display().to_string()), env, args: Vec::new(), api_key_env: None, effort: None };
     InstancesConfig { instances: [("claude".to_string(), kind)].into_iter().collect(), ..Default::default() }
+}
+
+/// R-SUB-12, R-SUB-9: a Claude Code agent's approval is asked under its
+/// child session, and a viewer answers it as it answered the session's own
+/// before the agent had a session: B prompts, the recorded sleeper agent
+/// asks for its Bash, and B's answer under the child's id reaches Claude
+/// Code. An answer naming another session, or an id the session's log
+/// never named, is refused before it is looked up.
+#[tokio::test]
+async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() {
+    let w = World::new("claude-ask");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let raw = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut scenario = String::from("{\"type\":\"assistant\",\"message\":{\"model\":\"claude-sonnet-4-6\",\"id\":\"msg_hi\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"hello\"}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}},\"parent_tool_use_id\":null,\"session_id\":\"{{SESSION}}\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"hello\",\"session_id\":\"{{SESSION}}\"}\n---\n");
+    for m in &printed[init + 1..] {
+        match m["type"].as_str() {
+            Some("control_request") if m["request"]["subtype"] == "can_use_tool" => scenario.push_str(&format!("@ask {}\n", m["request"])),
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => scenario.push_str(&format!("{m}\n")),
+        }
+    }
+    let path = w.root.join("agents.jsonl");
+    std::fs::write(&path, scenario).unwrap();
+    w.serve_with(w.env(), "home", fake_claude(&w, &path));
+    let d = w.daemon().await;
+    let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let first = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap();
+    let session = first.session_id;
+    let (tx, mut rx) = mpsc::channel(4096);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let other = d.execute(ask(None, "another session"), tx).await.unwrap().unwrap().session_id;
+    let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+
+    v.commands.send(ask(Some(&session), "run two agents")).unwrap();
+    let asked = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))));
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, asked).await;
+    let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
+    assert_ne!(req.session_id, session, "the agent's own session asks");
+    let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(parent.iter().any(|e| matches!(&e.body, krowk_harness::protocol::LogBody::SubagentStarted { subagent_session_id, .. } if *subagent_session_id == req.session_id)), "one of the session's own children");
+
+    let mut ack = async |c: Command| {
+        v.commands.send(c).unwrap();
+        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+    };
+    let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
+    for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
+        let e = ack(answer(refused)).await;
+        assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
+    }
+    assert_eq!(ack(answer(&req.session_id)).await, None, "the session's own child's approval is answered");
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
+    assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
 }
 
 /// R-SUB-6, R-SUB-7: Claude Code's agents, written as child sessions, ride

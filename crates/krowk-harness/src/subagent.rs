@@ -774,8 +774,14 @@ pub(crate) struct ChildWatch {
     tools: Vec<(String, ChildTool)>,
     /// The requests waiting on the person, by request id.
     waiting: Vec<(String, Waiting)>,
+    /// The call each waiting request asks about, when the engine said
+    /// (`EngineEvent::AskedFor`).
+    asked: HashMap<String, String>,
     last_event_ms: i64,
     tokens: i64,
+    /// A backend's agent: its items come whole, a call's result started
+    /// and completed at once, so its tool runs from its call (`backend`).
+    at_call: bool,
 }
 
 impl ChildWatch {
@@ -786,7 +792,14 @@ impl ChildWatch {
     }
 
     pub fn new(session_id: &str) -> ChildWatch {
-        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), last_event_ms: krowk_store::now_ms(), tokens: 0 }
+        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), asked: HashMap::new(), last_event_ms: krowk_store::now_ms(), tokens: 0, at_call: false }
+    }
+
+    /// The watch of a backend's agent (R-SUB-7), whose items come whole:
+    /// a tool runs from its call, the only moment before its result, and
+    /// its tokens are the backend's count (`EngineEvent::Progress`).
+    pub fn backend(session_id: &str) -> ChildWatch {
+        ChildWatch { at_call: true, ..ChildWatch::new(session_id) }
     }
 
     /// Takes in what the child's engine said at `now`: true when its state
@@ -796,10 +809,15 @@ impl ChildWatch {
     pub fn note(&mut self, ev: &EngineEvent, now: i64) -> bool {
         self.last_event_ms = now;
         match ev {
+            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } if self.at_call => {
+                self.tools.push((call_id.clone(), ChildTool { name: name.clone(), started_ms: now }));
+                true
+            }
             EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } => {
                 self.named.insert(call_id.clone(), name.clone());
                 false
             }
+            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { .. }, .. } if self.at_call => false,
             EngineEvent::ItemStarted { kind: ItemKind::ToolResult { call_id }, .. } => {
                 let name = self.named.remove(call_id).unwrap_or_default();
                 self.tools.push((call_id.clone(), ChildTool { name, started_ms: now }));
@@ -821,13 +839,28 @@ impl ChildWatch {
                 let before = self.waiting.len();
                 self.waiting.retain(|(r, _)| r != request_id);
                 let answered = self.waiting.len() != before;
-                if answered && let Some((_, t)) = self.tools.last_mut() {
+                // The call it asked about when known, else the latest.
+                let call = self.asked.remove(request_id);
+                let held = match &call {
+                    Some(c) => self.tools.iter_mut().find(|(id, _)| id == c),
+                    None => self.tools.last_mut(),
+                };
+                if answered && let Some((_, t)) = held {
                     t.started_ms = now;
                 }
                 answered
             }
+            EngineEvent::AskedFor { request_id, call_id } => {
+                self.asked.insert(request_id.clone(), call_id.clone());
+                false
+            }
             EngineEvent::ResponseCompleted { usage, .. } => {
                 self.tokens += usage.total();
+                true
+            }
+            // A count, never less than the last one.
+            EngineEvent::Progress { tokens } if *tokens > self.tokens => {
+                self.tokens = *tokens;
                 true
             }
             _ => false,
@@ -898,6 +931,51 @@ mod tests {
         theirs["backendId"] = "task_1".into();
         let claude: LogEvent = serde_json::from_value(theirs).unwrap();
         assert!(matches!(claude.body, LogBody::SubagentStarted { ran_by: RanBy::Claude, backend_id: Some(ref b), .. } if b == "task_1"));
+    }
+
+    /// R-SUB-9: a backend's agent's items come whole — its call's result
+    /// started and completed at once — so its tool runs from its call, is
+    /// none while it waits on the person, runs again from the answer, and
+    /// ends at its result; its tokens are the backend's count, never less.
+    #[test]
+    fn r_sub_9_a_backend_agents_tool_runs_from_its_call_and_its_tokens_are_the_backends_count() {
+        use crate::protocol::{ApprovalDecision, ApprovalRequest};
+        let mut w = ChildWatch::backend("k");
+        let call = Item::ToolCall { call_id: "c1".into(), name: "Bash".into(), input: serde_json::json!({}) };
+        let result = Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false };
+        let frame = |w: &ChildWatch| match w.frame(ChildState::Running) {
+            LiveEvent::SubagentStatus { tool, waiting, tokens, .. } => (tool.map(|t| (t.name, t.started_ms)), waiting, tokens),
+            other => panic!("{other:?}"),
+        };
+        assert!(w.note(&EngineEvent::Progress { tokens: 1200 }, 1));
+        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i1".into(), item: call }, 2));
+        assert_eq!(frame(&w), (Some(("Bash".into(), 2)), None, 1200), "running from its call");
+        let req = ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: "r1".into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `sleep 30`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() };
+        assert!(w.note(&EngineEvent::Approval(req), 3));
+        assert_eq!(frame(&w), (None, Some(Waiting::Approval), 1200), "waiting, in no call yet");
+        assert!(w.note(&EngineEvent::ApprovalResolved { request_id: "r1".into(), decision: ApprovalDecision::Allow }, 9));
+        assert_eq!(frame(&w), (Some(("Bash".into(), 9)), None, 1200), "its clock starts at the answer");
+        assert!(!w.note(&EngineEvent::Progress { tokens: 1100 }, 10), "a count never goes down");
+        assert!(w.note(&EngineEvent::Progress { tokens: 1300 }, 11));
+        assert!(!w.note(&EngineEvent::ItemStarted { item_id: "i2".into(), kind: ItemKind::ToolResult { call_id: "c1".into() } }, 20), "its result's start ends nothing");
+        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i2".into(), item: result }, 20));
+        assert_eq!(frame(&w), (None, None, 1300));
+        assert!(matches!(w.frame(ChildState::Done), LiveEvent::SubagentStatus { status: ChildState::Done, tool: None, waiting: None, tokens: 1300, .. }));
+        // Two calls in one message, the first asked about: its clock starts
+        // again at the answer, the other's runs on.
+        let mut w = ChildWatch::backend("k");
+        for (c, at) in [("c1", 2), ("c2", 3)] {
+            w.note(&EngineEvent::ItemCompleted { item_id: c.into(), item: Item::ToolCall { call_id: c.into(), name: "Bash".into(), input: serde_json::json!({}) } }, at);
+        }
+        assert!(!w.note(&EngineEvent::AskedFor { request_id: "r2".into(), call_id: "c1".into() }, 4));
+        w.note(&EngineEvent::Approval(req_for("r2")), 4);
+        w.note(&EngineEvent::ApprovalResolved { request_id: "r2".into(), decision: ApprovalDecision::Allow }, 9);
+        let started: Vec<(&str, i64)> = w.tools.iter().map(|(c, t)| (c.as_str(), t.started_ms)).collect();
+        assert_eq!(started, [("c1", 9), ("c2", 3)]);
+    }
+
+    fn req_for(id: &str) -> crate::protocol::ApprovalRequest {
+        crate::protocol::ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() }
     }
 
     #[test]

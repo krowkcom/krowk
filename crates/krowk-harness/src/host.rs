@@ -331,9 +331,14 @@ impl ChildHeld {
 }
 
 impl Drop for ChildHeld {
+    /// Let go however it ended — in a turn, between turns, its log lost,
+    /// its process gone: no longer running here, and a request handed to
+    /// it (`Approvals::hand_to`) that its turn never forgot goes with it,
+    /// which the parent's turn's end no longer covers.
     fn drop(&mut self) {
         if let Some(s) = self.shared.upgrade() {
             s.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&self.id);
+            s.approvals.forget_session(&self.id);
         }
     }
 }
@@ -1953,6 +1958,9 @@ async fn child_line(state: &tokio::sync::Mutex<BackendChildren>, task_id: &str, 
         EngineEvent::ItemDelta { item_id, delta } => Ok(Some(StreamLine::Live(LiveEvent::ItemDelta { session_id: child, turn_id, item_id, delta }))),
         EngineEvent::ItemCompleted { item_id, item } => c.log.append_off(LogBody::ItemCompleted { turn_id, item_id, item }).await.map(|e| Some(StreamLine::Log(e))),
         EngineEvent::ResponseCompleted { response_id, model, usage, stop_reason, item_ids } => c.log.append_off(LogBody::ResponseCompleted { turn_id, response_id, model, usage, stop_reason, item_ids }).await.map(|e| Some(StreamLine::Log(e))),
+        // A call it asks about is its own: the card says which agent asks.
+        EngineEvent::Approval(req) => Ok(Some(StreamLine::Live(LiveEvent::ApprovalRequested(crate::protocol::ApprovalRequest { session_id: child, turn_id, ..req })))),
+        EngineEvent::ApprovalResolved { request_id, decision } => Ok(Some(StreamLine::Live(LiveEvent::ApprovalResolved { session_id: child, turn_id, request_id, decision }))),
         _ => Ok(None),
     };
     match line {
@@ -2221,7 +2229,7 @@ impl Writer<'_> {
         self.log(LogBody::SubagentStarted { turn_id: self.turn_id.clone(), call_id, subagent_session_id: child.clone(), description, agent, model: model.clone(), ran_by, backend_id: Some(task_id.clone()) }).await?;
         let _ = self.out.send(StreamLine::Log(root)).await;
         let _ = self.out.send(StreamLine::Log(begun)).await;
-        let watch = ChildWatch::new(&child);
+        let watch = ChildWatch::backend(&child);
         self.live(watch.frame(ChildState::Running)).await;
         let mut st = state.lock().await;
         st.sessions.insert(task_id.clone(), child);
@@ -2232,9 +2240,31 @@ impl Writer<'_> {
     /// One event of a backend's running agent, as its own turn's
     /// (`child_line`). What is sent goes once the children are let go of:
     /// a stop or an approval takes them too.
+    ///
+    /// An approval it asks for is answered under its session: the request
+    /// waiting is handed to it before any client sees it. One of an agent
+    /// krowk does not follow is the session's own, never lost.
     async fn child_event(&self, session_id: &str, task_id: &str, ev: EngineEvent) {
+        let unfollowed = match &ev {
+            EngineEvent::Approval(req) => Some(LiveEvent::ApprovalRequested(req.clone())),
+            EngineEvent::ApprovalResolved { request_id, decision } => Some(LiveEvent::ApprovalResolved { session_id: session_id.into(), turn_id: self.turn_id.clone(), request_id: request_id.clone(), decision: *decision }),
+            _ => None,
+        };
+        let (lines, lost) = match &self.kids {
+            Some(k) => child_line(&k.state.state, task_id, ev).await,
+            None => (Vec::new(), None),
+        };
+        if lines.is_empty()
+            && let Some(ev) = unfollowed
+        {
+            return self.live(ev).await;
+        }
         let Some(k) = &self.kids else { return };
-        let (lines, lost) = child_line(&k.state.state, task_id, ev).await;
+        for l in &lines {
+            if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l {
+                k.shared.approvals.hand_to(&r.request_id, &r.session_id);
+            }
+        }
         for l in lines {
             let _ = self.out.send(l).await;
         }
@@ -2349,8 +2379,9 @@ impl Writer<'_> {
             EngineEvent::BackendAgents { agents } => {
                 self.live(LiveEvent::BackendAgents { session_id: session_id.into(), agents }).await;
             }
-            // Said between turns only, through the backend's `Idle`.
-            EngineEvent::Unprompted { .. } | EngineEvent::Woke => {}
+            // Said between turns only, through the backend's `Idle`; an
+            // agent's progress, only as that agent's.
+            EngineEvent::Unprompted { .. } | EngineEvent::Woke | EngineEvent::Progress { .. } | EngineEvent::AskedFor { .. } => {}
             // A backend's agent's own conversation, into its child session;
             // its calls are metered as `SubagentResponse` above, once.
             ev @ (EngineEvent::BackendChildStarted { .. } | EngineEvent::BackendChild { .. } | EngineEvent::BackendChildEnded { .. }) => self.backend_child(ev, session_id, model).await?,
