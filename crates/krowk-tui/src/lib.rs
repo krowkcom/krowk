@@ -3552,7 +3552,7 @@ fn child_key(app: &mut App, k: KeyEvent) -> Option<child::Key> {
 }
 
 /// What a turn's end leaves on the root record (R-PRES-3): done with the
-/// topic, error with the failure's first line (the topic when it has
+/// topic, error with the failure's first line (the prompt's when it has
 /// none), and nothing, idle, after an interrupt or a turn whose result
 /// this client never got.
 fn turn_ended(r: &Result<Option<RunResult>, EngineError>, topic: &str) -> Option<(presence::State, String)> {
