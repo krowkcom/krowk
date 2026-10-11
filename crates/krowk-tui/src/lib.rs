@@ -2209,8 +2209,7 @@ impl<'h> Ui<'h> {
             KeyCode::Up | KeyCode::Down => app.agent_move(if k.code == KeyCode::Up { -1 } else { 1 }),
             KeyCode::Enter => {
                 if let Some(id) = app.agent_selected() {
-                    let history = self.child_history(&id);
-                    app.open_child(&id, history);
+                    self.open_child(app, &id);
                 }
             }
             KeyCode::Char('x') => {
@@ -2229,8 +2228,7 @@ impl<'h> Ui<'h> {
         match child_key(app, k)? {
             child::Key::Sibling(by) => {
                 if let Some(id) = app.child_sibling(by) {
-                    let history = self.child_history(&id);
-                    app.open_child(&id, history);
+                    self.open_child(app, &id);
                 }
             }
             child::Key::Stop => {
@@ -2243,13 +2241,13 @@ impl<'h> Ui<'h> {
         Some(false)
     }
 
-    /// Child `id`'s history for the child view: its log, or, on a synced
-    /// session, where no child has a log here, its events as the session's
-    /// chunks and stream brought them (R-SUB-12).
-    fn child_history(&self, id: &str) -> Result<Vec<krowk_harness::protocol::LogEvent>, String> {
+    /// The child view on child `id`, its history read now: its log, or, on
+    /// a synced session, where no child has a log here, its events as the
+    /// session's chunks and stream brought them, replayed whole (R-SUB-12).
+    fn open_child(&self, app: &mut App, id: &str) {
         match self.host.synced() {
-            Some(s) => Ok(s.child_history(id)),
-            None => read_child(&self.sessions_dir, id),
+            Some(s) => app.open_child_synced(id, s.child_history(id)),
+            None => app.open_child(id, read_child(&self.sessions_dir, id)),
         }
     }
 

@@ -103,14 +103,42 @@ impl Children {
         }
     }
 
-    /// Child `id`'s events in its log's order. They arrive in another
-    /// order at times — a catch-up after the live lines it fills in
-    /// before, at attach or after a gap — and the child view walks the
-    /// log back from the last: ordered by id, which krowk mints rising
-    /// (time, then a counter) for every event a host writes.
+    /// Child `id`'s events in its log's order, as far as they show it.
+    /// They arrive in another order at times — a catch-up after the live
+    /// lines it fills in before, at attach or after a gap — and ids are
+    /// minted rising only within one process, so neither order is the log's.
+    /// A child's log has no forks: each event names the one before it. Each
+    /// run of events linked that way is kept in its links' order, and the
+    /// runs, where a link is missing (not arrived yet), go by their first
+    /// event's id. The child view replays them all (`ChildView::open`,
+    /// `whole`), so nothing is dropped for a link not here yet.
     fn of(&self, id: &str) -> Vec<LogEvent> {
-        let mut out: Vec<LogEvent> = self.events.iter().filter(|e| e.session_id == id).cloned().collect();
-        out.sort_by(|a, b| a.id.cmp(&b.id));
+        let mine: Vec<&LogEvent> = self.events.iter().filter(|e| e.session_id == id).collect();
+        let ids: std::collections::HashSet<&str> = mine.iter().map(|e| e.id.as_str()).collect();
+        let mut next: std::collections::HashMap<&str, &LogEvent> = std::collections::HashMap::new();
+        let mut firsts = Vec::new();
+        for e in &mine {
+            match e.parent_id.as_deref().filter(|p| ids.contains(p)) {
+                Some(p) => {
+                    next.entry(p).or_insert(e);
+                }
+                None => firsts.push(*e),
+            }
+        }
+        firsts.sort_by(|a, b| a.id.cmp(&b.id));
+        let mut out: Vec<LogEvent> = Vec::with_capacity(mine.len());
+        let mut placed = std::collections::HashSet::new();
+        for first in firsts {
+            let mut at = Some(first);
+            while let Some(e) = at.filter(|e| placed.insert(e.id.as_str())) {
+                out.push(e.clone());
+                at = next.get(e.id.as_str()).copied();
+            }
+        }
+        // A cycle has no first: what is left goes last, by id.
+        let mut rest: Vec<&LogEvent> = mine.into_iter().filter(|e| !placed.contains(e.id.as_str())).collect();
+        rest.sort_by(|a, b| a.id.cmp(&b.id));
+        out.extend(rest.into_iter().cloned());
         out
     }
 }
@@ -234,8 +262,9 @@ impl SyncLink {
         self.watch.subscribe()
     }
 
-    /// Child `id`'s logged events, in its log's order, as the session's
-    /// chunks and stream have brought them: its history for the child view.
+    /// Child `id`'s logged events, in its log's order as far as their links
+    /// show it (`Children::of`), as the session's chunks and stream have
+    /// brought them: its history for the child view, replayed whole.
     pub fn child_history(&self, id: &str) -> Vec<LogEvent> {
         lock(&self.children).of(id)
     }
@@ -513,6 +542,30 @@ mod tests {
         assert_eq!(krowk_harness::log::branch(&history, &head).iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["c1", "c2", "c3", "c4", "c5"], "the child view's walk reaches every one");
         assert_eq!(ids(&kept.of("k2")), ["d1"]);
         assert!(kept.of("s").is_empty(), "the session's own is its replay's, not kept twice");
+    }
+
+    /// R-SUB-12: a child's events are ordered by their links, not their
+    /// ids, which rise only within the process that minted them: a host
+    /// whose clock went back between two runs of the child still reads in
+    /// its log's order. A run whose link has not arrived goes by its first
+    /// id, after the runs before it.
+    #[test]
+    fn r_sub_12_a_childs_history_follows_its_links_whatever_its_ids_say() {
+        use krowk_harness::protocol::Item;
+        let ev = |id: &str, parent: Option<&str>| LogEvent { id: id.into(), parent_id: parent.map(String::from), session_id: "k1".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::user(id) } };
+        let mut kept = super::Children::default();
+        // Minted by a later run whose clock was behind: ids that sort first.
+        for e in [ev("05", None), ev("06", Some("05")), ev("01", Some("06")), ev("02", Some("01"))] {
+            kept.keep("s", &e);
+        }
+        let ids = |h: Vec<LogEvent>| h.into_iter().map(|e| e.id).collect::<Vec<_>>();
+        assert_eq!(ids(kept.of("k1")), ["05", "06", "01", "02"], "the links' order");
+        // A gap: 07 names 03, which has not arrived.
+        let mut gap = super::Children::default();
+        for e in [ev("07", Some("03")), ev("01", None), ev("02", Some("01"))] {
+            gap.keep("s", &e);
+        }
+        assert_eq!(ids(gap.of("k1")), ["01", "02", "07"]);
     }
 
     /// D11, R-SUB-12: a subagent's approval names its own session, which

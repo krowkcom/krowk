@@ -2135,6 +2135,16 @@ impl App {
     /// The child view on child `sid` (R-SUB-11): `history`, its log as
     /// read (or why it could not be), then what arrives of it live.
     pub fn open_child(&mut self, sid: &str, history: Result<Vec<LogEvent>, String>) {
+        self.open_child_as(sid, history, false);
+    }
+
+    /// `open_child` with `history` replayed whole (`ChildView::open`): what
+    /// a synced session brought of the child (R-SUB-12).
+    pub fn open_child_synced(&mut self, sid: &str, history: Vec<LogEvent>) {
+        self.open_child_as(sid, Ok(history), true);
+    }
+
+    fn open_child_as(&mut self, sid: &str, history: Result<Vec<LogEvent>, String>, whole: bool) {
         // Opened from the overlay: the order ← → step through, held.
         if self.child.is_none() {
             let children = self.children();
@@ -2151,7 +2161,7 @@ impl App {
         });
         let mut app = App::new(Editor::new(None), self.room, self.settings.clone(), None, None);
         app.set_rows(self.screen_rows);
-        self.child = Some(crate::child::ChildView::open(sid, app, history, under_way));
+        self.child = Some(crate::child::ChildView::open(sid, app, history, whole, under_way));
         self.dirty = true;
     }
 
