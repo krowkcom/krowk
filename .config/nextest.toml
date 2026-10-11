@@ -26,11 +26,11 @@ switch = { max-threads = 1 }
 slow-timeout = { period = "60s", terminate-after = 5 }
 
 # The long tail starts first. The symlink-race tests run thousands of tool
-# calls each (up to two minutes) and the relay ones half a minute or more;
+# calls each (up to two minutes), and a relay conformance one over a minute;
 # started last, as they were, the rest of the run waited on them. Started
 # first, they run alongside it.
 [[profile.default.overrides]]
-filter = "binary(r192b_escapes) | binary(relay_conformance) | binary(relay_invariant) | binary(sync_attach)"
+filter = "binary(r192b_escapes) | binary(relay_conformance)"
 priority = 100
 
 [[profile.default.overrides]]
