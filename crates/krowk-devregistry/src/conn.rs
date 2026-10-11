@@ -137,12 +137,21 @@ fn serve(open: &Open, handler: &Handler, stream: TcpStream, remote: SocketAddr) 
                 Some(Err(_)) => return writer.write_all(b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"),
             }
         };
-        let answer = handler(&head, &mut body);
+        // A handler that panics is a registry bug: answered 500 and closed,
+        // as tiny_http did, rather than left with the client waiting.
+        let answer = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| handler(&head, &mut body))) {
+            Ok(a) => a,
+            Err(_) => {
+                close = true;
+                Answer { status: 500, headers: vec![], body: vec![], undo: None }
+            }
+        };
         // What the handler left unread comes off before the next request
         // can be; too much of it, and the connection goes instead.
+        let mut unread = false;
         match io::copy(&mut (&mut body).take(DRAIN_MAX + 1), &mut io::sink()) {
             Ok(n) if n <= DRAIN_MAX => {}
-            _ => close = true,
+            _ => (close, unread) = (true, true),
         }
         drop(body);
         close |= answer.headers.iter().any(|(k, v)| k.eq_ignore_ascii_case("Connection") && v.eq_ignore_ascii_case("close"));
@@ -154,7 +163,29 @@ fn serve(open: &Open, handler: &Handler, stream: TcpStream, remote: SocketAddr) 
             return wrote;
         }
         if close {
+            if unread {
+                linger(&writer, &mut reader);
+            }
             return Ok(());
+        }
+    }
+}
+
+/// Closing on a body still arriving: a close with bytes unread sends a
+/// reset, which can reach the client before the answer does. Go's server
+/// shuts its side and reads on a moment first (`closeWriteAndWait`); so
+/// does this, for up to a second.
+fn linger(writer: &TcpStream, reader: &mut impl Read) {
+    let _ = writer.shutdown(Shutdown::Write);
+    let _ = writer.set_read_timeout(Some(std::time::Duration::from_millis(100)));
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let mut buf = [0u8; 16384];
+    while std::time::Instant::now() < until {
+        match reader.read(&mut buf) {
+            Ok(0) => return,
+            Ok(_) => {}
+            Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {}
+            Err(_) => return,
         }
     }
 }
@@ -319,6 +350,45 @@ mod tests {
         Chunked { inner: &mut wire, left: 0, done: false }.read_to_string(&mut out).unwrap();
         assert_eq!(out, "Wikipedia");
         assert_eq!(wire, b"NEXT", "the trailers are read off and the next request left");
+    }
+
+    /// A handler that panics answers 500 and closes, the client not left
+    /// waiting; one that refuses a large body unread still gets its answer
+    /// to the client, not a reset.
+    #[test]
+    fn a_panic_is_a_500_and_an_unread_body_still_gets_its_answer() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let open = Arc::new(Open::default());
+        let handler: Arc<Handler> = Arc::new(|h: &Head, _: &mut dyn Read| {
+            assert!(h.target != "/panic", "a registry bug");
+            Answer { status: 403, headers: vec![], body: b"no".to_vec(), undo: None }
+        });
+        let o = Arc::clone(&open);
+        let t = thread::spawn(move || accept(&listener, &o, &handler));
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        s.write_all(b"GET /panic HTTP/1.1\r\nHost: x\r\n\r\n").unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.1 500 ") && out.contains("Connection: close"), "{out}");
+
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+        let big = 4 * DRAIN_MAX as usize;
+        s.write_all(format!("PUT /x HTTP/1.1\r\nHost: x\r\nContent-Length: {big}\r\n\r\n").as_bytes()).unwrap();
+        let writer = s.try_clone().unwrap();
+        let sending = thread::spawn(move || {
+            let mut w = writer;
+            let _ = w.write_all(&vec![b'a'; big]);
+        });
+        let mut out = Vec::new();
+        let _ = s.read_to_end(&mut out);
+        let out = String::from_utf8_lossy(&out);
+        assert!(out.starts_with("HTTP/1.1 403 ") && out.ends_with("no"), "{out}");
+        let _ = sending.join();
+        open.stop(addr);
+        t.join().unwrap();
     }
 
     #[test]
