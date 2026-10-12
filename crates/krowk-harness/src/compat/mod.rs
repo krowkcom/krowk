@@ -33,14 +33,18 @@ pub struct Compat {
     /// The MCP servers the turn may use, started on first use and shared
     /// with its subagents (`crate::mcp`).
     pub mcp: std::sync::Arc<crate::mcp::Mcp>,
+    /// The MCP servers left out because their name or config could not be
+    /// used, each named with why: said to the person, never dropped quietly.
+    pub mcp_skipped: Vec<String>,
 }
 
 impl Compat {
     /// Everything that applies in `cwd`, with the hooks the settings named.
     pub fn load(cfg: &Config, cwd: &Path, hooks: Hooks) -> Compat {
         let project_dir = crate::trust::root(cwd);
-        let mcp = std::sync::Arc::new(crate::mcp::Mcp::new(crate::mcp::discover(cfg, cwd)));
-        Compat { instructions: instructions::discover(cfg, cwd), skills: skills::discover(cfg, cwd), hooks, project_dir, mcp, ..Compat::default() }
+        let (servers, mcp_skipped) = crate::mcp::discover(cfg, cwd);
+        let mcp = std::sync::Arc::new(crate::mcp::Mcp::new(servers));
+        Compat { instructions: instructions::discover(cfg, cwd), skills: skills::discover(cfg, cwd), hooks, project_dir, mcp, mcp_skipped, ..Compat::default() }
     }
 
     /// What the native system prompt carries after its own few lines: the

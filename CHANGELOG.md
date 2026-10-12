@@ -343,6 +343,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **krowk's own agent reads your MCP setup as Claude Code does.** A
+  repository's `.mcp.json` servers now follow Claude Code's
+  `enabledMcpjsonServers`, `disabledMcpjsonServers` and
+  `enableAllProjectMcpServers`, from Claude Code's settings, the project's
+  `.claude/settings.json` and `.claude/settings.local.json`, and its entry
+  in `~/.claude.json`: a disabled server stays off, and once an enabled
+  list is set only the servers it names start. Trust is still asked first.
+  The servers you added for a project with `claude mcp add` in a
+  subdirectory of a repository are found again, since krowk now looks the
+  project up in `~/.claude.json` by the directory you started in before
+  the repository's root.
+- **An MCP server that writes junk can no longer hold a call for ten
+  minutes.** A stdio server that writes line after line that isn't
+  JSON-RPC while krowk waits for its answer is stopped after 1,000 lines
+  or 1 MiB of it, and the call fails naming the server. A banner, a few
+  log lines and its notifications still pass.
+- **A server that krowk leaves out is named.** An MCP server whose name a
+  rule couldn't name one way (`a__b`) or whose config doesn't parse is
+  skipped with a notice saying which and why, instead of silently. And
+  `krowk -p` in a repository you haven't trusted now says that its
+  `.mcp.json` servers won't start, and how to trust it, as the TUI does.
+- **A `.claude/settings.json` that is a FIFO no longer hangs krowk.** It
+  is now named as not a plain file, as a `.mcp.json` already was, and a
+  settings file over 4 MiB is refused the same way.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer
