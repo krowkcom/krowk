@@ -399,6 +399,18 @@ async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>,
 /// back to bring krowk.db up to date.
 const RESTORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
 
+/// Whether a session is archived in a vintage: vintages are unix-only, as
+/// sync is, so elsewhere none is.
+fn archived(sessions: &std::path::Path, id: &str) -> bool {
+    #[cfg(unix)]
+    return krowk_harness::vintage::is_archived(sessions, id);
+    #[cfg(not(unix))]
+    {
+        let _ = (sessions, id);
+        false
+    }
+}
+
 /// Under the prompt while an archived session comes back.
 const RESTORING: &str = "restoring from its vintage… · esc stops waiting";
 type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
@@ -2831,7 +2843,7 @@ impl<'h> Ui<'h> {
         // session shown as it was, and says why.
         // It reads the registry, so it runs as a task the loop waits on,
         // and the session is continued when it is back (`on_restored`).
-        if krowk_harness::vintage::is_archived(&self.sessions_dir, id) {
+        if archived(&self.sessions_dir, id) {
             let Some(restore) = self.restore.clone() else {
                 return app.notice(&format!("session {id} is archived — bring it back with krowk sessions restore {id}"));
             };
@@ -2947,7 +2959,7 @@ impl<'h> Ui<'h> {
     /// unprojected.
     async fn settle_restore(&mut self) {
         let Some(r) = self.restoring.take() else { return };
-        if !krowk_harness::vintage::is_archived(&self.sessions_dir, &r.id) {
+        if !archived(&self.sessions_dir, &r.id) {
             let _ = tokio::time::timeout(RESTORE_SETTLE, r.done).await;
         }
     }
