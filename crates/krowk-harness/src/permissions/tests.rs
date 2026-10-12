@@ -785,3 +785,31 @@ fn wt8_a_repositorys_worktree_setup_is_read_and_asks_for_trust() {
     let e = Policy::load(&Config::default(), &d).unwrap_err();
     assert!(e.contains(".krowk/config.json") && e.contains("setupTimeout must be at least 1"), "{e}");
 }
+
+/// R-PERM-1: a repository's `.claude/settings.json` is read before the
+/// trust question (`widens`), so a FIFO there is an error naming it, never
+/// a hang — and a regular file over the cap is refused the same way.
+#[cfg(unix)]
+#[test]
+fn r_perm_1_a_fifo_claude_settings_does_not_hang_the_trust_probe() {
+    let d = repo("fifo-settings");
+    std::fs::create_dir_all(d.join(".claude")).unwrap();
+    let fifo = d.join(".claude/settings.json");
+    assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let at = d.clone();
+    std::thread::spawn(move || tx.send((settings::widens(&Config::default(), &at), settings::load(&Config::default(), &at).map(|_| ()))).unwrap());
+    let got = rx.recv_timeout(std::time::Duration::from_secs(3));
+    if got.is_err() {
+        let _ = std::fs::OpenOptions::new().write(true).open(&fifo);
+    }
+    let (widens, loaded) = got.expect("reading a FIFO settings.json hung");
+    assert!(!widens);
+    let e = loaded.unwrap_err();
+    assert!(e.contains(".claude/settings.json") && e.contains("not a plain file"), "{e}");
+    std::fs::remove_file(&fifo).unwrap();
+    std::fs::write(&fifo, vec![b' '; (4 << 20) + 1]).unwrap();
+    let e = settings::load(&Config::default(), &d).map(|_| ()).unwrap_err();
+    let _ = std::fs::remove_dir_all(&d);
+    assert!(e.contains("over 4 MiB"), "{e}");
+}

@@ -11,16 +11,33 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **An agent definition can name the MCP servers its subagent may use.**
+  In its `tools:` list, `mcp__github` gives the subagent the whole
+  `github` server and `mcp__linear__create_issue` that one tool, as in
+  Claude Code; `Mcp(github)` and `Mcp(linear:create_issue)` work too, and
+  `mcp__*` gives it every server. A name krowk can't read, such as the
+  pattern `mcp__github__get_*`, is left out with a notice. Such
+  a subagent gets `mcp_search` and `mcp_call` for those alone: its
+  searches find nothing elsewhere, a call to any other server or tool is
+  refused before it runs, and a server it can't use isn't started for it.
+  Your permission rules and hooks still apply on top. These names used to
+  be dropped, so a definition with a `tools:` line got no MCP at all; one
+  without a `tools:` line still reaches every server.
 - **A synced session goes direct on your LAN without Tailscale.** With
   `KROWK_DIRECT_LAN=1`, a host whose Tailscale isn't running now listens
   on its own LAN addresses instead of leaving everything to the relay,
   and advertises that listener over mDNS. A viewer on the same network
-  finds it there as well as in the host's welcome, and the session moves
-  onto it, shown as "direct over LAN". Getting in still takes the
+  moves onto it, shown as "direct over LAN". When the host's LAN address
+  changes, say after a DHCP renewal or switching Wi-Fi, it listens on the
+  new address within a few seconds, and a viewer whose welcome named the
+  old one finds the new one over mDNS. Getting in still takes the
   registry's ticket and your device's key, exactly as on the relay. The
   mDNS name is a hash of the session id, so the network learns that a
   krowk session is hosted at an address, never which one. A viewer only
-  queries mDNS when its host offered a LAN address. Two machines behind
+  queries mDNS when its host offered a LAN address, and only dials what it
+  finds there once the host's own addresses have failed, so a device
+  answering on someone else's behalf can't pull it off a working path.
+  Container and VM bridges (Docker, libvirt and the like) are not offered. Two machines behind
   different NATs without Tailscale still go by the relay.
 - **krowk tells your terminal whether it is working or waiting on you.**
   Beside the window title, the TUI now sends an OSC 7501 report (the
@@ -358,6 +375,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
   for its whole life: a terminal tab that wouldn't finish closing, or a
   script waiting on a pipe that never ended. It now starts with nothing
   open but its log and `/dev/null`.
+- **krowk's own agent reads your MCP setup as Claude Code does.** A
+  repository's `.mcp.json` servers now follow Claude Code's
+  `enabledMcpjsonServers`, `disabledMcpjsonServers` and
+  `enableAllProjectMcpServers`, from Claude Code's settings, the project's
+  `.claude/settings.json` and `.claude/settings.local.json`, and its entry
+  in `~/.claude.json`: a disabled server stays off, and once an enabled
+  list is set only the servers it names start. Trust is still asked first.
+  The servers you added for a project with `claude mcp add` in a
+  subdirectory of a repository are found again, since krowk now looks the
+  project up in `~/.claude.json` by the directory you started in before
+  the repository's root.
+- **An MCP server that writes junk can no longer hold a call for ten
+  minutes.** A stdio server that writes line after line that isn't
+  JSON-RPC while krowk waits for its answer is stopped after 1,000 lines
+  or 1 MiB of it, and the call fails naming the server. A banner, a few
+  log lines and its notifications still pass.
+- **A server that krowk leaves out is named.** An MCP server whose name a
+  rule couldn't name one way (`a__b`) or whose config doesn't parse is
+  skipped with a notice saying which and why, instead of silently. And
+  `krowk -p` in a repository you haven't trusted now says that its
+  `.mcp.json` servers won't start, and how to trust it, as the TUI does.
+- **A `.claude/settings.json` that is a FIFO no longer hangs krowk.** It
+  is now named as not a plain file, as a `.mcp.json` already was, and a
+  settings file over 4 MiB is refused the same way.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

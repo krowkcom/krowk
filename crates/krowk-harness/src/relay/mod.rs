@@ -286,29 +286,78 @@ pub fn run_opened(listener: std::net::TcpListener, config: Config, Opened(state)
 /// Runs a relay on every one of `listeners` until `stop` turns true: a
 /// host's direct listener (R-NET-1), which goes with the bridge that runs
 /// it. Every connection it holds closes as it stops.
-pub fn run_until(listeners: Vec<std::net::TcpListener>, config: Config, mut stop: tokio::sync::watch::Receiver<bool>) -> Result<(), String> {
+pub fn run_until(listeners: Vec<std::net::TcpListener>, config: Config, stop: tokio::sync::watch::Receiver<bool>) -> Result<(), String> {
+    run_changing(listeners, config, stop, None)
+}
+
+/// A change to a running direct listener's addresses: one its machine took
+/// up, listened on and dialed as its origin; or one it lost, no longer
+/// listened on and no longer an origin. Connections already joined there
+/// are left to end by themselves.
+pub enum Change {
+    Add(std::net::TcpListener, String),
+    Remove(String),
+}
+
+/// `run_until`, with the addresses changing as `changes` says (ticket 27:
+/// a host on the LAN whose address moves).
+pub fn run_changing(listeners: Vec<std::net::TcpListener>, config: Config, mut stop: tokio::sync::watch::Receiver<bool>, changes: Option<tokio::sync::mpsc::UnboundedReceiver<Change>>) -> Result<(), String> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
+        let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()) });
+        // Each listener by the origin it answers as, `ws://` and its own
+        // address: what `Change::Remove` names.
+        let mut accepting: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
         for l in listeners {
-            l.set_nonblocking(true).map_err(|e| e.to_string())?;
-            let l = TcpListener::from_std(l).map_err(|e| e.to_string())?;
-            let relay = relay.clone();
-            tokio::task::spawn_local(async move {
-                loop {
-                    match l.accept().await {
-                        Ok((stream, peer)) => {
-                            tokio::task::spawn_local(admitted(stream, peer, relay.clone()));
+            let at = l.local_addr().map(|a| format!("ws://{a}")).map_err(|e| e.to_string())?;
+            accepting.insert(at, accept_on(l, &relay)?);
+        }
+        let Some(mut changes) = changes else {
+            let _ = stop.wait_for(|s| *s).await;
+            return Ok(());
+        };
+        loop {
+            tokio::select! {
+                _ = stop.wait_for(|s| *s) => return Ok(()),
+                c = changes.recv() => match c {
+                    Some(Change::Add(l, origin)) => {
+                        if let Ok(task) = accept_on(l, &relay) {
+                            relay.removed.borrow_mut().retain(|o| *o != origin);
+                            relay.added.borrow_mut().push(origin.clone());
+                            if let Some(old) = accepting.insert(origin, task) { old.abort(); }
                         }
-                        Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
                     }
-                }
-            });
+                    Some(Change::Remove(origin)) => {
+                        relay.added.borrow_mut().retain(|o| *o != origin);
+                        relay.removed.borrow_mut().push(origin.clone());
+                        if let Some(task) = accepting.remove(&origin) { task.abort(); }
+                    }
+                    None => break,
+                },
+            }
         }
         let _ = stop.wait_for(|s| *s).await;
         Ok(())
     })
+}
+
+/// Accepts connections on `l` for the relay, until the task is aborted.
+fn accept_on(l: std::net::TcpListener, relay: &Rc<Relay>) -> Result<tokio::task::AbortHandle, String> {
+    l.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let l = TcpListener::from_std(l).map_err(|e| e.to_string())?;
+    let relay = relay.clone();
+    Ok(tokio::task::spawn_local(async move {
+        loop {
+            match l.accept().await {
+                Ok((stream, peer)) => {
+                    tokio::task::spawn_local(admitted(stream, peer, relay.clone()));
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    })
+    .abort_handle())
 }
 
 /// The tailnet check, when there is one, then the connection.
@@ -333,7 +382,7 @@ async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::f
         Some((lock, channels)) => (Some(lock), channels),
         None => (None, HashMap::new()),
     };
-    let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0) });
+    let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()) });
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -357,6 +406,11 @@ struct Relay {
     pending: RefCell<VecDeque<Pending>>,
     pending_ids: Cell<u64>,
     links: Cell<u64>,
+    /// Origins a host's direct listener took up while it ran
+    /// (`Change::Add`), beside `config.origins`.
+    added: RefCell<Vec<String>>,
+    /// Origins of `config.origins` it let go (`Change::Remove`).
+    removed: RefCell<Vec<String>>,
 }
 
 struct Pending {
@@ -793,8 +847,12 @@ async fn refused(ws: &mut Ws, env: Option<Env>, r: &Refusal) {
 async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Option<Env>, host: &str, ticket: (String, krowk_client::relay_ticket::Ticket), kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
     let limits = &relay.config.limits;
     let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
-    let listed = relay.config.origins.iter().filter_map(|o| e2e::canonical_origin(o)).collect::<Vec<_>>();
-    if !listed.is_empty() && !e2e::canonical_origin(&given).is_some_and(|o| listed.contains(&o)) {
+    let removed = relay.removed.borrow().iter().filter_map(|o| e2e::canonical_origin(o)).collect::<Vec<_>>();
+    let listed = relay.config.origins.iter().chain(relay.added.borrow().iter()).filter_map(|o| e2e::canonical_origin(o)).filter(|o| !removed.contains(o)).collect::<Vec<_>>();
+    // A listener that ever published an origin holds to them, even with
+    // every one let go: it never falls back to trusting `Host`.
+    let published = !relay.config.origins.is_empty() || !relay.added.borrow().is_empty() || !relay.removed.borrow().is_empty();
+    if published && !e2e::canonical_origin(&given).is_some_and(|o| listed.contains(&o)) {
         refused(ws, env, &refuse("bad_origin", format!("{given:?} is not an address this host published"), "dial one of the candidate addresses the host sent")).await;
         return None;
     }

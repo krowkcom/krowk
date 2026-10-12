@@ -770,13 +770,16 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, cursor: Option<([u8; 
             Ok::<_, String>((c, w, joined))
         });
     };
-    // A host that offers its LAN advertises it over mDNS too: what is
-    // found there for this session joins the race as it is found, each
-    // address once.
+    // A host that offers its LAN advertises it over mDNS too. Anyone on the
+    // LAN may answer for it, and a decoy can say `joined` with the host
+    // there as fast as it likes, so what is found there is tried only once
+    // every address the sealed welcome named has failed: it finds a host
+    // whose address changed, and never wins against one that has not.
     let (found_tx, mut found) = mpsc::unbounded_channel();
     if candidates.iter().any(Candidate::on_lan) {
         let session = crate::daemon::ws::uuid(&o.session);
-        tokio::task::spawn_blocking(move || super::mdns::browse(session, PROBE, found_tx));
+        let loopback = candidates.iter().any(|c| c.url.starts_with("ws://127."));
+        tokio::task::spawn_blocking(move || super::mdns::browse(session, PROBE, loopback, found_tx));
     } else {
         drop(found_tx);
     }
@@ -784,17 +787,23 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, cursor: Option<([u8; 
     for c in candidates {
         try_one(&mut set, c);
     }
-    let mut browsing = true;
+    let (mut browsing, mut welcomed_failed, mut waiting) = (true, false, Vec::new());
     loop {
+        if welcomed_failed {
+            for c in waiting.drain(..) {
+                try_one(&mut set, c);
+            }
+        }
         tokio::select! {
             r = set.join_next(), if !set.is_empty() => {
                 if let Some(Ok(Ok(w))) = r {
                     let _ = won.send(Some(w));
                     return;
                 }
+                welcomed_failed = welcomed_failed || set.is_empty();
             }
             c = found.recv(), if browsing => match c {
-                Some(c) if tried.insert(c.url.clone()) => try_one(&mut set, c),
+                Some(c) if tried.insert(c.url.clone()) => waiting.push(c),
                 Some(_) => {}
                 None => browsing = false,
             },
