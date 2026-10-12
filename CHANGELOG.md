@@ -15,12 +15,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `KROWK_DIRECT_LAN=1`, a host whose Tailscale isn't running now listens
   on its own LAN addresses instead of leaving everything to the relay,
   and advertises that listener over mDNS. A viewer on the same network
-  finds it there as well as in the host's welcome, and the session moves
-  onto it, shown as "direct over LAN". Getting in still takes the
+  moves onto it, shown as "direct over LAN". When the host's LAN address
+  changes, say after a DHCP renewal or switching Wi-Fi, it listens on the
+  new address within a few seconds, and a viewer whose welcome named the
+  old one finds the new one over mDNS. Getting in still takes the
   registry's ticket and your device's key, exactly as on the relay. The
   mDNS name is a hash of the session id, so the network learns that a
   krowk session is hosted at an address, never which one. A viewer only
-  queries mDNS when its host offered a LAN address. Two machines behind
+  queries mDNS when its host offered a LAN address, and only dials what it
+  finds there once the host's own addresses have failed, so a device
+  answering on someone else's behalf can't pull it off a working path.
+  Container and VM bridges (Docker, libvirt and the like) are not offered. Two machines behind
   different NATs without Tailscale still go by the relay.
 - **krowk tells your terminal whether it is working or waiting on you.**
   Beside the window title, the TUI now sends an OSC 7501 report (the
