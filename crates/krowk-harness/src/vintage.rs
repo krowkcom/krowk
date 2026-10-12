@@ -19,13 +19,16 @@
 //! summary, directory, dates, models and every turn's tokens, which is what
 //! the listing, search and cost read (R-VINT-3) — and the two log files go.
 //!
-//! **Restoring** (`restore`) is the reverse: the stub's week is fetched,
-//! checked against its digest, opened and unpacked, the session's two files
-//! are written back, and the stub goes (R-VINT-4).
+//! **Restoring** (`restore`) is the reverse: the vintage the stub names is
+//! fetched — else its week's current one, else one the registry still keeps
+//! after a newer one replaced it — checked against its digest, opened and
+//! unpacked, the session's two files are written back, and the stub goes
+//! (R-VINT-4).
 
 use crate::log::{self, CONTEXT_FILE, EVENTS_FILE};
 use crate::protocol::LogEvent;
-use krowk_api::Client;
+use krowk_api::sync::Vintage;
+use krowk_api::{fail, Client, Error};
 use krowk_client::e2e;
 use krowk_client::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
@@ -377,9 +380,23 @@ pub struct Keys {
 /// as replaced, and its sessions.
 fn fetch(client: &Client, keys: &Keys, week: &str) -> Result<Option<(String, Week)>, String> {
     let Some(v) = client.week_vintage(week).map_err(|e| e.fix())? else { return Ok(None) };
-    let sealed = client.read_vintage(&v).map_err(|e| e.fix())?;
-    let packed = e2e::open_vintage(&sealed, week, &keys.user).map_err(|e| e.to_string())?;
-    Ok(Some((v.slug, unpack(&packed)?)))
+    let lines = open(client, keys, &v)?;
+    Ok(Some((v.slug, lines)))
+}
+
+/// A listed vintage, current or replaced, read, checked and opened.
+fn open(client: &Client, keys: &Keys, v: &Vintage) -> Result<Week, String> {
+    let sealed = client.read_vintage(v).map_err(|e| e.fix())?;
+    let packed = e2e::open_vintage(&sealed, &v.week, &keys.user).map_err(|e| e.to_string())?;
+    unpack(&packed)
+}
+
+/// Every vintage of a week the registry keeps: its current one first, then
+/// those it replaced, newest replacement first.
+pub fn week_vintages(client: &Client, week: &str) -> Result<Vec<Vintage>, Error> {
+    let mut all: Vec<Vintage> = client.week_vintage(week)?.into_iter().collect();
+    all.extend(client.replaced_vintages(week)?);
+    Ok(all)
 }
 
 /// A session archived by a run: its id and the week it went into.
@@ -466,12 +483,214 @@ fn leave_stub(c: &Candidate) -> Result<(), String> {
     Ok(())
 }
 
-/// Brings an archived session back (R-VINT-4): its week's vintage fetched,
-/// checked and opened, its two files written back, the stub removed.
-pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Result<(), String> {
-    let stub = read_stub(sessions, id).ok_or_else(|| format!("session {id} is not archived on this machine"))?;
-    let (_, lines) = fetch(client, keys, &stub.week)?.ok_or_else(|| format!("the registry holds no vintage for {}, where session {id} was archived", stub.week))?;
-    let line = lines.get(id).ok_or_else(|| format!("the vintage for {} does not hold session {id} — the registry may have served an older one", stub.week))?;
+/// Brings an archived session back (R-VINT-4) and says which vintage it
+/// came from: fetched, checked and opened, its two files written back, the
+/// stub removed. The vintage it went into is read first — the slug its stub
+/// recorded, still its week's or replaced since — then the week's current
+/// one, then the week's replaced ones, newest first: a replacement that
+/// lost the session leaves it in the vintage it replaced for as long as
+/// the registry keeps that one. When the current one is the recorded one,
+/// or the stub records none, and holds the session, nothing else is asked.
+///
+/// A copy older than the stub records — fewer turns, or last active
+/// earlier — is never restored: it is what a replacement that lost the
+/// newer copy leaves behind, or what a registry rolled back serves, and
+/// restoring it would quietly drop what was said since. Restored from any
+/// vintage but the recorded one, it says so, and why each it passed over
+/// was — a digest or a seal that did not check out included.
+/// `waiting` is called before it waits for another krowk restoring it.
+pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Restored, Error> {
+    let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
+    let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
+    let current = client.week_vintage(&stub.week)?;
+    let mut tried = Vec::new();
+    if let Some(v) = current.as_ref().filter(|v| stub.vintage.is_empty() || v.slug == stub.vintage)
+        && let Some(line) = current_enough(client, keys, &stub, v, id, &mut tried)
+    {
+        unpack_session(sessions, id, &line).map_err(restore_failed)?;
+        return Ok(Restored { vintage: v.slug.clone(), ..Restored::default() });
+    }
+    // A listing that fails keeps its code — the registry unreachable is
+    // not the session lost — and what was read before it.
+    let replaced = client.replaced_vintages(&stub.week).map_err(|e| match tried.is_empty() {
+        true => e,
+        false => fail(&e.code(), failed(&stub.week, id, &tried, &format!("its replaced vintages could not be listed: {}", e.fix()))),
+    })?;
+    let (recorded, rest): (Vec<Vintage>, Vec<Vintage>) = replaced.into_iter().partition(|v| v.slug == stub.vintage);
+    let read_first = tried.first().map(|(slug, _)| slug.clone());
+    for v in recorded.iter().chain(current.iter().filter(|v| Some(&v.slug) != read_first.as_ref())).chain(&rest) {
+        if let Some(line) = current_enough(client, keys, &stub, v, id, &mut tried) {
+            unpack_session(sessions, id, &line).map_err(restore_failed)?;
+            let mut warnings = Vec::new();
+            if !stub.vintage.is_empty() && v.slug != stub.vintage && !tried.iter().any(|(s, _)| *s == stub.vintage) {
+                warnings.push(format!("session {id} was archived into vintage {}, which the registry no longer keeps", stub.vintage));
+            }
+            warnings.extend(tried.iter().map(|(slug, why)| format!("session {id} was restored from vintage {}, not {slug}: {slug} {why}", v.slug)));
+            return Ok(Restored { vintage: v.slug.clone(), warnings, already: false });
+        }
+    }
+    Err(restore_failed(failed(&stub.week, id, &tried, "")))
+}
+
+fn restore_failed(why: String) -> Error {
+    fail("restore_failed", why)
+}
+
+/// Why no vintage of `week` gave session `id` back: each one read, and why
+/// it was passed over, and `more` when there is more to say.
+fn failed(week: &str, id: &str, tried: &[(String, String)], more: &str) -> String {
+    let mut why: Vec<String> = tried.iter().map(|(slug, why)| format!("{slug} {why}")).collect();
+    if !more.is_empty() {
+        why.push(more.to_owned());
+    }
+    match why.is_empty() {
+        true => format!("the registry keeps no vintage for {week}, where session {id} was archived"),
+        false => format!("no vintage of {week} the registry keeps gave session {id} back ({})", why.join("; ")),
+    }
+}
+
+/// A restore's outcome: the vintage the session came from, and what the
+/// person should know about it — said on stderr, or in the TUI.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Restored {
+    pub vintage: String,
+    pub warnings: Vec<String>,
+    /// Another krowk restored it while this one waited its turn: its files
+    /// are back, and krowk.db is that krowk's to bring up to date.
+    pub already: bool,
+}
+
+/// The session's stub, locked for as long as it is held: one restore of a
+/// session at a time, across every krowk on the machine, so two never
+/// write its files over each other. None when, the lock had, the session
+/// is no longer archived — another restore brought it back meanwhile.
+/// `waiting` is called first when another krowk holds it. The lock is on
+/// the file opened, so it is checked to be the stub still at its path once
+/// had — a stub written again meanwhile is opened and locked afresh — and
+/// what a write cut short left beside the session's files is swept.
+fn hold(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Option<std::fs::File>, Error> {
+    use std::os::unix::fs::MetadataExt;
+    let path = sessions.join(id).join(STUB_FILE);
+    loop {
+        let stub = match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(e) => return Err(restore_failed(format!("open {}: {e}", path.display()))),
+        };
+        if stub.try_lock().is_err() {
+            waiting();
+            stub.lock().map_err(|e| restore_failed(format!("lock {}: {e}", path.display())))?;
+        }
+        let held = stub.metadata().map_err(|e| restore_failed(format!("stat {}: {e}", path.display())))?;
+        match std::fs::metadata(&path) {
+            Ok(now) if (now.dev(), now.ino()) != (held.dev(), held.ino()) => continue,
+            Ok(_) if is_archived(sessions, id) => {
+                sweep_temporaries(&sessions.join(id));
+                return Ok(Some(stub));
+            }
+            _ => return Ok(None),
+        }
+    }
+}
+
+/// How old a write's temporary must be before a restore takes it for one a
+/// crash left behind, rather than one being written.
+const STALE_TEMPORARY: std::time::Duration = std::time::Duration::from_secs(5 * 60);
+
+/// Removes the temporaries `write_private` left in `dir` — a krowk killed
+/// between writing one and renaming it — once they are past being written.
+fn sweep_temporaries(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let stale = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().is_ok_and(|age| age > STALE_TEMPORARY));
+        if name.starts_with('.') && name.ends_with(".tmp") && stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// What a restore that found the session already back says.
+fn restored_meanwhile(sessions: &Path, id: &str) -> Result<Restored, Error> {
+    match log::valid_id(id) && sessions.join(id).join(EVENTS_FILE).is_file() {
+        true => Ok(Restored { already: true, warnings: vec![format!("session {id} was restored meanwhile by another krowk")], ..Restored::default() }),
+        false => Err(restore_failed(format!("session {id} is not archived on this machine"))),
+    }
+}
+
+/// Brings an archived session back from vintage `slug` of its week, current
+/// or replaced, whichever the others hold: what a person picks when the
+/// one `restore` finds is not the one they want. A copy older than the stub
+/// records is restored here, since it was asked for by name, and said to be.
+pub fn restore_from(client: &Client, keys: &Keys, sessions: &Path, id: &str, slug: &str, waiting: &mut dyn FnMut()) -> Result<Restored, Error> {
+    let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id) };
+    let stub = read_stub(sessions, id).ok_or_else(|| restore_failed(format!("session {id} is not archived on this machine")))?;
+    let all = week_vintages(client, &stub.week)?;
+    let v = all.iter().find(|v| v.slug == slug).ok_or_else(|| restore_failed(format!("{slug} is no vintage of {} the registry keeps — `krowk sessions vintage {id}` lists them", stub.week)))?;
+    let mut tried = Vec::new();
+    let line = holding(client, keys, v, id, &mut tried).ok_or_else(|| restore_failed(format!("vintage {slug} {}", tried.pop().map(|(_, why)| why).unwrap_or_default())))?;
+    let warnings = older_than_stub(&stub, &line).map(|why| format!("session {id} was restored from vintage {slug}, which {why}")).into_iter().collect();
+    unpack_session(sessions, id, &line).map_err(restore_failed)?;
+    Ok(Restored { vintage: v.slug.clone(), warnings, already: false })
+}
+
+/// Session `id`'s line in vintage `v` when it is no older than the stub
+/// records; else none, and why kept in `tried`.
+fn current_enough(client: &Client, keys: &Keys, stub: &Stub, v: &Vintage, id: &str, tried: &mut Vec<(String, String)>) -> Option<Line> {
+    let line = holding(client, keys, v, id, tried)?;
+    match older_than_stub(stub, &line) {
+        Some(why) => {
+            tried.push((v.slug.clone(), format!("{why} — `krowk sessions restore {id} --from {}` restores it anyway", v.slug)));
+            None
+        }
+        None => Some(line),
+    }
+}
+
+/// How a session's copy in a vintage is older than its stub records — fewer
+/// turns, or last active earlier — or none when it is not.
+fn older_than_stub(stub: &Stub, line: &Line) -> Option<String> {
+    let Ok(events) = line.events.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str::<LogEvent>).collect::<Result<Vec<_>, _>>() else {
+        return Some("holds a copy whose log does not read".to_owned());
+    };
+    let (last, turns) = (last_active(&events), Stub::of(&events, &stub.week, 0).map_or(0, |s| s.turns.len()));
+    let mut older = Vec::new();
+    if turns < stub.turns.len() {
+        older.push(format!("{turns} turn(s) where the stub records {}", stub.turns.len()));
+    }
+    if last < stub.last_active_ms {
+        older.push(format!("last active {} before the stub says", ago(stub.last_active_ms - last)));
+    }
+    (!older.is_empty()).then(|| format!("holds an older copy ({})", older.join(", ")))
+}
+
+/// A gap between two moments, as a person reads it.
+fn ago(ms: i64) -> String {
+    match ms.max(0) / 1000 {
+        s if s < 120 => format!("{s}s"),
+        s if s < 2 * 3600 => format!("{}m", s / 60),
+        s if s < 2 * 86_400 => format!("{}h", s / 3600),
+        s => format!("{}d", s / 86_400),
+    }
+}
+
+/// Session `id`'s line in vintage `v`, or why there is none, kept in
+/// `tried` against its slug.
+fn holding(client: &Client, keys: &Keys, v: &Vintage, id: &str, tried: &mut Vec<(String, String)>) -> Option<Line> {
+    match open(client, keys, v) {
+        Ok(mut lines) => lines.remove(id).or_else(|| {
+            tried.push((v.slug.clone(), format!("does not hold session {id}")));
+            None
+        }),
+        Err(e) => {
+            tried.push((v.slug.clone(), e));
+            None
+        }
+    }
+}
+
+/// Writes a session's two files back from its line, then removes its stub.
+fn unpack_session(sessions: &Path, id: &str, line: &Line) -> Result<(), String> {
     let dir = sessions.join(id);
     write_private(&dir.join(CONTEXT_FILE), line.context.as_bytes())?;
     write_private(&dir.join(EVENTS_FILE), line.events.as_bytes())?;
@@ -479,17 +698,26 @@ pub fn restore(client: &Client, keys: &Keys, sessions: &Path, id: &str) -> Resul
 }
 
 /// Writes a file whole, 0600, through a temporary beside it and a rename,
-/// so a crash leaves the old file or the new one and never half of one.
+/// so a crash leaves the old file or the new one and never half of one. The
+/// temporary is this write's own — named for the process and the write —
+/// so two writes of one file never write through the same one.
 fn write_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     use std::io::Write;
-    let tmp = path.with_extension("tmp");
+    static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    let tmp = path.with_file_name(format!(".{name}.{}-{n}.tmp", std::process::id()));
     let mut o = std::fs::OpenOptions::new();
     o.write(true).create(true).truncate(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
     let mut f = o.open(&tmp).map_err(|e| format!("create {}: {e}", tmp.display()))?;
-    f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| format!("write {}: {e}", tmp.display()))?;
-    std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display()))
+    let written = f.write_all(bytes).and_then(|()| f.sync_all()).map_err(|e| format!("write {}: {e}", tmp.display())).and_then(|()| std::fs::rename(&tmp, path).map_err(|e| format!("rename {}: {e}", path.display())));
+    // A write that did not land leaves nothing beside the file.
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 #[cfg(test)]
@@ -585,6 +813,83 @@ mod tests {
         assert!(candidates(&dir, now, 14 * DAY).is_empty());
         std::fs::remove_dir(&context).unwrap();
         assert_eq!(candidates(&dir, now, 14 * DAY).len(), 1, "a missing context is an empty one");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two writes of one file at once each go through a temporary of their
+    /// own: the file ends whole, as one of them wrote it, never cut short
+    /// by the other's rename (R-VINT-4).
+    #[test]
+    fn r_vint_4_two_writes_of_one_file_never_share_a_temporary() {
+        let dir = scratch("writes");
+        let path = dir.join(EVENTS_FILE);
+        let (a, b) = ("a".repeat(1 << 20), "b".repeat(1 << 19));
+        std::thread::scope(|s| {
+            for body in [&a, &b] {
+                let path = &path;
+                s.spawn(move || {
+                    for _ in 0..20 {
+                        write_private(path, body.as_bytes()).unwrap();
+                    }
+                });
+            }
+        });
+        let left = std::fs::read_to_string(&path).unwrap();
+        assert!(left == a || left == b, "whole: {} bytes", left.len());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no temporary left behind");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A restore holds its session's stub locked: a second waits for it,
+    /// and then finds the session back rather than restoring it again.
+    #[test]
+    fn r_vint_4_a_second_restore_of_a_session_waits_for_the_first_and_finds_it_back() {
+        let dir = scratch("hold");
+        let id = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
+        std::fs::create_dir_all(dir.join(id)).unwrap();
+        std::fs::write(dir.join(id).join(STUB_FILE), b"{}").unwrap();
+        let first = hold(&dir, id, &mut || {}).unwrap().expect("archived");
+        let second = std::thread::spawn({
+            let dir = dir.clone();
+            move || {
+                let mut waited = false;
+                let held = hold(&dir, id, &mut || waited = true).unwrap();
+                (held.is_none(), waited, restored_meanwhile(&dir, id).unwrap().already)
+            }
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(!second.is_finished(), "waits while the first holds it");
+        write_private(&dir.join(id).join(EVENTS_FILE), b"").unwrap();
+        std::fs::remove_file(dir.join(id).join(STUB_FILE)).unwrap();
+        drop(first);
+        assert_eq!(second.join().unwrap(), (true, true, true), "said it waited, then found it back, and did not restore it again");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A temporary a crash left beside a session's files goes at its next
+    /// restore once it is past being written; a fresh one, and the files
+    /// themselves, stay. A write that fails leaves none.
+    #[test]
+    fn r_vint_4_a_restore_sweeps_stale_temporaries_and_a_failed_write_leaves_none() {
+        let dir = scratch("sweep");
+        let id = "0192f1e2-3a4b-7c5d-8e6f-0123456789ab";
+        let session = dir.join(id);
+        std::fs::create_dir_all(&session).unwrap();
+        std::fs::write(session.join(STUB_FILE), b"{}").unwrap();
+        let (stale, fresh) = (session.join(".events.jsonl.1-0.tmp"), session.join(".events.jsonl.2-0.tmp"));
+        for t in [&stale, &fresh] {
+            std::fs::write(t, b"half").unwrap();
+        }
+        std::fs::File::options().write(true).open(&stale).unwrap().set_modified(std::time::SystemTime::now() - STALE_TEMPORARY * 2).unwrap();
+        drop(hold(&dir, id, &mut || {}).unwrap().expect("archived"));
+        assert!(!stale.exists() && fresh.exists() && session.join(STUB_FILE).exists());
+        std::fs::remove_file(&fresh).unwrap();
+        // A file where a directory must be: the rename fails.
+        std::fs::create_dir(session.join(EVENTS_FILE)).unwrap();
+        std::fs::write(session.join(EVENTS_FILE).join("x"), b"").unwrap();
+        assert!(write_private(&session.join(EVENTS_FILE), b"log").is_err());
+        let left: Vec<String> = std::fs::read_dir(&session).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).filter(|n| n.ends_with(".tmp")).collect();
+        assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

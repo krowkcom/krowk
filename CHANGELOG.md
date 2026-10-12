@@ -194,6 +194,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   there, since that device has no log of the subagent. `x` in it stops the
   subagent on the host. Text the subagent was in the middle of writing
   when you attached shows once that answer is finished.
+- **`krowk sessions vintage` lists the vintages the registry keeps.**
+  Each week's current vintage, and the ones a newer vintage replaced,
+  which the registry keeps for a while. Give it an archived session's id
+  to see its week, with the vintage it was archived into marked, or an
+  ISO week like `2026-W40`. `krowk sessions restore <id> --from
+  <vintage>` restores the session from the one you name.
 
 ### Changed
 
@@ -363,6 +369,38 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **An archived session is restored even after its week's vintage lost
+  it.** If another machine replaced a week's vintage with one that dropped
+  sessions, restoring one of them used to fail, saying the vintage did
+  not hold it. krowk now reads the vintage the session was archived into
+  first, then the week's current one, then the replaced ones the registry
+  still keeps. A copy older than the stub on this machine records (fewer
+  turns, or last active earlier) is never restored on its own, so a lost
+  or rolled-back vintage can't quietly undo what you said since; name it
+  with `krowk sessions restore <id> --from <vintage>` to restore it
+  anyway. When the session comes from any vintage but the one it was
+  archived into, krowk warns and says why it skipped each of the others,
+  including one whose digest didn't match.
+- **`krowk sessions show` shows an archived session on a machine without
+  sync.** It used to fail, because the session can't be restored there.
+  It now shows what this machine keeps of it (title, first prompt, models,
+  turns and cost) and says the full session needs sync set up. The same
+  goes when the registry can't be reached. Any other failure to restore,
+  such as a vintage that doesn't check out, still fails.
+- **Both session pickers list and restore archived sessions.** `/sessions`
+  in the TUI now lists the archived sessions started in the directory,
+  marked "archived", and `krowk --resume` marks them too. Picking one
+  restores it from its vintage first, as `krowk --resume <id>` does. In
+  the TUI the restore runs in the background, so typing and scrolling keep
+  working. Esc, Ctrl-C on an empty prompt, `/new` or picking another
+  session stops waiting for it: it finishes in the background, and the
+  TUI says when it's back without switching to it. If it can't be
+  restored, the TUI says why and keeps the session you were in. Two
+  restores of the same session, from the TUI or `krowk sessions restore`
+  in another terminal, take turns rather than writing over each other;
+  the second says it is waiting. Quitting mid-restore never leaves a
+  session half back: the next `krowk sessions show` or resume of it
+  finishes the job.
 - **krowk no longer outlives a closed terminal.** Closing the window or
   losing the SSH link while a turn ran could leave krowk running with
   nothing to show it on, ignoring `kill` and using a whole CPU core,

@@ -37,7 +37,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
     let asked = model_flag(ctx, &registry)?;
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
-    let resume = match ctx.f.resume.as_str() {
+    let asked_resume = ctx.f.resume.clone();
+    let resume = match asked_resume.as_str() {
         "" => None,
         r => Some(resolve_resume(ctx, &sessions_dir, r)?),
     };
@@ -460,14 +461,15 @@ pub(super) fn config_json() -> Result<serde_json::Value, Error> {
 
 /// `--resume` takes the session id a result names, or anything `krowk
 /// sessions show` takes that resolves to a krowk session.
-pub(super) fn resolve_resume(ctx: &Ctx, sessions_dir: &std::path::Path, reference: &str) -> Result<String, Error> {
+pub(super) fn resolve_resume(ctx: &mut Ctx, sessions_dir: &std::path::Path, reference: &str) -> Result<String, Error> {
     let reference = reference.trim();
-    if log::valid_id(reference) && sessions_dir.join(reference).join(log::EVENTS_FILE).is_file() {
-        return Ok(reference.to_string());
-    }
-    // Resuming an archived session brings it back first (R-VINT-4).
+    // Resuming an archived session brings it back first (R-VINT-4), and
+    // one a restore was stopped before projecting is projected.
     #[cfg(unix)]
     if log::valid_id(reference) && sessions::restore_if_archived(ctx, reference)? {
+        return Ok(reference.to_string());
+    }
+    if log::valid_id(reference) && sessions_dir.join(reference).join(log::EVENTS_FILE).is_file() {
         return Ok(reference.to_string());
     }
     let conn = sessions::open_store(ctx)?;

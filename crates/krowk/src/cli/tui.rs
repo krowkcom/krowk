@@ -57,7 +57,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     } else if ctx.f.resume_pick {
         Some(pick(ctx)?)
     } else {
-        match ctx.f.resume.as_str() {
+        match ctx.f.resume.clone().as_str() {
             "" => None,
             r => Some(prompt::resolve_resume(ctx, &sessions_dir, r)?),
         }
@@ -196,6 +196,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         // is held, and finished once the TUI closes.
         daemon: if synced || worktree.is_some() { None } else { daemon(ctx)? },
         project: (!synced).then(|| projector.after_turns()),
+        restore: (!synced).then(|| restorer(ctx)),
         sync,
     });
     // As after `krowk -p`: the log is the session, krowk.db its listing —
@@ -279,16 +280,45 @@ impl Projector {
     }
 }
 
-/// `krowk --resume`: the sessions picker, over krowk's own sessions.
-fn pick(ctx: &Ctx) -> Result<String, Error> {
+/// What `/sessions` brings an archived session back with (R-VINT-4): the
+/// restore `krowk --resume` runs, on the TUI's own thread. That thread
+/// outlives `ctx`, so it reads the process's environment, as `Projector`
+/// does, with this command's flags; what the restore would print goes
+/// nowhere, since the TUI owns the terminal: its warnings and its failure
+/// are said there.
+fn restorer(ctx: &Ctx) -> krowk_tui::Restore {
+    let f = ctx.f.clone();
+    Arc::new(move |id: &str| {
+        #[cfg(unix)]
+        {
+            let (mut out, mut err) = (std::io::sink(), std::io::sink());
+            let env = |k: &str| std::env::var(k).unwrap_or_default();
+            let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
+            let mut quiet = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
+            sessions::restore_archived(&mut quiet, id).map(|r| r.map(|r| r.warnings).unwrap_or_default()).map_err(|e| e.fix())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = &f;
+            Err(format!("session {id} is archived, and archived sessions are not restored on this platform"))
+        }
+    })
+}
+
+/// `krowk --resume`: the sessions picker, over krowk's own sessions. An
+/// archived one is marked, and comes back from its vintage once picked, as
+/// `krowk --resume <id>` brings it back (R-VINT-4).
+fn pick(ctx: &mut Ctx) -> Result<String, Error> {
     let conn = sessions::open_store(ctx)?;
     let rows = krowk_store::list_sessions(&conn, krowk_harness::project::HARNESS, "", sessions::DEFAULT_SESSION_LIMIT as i64)
         .map_err(|e| sessions::store_fail(&e, &sessions::db_path_string(ctx)))?;
     if rows.is_empty() {
         return Err(fail("no_session", "there is no krowk session to resume yet — run `krowk` to start one"));
     }
-    let id = sessions::pick_session(&rows, krowk_store::now_ms())?;
+    let id = sessions::pick_session(&rows, krowk_store::now_ms(), &sessions::archived_rows(ctx, &rows))?;
     let d = sessions::load_by_id(ctx, &conn, &id)?;
+    #[cfg(unix)]
+    sessions::restore_if_archived(ctx, &d.session.foreign_session_id)?;
     Ok(d.session.foreign_session_id)
 }
 

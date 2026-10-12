@@ -216,6 +216,10 @@ pub struct Options {
     /// a thread of its own after each turn, while the person reads the
     /// answer, so leaving has little or nothing left to write.
     pub project: Option<Project>,
+    /// Brings an archived session back from its vintage before `/sessions`
+    /// continues it (R-VINT-4), or says why it could not. Run on a thread
+    /// of its own: it reads the registry.
+    pub restore: Option<Restore>,
     /// A session another machine runs, to follow through sync (`krowk sync
     /// attach`, `krowk --resume` of a synced id): its history is drawn
     /// first, and prompts, approvals and interrupts go to its host.
@@ -232,6 +236,10 @@ pub struct Daemon {
 }
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// Restores an archived session: what the person should know about the
+/// copy it came back from, or why it did not.
+pub type Restore = Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>;
 
 /// What the TUI routes once it is up (`Host::route_model`).
 pub struct Route {
@@ -331,6 +339,68 @@ type RouteFuture<'a> = Pin<Box<dyn Future<Output = Result<ModelRef, EngineError>
 type ChecksFuture = Pin<Box<dyn Future<Output = Vec<krowk_harness::readiness::Report>>>>;
 type PrFuture = Pin<Box<dyn Future<Output = (String, Option<pr::Pr>)>>>;
 type PasteFuture = Pin<Box<dyn Future<Output = paste::Pasted>>>;
+type RestoreFuture = Pin<Box<dyn Future<Output = Result<Vec<String>, String>>>>;
+
+/// An archived session `/sessions` picked, coming back from its vintage.
+/// It runs on a thread of its own rather than the runtime's blocking pool,
+/// so leaving krowk never waits for it: the runtime's shutdown would.
+struct Restoring {
+    id: String,
+    /// Someone is waiting on it, so it is continued once it is back; not
+    /// after esc, Ctrl-C, another session or `/new`, which leave it to
+    /// finish and say so.
+    wanted: bool,
+    done: RestoreFuture,
+}
+
+impl Restoring {
+    fn start(id: &str, restore: Restore) -> Restoring {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = id.to_string();
+        std::thread::spawn(move || {
+            let _ = tx.send(restore(&task));
+        });
+        Restoring { id: id.to_string(), wanted: true, done: Box::pin(async move { rx.await.unwrap_or_else(|_| Err("the restore stopped before it finished".into())) }) }
+    }
+}
+
+/// The restore under way finished, with its session's id; never, while
+/// none runs.
+async fn finish_restore(r: &mut Option<Restoring>) -> (String, Result<Vec<String>, String>) {
+    match r {
+        Some(r) => {
+            let out = (&mut r.done).await;
+            (r.id.clone(), out)
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// What the TUI looks up off the runtime's thread between keys, one of
+/// them done.
+enum LookedUp {
+    Pr(String, Option<pr::Pr>),
+    Checks(Vec<krowk_harness::readiness::Report>),
+    Restored(String, Result<Vec<String>, String>),
+}
+
+/// The first of the pull request lookup, the readiness checks and the
+/// restore to finish; never, while none runs.
+async fn looked_up(pr: &mut Option<PrFuture>, checks: &mut Option<ChecksFuture>, restoring: &mut Option<Restoring>) -> LookedUp {
+    tokio::select! {
+        biased;
+        (branch, found) = finish(pr) => LookedUp::Pr(branch, found),
+        reports = finish(checks) => LookedUp::Checks(reports),
+        (id, r) = finish_restore(restoring) => LookedUp::Restored(id, r),
+    }
+}
+
+/// How long leaving waits for a restore that has put its session's files
+/// back to bring krowk.db up to date.
+const RESTORE_SETTLE: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// Under the prompt while an archived session comes back.
+const RESTORING: &str = "restoring from its vintage… · esc stops waiting";
 type PasteJob = Box<dyn FnOnce() -> paste::Pasted + Send>;
 
 /// A daemon of an older krowk replaced as krowk starts, when it can be;
@@ -525,13 +595,13 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
         ui.resumed_in_daemon(&mut app, &id, replayed_to).await;
     }
-    let result = ui.run(&mut app, &mut term).await;
+    let result = ui.run_and_settle(&mut app, &mut term).await;
     ui.drain(&mut app);
     // A turn still running is let go first: its future holds its backend's
     // lock, and would hold a shutdown waiting on it forever.
@@ -694,6 +764,11 @@ struct Ui<'h> {
     /// person's next key: what the root record says while nothing runs.
     ended: Option<(presence::State, String)>,
     project: Option<Project>,
+    restore: Option<Restore>,
+    /// An archived session `/sessions` picked, coming back from its vintage
+    /// off the runtime's thread: keys, frames and Ctrl-C go on meanwhile,
+    /// and it is continued once it is back, if still wanted.
+    restoring: Option<Restoring>,
 }
 
 /// Two signals as one stream, registered once for the TUI's life.
@@ -1158,11 +1233,7 @@ impl<'h> Ui<'h> {
                 m = recv_auth(&mut self.auth) => self.on_auth(app, term, m)?,
                 p = finish_paste(&mut self.pasting) => self.on_pasted(app, p),
                 (id, in_view, answer) = first_of(&mut self.stops) => stop_answered(app, &id, in_view, answer),
-                (branch, found) = finish(&mut self.pr) => self.on_pr(app, branch, found),
-                reports = finish(&mut self.checks) => {
-                    self.checks = None;
-                    self.marked(app, reports);
-                }
+                done = looked_up(&mut self.pr, &mut self.checks, &mut self.restoring) => self.on_looked_up(app, done).await,
                 r = finish(&mut self.routing) => self.on_routing(app, r, &mut reach),
                 ok = finish(&mut reach.probe) => {
                     reach.probe = None;
@@ -2154,7 +2225,8 @@ impl<'h> Ui<'h> {
         let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
         let alt = k.modifiers.contains(KeyModifiers::ALT);
         app.touch();
-        app.flash = None;
+        // A restore under way stays said under the prompt, key or not.
+        app.flash = self.waiting_on_restore().then(|| RESTORING.into());
         let armed = self.quit_armed.take().filter(|(_, t)| t.elapsed() < QUIT_CONFIRM).map(|(c, _)| c);
         if let Some(done) = self.view_key(app, k).await {
             return done;
@@ -2668,6 +2740,8 @@ impl<'h> Ui<'h> {
                     app.overlay = Overlay::None;
                 } else if app.running() {
                     self.interrupt(app).await;
+                } else if self.waiting_on_restore() {
+                    self.stop_waiting(app);
                 }
             }
             KeyCode::Char('y') if ctrl => copy(app),
@@ -2713,6 +2787,8 @@ impl<'h> Ui<'h> {
             self.interrupt(app).await;
         } else if !app.editor.is_empty() {
             app.editor.clear();
+        } else if self.waiting_on_restore() {
+            self.stop_waiting(app);
         } else if self.held.is_some() || app.trust_question.is_some() {
             // What is waiting on the route or the trust question
             // comes back unsent; Ctrl-C twice more then quits.
@@ -2750,6 +2826,30 @@ impl<'h> Ui<'h> {
             app.notice(&format!("session {id} is the one shown"));
             return;
         }
+        // An archived one comes back from its vintage first, as `krowk
+        // --resume` brings it back (R-VINT-4); one that cannot leaves the
+        // session shown as it was, and says why.
+        // It reads the registry, so it runs as a task the loop waits on,
+        // and the session is continued when it is back (`on_restored`).
+        if krowk_harness::vintage::is_archived(&self.sessions_dir, id) {
+            let Some(restore) = self.restore.clone() else {
+                return app.notice(&format!("session {id} is archived — bring it back with krowk sessions restore {id}"));
+            };
+            // One restore at a time: the same session picked again waits
+            // on the one under way rather than starting a second.
+            match &mut self.restoring {
+                Some(r) if r.id == id => {
+                    r.wanted = true;
+                    app.notice(&format!("session {id} is still being restored — it opens once it is back"));
+                }
+                Some(r) => app.notice(&format!("session {} is still being restored — pick {id} again once it is back", r.id)),
+                None => self.restoring = Some(Restoring::start(id, restore)),
+            }
+            if self.waiting_on_restore() {
+                app.flash = Some(RESTORING.into());
+            }
+            return;
+        }
         // Read before anything is let go: a log that cannot be read leaves
         // the session shown as it was.
         let events = match read_session(&self.sessions_dir, id) {
@@ -2768,6 +2868,8 @@ impl<'h> Ui<'h> {
             }
             _ => {}
         }
+        // Another session wanted instead: a restore waited on is let go.
+        self.stop_waiting(app);
         self.leave(app);
         app.forget_session();
         app.model = None;
@@ -2792,6 +2894,80 @@ impl<'h> Ui<'h> {
         }
     }
 
+    /// A lookup done, handed to what waits on it.
+    async fn on_looked_up(&mut self, app: &mut App, done: LookedUp) {
+        match done {
+            LookedUp::Pr(branch, found) => self.on_pr(app, branch, found),
+            LookedUp::Checks(reports) => {
+                self.checks = None;
+                self.marked(app, reports);
+            }
+            LookedUp::Restored(id, r) => self.on_restored(app, &id, r).await,
+        }
+    }
+
+    /// An archived session `/sessions` picked is back, or is not: continued,
+    /// what the copy it came from warrants said first; or why not said, the
+    /// session shown left as it was.
+    /// One no longer waited on is only said to be back, never switched to.
+    async fn on_restored(&mut self, app: &mut App, id: &str, r: Result<Vec<String>, String>) {
+        let wanted = self.restoring.take().is_some_and(|r| r.wanted);
+        if app.flash.as_deref() == Some(RESTORING) {
+            app.flash = None;
+        }
+        match r {
+            Err(e) => app.notice(&format!("session {id} is archived and was not restored: {e}")),
+            Ok(warnings) => {
+                for w in &warnings {
+                    app.notice(w);
+                }
+                // Still waited on, and nothing since holds the session shown
+                // — a turn begun meanwhile does — it is continued.
+                match wanted && self.resume_waits(app).is_none() {
+                    true => Box::pin(self.resume(app, id)).await,
+                    false => app.notice(&format!("session {id} was restored — /sessions continues it")),
+                }
+            }
+        }
+    }
+
+    /// The TUI until it is left, then a restore under way settled
+    /// (`settle_restore`).
+    async fn run_and_settle<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
+        let result = self.run(app, term).await;
+        self.settle_restore().await;
+        result
+    }
+
+    /// Leaving with a restore under way. One that has put the session's
+    /// files back — its stub is gone — is given a moment to project them,
+    /// which its thread would not outlive krowk to do; one still fetching
+    /// is let go, and leaves the session archived to be restored next time.
+    /// Either way the next show or resume projects a session left
+    /// unprojected.
+    async fn settle_restore(&mut self) {
+        let Some(r) = self.restoring.take() else { return };
+        if !krowk_harness::vintage::is_archived(&self.sessions_dir, &r.id) {
+            let _ = tokio::time::timeout(RESTORE_SETTLE, r.done).await;
+        }
+    }
+
+    /// Whether a restore under way is still waited on.
+    fn waiting_on_restore(&self) -> bool {
+        self.restoring.as_ref().is_some_and(|r| r.wanted)
+    }
+
+    /// Stops waiting for a restore under way: it goes on, and says so when
+    /// it is back, but nothing switches to it.
+    fn stop_waiting(&mut self, app: &mut App) {
+        let Some(r) = self.restoring.as_mut().filter(|r| r.wanted) else { return };
+        r.wanted = false;
+        if app.flash.as_deref() == Some(RESTORING) {
+            app.flash = None;
+        }
+        app.notice(&format!("session {} goes on being restored in the background — /sessions continues it once it is back", r.id));
+    }
+
     /// `/new`: a fresh session in place of the one shown, on the same
     /// model, on a cleared screen; the next prompt starts it. The one left
     /// can be continued with `/sessions`. Not after a resume at start of a
@@ -2804,6 +2980,7 @@ impl<'h> Ui<'h> {
         if !self.can_resume(app) {
             return;
         }
+        self.stop_waiting(app);
         self.leave(app);
         // The one the next prompt goes to, else the one shown — the
         // resumed session's at start — rather than one routed afresh.
@@ -2854,7 +3031,15 @@ impl<'h> Ui<'h> {
     /// the session shown. The model routed at start is not: a session
     /// resumed meanwhile has its own, which the route then leaves alone.
     fn can_resume(&self, app: &mut App) -> bool {
-        let waits = if app.running() {
+        let Some(waits) = self.resume_waits(app) else { return true };
+        app.notice_keys(&format!("that waits for {waits}"));
+        false
+    }
+
+    /// What another session taking the one shown's place waits for, if
+    /// anything.
+    fn resume_waits(&self, app: &App) -> Option<&'static str> {
+        Some(if app.running() {
             "the running turn to finish — `esc` interrupts it"
         } else if app.offer.is_some() {
             "the question above — `y` or `n`"
@@ -2865,10 +3050,8 @@ impl<'h> Ui<'h> {
         } else if app.backend_agents_running() {
             "the agents running in the background — `ctrl-g` lists them"
         } else {
-            return true;
-        };
-        app.notice_keys(&format!("that waits for {waits}"));
-        false
+            return None;
+        })
     }
 
     fn open_models(&mut self, app: &mut App) {

@@ -539,6 +539,23 @@ pub fn drop_bodies(conn: &Connection, provider: &str, foreign_session_id: &str) 
     tx.commit().map_err(e("commit"))
 }
 
+/// The foreign id every stand-in message of an archived session starts
+/// with: one per turn, projected from its stub in place of the bodies its
+/// vintage holds (R-VINT-3).
+pub const STAND_IN: &str = "archived:";
+
+/// Whether a session's rows are still its stub's stand-ins: what a restore
+/// cut short between putting the log back and projecting it leaves, which
+/// the log's own rows must replace, not join. One indexed lookup.
+pub fn holds_stand_ins(conn: &Connection, provider: &str, foreign_session_id: &str) -> Result<bool, StoreError> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM session_binding b JOIN message m ON m.session_id = b.session_id WHERE b.provider = ? AND b.foreign_session_id = ? AND substr(m.foreign_id, 1, ?) = ?)",
+        params![provider, foreign_session_id, STAND_IN.len() as i64, STAND_IN],
+        |r| r.get(0),
+    )
+    .map_err(e("find stand-ins"))
+}
+
 /// The cursor an import was last read up to, "" when there is none.
 pub fn read_import_state(conn: &Connection, key: &str) -> Result<String, StoreError> {
     conn.query_row("SELECT cursor FROM import_state WHERE source = ?", [key], |r| r.get(0))
@@ -598,6 +615,24 @@ mod tests {
         w.ingest_with_cursor(&thread("Named", &["hello"]), "claude:/x", "42").unwrap();
         assert_eq!(read_import_state(&conn, "claude:/x").unwrap(), "42");
         assert_eq!(read_import_state(&conn, "nope").unwrap(), "");
+    }
+
+    /// A session's stub stand-ins are found as such, and are gone once its
+    /// bodies are dropped; a session of real messages holds none.
+    #[test]
+    fn r_vint_4_stand_ins_are_found_until_the_bodies_are_dropped() {
+        let home = Home::new("stand-ins");
+        let env = home.env();
+        let conn = crate::open(&env).unwrap();
+        let mut th = thread("", &["hi"]);
+        assert!(!holds_stand_ins(&conn, "anthropic", "s1").unwrap());
+        th.messages[0].foreign_id = format!("{STAND_IN}0");
+        th.messages[0].parts.clear();
+        Writer::new(&conn).ingest(&th).unwrap();
+        assert!(holds_stand_ins(&conn, "anthropic", "s1").unwrap());
+        assert!(!holds_stand_ins(&conn, "anthropic", "s2").unwrap(), "another session's are not this one's");
+        drop_bodies(&conn, "anthropic", "s1").unwrap();
+        assert!(!holds_stand_ins(&conn, "anthropic", "s1").unwrap());
     }
 
     /// A session whose source minted krowk's own id is stored under it, and

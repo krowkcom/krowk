@@ -95,7 +95,7 @@ pub fn stub_thread(session_id: &str, stub: &crate::vintage::Stub) -> Thread {
                 cost_usd_micros: t.usd_micros,
             })
             .collect(),
-        messages: stub.turns.iter().enumerate().map(|(i, t)| message(Role::Assistant, &t.provider, &t.model, &format!("archived:{i}"), Some(i as i64), "", Vec::new())).collect(),
+        messages: stub.turns.iter().enumerate().map(|(i, t)| message(Role::Assistant, &t.provider, &t.model, &format!("{}{i}", krowk_store::STAND_IN), Some(i as i64), "", Vec::new())).collect(),
         ..Thread::default()
     }
 }

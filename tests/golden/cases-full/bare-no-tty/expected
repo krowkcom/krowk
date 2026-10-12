@@ -843,13 +843,33 @@ stdout:
         },
         {
           "name": "restore",
-          "usage": "krowk sessions restore <id>",
+          "usage": "krowk sessions restore <id> [--from VINTAGE]",
           "summary": "Bring an archived session back from its vintage",
           "args": [
             {
               "name": "id",
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
+            }
+          ]
+        },
+        {
+          "name": "vintage",
+          "usage": "krowk sessions vintage [<id>|<week>]",
+          "summary": "List a week's vintages, replaced ones included",
+          "args": [
+            {
+              "name": "id",
+              "summary": "An archived session's id, or an ISO week like 2026-W40; every week when absent",
+              "required": false
             }
           ]
         },
@@ -2459,13 +2479,33 @@ tty:
         },
         {
           "name": "restore",
-          "usage": "krowk sessions restore <id>",
+          "usage": "krowk sessions restore <id> [--from VINTAGE]",
           "summary": "Bring an archived session back from its vintage",
           "args": [
             {
               "name": "id",
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
+            }
+          ]
+        },
+        {
+          "name": "vintage",
+          "usage": "krowk sessions vintage [<id>|<week>]",
+          "summary": "List a week's vintages, replaced ones included",
+          "args": [
+            {
+              "name": "id",
+              "summary": "An archived session's id, or an ISO week like 2026-W40; every week when absent",
+              "required": false
             }
           ]
         },
