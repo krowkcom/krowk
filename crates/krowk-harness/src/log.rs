@@ -462,7 +462,10 @@ const HEAD_LINES: usize = 64;
 /// session is listed from its stub, by its first prompt and when it was
 /// last active, marked archived.
 pub fn recent(sessions: &Path, cwd: &Path, most: usize) -> Vec<Recent> {
+    #[cfg_attr(not(unix), allow(unused_mut))]
     let mut all = recent_logs(sessions, cwd, most);
+    // Vintages are unix-only, as sync is: elsewhere nothing is archived.
+    #[cfg(unix)]
     all.extend(crate::vintage::list_archived(sessions).into_iter().filter_map(|(id, _)| {
         let stub = crate::vintage::read_stub(sessions, &id).filter(|s| s.parent_session_id.is_none() && Path::new(&s.directory) == cwd)?;
         let prompt = if stub.summary.trim().is_empty() { stub.title } else { stub.summary };
