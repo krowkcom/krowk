@@ -1432,7 +1432,7 @@ impl Shared {
             (Subagents(Arc::new(spawn)), problems)
         });
         let (subagents, problems) = subagents.unzip();
-        w.skipped(&session_id, problems.unwrap_or_default()).await;
+        w.skipped(&session_id, problems, &compat.mcp_skipped).await;
         let budget = plan.budget.clone();
         let spawned = subagents.clone();
         let ctx = TurnContext {
@@ -2123,11 +2123,14 @@ impl Writer<'_> {
         Ok(())
     }
 
-    /// Tells every client what reading the agent definitions found wrong:
+    /// Tells every client what reading the agent definitions found wrong —
     /// a definition skipped, an MCP entry of one left out
-    /// (`agents::discover`, which words each line).
-    async fn skipped(&self, session_id: &str, problems: Vec<String>) {
-        for text in problems {
+    /// (`agents::discover`, which words each line) — and the MCP servers
+    /// left out for their name or config. `None`: not a native turn, which
+    /// neither starts a subagent nor uses an MCP server.
+    async fn skipped(&self, session_id: &str, problems: Option<Vec<String>>, mcp: &[String]) {
+        let Some(problems) = problems else { return };
+        for text in problems.into_iter().chain(mcp.iter().cloned()) {
             self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text }).await;
         }
     }

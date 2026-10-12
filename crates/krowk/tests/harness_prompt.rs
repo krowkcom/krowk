@@ -339,6 +339,28 @@ fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
     assert!(!out.status.success() && err.contains("bad_settings") && err.contains("permissions.deny"), "{err}");
 }
 
+/// R-TOOL-3: a native `krowk -p` asks nobody about trust, so a repository's
+/// `.mcp.json` it will not start is named on stderr; trusted, a server it
+/// leaves out for its name or its config is named with why.
+#[test]
+fn r_tool_3_krowk_p_names_an_untrusted_mcp_json_and_a_server_it_skips() {
+    let m = mock::serve(mock::readme_script);
+    let b = Sandbox::new("mcp-notice", &m.url);
+    let servers = serde_json::json!({"mcpServers": {"ok": {"command": "true"}, "a__b": {"command": "true"}}});
+    std::fs::write(b.root.join("repo/.mcp.json"), servers.to_string()).unwrap();
+    let args = ["-p", "read README.md and summarise it in one line", "--model", "claude-sonnet-4-6"];
+    let out = b.krowk(&args);
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(err.contains("repo/.mcp.json names MCP servers, which krowk starts only in a trusted repository"), "{err}");
+    assert!(!err.contains("a__b"), "nothing of an untrusted .mcp.json is read: {err}");
+    let out = b.krowk(&[&args[..], &["--trust"]].concat());
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{err}");
+    assert!(!err.contains("starts only in a trusted repository"), "{err}");
+    assert!(err.contains("the MCP server \"a__b\" in .mcp.json was skipped"), "{err}");
+}
+
 // ---- R-PRES-6: the record `krowk -p` leaves on the terminal --------------
 
 /// The OSC 7501 reports in `out`, whole, in the order written.

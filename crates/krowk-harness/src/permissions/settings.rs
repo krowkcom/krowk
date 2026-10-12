@@ -226,9 +226,49 @@ fn read_file(path: &Path, root: &Path, base: &Path, home: Option<&Path>) -> Resu
     read_object(&v, &path.display().to_string(), root, base, home).map(Some)
 }
 
-/// A settings file's JSON, if there is one: `read_file`'s first half.
+/// A settings file bigger than this is not read: it is read before the
+/// trust question, and what a repository holds is not its to make krowk
+/// swallow whole.
+const MAX_SETTINGS: u64 = 4 << 20;
+
+/// A file's bytes, read only when it is a plain file of at most `max`
+/// bytes. It is opened without blocking and judged once open, so a FIFO or
+/// a device there — or one swapped in after a look — cannot hang a reader
+/// that runs before the trust question; `follow: false` refuses a symlink
+/// too. Not found is `NotFound`, as `std::fs::read` says it.
+pub(crate) fn read_plain(path: &Path, max: u64, follow: bool) -> std::io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut o = std::fs::OpenOptions::new();
+    o.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut o, libc::O_NONBLOCK | if follow { 0 } else { libc::O_NOFOLLOW });
+    // Off unix there is no O_NOFOLLOW: the link is refused before the open.
+    #[cfg(not(unix))]
+    if !follow && std::fs::symlink_metadata(path)?.file_type().is_symlink() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "it is a symbolic link"));
+    }
+    let f = o.open(path)?;
+    let meta = f.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "it is not a plain file"));
+    }
+    let too_big = || std::io::Error::new(std::io::ErrorKind::InvalidData, format!("it is over {} MiB", max >> 20));
+    if meta.len() > max {
+        return Err(too_big());
+    }
+    let mut raw = Vec::new();
+    f.take(max + 1).read_to_end(&mut raw)?;
+    if raw.len() as u64 > max {
+        return Err(too_big());
+    }
+    Ok(raw)
+}
+
+/// A settings file's JSON, if there is one: `read_file`'s first half. Read
+/// as `read_plain` reads, since `widens` reads a repository's before the
+/// trust question: a FIFO there is an error naming it, never a hang.
 fn read_json(path: &Path) -> Result<Option<Value>, String> {
-    let raw = match std::fs::read(path) {
+    let raw = match read_plain(path, MAX_SETTINGS, true) {
         Ok(r) => r,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => return Ok(None),
