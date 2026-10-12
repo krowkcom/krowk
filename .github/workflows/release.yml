@@ -209,8 +209,8 @@ jobs:
 
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
 
       - name: Build krowk's unit tests
         run: |
