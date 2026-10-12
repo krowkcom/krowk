@@ -55,9 +55,12 @@ lint-harness:
 # make hands its job slots to every cargo below (the jobserver), so the
 # builds share the cores instead of each taking them all.
 CHECK_JOBS ?= $(shell nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)
+# Each build's output kept together, where make can: --output-sync is GNU
+# make 4's, and macOS ships 3.81, which refuses it and runs nothing.
+OUTPUT_SYNC := $(if $(filter 3.%,$(MAKE_VERSION)),,--output-sync=target)
 
 check: ## Everything CI runs
-	$(MAKE) -j$(CHECK_JOBS) --output-sync=target check-build
+	$(MAKE) -j$(CHECK_JOBS) $(OUTPUT_SYNC) check-build
 	$(MAKE) check-run
 
 check-build: lint lean-deps test-build test-doc golden-build

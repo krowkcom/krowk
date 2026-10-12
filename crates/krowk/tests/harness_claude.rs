@@ -457,9 +457,17 @@ fn a_closed_terminal_ends_the_tui_though_claude_code_never_answers_the_interrupt
             unsafe { libc::kill(t.child.id() as i32, libc::SIGHUP) };
         }
         let st = t.wait(std::time::Duration::from_secs(30)).expect("the TUI outlived its terminal by 30 s");
-        let left = if closed && cfg!(target_os = "linux") { Some(130) } else { Some(0) };
-        assert_eq!(st.code(), left, "closed {closed}: {st}");
-        assert!(gone(server) && gone(grandchild), "closed {closed}: Claude Code's group outlived the TUI");
+        assert!(gone(server) && gone(grandchild), "closed {closed}: Claude Code's group outlived the TUI ({st})");
+        // How it ends is the platform's: Linux sees the hangup on the
+        // terminal and leaves as a second Ctrl-C does (130); macOS has no
+        // such watch, and its first write to the gone terminal can fail
+        // before SIGHUP is taken (1). A SIGHUP with the terminal still there
+        // ends it cleanly everywhere.
+        match (closed, cfg!(target_os = "linux")) {
+            (true, true) => assert_eq!(st.code(), Some(130), "closed: {st}"),
+            (true, false) => assert!(matches!(st.code(), Some(0 | 1 | 130)), "closed: {st}"),
+            (false, _) => assert_eq!(st.code(), Some(0), "SIGHUP: {st}"),
+        }
     }
 }
 

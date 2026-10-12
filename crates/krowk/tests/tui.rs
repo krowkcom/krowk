@@ -2618,6 +2618,10 @@ fn each_subagent_is_a_record(screen: &str) {
     assert_eq!(got[stopped - 1], rec(2, State::Clear), "cleared when stopped, the turn still running");
     let rooted: Vec<&String> = got.iter().filter(|r| !r.contains(":id=")).collect();
     let ask = "fan out";
+    // The turn done, an idle may come before the clear as krowk leaves, as
+    // it does when leaving takes a frame longer (a macOS runner): a change
+    // of state all the same, said once.
+    let rooted: Vec<&String> = rooted.iter().enumerate().filter(|(i, r)| !(**r == &root(State::Idle, "") && *i + 1 == rooted.len() - 1)).map(|(_, r)| *r).collect();
     assert_eq!(rooted, [&root(State::Idle, ""), &root(State::Working, ask), &root(State::Blocked(Kind::Permission), ask), &root(State::Working, ask), &root(State::Done, ask), &root(State::Clear, "")]);
     let at = |r: &String| got.iter().position(|g| g == r).unwrap();
     // Both blocked before either says it works again.
