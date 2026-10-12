@@ -433,7 +433,8 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
 /// The terminal closing under a TUI whose Claude Code turn answers no
 /// interrupt ends krowk all the same — one hangup is all a closed terminal
 /// sends — and takes Claude Code's process group with it: at once where
-/// the terminal is seen to go (Linux, exit 130 as a second Ctrl-C), and on
+/// the terminal is seen to go (Linux, exit 130 as a second Ctrl-C, or 1 when
+/// a write to it fails first), and on
 /// the one SIGHUP alone, the terminal still there to see, as macOS has it:
 /// the interrupted turn ended, Claude Code stopped when it does not end it
 /// itself, and krowk out cleanly.
@@ -459,12 +460,12 @@ fn a_closed_terminal_ends_the_tui_though_claude_code_never_answers_the_interrupt
         let st = t.wait(std::time::Duration::from_secs(30)).expect("the TUI outlived its terminal by 30 s");
         assert!(gone(server) && gone(grandchild), "closed {closed}: Claude Code's group outlived the TUI ({st})");
         // How it ends is the platform's: Linux sees the hangup on the
-        // terminal and leaves as a second Ctrl-C does (130); macOS has no
-        // such watch, and its first write to the gone terminal can fail
-        // before SIGHUP is taken (1). A SIGHUP with the terminal still there
-        // ends it cleanly everywhere.
+        // terminal and leaves as a second Ctrl-C does (130), unless its first
+        // write to the gone terminal fails before it does (1, seen on arm64);
+        // macOS has no such watch, so the write or SIGHUP decides. A SIGHUP
+        // with the terminal still there ends it cleanly everywhere.
         match (closed, cfg!(target_os = "linux")) {
-            (true, true) => assert_eq!(st.code(), Some(130), "closed: {st}"),
+            (true, true) => assert!(matches!(st.code(), Some(1 | 130)), "closed: {st}"),
             (true, false) => assert!(matches!(st.code(), Some(0 | 1 | 130)), "closed: {st}"),
             (false, _) => assert_eq!(st.code(), Some(0), "SIGHUP: {st}"),
         }
