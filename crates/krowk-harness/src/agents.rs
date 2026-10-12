@@ -23,9 +23,15 @@
 //! - `tools` — the allowlist, as a comma-separated string or a list: krowk's
 //!   names (`read`, `write`, `edit`, `bash`, `grep`, `glob`, `todo_write`,
 //!   `publish`) or Claude Code's (`Read`, `Write`, `Edit`, `MultiEdit`,
-//!   `Bash`, `Grep`, `Glob`, `TodoWrite`); absent, every tool. A name krowk
-//!   has no tool for — `WebFetch`, an MCP tool — is left out, and so is the
-//!   subagent tool itself: subagents do not start subagents.
+//!   `Bash`, `Grep`, `Glob`, `TodoWrite`); absent, every tool. MCP servers
+//!   and tools are named as Claude Code names them — `mcp__github` for a
+//!   whole server, `mcp__github__get_pr` for one of its tools — or as a
+//!   permission rule does, `Mcp(github)` and `Mcp(github:get_pr)`: a list
+//!   naming any is offered `mcp_search` and `mcp_call`, reaching those
+//!   alone (`crate::subagent::AgentRun::reaches`), and a list naming none
+//!   is offered no MCP. A name krowk has no tool for — `WebFetch` — is left
+//!   out, and so is the subagent tool itself: subagents do not start
+//!   subagents.
 //! - `isolation` — `worktree` runs it in a git worktree of its own
 //!   (`crate::worktree`), as Claude Code's does; `none`, or absent, in the
 //!   parent's directory. A call's own `isolation` wins.
@@ -49,8 +55,15 @@ pub struct AgentDef {
     pub description: String,
     /// As written; resolved against the parent's model when it runs.
     pub model: Option<String>,
-    /// krowk's tool names, the edit tool as `edit`; none is every tool.
+    /// krowk's tool names, the edit tool as `edit`, and the MCP servers
+    /// and tools it reaches as `mcp__<server>` and `mcp__<server>__<tool>`;
+    /// none is every tool and every server. Every server is
+    /// `EVERY_MCP_SERVER`.
     pub tools: Option<Vec<String>>,
+    /// What its tools spell as MCP but name nothing krowk can read — a
+    /// pattern such as `mcp__github__get_*`: left out of `tools`, and said
+    /// to the person when the definition is read (`discover`).
+    pub unread: Vec<String>,
     /// Where it works, when the definition says.
     pub isolation: Option<Isolation>,
     /// The body: what the subagent is told beyond krowk's own prompt.
@@ -70,8 +83,10 @@ pub const PROJECT_DIRS: [&str; 2] = [".krowk/agents", ".claude/agents"];
 /// case, so a repository's `Reviewer` replaces the person's `reviewer`, as
 /// Claude Code's project agents replace its user agents. That is the name
 /// a permission rule judges, matched regardless of case too, so replacing a
-/// definition never dodges a `Task(reviewer)` rule. A file that does not parse is
-/// skipped with the reason, for the caller to say.
+/// definition never dodges a `Task(reviewer)` rule. What the caller is to
+/// say comes back beside them, each line whole: a file that does not parse
+/// is skipped with the reason, and an MCP entry of a definition's tools
+/// that names nothing krowk can read is named, the rest of it used.
 pub fn discover(root: &Path, user_dirs: &[PathBuf]) -> (Vec<AgentDef>, Vec<String>) {
     let mut defs: Vec<AgentDef> = Vec::new();
     let mut problems = Vec::new();
@@ -104,9 +119,14 @@ pub fn discover(root: &Path, user_dirs: &[PathBuf]) -> (Vec<AgentDef>, Vec<Strin
             match parse(&text, &path) {
                 // One definition a name, whatever its case — the name is
                 // looked up regardless of case — the first found winning.
-                Ok(d) if !defs.iter().any(|e| e.name.eq_ignore_ascii_case(&d.name)) => defs.push(AgentDef { project, ..d }),
+                Ok(d) if !defs.iter().any(|e| e.name.eq_ignore_ascii_case(&d.name)) => {
+                    for entry in &d.unread {
+                        problems.push(format!("agent {} ({}): its tools name {entry:?}, which is no MCP server or tool krowk can read — `mcp__<server>`, `mcp__<server>__<tool>` or `mcp__*`, no other pattern — so it reaches nothing", d.name, path.display()));
+                    }
+                    defs.push(AgentDef { project, ..d })
+                }
                 Ok(_) => {}
-                Err(why) => problems.push(format!("{}: {why}", path.display())),
+                Err(why) => problems.push(format!("an agent definition was skipped — {}: {why}", path.display())),
             }
         }
     }
@@ -165,13 +185,24 @@ pub fn parse(text: &str, path: &Path) -> Result<AgentDef, String> {
     if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
         return Err(format!("{name:?} is not a name: letters, digits, `-`, `_` and `.` only"));
     }
+    let mut unread = Vec::new();
     let tools = get("tools").map(|t| {
         let mut out: Vec<String> = Vec::new();
         for raw in t.trim_start_matches('[').trim_end_matches(']').split(',') {
-            if let Some(n) = tool_name(unquote(raw.trim()))
-                && !out.iter().any(|o| o == n)
-            {
-                out.push(n.to_string());
+            let raw = unquote(raw.trim());
+            let named = match mcp_entry(raw) {
+                Some(Some(entry)) => entry,
+                Some(None) => {
+                    unread.push(raw.to_string());
+                    continue;
+                }
+                None => match tool_name(raw) {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                },
+            };
+            if !out.contains(&named) {
+                out.push(named);
             }
         }
         out
@@ -187,6 +218,7 @@ pub fn parse(text: &str, path: &Path) -> Result<AgentDef, String> {
         description: get("description").unwrap_or_default(),
         model: get("model"),
         tools,
+        unread,
         isolation,
         instructions: text.get(consumed.min(text.len())..).unwrap_or_default().trim().to_string(),
         path: path.to_path_buf(),
@@ -221,6 +253,38 @@ fn tool_name(n: &str) -> Option<&'static str> {
     })
 }
 
+/// An allowlist's entry for every MCP server: `mcp__*` or `Mcp(*)`, as a
+/// rule's `*` reads. No server is named `*` (`crate::mcp::good_name`), so
+/// it reads one way.
+pub const EVERY_MCP_SERVER: &str = "mcp__*";
+
+/// An MCP server or tool an allowlist names, as `mcp__<server>`,
+/// `mcp__<server>__<tool>` or `mcp__*` (`EVERY_MCP_SERVER`): Claude Code's
+/// `mcp__github` and `mcp__github__get_pr`, or a rule's `Mcp(github)`,
+/// `Mcp(github:get_pr)` and `Mcp(*)`. A tool of `*` is the whole server,
+/// as in a rule. None when `n` is not spelled as MCP at all; `Some(None)`
+/// when it is but names nothing krowk can read — a server no server may be
+/// named (`crate::mcp::good_name`), or a tool holding `*`, which a rule
+/// does not read as a pattern either — which is left out, and said.
+fn mcp_entry(n: &str) -> Option<Option<String>> {
+    let (server, tool) = if n.get(..5).is_some_and(|p| p.eq_ignore_ascii_case("mcp__")) {
+        let rest = &n[5..];
+        rest.split_once("__").map_or((rest, None), |(s, t)| (s, Some(t)))
+    } else if n.len() >= 5 && n.get(..4).is_some_and(|p| p.eq_ignore_ascii_case("mcp(")) && n.ends_with(')') {
+        let inner = n[4..n.len() - 1].trim();
+        inner.split_once(':').map_or((inner, None), |(s, t)| (s.trim(), Some(t.trim())))
+    } else {
+        return None;
+    };
+    Some(match (server, tool) {
+        ("*", None | Some("*")) => Some(EVERY_MCP_SERVER.to_string()),
+        (s, _) if !crate::mcp::good_name(s) => None,
+        (s, None | Some("*")) => Some(format!("mcp__{s}")),
+        (s, Some(t)) if crate::mcp::good_tool_name(t) => Some(format!("mcp__{s}__{t}")),
+        _ => None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,7 +296,7 @@ mod tests {
         assert_eq!(d.name, "code-reviewer");
         assert_eq!(d.description, "Reviews code. Use PROACTIVELY after edits.");
         assert_eq!(d.model.as_deref(), Some("haiku"));
-        assert_eq!(d.tools.as_deref(), Some(&["read".to_string(), "grep".into(), "glob".into(), "bash".into()][..]), "what krowk has no tool for is left out, and so is Task");
+        assert_eq!(d.tools.as_deref(), Some(&["read".to_string(), "grep".into(), "glob".into(), "bash".into(), "mcp__github__get_pr".into()][..]), "what krowk has no tool for is left out, and so is Task");
         assert_eq!(d.instructions, "You are a senior reviewer.\n\nBe terse.");
         assert_eq!(d.isolation, None);
         let isolated = parse("---\nname: editor\nisolation: worktree\n---\nEdit.", Path::new("a.md")).unwrap();
@@ -250,6 +314,23 @@ mod tests {
     }
 
     #[test]
+    fn r_sub_5_an_allowlist_names_mcp_servers_and_tools_as_claude_code_and_a_rule_do() {
+        let tools = |list: &str| parse(&format!("---\nname: x\ntools: {list}\n---\n"), Path::new("a.md")).unwrap().tools.unwrap();
+        assert_eq!(tools("Read, mcp__github, mcp__linear__create_issue"), ["read", "mcp__github", "mcp__linear__create_issue"], "Claude Code's spellings: a whole server, one tool");
+        assert_eq!(tools("Mcp(github), mcp(linear:create_issue), MCP( sentry : * )"), ["mcp__github", "mcp__linear__create_issue", "mcp__sentry"], "a rule's spellings, `*` the whole server");
+        assert_eq!(tools("mcp__github__*, MCP__github, Mcp(github)"), ["mcp__github"], "one server however it is spelled");
+        assert_eq!(tools("mcp__my_srv, Mcp(a-b), mcp__srv__a__b"), ["mcp__my_srv", "mcp__a-b", "mcp__srv__a__b"], "`_` and `-` in a server's name, `__` in a tool's");
+        assert_eq!(tools("mcp__*, Mcp(*), mcp(*:*)"), [EVERY_MCP_SERVER], "every server, as a rule's `*` reads");
+        // What is spelled as MCP but names nothing krowk can read is left
+        // out, and kept to be said; what is not MCP at all is left out unsaid.
+        let read = |list: &str| parse(&format!("---\nname: x\ntools: {list}\n---\n"), Path::new("a.md")).unwrap();
+        let d = read("Read, mcp__, mcp__a__, mcp__bad server, Mcp(), Mcp(x:), mcp__srv__get_*, Mcp(gh*), mcp__*__echo, mcp_search, mcp_call, WebFetch");
+        assert_eq!(d.tools.as_deref(), Some(&["read".to_string()][..]), "a list naming no MCP krowk can read reaches none");
+        assert_eq!(d.unread, ["mcp__", "mcp__a__", "mcp__bad server", "Mcp()", "Mcp(x:)", "mcp__srv__get_*", "Mcp(gh*)", "mcp__*__echo"]);
+        assert_eq!(read("mcp__ünï").unread, ["mcp__ünï"], "no panic on a name that is not ASCII");
+    }
+
+    #[test]
     fn r_sub_5_definitions_are_found_in_the_repository_then_the_persons_first_name_winning() {
         let root = std::env::temp_dir().join(format!("krowk-agents-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -263,14 +344,15 @@ mod tests {
         std::fs::write(repo.join(".claude/agents/tester.md"), "---\nname: tester\ndescription: runs tests\n---\n").unwrap();
         std::fs::write(repo.join(".claude/agents/broken.md"), "no frontmatter").unwrap();
         std::fs::write(user.join("tester.md"), "---\nname: tester\ndescription: the person's\n---\n").unwrap();
-        std::fs::write(user.join("writer.md"), "---\nname: writer\ndescription: writes\n---\n").unwrap();
+        std::fs::write(user.join("writer.md"), "---\nname: writer\ndescription: writes\ntools: Write, mcp__srv__get_*\n---\n").unwrap();
         std::fs::write(user.join("Reviewer.md"), "---\nname: Reviewer\ndescription: the person's, in another case\n---\n").unwrap();
         std::fs::write(user.join("notes.txt"), "not a definition").unwrap();
         let (defs, problems) = discover(&repo, &[user, root.join("missing")]);
         let got: Vec<(&str, &str)> = defs.iter().map(|d| (d.name.as_str(), d.description.as_str())).collect();
         assert_eq!(got, [("reviewer", "krowk's"), ("tester", "runs tests"), ("writer", "writes")]);
-        assert_eq!(problems.len(), 1, "{problems:?}");
-        assert!(problems[0].contains("broken.md"));
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("an agent definition was skipped — ") && problems[0].contains("broken.md"), "{problems:?}");
+        assert!(problems[1].starts_with("agent writer (") && problems[1].contains("its tools name \"mcp__srv__get_*\", which is no MCP server or tool krowk can read"), "{problems:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

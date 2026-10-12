@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **An agent definition can name the MCP servers its subagent may use.**
+  In its `tools:` list, `mcp__github` gives the subagent the whole
+  `github` server and `mcp__linear__create_issue` that one tool, as in
+  Claude Code; `Mcp(github)` and `Mcp(linear:create_issue)` work too, and
+  `mcp__*` gives it every server. A name krowk can't read, such as the
+  pattern `mcp__github__get_*`, is left out with a notice. Such
+  a subagent gets `mcp_search` and `mcp_call` for those alone: its
+  searches find nothing elsewhere, a call to any other server or tool is
+  refused before it runs, and a server it can't use isn't started for it.
+  Your permission rules and hooks still apply on top. These names used to
+  be dropped, so a definition with a `tools:` line got no MCP at all; one
+  without a `tools:` line still reaches every server.
 - **A synced session goes direct on your LAN without Tailscale.** With
   `KROWK_DIRECT_LAN=1`, a host whose Tailscale isn't running now listens
   on its own LAN addresses instead of leaving everything to the relay,

@@ -117,7 +117,8 @@ fn r_tool_3_every_spelling_of_a_whole_server_deny_starts_nothing() {
         let mut policy = Policy::modes_only(&b.join("repo"));
         policy.loaded.rules = vec![(Kind::Deny, rules::parse(rule, "test", &b.join("repo")).unwrap())];
         let gate = Gate::new(policy, krowk_harness::protocol::PermissionMode::BypassPermissions, Default::default(), None, None, "s", "t");
-        let denied = |srv: &str, tool: &str| {
+        let denied = |srv: &str, tool: Option<&str>| {
+            let tool = tool.unwrap_or("*");
             let call = krowk_harness::permissions::Call { tool: format!("mcp__{srv}__{tool}"), access: krowk_harness::permissions::Access::Mcp { server: srv.into(), tool: tool.into() }, subject: None };
             matches!(gate.verdict(&call, None), krowk_harness::permissions::Verdict::Deny(_))
         };
@@ -199,6 +200,41 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
     let _ = std::fs::remove_dir_all(&b);
     assert!(!env.contains("sk-secret") && !env.contains("kr-secret"), "{env}");
     assert!(env.contains("OPENAI_API_KEY=sk-for-this-server"), "a key the server's config sets is its own");
+}
+
+/// A rule and an allowlist read `*` as every tool, so a tool named with
+/// one could never be told from all of its server's: it is left out.
+#[test]
+fn r_tool_3_a_tool_named_with_a_star_is_left_out_and_said() {
+    let b = base("star");
+    let s = script(&b, "", r#"printf '{"tools":[{"name":"*","description":"x every"},{"name":"get_*","description":"x some"},{"name":"echo","description":"x one"}]}'"#);
+    let out = search(&Mcp::new(vec![server("fake", "bash", vec![s.display().to_string()], &b.join("home"))]), "x");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(out.contains("\"fake:echo\"") && !out.contains("fake:*") && !out.contains("fake:get_*"), "{out}");
+    assert!(out.contains("(the MCP server fake: 2 tool(s) named with a control character, whitespace or `*`, or with no name, were left out)"), "{out}");
+}
+
+/// `mcp_call` holds what `denied` keeps from the turn itself — a
+/// subagent's allowlist, which the native loop refuses first — before any
+/// server starts, the whole server or the one tool.
+#[test]
+fn r_sub_1_mcp_call_refuses_what_the_turn_may_not_reach_before_any_server_starts() {
+    let b = base("recheck");
+    let marker = b.join("started");
+    let s = script(&b, &format!("touch {}", marker.display()), r#"printf '{"tools":[{"name":"echo"}]}'"#);
+    let m = Mcp::new(vec![server("fake", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let whole = |srv: &str, _: Option<&str>| srv == "fake";
+    let one = |_: &str, tool: Option<&str>| tool == Some("echo");
+    for denied in [&whole as mcp::Denied, &one] {
+        let (out, err) = rt.block_on(m.call(&json!({"tool": "fake:echo", "input": {}}), denied, &rx));
+        assert!(err && out == "fake:echo was not run: this turn may not reach it", "{out}");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let started = marker.exists();
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(!started, "the server was started");
 }
 
 /// A stdio server listing one tool, `echo`, whose `tools/call` runs the

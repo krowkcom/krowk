@@ -38,6 +38,15 @@
 //! Every call is judged as `mcp__server__tool` (`Mcp(server:tool)` in a
 //! rule) by the one permission evaluator; a tool a deny rule covers is left
 //! out of search results too, as Claude Code leaves it out of the tool list.
+//! A subagent whose definition names MCP servers or tools reaches those
+//! alone (`crate::subagent::AgentRun::reaches`): the rest are left out of its
+//! search, its calls to them refused, and a server it cannot reach is not
+//! started for it.
+//!
+//! Each server starts on its own, once a turn first needs it: the session
+//! and its subagents share the servers, and a subagent that reaches one
+//! server must neither start the others nor leave them unstarted for its
+//! parent.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -120,7 +129,7 @@ pub struct Server {
 /// Whether a server name is one rules can name unambiguously: `mcp__a__b`
 /// must read one way, so no `__`, no `_` at either end, and nothing a rule
 /// treats as syntax.
-fn good_name(n: &str) -> bool {
+pub(crate) fn good_name(n: &str) -> bool {
     !n.is_empty() && !n.contains("__") && !n.starts_with('_') && !n.ends_with('_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
@@ -335,16 +344,20 @@ struct Live {
     left_out: Option<String>,
 }
 
-/// Whether a deny rule covers `server`'s `tool` (`*`: the whole server).
-pub type Denied<'a> = &'a (dyn Fn(&str, &str) -> bool + Sync);
+/// Whether a deny rule, or a subagent's allowlist, keeps the turn from
+/// `server`'s `tool` — or, `tool` none, from the whole server: a server
+/// whole is its own question, never a tool's name, so no tool a server
+/// lists can stand for all of it.
+pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 
-/// The session's MCP servers: configured up front, started on first use.
-/// Once started they are read without a lock, so one long call never holds
-/// another, or a search, behind it.
+/// The session's MCP servers: configured up front, each started on its
+/// first use. Once started they are read without a lock, so one long call
+/// never holds another, or a search, behind it.
 #[derive(Default)]
 pub struct Mcp {
     servers: Vec<Server>,
-    live: tokio::sync::OnceCell<Vec<Live>>,
+    /// One a server, in `servers`' order.
+    live: Vec<tokio::sync::OnceCell<Live>>,
 }
 
 impl std::fmt::Debug for Mcp {
@@ -390,7 +403,8 @@ pub fn arguments(input: &Value) -> Value {
 
 impl Mcp {
     pub fn new(servers: Vec<Server>) -> Mcp {
-        Mcp { servers, live: tokio::sync::OnceCell::new() }
+        let live = servers.iter().map(|_| tokio::sync::OnceCell::new()).collect();
+        Mcp { servers, live }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -402,8 +416,13 @@ impl Mcp {
     }
 
     /// The two meta-tools: all the context MCP costs until it is used.
-    pub fn definitions(&self) -> Vec<crate::protocol::ToolDefinition> {
-        let names: Vec<&str> = self.servers.iter().map(|s| s.name.as_str()).collect();
+    /// They name the servers `reaches` keeps — a subagent's, when its
+    /// definition names some — and are none when it keeps none.
+    pub fn definitions(&self, reaches: &dyn Fn(&str) -> bool) -> Vec<crate::protocol::ToolDefinition> {
+        let names: Vec<&str> = self.servers.iter().map(|s| s.name.as_str()).filter(|n| reaches(n)).collect();
+        if names.is_empty() {
+            return Vec::new();
+        }
         vec![
             crate::protocol::ToolDefinition {
                 name: SEARCH.into(),
@@ -415,32 +434,35 @@ impl Mcp {
         ]
     }
 
-    /// Starts every server a deny rule does not cover whole, at once, and
-    /// waits for each to list its tools; an interrupt stops the wait, and
-    /// the next call starts them again.
-    async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<&[Live], String> {
+    /// Starts every server `denied` does not cover whole — a deny rule's,
+    /// or one a subagent's allowlist leaves out — that is not running yet,
+    /// at once, and waits for each to list its tools: those servers, in
+    /// order. An interrupt stops the wait, and the next call starts them
+    /// again.
+    async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<Vec<&Live>, String> {
         let start_all = async {
-            let starts = self.servers.iter().filter(|s| !denied(&s.name, "*")).map(|s| -> crate::engine::BoxFuture<'_, Live> {
-                Box::pin(async move {
+            let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, None)).map(|(s, cell)| -> crate::engine::BoxFuture<'_, &Live> {
+                Box::pin(cell.get_or_init(move || async move {
                     let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
                         Ok(Ok((conn, listed))) => (Some(conn), listed, None),
                         Ok(Err(e)) => (None, Default::default(), Some(e)),
                         Err(_) => (None, Default::default(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
                     };
                     Live { name: s.name.clone(), conn, tools, error, left_out }
-                })
+                }))
             });
             crate::native::join_all(starts.collect()).await
         };
         let mut cancel = cancel.clone();
         tokio::select! {
-            live = self.live.get_or_init(|| start_all) => Ok(live.as_slice()),
+            live = start_all => Ok(live),
             _ = cancel.wait_for(|c| *c) => Err("interrupted while the MCP servers started".into()),
         }
     }
 
     /// Runs `mcp_search`: the tools that match, best first, with their
-    /// schemas, leaving out what a deny rule covers.
+    /// schemas, leaving out what a deny rule covers and what a subagent's
+    /// allowlist does not name.
     pub async fn search(&self, input: &Value, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> (String, bool) {
         let query = match SearchInput::deserialize(input) {
             Ok(i) => i.query.trim().to_lowercase(),
@@ -451,7 +473,7 @@ impl Mcp {
             Err(e) => return (e, true),
         };
         let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
-        let visible = || live.iter().flat_map(|l| l.tools.iter().map(move |t| (l, t))).filter(|(l, t)| !denied(&l.name, &t.name));
+        let visible = || live.iter().flat_map(|l| l.tools.iter().map(move |t| (*l, t))).filter(|(l, t)| !denied(&l.name, Some(&t.name)));
         let mut hits: Vec<(usize, &Live, &Tool)> = Vec::new();
         for (l, t) in visible() {
             let full = format!("{}:{}", l.name, t.name).to_lowercase();
@@ -489,7 +511,7 @@ impl Mcp {
         } else {
             serde_json::to_string_pretty(&found).expect("matches serialize")
         };
-        for l in live {
+        for l in &live {
             if let Some(e) = &l.error {
                 out.push_str(&format!("\n(the MCP server {} is not running: {e})", l.name));
             }
@@ -500,12 +522,18 @@ impl Mcp {
         (out, false)
     }
 
-    /// Runs `mcp_call`, which the evaluator has allowed.
+    /// Runs `mcp_call`, which the evaluator has allowed. A tool `denied`
+    /// covers is refused here too, before any server starts: the native
+    /// loop refuses a subagent's call outside its allowlist before it is
+    /// judged, and this holds it for any other caller.
     pub async fn call(&self, input: &Value, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> (String, bool) {
         let (server, tool) = match target(input) {
             Ok(t) => t,
             Err(e) => return e,
         };
+        if denied(&server, Some(&tool)) {
+            return (format!("{server}:{tool} was not run: this turn may not reach it"), true);
+        }
         let live = match self.started(denied, cancel).await {
             Ok(l) => l,
             Err(e) => return (e, true),
@@ -570,7 +598,7 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
     let conn = Conn::open(&s.config, &s.cwd)?;
     conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}})).await?;
     conn.notify("notifications/initialized").await?;
-    let (mut tools, mut listed, mut big) = (Vec::new(), 0usize, 0usize);
+    let (mut tools, mut listed, mut big, mut unnamed) = (Vec::new(), 0usize, 0usize, 0usize);
     let mut left_out = None;
     let mut cursor: Option<Value> = None;
     for page in 1..=MAX_PAGES {
@@ -578,7 +606,10 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
         let r = conn.request("tools/list", params).await?;
         let got = r.get("tools").and_then(|t| t.as_array()).map_or(&[][..], |t| t.as_slice());
         for t in got {
-            let Some(name) = t.get("name").and_then(|n| n.as_str()).filter(|n| good_tool_name(n)) else { continue };
+            let Some(name) = t.get("name").and_then(|n| n.as_str()).filter(|n| good_tool_name(n)) else {
+                unnamed += 1;
+                continue;
+            };
             let schema = t.get("inputSchema").cloned().unwrap_or_else(|| json!({"type": "object"}));
             let description: String = t.get("description").and_then(|d| d.as_str()).unwrap_or_default().into();
             let schema_len = schema.to_string().len();
@@ -603,17 +634,19 @@ async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String
             left_out = Some(format!("it listed more than {MAX_PAGES} pages of tools, so the rest were left out"));
         }
     }
-    if big > 0 {
-        let note = format!("{big} tool(s) with an input schema over {} KiB were left out", MAX_SCHEMA >> 10);
+    let notes = [(big > 0).then(|| format!("{big} tool(s) with an input schema over {} KiB were left out", MAX_SCHEMA >> 10)), (unnamed > 0).then(|| format!("{unnamed} tool(s) named with a control character, whitespace or `*`, or with no name, were left out"))];
+    for note in notes.into_iter().flatten() {
         left_out = Some(left_out.map_or(note.clone(), |l| format!("{l}; {note}")));
     }
     Ok((conn, (tools, left_out)))
 }
 
 /// A tool name as a server lists it, or the model gives it: printable, so
-/// the approval prompt that names it shows what it is.
-fn good_tool_name(n: &str) -> bool {
-    !n.is_empty() && n.len() <= 128 && !n.chars().any(|c| c.is_control() || c.is_whitespace())
+/// the approval prompt that names it shows what it is, and holding no `*`,
+/// which a rule and an allowlist read as every tool, so a tool named so
+/// could never be told from all of its server's.
+pub(crate) fn good_tool_name(n: &str) -> bool {
+    !n.is_empty() && n.len() <= 128 && !n.chars().any(|c| c.is_control() || c.is_whitespace() || c == '*')
 }
 
 /// A connection to one server.
@@ -912,7 +945,7 @@ mod tests {
     #[test]
     fn r_tool_3_a_call_naming_a_control_character_is_refused_before_it_is_judged() {
         assert_eq!(target(&json!({"tool": "fake:echo"})).unwrap(), ("fake".into(), "echo".into()));
-        for bad in ["fake:echo\u{1b}[2J", "fake:a\nb", "fa ke:echo", "fake:", ":echo", "s_:x"] {
+        for bad in ["fake:echo\u{1b}[2J", "fake:a\nb", "fa ke:echo", "fake:", ":echo", "s_:x", "fake:*", "fake:get_*"] {
             assert!(target(&json!({"tool": bad})).is_err(), "{bad:?}");
         }
     }
