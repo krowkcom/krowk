@@ -124,8 +124,10 @@ The binaries are reproducible: the same tag, built with the same toolchain,
 gives the same bytes wherever it is checked out. The release proves it on
 every tag — its `reproduce` job builds Linux x86-64 a second time, on
 another runner from another path, and refuses to publish unless every
-binary matches. To do it yourself on Linux, with Rust 1.97, zig 0.16.0 and
-cargo-zigbuild 0.23.4 (the versions in `.github/workflows/dist.yml`):
+binary matches. To do it yourself on Linux, with the exact Rust release the
+tag's `mise.toml` names (1.97.1 as of this writing — the same bytes need
+the same compiler), zig 0.16.0 and cargo-zigbuild 0.23.4 (the versions in
+`mise.toml` and `.github/workflows/dist.yml`):
 
 ```bash
 git clone https://github.com/krowkcom/krowk && cd krowk && git checkout "$tag"

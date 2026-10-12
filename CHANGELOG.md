@@ -197,6 +197,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Inside the sandbox, a failed `git add` or `git commit` now says why.**
+  The sandbox keeps `.git` read-only by design, so git can't stage, commit
+  or switch branches from inside it. Until now the agent saw only "Read-only
+  file system" and often tried again another way. It is now told this is on
+  purpose: leave the changes in the working tree and ask you to commit them.
+- **Releases are built with one exact Rust compiler, 1.97.1.** CI, the
+  release and `mise.toml` all pin it, since two builds of one tag only match
+  byte for byte on the same compiler.
 - **The running turn's label is in your terminal's text colour.**
   "Thinking…", "Responding…", "Running …" and the rest now show in the
   normal foreground (white on a dark theme). Only the spinner keeps the
