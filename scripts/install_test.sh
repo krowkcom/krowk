@@ -289,7 +289,7 @@ grep -q "Checksum matches" "$WORK/install.log" || fail "the installer did not re
 pass "the checksum was verified"
 # The release under test is signed or not by its version: a local run's
 # fake 9.9.9 is, CI's 0.0.0-snapshot (from dist/) predates signing.
-if (source <(sed -n '/^signed_since()/,/^}/p' "$REPO_ROOT/scripts/install.sh"); signed_since "$VERSION"); then
+if signed_since "$VERSION"; then
   grep -q "cosign is not installed" "$WORK/install.log" && grep -q "cosign verify-blob checksums.txt" "$WORK/install.log" \
     || { cat "$WORK/install.log"; fail "R-OSS-3: without cosign the installer did not say how to check the signature"; }
   pass "R-OSS-3: without cosign, the signature check is printed rather than required"
@@ -638,6 +638,9 @@ printf '%s\n' "$@" >"$COSIGN_ARGS"
 echo "Verified OK" >&2
 STUB_EOF
 chmod +x "$STUB/cosign"
+# Only a signed release has a bundle to check: a local run's fake 9.9.9 is,
+# CI's 0.0.0-snapshot from dist/ is not, and has none to download.
+if signed_since "$VERSION"; then
 for says in ok refused; do
   rm -rf "${BIN:?}"/*
   if env -i PATH="$STUB:$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
@@ -671,8 +674,7 @@ if env -i PATH="$STUB:$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_SKIP_SKILL=1 CI=
   fail "R-OSS-3: with cosign, a signed release's missing bundle was installed past"
 fi
 grep -q "would not download" "$WORK/cosign-missing.log" || { cat "$WORK/cosign-missing.log"; fail "R-OSS-3: a missing bundle failed for another reason"; }
-{ signed_since 0.12.0-rc2 && signed_since 1.0.0 && ! signed_since 0.11.2; } || fail "the first signed release is not 0.12.0"
-pass "R-OSS-3: with cosign, a signed release without its bundle is refused; releases before 0.12.0 have none"
+pass "R-OSS-3: with cosign, a signed release without its bundle is refused"
 # KROWK_REQUIRE_SIGNATURE=1: no cosign, or a release from before signing, is
 # refused rather than installed on its checksum.
 rm -rf "${BIN:?}"/*
@@ -683,9 +685,15 @@ if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 KROWK_REQUIR
   fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 installed without cosign"
 fi
 { [[ ! -e "$BIN/krowk" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
+pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses without cosign"
+else
+  echo "  - R-OSS-3: the cosign checks need a signed release; $VERSION predates signing (a local run checks them on its own)"
+fi
+{ signed_since 0.12.0-rc2 && signed_since 1.0.0 && ! signed_since 0.11.2; } || fail "the first signed release is not 0.12.0"
+pass "R-OSS-3: releases before 0.12.0 have no bundle"
 verify_signature_log=$( (REQUIRE_SIGNATURE=1 verify_signature "$BASE" "$WORK" 0.11.2) 2>&1 ) && fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 accepted a release from before signing"
 [[ "$verify_signature_log" == *"predates signed releases"*"install 0.12.0 or later"* ]] || fail "R-OSS-3: an unsigned old release under KROWK_REQUIRE_SIGNATURE=1 was refused for another reason: $verify_signature_log"
-pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses without cosign, and refuses a release from before signing"
+pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses a release from before signing"
 
 echo
 echo "Refusing a bad download"
