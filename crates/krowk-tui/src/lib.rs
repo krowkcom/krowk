@@ -47,6 +47,8 @@ pub mod osc7501;
 pub mod editor;
 pub mod full;
 pub mod help;
+#[cfg(unix)]
+mod hangup;
 pub mod look;
 pub mod net;
 pub mod paste;
@@ -138,6 +140,24 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+/// How long `flush_requests` waits in all, its interrupt and every steer
+/// together: what is not sent by then is sent at the next retry. One turn
+/// of the loop never waits past it on the host (`hangup::STUCK`).
+const FLUSH_WAIT: Duration = Duration::from_secs(3);
+/// The least of `FLUSH_WAIT` a steer is sent with. A wait cut short is read
+/// as the host being slow to answer a command it has, so one sent with
+/// next to no time could be dropped unwritten and still read as sent; with
+/// less left it waits for the next retry.
+const STEER_FLOOR: Duration = Duration::from_millis(250);
+/// How long a local turn interrupted by SIGHUP or SIGTERM is given to end.
+/// A closed terminal sends one SIGHUP and nobody is left to press a second
+/// Ctrl-C, so past it the turn is let go as that would let it go: a turn
+/// that never ends on the interrupt cannot keep krowk running with nothing
+/// to show it on. Past the backends' own worst case — Claude Code's
+/// receipt of the interrupt may take its 5 s grace, and its 10 s to end
+/// the turn start from that receipt — so a turn they end is recorded
+/// ended, and this is the backstop.
+const HANGUP_WAIT: Duration = Duration::from_secs(20);
 /// How long resuming a session waits for the daemon to say whether its
 /// background agents still run there.
 const STATUS_WAIT: Duration = Duration::from_millis(1500);
@@ -505,7 +525,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -655,6 +675,9 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// When SIGHUP or SIGTERM interrupted the local turn the loop now waits
+    /// to end (`HANGUP_WAIT`).
+    hung_up_at: Option<Instant>,
     /// The key (`c` or `d`, with Ctrl) that would have left krowk, and
     /// when: the same key again within `QUIT_CONFIRM` leaves, any other
     /// key forgets it.
@@ -892,6 +915,33 @@ fn next_tick(started: Instant, now: Instant, every: Duration) -> Instant {
     started + Duration::from_millis((n * tick) as u64)
 }
 
+/// A key reader on the terminal, unless it has hung up: crossterm's
+/// would wait for good on the reader it left spinning there (`hangup`).
+fn key_reader() -> Option<EventStream> {
+    #[cfg(unix)]
+    if hangup::gone() {
+        return None;
+    }
+    Some(EventStream::new())
+}
+
+/// Whether the watchdog is ending the process (`hangup::ending`).
+fn ending() -> bool {
+    #[cfg(unix)]
+    return hangup::ending();
+    #[cfg(not(unix))]
+    false
+}
+
+/// Resolves once the terminal has hung up; never where that is not
+/// watched.
+async fn terminal_went() {
+    #[cfg(unix)]
+    hangup::went().await;
+    #[cfg(not(unix))]
+    std::future::pending::<()>().await
+}
+
 /// The next of an optional stream, or never.
 async fn next_key(keys: &mut Option<EventStream>) -> Option<std::io::Result<Event>> {
     match keys {
@@ -1003,6 +1053,8 @@ struct Due {
     retry: Option<Instant>,
     quit: Option<Instant>,
     copied: Option<Instant>,
+    /// When an interrupted turn stops being waited for (`HANGUP_WAIT`).
+    hung_up: Option<Instant>,
 }
 
 /// Whether the model's provider can be reached, as the loop finds out:
@@ -1049,7 +1101,7 @@ impl<'h> Ui<'h> {
     }
 
     async fn run<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
-        self.keys = Some(EventStream::new());
+        self.keys = key_reader();
         let mut frames = Frames::default();
         // One probe at start, so a machine that is offline says so before
         // anybody types into it.
@@ -1057,12 +1109,26 @@ impl<'h> Ui<'h> {
         let mut quitting = false;
         let mut hangups = Signals::hangups();
         let mut interrupts = Signals::interrupts();
+        // A loop stuck past a hangup or a signal still ends the process;
+        // one that returns has its own way out (`hangup`).
+        #[cfg(unix)]
+        let _armed = hangup::arm(restore_terminal);
         self.first_frame(app, term, &mut frames)?;
         loop {
+            #[cfg(unix)]
+            hangup::beat();
             let due = self.due(app, &reach);
-            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied].into_iter().flatten().min();
+            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied, due.hung_up].into_iter().flatten().min();
             tokio::select! {
                 biased;
+                // The terminal hung up: nobody is left to answer, nor any
+                // key to read (`hangup`), so a turn here is not waited for —
+                // left as a second Ctrl-C leaves it. One in the daemon runs
+                // on there.
+                _ = terminal_went() => {
+                    self.abandoned = app.running() && self.host.remote().is_none() && self.host.synced().is_none();
+                    return Ok(());
+                }
                 // Ctrl-C or Ctrl-\ on the terminal a vendor's login has: that
                 // command's, not krowk's (with the TUI's own terminal raw,
                 // they arrive as keys instead). One can land a moment after
@@ -1104,11 +1170,22 @@ impl<'h> Ui<'h> {
                 }
                 _ = until(wake) => self.on_wake(app, term, &due, &mut frames, &mut reach).await?,
             }
-            if self.abandoned || (app.quit && self.turn.is_none()) {
+            if self.leaving(app) {
                 return Ok(());
             }
             self.paint(app, term, &mut frames)?;
         }
+    }
+
+    /// Whether the loop is done: left without the turn, or asked to quit
+    /// with none running. An interrupted turn waited for past
+    /// `HANGUP_WAIT` is let go as a second Ctrl-C lets it go, and the way
+    /// out is the usual one.
+    fn leaving(&mut self, app: &App) -> bool {
+        if self.turn.is_some() && self.hung_up_at.is_some_and(|t| t.elapsed() >= HANGUP_WAIT) {
+            self.abandoned = true;
+        }
+        self.abandoned || (app.quit && self.turn.is_none())
     }
 
     /// One terminal event, or the terminal's end: true once it is gone, and
@@ -1164,11 +1241,15 @@ impl<'h> Ui<'h> {
             retry: app.turn.as_ref().filter(|t| (t.want_interrupt && !t.interrupt_sent) || !app.unsent_steers.is_empty()).map(|_| now + INTERRUPT_RETRY),
             quit: self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM),
             copied: self.copied.as_ref().map(|(_, t)| *t),
+            hung_up: self.hung_up_at.map(|t| t + HANGUP_WAIT),
         }
     }
 
     /// SIGHUP or SIGTERM; true when the TUI stops now.
     async fn on_hangup(&mut self, app: &mut App, quitting: &mut bool) -> bool {
+        // Taken: the loop is not stuck, whatever this waits for.
+        #[cfg(unix)]
+        hangup::beat();
         // A turn in the daemon is the daemon's: the terminal
         // going takes nothing with it, and it runs on for
         // `krowk --resume` to follow (R-HOST-1).
@@ -1180,6 +1261,7 @@ impl<'h> Ui<'h> {
             return true;
         }
         *quitting = true;
+        self.hung_up_at = Some(Instant::now());
         self.interrupt(app).await;
         false
     }
@@ -1365,7 +1447,8 @@ impl<'h> Ui<'h> {
 
     fn draw<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
         // A vendor's login has the terminal: what is owed waits for it.
-        if self.suspended {
+        // Nor anything once the watchdog has put it back to end the process.
+        if self.suspended || ending() {
             return Ok(());
         }
         // The resize event can trail the resize itself; a frame drawn for
@@ -1850,16 +1933,23 @@ impl<'h> Ui<'h> {
         if !t.prompt_seen {
             return;
         }
+        // One budget for them all: a host slow to take each would hold the
+        // loop a COMMAND_WAIT a command.
+        let until = Instant::now() + FLUSH_WAIT;
+        let left = || until.saturating_duration_since(Instant::now()).min(COMMAND_WAIT);
         if t.want_interrupt
             && !t.interrupt_sent
-            && self.command(Command::Interrupt { session_id: id.clone() }).await.is_ok_or_slow()
+            && self.command_within(Command::Interrupt { session_id: id.clone() }, left()).await.is_ok_or_slow()
             && let Some(t) = &mut app.turn
         {
             t.interrupt_sent = true;
         }
         while let Some(text) = app.unsent_steers.first().cloned() {
+            if left() < STEER_FLOOR {
+                break;
+            }
             let images = app.images_for(&text);
-            if !self.command(Command::Steer { session_id: id.clone(), text: text.clone(), images }).await.is_ok_or_slow() {
+            if !self.command_within(Command::Steer { session_id: id.clone(), text: text.clone(), images }, left()).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);
@@ -1873,8 +1963,13 @@ impl<'h> Ui<'h> {
     /// turn's frames, but the keys are not held up on a daemon that does not
     /// answer. One not taken is asked again (`flush_requests`).
     async fn command(&self, cmd: Command) -> Result<(), EngineError> {
+        self.command_within(cmd, COMMAND_WAIT).await
+    }
+
+    /// `command`, waited for `limit` at most.
+    async fn command_within(&self, cmd: Command, limit: Duration) -> Result<(), EngineError> {
         let (tx, _rx) = mpsc::channel(1);
-        match tokio::time::timeout(COMMAND_WAIT, self.host.execute(cmd, tx)).await {
+        match tokio::time::timeout(limit, self.host.execute(cmd, tx)).await {
             Ok(r) => r.map(|_| ()),
             Err(_) => Err(EngineError::new(SLOW, "the host daemon did not answer in time; the command was sent")),
         }
@@ -1981,7 +2076,7 @@ impl<'h> Ui<'h> {
         }
         term.resize(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
         if self.keys.is_none() {
-            self.keys = Some(EventStream::new());
+            self.keys = key_reader();
         }
         app.set_width(inner(w));
         app.set_rows(h);
@@ -2035,7 +2130,7 @@ impl<'h> Ui<'h> {
         let _ = out.flush();
         let (w, h) = crossterm::terminal::size().unwrap_or((term.size().width, term.size().height));
         term.resume(Size { width: w.max(1), height: h.max(1) }, cursor_row)?;
-        self.keys = Some(EventStream::new());
+        self.keys = key_reader();
         app.set_width(inner(w));
         app.set_rows(h);
         Ok(())

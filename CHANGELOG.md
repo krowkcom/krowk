@@ -355,6 +355,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **krowk no longer outlives a closed terminal.** Closing the window or
+  losing the SSH link while a turn ran could leave krowk running with
+  nothing to show it on, ignoring `kill` and using a whole CPU core,
+  until `kill -9`. The library krowk reads keys with loops for good on a
+  terminal that has gone, and once krowk waited on it, it stopped
+  noticing anything. krowk now watches the terminal itself and leaves
+  as soon as it goes. A turn running in the host daemon runs on there,
+  for `krowk --resume` to pick up; one running in krowk itself is left as
+  a second Ctrl-C leaves it, and the session is still saved. On SIGHUP or
+  SIGTERM, a turn in krowk itself that hasn't ended 20 seconds after it
+  was interrupted is let go the same way. And should
+  krowk ever get stuck again, a SIGHUP or SIGTERM it doesn't act on
+  within five seconds ends it, with the terminal put back as far as it
+  still can be. A krowk that does act on it stops exactly as before.
+- **The host daemon no longer keeps the terminal that started it open.**
+  The daemon `krowk` starts in the background could inherit a terminal,
+  pipe or file its starter had open without close-on-exec, and kept it
+  for its whole life: a terminal tab that wouldn't finish closing, or a
+  script waiting on a pipe that never ended. It now starts with nothing
+  open but its log and `/dev/null`.
 - **krowk's own agent reads your MCP setup as Claude Code does.** A
   repository's `.mcp.json` servers now follow Claude Code's
   `enabledMcpjsonServers`, `disabledMcpjsonServers` and
