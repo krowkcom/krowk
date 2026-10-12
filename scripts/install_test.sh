@@ -287,9 +287,17 @@ pass "the installed krowk runs"
 
 grep -q "Checksum matches" "$WORK/install.log" || fail "the installer did not report verifying the checksum"
 pass "the checksum was verified"
-grep -q "cosign is not installed" "$WORK/install.log" && grep -q "cosign verify-blob checksums.txt" "$WORK/install.log" \
-  || { cat "$WORK/install.log"; fail "R-OSS-3: without cosign the installer did not say how to check the signature"; }
-pass "R-OSS-3: without cosign, the signature check is printed rather than required"
+# The release under test is signed or not by its version: a local run's
+# fake 9.9.9 is, CI's 0.0.0-snapshot (from dist/) predates signing.
+if (source <(sed -n '/^signed_since()/,/^}/p' "$REPO_ROOT/scripts/install.sh"); signed_since "$VERSION"); then
+  grep -q "cosign is not installed" "$WORK/install.log" && grep -q "cosign verify-blob checksums.txt" "$WORK/install.log" \
+    || { cat "$WORK/install.log"; fail "R-OSS-3: without cosign the installer did not say how to check the signature"; }
+  pass "R-OSS-3: without cosign, the signature check is printed rather than required"
+else
+  grep -q "predates signed releases, so only its checksum is checked" "$WORK/install.log" \
+    || { cat "$WORK/install.log"; fail "R-OSS-3: an unsigned release was not said to be checked by its checksum alone"; }
+  pass "R-OSS-3: a release from before signing is said to be checked by its checksum alone"
+fi
 
 [[ -f "$CLAUDE/skills/krowk/SKILL.md" ]] || fail "the agent skill was not written"
 diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
