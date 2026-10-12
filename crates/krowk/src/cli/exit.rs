@@ -25,6 +25,9 @@ fn client(code: &str) -> Option<i32> {
         "not_authenticated" | "missing_claim" | "no_key_for_workspace" | "dangling_default" | "authorization_denied"
         | "no_one_to_approve" => AUTH,
         "private_needs_key" | "shared_needs_key" | "visibility_not_applied" | "budget_exceeded" => REFUSED,
+        // `krowk upgrade` and a release whose checksums its workflow did not
+        // sign: refused, not retried.
+        "unverified_release" => REFUSED,
         // A backend is not started in a repository nobody trusted (R-BACK-6).
         #[cfg(feature = "harness")]
         "untrusted_directory" => REFUSED,

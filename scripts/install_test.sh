@@ -167,6 +167,16 @@ for goos in $yaml_goos; do
 done
 pass "every platform the release builds is one the installer names, and no others"
 
+# A cosign of this machine's would check the stand-in release's signature,
+# which nothing here can make: every install below runs without one, and the
+# signature's own tests put a stub of theirs first on PATH.
+no_cosign=""
+IFS=: read -ra path_dirs <<<"$PATH"
+for dir in "${path_dirs[@]}"; do
+  [[ -x "$dir/cosign" ]] || no_cosign+="${no_cosign:+:}$dir"
+done
+PATH="$no_cosign"
+
 # The release to install from.
 echo
 echo "Laying out a release to install from"
@@ -225,6 +235,8 @@ fi
 if cmp -s "$WORK/full/krowk" "$WORK/lean/krowk"; then fail "the full and lean archives hold the same krowk"; fi
 
 cp skills/krowk/SKILL.md "$RELEASE/SKILL.md"
+# Only the stub cosign below reads it.
+echo '{}' >"$RELEASE/checksums.txt.sigstore.json"
 pass "serving $ARCHIVE, $LEAN_ARCHIVE + checksums.txt, from $SOURCE"
 
 # The server. Port 0 so parallel runs do not collide.
@@ -275,6 +287,9 @@ pass "the installed krowk runs"
 
 grep -q "Checksum matches" "$WORK/install.log" || fail "the installer did not report verifying the checksum"
 pass "the checksum was verified"
+grep -q "cosign is not installed" "$WORK/install.log" && grep -q "cosign verify-blob checksums.txt" "$WORK/install.log" \
+  || { cat "$WORK/install.log"; fail "R-OSS-3: without cosign the installer did not say how to check the signature"; }
+pass "R-OSS-3: without cosign, the signature check is printed rather than required"
 
 [[ -f "$CLAUDE/skills/krowk/SKILL.md" ]] || fail "the agent skill was not written"
 diff -q skills/krowk/SKILL.md "$CLAUDE/skills/krowk/SKILL.md" >/dev/null \
@@ -600,6 +615,69 @@ if env -i PATH="$PATH" HOME="$WORK/home" NO_COLOR=1 \
   fail "the installer accepted --tiny"
 fi
 pass "a KROWK_LEAN or an argument that means neither build is refused"
+
+echo
+echo "The release's signature, with cosign (R-OSS-3)"
+# A stub cosign: it records what it was asked and answers as COSIGN_SAYS says,
+# so what the installer asks cosign for, and what it does with the answer, is
+# what is tested; cosign's own checking is SECURITY.md's command's.
+STUB="$WORK/cosign-stub"
+mkdir -p "$STUB"
+cat >"$STUB/cosign" <<'STUB_EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@" >"$COSIGN_ARGS"
+[[ "$COSIGN_SAYS" == ok ]] || { echo "Error: none of the expected identities matched" >&2; exit 1; }
+echo "Verified OK" >&2
+STUB_EOF
+chmod +x "$STUB/cosign"
+for says in ok refused; do
+  rm -rf "${BIN:?}"/*
+  if env -i PATH="$STUB:$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 \
+    COSIGN_SAYS="$says" COSIGN_ARGS="$WORK/cosign-$says.args" \
+    KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
+    KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+    bash "$REPO_ROOT/scripts/install.sh" >"$WORK/cosign-$says.log" 2>&1; then
+    [[ "$says" == ok ]] || { cat "$WORK/cosign-$says.log"; fail "R-OSS-3: the installer installed a release whose signature cosign refused"; }
+  else
+    [[ "$says" == refused ]] || { cat "$WORK/cosign-$says.log"; fail "R-OSS-3: the installer failed on a signature cosign verified"; }
+  fi
+  { grep -qx -- "https://github.com/krowkcom/krowk/.github/workflows/release.yml@refs/tags/v$VERSION" "$WORK/cosign-$says.args" \
+    && grep -qx -- "https://token.actions.githubusercontent.com" "$WORK/cosign-$says.args" \
+    && grep -qx -- "--bundle" "$WORK/cosign-$says.args" \
+    && grep -A1 -x -- "--certificate-github-workflow-repository" "$WORK/cosign-$says.args" | grep -qx "krowkcom/krowk" \
+    && grep -A1 -x -- "--certificate-github-workflow-trigger" "$WORK/cosign-$says.args" | grep -qx "push"; } \
+    || { cat "$WORK/cosign-$says.args"; fail "R-OSS-3: cosign was not asked for the release workflow's identity at v$VERSION"; }
+  if [[ "$says" == ok ]]; then
+    { grep -q "Signature verified" "$WORK/cosign-ok.log" && [[ -x "$BIN/krowk" ]]; } || { cat "$WORK/cosign-ok.log"; fail "R-OSS-3: a verified signature was not said"; }
+    pass "R-OSS-3: with cosign, the signature is checked as the release workflow at the version's tag"
+  else
+    { [[ ! -e "$BIN/krowk" ]] && grep -q "not signed by" "$WORK/cosign-refused.log"; } || { cat "$WORK/cosign-refused.log"; fail "R-OSS-3: a refused signature did not stop the install"; }
+    pass "R-OSS-3: a signature cosign refuses stops the install, and installs nothing"
+  fi
+done
+# The old release laid out above has no bundle; at this version it should.
+if env -i PATH="$STUB:$PATH" HOME="$WORK/home" NO_COLOR=1 KROWK_SKIP_SKILL=1 CI=true \
+  COSIGN_SAYS=ok COSIGN_ARGS="$WORK/cosign-missing.args" \
+  KROWK_INSTALL_BASE_URL="$BASE/old" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  bash "$REPO_ROOT/scripts/install.sh" --lean >"$WORK/cosign-missing.log" 2>&1; then
+  fail "R-OSS-3: with cosign, a signed release's missing bundle was installed past"
+fi
+grep -q "would not download" "$WORK/cosign-missing.log" || { cat "$WORK/cosign-missing.log"; fail "R-OSS-3: a missing bundle failed for another reason"; }
+{ signed_since 0.12.0-rc2 && signed_since 1.0.0 && ! signed_since 0.11.2; } || fail "the first signed release is not 0.12.0"
+pass "R-OSS-3: with cosign, a signed release without its bundle is refused; releases before 0.12.0 have none"
+# KROWK_REQUIRE_SIGNATURE=1: no cosign, or a release from before signing, is
+# refused rather than installed on its checksum.
+rm -rf "${BIN:?}"/*
+if env -i PATH="$PATH" HOME="$WORK/home" SHELL=/bin/bash NO_COLOR=1 KROWK_REQUIRE_SIGNATURE=1 \
+  KROWK_SKIP_SKILL=1 KROWK_INSTALL_TTY=/dev/null \
+  KROWK_INSTALL_BASE_URL="$BASE" KROWK_VERSION="$VERSION" KROWK_BIN_DIR="$BIN" \
+  bash "$REPO_ROOT/scripts/install.sh" >"$WORK/strict-nocosign.log" 2>&1; then
+  fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 installed without cosign"
+fi
+{ [[ ! -e "$BIN/krowk" ]] && grep -q "install cosign" "$WORK/strict-nocosign.log"; } || { cat "$WORK/strict-nocosign.log"; fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 without cosign did not say to install it"; }
+verify_signature_log=$( (REQUIRE_SIGNATURE=1 verify_signature "$BASE" "$WORK" 0.11.2) 2>&1 ) && fail "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 accepted a release from before signing"
+[[ "$verify_signature_log" == *"predates signed releases"*"install 0.12.0 or later"* ]] || fail "R-OSS-3: an unsigned old release under KROWK_REQUIRE_SIGNATURE=1 was refused for another reason: $verify_signature_log"
+pass "R-OSS-3: KROWK_REQUIRE_SIGNATURE=1 refuses without cosign, and refuses a release from before signing"
 
 echo
 echo "Refusing a bad download"

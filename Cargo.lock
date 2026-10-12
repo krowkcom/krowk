@@ -1637,6 +1637,7 @@ dependencies = [
 name = "krowk"
 version = "0.0.0"
 dependencies = [
+ "base64 0.22.1",
  "flate2",
  "inquire",
  "jaq-core",
@@ -1652,6 +1653,8 @@ dependencies = [
  "krowk-tui",
  "libc",
  "regex-lite",
+ "rustls-pki-types",
+ "rustls-webpki",
  "serde",
  "serde_json",
  "sha2 0.11.0",
