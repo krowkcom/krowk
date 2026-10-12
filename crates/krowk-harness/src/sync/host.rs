@@ -869,7 +869,7 @@ impl Hosting {
         // is known only once the relay's replay leaves it out.
         let due = if self.ws.is_some() { self.unreached.due(Instant::now()) } else { Vec::new() };
         for d in due {
-            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.candidates, same_user));
+            eprintln!("{}", super::direct::unreached_line(&self.o.session, &d, &self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()), same_user));
         }
         self.deny_late().await;
         Ok(())
@@ -1045,7 +1045,7 @@ impl Hosting {
         let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
         match self.link.open(from, &b[HEADER..]) {
             Ok(Inbound::Hello { .. }) => {
-                let body = serde_json::to_vec(&Welcome { head: self.head, approvals: self.approvals.values().map(|(r, _)| r.clone()).collect(), candidates: self.candidates.clone() }).expect("json");
+                let body = serde_json::to_vec(&Welcome { head: self.head, approvals: self.approvals.values().map(|(r, _)| r.clone()).collect(), candidates: self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()) }).expect("json");
                 let sock = if direct { &mut self.dws } else { &mut self.ws };
                 if let (Some(w), Ok(sealed)) = (sock.as_mut(), self.link.welcome(from, &body)) && !super::send(w, sealed).await { *sock = None; }
             }

@@ -157,6 +157,26 @@ fn r_host_1_closing_the_terminal_leaves_the_turn_running_and_reopening_krowk_fol
     assert!(b.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
+/// The terminal itself going away mid-reply — every descriptor of its far
+/// side closed, not a signal sent — ends the TUI within a few seconds, and
+/// the turn runs on in the daemon.
+#[test]
+fn a_closed_terminal_ends_the_tui_mid_reply_and_the_turn_runs_on() {
+    const ANSWER: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(120)));
+    let d = Daemon::new("closed");
+    let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 100, 30);
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"say the alphabet\r");
+    assert!(a.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.hang_up();
+    assert!(a.wait(Duration::from_secs(5)).is_some(), "the TUI outlived its terminal by 5 s");
+    let mut b = pty::Pty::spawn(d.command(&m.url, &["--resume", &d.session()]), 100, 30);
+    assert!(b.wait_for("papa", Duration::from_secs(15)).is_some(), "the turn ran on: {:?}", b.text());
+    b.write(b"\x04\x04");
+    assert!(b.wait(Duration::from_secs(10)).is_some());
+}
+
 /// R-PROTO-1: two TUIs on one session show the same reply — the second
 /// follows the first's turn in the daemon.
 #[test]

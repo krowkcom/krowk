@@ -111,6 +111,13 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     for n in notices {
         ctx.warn(&n);
     }
+    // R-TOOL-3: a native run asks nobody about trust, so the servers a
+    // repository's `.mcp.json` names that it will not start are said, as
+    // the TUI's question and a backend's refusal say them, never just missing.
+    let repo = trust::root(&runs_in);
+    if runs_native && !trusted && krowk_harness::mcp::project_has_servers(&repo) {
+        ctx.warn(&format!("{}/.mcp.json names MCP servers, which krowk starts only in a trusted repository — run krowk there on a terminal once and answer its question, or pass --trust", krowk_tui::home_relative(&repo)));
+    }
     // Everything that can still refuse the run is asked first: a worktree
     // made before a refusal would be left behind.
     let (credentials, krowk_dir) = (super::providers::credentials_path()?, super::providers::krowk_dir()?);

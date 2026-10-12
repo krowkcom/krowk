@@ -657,11 +657,13 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
 /// that stalls; the turn, a tool call and an answer, writes a dozen of them.
 /// One of those left on the thread is said by the thread that waited it out
 /// (`stalls_on_daemon_thread`), with where it was made. The lateness probe
-/// (5 ms ticks) would show it as 40 ms or more, but a loaded machine holds
-/// the thread up as long with no write on it (36 ms on Linux under load,
-/// 130 ms on a macOS runner), so the probe is held only to a backstop of
-/// six stalls: the thread waiting out a turn's writes made elsewhere (a
-/// `block_on`), one after another, which no stall on it would say.
+/// (5 ms ticks) shows it as 40 ms or more, but a loaded machine holds the
+/// thread up as long with no write on it (36 ms on Linux under load, 130 ms
+/// on a macOS runner). On Linux the probe takes off what the thread spent
+/// waiting for a CPU (its schedstat), which is the load, so there it is held
+/// to under one stall again; elsewhere only to a backstop of six: the
+/// thread waiting out a turn's writes made elsewhere (a `block_on`), one
+/// after another, which no stall on it would say.
 #[test]
 fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -709,6 +711,11 @@ fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
         // hold it with nothing on it, and short of a turn's dozen writes
         // waited for one after another.
         assert!(late < STALL * 6, "the daemon's thread was held {late:?} during the turn — waiting on its writes? held {held:?}");
+        // The load taken off: what is left is the thread held by something
+        // on it, or waiting on something off it.
+        if std::path::Path::new("/proc/thread-self/schedstat").exists() {
+            assert!(late < STALL * 3 / 4, "the daemon's thread was held {late:?} during the turn, past any wait for a CPU — a write on it, or waited for? held {held:?}");
+        }
     });
     drop(slow);
     daemon.join().unwrap().unwrap();

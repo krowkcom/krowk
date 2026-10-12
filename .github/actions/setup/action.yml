@@ -10,12 +10,13 @@ runs:
   using: composite
   steps:
     # rustup is on every hosted runner; the toolchain is pinned to the
-    # workspace's rust-version rather than whatever the image carries.
+    # exact point release mise.toml names rather than whatever the image
+    # carries.
     - name: Set up Rust
       shell: bash
       run: |
-        rustup toolchain install 1.97 --profile minimal --component clippy
-        rustup default 1.97
+        rustup toolchain install 1.97.1 --profile minimal --component clippy
+        rustup default 1.97.1
 
     # The same shared build cache mise.toml turns on locally, wrapping plain
     # cargo. It keys on the rustc on PATH, so it comes after the toolchain.
