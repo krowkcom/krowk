@@ -64,6 +64,9 @@ pub struct Options {
     /// For tests: the most, in microseconds, the daemon's thread has been
     /// late for a 5 ms tick since this was last set to 0 — how long
     /// something blocked every session and heartbeat at once (R-LAG-9).
+    /// On Linux, less the time the thread was ready to run and waited for
+    /// a CPU (`run_queue_wait`): what a loaded machine holds it up by, not
+    /// anything on it.
     pub lateness: Option<std::sync::Arc<std::sync::atomic::AtomicU64>>,
     /// For tests: each time it is notified, every client is let go, as
     /// one is that falls past what a catch-up can read (`extent`), so a
@@ -253,9 +256,10 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         tokio::task::spawn_local(async move {
             const TICK: Duration = Duration::from_millis(5);
             loop {
-                let at = Instant::now();
+                let (at, queued) = (Instant::now(), run_queue_wait());
                 tokio::time::sleep(TICK).await;
-                let late = at.elapsed().saturating_sub(TICK).as_micros() as u64;
+                let queued = run_queue_wait().saturating_sub(queued);
+                let late = at.elapsed().saturating_sub(TICK).saturating_sub(queued).as_micros() as u64;
                 probe.fetch_max(late, std::sync::atomic::Ordering::Relaxed);
             }
         });
@@ -398,6 +402,21 @@ async fn wind_down(state: &Shared) {
         }
     })
     .await;
+}
+
+/// How long this thread has waited, ready to run, for a CPU — the second
+/// field of its schedstat — on Linux; nothing elsewhere, and where the
+/// kernel keeps no such count.
+// blocking: for tests (the lateness probe) only, and a read of the
+// kernel's own counters, which never waits on a disk.
+fn run_queue_wait() -> Duration {
+    #[cfg(target_os = "linux")]
+    if let Ok(s) = std::fs::read_to_string("/proc/thread-self/schedstat")
+        && let Some(Ok(ns)) = s.split_whitespace().nth(1).map(str::parse::<u64>)
+    {
+        return Duration::from_nanos(ns);
+    }
+    Duration::ZERO
 }
 
 // blocking: at start and on the way out, like `bind`.

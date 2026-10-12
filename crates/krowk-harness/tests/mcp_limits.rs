@@ -117,7 +117,8 @@ fn r_tool_3_every_spelling_of_a_whole_server_deny_starts_nothing() {
         let mut policy = Policy::modes_only(&b.join("repo"));
         policy.loaded.rules = vec![(Kind::Deny, rules::parse(rule, "test", &b.join("repo")).unwrap())];
         let gate = Gate::new(policy, krowk_harness::protocol::PermissionMode::BypassPermissions, Default::default(), None, None, "s", "t");
-        let denied = |srv: &str, tool: &str| {
+        let denied = |srv: &str, tool: Option<&str>| {
+            let tool = tool.unwrap_or("*");
             let call = krowk_harness::permissions::Call { tool: format!("mcp__{srv}__{tool}"), access: krowk_harness::permissions::Access::Mcp { server: srv.into(), tool: tool.into() }, subject: None };
             matches!(gate.verdict(&call, None), krowk_harness::permissions::Verdict::Deny(_))
         };
@@ -175,7 +176,7 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
         trusted: Some(Arc::new(|_: &Path| false)),
         ..Default::default()
     };
-    let servers = mcp::discover(&cfg, &repo);
+    let (servers, _) = mcp::discover(&cfg, &repo);
     assert!(servers.iter().all(|s| s.cwd == b.join("home")));
     search(&Mcp::new(servers), "x");
     std::thread::sleep(Duration::from_millis(300));
@@ -199,4 +200,106 @@ fn r_tool_3_a_relative_command_never_runs_the_repositorys_file_and_keys_are_not_
     let _ = std::fs::remove_dir_all(&b);
     assert!(!env.contains("sk-secret") && !env.contains("kr-secret"), "{env}");
     assert!(env.contains("OPENAI_API_KEY=sk-for-this-server"), "a key the server's config sets is its own");
+}
+
+/// A rule and an allowlist read `*` as every tool, so a tool named with
+/// one could never be told from all of its server's: it is left out.
+#[test]
+fn r_tool_3_a_tool_named_with_a_star_is_left_out_and_said() {
+    let b = base("star");
+    let s = script(&b, "", r#"printf '{"tools":[{"name":"*","description":"x every"},{"name":"get_*","description":"x some"},{"name":"echo","description":"x one"}]}'"#);
+    let out = search(&Mcp::new(vec![server("fake", "bash", vec![s.display().to_string()], &b.join("home"))]), "x");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(out.contains("\"fake:echo\"") && !out.contains("fake:*") && !out.contains("fake:get_*"), "{out}");
+    assert!(out.contains("(the MCP server fake: 2 tool(s) named with a control character, whitespace or `*`, or with no name, were left out)"), "{out}");
+}
+
+/// `mcp_call` holds what `denied` keeps from the turn itself — a
+/// subagent's allowlist, which the native loop refuses first — before any
+/// server starts, the whole server or the one tool.
+#[test]
+fn r_sub_1_mcp_call_refuses_what_the_turn_may_not_reach_before_any_server_starts() {
+    let b = base("recheck");
+    let marker = b.join("started");
+    let s = script(&b, &format!("touch {}", marker.display()), r#"printf '{"tools":[{"name":"echo"}]}'"#);
+    let m = Mcp::new(vec![server("fake", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    let whole = |srv: &str, _: Option<&str>| srv == "fake";
+    let one = |_: &str, tool: Option<&str>| tool == Some("echo");
+    for denied in [&whole as mcp::Denied, &one] {
+        let (out, err) = rt.block_on(m.call(&json!({"tool": "fake:echo", "input": {}}), denied, &rx));
+        assert!(err && out == "fake:echo was not run: this turn may not reach it", "{out}");
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    let started = marker.exists();
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(!started, "the server was started");
+}
+
+/// A stdio server listing one tool, `echo`, whose `tools/call` runs the
+/// bash in `on_call` (with `$id` set) to answer.
+fn caller(dir: &Path, on_call: &str) -> PathBuf {
+    let p = dir.join("call.sh");
+    let body = format!(
+        r#"while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+  *'"method":"initialize"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"protocolVersion":"2025-06-18","capabilities":{{}}}}}}\n' "$id" ;;
+  *'"method":"tools/list"'*) printf '{{"jsonrpc":"2.0","id":%s,"result":{{"tools":[{{"name":"echo","description":"echo","inputSchema":{{"type":"object"}}}}]}}}}\n' "$id" ;;
+  *'"method":"tools/call"'*) {on_call} ;;
+  esac
+done
+"#
+    );
+    std::fs::write(&p, body).unwrap();
+    p
+}
+
+fn call(m: &Mcp, tool: &str) -> (String, bool) {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let (_tx, rx) = tokio::sync::watch::channel(false);
+    rt.block_on(m.call(&json!({"tool": tool}), &|_, _| false, &rx))
+}
+
+#[test]
+fn r_tool_3_a_server_writing_only_junk_fails_the_call_long_before_its_timeout() {
+    let b = base("junk");
+    let s = caller(&b, "while :; do echo 'not json at all'; done");
+    let m = Mcp::new(vec![server("noisy", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let started = std::time::Instant::now();
+    let (out, err) = call(&m, "noisy:echo");
+    assert!(started.elapsed() < Duration::from_secs(20), "the call took {:?}", started.elapsed());
+    assert!(err && out.contains("noisy:echo") && out.contains("not JSON-RPC") && out.contains("stopped"), "{out}");
+    // Stopped, it is not used again this turn.
+    let (again, err) = call(&m, "noisy:echo");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(err && again.contains("not used again") && again.contains("not JSON-RPC"), "{again}");
+}
+
+/// JSON log lines — objects with no `jsonrpc` — are no messages either: a
+/// server writing only those is stopped too.
+#[test]
+fn r_tool_3_a_server_writing_only_json_logs_is_stopped_too() {
+    let b = base("jsonlogs");
+    let s = caller(&b, r#"while :; do echo '{"level":30,"msg":"still working"}'; done"#);
+    let m = Mcp::new(vec![server("pino", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let started = std::time::Instant::now();
+    let (out, err) = call(&m, "pino:echo");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(started.elapsed() < Duration::from_secs(20), "the call took {:?}", started.elapsed());
+    assert!(err && out.contains("not JSON-RPC"), "{out}");
+}
+
+#[test]
+fn r_tool_3_a_few_log_lines_and_notifications_before_the_answer_still_answer() {
+    let b = base("chatty");
+    let s = caller(
+        &b,
+        r#"echo 'starting up...'; echo; for i in 1 2 3 4 5; do printf '{"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"%s"}}\n' "$i"; echo "log line $i"; done; printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"pong"}]}}\n' "$id""#,
+    );
+    let m = Mcp::new(vec![server("chatty", "bash", vec![s.display().to_string()], &b.join("home"))]);
+    let (out, err) = call(&m, "chatty:echo");
+    let _ = std::fs::remove_dir_all(&b);
+    assert!(!err && out == "pong", "{out}");
 }

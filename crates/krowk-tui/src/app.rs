@@ -3586,7 +3586,7 @@ impl App {
             out.push(Line::from(Span::styled(clip("no earlier session started in this directory", width), dim())));
             return out;
         }
-        let rows: Vec<[String; 3]> = self.resumable.iter().map(|r| [flat(&r.prompt.chars().take(200).collect::<String>()), ago(r.last_ms, self.resumable_at_ms), String::new()]).collect();
+        let rows: Vec<[String; 3]> = self.resumable.iter().map(|r| [flat(&r.prompt.chars().take(200).collect::<String>()), ago(r.last_ms, self.resumable_at_ms), if r.archived { "archived".into() } else { String::new() }]).collect();
         out.extend(menu(&rows, self.resume_at, width, SLASH_ROWS));
         out
     }
@@ -6449,12 +6449,13 @@ mod tests {
         a.open_resume(Vec::new(), 0);
         assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("no earlier session started in this directory")));
         let hour = 60 * 60 * 1000;
-        let recent = |id: &str, prompt: &str, last_ms| Recent { id: id.into(), prompt: prompt.into(), last_ms };
+        let recent = |id: &str, prompt: &str, last_ms| Recent { id: id.into(), prompt: prompt.into(), last_ms, archived: id == "b" };
         a.open_resume(vec![recent("a", "fix the parser\nthen the tests", 40 * hour - 3 * hour), recent("b", "add a flag", 40 * hour - 30 * hour)], 40 * hour);
         assert_eq!((a.overlay, a.resume_at), (Overlay::Sessions, 0));
         let rows = text(&a.view(Instant::now()).0);
         assert!(rows.iter().any(|r| r.contains("› fix the parser⏎then the tests") && r.contains("3h ago")), "{rows:?}");
-        assert!(rows.iter().any(|r| r.contains("add a flag") && r.contains("yesterday")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("add a flag") && r.contains("yesterday") && r.contains("archived")), "an archived session is marked: {rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("fix the parser") && r.contains("archived")), "{rows:?}");
         // What was counted of the session shown goes with it.
         let m = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
         a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: m.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }));

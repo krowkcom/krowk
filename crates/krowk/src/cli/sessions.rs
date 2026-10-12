@@ -38,7 +38,9 @@ fn all_sources() -> Vec<Box<dyn Source>> {
 /// Brings one native session's rows up to date from its log, right after a
 /// `krowk -p` turn: the same read and write an import does, for its log and
 /// for every subagent's under it (R-SUB-6), parents first, so each child
-/// links to the session that started it.
+/// links to the session that started it. A session whose rows are still
+/// its stub's stand-ins though its log is back — a restore cut short
+/// between the two — has them dropped first, so the log's replace them.
 #[cfg(feature = "harness")]
 pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result<(), Error> {
     let store_path = krowk_store::db_path(env).map_err(|e| store_fail(&e, ""))?.display().to_string();
@@ -55,6 +57,10 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
     let _lock = lock_store_waiting(&store_path, REFRESH_LOCK_WAIT)?;
     let conn = krowk_store::open(env).map_err(|e| store_fail(&e, &store_path))?;
     for r in &tree {
+        let from_log = std::path::Path::new(&r.path).file_name().is_some_and(|f| f == krowk_harness::log::EVENTS_FILE);
+        if from_log && krowk_store::holds_stand_ins(&conn, krowk_harness::project::HARNESS, &r.id).map_err(|e| store_fail(&e, &store_path))? {
+            krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, &r.id).map_err(|e| store_fail(&e, &store_path))?;
+        }
         let (thread, next, _) = src.read(env, r, "").map_err(|e| fail("import_failed", e.to_string()))?;
         krowk_store::Writer::new(&conn).ingest_with_cursor(&thread, &r.key(), &next).map_err(|e| store_fail(&e, &store_path))?;
     }
@@ -62,29 +68,59 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
 }
 
 /// Brings an archived native session back into its directory and into
-/// krowk.db (R-VINT-4): fetched from its week's vintage, opened, written
-/// back, then projected as a `krowk -p` turn's log is, the archive's
-/// stand-in rows dropped first.
+/// krowk.db (R-VINT-4): fetched from the vintage it went into — or from
+/// vintage `from` of its week, when one is named — opened, written back,
+/// then projected as a `krowk -p` turn's log is, the archive's stand-in
+/// rows dropped first. Says which vintage it came from, and what the
+/// person should know about it.
 #[cfg(all(feature = "harness", unix))]
-pub(super) fn restore_native(ctx: &Ctx, session_id: &str) -> Result<(), Error> {
+pub(super) fn restore_native(ctx: &mut Ctx, session_id: &str, from: Option<&str>) -> Result<krowk_harness::vintage::Restored, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
     let (client, keys) = super::sync::vintage_keys(ctx)?;
-    krowk_harness::vintage::restore(&client, &keys, &dir, session_id).map_err(|e| fail("restore_failed", e))?;
-    let conn = open_store(ctx)?;
-    krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
-    drop(conn);
-    project_native(ctx.io.env, session_id)
+    let restored = {
+        let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
+        match from {
+            Some(slug) => krowk_harness::vintage::restore_from(&client, &keys, &dir, session_id, slug, &mut waiting),
+            None => krowk_harness::vintage::restore(&client, &keys, &dir, session_id, &mut waiting),
+        }
+    }?;
+    // Restored by another krowk while this one waited: its rows are not
+    // dropped again, but projected all the same, which replaces stand-ins
+    // that krowk was stopped before replacing (`project_native`).
+    if !restored.already {
+        let conn = open_store(ctx)?;
+        krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
+    }
+    project_native(ctx.io.env, session_id)?;
+    Ok(restored)
 }
 
-/// Restores a native session named by its log id when it is archived; a
-/// no-op for any other.
+/// Restores a native session named by its log id when it is archived, and
+/// says how it went; none for any other. One whose log is back but whose
+/// rows are still its stub's — a restore stopped before projecting it — is
+/// projected now.
 #[cfg(all(feature = "harness", unix))]
-pub(super) fn restore_if_archived(ctx: &Ctx, session_id: &str) -> Result<bool, Error> {
+pub(super) fn restore_archived(ctx: &mut Ctx, session_id: &str) -> Result<Option<krowk_harness::vintage::Restored>, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
     if !krowk_harness::vintage::is_archived(&dir, session_id) {
-        return Ok(false);
+        if krowk_harness::log::valid_id(session_id)
+            && dir.join(session_id).join(krowk_harness::log::EVENTS_FILE).is_file()
+            && krowk_store::holds_stand_ins(&open_store(ctx)?, krowk_harness::project::HARNESS, session_id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?
+        {
+            project_native(ctx.io.env, session_id)?;
+        }
+        return Ok(None);
     }
-    restore_native(ctx, session_id)?;
+    restore_native(ctx, session_id, None).map(Some)
+}
+
+/// `restore_archived`, its warnings said on stderr: whether it restored.
+#[cfg(all(feature = "harness", unix))]
+pub(super) fn restore_if_archived(ctx: &mut Ctx, session_id: &str) -> Result<bool, Error> {
+    let Some(r) = restore_archived(ctx, session_id)? else { return Ok(false) };
+    for w in &r.warnings {
+        ctx.warn(w);
+    }
     Ok(true)
 }
 
@@ -139,15 +175,111 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     emit_data(ctx, json!({ "archived": rows, "due": true }), format!("{n} session{} archived", if n == 1 { "" } else { "s" }))
 }
 
-/// `krowk sessions restore <id>`: an archived session back on the machine.
+/// `krowk sessions restore <id> [--from <vintage>]`: an archived session
+/// back on the machine, from the vintage it went into, or from the one of
+/// its week `--from` names (`krowk sessions vintage <id>` lists them).
 #[cfg(all(feature = "harness", unix))]
 pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
     let id = native_arg(ctx, args, "restore")?;
-    if !restore_if_archived(ctx, &id)? {
+    let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    if !krowk_harness::vintage::is_archived(&dir, &id) {
         return Err(fail("not_archived", format!("session {id} is not archived on this machine")));
     }
-    emit_data(ctx, json!({ "restored": id }), format!("session {id} restored"))
+    let from = ctx.f.from.trim().to_string();
+    let r = restore_native(ctx, &id, Some(from.as_str()).filter(|f| !f.is_empty()))?;
+    for w in &r.warnings {
+        ctx.warn(w);
+    }
+    let slug = &r.vintage;
+    emit_data(ctx, json!({ "restored": id, "vintage": slug, "warnings": r.warnings }), format!("session {id} restored from vintage {slug}"))
+}
+
+/// `krowk sessions vintage [<id>|<week>]`: the vintages the registry keeps
+/// — each week's current one, and those a newer one replaced, which it
+/// keeps for a while — for one archived session's week, one ISO week, or
+/// every week. For a session, the one its stub recorded is marked.
+#[cfg(all(feature = "harness", unix))]
+pub fn vintage(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    check_os()?;
+    let (weeks, stub) = match args {
+        [] => (None, None),
+        [w] if is_iso_week(w.trim()) => (Some(vec![w.trim().to_string()]), None),
+        _ => {
+            let id = native_arg(ctx, args, "vintage")?;
+            let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+            let stub = krowk_harness::vintage::read_stub(&dir, &id).ok_or_else(|| fail("not_archived", format!("session {id} is not archived on this machine, so it is in no vintage — `krowk sessions vintage <week>` lists a week's")))?;
+            (Some(vec![stub.week.clone()]), Some((id, stub)))
+        }
+    };
+    let client = super::sync::keyed_client(ctx, "listing vintages")?;
+    // Every week's current vintage comes with the listing of them all, so
+    // only each week's replaced ones are asked for after it.
+    let current: Vec<krowk_api::sync::Vintage> = match &weeks {
+        Some(w) => w.iter().map(|week| client.week_vintage(week)).collect::<Result<Vec<_>, _>>()?.into_iter().flatten().collect(),
+        None => {
+            let (mut all, mut after) = (Vec::new(), None::<String>);
+            loop {
+                let page = client.list_vintages(after.as_deref())?;
+                all.extend(page.vintages);
+                match page.next {
+                    Some(n) if Some(&n) != after.as_ref() => after = Some(n),
+                    _ => break,
+                }
+            }
+            all
+        }
+    };
+    let weeks = weeks.unwrap_or_else(|| current.iter().map(|v| v.week.clone()).collect());
+    let mut rows = Vec::new();
+    for week in &weeks {
+        rows.extend(current.iter().filter(|v| &v.week == week).cloned());
+        rows.extend(client.replaced_vintages(week)?);
+    }
+    let recorded = stub.as_ref().map(|(_, s)| s.vintage.clone()).unwrap_or_default();
+    let json_rows: Vec<Value> = rows
+        .iter()
+        .map(|v| {
+            let mut j = json!({ "slug": v.slug, "week": v.week, "current": v.replaced_at.is_empty(), "byte_size": v.byte_size, "created_at": v.created_at });
+            if !v.replaced_at.is_empty() {
+                j["replaced_at"] = json!(v.replaced_at);
+            }
+            if stub.is_some() {
+                j["recorded"] = json!(v.slug == recorded);
+            }
+            j
+        })
+        .collect();
+    let n = rows.len();
+    let summary = format!("{n} vintage{}", if n == 1 { "" } else { "s" });
+    if ctx.format != Format::Human {
+        let mut data = json!({ "vintages": json_rows });
+        if let Some((id, s)) = &stub {
+            data["session"] = json!(id);
+            data["week"] = json!(s.week);
+        }
+        return emit_data(ctx, data, summary);
+    }
+    if rows.is_empty() {
+        let _ = writeln!(ctx.io.stdout, "no vintages{}", stub.as_ref().map_or(String::new(), |(_, s)| format!(" for {}", s.week)));
+        return Ok(());
+    }
+    for v in &rows {
+        let state = if v.replaced_at.is_empty() { "current".to_string() } else { format!("replaced {}", cell(&v.replaced_at)) };
+        let mark = if !recorded.is_empty() && v.slug == recorded { "  ← where it was archived" } else { "" };
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {}{mark}", cell(&v.week), cell(&v.slug), output::human_bytes(v.byte_size as i64), state);
+    }
+    if let Some((id, _)) = &stub {
+        let _ = writeln!(ctx.io.stdout, "\n`krowk sessions restore {id} --from <vintage>` restores it from one of them");
+    }
+    Ok(())
+}
+
+/// Whether `s` names an ISO week, `2026-W40`.
+#[cfg(all(feature = "harness", unix))]
+fn is_iso_week(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 8 && b[..4].iter().all(u8::is_ascii_digit) && &b[4..6] == b"-W" && b[6..].iter().all(u8::is_ascii_digit)
 }
 
 /// `krowk sessions pin|unpin <id>`: a pinned session is never archived.
@@ -246,7 +378,7 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     // One option per row: an unbounded page would hang the terminal building
     // them, so the picker only fires on a paged list.
     if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT {
-        let id = pick_session(&rows, now)?;
+        let id = pick_session(&rows, now, &archived_rows(ctx, &rows))?;
         let _ = writeln!(ctx.io.stdout, "krowk sessions show {id}");
         return Ok(());
     }
@@ -639,7 +771,18 @@ fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now
 
 /// The picker offers only rows already in the store, which is what makes it
 /// safe to offer.
-pub(super) fn pick_session(rows: &[SessionRow], now: i64) -> Result<String, Error> {
+/// The rows of `rows` that are krowk sessions archived on this machine,
+/// by row id: the pickers mark them, since picking one restores it first.
+pub(super) fn archived_rows(ctx: &Ctx, rows: &[SessionRow]) -> BTreeSet<String> {
+    #[cfg(all(feature = "harness", unix))]
+    if let Ok(dir) = krowk_harness::log::sessions_dir(ctx.io.env) {
+        return rows.iter().filter(|r| r.harness == krowk_harness::project::HARNESS && krowk_harness::vintage::is_archived(&dir, &r.foreign_session_id)).map(|r| r.id.clone()).collect();
+    }
+    let _ = (ctx, rows);
+    BTreeSet::new()
+}
+
+pub(super) fn pick_session(rows: &[SessionRow], now: i64, archived: &BTreeSet<String>) -> Result<String, Error> {
     let labels: Vec<String> = rows
         .iter()
         .map(|r| {
@@ -651,7 +794,11 @@ pub(super) fn pick_session(rows: &[SessionRow], now: i64) -> Result<String, Erro
             if !hm.is_empty() {
                 label += &format!("  —  {hm}");
             }
-            label + &format!("  ·  {:<13}  ·  {}", relative_time(r.time_updated, now), short_id(&r.id))
+            label += &format!("  ·  {:<13}  ·  {}", relative_time(r.time_updated, now), short_id(&r.id));
+            if archived.contains(&r.id) {
+                label += "  ·  archived";
+            }
+            label
         })
         .collect();
     let picked = inquire::Select::new("Pick a session", labels.clone())
@@ -802,17 +949,49 @@ pub fn show(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
     #[allow(unused_mut)]
     let mut d = load_detail(ctx, args, "show")?;
-    // Opening an archived session brings it back first (R-VINT-4).
+    // Opening an archived session brings it back first (R-VINT-4). One that
+    // cannot come back for want of sync here, or of the registry, is shown
+    // as its stub keeps it, saying so, rather than not at all. Any other
+    // failure — a vintage that does not check out, a copy older than the
+    // stub — fails as it would have: those are not to be shown past.
     #[cfg(all(feature = "harness", unix))]
-    if d.session.harness == krowk_harness::project::HARNESS && restore_if_archived(ctx, &d.session.foreign_session_id)? {
-        let conn = open_store(ctx)?;
-        d = load_by_id(ctx, &conn, &d.session.id)?;
+    let mut stub_only: Option<(krowk_harness::vintage::Stub, Error)> = None;
+    #[cfg(all(feature = "harness", unix))]
+    if d.session.harness == krowk_harness::project::HARNESS {
+        match restore_if_archived(ctx, &d.session.foreign_session_id) {
+            // Read again either way: one a restore was stopped before
+            // projecting has just been projected, too.
+            Ok(_) => {
+                let conn = open_store(ctx)?;
+                d = load_by_id(ctx, &conn, &d.session.id)?;
+            }
+            Err(e) if !matches!(e.code().as_str(), "not_set_up" | "not_authenticated" | "network_unreachable") => return Err(e),
+            Err(e) => match krowk_harness::log::sessions_dir(ctx.io.env).ok().and_then(|dir| krowk_harness::vintage::read_stub(&dir, &d.session.foreign_session_id)) {
+                Some(stub) => stub_only = Some((stub, e)),
+                None => return Err(e),
+            },
+        }
     }
     if ctx.format != Format::Human {
-        let (data, summary) = session_show_json(ctx, &d);
+        #[allow(unused_mut)]
+        let (mut data, summary) = session_show_json(ctx, &d);
+        #[cfg(all(feature = "harness", unix))]
+        if let Some((stub, e)) = &stub_only {
+            data["archived"] = json!({ "restored": false, "week": stub.week, "vintage": stub.vintage, "summary": stub.summary, "error": { "code": e.code(), "message": e.fix() } });
+        }
         return emit_data(ctx, data, summary);
     }
-    let text = human_session_show(ctx, &d, ctx.f.thinking, now_ms());
+    #[allow(unused_mut)]
+    let mut text = human_session_show(ctx, &d, ctx.f.thinking, now_ms());
+    #[cfg(all(feature = "harness", unix))]
+    if let Some((stub, e)) = &stub_only {
+        if !stub.summary.is_empty() {
+            text += &format!("\nfirst asked  {}\n", cell(&stub.summary));
+        }
+        let id = &d.session.foreign_session_id;
+        let again = if matches!(e.code().as_str(), "not_set_up" | "not_authenticated") { String::new() } else { format!(" (`krowk sessions restore {id}` tries again)") };
+        ctx.warn(&format!("session {id} is archived and only its stub is here, so this is its summary — {}{again}", e.fix()));
+    }
     let _ = write!(ctx.io.stdout, "{text}");
     Ok(())
 }

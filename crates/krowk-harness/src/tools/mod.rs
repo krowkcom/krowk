@@ -1264,6 +1264,22 @@ async fn background(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sa
     }
 }
 
+/// What a failed command in the sandbox is told when git could not write
+/// the repository: `.git` is read-only there by design (R-PERM-3), outside
+/// a krowk worktree, so `git add`, `commit`, `checkout` and the like fail
+/// however they are asked, and a model that reads only "Read-only file
+/// system" tries again. git's English is matched; another locale's goes
+/// without the note.
+const GIT_FENCED: &str = "the sandbox keeps .git read-only, so git cannot stage, commit or move branches from inside it — that is by design, not a fault to work around: leave the changes in the working tree and ask the person to commit them";
+
+/// Whether a command's output says git failed to write the repository: a
+/// line naming `.git` itself — not `.github` or `.gitignore` — and a write
+/// refused.
+fn git_fenced(out: &str) -> bool {
+    let names_git = |l: &str| l.match_indices(".git").any(|(i, _)| l[i + 4..].chars().next().is_none_or(|c| matches!(c, '/' | '\'' | '"' | ':' | ' ')));
+    out.lines().any(|l| names_git(l) && (l.contains("Read-only file system") || l.contains("Permission denied") || l.contains("Operation not permitted")))
+}
+
 async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox::Plan>) -> (String, bool) {
     use tokio::io::AsyncReadExt;
     let timeout = i.timeout_ms.map_or(BASH_DEFAULT_TIMEOUT, Duration::from_millis).min(BASH_MAX_TIMEOUT);
@@ -1375,6 +1391,12 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
                 body += &format!("\nthe sandbox removed {names}, which the command created: git, Claude Code, Codex and krowk run what such a directory names, so none is made from inside the sandbox — ask the person to create it");
                 return (body, true);
             }
+            // Only where krowk itself keeps `.git` read-only: the kernel's
+            // sandbox, outside a krowk worktree (which may commit, WT4) —
+            // a container's own permission errors are its own.
+            if code != Some(0) && sandbox.is_some_and(|p| p.kernel && p.git.is_empty()) && git_fenced(&text) {
+                body += &format!("\n{GIT_FENCED}");
+            }
             (body, code != Some(0))
         }
         Err(_) => {
@@ -1390,6 +1412,18 @@ async fn bash(i: &BashInput, env: &ToolEnv<'_>, sandbox: Option<&crate::sandbox:
 pub(crate) mod tests {
     use super::*;
     use serde_json::json;
+
+    /// R-PERM-3: git failing to write a read-only `.git` is recognised in
+    /// git's own words; another file's error, or a `.git` read, is not.
+    #[test]
+    fn r_perm_3_git_failing_on_a_read_only_git_dir_is_recognised() {
+        for out in ["error: could not lock config file .git/config: Read-only file system", "fatal: Unable to create '/w/.git/index.lock': Read-only file system", "error: cannot lock ref 'refs/heads/x': Unable to create '/w/.git/refs/heads/x.lock': Read-only file system"] {
+            assert!(git_fenced(out), "{out}");
+        }
+        for out in ["src/main.rs: Read-only file system", ".github/workflows/ci.yml: Read-only file system", "sh: .gitignore: Permission denied", "cat .git/HEAD\nref: refs/heads/main", ""] {
+            assert!(!git_fenced(out), "{out}");
+        }
+    }
 
     pub(crate) fn dir(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("krowk-harness-tools-{name}-{}", std::process::id()));

@@ -356,12 +356,22 @@ pub struct Vintage {
     pub upload: Option<Upload>,
     #[serde(default, deserialize_with = "nullable")]
     pub url: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub created_at: String,
+    /// When a newer vintage of its week took its place; empty for the
+    /// week's current one.
+    #[serde(default, deserialize_with = "nullable")]
+    pub replaced_at: String,
 }
 
+/// A page of vintages; `next` is the week to pass back as `after`, absent
+/// on the last page.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct VintagePage {
     #[serde(default, deserialize_with = "nullable")]
     pub vintages: Vec<Vintage>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub next: Option<String>,
 }
 
 /// A transport artifact (R-HAND-2): a handoff's bundle, sealed on the client
@@ -462,6 +472,32 @@ impl Client {
     pub fn week_vintage(&self, week: &str) -> Result<Option<Vintage>, Error> {
         let page: VintagePage = self.get(&format!("/vintages?week={}", slug_path(week)))?;
         Ok(page.vintages.into_iter().find(|v| v.week == week))
+    }
+
+    /// A page of every week's current vintage, in week order from after
+    /// `after`.
+    pub fn list_vintages(&self, after: Option<&str>) -> Result<VintagePage, Error> {
+        self.get(&match after {
+            Some(a) => format!("/vintages?after={}", slug_path(a)),
+            None => "/vintages".to_string(),
+        })
+    }
+
+    /// The week's replaced vintages, newest replacement first: kept by the
+    /// registry for a while after a newer one took their place, so what a
+    /// replacement lost can still be read.
+    pub fn replaced_vintages(&self, week: &str) -> Result<Vec<Vintage>, Error> {
+        let page: VintagePage = self.get(&format!("/vintages?week={}&replaced=1", slug_path(week)))?;
+        Ok(page.vintages.into_iter().filter(|v| v.week == week).collect())
+    }
+
+    /// Makes a replaced vintage its week's current one again, the current
+    /// one kept as replaced in its place. Under an Idempotency-Key, so a
+    /// retry after a lost answer is the same restoration rather than a
+    /// second swap.
+    pub fn restore_vintage(&self, slug: &str) -> Result<Vintage, Error> {
+        let key = crate::client::idempotency_key()?;
+        Ok(self.call_as_device("POST", &format!("/vintages/{}/restoration", slug_path(slug)), Some(json!({})), ATTEMPTS, Some(key))?.0)
     }
 
     /// A listed vintage's sealed bytes, checked against the digest the

@@ -10,8 +10,9 @@
 //! tag, so an address found this way is joined exactly as a welcome's is,
 //! with a registry ticket and the challenge signed over the address dialed,
 //! and the session moves onto it only once the host's sealed welcome comes
-//! back over it. Only a private or loopback IPv4 answer is dialed, so an
-//! answer cannot send a viewer anywhere off the LAN.
+//! back over it. Only a private IPv4 answer is dialed — loopback only for a
+//! viewer whose host is this machine — so an answer cannot send a viewer
+//! anywhere off the LAN, nor to another local service.
 
 use super::direct::Candidate;
 use mdns_sd::{IfKind, RecvTimeoutError, ResolvedService, ServiceDaemon, ServiceEvent, ServiceInfo};
@@ -32,24 +33,38 @@ pub fn tag(session: [u8; 16]) -> String {
     h.finalize()[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// An address mDNS may hand a viewer: a private or loopback IPv4 one, which
-/// reaches no further than the LAN.
-pub fn on_lan(ip: &IpAddr) -> bool {
-    matches!(ip, IpAddr::V4(v4) if v4.is_private() || v4.is_loopback() || v4.is_link_local())
+/// An address mDNS may hand a viewer: a private IPv4 one, which reaches no
+/// further than the LAN, or loopback when `loopback` (the host is this
+/// machine, as the welcome said).
+pub fn on_lan(ip: &IpAddr, loopback: bool) -> bool {
+    matches!(ip, IpAddr::V4(v4) if v4.is_private() || (loopback && v4.is_loopback()))
 }
 
+/// The most addresses one browse hands on: a LAN answering with more is not
+/// a host, and each would be a connection and a ticket sent.
+pub const MOST: usize = 4;
+
 /// This machine's own LAN addresses, from its interfaces: private IPv4 ones,
-/// a tailnet's `100.64.0.0/10` falling outside them.
+/// a tailnet's `100.64.0.0/10` falling outside them, and none on a bridge
+/// this machine runs for its containers or virtual machines, which are no
+/// LAN. A VPN's private address is taken like any other.
 pub fn lan_addresses() -> Vec<IpAddr> {
     let mut out: Vec<IpAddr> = if_addrs::get_if_addrs()
         .unwrap_or_default()
         .into_iter()
+        .filter(|i| !virtual_bridge(&i.name))
         .map(|i| i.ip())
         .filter(|ip| matches!(ip, IpAddr::V4(v4) if v4.is_private()))
         .collect();
     out.sort();
     out.dedup();
     out
+}
+
+/// An interface Docker, Podman, libvirt, LXD, Kubernetes' CNIs or a VM
+/// host's tools make for what runs on this machine.
+fn virtual_bridge(name: &str) -> bool {
+    ["docker", "br-", "veth", "virbr", "lxdbr", "lxcbr", "podman", "cni", "flannel", "cali", "vmnet", "vboxnet", "bridge"].iter().any(|p| name.starts_with(p))
 }
 
 /// A responder that answers for one session's listener while it lives.
@@ -83,22 +98,24 @@ pub fn advertise(session: [u8; 16], addrs: &[Ipv4Addr], port: u16) -> Result<Adv
 
 /// The candidates one answer for `name` names: each LAN address it gives,
 /// on its port.
-fn candidates(name: &str, s: &ResolvedService) -> Vec<Candidate> {
+fn candidates(name: &str, s: &ResolvedService, loopback: bool) -> Vec<Candidate> {
     if s.fullname != format!("{name}.{SERVICE}") || s.port == 0 {
         return Vec::new();
     }
-    let mut ips: Vec<IpAddr> = s.get_addresses_v4().into_iter().map(IpAddr::V4).filter(on_lan).collect();
+    let mut ips: Vec<IpAddr> = s.get_addresses_v4().into_iter().map(IpAddr::V4).filter(|ip| on_lan(ip, loopback)).collect();
     ips.sort();
     ips.into_iter().map(|ip| Candidate { url: format!("ws://{ip}:{}", s.port), via: "mdns".into() }).collect()
 }
 
 /// Looks for `session`'s host for up to `wait`, handing on each address
-/// found as it is found; blocking, so run off the runtime. Ends early when
-/// `found` is closed: the race it feeds is over.
-pub fn browse(session: [u8; 16], wait: Duration, found: tokio::sync::mpsc::UnboundedSender<Candidate>) {
+/// found as it is found, `MOST` at most, loopback ones only with
+/// `loopback`; blocking, so run off the runtime. Ends early when `found` is
+/// closed: the race it feeds is over.
+pub fn browse(session: [u8; 16], wait: Duration, loopback: bool, found: tokio::sync::mpsc::UnboundedSender<Candidate>) {
     let Ok(daemon) = daemon() else { return };
     let name = tag(session);
     if let Ok(rx) = daemon.browse(SERVICE) {
+        let mut sent = std::collections::HashSet::new();
         let until = Instant::now() + wait;
         while let Some(left) = until.checked_duration_since(Instant::now()).filter(|l| !l.is_zero()) {
             if found.is_closed() {
@@ -107,8 +124,11 @@ pub fn browse(session: [u8; 16], wait: Duration, found: tokio::sync::mpsc::Unbou
             // Short waits, so a race that is over ends the browse soon.
             match rx.recv_timeout(left.min(Duration::from_millis(100))) {
                 Ok(ServiceEvent::ServiceResolved(s)) => {
-                    for c in candidates(&name, &s) {
-                        if found.send(c).is_err() {
+                    for c in candidates(&name, &s, loopback) {
+                        if sent.len() >= MOST {
+                            break;
+                        }
+                        if sent.insert(c.url.clone()) && found.send(c).is_err() {
                             break;
                         }
                     }
@@ -135,7 +155,7 @@ mod tests {
         let _a = advertise(session, &[Ipv4Addr::LOCALHOST], 45_123).unwrap();
         let look = |s: [u8; 16], wait| async move {
             let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-            tokio::task::spawn_blocking(move || browse(s, wait, tx)).await.unwrap();
+            tokio::task::spawn_blocking(move || browse(s, wait, true, tx)).await.unwrap();
             let mut got = Vec::new();
             while let Ok(c) = rx.try_recv() {
                 got.push(c);
@@ -145,6 +165,17 @@ mod tests {
         let got = look(session, Duration::from_secs(3)).await;
         assert!(got.contains(&Candidate { url: "ws://127.0.0.1:45123".into(), via: "mdns".into() }), "{got:?}");
         assert!(look(other, Duration::from_secs(1)).await.is_empty(), "another session's tag was answered");
+    }
+
+    /// Container and VM bridges are no LAN; Wi-Fi and Ethernet are.
+    #[test]
+    fn container_and_vm_bridges_are_not_the_lan() {
+        for v in ["docker0", "br-3f2a", "veth12ab", "virbr0", "lxdbr0", "podman0", "cni0", "vboxnet0", "vmnet8", "bridge100"] {
+            assert!(virtual_bridge(v), "{v}");
+        }
+        for lan in ["eth0", "enp3s0", "wlan0", "wlp2s0", "en0", "en1"] {
+            assert!(!virtual_bridge(lan), "{lan}");
+        }
     }
 
     /// The tag names the session to nobody: a fixed-length hash, stable
@@ -158,21 +189,23 @@ mod tests {
         assert!(!t.contains("01010101"));
     }
 
-    /// R-NET-3: an answer is dialed only at a LAN or loopback IPv4 address,
-    /// and only for the tag asked; a public address, IPv6, another
-    /// instance and port 0 give nothing.
+    /// R-NET-3: an answer is dialed only at a private IPv4 address, loopback
+    /// only for a host on this machine, and only for the tag asked; a
+    /// public, link-local or IPv6 address, another instance and port 0
+    /// give nothing.
     #[test]
     fn r_net_3_only_lan_answers_for_the_tag_are_candidates() {
-        for ok in ["192.168.1.2", "10.0.0.1", "172.16.5.5", "127.0.0.1", "169.254.1.1"] {
-            assert!(on_lan(&ok.parse().unwrap()), "{ok}");
+        for ok in ["192.168.1.2", "10.0.0.1", "172.16.5.5"] {
+            assert!(on_lan(&ok.parse().unwrap(), false), "{ok}");
         }
-        for bad in ["8.8.8.8", "100.64.0.1", "fe80::1", "::1"] {
-            assert!(!on_lan(&bad.parse().unwrap()), "{bad}");
+        assert!(on_lan(&"127.0.0.1".parse().unwrap(), true));
+        for bad in ["127.0.0.1", "169.254.1.1", "8.8.8.8", "100.64.0.1", "fe80::1", "::1"] {
+            assert!(!on_lan(&bad.parse().unwrap(), false), "{bad}");
         }
         let name = tag([3; 16]);
         let info = |instance: &str, port| ServiceInfo::new(SERVICE, instance, "h.local.", &["192.168.1.9".parse::<IpAddr>().unwrap(), "8.8.8.8".parse().unwrap()][..], port, None::<HashMap<String, String>>).unwrap().as_resolved_service();
-        assert_eq!(candidates(&name, &info(&name, 4000)), [Candidate { url: "ws://192.168.1.9:4000".into(), via: "mdns".into() }]);
-        assert!(candidates(&name, &info(&tag([4; 16]), 4000)).is_empty());
-        assert!(candidates(&name, &info(&name, 0)).is_empty());
+        assert_eq!(candidates(&name, &info(&name, 4000), false), [Candidate { url: "ws://192.168.1.9:4000".into(), via: "mdns".into() }]);
+        assert!(candidates(&name, &info(&tag([4; 16]), 4000), false).is_empty());
+        assert!(candidates(&name, &info(&name, 0), false).is_empty());
     }
 }

@@ -11,16 +11,33 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **An agent definition can name the MCP servers its subagent may use.**
+  In its `tools:` list, `mcp__github` gives the subagent the whole
+  `github` server and `mcp__linear__create_issue` that one tool, as in
+  Claude Code; `Mcp(github)` and `Mcp(linear:create_issue)` work too, and
+  `mcp__*` gives it every server. A name krowk can't read, such as the
+  pattern `mcp__github__get_*`, is left out with a notice. Such
+  a subagent gets `mcp_search` and `mcp_call` for those alone: its
+  searches find nothing elsewhere, a call to any other server or tool is
+  refused before it runs, and a server it can't use isn't started for it.
+  Your permission rules and hooks still apply on top. These names used to
+  be dropped, so a definition with a `tools:` line got no MCP at all; one
+  without a `tools:` line still reaches every server.
 - **A synced session goes direct on your LAN without Tailscale.** With
   `KROWK_DIRECT_LAN=1`, a host whose Tailscale isn't running now listens
   on its own LAN addresses instead of leaving everything to the relay,
   and advertises that listener over mDNS. A viewer on the same network
-  finds it there as well as in the host's welcome, and the session moves
-  onto it, shown as "direct over LAN". Getting in still takes the
+  moves onto it, shown as "direct over LAN". When the host's LAN address
+  changes, say after a DHCP renewal or switching Wi-Fi, it listens on the
+  new address within a few seconds, and a viewer whose welcome named the
+  old one finds the new one over mDNS. Getting in still takes the
   registry's ticket and your device's key, exactly as on the relay. The
   mDNS name is a hash of the session id, so the network learns that a
   krowk session is hosted at an address, never which one. A viewer only
-  queries mDNS when its host offered a LAN address. Two machines behind
+  queries mDNS when its host offered a LAN address, and only dials what it
+  finds there once the host's own addresses have failed, so a device
+  answering on someone else's behalf can't pull it off a working path.
+  Container and VM bridges (Docker, libvirt and the like) are not offered. Two machines behind
   different NATs without Tailscale still go by the relay.
 - **krowk tells your terminal whether it is working or waiting on you.**
   Beside the window title, the TUI now sends an OSC 7501 report (the
@@ -177,6 +194,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   there, since that device has no log of the subagent. `x` in it stops the
   subagent on the host. Text the subagent was in the middle of writing
   when you attached shows once that answer is finished.
+- **`krowk sessions vintage` lists the vintages the registry keeps.**
+  Each week's current vintage, and the ones a newer vintage replaced,
+  which the registry keeps for a while. Give it an archived session's id
+  to see its week, with the vintage it was archived into marked, or an
+  ISO week like `2026-W40`. `krowk sessions restore <id> --from
+  <vintage>` restores the session from the one you name.
 
 ### Changed
 
@@ -191,6 +214,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   script does the same with `cosign` when you have it installed, and
   without it prints the command to check by hand; with
   `KROWK_REQUIRE_SIGNATURE=1` it refuses to install without cosign.
+- **Inside the sandbox, a failed `git add` or `git commit` now says why.**
+  The sandbox keeps `.git` read-only by design, so git can't stage, commit
+  or switch branches from inside it. Until now the agent saw only "Read-only
+  file system" and often tried again another way. It is now told this is on
+  purpose: leave the changes in the working tree and ask you to commit them.
+- **Releases are built with one exact Rust compiler, 1.97.1.** CI, the
+  release and `mise.toml` all pin it, since two builds of one tag only match
+  byte for byte on the same compiler.
 - **The running turn's label is in your terminal's text colour.**
   "Thinking…", "Responding…", "Running …" and the rest now show in the
   normal foreground (white on a dark theme). Only the spinner keeps the
@@ -349,6 +380,82 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **An archived session is restored even after its week's vintage lost
+  it.** If another machine replaced a week's vintage with one that dropped
+  sessions, restoring one of them used to fail, saying the vintage did
+  not hold it. krowk now reads the vintage the session was archived into
+  first, then the week's current one, then the replaced ones the registry
+  still keeps. A copy older than the stub on this machine records (fewer
+  turns, or last active earlier) is never restored on its own, so a lost
+  or rolled-back vintage can't quietly undo what you said since; name it
+  with `krowk sessions restore <id> --from <vintage>` to restore it
+  anyway. When the session comes from any vintage but the one it was
+  archived into, krowk warns and says why it skipped each of the others,
+  including one whose digest didn't match.
+- **`krowk sessions show` shows an archived session on a machine without
+  sync.** It used to fail, because the session can't be restored there.
+  It now shows what this machine keeps of it (title, first prompt, models,
+  turns and cost) and says the full session needs sync set up. The same
+  goes when the registry can't be reached. Any other failure to restore,
+  such as a vintage that doesn't check out, still fails.
+- **Both session pickers list and restore archived sessions.** `/sessions`
+  in the TUI now lists the archived sessions started in the directory,
+  marked "archived", and `krowk --resume` marks them too. Picking one
+  restores it from its vintage first, as `krowk --resume <id>` does. In
+  the TUI the restore runs in the background, so typing and scrolling keep
+  working. Esc, Ctrl-C on an empty prompt, `/new` or picking another
+  session stops waiting for it: it finishes in the background, and the
+  TUI says when it's back without switching to it. If it can't be
+  restored, the TUI says why and keeps the session you were in. Two
+  restores of the same session, from the TUI or `krowk sessions restore`
+  in another terminal, take turns rather than writing over each other;
+  the second says it is waiting. Quitting mid-restore never leaves a
+  session half back: the next `krowk sessions show` or resume of it
+  finishes the job.
+- **krowk no longer outlives a closed terminal.** Closing the window or
+  losing the SSH link while a turn ran could leave krowk running with
+  nothing to show it on, ignoring `kill` and using a whole CPU core,
+  until `kill -9`. The library krowk reads keys with loops for good on a
+  terminal that has gone, and once krowk waited on it, it stopped
+  noticing anything. krowk now watches the terminal itself and leaves
+  as soon as it goes. A turn running in the host daemon runs on there,
+  for `krowk --resume` to pick up; one running in krowk itself is left as
+  a second Ctrl-C leaves it, and the session is still saved. On SIGHUP or
+  SIGTERM, a turn in krowk itself that hasn't ended 20 seconds after it
+  was interrupted is let go the same way. And should
+  krowk ever get stuck again, a SIGHUP or SIGTERM it doesn't act on
+  within five seconds ends it, with the terminal put back as far as it
+  still can be. A krowk that does act on it stops exactly as before.
+- **The host daemon no longer keeps the terminal that started it open.**
+  The daemon `krowk` starts in the background could inherit a terminal,
+  pipe or file its starter had open without close-on-exec, and kept it
+  for its whole life: a terminal tab that wouldn't finish closing, or a
+  script waiting on a pipe that never ended. It now starts with nothing
+  open but its log and `/dev/null`.
+- **krowk's own agent reads your MCP setup as Claude Code does.** A
+  repository's `.mcp.json` servers now follow Claude Code's
+  `enabledMcpjsonServers`, `disabledMcpjsonServers` and
+  `enableAllProjectMcpServers`, from Claude Code's settings, the project's
+  `.claude/settings.json` and `.claude/settings.local.json`, and its entry
+  in `~/.claude.json`: a disabled server stays off, and once an enabled
+  list is set only the servers it names start. Trust is still asked first.
+  The servers you added for a project with `claude mcp add` in a
+  subdirectory of a repository are found again, since krowk now looks the
+  project up in `~/.claude.json` by the directory you started in before
+  the repository's root.
+- **An MCP server that writes junk can no longer hold a call for ten
+  minutes.** A stdio server that writes line after line that isn't
+  JSON-RPC while krowk waits for its answer is stopped after 1,000 lines
+  or 1 MiB of it, and the call fails naming the server. A banner, a few
+  log lines and its notifications still pass.
+- **A server that krowk leaves out is named.** An MCP server whose name a
+  rule couldn't name one way (`a__b`) or whose config doesn't parse is
+  skipped with a notice saying which and why, instead of silently. And
+  `krowk -p` in a repository you haven't trusted now says that its
+  `.mcp.json` servers won't start, and how to trust it, as the TUI does.
+- **A `.claude/settings.json` that is a FIFO no longer hangs krowk.** It
+  is now named as not a plain file, as a `.mcp.json` already was, and a
+  settings file over 4 MiB is refused the same way.
 - **`krowk worktrees remove` no longer needs `--force` once a worktree's
   branch is merged.** A commit already on `origin`'s default branch, or
   with the same change there (a rebased or rebase-merged PR), no longer

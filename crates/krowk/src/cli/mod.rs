@@ -332,6 +332,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["sessions", "restore", ..] => sessions::restore(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
+        ["sessions", "vintage", ..] => sessions::vintage(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
         ["sessions", "pin", ..] => sessions::pin(ctx, rest(2), true),
         #[cfg(all(feature = "harness", unix))]
         ["sessions", "unpin", ..] => sessions::pin(ctx, rest(2), false),
@@ -612,7 +614,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     );
     let owners = [
         ("dry-run", "`krowk sessions import`", import),
-        ("from", "`krowk sessions import`", import),
+        ("from", "`krowk sessions import` and `krowk sessions restore`", import || words.starts_with(&["sessions", "restore"])),
         ("harness", "`krowk sessions`", list),
         ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),

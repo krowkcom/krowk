@@ -70,6 +70,7 @@ Agent
   sessions sync     Import what changed since the last import, refresh prices
   sessions archive  Move idle sessions into encrypted weekly vintages
   sessions restore  Bring an archived session back from its vintage
+  sessions vintage  List a week's vintages, replaced ones included
   sessions pin      Never archive this session
   sessions unpin    Let a pinned session be archived again
   sync init         Set up sync: this device, your user key and a recovery kit

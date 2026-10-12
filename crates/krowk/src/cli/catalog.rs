@@ -546,7 +546,7 @@ pub fn catalog(version: &str) -> Catalog {
     c
 }
 
-/// `krowk sessions archive`, `restore`, `pin` and `unpin`: native sessions
+/// `krowk sessions archive`, `restore`, `vintage`, `pin` and `unpin`: native sessions
 /// leaving the machine as weekly vintages, and coming back (R-VINT-1..4).
 #[cfg(all(feature = "harness", unix))]
 fn vintage_commands() -> Vec<Command> {
@@ -559,7 +559,15 @@ fn vintage_commands() -> Vec<Command> {
             ],
             ..cmd("archive", "krowk sessions archive [--older-than DAYS] [--weekly]", "Move idle sessions into encrypted weekly vintages")
         },
-        Command { args: id(), ..cmd("restore", "krowk sessions restore <id>", "Bring an archived session back from its vintage") },
+        Command {
+            args: id(),
+            flags: vec![flag("from", STRING, "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)")],
+            ..cmd("restore", "krowk sessions restore <id> [--from VINTAGE]", "Bring an archived session back from its vintage")
+        },
+        Command {
+            args: vec![arg("id", "An archived session's id, or an ISO week like 2026-W40; every week when absent", false)],
+            ..cmd("vintage", "krowk sessions vintage [<id>|<week>]", "List a week's vintages, replaced ones included")
+        },
         Command { args: id(), ..cmd("pin", "krowk sessions pin <id>", "Never archive this session") },
         Command { args: id(), ..cmd("unpin", "krowk sessions unpin <id>", "Let a pinned session be archived again") },
     ]

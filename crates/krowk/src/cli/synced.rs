@@ -128,7 +128,7 @@ fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::dir
             return Ok(None);
         }
     };
-    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: Vec::new(), stop: None }))
+    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: None, stop: None }))
 }
 
 /// Where the registry's ticket keys are kept between hostings, in krowk's

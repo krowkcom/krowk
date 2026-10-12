@@ -34,8 +34,8 @@ jobs:
       # toolchain as the rest.
       - name: Set up Rust
         run: |
-          rustup toolchain install 1.97 --profile minimal
-          rustup default 1.97
+          rustup toolchain install 1.97.1 --profile minimal
+          rustup default 1.97.1
 
       - uses: taiki-e/install-action@v2
         with:

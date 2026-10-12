@@ -447,6 +447,9 @@ pub struct Recent {
     pub prompt: String,
     /// When its log was last written, in ms since the epoch.
     pub last_ms: i64,
+    /// Archived into a vintage: its stub is all that is here, and picking
+    /// it restores it first (R-VINT-4).
+    pub archived: bool,
 }
 
 /// How far into a log `recent` looks for its first prompt.
@@ -455,8 +458,22 @@ const HEAD_LINES: usize = 64;
 /// The sessions started in `cwd` that can be continued, the most recently
 /// written first, at most `most` of them. A subagent's belongs to its
 /// parent, and one nobody prompted has nothing to continue: neither is
-/// listed. Only each log's head is read, never the whole.
+/// listed. Only each log's head is read, never the whole. An archived
+/// session is listed from its stub, by its first prompt and when it was
+/// last active, marked archived.
 pub fn recent(sessions: &Path, cwd: &Path, most: usize) -> Vec<Recent> {
+    let mut all = recent_logs(sessions, cwd, most);
+    all.extend(crate::vintage::list_archived(sessions).into_iter().filter_map(|(id, _)| {
+        let stub = crate::vintage::read_stub(sessions, &id).filter(|s| s.parent_session_id.is_none() && Path::new(&s.directory) == cwd)?;
+        let prompt = if stub.summary.trim().is_empty() { stub.title } else { stub.summary };
+        Some(Recent { id, prompt, last_ms: stub.last_active_ms, archived: true })
+    }));
+    all.sort_by(|a, b| b.last_ms.cmp(&a.last_ms).then_with(|| b.id.cmp(&a.id)));
+    all.truncate(most);
+    all
+}
+
+fn recent_logs(sessions: &Path, cwd: &Path, most: usize) -> Vec<Recent> {
     let mut found: Vec<(i64, String, PathBuf)> = list(sessions)
         .unwrap_or_default()
         .into_iter()
@@ -467,7 +484,7 @@ pub fn recent(sessions: &Path, cwd: &Path, most: usize) -> Vec<Recent> {
         })
         .collect();
     found.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| b.1.cmp(&a.1)));
-    found.into_iter().filter_map(|(last_ms, id, path)| head_prompt(&path, cwd).map(|prompt| Recent { id, prompt, last_ms })).take(most).collect()
+    found.into_iter().filter_map(|(last_ms, id, path)| head_prompt(&path, cwd).map(|prompt| Recent { id, prompt, last_ms, archived: false })).take(most).collect()
 }
 
 /// The first prompt of a top-level session started in `cwd`; none for any
@@ -605,6 +622,33 @@ mod tests {
         assert!(found[0].last_ms > found[1].last_ms);
         assert_eq!(recent(&dir, Path::new("/repo"), 1).len(), 1, "at most `most`");
         assert!(recent(&dir.join("none"), Path::new("/repo"), 10).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// R-VINT-4: `/sessions` lists an archived session of this directory
+    /// from its stub, by its first prompt and when it was last active,
+    /// marked archived, among the others by that time; an archived
+    /// subagent's, or another directory's, is not listed.
+    #[test]
+    fn r_vint_4_resume_lists_this_directorys_archived_sessions_marked_archived() {
+        let dir = std::env::temp_dir().join(format!("krowk-harness-recent-archived-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut live, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        live.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user("still here") }).unwrap();
+        let stub = |id: &str, directory: &str, parent: Option<&str>, last_active_ms: i64| {
+            std::fs::create_dir_all(dir.join(id)).unwrap();
+            let s = crate::vintage::Stub { week: "2026-W40".into(), summary: format!("archived {id}"), directory: directory.into(), parent_session_id: parent.map(str::to_owned), last_active_ms, ..Default::default() };
+            std::fs::write(dir.join(id).join(crate::vintage::STUB_FILE), serde_json::to_vec(&s).unwrap()).unwrap();
+        };
+        let (older, newer, child, elsewhere) = ("0192f1e2-3a4b-7c5d-8e6f-0123456789a1", "0192f1e2-3a4b-7c5d-8e6f-0123456789a2", "0192f1e2-3a4b-7c5d-8e6f-0123456789a3", "0192f1e2-3a4b-7c5d-8e6f-0123456789a4");
+        stub(older, "/repo", None, 1_000);
+        stub(newer, "/repo", None, i64::MAX);
+        stub(child, "/repo", Some(newer), i64::MAX);
+        stub(elsewhere, "/other", None, i64::MAX);
+        let found = recent(&dir, Path::new("/repo"), 10);
+        let listed: Vec<(&str, &str, bool)> = found.iter().map(|r| (r.id.as_str(), r.prompt.as_str(), r.archived)).collect();
+        assert_eq!(listed, [(newer, "archived 0192f1e2-3a4b-7c5d-8e6f-0123456789a2", true), (live.session_id.as_str(), "still here", false), (older, "archived 0192f1e2-3a4b-7c5d-8e6f-0123456789a1", true)]);
+        assert_eq!(recent(&dir, Path::new("/repo"), 2).len(), 2, "at most `most`, archived ones counted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

