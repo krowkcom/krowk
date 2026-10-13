@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The `/` menu shows this many entries at most, scrolling past them.
-const SLASH_ROWS: usize = 10;
+const SLASH_ROWS: usize = 12;
 /// The help menu shows this many entries at most, scrolling past them: with
 /// the prompt box and the status line it fits a 24-row terminal whole.
 const HELP_ROWS: usize = 16;
