@@ -1300,6 +1300,37 @@ fn trust_is_asked_on_send_and_a_no_puts_the_prompt_back_to_be_asked_again() {
     assert!(fake_turns(&b).is_empty(), "nothing ran: {}", fake_turns(&b));
 }
 
+/// A no is not for good: `/trust` trusts the repository after it, and
+/// remembers it, and the next prompt runs without asking.
+#[test]
+fn trust_refused_by_mistake_is_given_with_slash_trust() {
+    let b = Sandbox::new("trustlater");
+    b.full_width();
+    let mut t = pty::Pty::spawn(subscription_only(&b, false, "0"), 100, 30);
+    assert!(t.wait_for("Claude Opus 5.5 (claude) |", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"first-try\r");
+    assert!(t.wait_for(TRUST_ASKED, Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    let at = t.output().len();
+    t.write(b"n");
+    assert!(wait_after(&t, at, "/trust to trust it", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x03");
+    std::thread::sleep(Duration::from_millis(100));
+    let at = t.output().len();
+    t.write(b"/trust\r");
+    assert!(wait_after(&t, at, "and remembered", Duration::from_secs(5)), "{:?}", String::from_utf8_lossy(&t.output()[at..]));
+    let listed = std::fs::read_to_string(b.root.join("home/.krowk/trusted.json")).unwrap_or_default();
+    assert!(listed.contains("directories"), "remembered: {listed}");
+    let at = t.output().len();
+    t.write(b"second-try\r");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while fake_turns(&b).is_empty() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(fake_turns(&b).contains("--model claude-opus-5-5"), "the prompt ran once trusted: {}", fake_turns(&b));
+    assert!(!String::from_utf8_lossy(&t.output()[at..]).contains(TRUST_ASKED), "not asked again");
+}
+
 /// Prompts sent while the route is pending are all kept, joined; a route
 /// that fails puts them back unsent, and so does Ctrl-C while they wait —
 /// which quits nothing.

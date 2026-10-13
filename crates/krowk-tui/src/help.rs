@@ -101,6 +101,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("disconnect", "Sign an instance out"),
     ("new", "Start a new session — the one shown can be continued with /sessions"),
     ("sessions", "Continue an earlier session started in this directory — or /sessions <id>"),
+    ("trust", "Trust this repository after all — its hooks, MCP servers, allow rules and extra directories"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
 ];

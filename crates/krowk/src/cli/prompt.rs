@@ -586,7 +586,9 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         if let Some(why) = store.refuses(root) {
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `krowk -p --trust` there for one run, or start krowk from a repository of its own.")));
         }
-        Err(trust::untrusted(root, "Nothing was run — start krowk again there and answer its trust prompt."))
+        // `/trust` trusts the session's own repository, and only that.
+        let how = if *root == asked { "Nothing was run — type /trust to trust it after all." } else { "Nothing was run — start krowk again there and answer its trust prompt." };
+        Err(trust::untrusted(root, how))
     });
     (gate, trusted, ask)
 }

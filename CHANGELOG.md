@@ -9,6 +9,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`/trust` takes back a no to the trust question.** If you answered `n`
+  when krowk asked whether to trust a repository, the session used to
+  stay untrusted until you restarted krowk: Claude Code and Codex
+  wouldn't start, and a native session ignored the repository's hooks,
+  allow rules and extra directories. Type `/trust` to trust it then and
+  there. It's remembered like a yes, counts from the next prompt, and
+  sends a prompt that was waiting on the question. The refusal now
+  points to it.
+
 ## [0.14.0] - 2026-10-12
 
 ### Added

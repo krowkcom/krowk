@@ -345,9 +345,16 @@ fn r_back_6_the_tui_asks_before_claude_runs_in_an_untrusted_repository() {
             assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
             assert!(b.fake_log().contains("argv -p"));
         } else {
-            assert!(t.wait_for("trust prompt", std::time::Duration::from_secs(10)).is_some(), "the refusal says why: {:?}", t.text());
+            assert!(t.wait_for("type /trust", std::time::Duration::from_secs(10)).is_some(), "the refusal says why, and how to take the no back: {:?}", t.text());
             assert!(!b.fake_log().contains("argv -p"), "claude never ran");
             assert!(!trusted.exists());
+            // The no taken back: `/trust`, and the next prompt runs.
+            t.write(b"/trust\r");
+            assert!(t.wait_for("and remembered", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
+            assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "remembered");
+            t.write(b"again\r");
+            assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
+            assert!(b.fake_log().contains("argv -p"));
         }
         t.write(b"\x04\x04");
         let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
