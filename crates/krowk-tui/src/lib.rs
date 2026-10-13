@@ -2522,12 +2522,43 @@ impl<'h> Ui<'h> {
             }
             KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
                 app.trust_question = None;
-                app.notice("not trusted, so nothing ran — send the prompt again to be asked again, or pick an API model with /model");
+                app.notice("not trusted, so nothing ran — send the prompt again to be asked again, /trust to trust it, or pick an API model with /model");
                 self.unhold(app);
             }
             _ => return None,
         }
         Some(false)
+    }
+
+    /// `/trust`: the session's repository trusted after a no — at launch,
+    /// or to the question here — for this run, and remembered when it can
+    /// be. Its settings and servers count from the next prompt, and a
+    /// prompt held for the question goes now.
+    fn trust_now(&mut self, app: &mut App) {
+        if self.host.synced().is_some() {
+            return app.notice("trust is the host's to give: this session runs on another machine — run krowk there and answer its trust question");
+        }
+        let Some(t) = &self.trust else {
+            return app.notice("there is no repository to trust here");
+        };
+        let at = home_relative(&t.root);
+        if let Some(why) = &t.refuses {
+            return app.notice(&format!("{at} cannot be trusted for good — {why}. Run `krowk -p --trust` there for one run, or start krowk from a repository of its own"));
+        }
+        if (t.trusted)() {
+            return app.notice(&format!("{at} is trusted already"));
+        }
+        match (t.accept)() {
+            Some(e) => app.notice(&e),
+            None => {
+                let runs = krowk_harness::trust::what_runs(&t.root);
+                let has = if runs.is_empty() { String::new() } else { format!(" — its {} count from the next prompt", runs.join(", ")) };
+                app.notice(&format!("{at} is trusted, and remembered{has}"));
+            }
+        }
+        app.trust_question = None;
+        self.needs_trust = None;
+        self.release(app);
     }
 
     /// A limit's offer (R-INST-7): one keystroke, y, and never taken
@@ -3420,6 +3451,11 @@ impl<'h> Ui<'h> {
             "/settings" => {
                 app.editor.clear();
                 self.open_settings(app);
+                return false;
+            }
+            "/trust" => {
+                app.editor.clear();
+                self.trust_now(app);
                 return false;
             }
             "/new" => {
