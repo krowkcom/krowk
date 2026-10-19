@@ -1,0 +1,60 @@
+# The phone's binding crate (R-FFI-1, R-CLIENT-1): krowk-client exported to
+# Swift (and later Kotlin) through UniFFI, so the iPhone app reaches the
+# crypto, the protocol and sync without reimplementing any of it. The rules
+# every export follows are the crate doc in src/lib.rs.
+#
+# A workspace member, so Cargo.lock, `cargo deny`, reproducible builds and
+# SBOMs cover it; the Swift app itself lives in apps/ios, outside the cargo
+# workspace. Like krowk-client it never depends on krowk-harness, tokio or
+# reqwest (tests/dependency_graph.rs), and `krowk` does not depend on it, so
+# the CLI's builds, lean-deps.txt and budgets.toml do not move.
+[package]
+name = "krowk-ffi"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[lib]
+name = "krowk_ffi"
+# lib for the Rust tests, cdylib so uniffi-bindgen can read the metadata
+# from a host build. The iOS static library is made by overriding the crate
+# type on the command line (ticket 70: `cargo rustc --crate-type staticlib`).
+crate-type = ["lib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+# The `uniffi-bindgen` command line, for generating the bindings by hand
+# (the crate doc says how). Off in `make check`, so its clap and friends are
+# built only when asked for; `cargo deny` judges them all the same.
+# `cargo-metadata` is how the generator finds this crate's uniffi.toml.
+bindgen = ["uniffi/cli", "uniffi/cargo-metadata"]
+
+[dependencies]
+# Everything the phone calls: crypto, protocol and sync live there, and
+# this crate only translates. Names no crypto crate itself (R-E2E-2).
+krowk-client = { path = "../krowk-client" }
+# UniFFI 0.32 (0.32.2 when added), the newest release: the proc-macro
+# scaffolding and its runtime, from which uniffi-bindgen generates the Swift.
+# MPL-2.0, on deny.toml's list. Adds, to this crate only, the uniffi_core
+# runtime (bytes, static_assertions), uniffi_pipeline (heck, tempfile and
+# rustix, which uniffi names unconditionally) and anyhow; its proc macros
+# (toml, camino, fs-err) run at build time and link into nothing. Default
+# features off: the default
+# `cargo-metadata` is the generator's, and would put cargo_metadata and its
+# dependencies into the phone's library; `bindgen` turns it back on.
+uniffi = { version = "0.32", default-features = false }
+# KrowkError's Display. Linked already.
+thiserror = "2"
+
+[dev-dependencies]
+# tests/dependency_graph.rs reads `cargo metadata`'s JSON. Linked already.
+serde_json = "1"
+# tests/swift_bindings.rs runs UniFFI's library-mode Swift generator from
+# the test, against the cdylib of the host build.
+uniffi = { version = "0.32", features = ["bindgen", "cargo-metadata"] }
