@@ -46,6 +46,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app can sign in to krowk and keep its keys in the
+  Keychain.** krowk-ffi now exports a browser sign-in that polls by the
+  terminal's rules and names the phone on the approval page, an account
+  that makes the device's keys on first use and signs registry calls as
+  that device, and a storage interface the app implements over the
+  Keychain under krowk's file names. No export hands a private key to
+  Swift. The CLI links none of it.
 - **krowk-client checks what a new device receives when it pairs.**
   Nothing changes for you: `krowk sync join` refuses the same replies as
   before. The check that the device list adds exactly the new machine,
