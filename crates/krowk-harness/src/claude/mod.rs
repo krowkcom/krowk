@@ -807,11 +807,12 @@ async fn idle(proc: Arc<tokio::sync::Mutex<Option<Proc>>>, mut stop: oneshot::Re
 /// The paste guard's callback id (`crate::paste_guard`).
 const PASTE_GUARD: &str = "krowk_paste_guard";
 
-/// The hooks `initialize` registers: the paste guard, before every Bash
-/// call. A hook runs ahead of Claude Code's own permission decision, so it
-/// sees the calls an allow rule in settings lets through without asking.
+/// The hooks `initialize` registers: the paste guard and the tooling guard
+/// (`crate::tooling_guard`), before every Bash and `EnterWorktree` call. A
+/// hook runs ahead of Claude Code's own permission decision, so it sees the
+/// calls an allow rule in settings lets through without asking.
 fn hooks() -> Value {
-    json!({"PreToolUse": [{"matcher": "Bash", "hookCallbackIds": [PASTE_GUARD]}]})
+    json!({"PreToolUse": [{"matcher": "Bash|EnterWorktree", "hookCallbackIds": [PASTE_GUARD]}]})
 }
 
 /// What a control request is answered with: the turn it arrived in.

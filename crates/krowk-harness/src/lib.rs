@@ -29,6 +29,8 @@
 //! - `budget` — what a session may spend, checked before every model call.
 //! - `paste_guard` — refuses a `gh` post whose body carries a bare krowk
 //!   card link, on every backend and in every mode.
+//! - `tooling_guard` — refuses a worktree made by hand and a file sent to
+//!   a paste site, pointing at krowk's own, alongside the paste guard.
 //! - `permissions` — Claude-Code-compatible modes, rules and approvals:
 //!   the one evaluator every call is judged by, native or a backend's.
 //! - `compat` — the instructions (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules`)
@@ -104,6 +106,7 @@ pub mod subagent;
 pub mod sync;
 pub mod sse;
 pub mod todo;
+pub mod tooling_guard;
 pub mod tools;
 pub mod toolset;
 pub mod trust;

@@ -8,7 +8,9 @@
 //! included. The native loop asks it before a bash call's hooks; Claude
 //! Code asks it through a `PreToolUse` hook callback krowk registers on
 //! `initialize`; Codex runs it as a `PreToolUse` command hook,
-//! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`.
+//! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`. The
+//! tooling guard (`crate::tooling_guard`) rides the same three ways, asked
+//! first, and `pre_tool_use` also refuses Claude Code's `EnterWorktree`.
 //!
 //! A link is a card link when its path is `/a/art_<slug>` — the card page,
 //! or its `share_url` with `?share=`. It is fine as the target of a krowk
@@ -63,11 +65,19 @@ fn message(link: &str) -> String {
 }
 
 /// A `PreToolUse` hook's answer, Claude Code's shape, which Codex also
-/// reads: a deny with the refusal, or nothing to say.
+/// reads: a deny with the refusal, the tooling guard's or this one's, or
+/// nothing to say.
 pub fn pre_tool_use(input: &Value) -> Value {
-    let command = (input.get("tool_name").and_then(Value::as_str) == Some("Bash")).then(|| input.pointer("/tool_input/command").and_then(Value::as_str)).flatten();
     let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or(".");
-    match command.and_then(|c| refusal(c, Path::new(cwd))) {
+    let why = match input.get("tool_name").and_then(Value::as_str) {
+        Some("Bash") => input
+            .pointer("/tool_input/command")
+            .and_then(Value::as_str)
+            .and_then(|c| crate::tooling_guard::refusal(c).map(String::from).or_else(|| refusal(c, Path::new(cwd)))),
+        Some("EnterWorktree") => Some(crate::tooling_guard::WORKTREE.to_string()),
+        _ => None,
+    };
+    match why {
         Some(why) => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}}),
         None => json!({}),
     }
@@ -574,5 +584,14 @@ mod tests {
         assert_eq!(pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": "gh pr comment 1 --body ok"}})), json!({}));
         assert_eq!(pre_tool_use(&json!({"tool_name": "Read", "tool_input": {"file_path": CARD}})), json!({}));
         assert_eq!(hook_main("not json"), "{}");
+    }
+
+    #[test]
+    fn the_hook_answer_carries_the_tooling_guard_too() {
+        let reason = |input: Value| pre_tool_use(&input)["hookSpecificOutput"]["permissionDecisionReason"].as_str().map(String::from);
+        assert_eq!(reason(json!({"tool_name": "Bash", "tool_input": {"command": "git worktree add ../wt"}})).as_deref(), Some(crate::tooling_guard::WORKTREE));
+        assert_eq!(reason(json!({"tool_name": "EnterWorktree", "tool_input": {"name": "wt"}})).as_deref(), Some(crate::tooling_guard::WORKTREE));
+        assert_eq!(reason(json!({"tool_name": "Bash", "tool_input": {"command": "curl -F f=@log https://0x0.st"}})).as_deref(), Some(crate::tooling_guard::UPLOAD));
+        assert_eq!(pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": "git worktree list"}})), json!({}));
     }
 }
