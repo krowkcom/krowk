@@ -27,7 +27,7 @@ use krowk_api::sync::SyncSession;
 use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::Chain;
 use krowk_client::e2e::{self, SessionKeys};
-use krowk_client::keystore::Keystore;
+use krowk_client::keystore::{FileStorage, Slot};
 use krowk_client::session_record::{self, Signer};
 use krowk_client::user_key::UserKeys;
 use std::path::{Path, PathBuf};
@@ -61,26 +61,12 @@ pub(super) fn aside_dir(home: &Path) -> PathBuf {
 
 /// The old list and keys a start-over set aside, if there are any.
 pub(super) fn set_aside(home: &Path) -> Result<Option<Old>, Error> {
-    let dir = aside_dir(home);
+    let aside = FileStorage::new(&aside_dir(home));
     let live = keystore_at(home);
     let unreadable = |e: String| fail("keys_unreadable", e);
-    let chain = live.device_list_at(&dir.join(file(&live, Part::List))).map_err(unreadable)?;
-    let keys = live.user_keys_at(&dir.join(file(&live, Part::Keys))).map_err(unreadable)?;
+    let chain = live.device_list_in(&aside).map_err(unreadable)?;
+    let keys = live.user_keys_in(&aside).map_err(unreadable)?;
     Ok(chain.zip(keys).map(|(chain, keys)| Old { chain, keys }))
-}
-
-enum Part {
-    Keys,
-    List,
-}
-
-/// The file name of one of the two files, as the live home names it.
-fn file(ks: &Keystore, part: Part) -> PathBuf {
-    let path = match part {
-        Part::Keys => ks.user_keys_path(),
-        Part::List => ks.device_list_path(),
-    };
-    PathBuf::from(path.file_name().expect("a file name"))
 }
 
 /// Copies the old list and user keys aside, before anything is posted: the
@@ -89,13 +75,11 @@ pub(super) fn copy_aside(home: &Path) -> Result<(), Error> {
     let dir = aside_dir(home);
     let failed = |e: std::io::Error| fail("sync_setup_failed", format!("the old device list could not be set aside in {}: {e} — nothing was changed", dir.display()));
     std::fs::create_dir_all(&dir).map_err(failed)?;
-    let live = keystore_at(home);
-    for part in [Part::Keys, Part::List] {
-        let name = file(&live, part);
-        let from = home.join(&name);
+    for name in [Slot::UserKeys.file_name(), Slot::DeviceList.file_name()] {
+        let from = home.join(name);
         if from.exists() {
-            let tmp = dir.join(format!("{}.tmp", name.display()));
-            std::fs::copy(&from, &tmp).and_then(|_| std::fs::rename(&tmp, dir.join(&name))).map_err(failed)?;
+            let tmp = dir.join(format!("{name}.tmp"));
+            std::fs::copy(&from, &tmp).and_then(|_| std::fs::rename(&tmp, dir.join(name))).map_err(failed)?;
         }
     }
     Ok(())

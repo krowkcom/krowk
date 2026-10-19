@@ -100,13 +100,14 @@ fn r_e2e_3_r_client_4_a_recovered_account_key_is_replaced_by_the_next_on_any_sto
 fn r_e2e_3_the_key_files_are_0600_and_hold_no_plain_account_key() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("mode");
+    let files = FileStorage::new(&root.join("home"));
     let store = Keystore::new(&root.join("home"));
     let (setup, _) = store.recover(AccountKey::generate()).unwrap();
-    for path in [store.device_path(), store.account_path()] {
+    for path in [files.path(Slot::Device), files.path(Slot::Account)] {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{}", path.display());
     }
-    let account = std::fs::read_to_string(store.account_path()).unwrap();
+    let account = std::fs::read_to_string(files.path(Slot::Account)).unwrap();
     assert!(!account.contains(&e2e::hex(setup.account.as_bytes())));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -118,11 +119,12 @@ fn r_e2e_3_the_key_files_are_0600_and_hold_no_plain_account_key() {
 fn r_relay_1_the_signing_key_is_made_once_and_kept_0600() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("signing");
+    let signing = root.join("home").join(Slot::Signing.file_name());
     let store = Keystore::new(&root.join("home"));
     let first = store.signing_key().unwrap();
-    assert_eq!(std::fs::metadata(store.signing_path()).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(&signing).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(store.signing_key().unwrap().public(), first.public());
-    std::fs::write(store.signing_path(), "{\"version\":2,\"secret\":\"00\"}").unwrap();
+    std::fs::write(&signing, "{\"version\":2,\"secret\":\"00\"}").unwrap();
     assert!(store.signing_key().unwrap_err().contains("move it aside"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -135,12 +137,13 @@ fn r_relay_1_the_signing_key_is_made_once_and_kept_0600() {
 fn d8_user_keys_are_kept_0600_wrapped_to_the_device_and_read_back() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("user-keys");
+    let files = FileStorage::new(&root.join("home"));
     let store = Keystore::new(&root.join("home"));
     assert!(store.user_keys().unwrap().is_none());
     let g1 = UserKey::first();
     store.save_user_keys(&UserKeys::new(g1.clone(), []).unwrap()).unwrap();
-    assert_eq!(std::fs::metadata(store.user_keys_path()).unwrap().permissions().mode() & 0o777, 0o600);
-    let text = std::fs::read_to_string(store.user_keys_path()).unwrap();
+    assert_eq!(std::fs::metadata(files.path(Slot::UserKeys)).unwrap().permissions().mode() & 0o777, 0o600);
+    let text = std::fs::read_to_string(files.path(Slot::UserKeys)).unwrap();
     assert!(!text.contains(&e2e::hex(g1.as_bytes())), "the user key is stored in the clear");
     assert_eq!(store.user_keys().unwrap().unwrap().newest(), &g1);
 
@@ -156,7 +159,7 @@ fn d8_user_keys_are_kept_0600_wrapped_to_the_device_and_read_back() {
     // Copied to another device's home, it does not open there.
     let other = Keystore::new(&root.join("other"));
     other.device_key().unwrap();
-    std::fs::copy(store.user_keys_path(), other.user_keys_path()).unwrap();
+    std::fs::copy(files.path(Slot::UserKeys), root.join("other").join(Slot::UserKeys.file_name())).unwrap();
     assert!(other.user_keys().unwrap_err().contains("was wrapped for device"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -310,7 +313,7 @@ fn r_client_4_a_slot_is_named_by_its_storage_and_files_keep_their_names() {
     assert_eq!(files.path(Slot::Account), root.join("account-key.json"));
     assert_eq!(files.describe(Slot::Account), root.join("account-key.json").display().to_string());
     let store = Keystore::new(&root);
-    assert_eq!(store.account_path(), files.path(Slot::Account));
+    assert_eq!(store.describe(Slot::Account), files.describe(Slot::Account));
     store.device_key().unwrap();
     assert!(root.join("device.json").is_file() && root.join("account-key.lock").is_file());
     let _ = std::fs::remove_dir_all(&root);
