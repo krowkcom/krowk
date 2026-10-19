@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-/// The host build's cdylib: `target/<profile>/`, the parent of the `deps/`
-/// this test binary runs from.
+/// The host build's cdylib: in the `deps/` this test binary runs from,
+/// else in `target/<profile>/` above it.
 fn cdylib() -> PathBuf {
     let exe = std::env::current_exe().expect("the test binary's path");
     let deps = exe.parent().expect("the test binary is in deps/");
