@@ -164,11 +164,17 @@ pub struct WorktreesConfig {
     /// Seconds `setup` may take before it is stopped; 600 when absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub setup_timeout: Option<u64>,
+    /// Every session started in a repository starts in a worktree of its
+    /// own, as with `--worktree`, whatever model or agent runs it;
+    /// `--worktree=false` runs one in place. A repository's own, in its
+    /// `.krowk/config.json`, comes before the person's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<bool>,
 }
 
 impl WorktreesConfig {
     pub fn is_empty(&self) -> bool {
-        self.seed.is_none() && self.setup.is_none() && self.setup_timeout.is_none()
+        self.seed.is_none() && self.setup.is_none() && self.setup_timeout.is_none() && self.default.is_none()
     }
 
     /// The setup command, when there is one that is not blank.
@@ -1447,6 +1453,8 @@ mod tests {
         let typo = from_config_json(&serde_json::json!({"worktrees": {"setupTimout": 5}})).unwrap_err();
         assert!(typo.contains("\"worktrees\"") && typo.contains("setupTimout"), "{typo}");
         assert!(from_config_json(&serde_json::json!({"worktrees": {"setup": 3}})).unwrap_err().contains("\"worktrees\""));
+        assert_eq!(from_config_json(&serde_json::json!({"worktrees": {"default": true}})).unwrap().worktrees.default, Some(true));
+        assert!(from_config_json(&serde_json::json!({"worktrees": {"default": "yes"}})).unwrap_err().contains("\"worktrees\""));
     }
 
     #[test]

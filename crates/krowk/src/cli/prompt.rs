@@ -123,7 +123,13 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let (credentials, krowk_dir) = (super::providers::credentials_path()?, super::providers::krowk_dir()?);
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
-    // here; the session starts in it.
+    // here; the session starts in it. So does `worktrees.default`, for a
+    // new session, which the host daemon cannot hold one for: refused
+    // with --daemon, as the flag is, never quietly run in the checkout.
+    ctx.f.own_worktree = own_worktree::wanted(ctx, resume.is_none(), &cwd, &permissions, &registry);
+    if ctx.f.daemon && ctx.f.own_worktree {
+        return Err(fail("bad_flag", "worktrees.default starts a new session in a worktree of its own, which this process holds, and --daemon runs the turn in the host daemon — drop --daemon, or pass --worktree=false to run in place"));
+    }
     let (worktree, session) = match resumed {
         Some(w) => {
             let (env, on_agent_slot) = (w.env(), w.agent.is_some());
@@ -131,7 +137,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         }
         None if ctx.f.own_worktree => {
             let id = krowk_store::new_id();
-            let (w, notes) = own_worktree::open(ctx, &cwd, &permissions, &registry, &id)?;
+            let (w, notes) = own_worktree::start(ctx, &cwd, &permissions, &registry, &id)?;
             trust_as.set(&w.worktree);
             let (env, on_agent_slot) = (w.env(), w.agent.is_some());
             (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })

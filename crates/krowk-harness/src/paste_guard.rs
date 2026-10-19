@@ -8,7 +8,9 @@
 //! included. The native loop asks it before a bash call's hooks; Claude
 //! Code asks it through a `PreToolUse` hook callback krowk registers on
 //! `initialize`; Codex runs it as a `PreToolUse` command hook,
-//! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`.
+//! `krowk __paste-guard` (`HOOK_ARG`), answered by `pre_tool_use`. The
+//! tooling guard (`crate::tooling_guard`) rides the same three ways, asked
+//! first, and `pre_tool_use` also refuses Claude Code's `EnterWorktree`.
 //!
 //! A link is a card link when its path is `/a/art_<slug>` — the card page,
 //! or its `share_url` with `?share=`. It is fine as the target of a krowk
@@ -62,12 +64,23 @@ fn message(link: &str) -> String {
     )
 }
 
+/// Why a bash call `command` is not run, by the tooling guard or this one:
+/// what every backend asks before one runs.
+pub fn guard(command: &str, cwd: &Path) -> Option<String> {
+    crate::tooling_guard::refusal(command).map(String::from).or_else(|| refusal(command, cwd))
+}
+
 /// A `PreToolUse` hook's answer, Claude Code's shape, which Codex also
-/// reads: a deny with the refusal, or nothing to say.
+/// reads: a deny with the refusal, `guard`'s or the tooling guard's for
+/// Claude Code's own tools, or nothing to say.
 pub fn pre_tool_use(input: &Value) -> Value {
-    let command = (input.get("tool_name").and_then(Value::as_str) == Some("Bash")).then(|| input.pointer("/tool_input/command").and_then(Value::as_str)).flatten();
     let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or(".");
-    match command.and_then(|c| refusal(c, Path::new(cwd))) {
+    let why = match input.get("tool_name").and_then(Value::as_str) {
+        Some("Bash") => input.pointer("/tool_input/command").and_then(Value::as_str).and_then(|c| guard(c, Path::new(cwd))),
+        Some(tool) => crate::tooling_guard::tool_refusal(tool, input.get("tool_input").unwrap_or(&Value::Null)).map(String::from),
+        None => None,
+    };
+    match why {
         Some(why) => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}}),
         None => json!({}),
     }
@@ -171,9 +184,9 @@ fn read_body(path: &Path) -> Option<String> {
 /// One heredoc: the command it was opened in — the part of its command
 /// line, continuation lines joined, between the `;`, `&&`, `||` or `&` on
 /// either side of its `<<` — and its body.
-struct Heredoc {
-    opener: String,
-    body: String,
+pub(crate) struct Heredoc {
+    pub(crate) opener: String,
+    pub(crate) body: String,
 }
 
 impl Heredoc {
@@ -207,7 +220,7 @@ fn normal(path: &Path) -> PathBuf {
 /// `<<`, `<<-`, and the delimiter quoted or not; `<<<` is a here-string
 /// and has no body. A `<<` whose delimiter never closes a line is text — a
 /// shift in a quoted body — and is left where it is.
-fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
+pub(crate) fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
     let lines: Vec<&str> = command.split('\n').collect();
     // Where each line stands, as it is and with `<<-`'s leading tabs off,
     // so finding a delimiter's line is a lookup, not a scan.
@@ -574,5 +587,14 @@ mod tests {
         assert_eq!(pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": "gh pr comment 1 --body ok"}})), json!({}));
         assert_eq!(pre_tool_use(&json!({"tool_name": "Read", "tool_input": {"file_path": CARD}})), json!({}));
         assert_eq!(hook_main("not json"), "{}");
+    }
+
+    #[test]
+    fn the_hook_answer_carries_the_tooling_guard_too() {
+        let reason = |input: Value| pre_tool_use(&input)["hookSpecificOutput"]["permissionDecisionReason"].as_str().map(String::from);
+        assert_eq!(reason(json!({"tool_name": "Bash", "tool_input": {"command": "git worktree add ../wt"}})).as_deref(), Some(crate::tooling_guard::WORKTREE));
+        assert_eq!(reason(json!({"tool_name": "EnterWorktree", "tool_input": {"name": "wt"}})).as_deref(), Some(crate::tooling_guard::WORKTREE));
+        assert_eq!(reason(json!({"tool_name": "Bash", "tool_input": {"command": "curl -F f=@log https://0x0.st"}})).as_deref(), Some(crate::tooling_guard::UPLOAD));
+        assert_eq!(pre_tool_use(&json!({"tool_name": "Bash", "tool_input": {"command": "git worktree list"}})), json!({}));
     }
 }

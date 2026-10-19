@@ -215,6 +215,43 @@ fn wt6_worktree_outside_a_repository_is_refused() {
 }
 
 #[test]
+fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag() {
+    if !has_git() {
+        return;
+    }
+    let m = mock::serve(script);
+    let b = Sandbox::new("default", &m.url);
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), r#"{"worktrees": {"default": true}}"#).unwrap();
+    let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
+    let result: Value = serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let path = PathBuf::from(result["worktree"]["path"].as_str().unwrap_or_else(|| panic!("the kept worktree is named: {result}")));
+    assert!(path.starts_with(b.worktrees()) && path.join("NEW.md").is_file(), "{result}");
+    assert!(!b.repo().join("NEW.md").exists(), "not in the checkout");
+
+    // `--worktree=false` runs one in place.
+    b.prompt(&["--worktree=false", "make a file"]);
+    assert!(b.repo().join("NEW.md").is_file());
+    std::fs::remove_file(b.repo().join("NEW.md")).unwrap();
+
+    // A repository's own says no before the person's yes, once it is
+    // trusted: until then, the person's holds.
+    std::fs::create_dir_all(b.repo().join(".krowk")).unwrap();
+    std::fs::write(b.repo().join(".krowk/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
+    let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
+    assert!(out.contains("\"worktree\""), "untrusted, the repository's no is not read: {out}");
+    assert!(!b.repo().join("NEW.md").exists());
+    b.prompt(&["--trust", "make a file"]);
+    assert!(b.repo().join("NEW.md").is_file());
+
+    // Outside a repository there is nothing to make one of: the session
+    // runs where it is, where `--worktree` would be refused.
+    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "anthropic/claude-sonnet-4-6", "--permission-mode", "acceptEdits", "make a file"]);
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(b.root.join("elsewhere/NEW.md").is_file());
+}
+
+#[test]
 fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
     let m = mock::serve(script);
     let b = Sandbox::new("help", &m.url);

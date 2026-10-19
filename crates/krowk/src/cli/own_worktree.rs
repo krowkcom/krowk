@@ -33,6 +33,17 @@
 //!   wait. Its subagents run on its slot (`SessionSetup::on_agent_slot`)
 //!   rather than waiting for more. A session without `--worktree` takes
 //!   none and never waits.
+//!
+//! - **The default where config says so**: `worktrees.default` starts
+//!   every new session in a repository this way without the flag, whatever
+//!   model or agent runs it (`wanted`). `--worktree=false` runs one in
+//!   place, a resumed one or one already in a krowk worktree stays where it
+//!   is, and `-p --daemon` is refused, as with the flag. A TUI session in a
+//!   worktree runs in this process, not the host daemon, and the sessions
+//!   `/new` starts after it share its worktree. A repository's own counts once it
+//!   is trusted. A worktree the default cannot make refuses the session,
+//!   naming `--worktree=false` (`start`). Like `--worktree`, it holds an
+//!   agent slot, so it waits when every one is taken.
 
 use super::{prompt, Ctx};
 use krowk_api::{fail, Error};
@@ -49,6 +60,49 @@ pub(super) const NEEDS_A_REPOSITORY: &str = "--worktree makes a git worktree of 
 /// Where krowk's worktrees are.
 fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
     krowk_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME"))
+}
+
+/// Whether the session starts in a worktree of its own: `--worktree` as
+/// given, else `worktrees.default` — a trusted repository's own before the
+/// person's — for a `fresh` one (new, and run in this process) when `cwd`
+/// is in a repository and not already in one of krowk's worktrees.
+pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissions::Config, registry: &Registry) -> bool {
+    if ctx.f.given.contains("worktree") {
+        return ctx.f.own_worktree;
+    }
+    if !fresh {
+        return false;
+    }
+    let own = permissions::settings::load(permissions, cwd).ok().filter(|l| l.trusted).and_then(|l| l.worktrees).and_then(|w| w.default);
+    if !own.or(registry.worktrees.default).unwrap_or(false) || trust::root(cwd).join(".git").symlink_metadata().is_err() {
+        return false;
+    }
+    // With no root to make one under, `start` says so rather than the
+    // session quietly running in the checkout.
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    root(ctx).map_or(true, |root| !below(&root, &cwd))
+}
+
+/// Whether `dir` is below krowk's worktrees `root`, as given or canonical.
+fn below(root: &Path, dir: &Path) -> bool {
+    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    [root, real.as_path()].iter().any(|r| dir != *r && dir.starts_with(r))
+}
+
+/// `open`, for a session `wanted` puts in a worktree. Refused as `open`
+/// refuses it, and when `worktrees.default` asked for a worktree that
+/// could not be made, the refusal says how to run in place: the default is
+/// a person's promise that agents keep out of the checkout, never quietly
+/// broken.
+pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
+    let by_default = !ctx.f.given.contains("worktree");
+    open(ctx, cwd, permissions, registry, session).map_err(|mut e| {
+        if by_default && matches!(e.code().as_str(), "worktree_failed" | "not_a_repository" | "no_home") {
+            let fix = format!("{} — worktrees.default starts every new session in a worktree of its own; pass --worktree=false to run this one in place", e.fix());
+            e.body.insert("fix".into(), fix.into());
+        }
+        e
+    })
 }
 
 /// A new worktree of the repository `cwd` is in, for the new session
@@ -98,8 +152,7 @@ fn agent_slot(ctx: &mut Ctx, registry: &Registry) -> Option<krowk_harness::slots
 /// Refused when it is gone, or another live session holds it.
 pub(super) fn resumed(ctx: &mut Ctx, registry: &Registry, session: &str, dir: &Path) -> Result<Option<InUse>, Error> {
     let Ok(root) = root(ctx) else { return Ok(None) };
-    let real = root.canonicalize().unwrap_or_else(|_| root.clone());
-    if dir == root || dir == real || !(dir.starts_with(&root) || dir.starts_with(&real)) {
+    if !below(&root, dir) {
         return Ok(None);
     }
     if !dir.is_dir() {

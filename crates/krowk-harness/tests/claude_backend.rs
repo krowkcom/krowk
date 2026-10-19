@@ -276,7 +276,7 @@ fn a_gh_post_with_a_bare_card_link_is_denied_by_krowks_hook_in_every_mode() {
         assert!(refused.contains("bare krowk card link") && refused.contains("krowk block"), "{mode:?}: the model reads why: {refused}");
         let fake = home.fake_log();
         let init = fake.lines().find(|l| l.starts_with("in ") && l.contains(r#""subtype":"initialize""#)).unwrap();
-        assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash","hookCallbackIds":["krowk_paste_guard"]}]}"#), "registered on every process: {init}");
+        assert!(init.contains(r#""hooks":{"PreToolUse":[{"matcher":"Bash|EnterWorktree|Agent|Task","hookCallbackIds":["krowk_paste_guard"]}]}"#), "registered on every process: {init}");
         // R-SUB-7: an agent's own text reaches the stream, for its child session.
         assert!(init.contains(r#""forwardSubagentText":true"#), "{init}");
     }
