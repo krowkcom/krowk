@@ -20,7 +20,8 @@ publish.workspace = true
 name = "krowk_ffi"
 # lib for the Rust tests, cdylib so uniffi-bindgen can read the metadata
 # from a host build. The iOS static library is made by overriding the crate
-# type on the command line (ticket 70: `cargo rustc --crate-type staticlib`).
+# type on the command line (`cargo rustc --crate-type staticlib`, in
+# scripts/ios_core.sh).
 crate-type = ["lib", "cdylib"]
 
 [[bin]]

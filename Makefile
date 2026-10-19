@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema ffi-api codex-schema codex-schema-update lean-deps bench
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema ffi-api codex-schema codex-schema-update lean-deps bench ios-core
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
@@ -130,6 +130,15 @@ codex-schema: ## Fail when the pinned codex app-server schema is stale against t
 
 codex-schema-update: ## Re-pin the codex app-server schema from the Codex installed
 	scripts/codex_schema.sh --update
+
+# R-IOS-14: the iPhone app's Rust core, krowk-ffi, as a static arm64-only
+# XCFramework for device and simulator plus the local Swift package
+# apps/ios/KrowkCore that wraps it. On a Mac with Xcode, or on Linux with
+# the omarchy-apple-dev toolchain and an iOS SDK (scripts/ios_core.sh says
+# how). Not part of check, check-build or signoff: those never build apps/
+# (R-REPO-1).
+ios-core: ## The iPhone app's Rust core: static XCFramework + Swift package (macOS + Xcode, or Linux + omarchy-apple-dev)
+	scripts/ios_core.sh
 
 install: ## Install krowk and krowk-mcp into ~/.cargo/bin
 	KROWK_VERSION=$(VERSION) cargo install --locked --path crates/krowk --features harness

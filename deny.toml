@@ -13,6 +13,10 @@ targets = [
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
   "x86_64-pc-windows-gnu",
+  # The phone's static library ships too (`make ios-core`), so a crate only
+  # iOS links is judged as well.
+  "aarch64-apple-ios",
+  "aarch64-apple-ios-sim",
 ]
 # The full build is `--features harness`, a superset of the lean one.
 all-features = true

@@ -1,0 +1,118 @@
+name: iOS core
+
+# R-IOS-14, R-CLIENT-1: `make ios-core` builds the iPhone app's Rust core
+# as a static XCFramework, and the KrowkCore package's BindingsTests call
+# into it on an iPhone simulator. Only for changes that can move what it
+# builds; the CLI's checks never build apps/ (R-REPO-1). Minimal on
+# purpose: ticket 72 owns the app's path-filtered CI and may absorb this.
+#
+# Twice: once as a Mac builds it (`xcodebuild -create-xcframework`), once
+# with the XCFramework assembled by hand as on Linux (KROWK_IOS_ASSEMBLE=1,
+# omarchy-apple-dev), each held to the same tests, and the two layouts are
+# compared.
+on:
+  pull_request:
+    paths:
+      - apps/ios/KrowkCore/**
+      - scripts/ios_core.sh
+      - crates/krowk-ffi/**
+      - crates/krowk-client/**
+      - crates/krowk-api/**
+      - Cargo.toml
+      - Cargo.lock
+      - Makefile
+      - .cargo/**
+      - .github/workflows/ios-core.yml
+  push:
+    branches: [main]
+    paths:
+      - apps/ios/KrowkCore/**
+      - scripts/ios_core.sh
+      - crates/krowk-ffi/**
+      - crates/krowk-client/**
+      - crates/krowk-api/**
+      - Cargo.toml
+      - Cargo.lock
+      - Makefile
+      - .cargo/**
+      - .github/workflows/ios-core.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-core-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  ios-core:
+    # Xcode 26 with the iOS 26 SDK and simulators.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+          rustup default 1.97.1
+
+      - name: "R-IOS-14: make ios-core (xcodebuild -create-xcframework)"
+        run: |
+          make ios-core
+          cp -R apps/ios/KrowkCore/build/KrowkFFI.xcframework "$RUNNER_TEMP/xcodebuild.xcframework"
+
+      - name: Xcode and the simulator
+        run: |
+          xcodebuild -version
+          # An iPhone on the newest iOS runtime installed: the package
+          # needs iOS 26, and the image may carry older runtimes too.
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            [.devices | to_entries[]
+              | select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+$"))
+              | (.key | capture("iOS-(?<a>[0-9]+)-(?<b>[0-9]+)$") | [(.a | tonumber), (.b | tonumber)]) as $v
+              | .value[] | select(.name | startswith("iPhone")) | {v: $v, udid}]
+            | sort_by(.v) | last | .udid // empty')
+          test -n "$udid" || { echo "no iPhone simulator available" >&2; exit 1; }
+          echo "UDID=$udid" >> "$GITHUB_ENV"
+          # After the build: Xcode resolves the package, whose binary
+          # target is build/KrowkFFI.xcframework, to list its schemes.
+          cd apps/ios/KrowkCore
+          # The package's test scheme: KrowkCore-Package when Xcode makes
+          # one, else the package's or the product's own.
+          schemes=$(xcodebuild -list -json | jq -r '(.workspace // .project).schemes[]')
+          echo "$schemes"
+          for s in KrowkCore-Package KrowkCore Krowk; do
+            if printf '%s\n' "$schemes" | grep -qx "$s"; then echo "SCHEME=$s" >> "$GITHUB_ENV"; exit 0; fi
+          done
+          echo "no KrowkCore scheme" >&2; exit 1
+
+      - name: "R-CLIENT-1: BindingsTests on the simulator"
+        working-directory: apps/ios/KrowkCore
+        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID,arch=arm64"
+
+      - name: "R-IOS-14: make ios-core with the XCFramework assembled as on Linux"
+        run: KROWK_IOS_ASSEMBLE=1 make ios-core
+
+      - name: The hand-assembled XCFramework is laid out as Xcode's
+        run: |
+          a=$RUNNER_TEMP/xcodebuild.xcframework b=apps/ios/KrowkCore/build/KrowkFFI.xcframework
+          diff -r -x Info.plist "$a" "$b"
+          python3 - "$a/Info.plist" "$b/Info.plist" <<'EOF'
+          import plistlib, sys
+          def load(p):
+              d = plistlib.load(open(p, "rb"))
+              d["AvailableLibraries"].sort(key=lambda l: l["LibraryIdentifier"])
+              return d
+          a, b = load(sys.argv[1]), load(sys.argv[2])
+          if a != b:
+              sys.exit(f"Info.plist differs:\nxcodebuild: {a}\nassembled:  {b}")
+          EOF
+
+      - name: "R-CLIENT-1: BindingsTests on the simulator, hand-assembled XCFramework"
+        working-directory: apps/ios/KrowkCore
+        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID,arch=arm64"

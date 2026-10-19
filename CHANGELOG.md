@@ -46,6 +46,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app's Rust core builds with `make ios-core`.** It makes a
+  static, arm64-only XCFramework of krowk-ffi for device and simulator,
+  with the release build's size settings, and a local Swift package,
+  `apps/ios/KrowkCore`, around it. It runs on a Mac with Xcode, or on
+  Linux with the [omarchy-apple-dev](https://github.com/joshuaswarren/omarchy-apple-dev)
+  toolchain and an iOS SDK. `make check` doesn't build it, and the CLI is
+  unaffected.
 - **The iPhone app can sign in to krowk and keep its keys in the
   Keychain.** krowk-ffi now exports a browser sign-in that polls by the
   terminal's rules and names the phone on the approval page, an account

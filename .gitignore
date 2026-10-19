@@ -7,3 +7,7 @@ node_modules/
 /target/
 *.orig
 *.rej
+# make ios-core's outputs, and what SwiftPM and Xcode leave beside a package.
+/apps/ios/KrowkCore/build/
+/apps/ios/**/.build/
+/apps/ios/**/.swiftpm/
