@@ -49,22 +49,26 @@ refuse() {
 }
 need_sdk="needs Xcode on a Mac, or Linux with the omarchy-apple-dev toolchain and an iOS SDK (KROWK_IOS_SDK and KROWK_IOS_SIM_SDK, or xtool's darwin Swift SDK)"
 
-# <platform>.sdk inside xtool's darwin Swift SDK bundle, or else the
-# newest <platform><version>.sdk; nothing when there is neither.
-bundled_sdk() {
-  local base bundle found
+# xtool's darwin Swift SDK bundle, the first of SwiftPM's two places.
+darwin_bundle() {
+  local base
   for base in "${XDG_CONFIG_HOME:-$HOME/.config}/swiftpm/swift-sdks" "$HOME/.swiftpm/swift-sdks"; do
-    bundle=$base/darwin.artifactbundle
-    [ -d "$bundle" ] || continue
-    found=$({ find -H "$bundle" -maxdepth 8 -name "$1.sdk" 2>/dev/null || true; } | sed -n 1p)
-    if [ -z "$found" ]; then
-      found=$({ find -H "$bundle" -maxdepth 8 -name "$1[0-9]*.sdk" 2>/dev/null || true; } | sort -V | tail -n 1)
-    fi
-    if [ -n "$found" ]; then
-      echo "$found"
+    if [ -d "$base/darwin.artifactbundle" ]; then
+      echo "$base/darwin.artifactbundle"
       return 0
     fi
   done
+}
+# <platform>.sdk in that bundle, or else its newest <platform><version>.sdk;
+# nothing when there is neither.
+bundled_sdk() {
+  local found
+  [ -n "$bundle" ] || return 0
+  found=$({ find -H "$bundle" -maxdepth 8 -name "$1.sdk" 2>/dev/null || true; } | sort | sed -n 1p)
+  if [ -z "$found" ]; then
+    found=$({ find -H "$bundle" -maxdepth 8 -name "$1[0-9]*.sdk" 2>/dev/null || true; } | sort -V | tail -n 1)
+  fi
+  echo "$found"
 }
 
 case $(uname -s) in
@@ -83,11 +87,15 @@ case $(uname -s) in
     sdk_aarch64_apple_ios_sim=
     ;;
   Linux)
+    bundle=$(darwin_bundle)
     sdk_aarch64_apple_ios=${ios_sdk:-$(bundled_sdk iPhoneOS)}
     sdk_aarch64_apple_ios_sim=${sim_sdk:-$(bundled_sdk iPhoneSimulator)}
     if [ -z "$sdk_aarch64_apple_ios" ] || [ -z "$sdk_aarch64_apple_ios_sim" ]; then refuse "$need_sdk"; fi
-    for sdk in "$sdk_aarch64_apple_ios" "$sdk_aarch64_apple_ios_sim"; do
-      [ -d "$sdk/usr/include" ] || refuse "$sdk is not an iOS SDK (no usr/include): $need_sdk"
+    # Each SDK the one its target needs, not the other swapped in.
+    for pair in "iphoneos:$sdk_aarch64_apple_ios" "iphonesimulator:$sdk_aarch64_apple_ios_sim"; do
+      sdk=${pair#*:}
+      grep -Eq "\"CanonicalName\"[[:space:]]*:[[:space:]]*\"${pair%%:*}[0-9]" "$sdk/SDKSettings.json" 2>/dev/null \
+        || refuse "$sdk is not an ${pair%%:*} SDK (its SDKSettings.json says otherwise, or is missing): $need_sdk"
     done
     for tool in clang llvm-ar llvm-objdump; do
       command -v "$tool" >/dev/null || refuse "no $tool on PATH; with omarchy-apple-dev, run: . ~/.config/omarchy-apple-dev/env.sh"
@@ -123,8 +131,8 @@ cp "$stage/gen/KrowkFFI.h" "$stage/headers/KrowkFFI.h"
 cp "$stage/gen/KrowkFFI.modulemap" "$stage/headers/module.modulemap"
 
 # One static library per target, release profile (opt-level "s", LTO, one
-# codegen unit, abort on panic; its `strip` applies to linked binaries, so
-# the app's link strips these). The crate stays lib + cdylib;
+# codegen unit, abort on panic; its `strip` does not apply to a static
+# library, so stripping is the app's link's). The crate stays lib + cdylib;
 # the crate type is overridden here. Each target's variables reach only
 # its own cargo: SDKROOT names one SDK, so it cannot be set for both.
 for t in "${targets[@]}"; do
@@ -221,7 +229,16 @@ for slice in ios-arm64:ios ios-arm64-simulator:iossimulator; do
   headers=$("$objdump" --macho --private-headers "$a")
   archs=$(printf '%s\n' "$headers" | awk '/^ *magic /{getline; print $2}' | sort -u | tr '\n' ' ')
   [ "$archs" = "ARM64 " ] || refuse "$id/libkrowk_ffi.a is not arm64 only: $archs"
-  platforms=$(printf '%s\n' "$headers" | awk '/cmd LC_VERSION_MIN_IPHONEOS/{print "ios"} /^ *platform /{print $2}' | sort -u | tr '\n' ' ')
+  # One platform mark per member, so a member with none, or with another
+  # OS's LC_VERSION_MIN_*, fails too.
+  marks=$(printf '%s\n' "$headers" | awk '
+    /cmd LC_VERSION_MIN_IPHONEOS$/ { print "ios"; next }
+    /cmd LC_VERSION_MIN_/ { print "other"; next }
+    /^ *platform / { print $2 }')
+  members=$(printf '%s\n' "$headers" | { grep -c '^Mach header' || true; })
+  [ "$(printf '%s\n' "$marks" | wc -l | tr -d ' ')" = "$members" ] \
+    || refuse "$id/libkrowk_ffi.a has members without exactly one platform"
+  platforms=$(printf '%s\n' "$marks" | sort -u | tr '\n' ' ')
   [ "$platforms" = "${slice#*:} " ] || refuse "$id/libkrowk_ffi.a is built for $platforms, not ${slice#*:}"
 done
 slices=$(find "$fw" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
