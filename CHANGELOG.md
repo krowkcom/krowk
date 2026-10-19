@@ -39,6 +39,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk-client can keep a device's keys somewhere other than files.**
+  Nothing moves for you: the terminal keeps them in the same files in
+  krowk's home, `0600`, with the same contents. The rules that keep them
+  safe stay in Rust, behind a storage seam, so the iPhone app can keep the
+  keys in its Keychain later without writing those rules again.
 - **krowk-ffi's API is frozen in a file.** What the iPhone app compiles
   against is written down in `crates/krowk-ffi/public-api.txt`, rendered
   from the Rust source, and a test fails when the two differ, so a
