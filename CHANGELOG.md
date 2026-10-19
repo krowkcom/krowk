@@ -20,6 +20,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sends a prompt that was waiting on the question. The refusal now
   points to it.
 
+### Security
+
+- **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
+  bomb (RUSTSEC-2026-0344), where a tiny zstd input could exhaust memory.
+  krowk decompresses with it when it restores a vintage and when it reads
+  a compressed WebSocket message. rustls 0.23.46 stops its `Debug` output
+  from printing TLS session secrets (RUSTSEC-2026-0346). krowk never
+  prints those values, so it wasn't exposed.
+
 ## [0.14.0] - 2026-10-12
 
 ### Added
