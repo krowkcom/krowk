@@ -51,17 +51,58 @@ fn has_uniffi(attrs: &[Attribute]) -> bool {
     })
 }
 
+/// Whether UniFFI writes every field of the struct, private ones too:
+/// a Record, derived or `uniffi::remote`.
+fn is_record(attrs: &[Attribute]) -> bool {
+    attrs.iter().any(|a| {
+        let path = a.path();
+        (path.is_ident("derive") || path.segments.first().is_some_and(|s| s.ident == "uniffi"))
+            && a.meta.require_list().is_ok_and(|l| l.tokens.to_string().contains("Record"))
+    })
+}
+
+/// `#[cfg(test)]`, or `#[cfg(all(test, …))]`: compiled only for tests.
 fn is_cfg_test(attrs: &[Attribute]) -> bool {
+    fn test_in(meta: &syn::meta::ParseNestedMeta) -> bool {
+        if meta.path.is_ident("test") {
+            return true;
+        }
+        let mut test = false;
+        if meta.path.is_ident("all") {
+            let _ = meta.parse_nested_meta(|m| {
+                test |= test_in(&m);
+                Ok(())
+            });
+        }
+        test
+    }
     attrs.iter().any(|a| {
         a.path().is_ident("cfg") && {
             let mut test = false;
             let _ = a.parse_nested_meta(|m| {
-                test |= m.path.is_ident("test");
+                test |= test_in(&m);
                 Ok(())
             });
             test
         }
     })
+}
+
+fn attrs_of(item: &Item) -> &[Attribute] {
+    match item {
+        Item::Const(i) => &i.attrs,
+        Item::Enum(i) => &i.attrs,
+        Item::Fn(i) => &i.attrs,
+        Item::Impl(i) => &i.attrs,
+        Item::Macro(i) => &i.attrs,
+        Item::Mod(i) => &i.attrs,
+        Item::Static(i) => &i.attrs,
+        Item::Struct(i) => &i.attrs,
+        Item::Trait(i) => &i.attrs,
+        Item::Type(i) => &i.attrs,
+        Item::Use(i) => &i.attrs,
+        _ => &[],
+    }
 }
 
 fn is_pub(vis: &Visibility) -> bool {
@@ -99,39 +140,53 @@ fn child_dir(file: &Path) -> PathBuf {
 }
 
 /// The public items of `items`, rendered, in source order, following
-/// each `mod` (out-of-line from `dir`) where it is declared.
-fn collect(items: &[Item], dir: &Path, out: &mut Vec<String>) {
+/// each `mod` where it is declared: out of line from `dir`, or with
+/// `#[path]` from `file_dir`, the directory of the file the items are in.
+fn collect(items: &[Item], dir: &Path, file_dir: &Path, out: &mut Vec<String>) {
     for item in items {
+        if is_cfg_test(attrs_of(item)) {
+            continue;
+        }
         match item {
-            Item::Mod(m) if is_cfg_test(&m.attrs) => {}
             Item::Mod(m) => match &m.content {
-                Some((_, inner)) => collect(inner, &dir.join(m.ident.to_string()), out),
+                Some((_, inner)) => {
+                    let inner_dir = dir.join(m.ident.to_string());
+                    collect(inner, &inner_dir, &inner_dir, out)
+                }
                 None => {
                     let file = match path_attr(&m.attrs) {
-                        Some(p) => dir.join(p),
+                        Some(p) => file_dir.join(p),
                         None => {
                             let flat = dir.join(format!("{}.rs", m.ident));
                             if flat.exists() { flat } else { dir.join(m.ident.to_string()).join("mod.rs") }
                         }
                     };
                     let parsed = read_module(&file);
-                    collect(&parsed.items, &child_dir(&file), out);
+                    collect(&parsed.items, &child_dir(&file), file.parent().unwrap(), out);
                 }
             },
-            // `uniffi::setup_scaffolding!()` and any other macro call are
-            // not items: what they expand to is UniFFI's, not ours.
-            Item::Macro(_) => {}
-            item => {
-                if let Some(rendered) = render(item) {
-                    out.push(rendered);
+            // A macro call is not an item: `uniffi::setup_scaffolding!()`
+            // expands to UniFFI's own plumbing, and other macros to
+            // nothing Swift sees — save UniFFI's type macros
+            // (`uniffi::custom_type!`, rule 5), which decide how a type
+            // crosses and are listed as written.
+            Item::Macro(m) => {
+                let path = &m.mac.path;
+                if path.segments.first().is_some_and(|s| s.ident == "uniffi")
+                    && !path.segments.last().is_some_and(|s| s.ident == "setup_scaffolding")
+                {
+                    out.push(print(Item::Macro(m.clone()), false));
                 }
             }
+            item => out.extend(render(item)),
         }
     }
 }
 
-/// One item as it goes in the file, or `None` when it is not public.
-fn render(item: &Item) -> Option<String> {
+/// An item as it goes in the file, none when it is not public, or one
+/// per method for an inherent `impl`, so that a method added to an
+/// exported object is an addition, not a change.
+fn render(item: &Item) -> Vec<String> {
     let mut item = item.clone();
     let mut opaque = false;
     let public = match &mut item {
@@ -144,8 +199,12 @@ fn render(item: &Item) -> Option<String> {
         }
         Item::Struct(s) => {
             let public = is_pub(&s.vis) || has_uniffi(&s.attrs);
+            // UniFFI writes a Record's every field, private or not.
+            if !is_record(&s.attrs) {
+                opaque = hide_private_fields(&mut s.fields);
+            }
+            s.fields.iter_mut().for_each(|f| strip(&mut f.attrs));
             strip(&mut s.attrs);
-            opaque = hide_private_fields(&mut s.fields);
             public
         }
         Item::Enum(e) => {
@@ -204,11 +263,12 @@ fn render(item: &Item) -> Option<String> {
         }
         // An `impl` shows its `pub fn`s, or every method when it is
         // `#[uniffi::export]`ed (UniFFI exports them all); a trait impl
-        // only when UniFFI exports it.
+        // only when UniFFI exports it, and whole, since a method added
+        // to a trait changes what Swift implements.
         Item::Impl(i) => {
             let exported = has_uniffi(&i.attrs);
             if i.trait_.is_some() && !exported {
-                return None;
+                return Vec::new();
             }
             strip(&mut i.attrs);
             i.items.retain_mut(|ii| match ii {
@@ -227,13 +287,29 @@ fn render(item: &Item) -> Option<String> {
                 }
                 _ => false,
             });
+            if i.trait_.is_none() {
+                let methods = std::mem::take(&mut i.items);
+                return methods
+                    .into_iter()
+                    .map(|m| {
+                        let mut one = i.clone();
+                        one.items = vec![m];
+                        print(Item::Impl(one), false)
+                    })
+                    .collect();
+            }
             !i.items.is_empty()
         }
         _ => false,
     };
     if !public {
-        return None;
+        return Vec::new();
     }
+    vec![print(item, opaque)]
+}
+
+/// prettyplease's text of one stripped item, the opaque marker put in.
+fn print(item: Item, opaque: bool) -> String {
     let file = syn::File { shebang: None, attrs: Vec::new(), items: vec![item] };
     let mut text = prettyplease::unparse(&file);
     if opaque {
@@ -255,7 +331,7 @@ fn render(item: &Item) -> Option<String> {
     // No blank line inside an item, so the file splits back into items
     // on blank lines.
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
-    Some(lines.join("\n"))
+    lines.join("\n")
 }
 
 fn strip_args(sig: &mut syn::Signature) {
@@ -290,7 +366,6 @@ fn hide_private_fields(fields: &mut Fields) -> bool {
         }
         Fields::Unit => {}
     }
-    fields.iter_mut().for_each(|f| strip(&mut f.attrs));
     opaque
 }
 
@@ -298,7 +373,7 @@ fn hide_private_fields(fields: &mut Fields) -> bool {
 fn render_crate() -> Vec<String> {
     let lib = manifest_dir().join("src/lib.rs");
     let mut out = Vec::new();
-    collect(&read_module(&lib).items, &child_dir(&lib), &mut out);
+    collect(&read_module(&lib).items, &child_dir(&lib), lib.parent().unwrap(), &mut out);
     out
 }
 
@@ -342,7 +417,13 @@ enum Decision {
 /// cannot be read, which counts as not bumped). The first line is kept
 /// as found: the version is bumped by hand.
 fn decide(committed: Option<u32>, old: &str, new: &[String]) -> Decision {
-    let removed: Vec<String> = items_of(old).into_iter().filter(|item| !new.contains(item)).collect();
+    // As a multiset: of two identical items, one going is a removal.
+    let mut removed = items_of(old);
+    for item in new {
+        if let Some(k) = removed.iter().position(|r| r == item) {
+            removed.remove(k);
+        }
+    }
     let bumped = matches!((committed, version_of(old)), (Some(c), Some(v)) if v > c);
     if !removed.is_empty() && !bumped {
         return Decision::Refuse(removed);
@@ -387,6 +468,9 @@ fn diff(old: &str, new: &str) -> String {
         }
     }
     let near = |k: usize| lines[k.saturating_sub(2)..(k + 3).min(lines.len())].iter().any(|(c, _)| *c != ' ');
+    if !lines.iter().any(|(c, _)| *c != ' ') {
+        return "(the lines are the same; the file's whitespace at the end is not)\n".into();
+    }
     let mut text = String::from("--- public-api.txt\n+++ rendered from src/\n");
     let mut skipped = false;
     for (k, (c, line)) in lines.iter().enumerate() {
@@ -420,7 +504,13 @@ fn r_ffi_2_r_proto_2_the_checked_in_public_api_is_rendered_from_the_source_and_c
         panic!("public-api.txt no longer matches krowk-ffi's source:\n\n{}\n{UPDATE}", diff(&old, &want));
     }
     match decide(committed_version(), &old, &items) {
-        Decision::Write(text) => std::fs::write(api_file(), text).unwrap(),
+        // Written beside and renamed over, so the version test running
+        // alongside never reads a half-written file.
+        Decision::Write(text) => {
+            let tmp = api_file().with_extension("txt.new");
+            std::fs::write(&tmp, text).unwrap();
+            std::fs::rename(&tmp, api_file()).unwrap();
+        }
         Decision::Refuse(removed) => panic!(
             "public-api.txt not written: these existing items were removed or changed, and FFI_API_VERSION on its \
              first line is not above the committed one — bump it there and in src/lib.rs, then rerun:\n\n{}",
@@ -443,7 +533,7 @@ fn r_ffi_2_ffi_api_version_is_the_files_first_line() {
 /// The fixture's items, rendered as the crate's are.
 fn render_source(src: &str) -> Vec<String> {
     let mut out = Vec::new();
-    collect(&syn::parse_file(src).unwrap().items, Path::new("."), &mut out);
+    collect(&syn::parse_file(src).unwrap().items, Path::new("."), Path::new("."), &mut out);
     out
 }
 
@@ -492,4 +582,59 @@ fn r_proto_2_r_ffi_2_adding_an_export_needs_no_version_bump() {
     let old = render_file("FFI_API_VERSION = 1", &[a.clone(), b.clone()]);
     let new = [a, b, c];
     assert_eq!(decide(Some(1), &old, &new), Decision::Write(render_file("FFI_API_VERSION = 1", &new)));
+}
+
+#[test]
+fn r_ffi_2_a_records_private_fields_are_listed_since_swift_sees_them() {
+    let items = render_source(
+        r#"
+        #[derive(uniffi::Record)]
+        pub struct R { pub a: u32, b: u32 }
+
+        #[uniffi::remote(Record)]
+        pub struct Q { a: u32 }
+        "#,
+    );
+    assert_eq!(
+        items,
+        [
+            "#[derive(uniffi::Record)]\npub struct R {\n    pub a: u32,\n    b: u32,\n}",
+            "#[uniffi::remote(Record)]\npub struct Q {\n    a: u32,\n}",
+        ]
+    );
+}
+
+#[test]
+fn r_ffi_2_a_method_added_to_an_exported_object_needs_no_version_bump() {
+    let before = render_source("#[uniffi::export] impl O { pub fn a(&self) {} }");
+    let after = render_source("#[uniffi::export] impl O { pub fn a(&self) {} pub fn b(&self) -> u32 { 1 } }");
+    assert_eq!(before, ["#[uniffi::export]\nimpl O {\n    pub fn a(&self) {}\n}"]);
+    assert_eq!(after.len(), 2);
+    let old = render_file("FFI_API_VERSION = 1", &before);
+    assert_eq!(decide(Some(1), &old, &after), Decision::Write(render_file("FFI_API_VERSION = 1", &after)));
+}
+
+#[test]
+fn r_ffi_2_test_only_items_and_private_ones_are_not_listed() {
+    let items = render_source(
+        r#"
+        #[cfg(test)]
+        pub fn t() {}
+        #[cfg(all(test, unix))]
+        mod tests { pub fn u() {} }
+        #[cfg(not(test))]
+        pub fn shipped() {}
+        pub(crate) fn inner() {}
+        impl S { fn private(&self) {} }
+        impl Clone for S { fn clone(&self) -> Self { S } }
+        "#,
+    );
+    assert_eq!(items, ["pub fn shipped() {}"]);
+}
+
+#[test]
+fn r_ffi_2_one_of_two_identical_items_going_is_a_removal() {
+    let a = "pub fn new() {}".to_string();
+    let old = render_file("FFI_API_VERSION = 1", &[a.clone(), a.clone()]);
+    assert_eq!(decide(Some(1), &old, std::slice::from_ref(&a)), Decision::Refuse(vec![a]));
 }

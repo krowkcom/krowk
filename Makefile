@@ -114,8 +114,9 @@ bench: ## Hold the release builds to the performance and size budgets
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema
 
-# R-FFI-2: refused when an existing item changed and FFI_API_VERSION, on the
-# file's first line and in src/lib.rs, was not bumped.
+# R-FFI-2: refused when an existing item changed and the file's first line,
+# FFI_API_VERSION, is not above the committed one (the constant in
+# src/lib.rs is held equal to it by another test).
 ffi-api: ## Rewrite crates/krowk-ffi/public-api.txt after an intended change
 	UPDATE_PUBLIC_API=1 cargo test -p krowk-ffi --test public_api
 
