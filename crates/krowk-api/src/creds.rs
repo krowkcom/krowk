@@ -45,12 +45,19 @@ pub fn read<T: DeserializeOwned + Default>(path: &Path) -> Result<T, String> {
 }
 
 /// Replaces the file by rename with `v`, `0600`, synced before the rename.
+/// Pretty JSON and a newline.
 pub fn write<T: Serialize>(path: &Path, v: &T) -> Result<(), String> {
+    let data = serde_json::to_string_pretty(v).expect("credentials serialize") + "\n";
+    write_bytes(path, data.as_bytes())
+}
+
+/// `write` for bytes the caller serialised itself — into a buffer it wipes,
+/// when they hold a secret. The same temp file, sync and rename.
+pub fn write_bytes(path: &Path, data: &[u8]) -> Result<(), String> {
     let io = |e: std::io::Error| format!("{} could not be written: {e}", path.display());
     let dir = path.parent().unwrap_or(Path::new("."));
-    let data = serde_json::to_string_pretty(v).expect("credentials serialize") + "\n";
     let (mut f, tmp) = crate::tempfile::create_file(dir, ".credentials-", ".json", 0o600).map_err(io)?;
-    let result = f.write_all(data.as_bytes()).and_then(|()| f.sync_all()).and_then(|()| std::fs::rename(&tmp, path));
+    let result = f.write_all(data).and_then(|()| f.sync_all()).and_then(|()| std::fs::rename(&tmp, path));
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
