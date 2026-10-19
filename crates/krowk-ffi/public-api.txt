@@ -1,0 +1,20 @@
+FFI_API_VERSION = 1
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum KrowkError {
+    InvalidInput { detail: String },
+    Internal { detail: String },
+}
+
+pub use error::KrowkError;
+
+pub const FFI_API_VERSION: u32 = _;
+
+#[uniffi::export]
+pub fn ffi_api_version() -> u32 {}
+
+#[uniffi::export]
+pub fn protocol_version() -> u32 {}
+
+#[uniffi::export]
+pub fn parse_pairing_code(text: String) -> Result<String, KrowkError> {}
