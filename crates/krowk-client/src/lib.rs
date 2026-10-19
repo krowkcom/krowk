@@ -9,6 +9,9 @@
 //!   home, `0600`.
 //! - `pairing`: adding a device by a short code — SPAKE2 with key
 //!   confirmation both ways, as a sans-IO state machine for each side.
+//! - `pairing_payload`: what the paired device seals to the new one — the
+//!   chain, the wrapped user key, its signing key — and the new device's
+//!   checks that the chain adds exactly it.
 //! - `user_key`: the person's user key, by generation, HPKE-wrapped to each
 //!   device, each generation wrapping the one before it.
 //! - `recovery`: the 12-word recovery kit, its words, and the recovery
@@ -25,6 +28,7 @@
 pub mod e2e;
 pub mod keystore;
 pub mod pairing;
+pub mod pairing_payload;
 pub mod protocol;
 pub mod relay_link;
 pub mod relay_ticket;
