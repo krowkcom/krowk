@@ -318,3 +318,71 @@ fn r_client_4_a_slot_is_named_by_its_storage_and_files_keep_their_names() {
     assert!(root.join("device.json").is_file() && root.join("account-key.lock").is_file());
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// R-CLIENT-4, R-CLIENT-1: a keystore names a slot in its errors as its
+/// storage does, so one with no files (the iPhone's Keychain, here memory)
+/// never names a path — not for its own slots, not for another storage's
+/// it reads, and not in what `holds` and `describe` say.
+#[test]
+fn r_client_4_r_client_1_a_memory_keystores_errors_name_the_slot_not_a_path() {
+    let memory = Arc::new(MemoryStorage::new());
+    let store = Keystore::with(memory.clone());
+    store.device_key().unwrap();
+    assert!(!store.holds(Slot::UserKeys).unwrap() && !store.holds(Slot::DeviceList).unwrap());
+    memory.write(Slot::UserKeys, b"{\"version\": 2}").unwrap();
+    memory.write(Slot::DeviceList, b"{\"version\": 1, \"entries\": []}").unwrap();
+    assert!(store.holds(Slot::UserKeys).unwrap() && store.holds(Slot::DeviceList).unwrap());
+
+    let aside = MemoryStorage::new();
+    aside.write(Slot::UserKeys, b"{\"version\": 2}").unwrap();
+    aside.write(Slot::DeviceList, b"not json").unwrap();
+    for (err, slot) in [
+        (store.user_keys().unwrap_err(), "the in-memory user keys slot"),
+        (store.device_list().unwrap_err(), "the in-memory device list slot"),
+        (store.user_keys_in(&aside).unwrap_err(), "the in-memory user keys slot"),
+        (store.device_list_in(&aside).unwrap_err(), "the in-memory device list slot"),
+    ] {
+        assert!(err.starts_with(slot), "{err}");
+        assert!(!err.contains('/'), "{err}");
+    }
+    assert!(!store.describe(Slot::Device).contains('/'));
+    assert!(store.user_keys_in(&MemoryStorage::new()).unwrap().is_none());
+}
+
+/// R-CLIENT-4: the same errors from a keystore over files name each file
+/// by its full path — the terminal's next action is to move that file —
+/// and a slot read from another home is named by that home's path, while
+/// the device key that opens it is still this one's.
+#[test]
+fn r_client_4_a_file_keystores_errors_name_the_full_path() {
+    let root = scratch("named");
+    let (home, aside) = (root.join("home"), root.join("aside"));
+    let store = Keystore::new(&home);
+    store.device_key().unwrap();
+    let g1 = UserKey::first();
+    store.save_user_keys(&UserKeys::new(g1.clone(), []).unwrap()).unwrap();
+    std::fs::create_dir_all(&aside).unwrap();
+    std::fs::copy(home.join(Slot::UserKeys.file_name()), aside.join(Slot::UserKeys.file_name())).unwrap();
+    let away = FileStorage::new(&aside);
+    assert_eq!(store.user_keys_in(&away).unwrap().unwrap().newest(), &g1, "opened with this keystore's device key");
+    let other = Keystore::new(&root.join("other"));
+    other.device_key().unwrap();
+    assert!(other.user_keys_in(&away).unwrap_err().contains("was wrapped for device"));
+
+    std::fs::write(home.join(Slot::UserKeys.file_name()), "{\"version\": 2}").unwrap();
+    std::fs::write(home.join(Slot::DeviceList.file_name()), "{\"version\": 1, \"entries\": []}").unwrap();
+    std::fs::write(aside.join(Slot::UserKeys.file_name()), "{\"version\": 2}").unwrap();
+    std::fs::write(aside.join(Slot::DeviceList.file_name()), "not json").unwrap();
+    for (err, path) in [
+        (store.user_keys().unwrap_err(), home.join("user-keys.json")),
+        (store.device_list().unwrap_err(), home.join("device-list.json")),
+        (store.user_keys_in(&away).unwrap_err(), aside.join("user-keys.json")),
+        (store.device_list_in(&away).unwrap_err(), aside.join("device-list.json")),
+    ] {
+        assert!(path.is_absolute());
+        assert!(err.starts_with(&path.display().to_string()), "{err}");
+    }
+    assert_eq!(store.describe(Slot::Device), home.join("device.json").display().to_string());
+    assert!(store.holds(Slot::UserKeys).unwrap() && !Keystore::new(&root.join("none")).holds(Slot::UserKeys).unwrap());
+    let _ = std::fs::remove_dir_all(&root);
+}
