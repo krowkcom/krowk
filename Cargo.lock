@@ -1895,12 +1895,17 @@ dependencies = [
 name = "krowk-ffi"
 version = "0.0.0"
 dependencies = [
+ "jiff",
+ "krowk-api",
  "krowk-client",
+ "krowk-devregistry",
  "prettyplease",
+ "serde",
  "serde_json",
  "syn 2.0.119",
  "thiserror 2.0.21",
  "uniffi",
+ "zeroize",
 ]
 
 [[package]]

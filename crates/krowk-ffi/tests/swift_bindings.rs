@@ -27,7 +27,7 @@ fn cdylib() -> PathBuf {
 }
 
 #[test]
-fn r_proto_2_swift_bindings_generate_from_the_host_build() {
+fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
     let out = std::env::temp_dir().join(format!("krowk-ffi-swift-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&out);
     let utf8 = |p: PathBuf| {
@@ -60,7 +60,27 @@ fn r_proto_2_swift_bindings_generate_from_the_host_build() {
     // left out of the comparison.
     let squeeze = |s: &str| s.split_whitespace().collect::<String>();
     let swift = squeeze(&std::fs::read_to_string(out.join("Krowk.swift")).expect("Krowk.swift reads"));
-    for decl in ["func protocolVersion() -> UInt32", "func parsePairingCode(text: String) throws -> String", "enum KrowkError"] {
+    for decl in [
+        "func protocolVersion() -> UInt32",
+        "func parsePairingCode(text: String) throws -> String",
+        "enum KrowkError",
+        // R-FFI-3: the storage Swift implements over the Keychain, and the
+        // sign-in and account that use it.
+        "protocol KeyStorage",
+        "func read(slot: String) throws -> Data?",
+        "func write(slot: String, bytes: Data) throws",
+        "class SignIn",
+        "static func start(api: String, deviceName: String) throws -> SignIn",
+        "func wait(storage: KeyStorage) throws -> SignedIn",
+        "struct SignedIn",
+        "class Account",
+        // `open` is a Swift keyword, so the generator quotes it; Swift
+        // still calls `Account.open(api:storage:)`.
+        "static func `open`(api: String, storage: KeyStorage) throws -> Account",
+        "func hasUserKeys() throws -> Bool",
+        "case Refused(code: String, detail: String)",
+        "case Network(detail: String)",
+    ] {
         assert!(swift.contains(&squeeze(decl)), "Krowk.swift declares `{decl}`");
     }
     let _ = std::fs::remove_dir_all(&out);
