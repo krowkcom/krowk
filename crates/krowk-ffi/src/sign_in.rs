@@ -68,14 +68,18 @@ impl SignIn {
     /// Opens a browser sign-in against the registry at `api` (its `/v1`
     /// URL), named after the phone — the approval page asks about
     /// `device_name`, and the key is named after it. Its control
-    /// characters are dropped and it is cut to 64 bytes.
+    /// characters are dropped and it is cut to 64 bytes. Blocking, a
+    /// registry call: call it off the main thread.
     #[uniffi::constructor]
     pub fn start(api: String, device_name: String) -> Result<Arc<SignIn>, KrowkError> {
         // Keyless: the endpoint exists for a device with no key.
         let client = Client::new(&api, "");
         let auth = client.start_cli_authorization(LoginAction::Login, &device_name)?;
         let page = browsable_url(&auth.verification_url, client.insecure())
-            .map_err(|e| KrowkError::Refused { code: "unsafe_url".into(), detail: e.fix() })?;
+            .map_err(|_| KrowkError::Refused {
+                code: "unsafe_url".into(),
+                detail: "the registry named a sign-in page krowk will not open — check the app's registry address".into(),
+            })?;
         Ok(Arc::new(SignIn { client, auth, page, cancelled: AtomicBool::new(false) }))
     }
 
@@ -190,6 +194,7 @@ fn refusal(e: krowk_api::Error) -> KrowkError {
     let (code, detail) = match (e.code().as_str(), e.status) {
         ("authorization_denied", _) => ("authorization_denied", "this sign-in was denied in the browser — sign in again to ask again"),
         ("authorization_expired" | "expired", _) => ("authorization_expired", "nobody approved this sign-in before it lapsed — sign in again to ask again"),
+        ("malformed_response", _) => ("malformed_response", "the registry approved this sign-in without handing over a key — sign in again, and report it if it repeats"),
         ("spent", _) => ("spent", "this sign-in's key was already collected, and the registry keeps no second copy — sign in again"),
         (_, 404) => ("not_found", "the registry does not know this sign-in — it may have lapsed; sign in again"),
         _ => return e.into(),
@@ -197,12 +202,14 @@ fn refusal(e: krowk_api::Error) -> KrowkError {
     KrowkError::Refused { code: code.into(), detail: detail.into() }
 }
 
-/// Writes `creds` to the `credentials.json` item, serialized into a buffer
-/// wiped after; the copy UniFFI makes to hand Swift is its own, unwiped
-/// (`storage::Foreign` says more). The key was handed over once and the registry keeps no copy, so a failed
+/// Writes `creds` to the `credentials.json` item, serialized into one
+/// buffer wiped after, sized so it never reallocates and leaves a copy of
+/// the token behind (JSON escapes a character in at most six bytes). The
+/// copy handed to Swift is not wiped (`storage::Foreign` says why). The key was handed over once and the registry keeps no copy, so a failed
 /// write says to sign in again.
 fn save(storage: &dyn KeyStorage, creds: &Credentials) -> Result<(), KrowkError> {
-    let mut buf = Zeroizing::new(Vec::with_capacity(512));
+    let fields = creds.token.len() + creds.key_id.len() + creds.workspace.len() + creds.workspace_name.len();
+    let mut buf = Zeroizing::new(Vec::with_capacity(128 + 6 * fields));
     serde_json::to_writer(&mut *buf, creds).expect("credentials serialize");
     storage.write(CREDENTIALS.into(), buf.to_vec()).map_err(|e| KrowkError::Internal {
         detail: format!("could not save the key to the Keychain item {CREDENTIALS}: {e} — it was handed over once and the registry keeps no copy, so sign in again"),
