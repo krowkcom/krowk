@@ -11,8 +11,8 @@
 //! linked all the same. Dev-dependencies are left out, since no client
 //! links a test's.
 //!
-//! It is not the whole of "no HTTP stack": the keystore's krowk-api still
-//! brings ureq, until its home and credentials split out from under it.
+//! It is not "no HTTP stack": krowk-api brings ureq, the blocking client
+//! sign-in and the device-signed calls go through (the crate doc's rule 2).
 //!
 //! R-REPO-1 the other way round: krowk-ffi is in the workspace, but no
 //! workspace crate links it, so `cargo install` and the lean build of
@@ -170,7 +170,7 @@ fn r_client_1_the_dependency_graph_test_fails_when_krowk_ffi_gains_one() {
         "{found:?}"
     );
     assert!(
-        found.contains(&"krowk-ffi -> krowk-client -> krowk-api -> reqwest".to_string()),
+        found.contains(&"krowk-ffi -> krowk-api -> reqwest".to_string()),
         "a transitive build dependency: {found:?}"
     );
     assert!(

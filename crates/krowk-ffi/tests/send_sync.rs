@@ -7,7 +7,12 @@ fn assert_send_sync<T: Send + Sync + 'static>() {}
 
 #[test]
 fn r_ffi_1_exported_types_are_send_and_sync() {
-    // No `uniffi::Object` is exported yet: each one later is added here,
-    // beside the error every export returns.
+    // Each `uniffi::Object` is added here, beside the error every export
+    // returns and the record sign-in gives back.
     assert_send_sync::<krowk_ffi::KrowkError>();
+    assert_send_sync::<krowk_ffi::SignedIn>();
+    assert_send_sync::<krowk_ffi::SignIn>();
+    assert_send_sync::<krowk_ffi::Account>();
+    // The app's storage, which every thread may call.
+    assert_send_sync::<std::sync::Arc<dyn krowk_ffi::KeyStorage>>();
 }

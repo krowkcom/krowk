@@ -51,10 +51,24 @@ krowk-client = { path = "../krowk-client" }
 uniffi = { version = "0.32", default-features = false }
 # KrowkError's Display. Linked already.
 thiserror = "2"
+# The registry client the phone signs in and makes device-signed calls
+# with, and the sign-in poll's rules (`krowk_api::login`). Linked already,
+# under krowk-client.
+krowk-api = { path = "../krowk-api" }
+# The wall clock a sign-in's expiry is read against, as krowk-api takes it.
+# Linked already, with krowk-api's features.
+jiff = { version = "0.2", default-features = false, features = ["std"] }
+# The credentials.json storage item, and wiping its token; serde_json is
+# also what tests/dependency_graph.rs reads `cargo metadata` with. Linked
+# already.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zeroize = "1"
 
 [dev-dependencies]
-# tests/dependency_graph.rs reads `cargo metadata`'s JSON. Linked already.
-serde_json = "1"
+# tests/sign_in.rs signs in against the stand-in registry. Its krowk-client
+# is this crate's, so the types are one.
+krowk-devregistry = { path = "../krowk-devregistry" }
 # tests/public_api.rs renders the exported API from src/ (syn parses it,
 # prettyplease prints each item) to compare with public-api.txt. Test-only:
 # no build of krowk-ffi or krowk links either.

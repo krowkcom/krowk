@@ -1,12 +1,104 @@
-FFI_API_VERSION = 1
+FFI_API_VERSION = 2
+
+#[derive(uniffi::Object)]
+pub struct Account {
+    // opaque: private fields
+}
+
+#[uniffi::export]
+impl Account {
+    #[uniffi::constructor]
+    pub fn open(
+        api: String,
+        storage: Arc<dyn KeyStorage>,
+    ) -> Result<Arc<Account>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn device_id(&self) -> String {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn workspace(&self) -> String {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn has_user_keys(&self) -> Result<bool, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn sign_out(&self) -> Result<(), KrowkError> {}
+}
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum KrowkError {
     InvalidInput { detail: String },
     Internal { detail: String },
+    Refused { code: String, detail: String },
+    Network { detail: String },
 }
 
+#[derive(uniffi::Object)]
+pub struct SignIn {
+    // opaque: private fields
+}
+
+#[derive(Debug, Clone, PartialEq, uniffi::Record)]
+pub struct SignedIn {
+    pub workspace: String,
+    pub workspace_name: String,
+    pub key_id: String,
+}
+
+#[uniffi::export]
+impl SignIn {
+    #[uniffi::constructor]
+    pub fn start(api: String, device_name: String) -> Result<Arc<SignIn>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl SignIn {
+    pub fn code(&self) -> String {}
+}
+
+#[uniffi::export]
+impl SignIn {
+    pub fn verification_url(&self) -> String {}
+}
+
+#[uniffi::export]
+impl SignIn {
+    pub fn expires_at(&self) -> String {}
+}
+
+#[uniffi::export]
+impl SignIn {
+    pub fn wait(&self, storage: Arc<dyn KeyStorage>) -> Result<SignedIn, KrowkError> {}
+}
+
+#[uniffi::export]
+impl SignIn {
+    pub fn cancel(&self) {}
+}
+
+#[uniffi::export(with_foreign)]
+pub trait KeyStorage: Send + Sync {
+    fn read(&self, slot: String) -> Result<Option<Vec<u8>>, KrowkError>;
+    fn write(&self, slot: String, bytes: Vec<u8>) -> Result<(), KrowkError>;
+    fn remove(&self, slot: String) -> Result<(), KrowkError>;
+}
+
+pub use account::Account;
+
 pub use error::KrowkError;
+
+pub use sign_in::{SignIn, SignedIn};
+
+pub use storage::KeyStorage;
 
 pub const FFI_API_VERSION: u32 = _;
 

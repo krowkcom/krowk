@@ -38,6 +38,15 @@
 //! ([`protocol_version`]); nor a `FromStr` or `Display` impl, so those
 //! become `parse_*` and `*_to_string` functions ([`parse_pairing_code`]).
 //!
+//! # Signing in, and where the keys live
+//!
+//! The app implements [`KeyStorage`] over the Keychain (R-FFI-3): the
+//! keystore's five items and `credentials.json`, the krowk API key, under
+//! the file names the terminal uses. [`SignIn`] is the browser sign-in,
+//! saving the key there on approval; [`Account`] opens from it, makes the
+//! device's keys on first use, and holds the client that signs registry
+//! calls as this device. Nothing exported returns a private key.
+//!
 //! # Generating the Swift bindings
 //!
 //! Library mode reads the interface out of the host build's cdylib (on
@@ -56,16 +65,22 @@
 
 uniffi::setup_scaffolding!();
 
+mod account;
 mod error;
+mod sign_in;
+mod storage;
 
+pub use account::Account;
 pub use error::KrowkError;
+pub use sign_in::{SignIn, SignedIn};
+pub use storage::KeyStorage;
 
 use krowk_client::pairing::PairingCode;
 
 /// The version of this crate's exported API, the first line of
 /// `public-api.txt`: bumped whenever an existing export is removed or
 /// changed (rule 8), never for an addition.
-pub const FFI_API_VERSION: u32 = 1;
+pub const FFI_API_VERSION: u32 = 2;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]
