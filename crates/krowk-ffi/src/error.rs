@@ -3,10 +3,10 @@
 /// Every error an export returns. Struct variants, each with a `detail`
 /// field and never `message`: Swift's `Error` (and Kotlin's
 /// `Throwable.message`) already has one, and the generated code clashes.
-///
-/// Later variants (`Network`, `Refused { code, detail }`, …) come with
-/// `From` impls from krowk-client's errors, so an export maps with `?`
-/// rather than by hand at each call.
+// Not in the doc comment, which UniFFI copies into the Swift: later
+// variants (`Network`, `Refused { code, detail }`, …) come with `From`
+// impls from krowk-client's errors, so an export maps with `?` rather than
+// by hand at each call.
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum KrowkError {
     /// What the caller passed is not what the call takes; `detail` says

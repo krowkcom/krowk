@@ -41,8 +41,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 - **krowk-client has Swift bindings.** A new crate, krowk-ffi, exports it
   through UniFFI for the iPhone app, starting with the protocol version
-  and pairing-code parsing; the Swift is generated from the Rust on every
-  build check. The CLI links none of it and its builds are unchanged.
+  and pairing-code parsing; a test generates the Swift from the Rust on
+  every `make check`. The CLI links none of it and its builds are
+  unchanged.
 - **The threat model and crypto design are public.** They are in
   [`docs/security/`](docs/security/), and `SECURITY.md` links them. Until
   now they lived in krowk's private design repository, so a reader could

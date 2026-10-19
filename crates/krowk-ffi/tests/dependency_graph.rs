@@ -13,6 +13,10 @@
 //!
 //! It is not the whole of "no HTTP stack": the keystore's krowk-api still
 //! brings ureq, until its home and credentials split out from under it.
+//!
+//! R-REPO-1 the other way round: krowk-ffi is in the workspace, but no
+//! workspace crate links it, so `cargo install` and the lean build of
+//! `krowk` are unaffected by it.
 
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -181,4 +185,29 @@ fn r_client_1_the_dependency_graph_test_fails_when_krowk_ffi_gains_one() {
         "a dev-dependency is not linked: {:?}",
         violations(&dev)
     );
+}
+
+/// Each workspace crate that names krowk-ffi as a normal or build
+/// dependency, under any feature or target, from the manifests.
+fn linkers(metadata: &Value) -> Vec<String> {
+    let mut out = Vec::new();
+    for pkg in metadata["packages"].as_array().expect("packages") {
+        for dep in pkg["dependencies"].as_array().into_iter().flatten() {
+            if dep["name"] == ROOT && dep["kind"] != "dev" {
+                out.push(pkg["name"].as_str().unwrap_or_default().to_string());
+            }
+        }
+    }
+    out
+}
+
+/// R-REPO-1: no crate, `krowk` included, links krowk-ffi; and the check
+/// sees an optional dependency, which a feature could turn on.
+#[test]
+fn r_repo_1_no_workspace_crate_links_krowk_ffi() {
+    let mut m = metadata();
+    assert!(linkers(&m).is_empty(), "krowk-ffi is linked by no workspace crate (R-REPO-1): {:?}", linkers(&m));
+    let krowk = m["packages"].as_array_mut().unwrap().iter_mut().find(|p| p["name"] == "krowk").expect("krowk is in the workspace");
+    krowk["dependencies"].as_array_mut().unwrap().push(serde_json::json!({"name": ROOT, "kind": null, "optional": true}));
+    assert_eq!(linkers(&m), ["krowk"]);
 }

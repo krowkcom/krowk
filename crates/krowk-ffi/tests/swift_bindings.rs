@@ -17,8 +17,10 @@ fn cdylib() -> PathBuf {
         std::env::consts::DLL_PREFIX,
         std::env::consts::DLL_SUFFIX
     );
-    // Uplifted to target/<profile>/ by a build, and in deps/ in any case.
-    [dir.join(&name), deps.join(&name)]
+    // deps/ first: the build that made this test binary always writes it
+    // there, while target/<profile>/ holds whatever a plain `cargo build`
+    // (the crate doc's manual command) last copied up, which may be older.
+    [deps.join(&name), dir.join(&name)]
         .into_iter()
         .find(|p| p.is_file())
         .unwrap_or_else(|| panic!("{name} is built beside {}", deps.display()))
