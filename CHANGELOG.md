@@ -39,6 +39,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk-ffi's API is frozen in a file.** What the iPhone app compiles
+  against is written down in `crates/krowk-ffi/public-api.txt`, rendered
+  from the Rust source, and a test fails when the two differ, so a
+  renamed or removed export shows in the Rust change's own diff. Removing
+  or changing an existing export needs a bump of `FFI_API_VERSION`, which
+  the app can read at run time through `ffi_api_version()`; adding one
+  does not.
 - **krowk-client has Swift bindings.** A new crate, krowk-ffi, exports it
   through UniFFI for the iPhone app, starting with the protocol version
   and pairing-code parsing; a test generates the Swift from the Rust on

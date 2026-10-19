@@ -2,7 +2,7 @@
 # A checkout and a release should not disagree about what version this is.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null | sed 's/^v//' || echo dev)
 
-.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema codex-schema codex-schema-update lean-deps bench
+.PHONY: build test test-build test-run test-doc lint lint-lean lint-sessions lint-harness check check-build check-run quick-check signoff install dev mock clean dist release-check golden golden-build golden-device golden-full golden-run golden-update bin/devregistry schema ffi-api codex-schema codex-schema-update lean-deps bench
 
 build: ## Build target/release/krowk (the full build) and krowk-mcp
 	KROWK_VERSION=$(VERSION) cargo build --release -p krowk --features harness
@@ -113,6 +113,12 @@ bench: ## Hold the release builds to the performance and size budgets
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema
+
+# R-FFI-2: refused when an existing item changed and the file's first line,
+# FFI_API_VERSION, is not above the committed one (the constant in
+# src/lib.rs is held equal to it by another test).
+ffi-api: ## Rewrite crates/krowk-ffi/public-api.txt after an intended change
+	UPDATE_PUBLIC_API=1 cargo test -p krowk-ffi --test public_api
 
 # R-BACK-3: the schema of the `codex app-server` protocol krowk drives, pinned
 # for the Codex version in crates/krowk-harness/schema/codex/VERSION. Needs

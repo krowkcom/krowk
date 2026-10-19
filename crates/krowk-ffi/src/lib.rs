@@ -26,6 +26,13 @@
 //! 6. Storage the phone owns (the Keychain) is a foreign trait:
 //!    `#[uniffi::export(with_foreign)] pub trait KeyStorage: Send + Sync`.
 //! 7. Errors: one [`KrowkError`], struct variants, field `detail`.
+//! 8. The public API is frozen in `public-api.txt` (R-FFI-2), rendered
+//!    from this source by `tests/public_api.rs`, which fails when the two
+//!    differ. A change that adds an export reruns it with
+//!    `UPDATE_PUBLIC_API=1` and commits the new file; one that removes or
+//!    changes an existing item also bumps [`FFI_API_VERSION`], here and on
+//!    the file's first line, or the rewrite is refused. Swift reads the
+//!    version at run time through [`ffi_api_version`].
 //!
 //! UniFFI cannot export a `const`, so a constant becomes a function
 //! ([`protocol_version`]); nor a `FromStr` or `Display` impl, so those
@@ -54,6 +61,17 @@ mod error;
 pub use error::KrowkError;
 
 use krowk_client::pairing::PairingCode;
+
+/// The version of this crate's exported API, the first line of
+/// `public-api.txt`: bumped whenever an existing export is removed or
+/// changed (rule 8), never for an addition.
+pub const FFI_API_VERSION: u32 = 1;
+
+/// [`FFI_API_VERSION`], for the app to read at run time.
+#[uniffi::export]
+pub fn ffi_api_version() -> u32 {
+    FFI_API_VERSION
+}
 
 /// The protocol version this build speaks,
 /// `krowk_client::protocol::PROTOCOL_VERSION`.
