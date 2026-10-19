@@ -345,7 +345,9 @@ fn r_client_4_r_client_1_a_memory_keystores_errors_name_the_slot_not_a_path() {
         assert!(err.starts_with(slot), "{err}");
         assert!(!err.contains('/'), "{err}");
     }
-    assert!(!store.describe(Slot::Device).contains('/'));
+    for slot in [Slot::Device, Slot::Signing, Slot::Account, Slot::UserKeys, Slot::DeviceList] {
+        assert!(!store.describe(slot).contains('/'), "{slot:?}");
+    }
     assert!(store.user_keys_in(&MemoryStorage::new()).unwrap().is_none());
 }
 

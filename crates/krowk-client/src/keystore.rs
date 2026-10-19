@@ -339,7 +339,8 @@ impl Keystore {
         self.storage.describe(slot)
     }
 
-    /// Whether `slot` holds anything, read or not.
+    /// Whether `slot` holds anything, valid or not; Err when it cannot be
+    /// read.
     pub fn holds(&self, slot: Slot) -> Result<bool, String> {
         Ok(self.storage.read(slot)?.is_some())
     }
