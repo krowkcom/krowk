@@ -294,7 +294,8 @@ fn r_client_4_a_memory_lock_holds_its_slot_until_dropped() {
 #[test]
 fn r_client_4_a_slot_is_named_by_its_storage_and_files_keep_their_names() {
     let memory = Arc::new(MemoryStorage::new());
-    memory.write(Slot::Device, b"{\"version\": 1, \"secret\": 1234abcd}").unwrap();
+    // serde's own words would quote it: `invalid type: string "1234abcd"`.
+    memory.write(Slot::Device, b"{\"version\": \"1234abcd\"}").unwrap();
     let err = Keystore::with(memory.clone()).device().unwrap_err();
     assert!(err.starts_with("the in-memory device key slot is not valid (line 1, column "), "{err}");
     assert!(!err.contains("1234abcd"), "{err}");
