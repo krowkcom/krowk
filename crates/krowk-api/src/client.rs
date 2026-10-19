@@ -244,11 +244,12 @@ impl Client {
     /// Opens a browser login. Keyless on purpose: the endpoint exists for a
     /// machine with no key, and sending one would meter it as that key's.
     ///
-    /// `action` says what the login is for, so the approval page can name
-    /// it. It goes in the query string, which a registry that does not know
-    /// it ignores.
-    pub fn start_cli_authorization(&self, action: LoginAction) -> Result<CliAuthorization, Error> {
-        let path = format!("/cli/authorizations?action={}", action.as_str());
+    /// `action` says what the login is for and `machine` what it is for,
+    /// so the approval page can name both and the key is named after the
+    /// machine. Both go in the query string, which a registry that does not
+    /// know them ignores; an empty `machine` is left out.
+    pub fn start_cli_authorization(&self, action: LoginAction, machine: &str) -> Result<CliAuthorization, Error> {
+        let path = authorization_path(action, machine);
         let (auth, status): (CliAuthorization, u16) = self.call("POST", &path, None, MAX_ATTEMPTS, None)?;
         if auth.slug.is_empty() || auth.code.is_empty() {
             return Err(malformed(
@@ -1100,6 +1101,29 @@ fn escape(s: &str, keep: &[u8]) -> String {
         .collect()
 }
 
+/// The most a registry takes for a login's machine name, which it refuses
+/// whole rather than clips.
+const MACHINE_MAX: usize = 64;
+
+/// Where a browser login is opened, with what it is for and the machine it is
+/// for. The name is made one the registry accepts — no control characters,
+/// trimmed, at most 64 bytes clipped on a character boundary — since a name it
+/// refuses would cost the login itself.
+fn authorization_path(action: LoginAction, machine: &str) -> String {
+    let printable: String = machine.chars().filter(|c| !c.is_control()).collect();
+    let machine = printable.trim();
+    let mut cut = MACHINE_MAX.min(machine.len());
+    while !machine.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let machine = machine[..cut].trim_end();
+    let mut path = format!("/cli/authorizations?action={}", action.as_str());
+    if !machine.is_empty() {
+        path.push_str(&format!("&machine={}", escape(machine, b"-._~")));
+    }
+    path
+}
+
 /// The cursor and page size every listing takes.
 pub(crate) fn paged(path: &str, before: &str, limit: i64) -> String {
     let mut query = Vec::new();
@@ -1443,6 +1467,37 @@ mod tests {
         assert_eq!(slug_path("a/b?c#d"), "a%2Fb%3Fc%23d");
         assert_eq!(paged("/runs", "run_x", 10), "/runs?before=run_x&limit=10");
         assert_eq!(paged("/runs", "", 0), "/runs");
+    }
+
+    /// The registry refuses a machine name over 64 characters or with a
+    /// control character in it, refusing the login with it, so none is sent.
+    #[test]
+    fn a_login_sends_its_machine_escaped_clipped_and_without_control_characters() {
+        let long = format!("  laptop\x1b[31m\u{7}\nx{}", "é".repeat(42));
+        assert_eq!(long.len(), 100);
+        let path = authorization_path(LoginAction::Login, &long);
+        let sent = path.split_once("&machine=").unwrap().1;
+        let raw: Vec<u8> = {
+            let mut out = Vec::new();
+            let mut b = sent.bytes();
+            while let Some(c) = b.next() {
+                if c == b'%' {
+                    let hex = [b.next().unwrap(), b.next().unwrap()];
+                    out.push(u8::from_str_radix(std::str::from_utf8(&hex).unwrap(), 16).unwrap());
+                } else {
+                    out.push(c);
+                }
+            }
+            out
+        };
+        let name = String::from_utf8(raw).expect("clipped on a character boundary");
+        assert!(name.len() <= 64, "{name:?}");
+        assert!(!name.chars().any(char::is_control), "{name:?}");
+        assert!(name.starts_with("laptop[31mxé"), "{name:?}");
+        assert!(!sent.contains(['&', '#', ' ', '?']), "{sent}");
+        assert!(path.starts_with("/cli/authorizations?action=login&machine="), "{path}");
+        assert_eq!(authorization_path(LoginAction::StartOver, " \n "), "/cli/authorizations?action=start_over");
+        assert_eq!(authorization_path(LoginAction::Login, "a&b=c"), "/cli/authorizations?action=login&machine=a%26b%3Dc");
     }
 
     #[test]
