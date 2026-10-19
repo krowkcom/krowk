@@ -173,7 +173,7 @@ fn r_e2e_3_a_version_2_payload_is_refused() {
 fn r_e2e_3_bytes_that_are_not_json_are_refused() {
     let a = a();
     let b = Device::new("b-macbook");
-    for bytes in [&b"\x00\x01not json"[..], b"", b"{\"v\":1}"] {
+    for bytes in [&b"\x00\x01not json"[..], b"", b"{\"v\":1"] {
         assert_eq!(refused(bytes, &a, &b), "the reply is not a payload krowk reads");
     }
 }
