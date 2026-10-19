@@ -5,9 +5,10 @@
 # Swift package apps/ios/KrowkCore. Never part of `make check` (R-REPO-1).
 #
 # It builds on a Mac with Xcode, or on Linux with the omarchy-apple-dev
-# toolchain (github.com/joshuaswarren/omarchy-apple-dev): any clang (the
-# Swift toolchain's) and Apple's iOS SDKs, named by KROWK_IOS_SDK and
-# KROWK_IOS_SIM_SDK or found in xtool's `darwin` Swift SDK. Xcode writes
+# toolchain (github.com/joshuaswarren/omarchy-apple-dev): the Swift
+# toolchain's clang, llvm-ar and llvm-objdump on PATH (its env.sh puts them
+# there) and Apple's iOS SDKs, named by KROWK_IOS_SDK and KROWK_IOS_SIM_SDK
+# or found in xtool's `darwin` Swift SDK. Xcode writes
 # the XCFramework on a Mac; on Linux this script writes the same layout
 # and Info.plist itself. KROWK_IOS_ASSEMBLE=1 does that on a Mac too,
 # which is how CI holds the Linux layout to Xcode (.github/workflows/ios-core.yml).
@@ -21,10 +22,18 @@
 #   Sources/Krowk/Krowk.swift
 set -euo pipefail
 export LC_ALL=C
+# An SDK path given relative to where the script was run from.
+absolute() {
+  case $1 in
+    /* | "") echo "$1" ;;
+    *) echo "$PWD/$1" ;;
+  esac
+}
+ios_sdk=$(absolute "${KROWK_IOS_SDK:-}")
+sim_sdk=$(absolute "${KROWK_IOS_SIM_SDK:-}")
 cd "$(dirname "$0")/.."
 root=$PWD
 out=$root/apps/ios/KrowkCore/build
-target_dir=${CARGO_TARGET_DIR:-$root/target}
 # The app's minimum (Package.swift's platforms). Rust's own objects keep
 # rustc's default minimum, which is lower: a library may ask for less than
 # the app it links into, never more. The C and assembly ring compiles get
@@ -40,36 +49,50 @@ refuse() {
 }
 need_sdk="needs Xcode on a Mac, or Linux with the omarchy-apple-dev toolchain and an iOS SDK (KROWK_IOS_SDK and KROWK_IOS_SIM_SDK, or xtool's darwin Swift SDK)"
 
-# The first <platform>.sdk inside xtool's darwin Swift SDK bundle,
-# unversioned name first (iPhoneOS.sdk sorts before iPhoneOS26.0.sdk).
+# <platform>.sdk inside xtool's darwin Swift SDK bundle, or else the
+# newest <platform><version>.sdk; nothing when there is neither.
 bundled_sdk() {
-  local base bundle
+  local base bundle found
   for base in "${XDG_CONFIG_HOME:-$HOME/.config}/swiftpm/swift-sdks" "$HOME/.swiftpm/swift-sdks"; do
     bundle=$base/darwin.artifactbundle
     [ -d "$bundle" ] || continue
-    { find "$bundle" -maxdepth 8 \( -name "$1.sdk" -o -name "$1[0-9]*.sdk" \) 2>/dev/null || true; } | sort | sed -n 1p
-    return 0
+    found=$({ find -H "$bundle" -maxdepth 8 -name "$1.sdk" 2>/dev/null || true; } | sed -n 1p)
+    if [ -z "$found" ]; then
+      found=$({ find -H "$bundle" -maxdepth 8 -name "$1[0-9]*.sdk" 2>/dev/null || true; } | sort -V | tail -n 1)
+    fi
+    if [ -n "$found" ]; then
+      echo "$found"
+      return 0
+    fi
   done
 }
 
 case $(uname -s) in
   Darwin)
-    if ! command -v xcodebuild >/dev/null || ! command -v xcrun >/dev/null; then refuse "$need_sdk"; fi
+    # /usr/bin/xcodebuild is there with only the Command Line Tools too,
+    # and fails when run; so do the SDK lookups without the iOS platform.
+    if ! xcodebuild -version >/dev/null 2>&1 \
+      || ! xcrun --sdk iphoneos --show-sdk-path >/dev/null 2>&1 \
+      || ! xcrun --sdk iphonesimulator --show-sdk-path >/dev/null 2>&1; then
+      refuse "$need_sdk"
+    fi
     host_lib=libkrowk_ffi.dylib
-    lipo=lipo
+    objdump=$(xcrun --find objdump) || refuse "Xcode has no objdump, to check the slices"
     # cc-rs finds each SDK through xcrun.
     sdk_aarch64_apple_ios=
     sdk_aarch64_apple_ios_sim=
     ;;
   Linux)
-    sdk_aarch64_apple_ios=${KROWK_IOS_SDK:-$(bundled_sdk iPhoneOS)}
-    sdk_aarch64_apple_ios_sim=${KROWK_IOS_SIM_SDK:-$(bundled_sdk iPhoneSimulator)}
+    sdk_aarch64_apple_ios=${ios_sdk:-$(bundled_sdk iPhoneOS)}
+    sdk_aarch64_apple_ios_sim=${sim_sdk:-$(bundled_sdk iPhoneSimulator)}
     if [ -z "$sdk_aarch64_apple_ios" ] || [ -z "$sdk_aarch64_apple_ios_sim" ]; then refuse "$need_sdk"; fi
     for sdk in "$sdk_aarch64_apple_ios" "$sdk_aarch64_apple_ios_sim"; do
       [ -d "$sdk/usr/include" ] || refuse "$sdk is not an iOS SDK (no usr/include): $need_sdk"
     done
-    command -v clang >/dev/null || refuse "no clang on PATH; with omarchy-apple-dev, run: . ~/.config/omarchy-apple-dev/env.sh"
-    lipo=$(command -v llvm-lipo) || refuse "no llvm-lipo on PATH, to check the slices' architectures"
+    for tool in clang llvm-ar llvm-objdump; do
+      command -v "$tool" >/dev/null || refuse "no $tool on PATH; with omarchy-apple-dev, run: . ~/.config/omarchy-apple-dev/env.sh"
+    done
+    objdump=llvm-objdump
     host_lib=libkrowk_ffi.so
     ;;
   *)
@@ -83,6 +106,11 @@ rustup target add "${targets[@]}"
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT
 
+# Where cargo puts its builds: CARGO_TARGET_DIR, a configured target-dir,
+# or target/.
+target_dir=$(cargo metadata --format-version 1 --no-deps --locked | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+[ -n "$target_dir" ] || refuse "cargo metadata named no target directory"
+
 # The bindings, in library mode from the host build: the interface is read
 # out of the host's cdylib, never the iOS libraries.
 cargo build -p krowk-ffi --locked --features bindgen --lib --bin uniffi-bindgen
@@ -95,7 +123,8 @@ cp "$stage/gen/KrowkFFI.h" "$stage/headers/KrowkFFI.h"
 cp "$stage/gen/KrowkFFI.modulemap" "$stage/headers/module.modulemap"
 
 # One static library per target, release profile (opt-level "s", LTO, one
-# codegen unit, abort on panic, stripped). The crate stays lib + cdylib;
+# codegen unit, abort on panic; its `strip` applies to linked binaries, so
+# the app's link strips these). The crate stays lib + cdylib;
 # the crate type is overridden here. Each target's variables reach only
 # its own cargo: SDKROOT names one SDK, so it cannot be set for both.
 for t in "${targets[@]}"; do
@@ -108,10 +137,10 @@ for t in "${targets[@]}"; do
   sdk_var=sdk_$tv
   sdk=${!sdk_var}
   if [ -n "$sdk" ]; then
-    # Linux: clang cross-compiles ring's C against the SDK's headers.
-    vars+=("SDKROOT=$sdk" "CC_$tv=clang")
-    cflags="$cflags -isysroot $sdk"
-    if command -v llvm-ar >/dev/null; then vars+=("AR_$tv=llvm-ar"); fi
+    # Linux: clang cross-compiles ring's C, and cc-rs passes it SDKROOT
+    # as -isysroot. Read only for Apple targets, so the host's build
+    # scripts never see it.
+    vars+=("SDKROOT=$sdk" "CC_$tv=clang" "AR_$tv=llvm-ar")
   fi
   vars+=("CFLAGS_$tv=$cflags")
   env "${vars[@]}" cargo rustc -p krowk-ffi --lib --release --locked --target "$t" --crate-type staticlib
@@ -182,11 +211,18 @@ EOF
   } > "$fw/Info.plist"
 fi
 
-# Exactly two slices, each a single-architecture arm64 library.
-for id in ios-arm64 ios-arm64-simulator; do
+# Exactly two slices, each arm64 only and built for its own platform
+# (rustc marks a device object with LC_VERSION_MIN_IPHONEOS, clang with
+# LC_BUILD_VERSION's ios).
+for slice in ios-arm64:ios ios-arm64-simulator:iossimulator; do
+  id=${slice%%:*}
   a=$fw/$id/libkrowk_ffi.a
   [ -f "$a" ] || refuse "the XCFramework has no $id/libkrowk_ffi.a"
-  "$lipo" -info "$a" | grep -q 'architecture: arm64$' || refuse "$id/libkrowk_ffi.a is not arm64 only: $("$lipo" -info "$a")"
+  headers=$("$objdump" --macho --private-headers "$a")
+  archs=$(printf '%s\n' "$headers" | awk '/^ *magic /{getline; print $2}' | sort -u | tr '\n' ' ')
+  [ "$archs" = "ARM64 " ] || refuse "$id/libkrowk_ffi.a is not arm64 only: $archs"
+  platforms=$(printf '%s\n' "$headers" | awk '/cmd LC_VERSION_MIN_IPHONEOS/{print "ios"} /^ *platform /{print $2}' | sort -u | tr '\n' ' ')
+  [ "$platforms" = "${slice#*:} " ] || refuse "$id/libkrowk_ffi.a is built for $platforms, not ${slice#*:}"
 done
 slices=$(find "$fw" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
 [ "$slices" = 2 ] || refuse "the XCFramework has $slices slices, not 2"

@@ -8,6 +8,7 @@ import Testing
 struct BindingsTests {
     @Test("R-CLIENT-1: protocolVersion() is the Rust core's protocol version")
     func protocolVersionIsTheCores() {
+        // PROTOCOL_VERSION in krowk-client; moves with it.
         #expect(protocolVersion() == 1)
     }
 

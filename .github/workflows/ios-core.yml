@@ -20,6 +20,8 @@ on:
       - crates/krowk-api/**
       - Cargo.toml
       - Cargo.lock
+      - Makefile
+      - .cargo/**
       - .github/workflows/ios-core.yml
   push:
     branches: [main]
@@ -31,6 +33,8 @@ on:
       - crates/krowk-api/**
       - Cargo.toml
       - Cargo.lock
+      - Makefile
+      - .cargo/**
       - .github/workflows/ios-core.yml
   workflow_dispatch:
 
@@ -65,7 +69,14 @@ jobs:
       - name: Xcode and the simulator
         run: |
           xcodebuild -version
-          udid=$(xcrun simctl list devices available -j | jq -r '.devices[][] | select(.name | startswith("iPhone")) | .udid' | head -1)
+          # An iPhone on the newest iOS runtime installed: the package
+          # needs iOS 26, and the image may carry older runtimes too.
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            [.devices | to_entries[]
+              | select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+$"))
+              | (.key | capture("iOS-(?<a>[0-9]+)-(?<b>[0-9]+)$") | [(.a | tonumber), (.b | tonumber)]) as $v
+              | .value[] | select(.name | startswith("iPhone")) | {v: $v, udid}]
+            | sort_by(.v) | last | .udid // empty')
           test -n "$udid" || { echo "no iPhone simulator available" >&2; exit 1; }
           echo "UDID=$udid" >> "$GITHUB_ENV"
           # After the build: Xcode resolves the package, whose binary
@@ -90,7 +101,7 @@ jobs:
       - name: The hand-assembled XCFramework is laid out as Xcode's
         run: |
           a=$RUNNER_TEMP/xcodebuild.xcframework b=apps/ios/KrowkCore/build/KrowkFFI.xcframework
-          diff <(cd "$a" && find . | sort) <(cd "$b" && find . | sort)
+          diff -r -x Info.plist "$a" "$b"
           python3 - "$a/Info.plist" "$b/Info.plist" <<'EOF'
           import plistlib, sys
           def load(p):
