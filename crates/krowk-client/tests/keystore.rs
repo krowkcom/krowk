@@ -386,5 +386,9 @@ fn r_client_4_a_file_keystores_errors_name_the_full_path() {
     }
     assert_eq!(store.describe(Slot::Device), home.join("device.json").display().to_string());
     assert!(store.holds(Slot::UserKeys).unwrap() && !Keystore::new(&root.join("none")).holds(Slot::UserKeys).unwrap());
+    // A slot that cannot be read is an error naming its file, not "empty".
+    std::fs::create_dir_all(root.join("dir").join(Slot::UserKeys.file_name())).unwrap();
+    let err = Keystore::new(&root.join("dir")).holds(Slot::UserKeys).unwrap_err();
+    assert!(err.starts_with(&root.join("dir").join("user-keys.json").display().to_string()), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
