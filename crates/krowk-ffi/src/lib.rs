@@ -61,7 +61,9 @@
 //!
 //! That writes `Krowk.swift`, `KrowkFFI.h` and `KrowkFFI.modulemap`;
 //! `tests/swift_bindings.rs` generates them the same way on every
-//! `make check`.
+//! `make check`. `make ios-core` (`scripts/ios_core.sh`) does too, and
+//! wraps them with the iOS static libraries in the XCFramework and Swift
+//! package the app links, `apps/ios/KrowkCore`.
 
 uniffi::setup_scaffolding!();
 
