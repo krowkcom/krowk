@@ -8,19 +8,10 @@ use super::workspace::resolve_workspace;
 use super::Ctx;
 use crate::output::{self, Authorization, Login};
 use krowk_api::creds::{self, Identity};
-use krowk_api::{fail, CliAuthorization, Client, Error, AUTHORIZATION_APPROVED, AUTHORIZATION_DENIED};
+use krowk_api::login::{browsable_url, LoginPoll, Next};
+use krowk_api::{fail, CliAuthorization, Client, Error};
 use serde_json::json;
-use std::time::{Duration, Instant};
-
-/// A browser login's window and pace are the registry's to set, and bounded
-/// here, so an absurd answer can neither make krowk hammer it nor leave a
-/// forgotten terminal polling all afternoon.
-const DEFAULT_WINDOW: Duration = Duration::from_secs(15 * 60);
-const MIN_WINDOW: Duration = Duration::from_secs(60);
-const MAX_WINDOW: Duration = Duration::from_secs(30 * 60);
-const DEFAULT_POLL: Duration = Duration::from_secs(5);
-const MIN_POLL: Duration = Duration::from_secs(1);
-const MAX_POLL: Duration = Duration::from_secs(30);
+use std::time::Instant;
 
 /// Words that name a model provider, or an instance of one, rather than
 /// anything `login` takes: somebody who types them wants `krowk connect`.
@@ -142,7 +133,9 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Re
     // Keyless whatever the environment holds: the endpoint exists for a
     // machine with no key.
     let client = Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), "");
-    let auth = client.start_cli_authorization(action).map_err(|mut e| {
+    // Named, so the approval page asks about this machine rather than "this
+    // machine", and the key it mints is named after it.
+    let auth = client.start_cli_authorization(action, &super::machine::name(ctx)).map_err(|mut e| {
         if e.status == 404 {
             e.body.insert(
                 "fix".into(),
@@ -151,7 +144,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Re
         }
         e
     })?;
-    let page = browsable_url(&auth.verification_url, &client)?;
+    let page = browsable_url(&auth.verification_url, client.insecure())?;
     let opened = !ctx.f.no_browser && !headless(ctx) && open_browser(&page);
     // stderr: the code and the page are what a person needs during the
     // command, while stdout stays the one document a program parses.
@@ -159,8 +152,7 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Re
     let notice = output::authorizing(&Authorization { code: auth.code.clone(), page, opened }, ctx.format, colour);
     let _ = write!(ctx.io.stderr, "{notice}");
 
-    let deadline = Instant::now() + window(&auth.expires_at);
-    let granted = await_authorization(&client, &auth, deadline)?;
+    let granted = await_authorization(&client, &auth)?;
     let id = Identity {
         key_id: granted.key_id.clone(),
         workspace: granted.workspace.clone(),
@@ -188,130 +180,21 @@ pub(super) fn browser_login(ctx: &mut Ctx, action: krowk_api::LoginAction) -> Re
     Ok((granted.token, result))
 }
 
-/// Polls until somebody answers or the window closes. Approved, denied and a
-/// refusal about this authorization are answers; a rate limit, a 5xx or no
-/// network are the moment, and the window is kept rather than an approval
-/// thrown away.
-fn await_authorization(client: &Client, auth: &CliAuthorization, deadline: Instant) -> Result<CliAuthorization, Error> {
-    let interval = poll_interval(auth.interval);
-    // The last poll that got no answer: if the window closes with one
-    // outstanding, krowk could not ask, and "nobody approved it" would blame a
-    // person for a question that never got out.
-    let mut unanswered: Option<Error> = None;
-    let mut wait = interval;
+/// Polls until somebody answers or the window closes, at the pace and on
+/// the terms `LoginPoll` keeps; here is only the sleeping and the reading.
+fn await_authorization(client: &Client, auth: &CliAuthorization) -> Result<CliAuthorization, Error> {
+    let mut poll = LoginPoll::new(auth, Instant::now(), jiff::Timestamp::now());
     loop {
-        // Slept before the first read too: an authorization milliseconds old
-        // cannot have been approved yet. Never past the deadline.
-        std::thread::sleep(wait.min(deadline.saturating_duration_since(Instant::now())));
-        wait = interval;
-        if Instant::now() >= deadline {
-            return Err(window_closed(unanswered));
-        }
-        match client.read_cli_authorization(&auth.slug) {
-            Err(e) if worth_another_poll(&e) => {
-                if let Some(asked) = krowk_api::client::retry_after_for(&e).filter(|a| *a > wait) {
-                    wait = asked;
+        match poll.next(Instant::now()) {
+            Next::Sleep(wait) => std::thread::sleep(wait),
+            Next::Read => {
+                if let Some(answer) = poll.answer(client.read_cli_authorization(poll.slug())) {
+                    return answer;
                 }
-                unanswered = Some(e);
             }
-            Err(e) => return Err(login_fix(e)),
-            Ok(granted) if granted.state == AUTHORIZATION_APPROVED => {
-                if granted.token.is_empty() {
-                    return Err(fail(
-                        "malformed_response",
-                        "the registry approved this login without handing over a key — run `krowk login` again, and report it if it repeats",
-                    ));
-                }
-                return Ok(granted);
-            }
-            Ok(granted) if granted.state == AUTHORIZATION_DENIED => {
-                return Err(fail("authorization_denied", "this login was denied in the browser — run `krowk login` to ask again"));
-            }
-            // Pending, or a state this build has no word for: still inside the window.
-            Ok(_) => unanswered = None,
+            Next::Done(answer) => return answer,
         }
     }
-}
-
-fn window_closed(unanswered: Option<Error>) -> Error {
-    unanswered.unwrap_or_else(|| {
-        fail("authorization_expired", "nobody approved this login before it lapsed — run `krowk login` to ask again")
-    })
-}
-
-fn worth_another_poll(e: &Error) -> bool {
-    e.code() == "network_unreachable" || e.status == 429 || e.status >= 500
-}
-
-/// Advice written for artifacts, replaced on a login: "upload it again" is
-/// nonsense to someone trying to log in.
-fn login_fix(mut e: Error) -> Error {
-    let fix = match (e.code().as_str(), e.status) {
-        ("expired", _) => "this login lapsed before it was approved — run `krowk login` to ask again",
-        ("spent", _) => "this login's key was already collected, and the registry keeps no second copy — run `krowk login` for a new one",
-        (_, 404) => "the registry does not know this login — it may have lapsed and been swept; run `krowk login` to ask again",
-        _ => return e,
-    };
-    e.body.insert("fix".into(), json!(fix));
-    e
-}
-
-/// The registry's expiry, clamped: a clock minutes off the registry's would
-/// otherwise abandon a good login before its first poll.
-fn window(expires_at: &str) -> Duration {
-    match expires_at.parse::<jiff::Timestamp>() {
-        Ok(at) => {
-            let secs = at.duration_since(jiff::Timestamp::now()).as_secs().max(0) as u64;
-            Duration::from_secs(secs).clamp(MIN_WINDOW, MAX_WINDOW)
-        }
-        Err(_) => DEFAULT_WINDOW,
-    }
-}
-
-fn poll_interval(seconds: i64) -> Duration {
-    if seconds <= 0 {
-        return DEFAULT_POLL;
-    }
-    Duration::from_secs(seconds.min(MAX_POLL.as_secs() as i64) as u64).max(MIN_POLL)
-}
-
-/// The approval page arrives in a response body and is about to go to the
-/// desktop's URL handler, which reaches far past an HTTP client — so only
-/// http(s), and plain http only when the API itself is.
-fn browsable_url(raw: &str, registry: &Client) -> Result<String, Error> {
-    let malformed = |what: &str| {
-        fail(
-            "malformed_response",
-            format!("the registry {what} — check KROWK_API_URL points at the API host, not the website"),
-        )
-    };
-    if raw.is_empty() {
-        return Err(malformed("opened a browser login without naming a page to approve it on"));
-    }
-    let Some((scheme, rest)) = raw.split_once("://").or_else(|| raw.split_once(':')) else {
-        return Err(malformed("named a page for this login with no scheme"));
-    };
-    match scheme.to_ascii_lowercase().as_str() {
-        "https" => {}
-        "http" if registry.insecure() => {}
-        "http" => {
-            return Err(fail(
-                "refused_verification_url",
-                "the registry named an http page for this login while the API itself is https — krowk will not open it; check KROWK_API_URL",
-            ))
-        }
-        "" => return Err(malformed("named a page for this login with no scheme")),
-        other => {
-            return Err(fail(
-                "refused_verification_url",
-                format!("the registry named a {other}: page for this login, and krowk only opens http and https"),
-            ))
-        }
-    }
-    if rest.split(['/', '?', '#']).next().unwrap_or_default().rsplit('@').next().unwrap_or_default().is_empty() {
-        return Err(malformed("named a page for this login with no host"));
-    }
-    Ok(raw.to_string())
 }
 
 /// Nowhere to open a browser: over SSH, on CI, or on a unix session with no
@@ -440,29 +323,4 @@ pub(crate) fn verify(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let rendered = output::key(&key, ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_approval_page_is_http_s_only_and_plain_http_only_beside_a_plain_api() {
-        let prod = Client::new("https://api.krowk.com/v1", "");
-        let local = Client::new("http://127.0.0.1:8787/v1", "");
-        assert!(browsable_url("https://app.krowk.com/cli/ABCD", &prod).is_ok());
-        assert_eq!(browsable_url("http://app.krowk.com/x", &prod).unwrap_err().code(), "refused_verification_url");
-        assert!(browsable_url("http://127.0.0.1:8787/x", &local).is_ok());
-        assert_eq!(browsable_url("file:///etc/passwd", &prod).unwrap_err().code(), "refused_verification_url");
-        assert_eq!(browsable_url("https:///nohost", &prod).unwrap_err().code(), "malformed_response");
-        assert_eq!(browsable_url("", &prod).unwrap_err().code(), "malformed_response");
-    }
-
-    #[test]
-    fn the_pace_and_window_are_bounded() {
-        assert_eq!(poll_interval(0), DEFAULT_POLL);
-        assert_eq!(poll_interval(1_000_000), MAX_POLL);
-        assert_eq!(window("not a time"), DEFAULT_WINDOW);
-        assert_eq!(window("2000-01-01T00:00:00Z"), MIN_WINDOW);
-    }
 }
