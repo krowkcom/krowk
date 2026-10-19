@@ -106,7 +106,8 @@ pub trait KeyStorage: Send + Sync {
 }
 
 /// The keys as files in krowk's home: each `0600`, each replaced by rename
-/// through krowk-api's credentials write, locked by a `.lock` file beside it.
+/// through krowk-api's credentials write. A slot's lock is a `.lock` file
+/// beside its file: `account-key.lock`, `device-list.lock`.
 #[derive(Debug, Clone)]
 pub struct FileStorage {
     home: PathBuf,
