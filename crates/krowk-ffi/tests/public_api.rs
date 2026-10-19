@@ -10,8 +10,11 @@
 //! in source order, that is `pub` or carries a `uniffi` attribute (UniFFI
 //! exports from a private module too, so `mod error;` is followed like a
 //! `pub mod`); each printed by prettyplease with docs, bodies, private
-//! fields and every attribute but `derive`, `non_exhaustive` and the
-//! `uniffi` ones stripped.
+//! fields (save a Record's, which Swift sees) and every attribute but
+//! `derive`, `non_exhaustive` and the `uniffi` ones stripped. Each method
+//! of an inherent `impl` is an item of its own, so adding one to an
+//! exported object is an addition. Test-only (`cfg(test)`) code is left
+//! out wherever it is.
 
 use std::path::{Path, PathBuf};
 
@@ -22,7 +25,7 @@ const UPDATE: &str = "run `UPDATE_PUBLIC_API=1 cargo test -p krowk-ffi --test pu
 /// The private fields of a struct are rendered as this field, then the
 /// line is replaced with the marker: prettyplease drops comments, so the
 /// marker is put in as text after rendering.
-const OPAQUE_FIELD: &str = "_opaque";
+const OPAQUE_FIELD: &str = "__opaque_private_fields";
 const OPAQUE_MARKER: &str = "// opaque: private fields";
 
 fn manifest_dir() -> PathBuf {
@@ -162,7 +165,13 @@ fn collect(items: &[Item], dir: &Path, file_dir: &Path, out: &mut Vec<String>) {
                         }
                     };
                     let parsed = read_module(&file);
-                    collect(&parsed.items, &child_dir(&file), file.parent().unwrap(), out);
+                    // A `#[path]` file is a `mod.rs` to rustc: its own
+                    // modules resolve beside it.
+                    let children = match path_attr(&m.attrs) {
+                        Some(_) => file.parent().unwrap().to_path_buf(),
+                        None => child_dir(&file),
+                    };
+                    collect(&parsed.items, &children, file.parent().unwrap(), out);
                 }
             },
             // A macro call is not an item: `uniffi::setup_scaffolding!()`
@@ -175,7 +184,9 @@ fn collect(items: &[Item], dir: &Path, file_dir: &Path, out: &mut Vec<String>) {
                 if path.segments.first().is_some_and(|s| s.ident == "uniffi")
                     && !path.segments.last().is_some_and(|s| s.ident == "setup_scaffolding")
                 {
-                    out.push(print(Item::Macro(m.clone()), false));
+                    let mut m = m.clone();
+                    strip(&mut m.attrs);
+                    out.push(print(Item::Macro(m), false));
                 }
             }
             item => out.extend(render(item)),
@@ -199,6 +210,7 @@ fn render(item: &Item) -> Vec<String> {
         }
         Item::Struct(s) => {
             let public = is_pub(&s.vis) || has_uniffi(&s.attrs);
+            drop_test_fields(&mut s.fields);
             // UniFFI writes a Record's every field, private or not.
             if !is_record(&s.attrs) {
                 opaque = hide_private_fields(&mut s.fields);
@@ -210,7 +222,9 @@ fn render(item: &Item) -> Vec<String> {
         Item::Enum(e) => {
             let public = is_pub(&e.vis) || has_uniffi(&e.attrs);
             strip(&mut e.attrs);
+            e.variants = std::mem::take(&mut e.variants).into_iter().filter(|v| !is_cfg_test(&v.attrs)).collect();
             for v in &mut e.variants {
+                drop_test_fields(&mut v.fields);
                 strip(&mut v.attrs);
                 v.fields.iter_mut().for_each(|f| strip(&mut f.attrs));
             }
@@ -219,6 +233,12 @@ fn render(item: &Item) -> Vec<String> {
         Item::Trait(t) => {
             let public = is_pub(&t.vis) || has_uniffi(&t.attrs);
             strip(&mut t.attrs);
+            t.items.retain(|ti| match ti {
+                syn::TraitItem::Fn(f) => !is_cfg_test(&f.attrs),
+                syn::TraitItem::Const(c) => !is_cfg_test(&c.attrs),
+                syn::TraitItem::Type(t) => !is_cfg_test(&t.attrs),
+                _ => true,
+            });
             for ti in &mut t.items {
                 match ti {
                     syn::TraitItem::Fn(f) => {
@@ -273,14 +293,14 @@ fn render(item: &Item) -> Vec<String> {
             strip(&mut i.attrs);
             i.items.retain_mut(|ii| match ii {
                 syn::ImplItem::Fn(f) => {
-                    let keep = exported || is_pub(&f.vis);
+                    let keep = (exported || is_pub(&f.vis)) && !is_cfg_test(&f.attrs);
                     strip(&mut f.attrs);
                     strip_args(&mut f.sig);
                     f.block = empty_block();
                     keep
                 }
                 syn::ImplItem::Const(c) => {
-                    let keep = is_pub(&c.vis);
+                    let keep = is_pub(&c.vis) && !is_cfg_test(&c.attrs);
                     strip(&mut c.attrs);
                     c.expr = syn::parse_quote!(_);
                     keep
@@ -343,6 +363,20 @@ fn strip_args(sig: &mut syn::Signature) {
     }
 }
 
+/// Drops the fields compiled only for tests.
+fn drop_test_fields(fields: &mut Fields) {
+    match fields {
+        Fields::Named(named) => {
+            named.named = std::mem::take(&mut named.named).into_iter().filter(|f| !is_cfg_test(&f.attrs)).collect()
+        }
+        Fields::Unnamed(unnamed) => {
+            unnamed.unnamed =
+                std::mem::take(&mut unnamed.unnamed).into_iter().filter(|f| !is_cfg_test(&f.attrs)).collect()
+        }
+        Fields::Unit => {}
+    }
+}
+
 /// Keeps the `pub` fields; when any field is not `pub`, adds the
 /// placeholder field `render` swaps for the marker, and says so.
 fn hide_private_fields(fields: &mut Fields) -> bool {
@@ -353,7 +387,7 @@ fn hide_private_fields(fields: &mut Fields) -> bool {
             named.named = std::mem::take(&mut named.named).into_iter().filter(|f| is_pub(&f.vis)).collect();
             if named.named.len() != before {
                 opaque = true;
-                named.named.push(syn::parse_quote!(_opaque: ()));
+                named.named.push(syn::parse_quote!(__opaque_private_fields: ()));
             }
         }
         Fields::Unnamed(unnamed) => {
@@ -361,7 +395,7 @@ fn hide_private_fields(fields: &mut Fields) -> bool {
             unnamed.unnamed = std::mem::take(&mut unnamed.unnamed).into_iter().filter(|f| is_pub(&f.vis)).collect();
             if unnamed.unnamed.len() != before {
                 opaque = true;
-                unnamed.unnamed.push(syn::parse_quote!(_opaque));
+                unnamed.unnamed.push(syn::parse_quote!(__opaque_private_fields));
             }
         }
         Fields::Unit => {}
@@ -637,4 +671,30 @@ fn r_ffi_2_one_of_two_identical_items_going_is_a_removal() {
     let a = "pub fn new() {}".to_string();
     let old = render_file("FFI_API_VERSION = 1", &[a.clone(), a.clone()]);
     assert_eq!(decide(Some(1), &old, std::slice::from_ref(&a)), Decision::Refuse(vec![a]));
+}
+
+#[test]
+fn r_ffi_2_test_only_members_and_a_type_macros_docs_are_not_listed() {
+    let items = render_source(
+        r#"
+        #[uniffi::export]
+        impl O {
+            pub fn a(&self) {}
+            #[cfg(test)]
+            pub fn only_in_tests(&self) {}
+        }
+        pub enum E { A, #[cfg(test)] T }
+        /// Ids cross as strings.
+        #[allow(unused)]
+        uniffi::custom_type!(Id, String);
+        "#,
+    );
+    assert_eq!(
+        items,
+        [
+            "#[uniffi::export]\nimpl O {\n    pub fn a(&self) {}\n}",
+            "pub enum E {\n    A,\n}",
+            "uniffi::custom_type!(Id, String);",
+        ]
+    );
 }
