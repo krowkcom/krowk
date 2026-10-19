@@ -22,8 +22,6 @@ const MAX_POLL: Duration = Duration::from_secs(30);
 /// refusal about this authorization are answers; a rate limit, a 5xx or no
 /// network are the moment, and the window is kept rather than an approval
 /// thrown away.
-///
-/// No `Debug`: the slug is what collects the key.
 pub struct LoginPoll {
     slug: String,
     interval: Duration,
@@ -38,8 +36,8 @@ pub struct LoginPoll {
     unanswered: Option<Error>,
 }
 
-/// What the caller does next. `Done` is the large variant, and is returned
-/// once and moved out, never kept.
+/// What the caller does next. `Done` is the large variant, moved out to the
+/// caller; the poll keeps only the error it may repeat.
 #[derive(Debug, PartialEq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Next {

@@ -12,11 +12,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Added
 
 - **The browser's approval page names the machine signing in, and the key
-  it makes is named after it.** `krowk login`, and the sign-in `krowk sync`
-  asks for, used to show "Log in on this machine?" for every terminal.
-  They now send the machine's name: `--name` where the command takes it,
-  else `KROWK_DEVICE_NAME`, else the host name, the same name `krowk sync
-  join` puts on your device list. Set `KROWK_DEVICE_NAME` to keep the host
+  it makes is named after it.** `krowk login`, and the sign-ins `krowk
+  sync` and `krowk devices` ask for, used to show "Log in on this
+  machine?" for every terminal. They now send the machine's name:
+  `--name` where the command takes it, else `KROWK_DEVICE_NAME`, else the
+  host name, as `krowk sync join` names it on your device list. Set `KROWK_DEVICE_NAME` to keep the host
   name from reaching the registry.
 - **`/trust` takes back a no to the trust question.** If you answered `n`
   when krowk asked whether to trust a repository, the session used to
