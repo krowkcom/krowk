@@ -98,9 +98,10 @@ impl SignIn {
     /// Blocks until the sign-in is approved, denied, lapses or is
     /// cancelled; call it off the main thread. On approval the key is saved
     /// to `storage`'s `credentials.json` item before this returns. Refused
-    /// with `authorization_denied`, `authorization_expired` or `cancelled`;
-    /// `Network` when the registry could not be reached for the whole
-    /// window.
+    /// with `authorization_denied`, `authorization_expired` or `cancelled`
+    /// — or `spent` when this sign-in's key was collected already, by an
+    /// earlier `wait`; `Network` when the registry could not be reached for
+    /// the whole window.
     pub fn wait(&self, storage: Arc<dyn KeyStorage>) -> Result<SignedIn, KrowkError> {
         let granted = self.poll()?;
         let creds = Credentials {
@@ -115,8 +116,10 @@ impl SignIn {
         Ok(SignedIn { workspace: creds.workspace.clone(), workspace_name: creds.workspace_name.clone(), key_id: creds.key_id.clone() })
     }
 
-    /// Ends a `wait` under way, within a quarter of a second, and any later
-    /// one at once: a cancelled sign-in stays cancelled.
+    /// Ends a `wait` under way, and any later one at once: a cancelled
+    /// sign-in stays cancelled. Within a quarter of a second while `wait`
+    /// sleeps between polls, which is nearly all of it; a poll already sent
+    /// is answered, or times out, first.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
@@ -181,18 +184,22 @@ impl Drop for Wiped {
 }
 
 /// How the poll ended without a key, in words for the phone rather than the
-/// terminal's `krowk login`.
+/// terminal's `krowk login`. The registry's own `expired` is the same
+/// lapse seen from its clock, when the phone's runs behind it.
 fn refusal(e: krowk_api::Error) -> KrowkError {
-    let detail = match e.code().as_str() {
-        "authorization_denied" => "this sign-in was denied in the browser — sign in again to ask again",
-        "authorization_expired" => "nobody approved this sign-in before it lapsed — sign in again to ask again",
+    let (code, detail) = match (e.code().as_str(), e.status) {
+        ("authorization_denied", _) => ("authorization_denied", "this sign-in was denied in the browser — sign in again to ask again"),
+        ("authorization_expired" | "expired", _) => ("authorization_expired", "nobody approved this sign-in before it lapsed — sign in again to ask again"),
+        ("spent", _) => ("spent", "this sign-in's key was already collected, and the registry keeps no second copy — sign in again"),
+        (_, 404) => ("not_found", "the registry does not know this sign-in — it may have lapsed; sign in again"),
         _ => return e.into(),
     };
-    KrowkError::Refused { code: e.code(), detail: detail.into() }
+    KrowkError::Refused { code: code.into(), detail: detail.into() }
 }
 
-/// Writes `creds` to the `credentials.json` item from a buffer wiped after.
-/// The key was handed over once and the registry keeps no copy, so a failed
+/// Writes `creds` to the `credentials.json` item, serialized into a buffer
+/// wiped after; the copy UniFFI makes to hand Swift is its own, unwiped
+/// (`storage::Foreign` says more). The key was handed over once and the registry keeps no copy, so a failed
 /// write says to sign in again.
 fn save(storage: &dyn KeyStorage, creds: &Credentials) -> Result<(), KrowkError> {
     let mut buf = Zeroizing::new(Vec::with_capacity(512));

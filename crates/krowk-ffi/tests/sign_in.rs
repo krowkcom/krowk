@@ -81,6 +81,9 @@ fn r_client_1_r_ffi_3_an_approved_sign_in_keeps_its_key_in_the_apps_storage() {
     assert_eq!(creds["workspace"], who.workspace.as_str());
     assert_eq!(storage.0.lock().unwrap().len(), 1, "only the key is written; the device keys wait for Account::open");
 
+    // The key was handed over once: a second wait finds it collected.
+    assert_eq!(refused(s.wait(Arc::new(Memory::default()))), "spent");
+
     // The account opens from it, signing as the device it makes.
     let account = krowk_ffi::Account::open(api(&registry), storage).unwrap();
     assert_eq!(account.workspace(), who.workspace);
@@ -108,7 +111,8 @@ fn r_client_1_cancel_from_another_thread_ends_the_wait_within_a_second() {
             (r, Instant::now())
         })
     };
-    // Long enough to be in the poll's sleep or read, not before it.
+    // Most likely in the poll's first sleep by now (the stand-in's pace is
+    // a second); a cancel before `wait` began would end it all the same.
     std::thread::sleep(Duration::from_millis(300));
     let cancelled = Instant::now();
     s.cancel();

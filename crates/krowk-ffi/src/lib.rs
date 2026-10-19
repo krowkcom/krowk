@@ -34,6 +34,10 @@
 //!    the file's first line, or the rewrite is refused. Swift reads the
 //!    version at run time through [`ffi_api_version`].
 //!
+//! UniFFI cannot export a `const`, so a constant becomes a function
+//! ([`protocol_version`]); nor a `FromStr` or `Display` impl, so those
+//! become `parse_*` and `*_to_string` functions ([`parse_pairing_code`]).
+//!
 //! # Signing in, and where the keys live
 //!
 //! The app implements [`KeyStorage`] over the Keychain (R-FFI-3): the
@@ -42,10 +46,6 @@
 //! saving the key there on approval; [`Account`] opens from it, makes the
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
-//!
-//! UniFFI cannot export a `const`, so a constant becomes a function
-//! ([`protocol_version`]); nor a `FromStr` or `Display` impl, so those
-//! become `parse_*` and `*_to_string` functions ([`parse_pairing_code`]).
 //!
 //! # Generating the Swift bindings
 //!

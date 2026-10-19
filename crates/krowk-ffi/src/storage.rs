@@ -32,10 +32,13 @@ pub trait KeyStorage: Send + Sync {
     fn remove(&self, slot: String) -> Result<(), KrowkError>;
 }
 
-/// The app's storage as the keystore reaches it. Bytes read are wiped when
-/// the keystore is done with them; bytes written are copied once into the
-/// buffer UniFFI hands Swift, which frees it unwiped — the Keychain write
-/// is the one copy Swift is asked to make.
+/// The app's storage as the keystore reaches it. What krowk holds is wiped:
+/// bytes read, once the keystore is done with them, and the buffers the
+/// keystore serializes keys into. What UniFFI holds is not, and krowk
+/// cannot reach it: it serializes every `Vec<u8>` into a buffer of its own
+/// to cross to Swift and back, so the copy handed to `write` and the
+/// buffer a read came back in are freed unwiped. Swift is asked to keep
+/// the bytes, nothing more; no export hands it a key any other way.
 pub(crate) struct Foreign(pub(crate) Arc<dyn KeyStorage>);
 
 impl Foreign {

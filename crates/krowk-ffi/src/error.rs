@@ -40,8 +40,12 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for KrowkError {
 impl From<krowk_api::Error> for KrowkError {
     fn from(e: krowk_api::Error) -> KrowkError {
         let code = e.code();
+        // The terminal's advice names KROWK_API_URL, which a phone has not.
+        if code == "network_unreachable" {
+            return KrowkError::Network { detail: "krowk's registry cannot be reached — check the network and try again".into() };
+        }
         let detail = [e.fix(), message(&e)].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| code.clone());
-        if code == "network_unreachable" || e.status == 429 || e.status >= 500 {
+        if e.status == 429 || e.status >= 500 {
             KrowkError::Network { detail }
         } else {
             KrowkError::Refused { code, detail }

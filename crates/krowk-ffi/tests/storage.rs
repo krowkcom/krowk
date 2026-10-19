@@ -82,12 +82,14 @@ fn r_ffi_3_an_unreadable_key_is_signed_out_too() {
 }
 
 #[test]
-fn r_ffi_3_r_client_1_the_device_keys_are_made_once_under_krowks_file_names() {
+fn r_ffi_3_r_client_1_r_cred_1_the_device_keys_are_made_once_under_krowks_file_names() {
     let storage = Arc::new(Memory::default());
     storage.write("credentials.json".into(), signed_in()).unwrap();
     let first = Account::open(API.into(), storage.clone()).unwrap();
     assert_eq!(first.workspace(), "ws_1");
     assert_eq!(first.device_id().len(), 32, "{}", first.device_id());
+    // Its own keys and its krowk API key, and no slot for a provider's
+    // credential (R-CRED-1).
     assert_eq!(storage.names(), ["credentials.json", "device.json", "signing.json"]);
     let device = storage.read("device.json".into()).unwrap();
 

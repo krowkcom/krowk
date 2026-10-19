@@ -77,7 +77,10 @@ impl Account {
 /// krowk can read.
 fn credentials(storage: &dyn KeyStorage) -> Result<Credentials, KrowkError> {
     let signed_out = |detail: String| KrowkError::Refused { code: "signed_out".into(), detail };
-    let Some(raw) = storage.read(CREDENTIALS.into())?.map(krowk_client::Zeroizing::new) else {
+    let read = storage
+        .read(CREDENTIALS.into())
+        .map_err(|e| KrowkError::Internal { detail: format!("could not read the Keychain item {CREDENTIALS}: {e}") })?;
+    let Some(raw) = read.map(krowk_client::Zeroizing::new) else {
         return Err(signed_out("this device is not signed in to krowk".into()));
     };
     match serde_json::from_slice::<Credentials>(&raw) {
