@@ -50,8 +50,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Nothing changes for you: `krowk sync join` refuses the same replies as
   before. The check that the device list adds exactly the new machine,
   signed by the device that paired it, moved from the CLI into
-  krowk-client, so the iPhone app runs the same check instead of writing
-  its own.
+  krowk-client, so the iPhone app will run the same check instead of
+  writing its own.
 - **krowk-client's key errors name a key, not always a file.** The
   terminal's messages are unchanged and still give each key file's full
   path to move aside. A keystore with no files, like the iPhone's

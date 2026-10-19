@@ -4,19 +4,19 @@
 //! is `krowk_client::pairing` and `device_chain`; this is the command line
 //! around them and the registry's mailbox between them.
 //!
-//! What A seals to B, once the person has said yes, is
-//! `krowk_client::pairing_payload`:
-//! the whole signed chain with the new `add` entry on its end, the user key
-//! wrapped to B, and A's signing key. B trusts it because the pairing
-//! authenticated it, not because the registry served it, and keeps nothing
-//! until the chain verifies from seq 0 and its last entry adds exactly B's
-//! keys, signed by A. A posts the entry and the wrap once B has acked —
-//! and also once the reply has gone out and B never acks: the reply carries
-//! the user key, so a machine that may hold it is put on the list, where
-//! `krowk devices remove` can take it off and rotate the key away from it,
-//! rather than left holding the key where nothing can see it. That departs
-//! from devices.md's "nothing reaches the chain until both sides have
-//! confirmed", deliberately; a reply that never went out posts nothing.
+//! What A seals to B once the person has said yes, built and checked in
+//! `krowk_client::pairing_payload`, is the whole signed chain with the new
+//! `add` entry on its end, the user key wrapped to B, and A's signing key.
+//! B trusts it because the pairing authenticated it, not because the
+//! registry served it, and keeps nothing until the chain verifies from seq
+//! 0 and its last entry adds exactly B's keys, signed by A. A posts the
+//! entry and the wrap once B has acked — and also once the reply has gone
+//! out and B never acks: the reply carries the user key, so a machine that
+//! may hold it is put on the list, where `krowk devices remove` can take it
+//! off and rotate the key away from it, rather than left holding the key
+//! where nothing can see it. That departs from devices.md's "nothing
+//! reaches the chain until both sides have confirmed", deliberately; a
+//! reply that never went out posts nothing.
 //!
 //! **After any failure on B, the code is gone.** A step that fails, a
 //! refusal, a timeout, a dropped connection — B ends the pairing, tells the

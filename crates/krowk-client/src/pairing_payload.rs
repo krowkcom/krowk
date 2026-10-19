@@ -37,6 +37,9 @@ struct Payload {
 
 /// What B keeps once the reply checks: the user keys, the chain's entries
 /// as sent, and the chain they verify to.
+///
+/// Only `check` makes one that means anything: holding a `Checked` is not
+/// proof the checks ran, so nothing should take one in place of calling it.
 pub struct Checked {
     pub keys: UserKeys,
     pub entries: Vec<SignedEntry>,

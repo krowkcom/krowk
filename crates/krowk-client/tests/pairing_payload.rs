@@ -1,8 +1,10 @@
 //! What the paired device seals to the new one, and the new device's
 //! checks on it (R-E2E-3; engineering/devices.md in Canon → Adding a
-//! device): the reply checks on the device it adds, and each way it must
-//! not — another device added, another signer, another signing key, another
-//! generation, another device's wrap, a newer format, not JSON at all.
+//! device), in krowk-client so every client runs the one check
+//! (R-CLIENT-1): the reply checks on the device it adds, and each way it
+//! must not — another device added, another signer, another signing key,
+//! another generation, another device's wrap, a newer format, not JSON at
+//! all.
 //!
 //! A's list has been through a removal before B joins, so the user key is
 //! at generation 2 and the reply carries generation 1 wrapped under it.
@@ -103,6 +105,8 @@ fn r_e2e_3_a_sealed_payload_checks_on_the_device_it_adds() {
 fn r_e2e_3_a_last_entry_adding_another_device_is_refused() {
     let a = a();
     let (b, other) = (Device::new("b-macbook"), Device::new("someone-else"));
+    // A signs the add and sends its own key; only the subject added is
+    // not B, so the entry check is what refuses it.
     let (next, all, batch) = a.add(&other, &a.device);
     let payload = seal(&all, &a.keys, next.generation(), &wrap_for(&batch, &other), &a.device.signing.public());
     assert!(refused(&payload, &a, &b).contains("does not add exactly this device"));
@@ -112,7 +116,8 @@ fn r_e2e_3_a_last_entry_adding_another_device_is_refused() {
 fn r_e2e_3_a_last_entry_signed_by_a_device_other_than_the_pairing_one_is_refused() {
     let mut a = a();
     let d = Device::new("d-server");
-    // D is on the list, holds the key, and signs B's add; A paired.
+    // D is on the list, holds the key, and signs an add of exactly B; A
+    // paired and sends its own key, so only the signer is wrong.
     let (chain, batch) = a.chain.batch(a.keys.newest(), vec![Change::Add(d.subject())], a.device.key.id(), &a.device.signing, TIME).unwrap();
     a.chain = chain;
     a.entries.extend(batch.entries);
