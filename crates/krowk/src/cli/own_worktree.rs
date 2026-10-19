@@ -33,6 +33,13 @@
 //!   wait. Its subagents run on its slot (`SessionSetup::on_agent_slot`)
 //!   rather than waiting for more. A session without `--worktree` takes
 //!   none and never waits.
+//!
+//! - **The default where config says so**: `worktrees.default` starts
+//!   every new session in a repository this way without the flag, whatever
+//!   model or agent runs it (`wanted`). `--worktree=false` runs one in
+//!   place, and a session already in a krowk worktree, resumed, or run in
+//!   the host daemon stays where it is. A worktree the default cannot make
+//!   is said, and the session runs in place (`start`).
 
 use super::{prompt, Ctx};
 use krowk_api::{fail, Error};
@@ -49,6 +56,42 @@ pub(super) const NEEDS_A_REPOSITORY: &str = "--worktree makes a git worktree of 
 /// Where krowk's worktrees are.
 fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
     krowk_api::home::worktrees_root(ctx.io.env).ok_or_else(|| fail("no_home", "krowk found no home directory to make worktrees under — set HOME or XDG_DATA_HOME"))
+}
+
+/// Whether the session starts in a worktree of its own: `--worktree` as
+/// given, else `worktrees.default` — the repository's own before the
+/// person's — for a `fresh` one (new, and run in this process) when `cwd`
+/// is in a repository and not already in one of krowk's worktrees.
+pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissions::Config, registry: &Registry) -> bool {
+    if ctx.f.given.contains("worktree") {
+        return ctx.f.own_worktree;
+    }
+    if !fresh {
+        return false;
+    }
+    let own = permissions::settings::load(permissions, cwd).ok().and_then(|l| l.worktrees).and_then(|w| w.default);
+    if !own.or(registry.worktrees.default).unwrap_or(false) || !trust::root(cwd).join(".git").exists() {
+        return false;
+    }
+    root(ctx).is_ok_and(|root| {
+        let real = root.canonicalize().unwrap_or_else(|_| root.clone());
+        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+        !cwd.starts_with(&root) && !cwd.starts_with(&real)
+    })
+}
+
+/// `open`, for a session `wanted` puts in a worktree: one `--worktree`
+/// asked for is refused as `open` refuses it; one `worktrees.default` asked
+/// for that cannot be made is said, and the session runs in place.
+pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<Option<(InUse, Vec<String>)>, Error> {
+    match open(ctx, cwd, permissions, registry, session) {
+        Ok(w) => Ok(Some(w)),
+        Err(e) if ctx.f.given.contains("worktree") => Err(e),
+        Err(e) => {
+            ctx.warn(&format!("worktrees.default: the session runs in place, in {} — {}", cwd.display(), e.fix()));
+            Ok(None)
+        }
+    }
 }
 
 /// A new worktree of the repository `cwd` is in, for the new session

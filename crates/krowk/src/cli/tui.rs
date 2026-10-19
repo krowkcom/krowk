@@ -135,7 +135,9 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     let (credentials, config_path) = (super::providers::credentials_path()?, super::providers::config_path()?);
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
-    // here; the session starts in it, and the header names its branch.
+    // here; the session starts in it, and the header names its branch. So
+    // does `worktrees.default`, for a new session.
+    ctx.f.own_worktree = own_worktree::wanted(ctx, resume.is_none() && !synced, &cwd, &permissions, &registry);
     let (worktree, session) = match resumed {
         Some(w) => {
             let (env, on_agent_slot) = (w.env(), w.agent.is_some());
@@ -143,10 +145,14 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         }
         None if ctx.f.own_worktree && !synced => {
             let id = krowk_store::new_id();
-            let (w, notes) = own_worktree::open(ctx, &cwd, &permissions, &registry, &id)?;
-            trust_as.set(&w.worktree);
-            let (env, on_agent_slot) = (w.env(), w.agent.is_some());
-            (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })
+            match own_worktree::start(ctx, &cwd, &permissions, &registry, &id)? {
+                Some((w, notes)) => {
+                    trust_as.set(&w.worktree);
+                    let (env, on_agent_slot) = (w.env(), w.agent.is_some());
+                    (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })
+                }
+                None => (None, SessionSetup::default()),
+            }
         }
         None => (None, SessionSetup::default()),
     };
