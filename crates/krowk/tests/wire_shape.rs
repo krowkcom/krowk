@@ -250,6 +250,12 @@ fn approve_logins(registry: SocketAddr, method: &str, path: &str, answer: &[u8])
         if !path.contains("action=login") {
             return Err(format!("a browser login opened without its action: {path}"));
         }
+        // And names the machine, for the approval page to ask about and the
+        // key to be named after.
+        let named = path.split(['?', '&']).any(|p| p.strip_prefix("machine=").is_some_and(|m| !m.is_empty()));
+        if !named {
+            return Err(format!("a browser login opened without naming its machine: {path}"));
+        }
         approve(registry, answer)?;
     }
     Ok(())

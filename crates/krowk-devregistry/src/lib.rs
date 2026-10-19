@@ -321,6 +321,30 @@ mod tests {
         text[at..].split('"').next().unwrap().to_owned()
     }
 
+    /// The machine a terminal names is the approval page's to show, escaped,
+    /// and a name the registry would refuse is refused here too.
+    #[test]
+    fn a_browser_login_shows_its_machine_and_refuses_one_the_registry_would() {
+        let app = app(Config::default());
+        let running = spawn(TcpListener::bind("127.0.0.1:0").unwrap(), Arc::clone(&app)).unwrap();
+        let opened = call(running.addr(), "POST", "/v1/cli/authorizations?action=login&machine=elvinas-arch%20%3Cb%3E");
+        assert!(opened.starts_with("HTTP/1.1 201"), "{opened}");
+        let page = call(running.addr(), "GET", &format!("/_approve/cli/authorizations/new?code={}", field(&opened, "code")));
+        assert!(page.contains("A terminal on elvinas-arch &lt;b&gt; asked to sign in"), "{page}");
+
+        let unnamed = call(running.addr(), "POST", "/v1/cli/authorizations?action=login");
+        let page = call(running.addr(), "GET", &format!("/_approve/cli/authorizations/new?code={}", field(&unnamed, "code")));
+        assert!(page.contains("A terminal asked to sign in"), "{page}");
+
+        let at_most = "é".repeat(64);
+        let fits = call(running.addr(), "POST", &format!("/v1/cli/authorizations?machine={}", at_most.bytes().map(|b| format!("%{b:02X}")).collect::<String>()));
+        assert!(fits.starts_with("HTTP/1.1 201"), "{fits}");
+        let too_long = call(running.addr(), "POST", &format!("/v1/cli/authorizations?machine={}", "a".repeat(65)));
+        assert!(too_long.starts_with("HTTP/1.1 422") && too_long.contains("\"machine\""), "{too_long}");
+        let control = call(running.addr(), "POST", "/v1/cli/authorizations?machine=laptop%1B%5B31m");
+        assert!(control.starts_with("HTTP/1.1 422"), "{control}");
+    }
+
     /// One-shot means delivered once, not destroyed once: a response that never
     /// leaves hands nothing over, so the key stays collectable. The undo is the
     /// seam a failed write takes.
