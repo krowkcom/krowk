@@ -37,8 +37,10 @@
 //! - **The default where config says so**: `worktrees.default` starts
 //!   every new session in a repository this way without the flag, whatever
 //!   model or agent runs it (`wanted`). `--worktree=false` runs one in
-//!   place, and a session already in a krowk worktree, resumed, or run in
-//!   the host daemon stays where it is. A repository's own counts once it
+//!   place, a resumed one or one already in a krowk worktree stays where it
+//!   is, and `-p --daemon` is refused, as with the flag. A TUI session in a
+//!   worktree runs in this process, not the host daemon, and the sessions
+//!   `/new` starts after it share its worktree. A repository's own counts once it
 //!   is trusted. A worktree the default cannot make refuses the session,
 //!   naming `--worktree=false` (`start`). Like `--worktree`, it holds an
 //!   agent slot, so it waits when every one is taken.

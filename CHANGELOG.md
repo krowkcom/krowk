@@ -25,7 +25,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   starts in a `krowk/<hex>` worktree, as `--worktree` does, on Claude, GPT,
   Grok, Claude Code or Codex alike. If the worktree can't be made, the
   session stops instead of running in your checkout. `--worktree=false`
-  runs one in place.
+  runs one in place. As with `--worktree`, the session runs in krowk's own
+  process rather than the background host, so it ends with the terminal,
+  and `/new` carries on in the same worktree.
 - **Agents use krowk's worktrees and artifacts, not their own.** On every
   backend and in every mode, `git worktree add`, and Claude Code's
   `EnterWorktree` and `Agent` with `isolation: "worktree"`, are refused

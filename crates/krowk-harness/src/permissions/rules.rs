@@ -863,9 +863,10 @@ const WRAPPERS: &[(&str, &[&str])] = &[
     ("watch", &["-n", "-d"]),
 ];
 
-const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"];
+/// Shells, which run a command line given to them.
+pub(crate) const SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "fish", "ash"];
 
-fn basename(w: &str) -> &str {
+pub(crate) fn basename(w: &str) -> &str {
     w.rsplit('/').next().unwrap_or(w)
 }
 

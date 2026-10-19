@@ -124,8 +124,12 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // WT6: `--worktree` makes the session's worktree now, from this
     // directory's repository, with the settings it would have run with
     // here; the session starts in it. So does `worktrees.default`, for a
-    // new session this process runs.
-    ctx.f.own_worktree = own_worktree::wanted(ctx, resume.is_none() && !ctx.f.daemon, &cwd, &permissions, &registry);
+    // new session, which the host daemon cannot hold one for: refused
+    // with --daemon, as the flag is, never quietly run in the checkout.
+    ctx.f.own_worktree = own_worktree::wanted(ctx, resume.is_none(), &cwd, &permissions, &registry);
+    if ctx.f.daemon && ctx.f.own_worktree {
+        return Err(fail("bad_flag", "worktrees.default starts a new session in a worktree of its own, which this process holds, and --daemon runs the turn in the host daemon — drop --daemon, or pass --worktree=false to run in place"));
+    }
     let (worktree, session) = match resumed {
         Some(w) => {
             let (env, on_agent_slot) = (w.env(), w.agent.is_some());
