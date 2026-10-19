@@ -111,16 +111,31 @@ pub(crate) fn id(label: &[u8], bytes: &[u8]) -> [u8; 16] {
     h[..16].try_into().expect("sixteen bytes")
 }
 
+/// Lowercase hex, built in one allocation of its exact size: the hex of a
+/// secret key leaves no earlier copy behind for its holder to miss wiping.
 pub fn hex(b: &[u8]) -> String {
-    b.iter().map(|x| format!("{x:02x}")).collect()
+    const DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(b.len() * 2);
+    for x in b {
+        s.push(DIGITS[usize::from(x >> 4)] as char);
+        s.push(DIGITS[usize::from(x & 0xf)] as char);
+    }
+    s
 }
 
+/// The bytes `s` spells in hex, either case, into one allocation of their
+/// exact size, as `hex` builds its text.
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    // Hex digits only: `from_str_radix` alone would take a sign ("+f").
+    // Checked whole first, so a bad digit never leaves a half-decoded key.
     if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
-    (0..s.len()).step_by(2).map(|i| u8::from_str_radix(s.get(i..i + 2)?, 16).ok()).collect()
+    let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
+    let mut out = Vec::with_capacity(s.len() / 2);
+    for pair in s.as_bytes().chunks_exact(2) {
+        out.push(digit(pair[0])? << 4 | digit(pair[1])?);
+    }
+    Some(out)
 }
 
 /// A device's keypair. The private half is wiped when this is dropped
