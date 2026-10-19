@@ -4,18 +4,19 @@
 //! is `krowk_client::pairing` and `device_chain`; this is the command line
 //! around them and the registry's mailbox between them.
 //!
-//! What A seals to B, once the person has said yes, is the payload below:
-//! the whole signed chain with the new `add` entry on its end, the user key
-//! wrapped to B, and A's signing key. B trusts it because the pairing
-//! authenticated it, not because the registry served it, and keeps nothing
-//! until the chain verifies from seq 0 and its last entry adds exactly B's
-//! keys, signed by A. A posts the entry and the wrap once B has acked —
-//! and also once the reply has gone out and B never acks: the reply carries
-//! the user key, so a machine that may hold it is put on the list, where
-//! `krowk devices remove` can take it off and rotate the key away from it,
-//! rather than left holding the key where nothing can see it. That departs
-//! from devices.md's "nothing reaches the chain until both sides have
-//! confirmed", deliberately; a reply that never went out posts nothing.
+//! What A seals to B once the person has said yes, built and checked in
+//! `krowk_client::pairing_payload`, is the whole signed chain with the new
+//! `add` entry on its end, the user key wrapped to B, and A's signing key.
+//! B trusts it because the pairing authenticated it, not because the
+//! registry served it, and keeps nothing until the chain verifies from seq
+//! 0 and its last entry adds exactly B's keys, signed by A. A posts the
+//! entry and the wrap once B has acked — and also once the reply has gone
+//! out and B never acks: the reply carries the user key, so a machine that
+//! may hold it is put on the list, where `krowk devices remove` can take it
+//! off and rotate the key away from it, rather than left holding the key
+//! where nothing can see it. That departs from devices.md's "nothing
+//! reaches the chain until both sides have confirmed", deliberately; a
+//! reply that never went out posts nothing.
 //!
 //! **After any failure on B, the code is gone.** A step that fails, a
 //! refusal, a timeout, a dropped connection — B ends the pairing, tells the
@@ -44,11 +45,11 @@ use crate::output::Format;
 use krowk_api::sync::{ListPost, Pairing, PairingStep};
 use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject};
-use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey, SigningPublic};
+use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey};
 use krowk_client::keystore::{Keystore, Slot};
 use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairB, PairingCode, PeerKind};
-use krowk_client::user_key::{UserKey, UserKeys};
-use serde::{Deserialize, Serialize};
+use krowk_client::pairing_payload;
+use krowk_client::user_key::UserKeys;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
@@ -93,18 +94,6 @@ fn clip(s: &str, max: usize) -> String {
         end -= 1;
     }
     s[..end].trim().to_string()
-}
-
-#[derive(Serialize, Deserialize)]
-struct Payload {
-    v: u8,
-    entries: Vec<(String, String)>,
-    /// Every older generation of the user key wrapped under the next, so
-    /// the new machine opens sessions sealed before it joined.
-    previous: Vec<String>,
-    generation: u32,
-    wrapped_key: String,
-    signing_key: String,
 }
 
 fn signer(store: &Keystore, device: &DeviceKey) -> Result<(SigningKey, std::sync::Arc<dyn krowk_api::client::RequestSigner>), Error> {
@@ -399,15 +388,7 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
     let (next, batch) = chain.batch(keys.newest(), vec![Change::Add(subject)], device.id(), signing, now()).map_err(|e| fail("device_list_refused", e.0))?;
     let wrapped = batch.wraps.iter().find(|(d, _)| *d == new.id()).map(|(_, w)| w.clone()).ok_or_else(|| fail("device_list_refused", "the new device's entry carried no wrap for it"))?;
     all.extend(batch.entries.iter().cloned());
-    let payload = Payload {
-        v: 1,
-        entries: all.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
-        previous: keys.wraps().map(|(_, w)| hex(w)).collect(),
-        generation: next.generation(),
-        wrapped_key: hex(&wrapped),
-        signing_key: hex(&signing.public().0),
-    };
-    let bytes = krowk_client::Zeroizing::new(serde_json::to_vec(&payload).expect("the payload serializes"));
+    let bytes = pairing_payload::seal(&all, keys, next.generation(), &wrapped, &signing.public());
     let (await_ack, reply) = confirmed.approve(&bytes).map_err(|_| a_failed(None))?;
     send_reply(client, id, &reply)?;
     Ok(Sealed { batch, entries: all, next, await_ack, name, os })
@@ -596,15 +577,15 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
     client.pairing_step(PairingStep::Confirmation, &confirm).map_err(|_| false)?;
     let reply = wait_for(client, id, "sealed_reply", false, &none).map_err(|_| false)?;
     let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
-    let (key, entries, chain) = check_payload(received.payload(), a_device, &me, device).map_err(|_| false)?;
-    let seq = chain.head().seq;
+    let checked = pairing_payload::check(received.payload(), a_device, &me, device).map_err(|_| false)?;
+    let seq = checked.chain.head().seq;
     // Kept before the ack, so an ack that lands always leaves the keys
     // here; a failure after this forgets them again. A user key an earlier
     // pairing left goes only now, on A's authenticated word that this
     // machine is new to the list.
     store.forget_user_keys().map_err(|_| false)?;
-    store.save_user_keys(&key).map_err(|_| true)?;
-    store.save_device_list(&entries).map_err(|_| true)?;
+    store.save_user_keys(&checked.keys).map_err(|_| true)?;
+    store.save_device_list(&checked.entries).map_err(|_| true)?;
     let (_, ack) = received.acknowledge();
     match client.pairing_step(PairingStep::Acknowledgement, &ack) {
         // Lost on the way back, it may have landed: the caller learns which
@@ -613,39 +594,4 @@ fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me
         Err(e) if e.status == 0 => Ok((seq, me.name)),
         Err(_) => Err(true),
     }
-}
-
-/// The caller's checks on what A sealed (`Received::payload`): the chain
-/// verifies from seq 0 — a new machine has no pin, and this authenticated
-/// reply is where its trust comes from — and its last entry adds exactly
-/// this machine's keys, name and OS, signed by A alone, whose signing key
-/// the payload names; then the user key opens as the id the chain names.
-pub(super) fn check_payload(payload: &[u8], a_device: DeviceId, me: &NewDevice, device: &DeviceKey) -> Result<(UserKeys, Vec<SignedEntry>, Chain), String> {
-    let p: Payload = serde_json::from_slice(payload).map_err(|_| "the reply is not a payload krowk reads")?;
-    if p.v != 1 {
-        return Err("the reply is from a newer krowk".into());
-    }
-    let entries = p
-        .entries
-        .iter()
-        .map(|(e, s)| SignedEntry::from_parts(e2e::unhex(e).ok_or("not hex")?, &e2e::unhex(s).ok_or("not hex")?).map_err(|e| e.0))
-        .collect::<Result<Vec<_>, String>>()?;
-    let chain = Chain::verify(&entries, None).map_err(|e| e.0)?;
-    let last = Entry::decode(&entries.last().ok_or("the chain is empty")?.bytes).map_err(|e| e.0)?;
-    let mine = Subject { kind: Kind::Device, name: me.name.clone(), os: me.os.clone(), device: me.device, signing: me.signing };
-    if last.action != Action::Add || last.subjects != [mine] || last.signers != [a_device] || last.seq == 0 {
-        return Err("the chain's last entry does not add exactly this device, signed by the device that paired it".into());
-    }
-    let signing = e2e::unhex(&p.signing_key).and_then(|b| <[u8; 32]>::try_from(b).ok()).map(SigningPublic).ok_or("no signing key")?;
-    if !chain.devices().iter().any(|d| d.id() == a_device && d.kind == Kind::Device && d.signing == signing) {
-        return Err("the device that paired this one is not on the chain with the signing key it sent".into());
-    }
-    if p.generation != chain.generation() {
-        return Err("the user key sent is not the generation the chain leaves current".into());
-    }
-    let wrapped = e2e::unhex(&p.wrapped_key).ok_or("not hex")?;
-    let newest = UserKey::unwrap(&wrapped, chain.generation(), chain.key_id(), device).map_err(|e| e.0)?;
-    let previous = p.previous.iter().map(|w| e2e::unhex(w).ok_or("not hex")).collect::<Result<Vec<_>, _>>()?;
-    let key = UserKeys::new(newest, previous).and_then(|k| k.verified_by(&chain)).map_err(|e| e.0)?;
-    Ok((key, entries, chain))
 }
