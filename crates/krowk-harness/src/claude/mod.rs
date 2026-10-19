@@ -38,9 +38,9 @@
 //!
 //! | subtype | direction | what krowk does |
 //! |---|---|---|
-//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
+//! | `initialize` | krowk → claude | first, on every process, registering the paste guard as a `PreToolUse` hook on `Bash`, `EnterWorktree`, `Agent` and `Task` and asking for agents' own text (`forwardSubagentText`); its answer lists the `models`, which is how in-place model switching is detected |
 //! | `can_use_tool` | claude → krowk | judged by krowk's permission evaluator (`crate::permissions`), asking the person when a client is attached; `AskUserQuestion` is the person's to answer (`crate::ask`), its answers returned in `updatedInput`; one an agent asks (`agent_id`, else the call's `tool_use_id`) is asked as that agent's child session |
-//! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`): a `gh` post carrying a bare krowk card link is denied, whatever the mode and the person's allow rules |
+//! | `hook_callback` | claude → krowk | the paste guard (`crate::paste_guard`) and the tooling guard (`crate::tooling_guard`): a `gh` post carrying a bare krowk card link, a worktree made by hand or a paste-site upload is denied, whatever the mode and the person's allow rules |
 //! | `mcp_message` | claude → krowk | a JSON-RPC message for the `krowk` MCP server, answered by `crate::bridge` |
 //! | `interrupt` | krowk → claude | a `Command::Interrupt`; the turn ends at the next `result` and the process lives on |
 //! | `set_model` | krowk → claude | a turn on another model of the same instance, when `initialize` listed models; otherwise a new process on `--resume` |

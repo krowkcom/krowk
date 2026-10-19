@@ -72,25 +72,34 @@ pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissio
         return false;
     }
     let own = permissions::settings::load(permissions, cwd).ok().filter(|l| l.trusted).and_then(|l| l.worktrees).and_then(|w| w.default);
-    if !own.or(registry.worktrees.default).unwrap_or(false) || !trust::root(cwd).join(".git").exists() {
+    if !own.or(registry.worktrees.default).unwrap_or(false) || trust::root(cwd).join(".git").symlink_metadata().is_err() {
         return false;
     }
-    root(ctx).is_ok_and(|root| {
-        let real = root.canonicalize().unwrap_or_else(|_| root.clone());
-        let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-        !cwd.starts_with(&root) && !cwd.starts_with(&real)
-    })
+    // With no root to make one under, `start` says so rather than the
+    // session quietly running in the checkout.
+    let cwd = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
+    root(ctx).map_or(true, |root| !below(&root, &cwd))
+}
+
+/// Whether `dir` is below krowk's worktrees `root`, as given or canonical.
+fn below(root: &Path, dir: &Path) -> bool {
+    let real = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    [root, real.as_path()].iter().any(|r| dir != *r && dir.starts_with(r))
 }
 
 /// `open`, for a session `wanted` puts in a worktree. Refused as `open`
-/// refuses it, and when `worktrees.default` asked for it rather than the
-/// flag, the refusal says how to run in place: the default is a person's
-/// promise that agents keep out of the checkout, never quietly broken.
+/// refuses it, and when `worktrees.default` asked for a worktree that
+/// could not be made, the refusal says how to run in place: the default is
+/// a person's promise that agents keep out of the checkout, never quietly
+/// broken.
 pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
     let by_default = !ctx.f.given.contains("worktree");
-    open(ctx, cwd, permissions, registry, session).map_err(|e| match by_default {
-        true => fail(&e.code(), format!("{} — worktrees.default starts every new session in a worktree of its own; pass --worktree=false to run this one in place", e.fix())),
-        false => e,
+    open(ctx, cwd, permissions, registry, session).map_err(|mut e| {
+        if by_default && matches!(e.code().as_str(), "worktree_failed" | "not_a_repository" | "no_home") {
+            let fix = format!("{} — worktrees.default starts every new session in a worktree of its own; pass --worktree=false to run this one in place", e.fix());
+            e.body.insert("fix".into(), fix.into());
+        }
+        e
     })
 }
 
@@ -141,8 +150,7 @@ fn agent_slot(ctx: &mut Ctx, registry: &Registry) -> Option<krowk_harness::slots
 /// Refused when it is gone, or another live session holds it.
 pub(super) fn resumed(ctx: &mut Ctx, registry: &Registry, session: &str, dir: &Path) -> Result<Option<InUse>, Error> {
     let Ok(root) = root(ctx) else { return Ok(None) };
-    let real = root.canonicalize().unwrap_or_else(|_| root.clone());
-    if dir == root || dir == real || !(dir.starts_with(&root) || dir.starts_with(&real)) {
+    if !below(&root, dir) {
         return Ok(None);
     }
     if !dir.is_dir() {

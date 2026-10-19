@@ -185,8 +185,8 @@ fn read_body(path: &Path) -> Option<String> {
 /// line, continuation lines joined, between the `;`, `&&`, `||` or `&` on
 /// either side of its `<<` — and its body.
 pub(crate) struct Heredoc {
-    opener: String,
-    body: String,
+    pub(crate) opener: String,
+    pub(crate) body: String,
 }
 
 impl Heredoc {
