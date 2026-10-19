@@ -194,7 +194,10 @@ fn refusal(e: krowk_api::Error) -> KrowkError {
     let (code, detail) = match (e.code().as_str(), e.status) {
         ("authorization_denied", _) => ("authorization_denied", "this sign-in was denied in the browser — sign in again to ask again"),
         ("authorization_expired" | "expired", _) => ("authorization_expired", "nobody approved this sign-in before it lapsed — sign in again to ask again"),
-        ("malformed_response", _) => ("malformed_response", "the registry approved this sign-in without handing over a key — sign in again, and report it if it repeats"),
+        // LoginPoll's own: an approval with no key in it.
+        ("malformed_response", 0) => ("malformed_response", "the registry approved this sign-in without handing over a key — sign in again, and report it if it repeats"),
+        // A 2xx krowk cannot read: on a phone, often a Wi-Fi sign-in page.
+        ("malformed_response", _) => ("malformed_response", "the registry answered with something krowk could not read — check the network (a Wi-Fi sign-in page can do this) and sign in again"),
         ("spent", _) => ("spent", "this sign-in's key was already collected, and the registry keeps no second copy — sign in again"),
         (_, 404) => ("not_found", "the registry does not know this sign-in — it may have lapsed; sign in again"),
         _ => return e.into(),
@@ -205,7 +208,8 @@ fn refusal(e: krowk_api::Error) -> KrowkError {
 /// Writes `creds` to the `credentials.json` item, serialized into one
 /// buffer wiped after, sized so it never reallocates and leaves a copy of
 /// the token behind (JSON escapes a character in at most six bytes). The
-/// copy handed to Swift is not wiped (`storage::Foreign` says why). The key was handed over once and the registry keeps no copy, so a failed
+/// copy handed to Swift is not wiped (`storage::Foreign` says why). The
+/// key was handed over once and the registry keeps no copy, so a failed
 /// write says to sign in again.
 fn save(storage: &dyn KeyStorage, creds: &Credentials) -> Result<(), KrowkError> {
     let fields = creds.token.len() + creds.key_id.len() + creds.workspace.len() + creds.workspace_name.len();
@@ -214,4 +218,39 @@ fn save(storage: &dyn KeyStorage, creds: &Credentials) -> Result<(), KrowkError>
     storage.write(CREDENTIALS.into(), buf.to_vec()).map_err(|e| KrowkError::Internal {
         detail: format!("could not save the key to the Keychain item {CREDENTIALS}: {e} — it was handed over once and the registry keeps no copy, so sign in again"),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn failed(status: u16, code: &str) -> krowk_api::Error {
+        let mut e = krowk_api::fail(code, "run `krowk login` again");
+        e.status = status;
+        e
+    }
+
+    fn refused(e: KrowkError) -> (String, String) {
+        match e {
+            KrowkError::Refused { code, detail } => (code, detail),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn r_client_1_a_keyless_approval_and_an_unreadable_answer_are_told_apart() {
+        let (code, detail) = refused(refusal(failed(0, "malformed_response")));
+        assert_eq!(code, "malformed_response");
+        assert!(detail.contains("without handing over a key"), "{detail}");
+        let (code, detail) = refused(refusal(failed(200, "malformed_response")));
+        assert_eq!(code, "malformed_response");
+        assert!(detail.contains("check the network"), "{detail}");
+    }
+
+    #[test]
+    fn r_client_1_the_registrys_expired_is_authorization_expired_in_the_phones_words() {
+        let (code, detail) = refused(refusal(failed(410, "expired")));
+        assert_eq!(code, "authorization_expired");
+        assert!(!detail.contains("krowk login"), "{detail}");
+    }
 }

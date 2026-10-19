@@ -45,6 +45,7 @@ impl From<krowk_api::Error> for KrowkError {
             return KrowkError::Network { detail: "krowk's registry cannot be reached — check the network and try again".into() };
         }
         let detail = [e.fix(), message(&e)].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| code.clone());
+        let detail = detail.replace("KROWK_API_URL", "the app's registry address");
         if e.status == 429 || e.status >= 500 {
             KrowkError::Network { detail }
         } else {
