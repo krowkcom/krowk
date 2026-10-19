@@ -129,7 +129,7 @@ impl KeyStorage for FileStorage {
         match std::fs::read(&path) {
             Ok(raw) => Ok(Some(Zeroizing::new(raw))),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("{} cannot be read: {e}", path.display())),
+            Err(e) => Err(format!("{} cannot be read: {e}", self.describe(slot))),
         }
     }
 
@@ -141,7 +141,7 @@ impl KeyStorage for FileStorage {
     fn remove(&self, slot: Slot) -> Result<(), String> {
         let path = self.path(slot);
         match std::fs::remove_file(&path) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not remove {}: {e}", path.display())),
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("could not remove {}: {e}", self.describe(slot))),
             _ => Ok(()),
         }
     }
@@ -305,14 +305,11 @@ struct UserKeysFile {
 #[derive(Clone)]
 pub struct Keystore {
     storage: Arc<dyn KeyStorage>,
-    /// The home `new` was given, for the file-only `*_path` and `*_at`
-    /// helpers; None for a keystore over another storage.
-    home: Option<PathBuf>,
 }
 
 impl std::fmt::Debug for Keystore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Keystore").field("home", &self.home).finish_non_exhaustive()
+        f.debug_struct("Keystore").field("device", &self.storage.describe(Slot::Device)).finish_non_exhaustive()
     }
 }
 
@@ -327,28 +324,29 @@ pub struct Setup {
 impl Keystore {
     /// The keys kept in `storage`.
     pub fn with(storage: Arc<dyn KeyStorage>) -> Keystore {
-        Keystore { storage, home: None }
+        Keystore { storage }
     }
 
     /// The keys kept as files in the krowk home `home`.
     pub fn new(home: &Path) -> Keystore {
-        Keystore { home: Some(home.to_path_buf()), ..Keystore::with(Arc::new(FileStorage::new(home))) }
+        Keystore::with(Arc::new(FileStorage::new(home)))
     }
 
-    fn file(&self, slot: Slot) -> PathBuf {
-        self.home.as_deref().unwrap_or(Path::new("")).join(slot.file_name())
-    }
-
-    fn name(&self, slot: Slot) -> String {
+    /// How an error message names `slot`: the storage's words for it — a
+    /// file's full path, so the terminal's "move it aside" says which file;
+    /// the slot's name where there is no path.
+    pub fn describe(&self, slot: Slot) -> String {
         self.storage.describe(slot)
     }
 
-    /// The slot's JSON as `T`, None when it is empty. A slot that is not
-    /// JSON is named with a line and column only, never serde's words,
-    /// which quote the value they could not take.
+    /// Whether `slot` holds anything, valid or not; Err when it cannot be
+    /// read.
+    pub fn holds(&self, slot: Slot) -> Result<bool, String> {
+        Ok(self.storage.read(slot)?.is_some())
+    }
+
     fn load<T: DeserializeOwned>(&self, slot: Slot) -> Result<Option<T>, String> {
-        let Some(raw) = self.storage.read(slot)? else { return Ok(None) };
-        serde_json::from_slice(&raw).map(Some).map_err(|e| format!("{} is not valid (line {}, column {})", self.name(slot), e.line(), e.column()))
+        load(&*self.storage, slot)
     }
 
     /// `v` as the slot's JSON, as the credentials write lays it out, from a
@@ -363,18 +361,10 @@ impl Keystore {
         self.storage.write(slot, &buf)
     }
 
-    pub fn device_path(&self) -> PathBuf {
-        self.file(Slot::Device)
-    }
-
-    pub fn account_path(&self) -> PathBuf {
-        self.file(Slot::Account)
-    }
-
     /// This device's key, if it has one.
     pub fn device(&self) -> Result<Option<DeviceKey>, String> {
         let Some(f) = self.load::<DeviceFile>(Slot::Device)? else { return Ok(None) };
-        let bad = || format!("{} does not hold a device key krowk reads — move it aside and run `krowk sync recover`", self.name(Slot::Device));
+        let bad = || format!("{} does not hold a device key krowk reads — move it aside and run `krowk sync recover`", self.describe(Slot::Device));
         if f.version != 1 {
             return Err(bad());
         }
@@ -403,10 +393,6 @@ impl Keystore {
         Ok((d, true))
     }
 
-    pub fn signing_path(&self) -> PathBuf {
-        self.file(Slot::Signing)
-    }
-
     /// This device's relay signing key, made and stored now when it has
     /// none, under the account slot's lock as the device key is. Its own
     /// slot rather than a field of the device key's, so a device made before
@@ -414,7 +400,7 @@ impl Keystore {
     pub fn signing_key(&self) -> Result<SigningKey, String> {
         let _lock = self.storage.lock(Slot::Account)?;
         if let Some(f) = self.load::<DeviceFile>(Slot::Signing)? {
-            let bad = || format!("{} does not hold a signing key krowk reads — move it aside, and krowk makes a new one to register", self.name(Slot::Signing));
+            let bad = || format!("{} does not hold a signing key krowk reads — move it aside, and krowk makes a new one to register", self.describe(Slot::Signing));
             if f.version != 1 {
                 return Err(bad());
             }
@@ -435,7 +421,7 @@ impl Keystore {
     }
 
     fn parse_id(&self, f: &AccountFile) -> Result<KeyId, String> {
-        let bad = || format!("{} does not hold a wrapped account key krowk reads — move it aside and run `krowk sync recover`", self.name(Slot::Account));
+        let bad = || format!("{} does not hold a wrapped account key krowk reads — move it aside and run `krowk sync recover`", self.describe(Slot::Account));
         if f.version != 1 {
             return Err(bad());
         }
@@ -446,9 +432,9 @@ impl Keystore {
     /// The account key, unwrapped with this device's key.
     pub fn account(&self) -> Result<Option<AccountKey>, String> {
         let Some(f) = self.load::<AccountFile>(Slot::Account)? else { return Ok(None) };
-        let name = self.name(Slot::Account);
+        let name = self.describe(Slot::Account);
         let id = self.parse_id(&f)?;
-        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — run `krowk sync recover` with the recovery phrase", self.name(Slot::Device)))?;
+        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — run `krowk sync recover` with the recovery phrase", self.describe(Slot::Device)))?;
         if f.device_id != device.id().to_string() {
             return Err(format!("{name} was wrapped for device {}, not this device ({}) — run `krowk sync recover` with the recovery phrase", f.device_id, device.id()));
         }
@@ -473,7 +459,7 @@ impl Keystore {
             if id == account.id() {
                 origin = if f.origin == "recover" { f.origin } else { "init".into() };
             } else if f.origin != "recover" {
-                return Err(format!("this home already holds account key {id}, put here by `krowk sync init` or `join` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.name(Slot::Account)));
+                return Err(format!("this home already holds account key {id}, put here by `krowk sync init` or `join` — recovering another into it would lose that one; use a fresh krowk home, or move {} aside", self.describe(Slot::Account)));
             } else {
                 replaced = Some(id);
             }
@@ -483,25 +469,18 @@ impl Keystore {
         Ok((Setup { device, device_created, account }, replaced))
     }
 
-    pub fn user_keys_path(&self) -> PathBuf {
-        self.file(Slot::UserKeys)
-    }
-
     /// The generations of the user key this device holds, opened with its
     /// device key; None when it holds none yet.
     pub fn user_keys(&self) -> Result<Option<UserKeys>, String> {
-        let Some(f) = self.load::<UserKeysFile>(Slot::UserKeys)? else { return Ok(None) };
-        self.open_user_keys(&f, &self.name(Slot::UserKeys)).map(Some)
+        self.user_keys_in(&*self.storage)
     }
 
-    /// The user keys in the file at `path` rather than this home's, opened
+    /// The user keys in `other` rather than this keystore's storage, opened
     /// with this device's key: the old ones a start-over keeps aside.
-    pub fn user_keys_at(&self, path: &Path) -> Result<Option<UserKeys>, String> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let f: UserKeysFile = krowk_api::creds::read(path)?;
-        self.open_user_keys(&f, &path.display().to_string()).map(Some)
+    /// Errors name the slot as `other` describes it.
+    pub fn user_keys_in(&self, other: &dyn KeyStorage) -> Result<Option<UserKeys>, String> {
+        let Some(f) = load::<UserKeysFile>(other, Slot::UserKeys)? else { return Ok(None) };
+        self.open_user_keys(&f, &other.describe(Slot::UserKeys)).map(Some)
     }
 
     /// `f`, opened with this device's key; `name` is where it was read.
@@ -510,7 +489,7 @@ impl Keystore {
         if f.version != 1 {
             return Err(bad());
         }
-        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — add this device again", self.name(Slot::Device)))?;
+        let device = self.device()?.ok_or_else(|| format!("{name} is here but this device's key ({}) is not, so it cannot be opened — add this device again", self.describe(Slot::Device)))?;
         if f.device_id != device.id().to_string() {
             return Err(format!("{name} was wrapped for device {}, not this device ({}) — add this device again", f.device_id, device.id()));
         }
@@ -560,27 +539,20 @@ impl Keystore {
         self.store(Slot::UserKeys, &file)
     }
 
-    pub fn device_list_path(&self) -> PathBuf {
-        self.file(Slot::DeviceList)
-    }
-
     /// The device list as this device last verified it, verified again
     /// from entry 0; None when it has kept none. Its head is this device's
     /// pin: every sync command that opens or seals a session takes its
     /// signers and the current generation from here.
     pub fn device_list(&self) -> Result<Option<Chain>, String> {
-        let Some(f) = self.load::<DeviceListFile>(Slot::DeviceList)? else { return Ok(None) };
-        verify_list(&f, &self.name(Slot::DeviceList)).map(Some)
+        self.device_list_in(&*self.storage)
     }
 
-    /// The device list in the file at `path` rather than this home's,
-    /// verified from entry 0: the old one a start-over keeps aside.
-    pub fn device_list_at(&self, path: &Path) -> Result<Option<Chain>, String> {
-        if !path.exists() {
-            return Ok(None);
-        }
-        let f: DeviceListFile = krowk_api::creds::read(path)?;
-        verify_list(&f, &path.display().to_string()).map(Some)
+    /// The device list in `other` rather than this keystore's storage,
+    /// verified from entry 0: the old one a start-over keeps aside. Errors
+    /// name the slot as `other` describes it.
+    pub fn device_list_in(&self, other: &dyn KeyStorage) -> Result<Option<Chain>, String> {
+        let Some(f) = load::<DeviceListFile>(other, Slot::DeviceList)? else { return Ok(None) };
+        verify_list(&f, &other.describe(Slot::DeviceList)).map(Some)
     }
 
     /// Verifies `entries` against the list kept here — they must reach its
@@ -590,7 +562,7 @@ impl Keystore {
     pub fn save_device_list(&self, entries: &[SignedEntry]) -> Result<Chain, String> {
         let _lock = self.storage.lock(Slot::DeviceList)?;
         let pin = match self.load::<DeviceListFile>(Slot::DeviceList)? {
-            Some(f) => Some(verify_list(&f, &self.name(Slot::DeviceList))?.head()),
+            Some(f) => Some(verify_list(&f, &self.describe(Slot::DeviceList))?.head()),
             None => None,
         };
         let chain = Chain::verify(entries, pin).map_err(|e| e.0)?;
@@ -617,6 +589,14 @@ impl Keystore {
         let file = AccountFile { version: 1, key_id: account.id().to_string(), device_id: device.id().to_string(), wrapped: e2e::hex(&wrapped), origin: origin.into() };
         self.store(Slot::Account, &file)
     }
+}
+
+/// `slot`'s JSON in `storage` as `T`, None when it is empty. A slot that is
+/// not JSON is named with a line and column only, never serde's words,
+/// which quote the value they could not take.
+fn load<T: DeserializeOwned>(storage: &dyn KeyStorage, slot: Slot) -> Result<Option<T>, String> {
+    let Some(raw) = storage.read(slot)? else { return Ok(None) };
+    serde_json::from_slice(&raw).map(Some).map_err(|e| format!("{} is not valid (line {}, column {})", storage.describe(slot), e.line(), e.column()))
 }
 
 /// The device list `f` holds, verified from entry 0; `name` is where it was

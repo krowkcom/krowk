@@ -45,7 +45,7 @@ use krowk_api::sync::{ListPost, Pairing, PairingStep};
 use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey, SigningPublic};
-use krowk_client::keystore::Keystore;
+use krowk_client::keystore::{Keystore, Slot};
 use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairB, PairingCode, PeerKind};
 use krowk_client::user_key::{UserKey, UserKeys};
 use serde::{Deserialize, Serialize};
@@ -504,7 +504,7 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         Listing::Removed => {
             return Err(fail(
                 "device_removed",
-                format!("this machine was removed from your devices, and its keys cannot be added again — move {} and {} aside, then run `krowk sync join`", store.device_path().display(), store.signing_path().display()),
+                format!("this machine was removed from your devices, and its keys cannot be added again — move {} and {} aside, then run `krowk sync join`", store.describe(Slot::Device), store.describe(Slot::Signing)),
             ));
         }
         _ => {}

@@ -29,6 +29,7 @@ use super::reseal::{self, Old};
 use super::Ctx;
 use krowk_api::{fail, Client, Error, LoginAction};
 use krowk_client::device_chain::{Batch, Change, Chain, Device, Kind, SignedEntry, Subject};
+use krowk_client::keystore::Slot;
 use krowk_client::recovery::{RecoveryDevice, RecoveryKit};
 use krowk_client::user_key::UserKeys;
 use serde_json::json;
@@ -80,7 +81,8 @@ fn discard_kit(ctx: &mut Ctx, handed: bool) {
 /// user keys, is set up.
 fn refuse_if_set_up(ctx: &Ctx, why: &str) -> Result<(), Error> {
     let store = super::sync::keystore(ctx)?;
-    if store.device_list_path().exists() || store.user_keys_path().exists() {
+    let holds = |slot| store.holds(slot).map_err(|e| fail("keys_unreadable", e));
+    if holds(Slot::DeviceList)? || holds(Slot::UserKeys)? {
         return Err(fail("already_set_up", why.to_string()));
     }
     Ok(())

@@ -39,6 +39,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk-client's key errors name a key, not always a file.** The
+  terminal's messages are unchanged and still give each key file's full
+  path to move aside. A keystore with no files, like the iPhone's
+  Keychain later, names the key instead of a path that doesn't exist.
 - **krowk-client can keep a device's keys somewhere other than files.**
   Nothing moves for you: the terminal keeps them in the same files in
   krowk's home, `0600`, with the same contents. The rules that keep them

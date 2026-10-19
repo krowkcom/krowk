@@ -100,13 +100,14 @@ fn r_e2e_3_r_client_4_a_recovered_account_key_is_replaced_by_the_next_on_any_sto
 fn r_e2e_3_the_key_files_are_0600_and_hold_no_plain_account_key() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("mode");
+    let files = FileStorage::new(&root.join("home"));
     let store = Keystore::new(&root.join("home"));
     let (setup, _) = store.recover(AccountKey::generate()).unwrap();
-    for path in [store.device_path(), store.account_path()] {
+    for path in [files.path(Slot::Device), files.path(Slot::Account)] {
         let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600, "{}", path.display());
     }
-    let account = std::fs::read_to_string(store.account_path()).unwrap();
+    let account = std::fs::read_to_string(files.path(Slot::Account)).unwrap();
     assert!(!account.contains(&e2e::hex(setup.account.as_bytes())));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -118,11 +119,12 @@ fn r_e2e_3_the_key_files_are_0600_and_hold_no_plain_account_key() {
 fn r_relay_1_the_signing_key_is_made_once_and_kept_0600() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("signing");
+    let signing = root.join("home").join(Slot::Signing.file_name());
     let store = Keystore::new(&root.join("home"));
     let first = store.signing_key().unwrap();
-    assert_eq!(std::fs::metadata(store.signing_path()).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(std::fs::metadata(&signing).unwrap().permissions().mode() & 0o777, 0o600);
     assert_eq!(store.signing_key().unwrap().public(), first.public());
-    std::fs::write(store.signing_path(), "{\"version\":2,\"secret\":\"00\"}").unwrap();
+    std::fs::write(&signing, "{\"version\":2,\"secret\":\"00\"}").unwrap();
     assert!(store.signing_key().unwrap_err().contains("move it aside"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -135,12 +137,13 @@ fn r_relay_1_the_signing_key_is_made_once_and_kept_0600() {
 fn d8_user_keys_are_kept_0600_wrapped_to_the_device_and_read_back() {
     use std::os::unix::fs::PermissionsExt;
     let root = scratch("user-keys");
+    let files = FileStorage::new(&root.join("home"));
     let store = Keystore::new(&root.join("home"));
     assert!(store.user_keys().unwrap().is_none());
     let g1 = UserKey::first();
     store.save_user_keys(&UserKeys::new(g1.clone(), []).unwrap()).unwrap();
-    assert_eq!(std::fs::metadata(store.user_keys_path()).unwrap().permissions().mode() & 0o777, 0o600);
-    let text = std::fs::read_to_string(store.user_keys_path()).unwrap();
+    assert_eq!(std::fs::metadata(files.path(Slot::UserKeys)).unwrap().permissions().mode() & 0o777, 0o600);
+    let text = std::fs::read_to_string(files.path(Slot::UserKeys)).unwrap();
     assert!(!text.contains(&e2e::hex(g1.as_bytes())), "the user key is stored in the clear");
     assert_eq!(store.user_keys().unwrap().unwrap().newest(), &g1);
 
@@ -156,7 +159,7 @@ fn d8_user_keys_are_kept_0600_wrapped_to_the_device_and_read_back() {
     // Copied to another device's home, it does not open there.
     let other = Keystore::new(&root.join("other"));
     other.device_key().unwrap();
-    std::fs::copy(store.user_keys_path(), other.user_keys_path()).unwrap();
+    std::fs::copy(files.path(Slot::UserKeys), root.join("other").join(Slot::UserKeys.file_name())).unwrap();
     assert!(other.user_keys().unwrap_err().contains("was wrapped for device"));
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -310,8 +313,82 @@ fn r_client_4_a_slot_is_named_by_its_storage_and_files_keep_their_names() {
     assert_eq!(files.path(Slot::Account), root.join("account-key.json"));
     assert_eq!(files.describe(Slot::Account), root.join("account-key.json").display().to_string());
     let store = Keystore::new(&root);
-    assert_eq!(store.account_path(), files.path(Slot::Account));
+    assert_eq!(store.describe(Slot::Account), files.describe(Slot::Account));
     store.device_key().unwrap();
     assert!(root.join("device.json").is_file() && root.join("account-key.lock").is_file());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// R-CLIENT-4, R-CLIENT-1: a keystore names a slot in its errors as its
+/// storage does, so one with no files (the iPhone's Keychain, here memory)
+/// never names a path — not for its own slots, not for another storage's
+/// it reads, and not in what `holds` and `describe` say.
+#[test]
+fn r_client_4_r_client_1_a_memory_keystores_errors_name_the_slot_not_a_path() {
+    let memory = Arc::new(MemoryStorage::new());
+    let store = Keystore::with(memory.clone());
+    store.device_key().unwrap();
+    assert!(!store.holds(Slot::UserKeys).unwrap() && !store.holds(Slot::DeviceList).unwrap());
+    memory.write(Slot::UserKeys, b"{\"version\": 2}").unwrap();
+    memory.write(Slot::DeviceList, b"{\"version\": 1, \"entries\": []}").unwrap();
+    assert!(store.holds(Slot::UserKeys).unwrap() && store.holds(Slot::DeviceList).unwrap());
+
+    let aside = MemoryStorage::new();
+    aside.write(Slot::UserKeys, b"{\"version\": 2}").unwrap();
+    aside.write(Slot::DeviceList, b"not json").unwrap();
+    for (err, slot) in [
+        (store.user_keys().unwrap_err(), "the in-memory user keys slot"),
+        (store.device_list().unwrap_err(), "the in-memory device list slot"),
+        (store.user_keys_in(&aside).unwrap_err(), "the in-memory user keys slot"),
+        (store.device_list_in(&aside).unwrap_err(), "the in-memory device list slot"),
+    ] {
+        assert!(err.starts_with(slot), "{err}");
+        assert!(!err.contains('/'), "{err}");
+    }
+    for slot in [Slot::Device, Slot::Signing, Slot::Account, Slot::UserKeys, Slot::DeviceList] {
+        assert!(!store.describe(slot).contains('/'), "{slot:?}");
+    }
+    assert!(store.user_keys_in(&MemoryStorage::new()).unwrap().is_none());
+}
+
+/// R-CLIENT-4: the same errors from a keystore over files name each file
+/// by its full path — the terminal's next action is to move that file —
+/// and a slot read from another home is named by that home's path, while
+/// the device key that opens it is still this one's.
+#[test]
+fn r_client_4_a_file_keystores_errors_name_the_full_path() {
+    let root = scratch("named");
+    let (home, aside) = (root.join("home"), root.join("aside"));
+    let store = Keystore::new(&home);
+    store.device_key().unwrap();
+    let g1 = UserKey::first();
+    store.save_user_keys(&UserKeys::new(g1.clone(), []).unwrap()).unwrap();
+    std::fs::create_dir_all(&aside).unwrap();
+    std::fs::copy(home.join(Slot::UserKeys.file_name()), aside.join(Slot::UserKeys.file_name())).unwrap();
+    let away = FileStorage::new(&aside);
+    assert_eq!(store.user_keys_in(&away).unwrap().unwrap().newest(), &g1, "opened with this keystore's device key");
+    let other = Keystore::new(&root.join("other"));
+    other.device_key().unwrap();
+    assert!(other.user_keys_in(&away).unwrap_err().contains("was wrapped for device"));
+
+    std::fs::write(home.join(Slot::UserKeys.file_name()), "{\"version\": 2}").unwrap();
+    std::fs::write(home.join(Slot::DeviceList.file_name()), "{\"version\": 1, \"entries\": []}").unwrap();
+    std::fs::write(aside.join(Slot::UserKeys.file_name()), "{\"version\": 2}").unwrap();
+    std::fs::write(aside.join(Slot::DeviceList.file_name()), "not json").unwrap();
+    for (err, path) in [
+        (store.user_keys().unwrap_err(), home.join("user-keys.json")),
+        (store.device_list().unwrap_err(), home.join("device-list.json")),
+        (store.user_keys_in(&away).unwrap_err(), aside.join("user-keys.json")),
+        (store.device_list_in(&away).unwrap_err(), aside.join("device-list.json")),
+    ] {
+        assert!(path.is_absolute());
+        assert!(err.starts_with(&path.display().to_string()), "{err}");
+    }
+    assert_eq!(store.describe(Slot::Device), home.join("device.json").display().to_string());
+    assert!(store.holds(Slot::UserKeys).unwrap() && !Keystore::new(&root.join("none")).holds(Slot::UserKeys).unwrap());
+    // A slot that cannot be read is an error naming its file, not "empty".
+    std::fs::create_dir_all(root.join("dir").join(Slot::UserKeys.file_name())).unwrap();
+    let err = Keystore::new(&root.join("dir")).holds(Slot::UserKeys).unwrap_err();
+    assert!(err.starts_with(&root.join("dir").join("user-keys.json").display().to_string()), "{err}");
     let _ = std::fs::remove_dir_all(&root);
 }
