@@ -126,7 +126,8 @@ pub fn hex(b: &[u8]) -> String {
 /// The bytes `s` spells in hex, either case, into one allocation of their
 /// exact size, as `hex` builds its text.
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // Checked whole first, so a bad digit never leaves a half-decoded key.
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
         return None;
     }
     let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);

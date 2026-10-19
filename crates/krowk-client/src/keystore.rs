@@ -353,7 +353,9 @@ impl Keystore {
 
     /// `v` as the slot's JSON, as the credentials write lays it out, from a
     /// buffer wiped after: the device and signing keys go through here.
-    /// Sized so a key file never reallocates and leaves a copy behind.
+    /// Sized so the device, signing and account files never reallocate and
+    /// leave a copy behind; the user keys and the device list can outgrow
+    /// it, and hold nothing that opens without the device key.
     fn store<T: Serialize>(&self, slot: Slot, v: &T) -> Result<(), String> {
         let mut buf = Zeroizing::new(Vec::with_capacity(1024));
         serde_json::to_writer_pretty(&mut *buf, v).expect("key file serializes");
