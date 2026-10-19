@@ -709,7 +709,7 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
     // The shape of a paste, and krowk's own tooling over a hand-rolled
     // stand-in, not permissions: held in every mode.
     if let crate::permissions::Access::Bash(command) = &call.access
-        && let Some(why) = crate::tooling_guard::refusal(command).map(String::from).or_else(|| crate::paste_guard::refusal(command, env.cwd))
+        && let Some(why) = crate::paste_guard::guard(command, env.cwd)
     {
         return (why, true);
     }

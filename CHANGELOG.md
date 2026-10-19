@@ -20,17 +20,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sends a prompt that was waiting on the question. The refusal now
   points to it.
 - **Every session can start in a worktree of its own.** Set
-  `"worktrees": { "default": true }` in your config, or in a repository's
-  `.krowk/config.json`, and each new session in a repository starts in a
-  `krowk/<hex>` worktree, as `--worktree` does, on Claude, GPT, Grok,
-  Claude Code or Codex alike. `--worktree=false` runs one in place.
+  `"worktrees": { "default": true }` in your config, or in a trusted
+  repository's `.krowk/config.json`, and each new session in a repository
+  starts in a `krowk/<hex>` worktree, as `--worktree` does, on Claude, GPT,
+  Grok, Claude Code or Codex alike. If the worktree can't be made, the
+  session stops instead of running in your checkout. `--worktree=false`
+  runs one in place.
 - **Agents use krowk's worktrees and artifacts, not their own.** On every
-  backend and in every mode, `git worktree add` and Claude Code's
-  `EnterWorktree` are refused with a pointer to `isolation: "worktree"`,
-  and `gh gist create` or an upload to a paste site (0x0.st, transfer.sh
-  and the like) is refused with a pointer to `publish`. So an agent's work
-  stays where `krowk worktrees` lists it, and its files stay in your
-  workspace. You can still run these yourself.
+  backend and in every mode, `git worktree add`, and Claude Code's
+  `EnterWorktree` and `Agent` with `isolation: "worktree"`, are refused
+  with a pointer to krowk's worktrees. `gh gist create` and uploads to a
+  paste site (0x0.st, transfer.sh and the like) are refused with a
+  pointer to `publish`. So an agent's work stays where `krowk worktrees`
+  lists it, and its files stay in your workspace. You can still run these
+  yourself.
 
 ### Changed
 

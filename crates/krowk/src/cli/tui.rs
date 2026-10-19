@@ -145,14 +145,10 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         }
         None if ctx.f.own_worktree && !synced => {
             let id = krowk_store::new_id();
-            match own_worktree::start(ctx, &cwd, &permissions, &registry, &id)? {
-                Some((w, notes)) => {
-                    trust_as.set(&w.worktree);
-                    let (env, on_agent_slot) = (w.env(), w.agent.is_some());
-                    (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })
-                }
-                None => (None, SessionSetup::default()),
-            }
+            let (w, notes) = own_worktree::start(ctx, &cwd, &permissions, &registry, &id)?;
+            trust_as.set(&w.worktree);
+            let (env, on_agent_slot) = (w.env(), w.agent.is_some());
+            (Some(w), SessionSetup { id: Some(id), notes, env, on_agent_slot })
         }
         None => (None, SessionSetup::default()),
     };

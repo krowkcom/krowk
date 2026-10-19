@@ -64,18 +64,21 @@ fn message(link: &str) -> String {
     )
 }
 
+/// Why a bash call `command` is not run, by the tooling guard or this one:
+/// what every backend asks before one runs.
+pub fn guard(command: &str, cwd: &Path) -> Option<String> {
+    crate::tooling_guard::refusal(command).map(String::from).or_else(|| refusal(command, cwd))
+}
+
 /// A `PreToolUse` hook's answer, Claude Code's shape, which Codex also
-/// reads: a deny with the refusal, the tooling guard's or this one's, or
-/// nothing to say.
+/// reads: a deny with the refusal, `guard`'s or the tooling guard's for
+/// Claude Code's own tools, or nothing to say.
 pub fn pre_tool_use(input: &Value) -> Value {
     let cwd = input.get("cwd").and_then(Value::as_str).unwrap_or(".");
     let why = match input.get("tool_name").and_then(Value::as_str) {
-        Some("Bash") => input
-            .pointer("/tool_input/command")
-            .and_then(Value::as_str)
-            .and_then(|c| crate::tooling_guard::refusal(c).map(String::from).or_else(|| refusal(c, Path::new(cwd)))),
-        Some("EnterWorktree") => Some(crate::tooling_guard::WORKTREE.to_string()),
-        _ => None,
+        Some("Bash") => input.pointer("/tool_input/command").and_then(Value::as_str).and_then(|c| guard(c, Path::new(cwd))),
+        Some(tool) => crate::tooling_guard::tool_refusal(tool, input.get("tool_input").unwrap_or(&Value::Null)).map(String::from),
+        None => None,
     };
     match why {
         Some(why) => json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": why}}),
@@ -181,7 +184,7 @@ fn read_body(path: &Path) -> Option<String> {
 /// One heredoc: the command it was opened in — the part of its command
 /// line, continuation lines joined, between the `;`, `&&`, `||` or `&` on
 /// either side of its `<<` — and its body.
-struct Heredoc {
+pub(crate) struct Heredoc {
     opener: String,
     body: String,
 }
@@ -217,7 +220,7 @@ fn normal(path: &Path) -> PathBuf {
 /// `<<`, `<<-`, and the delimiter quoted or not; `<<<` is a here-string
 /// and has no body. A `<<` whose delimiter never closes a line is text — a
 /// shift in a quoted body — and is left where it is.
-fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
+pub(crate) fn heredocs(command: &str) -> (String, Vec<Heredoc>) {
     let lines: Vec<&str> = command.split('\n').collect();
     // Where each line stands, as it is and with `<<-`'s leading tabs off,
     // so finding a delimiter's line is a lookup, not a scan.

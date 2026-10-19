@@ -476,6 +476,15 @@ fn pairs(c: &Simple) -> Vec<(String, bool)> {
     c.words.iter().cloned().zip(c.dynamic.iter().copied().chain(std::iter::repeat(false))).collect()
 }
 
+/// Every form `c` runs as, the ones a deny rule is matched against
+/// (`deny_forms`): as written, with what only wraps a program stripped,
+/// and what a shell, `eval` or `find -exec` runs from its arguments.
+pub fn forms(c: &Simple) -> Vec<Vec<String>> {
+    let mut out = Vec::new();
+    deny_forms(&pairs(c), &mut out, 0);
+    out
+}
+
 /// Substitutions nested deeper than this are not followed; the line is
 /// opaque instead.
 const MAX_NESTING: usize = 8;

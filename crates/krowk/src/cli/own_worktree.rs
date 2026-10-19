@@ -38,8 +38,10 @@
 //!   every new session in a repository this way without the flag, whatever
 //!   model or agent runs it (`wanted`). `--worktree=false` runs one in
 //!   place, and a session already in a krowk worktree, resumed, or run in
-//!   the host daemon stays where it is. A worktree the default cannot make
-//!   is said, and the session runs in place (`start`).
+//!   the host daemon stays where it is. A repository's own counts once it
+//!   is trusted. A worktree the default cannot make refuses the session,
+//!   naming `--worktree=false` (`start`). Like `--worktree`, it holds an
+//!   agent slot, so it waits when every one is taken.
 
 use super::{prompt, Ctx};
 use krowk_api::{fail, Error};
@@ -59,7 +61,7 @@ fn root(ctx: &Ctx) -> Result<PathBuf, Error> {
 }
 
 /// Whether the session starts in a worktree of its own: `--worktree` as
-/// given, else `worktrees.default` — the repository's own before the
+/// given, else `worktrees.default` — a trusted repository's own before the
 /// person's — for a `fresh` one (new, and run in this process) when `cwd`
 /// is in a repository and not already in one of krowk's worktrees.
 pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissions::Config, registry: &Registry) -> bool {
@@ -69,7 +71,7 @@ pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissio
     if !fresh {
         return false;
     }
-    let own = permissions::settings::load(permissions, cwd).ok().and_then(|l| l.worktrees).and_then(|w| w.default);
+    let own = permissions::settings::load(permissions, cwd).ok().filter(|l| l.trusted).and_then(|l| l.worktrees).and_then(|w| w.default);
     if !own.or(registry.worktrees.default).unwrap_or(false) || !trust::root(cwd).join(".git").exists() {
         return false;
     }
@@ -80,18 +82,16 @@ pub(super) fn wanted(ctx: &Ctx, fresh: bool, cwd: &Path, permissions: &permissio
     })
 }
 
-/// `open`, for a session `wanted` puts in a worktree: one `--worktree`
-/// asked for is refused as `open` refuses it; one `worktrees.default` asked
-/// for that cannot be made is said, and the session runs in place.
-pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<Option<(InUse, Vec<String>)>, Error> {
-    match open(ctx, cwd, permissions, registry, session) {
-        Ok(w) => Ok(Some(w)),
-        Err(e) if ctx.f.given.contains("worktree") => Err(e),
-        Err(e) => {
-            ctx.warn(&format!("worktrees.default: the session runs in place, in {} — {}", cwd.display(), e.fix()));
-            Ok(None)
-        }
-    }
+/// `open`, for a session `wanted` puts in a worktree. Refused as `open`
+/// refuses it, and when `worktrees.default` asked for it rather than the
+/// flag, the refusal says how to run in place: the default is a person's
+/// promise that agents keep out of the checkout, never quietly broken.
+pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
+    let by_default = !ctx.f.given.contains("worktree");
+    open(ctx, cwd, permissions, registry, session).map_err(|e| match by_default {
+        true => fail(&e.code(), format!("{} — worktrees.default starts every new session in a worktree of its own; pass --worktree=false to run this one in place", e.fix())),
+        false => e,
+    })
 }
 
 /// A new worktree of the repository `cwd` is in, for the new session

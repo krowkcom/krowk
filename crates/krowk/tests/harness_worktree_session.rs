@@ -234,10 +234,14 @@ fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag()
     assert!(b.repo().join("NEW.md").is_file());
     std::fs::remove_file(b.repo().join("NEW.md")).unwrap();
 
-    // A repository's own says no before the person's yes.
+    // A repository's own says no before the person's yes, once it is
+    // trusted: until then, the person's holds.
     std::fs::create_dir_all(b.repo().join(".krowk")).unwrap();
     std::fs::write(b.repo().join(".krowk/config.json"), r#"{"worktrees": {"default": false}}"#).unwrap();
-    b.prompt(&["make a file"]);
+    let (out, _) = b.prompt(&["--output-format", "json", "make a file"]);
+    assert!(out.contains("\"worktree\""), "untrusted, the repository's no is not read: {out}");
+    assert!(!b.repo().join("NEW.md").exists());
+    b.prompt(&["--trust", "make a file"]);
     assert!(b.repo().join("NEW.md").is_file());
 
     // Outside a repository there is nothing to make one of: the session
