@@ -16,6 +16,7 @@ mod chain;
 mod devices;
 #[cfg(all(feature = "harness", unix))]
 mod host;
+mod machine;
 #[cfg(feature = "harness")]
 mod own_worktree;
 #[cfg(feature = "harness")]

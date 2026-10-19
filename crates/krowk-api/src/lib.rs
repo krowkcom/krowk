@@ -7,6 +7,7 @@ pub mod creds;
 pub mod error;
 pub mod git;
 pub mod home;
+pub mod login;
 pub mod migrate;
 pub mod slug;
 pub mod spec;

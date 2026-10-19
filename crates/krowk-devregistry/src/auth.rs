@@ -3,7 +3,7 @@
 //! approval screen.
 
 use crate::encode::Json;
-use crate::errors::{error, unauthorized};
+use crate::errors::{error, invalid, unauthorized};
 use crate::http::{Req, Resp};
 use crate::page::{escape, page};
 use crate::store::{
@@ -15,6 +15,8 @@ use std::sync::Arc;
 const PENDING: &str = "pending";
 const APPROVED: &str = "approved";
 const DENIED: &str = "denied";
+/// The longest machine name a login takes, as the registry's BrowserLogin.
+const MACHINE_MAX: usize = 64;
 
 fn bearer(header: &str) -> Option<String> {
     let b = header.as_bytes();
@@ -86,6 +88,15 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         a @ ("start_over" | "remove_device" | "replace_kit") => a.to_string(),
         _ => "login".to_string(),
     };
+    // The machine the terminal says it is, refused as the registry refuses
+    // it: it is printed on the approval page and names the key.
+    let machine = req.query_get("machine");
+    if machine.chars().count() > MACHINE_MAX {
+        return invalid("machine", &format!("is too long (maximum is {MACHINE_MAX} characters)"));
+    }
+    if machine.chars().any(char::is_control) {
+        return invalid("machine", "is invalid");
+    }
     let mut s = app.lock();
     // Swept here, the only moment the set grows, and only past a grace period
     // so a late poll still hears `410 expired` rather than `404`.
@@ -107,6 +118,7 @@ pub fn create_cli_authorization(app: &App, req: &Req, site: &str) -> Resp {
         workspace: String::new(),
         spent: false,
         action,
+        machine,
     };
     let body = Json::map([
         ("slug", Json::str(&auth.slug)),
@@ -170,16 +182,17 @@ pub fn show_cli_authorization(app: &Arc<App>, slug: &str) -> Resp {
     resp
 }
 
-fn pending_code(app: &App, code: &str) -> Option<String> {
+/// A waiting login's code and the machine it named.
+fn pending_code(app: &App, code: &str) -> Option<(String, String)> {
     let s = app.lock();
     let a = s.authorizations.values().find(|a| !code.is_empty() && a.code == code)?;
-    (a.state == PENDING && !s.authorization_expired(a)).then(|| a.code.clone())
+    (a.state == PENDING && !s.authorization_expired(a)).then(|| (a.code.clone(), a.machine.clone()))
 }
 
 /// Where a person confirms the code. A code matching no waiting login is
 /// refused outright rather than shown with buttons that would 404 once pressed.
 pub fn cli_authorization_page(app: &App, req: &Req) -> Resp {
-    let Some(code) = pending_code(app, &req.query_get("code")) else {
+    let Some((code, machine)) = pending_code(app, &req.query_get("code")) else {
         return Resp::html(404, page("No such login", &[], "<p>No login is waiting on that code.</p>"));
     };
     let form = |action: &str, label: &str| {
@@ -187,8 +200,9 @@ pub fn cli_authorization_page(app: &App, req: &Req) -> Resp {
             "<form method=\"post\" action=\"/_approve/cli/authorizations/{code}/{action}\"><button type=\"submit\">{label}</button></form>"
         )
     };
+    let who = if machine.trim().is_empty() { "A terminal".to_string() } else { format!("A terminal on {}", escape(&machine)) };
     let body = format!(
-        "<p>A terminal asked to sign in. Approve it only if this code is the one it printed.</p>\n<p><strong>{}</strong></p>\n{}\n{}",
+        "<p>{who} asked to sign in. Approve it only if this code is the one it printed.</p>\n<p><strong>{}</strong></p>\n{}\n{}",
         escape(&code),
         form("approval", "Approve"),
         form("denial", "Deny"),

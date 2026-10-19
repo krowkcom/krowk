@@ -131,6 +131,8 @@ pub struct Authorization {
     /// What it is for: `login`, `start_over`, `remove_device` or
     /// `replace_kit`, as the approval page names it.
     pub action: String,
+    /// The machine the terminal said it is, empty when it named none.
+    pub machine: String,
 }
 
 pub struct Store {
