@@ -244,8 +244,8 @@ impl Client {
     /// Opens a browser login. Keyless on purpose: the endpoint exists for a
     /// machine with no key, and sending one would meter it as that key's.
     ///
-    /// `action` says what the login is for and `machine` what it is for,
-    /// so the approval page can name both and the key is named after the
+    /// `action` says what the login is for and `machine` which machine it is
+    /// for, so the approval page can name both and the key is named after the
     /// machine. Both go in the query string, which a registry that does not
     /// know them ignores; an empty `machine` is left out.
     pub fn start_cli_authorization(&self, action: LoginAction, machine: &str) -> Result<CliAuthorization, Error> {

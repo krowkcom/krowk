@@ -22,7 +22,8 @@ const MAX_POLL: Duration = Duration::from_secs(30);
 /// refusal about this authorization are answers; a rate limit, a 5xx or no
 /// network are the moment, and the window is kept rather than an approval
 /// thrown away.
-#[derive(Debug)]
+///
+/// No `Debug`: the slug is what collects the key.
 pub struct LoginPoll {
     slug: String,
     interval: Duration,
@@ -37,8 +38,10 @@ pub struct LoginPoll {
     unanswered: Option<Error>,
 }
 
-/// What the caller does next.
+/// What the caller does next. `Done` is the large variant, and is returned
+/// once and moved out, never kept.
 #[derive(Debug, PartialEq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Next {
     /// Sleep this long, then ask again.
     Sleep(Duration),
@@ -71,9 +74,10 @@ impl LoginPoll {
     }
 
     /// What to do now: sleep (never past the deadline), read, or stop.
+    /// Once it has stopped at the deadline it stops the same way again.
     pub fn next(&mut self, now: Instant) -> Next {
         if now >= self.deadline {
-            return Next::Done(Err(window_closed(self.unanswered.take())));
+            return Next::Done(Err(window_closed(self.unanswered.clone())));
         }
         if let Some(wait) = self.wait.take() {
             self.due = now + wait;
@@ -297,6 +301,9 @@ mod tests {
                 }
             }
         }
+        // Asked again, it says the same.
+        let Next::Done(again) = poll.next(now) else { panic!("the window reopened") };
+        assert_eq!(again.unwrap_err().code(), "network_unreachable");
         // The last sleep stopped at the deadline, not past it.
         assert_eq!(now, t0 + 15 * 60 * SEC);
     }
