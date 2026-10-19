@@ -1,15 +1,14 @@
 //! What an open-source security tool owes the people who read its source
-//! (spec D18), held where a test can hold it: no telemetry crate in either
-//! build, a disclosure policy that says where to report, no vendor's name
-//! on anything krowk ships under its own name, and a `cargo deny` policy
-//! that cannot be loosened quietly.
+//! (spec D18), held where a test can hold it: a public threat model and
+//! crypto design, no telemetry crate in either build, a disclosure policy
+//! that says where to report, no vendor's name on anything krowk ships
+//! under its own name, and a `cargo deny` policy that cannot be loosened
+//! quietly.
 //!
-//! The rest of D18 is checked elsewhere. The public threat model and
-//! crypto design (R-OSS-1) are Canon's `engineering/threat-model.md` and
-//! `engineering/crypto.md`, and the audit they scope (R-OSS-2) is ticket
-//! 37. Signing, the SBOM and the reproducible rebuild are steps of
-//! `.github/workflows/release.yml`, `cargo deny` itself is CI's `deny` job,
-//! and the lean build's dependency promise (R-OSS-7) is
+//! The rest of D18 is checked elsewhere. The audit the threat model scopes
+//! (R-OSS-2) is ticket 37. Signing, the SBOM and the reproducible rebuild
+//! are steps of `.github/workflows/release.yml`, `cargo deny` itself is
+//! CI's `deny` job, and the lean build's dependency promise (R-OSS-7) is
 //! `scripts/lean_deps_check.sh`.
 
 use serde_json::Value;
@@ -33,6 +32,20 @@ fn metadata() -> Value {
         .expect("cargo metadata runs");
     assert!(out.status.success(), "cargo metadata: {}", String::from_utf8_lossy(&out.stderr));
     serde_json::from_slice(&out.stdout).expect("cargo metadata is JSON")
+}
+
+/// R-OSS-1: the threat model, with the server side assumed hostile, and the
+/// crypto design are published here, and SECURITY.md links them.
+#[test]
+fn r_oss_1_the_threat_model_and_crypto_design_are_public() {
+    let model = read("docs/security/threat-model.md");
+    assert!(model.contains("**The server side is assumed hostile.**"), "the threat model assumes a hostile server side");
+    assert!(model.contains("## The independent audit"), "the threat model scopes the audit (R-OSS-2)");
+    assert!(read("docs/security/crypto.md").starts_with("# End-to-end encryption"), "the crypto design is published");
+    let security = read("SECURITY.md");
+    for doc in ["docs/security/threat-model.md", "docs/security/crypto.md"] {
+        assert!(security.contains(&format!("]({doc})")), "SECURITY.md links {doc}");
+    }
 }
 
 /// Crates whose job is to send what a program does somewhere else: error

@@ -20,6 +20,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sends a prompt that was waiting on the question. The refusal now
   points to it.
 
+### Changed
+
+- **The threat model and crypto design are public.** They are in
+  [`docs/security/`](docs/security/), and `SECURITY.md` links them. Until
+  now they lived in krowk's private design repository, so a reader could
+  not check what the encryption claims to protect, from whom, or which
+  risks krowk accepts.
+
 ### Security
 
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression

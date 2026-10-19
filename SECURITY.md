@@ -53,10 +53,9 @@ Out of scope: problems in the model providers themselves, attacks that need
 an attacker already running code as your user (the threat model says why),
 and missing hardening headers on marketing pages.
 
-The threat model, with the server side assumed hostile, and the crypto
-design are `engineering/threat-model.md` and `engineering/crypto.md` in
-[krowkcom/canon](https://github.com/krowkcom/canon), the repository that
-holds krowk's design.
+The [threat model](docs/security/threat-model.md), with the server side
+assumed hostile, says what krowk protects, from whom, and which risks it
+accepts. The [crypto design](docs/security/crypto.md) is what it rests on.
 
 ## Supported versions
 

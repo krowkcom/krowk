@@ -20,7 +20,7 @@
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //!
 //! The design, and what a hostile server can and cannot learn from it, is
-//! `engineering/crypto.md` in Canon (R-OSS-1).
+//! `docs/security/crypto.md` (R-OSS-1).
 
 pub mod e2e;
 pub mod keystore;
