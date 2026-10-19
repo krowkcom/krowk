@@ -93,7 +93,7 @@ jobs:
 
       - name: "R-CLIENT-1: BindingsTests on the simulator"
         working-directory: apps/ios/KrowkCore
-        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID"
+        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID,arch=arm64"
 
       - name: "R-IOS-14: make ios-core with the XCFramework assembled as on Linux"
         run: KROWK_IOS_ASSEMBLE=1 make ios-core
@@ -115,4 +115,4 @@ jobs:
 
       - name: "R-CLIENT-1: BindingsTests on the simulator, hand-assembled XCFramework"
         working-directory: apps/ios/KrowkCore
-        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID"
+        run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID,arch=arm64"
