@@ -26,6 +26,11 @@ impl Account {
 
 #[uniffi::export]
 impl Account {
+    pub fn workspace_name(&self) -> String {}
+}
+
+#[uniffi::export]
+impl Account {
     pub fn has_user_keys(&self) -> Result<bool, KrowkError> {}
 }
 

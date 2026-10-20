@@ -104,7 +104,8 @@ impl SignIn {
     /// to `storage`'s `credentials.json` item before this returns. Refused
     /// with `authorization_denied`, `authorization_expired` or `cancelled`
     /// — or `spent` when this sign-in's key was collected already, by an
-    /// earlier `wait`; `Network` when the registry could not be reached for
+    /// earlier `wait`, or `credentials_unwritable` when `storage` refused to
+    /// keep the key; `Network` when the registry could not be reached for
     /// the whole window.
     pub fn wait(&self, storage: Arc<dyn KeyStorage>) -> Result<SignedIn, KrowkError> {
         let granted = self.poll()?;
@@ -215,7 +216,10 @@ fn save(storage: &dyn KeyStorage, creds: &Credentials) -> Result<(), KrowkError>
     let fields = creds.token.len() + creds.key_id.len() + creds.workspace.len() + creds.workspace_name.len();
     let mut buf = Zeroizing::new(Vec::with_capacity(128 + 6 * fields));
     serde_json::to_writer(&mut *buf, creds).expect("credentials serialize");
-    storage.write(CREDENTIALS.into(), buf.to_vec()).map_err(|e| KrowkError::Internal {
+    // Refused with the terminal's `credentials_unwritable`, so the app can
+    // say so in its own words; `e` (the Keychain's status) is for its log.
+    storage.write(CREDENTIALS.into(), buf.to_vec()).map_err(|e| KrowkError::Refused {
+        code: "credentials_unwritable".into(),
         detail: format!("could not save the key to the Keychain item {CREDENTIALS}: {e} — it was handed over once and the registry keeps no copy, so sign in again"),
     })
 }

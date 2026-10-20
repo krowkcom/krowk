@@ -87,6 +87,7 @@ fn r_client_1_r_ffi_3_an_approved_sign_in_keeps_its_key_in_the_apps_storage() {
     // The account opens from it, signing as the device it makes.
     let account = krowk_ffi::Account::open(api(&registry), storage).unwrap();
     assert_eq!(account.workspace(), who.workspace);
+    assert_eq!(account.workspace_name(), who.workspace_name);
 }
 
 #[test]
@@ -98,6 +99,35 @@ fn r_client_1_a_denied_sign_in_is_refused_and_stores_nothing() {
     let storage = Arc::new(Memory::default());
     assert_eq!(refused(s.wait(storage.clone())), "authorization_denied");
     assert!(storage.0.lock().unwrap().is_empty());
+}
+
+/// A Keychain that refuses every write, as a locked phone's does.
+struct Locked;
+
+impl KeyStorage for Locked {
+    fn read(&self, _: String) -> Result<Option<Vec<u8>>, KrowkError> {
+        Ok(None)
+    }
+    fn write(&self, slot: String, _: Vec<u8>) -> Result<(), KrowkError> {
+        Err(KrowkError::Internal { detail: format!("errSecInteractionNotAllowed writing {slot}") })
+    }
+    fn remove(&self, _: String) -> Result<(), KrowkError> {
+        Ok(())
+    }
+}
+
+#[test]
+fn r_ffi_3_a_key_the_storage_will_not_keep_is_credentials_unwritable_naming_the_status() {
+    let registry = registry();
+    let s = SignIn::start(api(&registry), "Test iPhone".into()).unwrap();
+    call(registry.addr(), "POST", &format!("/_approve/cli/authorizations/{}/approval", s.code()));
+    match s.wait(Arc::new(Locked)) {
+        Err(KrowkError::Refused { code, detail }) => {
+            assert_eq!(code, "credentials_unwritable");
+            assert!(detail.contains("errSecInteractionNotAllowed") && detail.contains("sign in again"), "{detail}");
+        }
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]

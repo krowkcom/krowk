@@ -23,6 +23,7 @@ pub struct Account {
     storage: Arc<dyn KeyStorage>,
     device_id: String,
     workspace: String,
+    workspace_name: String,
 }
 
 #[uniffi::export]
@@ -46,6 +47,7 @@ impl Account {
             storage,
             device_id: device_id.to_string(),
             workspace: creds.workspace.clone(),
+            workspace_name: creds.workspace_name.clone(),
         }))
     }
 
@@ -58,6 +60,12 @@ impl Account {
     /// The workspace the key belongs to; empty when the registry named none.
     pub fn workspace(&self) -> String {
         self.workspace.clone()
+    }
+
+    /// The workspace's name, as the registry's approval named it: what the
+    /// phone says it is signed in to. Empty when the registry named none.
+    pub fn workspace_name(&self) -> String {
+        self.workspace_name.clone()
     }
 
     /// Whether this device holds the person's user keys yet: false until
