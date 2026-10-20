@@ -16,7 +16,6 @@
 use super::tailscale::{self, SameUser};
 use krowk_client::e2e::DeviceId;
 use crate::relay::{self, Limits, Roster};
-use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::{IpAddr, TcpListener};
 use std::time::{Duration, Instant};
@@ -56,25 +55,9 @@ pub type LanAt = std::sync::Arc<dyn Fn() -> Vec<IpAddr> + Send + Sync>;
 /// one over mDNS.
 pub const LAN_CHECK: Duration = Duration::from_secs(5);
 
-/// One address a viewer may dial the host at.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Candidate {
-    pub url: String,
-    /// `tailscale` (the tailnet address), `magicdns` or `lan`.
-    pub via: String,
-}
-
-impl Candidate {
-    /// How a path over it is named on screen.
-    pub fn path(&self) -> &'static str {
-        if self.on_lan() { "direct over LAN" } else { "direct over Tailscale" }
-    }
-
-    /// An address on the LAN: the host's own, or one mDNS answered with.
-    pub fn on_lan(&self) -> bool {
-        matches!(self.via.as_str(), "lan" | "mdns")
-    }
-}
+/// One address a viewer may dial the host at: in the welcome, so
+/// `krowk_client::sync` declares it for every client.
+pub use krowk_client::sync::Candidate;
 
 /// A listener running: where the bridge dials it, and what it offers.
 pub struct Listening {
