@@ -16,6 +16,15 @@ final class SignInUITests: XCTestCase {
 
     @MainActor
     func testSignInThroughTheBrowser() throws {
+        for appearance in Screenshots.appearances {
+            XCUIDevice.shared.appearance = appearance
+            try signIn()
+        }
+        XCUIDevice.shared.appearance = .light
+    }
+
+    @MainActor
+    private func signIn() throws {
         let api = try XCTUnwrap(
             ProcessInfo.processInfo.environment["KROWK_API_URL"].flatMap { $0.isEmpty ? nil : $0 },
             "KROWK_API_URL is unset: run the tests through apps/ios/scripts/with-fleet.sh")
@@ -34,12 +43,16 @@ final class SignInUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts[code].waitForExistence(timeout: 20), "the page in the sheet does not show \(code)")
         Screenshots.keep("approval-page", in: app)
 
-        // Closing the sheet doesn't stop the sign-in.
-        let close = app.buttons["Cancel"].firstMatch
-        XCTAssertTrue(close.waitForExistence(timeout: 5), "no Cancel on the sheet")
+        // Closing the sheet doesn't stop the sign-in. Its close button,
+        // not the screen's own Cancel behind it.
+        let close = app.buttons.matching(NSPredicate(
+            format: "NOT (identifier BEGINSWITH 'sign-in') AND label IN {'Close', 'Cancel', 'Done'}")).firstMatch
+        if !close.waitForExistence(timeout: 5) { Screenshots.tree(of: app) }
+        XCTAssertTrue(close.exists, "no close button on the sheet")
         close.tap()
         let reopen = app.buttons["sign-in-reopen"]
-        XCTAssertTrue(reopen.waitForExistence(timeout: 10), "no Open the page again after the sheet closed")
+        if !reopen.waitForExistence(timeout: 10) { Screenshots.tree(of: app) }
+        XCTAssertTrue(reopen.exists, "no Open the page again after the sheet closed")
         XCTAssertTrue(app.staticTexts["sign-in-waiting"].exists)
         XCTAssertTrue(app.buttons["sign-in-cancel"].exists)
         Screenshots.keep("waiting", in: app)
@@ -48,13 +61,15 @@ final class SignInUITests: XCTestCase {
         reopen.tap()
         allowTheSignInPage()
         let approve = app.webViews.buttons["Approve"]
-        XCTAssertTrue(approve.waitForExistence(timeout: 20), "no Approve button on the page")
+        if !approve.waitForExistence(timeout: 20) { Screenshots.tree(of: app) }
+        XCTAssertTrue(approve.exists, "no Approve button on the page")
         approve.tap()
         let signedIn = app.staticTexts["signed-in"]
         XCTAssertTrue(signedIn.waitForExistence(timeout: 30), "not signed in 30 s after approving")
         XCTAssertTrue(signedIn.label.hasPrefix("Signed in to "), signedIn.label)
         XCTAssertFalse(app.webViews.firstMatch.exists, "the sheet is still open")
         Screenshots.keep("signed-in", in: app)
+        app.terminate()
     }
 
     /// The code the app shows, from "Check the page shows the code K7QF-9M3X."

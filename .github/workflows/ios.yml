@@ -382,13 +382,15 @@ jobs:
           # whatever the tests left in the Keychain, and opens on sign-in.
           xcrun simctl uninstall "$UDID" com.krowk.app || true
           xcrun simctl install "$UDID" "$app"
-          xcrun simctl ui "$UDID" appearance light
-          xcrun simctl launch "$UDID" com.krowk.app
-          sleep 5
-          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-launch-light.png"
-          xcrun simctl ui "$UDID" appearance dark
-          sleep 2
-          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-launch-dark.png"
+          # Each appearance set before a launch: a running app doesn't
+          # reliably redraw when it changes.
+          for look in dark light; do
+            xcrun simctl terminate "$UDID" com.krowk.app 2>/dev/null || true
+            xcrun simctl ui "$UDID" appearance "$look"
+            xcrun simctl launch "$UDID" com.krowk.app
+            sleep 5
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-launch-$look.png"
+          done
           # A crashed app would leave the home screen in the picture.
           xcrun simctl spawn "$UDID" launchctl list | grep -q 'UIKitApplication:com\.krowk\.app' \
             || { echo "krowk is not running after 5 s" >&2; exit 1; }
