@@ -428,7 +428,9 @@ impl Pairer {
         let waited = child.clone();
         std::thread::spawn(move || {
             loop {
-                match waited.lock().unwrap().try_wait() {
+                // Its own statement, so the lock is let go before the sleep.
+                let status = waited.lock().unwrap().try_wait();
+                match status {
                     Ok(Some(s)) => eprintln!("fleet: krowk devices add ended: {s}"),
                     Ok(None) => {
                         std::thread::sleep(Duration::from_millis(50));
@@ -446,7 +448,9 @@ impl Pairer {
 
     /// Ends the running `devices add`: ^C, on which it ends its pairing on
     /// the registry — which keeps one live pairing a person — and exits;
-    /// killed if it has not within five seconds.
+    /// killed if it has not within five seconds, which leaves its pairing
+    /// open, so the next `pair` is refused (`pairing_open`) until the
+    /// registry's ten minutes are up.
     pub fn end(&mut self) {
         let Some(r) = self.running.take() else { return };
         {

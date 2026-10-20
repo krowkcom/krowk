@@ -188,13 +188,13 @@ impl Proc {
         writeln!(self.stdin.as_mut().unwrap(), "{line}").unwrap();
     }
 
-    /// Waits until the fleet has logged `n` `devices add` children ending
-    /// with `status`.
-    fn ended(&self, status: &str, n: usize) {
-        let want = format!("fleet: krowk devices add ended: {status}");
+    /// Waits until the fleet has logged a `devices add` child ending, with
+    /// exit status 0 when `ok`, else with any other.
+    fn ended(&self, ok: bool) {
+        const ENDED: &str = "fleet: krowk devices add ended: ";
         let deadline = Instant::now() + Duration::from_secs(30);
-        while self.err.lock().unwrap().matches(&want).count() < n {
-            assert!(Instant::now() < deadline, "no {want:?} ({n}); stderr:\n{}", self.err.lock().unwrap());
+        while !self.err.lock().unwrap().lines().filter_map(|l| l.strip_prefix(ENDED)).any(|s| (s == "exit status: 0") == ok) {
+            assert!(Instant::now() < deadline, "no `devices add` ended {}; stderr:\n{}", if ok { "0" } else { "failing" }, self.err.lock().unwrap());
             std::thread::sleep(Duration::from_millis(50));
         }
     }
@@ -269,6 +269,20 @@ impl Phone {
     }
 }
 
+/// A test that fails leaves no fleet behind: EOF, and killed if it has not
+/// gone within a few seconds (its `devices add` then ends on its own).
+impl Drop for Proc {
+    fn drop(&mut self) {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 impl Drop for Phone {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.home);
@@ -292,7 +306,7 @@ fn r_e2e_3_r_ios_15_a_phone_joins_the_fake_fleet_with_the_code_its_krowk_devices
     let phone = Phone::sign_in(&f, "phone");
     let out = phone.join(&f, &code);
     assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
-    f.ended("exit status: 0", 1);
+    f.ended(true);
     assert_eq!(phone.devices(&f), ["host-a", "phone"]);
     f.stop();
 }
@@ -308,13 +322,15 @@ fn r_e2e_3_after_a_wrong_code_a_pair_line_gives_the_fake_fleet_a_fresh_code_that
     let wrong = if first.starts_with('2') { "3" } else { "2" }.to_string() + &first[1..];
     let out = phone.join(&f, &wrong);
     assert!(!out.status.success(), "a wrong code joined: {}", said(&out));
+    // The wrong code ended A's pairing: its `devices add` failed.
+    f.ended(false);
     f.send("pair");
     let second = f.line();
     let second = second.strip_prefix("pair=").unwrap_or_else(|| panic!("not a pair= line: {second}")).to_string();
     assert_ne!(second, first, "a fresh code");
     let out = phone.join(&f, &second);
     assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
-    f.ended("exit status: 0", 1);
+    f.ended(true);
     assert_eq!(phone.devices(&f), ["host-a", "phone"]);
     f.stop();
 }
