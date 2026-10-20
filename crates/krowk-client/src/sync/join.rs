@@ -44,8 +44,8 @@ pub struct Joining {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {
-    Challenge,
-    Joined,
+    AwaitChallenge,
+    AwaitJoined,
     Done,
 }
 
@@ -68,7 +68,7 @@ impl Joining {
     pub fn new(relay: &str, session: &str, env: &str, device: DeviceId, role: u8, extra: Value) -> Result<Joining, String> {
         let base = relay.trim_end_matches('/');
         let origin = e2e::canonical_origin(base).ok_or_else(|| format!("{base} has no origin a relay signs"))?;
-        Ok(Joining { role, session: super::uuid(session), env: env.to_string(), device, origin, extra, state: State::Challenge })
+        Ok(Joining { role, session: super::uuid(session), env: env.to_string(), device, origin, extra, state: State::AwaitChallenge })
     }
 
     /// One binary WebSocket message received. Anything but a relay control
@@ -77,45 +77,37 @@ impl Joining {
     /// it has ended — joined, or any error — every message is an error, so
     /// no second challenge is ever signed.
     pub fn message(&mut self, signing: &SigningKey, bytes: &[u8]) -> Result<Step, String> {
-        if self.state == State::Done {
+        // Done unless this message moves it on: whatever goes wrong ends
+        // the join, and one challenge is answered, once.
+        let state = std::mem::replace(&mut self.state, State::Done);
+        if state == State::Done {
             return Err("the join is over".into());
         }
         if !is_control(bytes) {
+            self.state = state;
             return Ok(Step::Wait);
         }
         // Serde's own words, as the harness has always said them.
-        let v: Value = serde_json::from_slice(&bytes[HEADER..]).map_err(|e| {
-            self.state = State::Done;
-            e.to_string()
-        })?;
-        match self.state {
-            State::Challenge => {
-                // One challenge is answered, once: whatever goes wrong
-                // with it ends the join.
-                self.state = State::Done;
-                if v["type"] != "challenge" {
-                    return Err(refusal(&v));
-                }
-                let nonce: [u8; 32] = v["nonce"].as_str().and_then(e2e::unhex).and_then(|n| n.try_into().ok()).ok_or("the relay's challenge has no nonce")?;
-                let sig = signing.sign_relay_join(self.role, &self.session, &nonce, &self.device, &self.origin).map_err(|e| e.to_string())?;
-                let mut msg = json!({"type": "join", "role": if self.role == e2e::RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": self.device.to_string(), "signature": e2e::hex(&sig), "env": self.env});
-                if let Value::Object(extra) = std::mem::take(&mut self.extra) {
-                    for (k, v) in extra {
-                        msg[k] = v;
-                    }
-                }
-                self.state = State::Joined;
-                Ok(Step::Send(control(&msg)))
+        let v: Value = serde_json::from_slice(&bytes[HEADER..]).map_err(|e| e.to_string())?;
+        if state == State::AwaitJoined {
+            if v["type"] != "joined" {
+                return Err(refusal(&v));
             }
-            State::Joined => {
-                self.state = State::Done;
-                if v["type"] != "joined" {
-                    return Err(refusal(&v));
-                }
-                Ok(Step::Joined(v))
-            }
-            State::Done => Err("the join is over".into()),
+            return Ok(Step::Joined(v));
         }
+        if v["type"] != "challenge" {
+            return Err(refusal(&v));
+        }
+        let nonce: [u8; 32] = v["nonce"].as_str().and_then(e2e::unhex).and_then(|n| n.try_into().ok()).ok_or("the relay's challenge has no nonce")?;
+        let sig = signing.sign_relay_join(self.role, &self.session, &nonce, &self.device, &self.origin).map_err(|e| e.to_string())?;
+        let mut msg = json!({"type": "join", "role": if self.role == e2e::RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": self.device.to_string(), "signature": e2e::hex(&sig), "env": self.env});
+        if let Value::Object(extra) = std::mem::take(&mut self.extra) {
+            for (k, v) in extra {
+                msg[k] = v;
+            }
+        }
+        self.state = State::AwaitJoined;
+        Ok(Step::Send(control(&msg)))
     }
 }
 
@@ -195,6 +187,7 @@ mod tests {
         assert!(verifies(&v, RELAY_ROLE_HOST, "ws://127.0.0.1:7790"));
         assert!(!verifies(&v, RELAY_ROLE_HOST, "wss://elsewhere.example"), "the challenge's relay is never signed");
         assert!(!verifies(&v, RELAY_ROLE_VIEWER, "ws://127.0.0.1:7790"), "the role is signed");
+        assert_eq!(j.message(&signing(), &[0; 3]), Ok(Step::Wait), "a short message is waited past");
         let joined = json!({"type": "joined", "role": "host"});
         assert_eq!(j.message(&signing(), &control(&joined)).unwrap(), Step::Joined(joined));
         assert!(j.message(&signing(), &challenge()).is_err(), "a second challenge after joining is not answered");
@@ -253,6 +246,7 @@ mod tests {
         assert_eq!(read_control(&challenge()[..HEADER - 1]), None);
         let mut j = Joining::new("ws://127.0.0.1:7790", SESSION, "production", DeviceId([1; 16]), RELAY_ROLE_VIEWER, json!({})).unwrap();
         assert_eq!(j.message(&signing(), &batch), Ok(Step::Wait));
+        assert_eq!(j.message(&signing(), &challenge()[..HEADER - 1]), Ok(Step::Wait));
         assert!(matches!(j.message(&signing(), &challenge()), Ok(Step::Send(_))));
     }
 }
