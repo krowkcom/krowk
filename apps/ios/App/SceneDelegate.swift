@@ -57,7 +57,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 private extension KrowkError {
     var detail: String {
         switch self {
-        case .InvalidInput(let detail), .Internal(let detail), .Refused(_, let detail), .Network(let detail): detail
+        case .InvalidInput(let detail), .Internal(let detail), .Refused(_, let detail), .Network(let detail),
+             .Decode(let detail): detail
         }
     }
 }

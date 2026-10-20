@@ -89,6 +89,35 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "func signOut() throws",
         "case Refused(code: String, detail: String)",
         "case Network(detail: String)",
+        "case Decode(detail: String)",
+        // R-PROTO-2: the protocol's types, generated from krowk-client's
+        // through src/protocol.rs, and JSON only at the edges.
+        "enum StreamLine",
+        "case log(LogEvent)",
+        "case live(LiveEvent)",
+        "struct LogEvent",
+        "enum LogBody",
+        "case turnStarted(turnId: String, model: ModelRef,",
+        "enum LiveEvent",
+        "case itemDelta(sessionId: String, turnId: String, itemId: String, delta: Delta)",
+        "case approvalRequested(ApprovalRequest)",
+        "case result(RunResult)",
+        "enum Command",
+        "case interrupt(sessionId: String)",
+        "struct ApprovalRequest",
+        "enum ApprovalDecision",
+        "struct Question",
+        "struct QuestionAnswer",
+        "enum Item",
+        "enum Delta",
+        "struct RunResult",
+        "var worktree: KeptWorktree?",
+        // serde_json::Value as its JSON text, usize as a u64.
+        "typealias Value = String",
+        "typealias Usize = UInt64",
+        "func decodeStreamLine(json: String) throws -> StreamLine",
+        "func decodeLogEvent(json: String) throws -> LogEvent",
+        "func encodeCommand(command: Command) throws -> String",
     ] {
         assert!(swift.contains(&squeeze(decl)), "Krowk.swift declares `{decl}`");
     }

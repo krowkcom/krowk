@@ -46,6 +46,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The protocol's types reach Swift.** The iPhone app will read the
+  daemon's lines (log events, live deltas, approval requests, results)
+  and build its commands as Swift enums and structs that UniFFI generates
+  from krowk-client's own protocol types, with JSON only at the edges. A
+  protocol change no longer builds until the app's copy of the types
+  follows it. Nothing changes for CLI users.
 - **krowk-client runs the new device's side of pairing.** Nothing
   changes for you: `krowk sync join` sends the same steps, waits as long
   and fails with the same messages. The sequence and its rules (a code is

@@ -25,6 +25,10 @@ pub enum KrowkError {
     /// the call was willing to try.
     #[error("{detail}")]
     Network { detail: String },
+    /// JSON handed in is not the protocol type the call reads: malformed,
+    /// or a `type` this build does not know (a newer daemon's).
+    #[error("{detail}")]
+    Decode { detail: String },
 }
 
 /// A Swift `KeyStorage` that threw something other than a `KrowkError`,
