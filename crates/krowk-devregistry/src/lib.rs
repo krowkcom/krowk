@@ -55,6 +55,8 @@ pub use store::{
 /// How a registry is started: the `--limit-bytes` and `--site` flags, and the
 /// clock — Go's `HandlerWithClock`. `limit_bytes <= 0` is the default limit;
 /// an empty `site` means links name whatever host a request arrived on.
+/// `max_sessions` and `login_person` are for tests and the fake fleet; no
+/// flag sets them.
 #[derive(Default, Clone)]
 pub struct Config {
     pub limit_bytes: i64,

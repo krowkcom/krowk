@@ -14,7 +14,7 @@ mod scratch;
 use krowk_api::types::LoginAction;
 use krowk_client::device_chain::Change;
 use krowk_client::user_key::UserKeys;
-use krowk_harness::protocol::{LiveEvent, StreamLine};
+use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, StreamLine};
 use krowk_harness::sync::viewer;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
@@ -52,13 +52,13 @@ fn post(url: &str) -> String {
 /// daemon and a mock model, on localhost — never api.krowk.com. It prints
 /// what a test needs within 15 s; a second device of the person's attaches
 /// to its session and sees the demo's transcript and its held approval; a
-/// browser sign-in approved at `approve` lands in the host's person; and
-/// with the fleet stopped the host is gone and the viewer is read-only.
+/// browser sign-in approved at `approve` lands in the host's person; B's
+/// answer ends the held turn; and with the fleet's host stopped — its
+/// registry and relay still up — the viewer is read-only.
 #[test]
 fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its_held_approval() {
     let started = Instant::now();
-    // Its own thread: the fleet runs runtimes of its own.
-    let f = std::thread::spawn(|| fleet::start(true)).join().unwrap();
+    let f = fleet::start(true);
     assert!(started.elapsed() < Duration::from_secs(15), "the fleet took {:?}", started.elapsed());
     let lines = f.lines();
     let keys: Vec<&str> = lines.iter().map(|l| l.split_once('=').unwrap().0).collect();
@@ -103,6 +103,12 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     let held = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
     assert_eq!((held.tool.as_str(), &held.input), ("bash", &serde_json::json!({"command": "touch approved.txt"})));
     assert!(!f.root.join("repo/approved.txt").exists(), "the approval is held");
+
+    // Answered from B, as App Review would tap it, the demo's turn ends.
+    v.commands.send(Command::Approve { session_id: held.session_id.clone(), request_id: held.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::Result(_)))))));
+    assert!(format!("{got:?}").contains("Done: approved.txt is in the project."), "{got:?}");
+    assert!(f.root.join("repo/approved.txt").exists(), "B's answer ran the call");
 
     // R-HAND-4: stopping the fleet's bridge takes the host away, the
     // registry and the relay still up.

@@ -222,20 +222,15 @@ pub fn start(demo: bool) -> Fleet {
         std::thread::spawn(move || {
             rt.block_on(async move {
                 let (out, mut lines) = mpsc::channel(4096);
-                let turn = d.execute(cmd, out);
-                tokio::pin!(turn);
-                loop {
-                    tokio::select! {
-                        l = lines.recv() => match l {
-                            Some(StreamLine::Live(LiveEvent::ApprovalRequested(r))) if r.tool == "bash" => { let _ = tx.send(r.request_id); }
-                            Some(_) => {}
-                            None => break,
-                        },
-                        _ = &mut turn => break,
+                tokio::spawn(async move {
+                    while let Some(l) = lines.recv().await {
+                        if let StreamLine::Live(LiveEvent::ApprovalRequested(r)) = l {
+                            let _ = tx.send(r.request_id);
+                        }
                     }
-                }
+                });
                 // Held until the process ends, or the approval is answered.
-                let _ = turn.await;
+                let _ = d.execute(cmd, out).await;
             })
         });
         // The bridge hears it as this client does, and hands it to a viewer
