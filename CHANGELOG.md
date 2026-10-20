@@ -132,6 +132,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   heard nothing more. Now its `sync.acked` line carries the refusal, and
   the TUI shows it as an error. Fix the cause on the host and send the
   prompt again: nothing needs restarting.
+- **A session followed from another machine no longer silently misses
+  events when the relay drops a batch.** If the relay dropped a batch just
+  as `krowk sync attach` joined, while it moved the session onto a direct
+  path, or while it was already catching up on an earlier gap, the events
+  in that batch could never reach the screen, and no gap was shown. Now
+  every gap shows, and the viewer asks the host for what it missed, once
+  any catch-up already under way has finished.
 
 ### Security
 
