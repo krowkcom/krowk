@@ -69,3 +69,4 @@ schemes:
       targets:
         - Krowk-iOSUITests
         - package: KrowkKit/KrowkKitTests
+        - package: KrowkCore/KrowkCoreTests

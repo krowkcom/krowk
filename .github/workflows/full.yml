@@ -20,6 +20,9 @@ on:
       - "*.md"
       - LICENSE
       - THIRD-PARTY-NOTICES
+      # `make check` never builds apps/; ios.yml tests apps/ios on its
+      # own path filter.
+      - "apps/**"
   pull_request:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:

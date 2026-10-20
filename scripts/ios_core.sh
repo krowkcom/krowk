@@ -11,7 +11,7 @@
 # or found in xtool's `darwin` Swift SDK. Xcode writes
 # the XCFramework on a Mac; on Linux this script writes the same layout
 # and Info.plist itself. KROWK_IOS_ASSEMBLE=1 does that on a Mac too,
-# which is how CI holds the Linux layout to Xcode (.github/workflows/ios-core.yml).
+# which is how CI holds the Linux layout to Xcode (.github/workflows/ios.yml).
 #
 # What it makes, under apps/ios/KrowkCore/build/ (gitignored), replacing
 # whatever an earlier run left:
