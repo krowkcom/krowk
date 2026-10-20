@@ -304,10 +304,9 @@ impl Driver {
                 Effect::ReadChunks { want } => {
                     let (api, key, id) = (self.o.api.clone(), self.key.clone(), self.o.session.clone());
                     let mut a = self.core.attached().clone();
-                    let unread = a.clone();
                     let read = tokio::task::spawn_blocking(move || store::catch_up(&api, &key, &id, &mut a, want).map(|f| (f, a))).await;
                     // A read that did not run read nothing new.
-                    let read = read.unwrap_or_else(|_| Ok((Vec::new(), unread)));
+                    let read = read.unwrap_or_else(|_| Ok((Vec::new(), self.core.attached().clone())));
                     todo.extend(self.core.chunks_read(read, self.now()));
                 }
                 Effect::Join { extra, at_ms } => {
