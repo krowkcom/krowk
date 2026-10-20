@@ -140,8 +140,11 @@ pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Val
 }
 
 /// Reads chunks from `reader`'s place to the end of what the registry lists,
-/// handing each to `each` with its head. Public for the host's writer as
-/// well as for `attach` and `catch_up`.
+/// handing each to `each` with its head, the chunks of a page fetched
+/// `FETCH` at a time. What `attach`, `catch_up` and `read_all` (the host's
+/// writer's) are built on. It holds what it read to no head: a caller
+/// reading a session it was not told the length of goes through `attach`
+/// or `catch_up`, which do (`Head::at_least`).
 pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
     let mut after = reader.next().checked_sub(1);
     loop {
@@ -320,14 +323,22 @@ mod tests {
         let session = crate::sync::uuid(id);
         let old = e2e::SessionKeys::from(e2e::SessionKey::generate());
         let index = Index { title: "fix the build".into(), cwd: "/src".into(), updated_ms: 7, head: h(3, 2), checkpoint: None, host: None };
-        let sealed = e2e::hex(&e2e::seal_session_index(old.current(), &session, &serde_json::to_vec(&index).unwrap()));
+        let seal = |k: &e2e::SessionKey| e2e::hex(&e2e::seal_session_index(k, &session, &serde_json::to_vec(&index).unwrap()));
+        let sealed = seal(old.current());
         let rotated = old.rotated().unwrap();
         assert_eq!(rotated.epoch(), 1);
         assert_eq!(open_index(&rotated, id, &sealed).unwrap(), index);
         assert_eq!(open_index(&old, id, &sealed).unwrap(), index);
+        // Rotated twice: epoch 0 is reached past epoch 1, and an index
+        // sealed under epoch 1 opens too.
+        let twice = rotated.rotated().unwrap();
+        assert_eq!(twice.epoch(), 2);
+        assert_eq!(open_index(&twice, id, &sealed).unwrap(), index);
+        assert_eq!(open_index(&twice, id, &seal(twice.at(1).unwrap())).unwrap(), index);
+        assert!(open_index(&old, id, &seal(twice.current())).is_err(), "a newer epoch than the ring holds");
         let other = e2e::SessionKeys::from(e2e::SessionKey::generate()).rotated().unwrap();
         assert!(open_index(&other, id, &sealed).is_err(), "no key of the ring");
-        assert!(open_index(&rotated, "1b1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5e", &sealed).is_err(), "another session's index");
-        assert_eq!(open_index(&rotated, id, "").unwrap(), Index::default());
+        assert!(open_index(&twice, "1b1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5e", &sealed).is_err(), "another session's index");
+        assert_eq!(open_index(&twice, id, "").unwrap(), Index::default());
     }
 }
