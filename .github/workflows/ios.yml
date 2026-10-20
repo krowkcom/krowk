@@ -231,6 +231,7 @@ jobs:
             -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
             -destination "platform=iOS Simulator,id=$UDID" \
             -derivedDataPath "$DERIVED" COMPILER_INDEX_STORE_ENABLE=NO
+          echo "BUILT=1" >> "$GITHUB_ENV"
 
       # Retried only when the simulator failed to start the test runner,
       # a known flake; any other failure fails at once.
@@ -245,7 +246,10 @@ jobs:
               exit 0
             fi
             grep -q "Failed to install or launch the test runner" "$RUNNER_TEMP/test.log" || exit 1
-            echo "::warning::attempt $attempt: the simulator failed to launch the test runner"
+            echo "::warning::attempt $attempt: the simulator failed to launch the test runner; restarting it"
+            xcrun simctl shutdown "$UDID" || true
+            xcrun simctl boot "$UDID" || true
+            xcrun simctl bootstatus "$UDID" -b
           done
           exit 1
 
@@ -296,7 +300,7 @@ jobs:
       - name: Screenshot of the running app
         id: shot
         # After a failed test too, when it says the most; not without an app.
-        if: ${{ !cancelled() && env.UDID != '' }}
+        if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |
           app=$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app
           test -d "$app" || { echo "no Krowk.app was built" >&2; exit 1; }
