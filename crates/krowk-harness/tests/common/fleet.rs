@@ -371,9 +371,12 @@ struct Running {
     ended: std::sync::mpsc::Receiver<()>,
 }
 
-/// The code on a `  Code: XXXX-XXXX    valid 10 minutes, once` line.
+/// The code on a `  Code: XXXX-XXXX    valid 10 minutes, once` line, and
+/// only a pairing code: an error's `Code: pairing_open` is not one.
 fn code_of(line: &str) -> Option<String> {
-    line.trim().strip_prefix("Code: ")?.split_whitespace().next().map(String::from)
+    let code = line.trim().strip_prefix("Code: ")?.split_whitespace().next()?;
+    let shaped = code.len() == 9 && code.bytes().enumerate().all(|(i, b)| if i == 4 { b == b'-' } else { krowk_client::pairing::ALPHABET.contains(&b) });
+    shaped.then(|| code.to_string())
 }
 
 impl Pairer {

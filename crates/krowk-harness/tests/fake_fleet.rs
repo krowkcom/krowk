@@ -21,6 +21,7 @@ use krowk_harness::sync::viewer;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::Path;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -148,7 +149,8 @@ struct Proc {
 
 impl Proc {
     fn start(args: &[&str]) -> Proc {
-        let mut child = Command::new(built("examples/fake_fleet")).args(args).env("KROWK_BIN", built("krowk")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        // A group of its own, so a failed test takes its `devices add` too.
+        let mut child = Command::new(built("examples/fake_fleet")).args(args).env("KROWK_BIN", built("krowk")).process_group(0).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let (tx, out) = std::sync::mpsc::channel();
         let stdout = child.stdout.take().unwrap();
         std::thread::spawn(move || {
@@ -269,8 +271,9 @@ impl Phone {
     }
 }
 
-/// A test that fails leaves no fleet behind: EOF, and killed if it has not
-/// gone within a few seconds (its `devices add` then ends on its own).
+/// A test that fails leaves no fleet behind: EOF, and if it has not gone
+/// within a few seconds its whole group — the fleet and its `devices add`
+/// — is killed.
 impl Drop for Proc {
     fn drop(&mut self) {
         drop(self.stdin.take());
@@ -278,7 +281,11 @@ impl Drop for Proc {
         while matches!(self.child.try_wait(), Ok(None)) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
+        if matches!(self.child.try_wait(), Ok(None)) {
+            // SAFETY: kill(2) on the group led by our own child, which is
+            // not reaped yet.
+            unsafe { libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL) };
+        }
         let _ = self.child.wait();
     }
 }
