@@ -46,6 +46,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk-client declares what a synced session's devices send each
+  other.** Nothing changes for you: the frames, answers, welcome and
+  batches a host and its viewers exchange, and the sealed index and chunks
+  kept at rest, are the same JSON byte for byte. Their types moved from
+  the harness into krowk-client, so the iPhone app will read them without
+  a copy of its own.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,
