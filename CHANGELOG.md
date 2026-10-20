@@ -141,10 +141,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 - **Commands an attached device sends again after a reconnect go in the
   order you typed them.** A device following a synced session sends every
-  command the host hasn't answered yet again once it reconnects. With ten
-  or more waiting, they used to go out of order (the tenth before the
-  ninth), so two prompts could run swapped. They now go in the order you
-  typed them.
+  command the host hasn't answered yet again once it reconnects. Once it
+  had sent ten or more in a run, those could go out of order (the tenth
+  before the ninth), so two prompts could run swapped. They now go in the
+  order you typed them.
 - **A prompt sent from `krowk sync attach` that the host refuses now says
   why.** If the host's daemon turned the prompt down before its turn
   started, for example because the repository was trusted only for one
