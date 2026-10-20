@@ -7,12 +7,18 @@
 //! `examples/fake_fleet.rs`, which serves it, and by `tests/fake_fleet.rs`,
 //! which holds it to what it prints. Never a part of a build krowk ships.
 //!
+//! Host A's keys are kept on disk, in the fleet's `home/.krowk`, as `krowk
+//! sync init` keeps a device's: so a `krowk` run with that home and the
+//! fleet's API *is* host A, and `Pairer` (ticket 76) answers a phone's
+//! pairing with the real `krowk devices add` rather than a copy of it.
+//!
 //! The crate including it declares `mock` and `scratch` beside it.
 #![allow(dead_code)]
 
 use crate::{mock, scratch};
 use krowk_client::device_chain::{Batch, Chain, Kind, Subject};
 use krowk_client::e2e::{self, DeviceKey, SigningKey};
+use krowk_client::keystore::Keystore;
 use krowk_client::session_record;
 use krowk_client::user_key::{UserKey, UserKeys};
 use krowk_harness::daemon::{self, client::Client, server};
@@ -21,8 +27,10 @@ use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{Command, LiveEvent, PermissionMode, StreamLine};
 use krowk_harness::sync::host;
+use std::io::BufRead;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
@@ -54,6 +62,13 @@ pub struct Device {
 impl Device {
     pub fn new(name: &str) -> Device {
         Device { key: DeviceKey::generate(), signing: SigningKey::generate(), token: format!("{TOKEN}#{name}") }
+    }
+
+    /// The device whose keys `store` keeps, made and kept there now.
+    pub fn kept(store: &Keystore, name: &str) -> Device {
+        let key = store.device_key().expect("the fleet's home keeps host A's device key");
+        let signing = store.signing_key().expect("the fleet's home keeps host A's signing key");
+        Device { key, signing, token: format!("{TOKEN}#{name}") }
     }
 
     /// Its own registry client, its device calls signed by its key.
@@ -163,11 +178,15 @@ pub fn start(demo: bool) -> Fleet {
     let m = mock::serve(model);
     let env = env(&root, &m.url);
 
-    // Host A starts the person's device list.
-    let a = Device::new("host-a");
+    // Host A starts the person's device list, its keys, the user key and
+    // the list kept in its home as `sync init` keeps them.
+    let store = Keystore::new(&root.join("home/.krowk"));
+    let a = Device::kept(&store, "host-a");
     let (chain, start) = Chain::start(a.subject("host-a"), &a.signing, None, T0).unwrap();
     a.client(&api).init_device_list(&post(&start)).expect("the registry takes host A's device list");
     let user = start.newest;
+    store.save_user_keys(&UserKeys::new(user.clone(), []).unwrap()).expect("host A's home keeps the user key");
+    store.save_device_list(&start.entries).expect("host A's home keeps the device list");
 
     serve(&root, env.clone());
     let socket = daemon::socket(&env).unwrap();
@@ -330,5 +349,131 @@ fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain
             Err(e) => assert!(Instant::now() < deadline, "the bridge never synced the session: {e}"),
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Host A's side of pairing (ticket 76), played by the real CLI: a debug
+/// `krowk` (`cargo build -p krowk --features harness`, never `--release`,
+/// whose build ignores the unattended approval) with host A's home and the
+/// fleet's API, logged in as A once and then run as `krowk devices add`, one
+/// at a time, saying yes to the device that joins (R-E2E-3).
+pub struct Pairer {
+    bin: PathBuf,
+    root: PathBuf,
+    api: String,
+    running: Option<Running>,
+}
+
+/// The `devices add` running now, shared with the thread that waits for
+/// it, and a channel that hears once it has ended and been reaped.
+struct Running {
+    child: Arc<std::sync::Mutex<std::process::Child>>,
+    ended: std::sync::mpsc::Receiver<()>,
+}
+
+/// The code on a `  Code: XXXX-XXXX    valid 10 minutes, once` line, and
+/// only a pairing code: an error's `Code: pairing_open` is not one.
+fn code_of(line: &str) -> Option<String> {
+    let code = line.trim().strip_prefix("Code: ")?.split_whitespace().next()?;
+    let shaped = code.len() == 9 && code.bytes().enumerate().all(|(i, b)| if i == 4 { b == b'-' } else { krowk_client::pairing::ALPHABET.contains(&b) });
+    shaped.then(|| code.to_string())
+}
+
+impl Pairer {
+    /// Stores host A's token in its home's credentials file with `krowk
+    /// login --token`, so a `krowk` with that home needs no `KROWK_TOKEN`.
+    pub fn new(fleet: &Fleet, bin: &Path) -> Result<Pairer, String> {
+        let p = Pairer { bin: bin.to_path_buf(), root: fleet.root.clone(), api: fleet.api.clone(), running: None };
+        let out = p.krowk(&["login", "--token", &fleet.host.token]).stdout(Stdio::null()).output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", bin.display()))?;
+        if !out.status.success() {
+            return Err(format!("`krowk login --token` as host A failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr).trim()));
+        }
+        Ok(p)
+    }
+
+    /// `krowk` as host A: its home and the fleet's API, nothing of this
+    /// machine's, and the debug build's stand-in for the person on.
+    fn krowk(&self, args: &[&str]) -> Process {
+        let home = self.root.join("home");
+        let mut c = Process::new(&self.bin);
+        c.args(args)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &home)
+            .env("KROWK_HOME", home.join(".krowk"))
+            .env("KROWK_API_URL", &self.api)
+            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+            .current_dir(&home)
+            .stdin(Stdio::null());
+        c
+    }
+
+    /// Ends the running `devices add`, if any, and starts another; its code,
+    /// once it shows one. The child goes on waiting for the device that
+    /// types the code, and its lines and exit status go to stderr.
+    pub fn pair(&mut self) -> Result<String, String> {
+        self.end();
+        let mut child = self.krowk(&["devices", "add"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let stderr = child.stderr.take().expect("piped");
+        let (code, shown) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
+                eprintln!("fleet: krowk devices add: {line}");
+                if let Some(c) = code_of(&line) {
+                    let _ = code.send(c);
+                }
+            }
+        });
+        // Reaped only under the lock, so `end` never signals a pid that
+        // may have been handed to another process.
+        let (child, (done, ended)) = (Arc::new(std::sync::Mutex::new(child)), std::sync::mpsc::channel());
+        let waited = child.clone();
+        std::thread::spawn(move || {
+            loop {
+                // Its own statement, so the lock is let go before the sleep.
+                let status = waited.lock().unwrap().try_wait();
+                match status {
+                    Ok(Some(s)) => eprintln!("fleet: krowk devices add ended: {s}"),
+                    Ok(None) => {
+                        std::thread::sleep(Duration::from_millis(50));
+                        continue;
+                    }
+                    Err(e) => eprintln!("fleet: krowk devices add could not be waited for: {e}"),
+                }
+                break;
+            }
+            let _ = done.send(());
+        });
+        self.running = Some(Running { child, ended });
+        shown.recv_timeout(Duration::from_secs(30)).map_err(|_| "`krowk devices add` showed no code (its lines are above) — is KROWK_BIN a debug build, `cargo build -p krowk --features harness`?".to_string())
+    }
+
+    /// Ends the running `devices add`: ^C, on which it ends its pairing on
+    /// the registry — which keeps one live pairing a person — and exits;
+    /// killed if it has not within five seconds, which leaves its pairing
+    /// open, so the next `pair` is refused (`pairing_open`) until the
+    /// registry's ten minutes are up.
+    pub fn end(&mut self) {
+        let Some(r) = self.running.take() else { return };
+        {
+            let mut c = r.child.lock().unwrap();
+            if !matches!(c.try_wait(), Ok(None)) {
+                return;
+            }
+            // SAFETY: kill(2) on our own child, not yet reaped: it is reaped
+            // only under this lock.
+            unsafe { libc::kill(c.id() as libc::pid_t, libc::SIGINT) };
+        }
+        if r.ended.recv_timeout(Duration::from_secs(5)).is_err() {
+            let _ = r.child.lock().unwrap().kill();
+            let _ = r.ended.recv();
+        }
+    }
+}
+
+impl Drop for Pairer {
+    fn drop(&mut self) {
+        self.end();
     }
 }
