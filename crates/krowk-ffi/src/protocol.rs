@@ -22,6 +22,7 @@ use krowk_client::protocol::{
     LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, ProviderBlob, Question, QuestionAnswer, QuestionOption,
     RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
 };
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::KrowkError;
@@ -267,6 +268,8 @@ pub enum WireApi {
     CodexAppServer,
 }
 
+/// How hard a model thinks. Where an `Effort?` is expected, write
+/// `Effort.none` in full: a bare `.none` there is Swift's `nil`.
 #[uniffi::remote(Enum)]
 pub enum Effort {
     None,
@@ -525,7 +528,22 @@ pub struct KeptWorktree {
 /// JSON text.
 #[uniffi::export]
 pub fn decode_stream_line(json: String) -> Result<StreamLine, KrowkError> {
-    serde_json::from_str(&json).map_err(decode_error("a stream line"))
+    // StreamLine is untagged, so serde's own error is only "data did not
+    // match any variant". Tried in the same order, log then live, but the
+    // error kept is the one that says what is wrong: the log event's when
+    // the line has an `id`, which every log event has and no live one,
+    // else the live event's.
+    let what = decode_error("a stream line");
+    let value: Value = serde_json::from_str(&json).map_err(&what)?;
+    let log = match LogEvent::deserialize(&value) {
+        Ok(ev) => return Ok(StreamLine::Log(ev)),
+        Err(e) => e,
+    };
+    match LiveEvent::deserialize(&value) {
+        Ok(ev) => Ok(StreamLine::Live(ev)),
+        Err(_) if value.get("id").is_some() => Err(what(log)),
+        Err(live) => Err(what(live)),
+    }
 }
 
 /// One line of a session's log, as the log at rest holds it, from its JSON

@@ -412,6 +412,22 @@ fn r_proto_2_a_line_of_an_unknown_type_is_a_decode_error() {
 }
 
 #[test]
+fn r_proto_2_a_decode_error_names_what_is_wrong_with_a_known_type() {
+    // Not serde's "did not match any variant of untagged enum": the
+    // field, of the live event or of the log event (it has an `id`).
+    let live = json!({"type": "notice", "sessionId": SESSION, "turnId": TURN}).to_string();
+    match decode_stream_line(live) {
+        Err(KrowkError::Decode { detail }) => assert!(detail.contains("missing field `text`"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+    let log = json!({"id": SESSION, "sessionId": SESSION, "timeMs": 1, "type": "run.opened", "turnId": TURN}).to_string();
+    match decode_stream_line(log) {
+        Err(KrowkError::Decode { detail }) => assert!(detail.contains("missing field `run`"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
 fn r_proto_2_a_json_value_crosses_as_its_text_and_bad_text_does_not_lift() {
     // ApprovalRequest.input is a serde_json::Value: Swift holds the JSON
     // text, and text that is not JSON is refused on the way back in.
