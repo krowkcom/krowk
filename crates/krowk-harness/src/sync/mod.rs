@@ -17,8 +17,9 @@ pub mod tailscale;
 pub mod viewer;
 
 use futures_util::{SinkExt, StreamExt};
-use krowk_client::e2e::{self, DeviceId, SigningKey};
+use krowk_client::e2e::{DeviceId, SigningKey};
 use krowk_client::protocol::frame::{KIND_RELAY, HEADER};
+use krowk_client::sync::join as handshake;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -52,12 +53,16 @@ pub struct Join<'a> {
 /// Dials the relay with the ticket in `X-Krowk-Ticket`, answers its
 /// challenge with a signature over the origin dialed, and joins. Answers
 /// the link and `joined`, or the relay's refusal.
+///
+/// The handshake itself — the URL, the challenge, the signature, the join
+/// and its answer — is `krowk_client::sync::join`'s, which every client
+/// links (R-CLIENT-1); this is its IO: the socket, TLS and the waits.
 pub async fn join(j: Join<'_>) -> Result<(Ws, Value), String> {
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
-    let base = j.relay.trim_end_matches('/');
-    let query = if j.env == "production" { String::new() } else { format!("?env={}", j.env) };
-    let mut req = format!("{base}/v1/relay/{}{query}", j.session).into_client_request().map_err(|e| format!("{base} is not a relay URL: {e}"))?;
-    req.headers_mut().insert("x-krowk-ticket", j.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
+    let dial = handshake::dial(j.relay, j.session, j.env, j.ticket);
+    let mut req = dial.url.into_client_request().map_err(|e| format!("{} is not a relay URL: {e}", j.relay.trim_end_matches('/')))?;
+    req.headers_mut().insert("x-krowk-ticket", dial.ticket.parse().map_err(|_| "the relay ticket is not a header value")?);
+    let mut joining = handshake::Joining::new(j.relay, j.session, j.env, j.device, j.role, j.extra)?;
     // `wss://`, the hosted relay, is dialed through the harness's own rustls
     // configuration; `ws://` (a local relay, a direct path) needs none.
     let tls = if req.uri().scheme_str() == Some("wss") {
@@ -67,39 +72,22 @@ pub async fn join(j: Join<'_>) -> Result<(Ws, Value), String> {
         None
     };
     let (mut ws, _) = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async_tls_with_config(req, None, false, tls)).await.map_err(|_| "the relay did not answer in 10 seconds".to_string())?.map_err(|e| format!("the relay could not be reached: {e}"))?;
-    let challenge = next_control(&mut ws).await?;
-    if challenge["type"] != "challenge" {
-        return Err(refusal(&challenge));
-    }
-    let nonce: [u8; 32] = challenge["nonce"].as_str().and_then(e2e::unhex).and_then(|v| v.try_into().ok()).ok_or("the relay's challenge has no nonce")?;
-    let origin = e2e::canonical_origin(base).ok_or_else(|| format!("{base} has no origin a relay signs"))?;
-    let session = crate::daemon::ws::uuid(j.session);
-    let sig = j.signing.sign_relay_join(j.role, &session, &nonce, &j.device, &origin).map_err(|e| e.to_string())?;
-    let mut msg = json!({"type": "join", "role": if j.role == e2e::RELAY_ROLE_HOST { "host" } else { "viewer" }, "device": j.device.to_string(), "signature": e2e::hex(&sig), "env": j.env});
-    if let Value::Object(extra) = j.extra {
-        for (k, v) in extra {
-            msg[k] = v;
+    loop {
+        match joining.message(j.signing, &next_binary(&mut ws).await?)? {
+            handshake::Step::Wait => {}
+            handshake::Step::Send(b) => ws.send(Message::Binary(b.into())).await.map_err(|e| e.to_string())?,
+            handshake::Step::Joined(joined) => return Ok((ws, joined)),
         }
     }
-    ws.send(Message::Binary(crate::relay::control(&msg).into())).await.map_err(|e| e.to_string())?;
-    let joined = next_control(&mut ws).await?;
-    if joined["type"] != "joined" {
-        return Err(refusal(&joined));
-    }
-    Ok((ws, joined))
 }
 
-fn refusal(v: &Value) -> String {
-    format!("the relay refused: {} — {}", v["code"].as_str().unwrap_or("?"), v["message"].as_str().unwrap_or(""))
-}
-
-async fn next_control(ws: &mut Ws) -> Result<Value, String> {
+/// The next binary message, each waited on for 10 seconds.
+async fn next_binary(ws: &mut Ws) -> Result<Vec<u8>, String> {
     loop {
         match tokio::time::timeout(Duration::from_secs(10), ws.next()).await {
             Err(_) => return Err("the relay said nothing for 10 seconds".into()),
-            Ok(None) | Ok(Some(Err(_))) => return Err("the relay closed the connection".into()),
-            Ok(Some(Ok(Message::Binary(b)))) if b.len() >= HEADER && b[1] == KIND_RELAY => return serde_json::from_slice(&b[HEADER..]).map_err(|e| e.to_string()),
-            Ok(Some(Ok(Message::Close(_)))) => return Err("the relay closed the connection".into()),
+            Ok(None) | Ok(Some(Err(_))) | Ok(Some(Ok(Message::Close(_)))) => return Err("the relay closed the connection".into()),
+            Ok(Some(Ok(Message::Binary(b)))) => return Ok(b.to_vec()),
             Ok(Some(Ok(_))) => continue,
         }
     }
@@ -117,7 +105,7 @@ pub enum In {
 pub async fn recv(ws: &mut Ws) -> In {
     match ws.next().await {
         None | Some(Err(_)) | Some(Ok(Message::Close(_))) => In::Closed,
-        Some(Ok(Message::Binary(b))) if b.len() >= HEADER && b[1] == KIND_RELAY => serde_json::from_slice(&b[HEADER..]).map_or(In::Alive, In::Control),
+        Some(Ok(Message::Binary(b))) if b.len() >= HEADER && b[1] == KIND_RELAY => handshake::read_control(&b).map_or(In::Alive, In::Control),
         Some(Ok(Message::Binary(b))) if b.len() >= HEADER => In::Envelope(b.to_vec()),
         Some(Ok(_)) => In::Alive,
     }
@@ -386,6 +374,16 @@ mod tests {
             let e = joined.map(|_| ()).expect_err("no relay answered");
             assert!(!e.contains("TLS support not compiled in"), "{e}");
         });
+    }
+
+    /// R-CLIENT-1, R-RELAY-1: the control message a client sends is the
+    /// one the reference relay builds and reads, byte for byte.
+    #[test]
+    fn r_client_1_the_clients_control_message_is_the_relays() {
+        let v = serde_json::json!({"type": "join", "role": "viewer", "afterSeq": 3});
+        let b = super::handshake::control(&v);
+        assert_eq!(b, crate::relay::control(&v));
+        assert_eq!(super::handshake::read_control(&b), Some(v));
     }
 
     /// The five commands, each to its `Command`; anything else starting

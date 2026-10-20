@@ -4,8 +4,11 @@
 //! `relay_link`, and (`store`) the sealed index and chunks a session's log
 //! is kept in, with the reader a device attaching opens them by. The wire
 //! shapes are types only, with no IO: the harness's host and viewer, and
-//! the phone's viewer later, read and write the same JSON.
+//! the phone's viewer later, read and write the same JSON. `join` is the
+//! relay's join handshake, and `viewer` what a viewer shows, both without
+//! IO.
 
+pub mod join;
 pub mod store;
 pub mod viewer;
 
