@@ -52,6 +52,7 @@ use krowk_client::keystore::{Keystore, Slot};
 use krowk_client::pairing::{self, invite, Binding, NewDevice, PairA, PairingCode, PeerKind};
 use krowk_client::pairing_join::{self, Field, JoinFailed, Mailbox};
 use krowk_client::pairing_payload;
+use krowk_client::Zeroizing;
 use krowk_client::user_key::UserKeys;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -405,17 +406,17 @@ fn show_qr(ctx: &mut Ctx, code: &PairingCode, user: &str, device: DeviceId) {
     if !ctx.io.err_tty {
         return;
     }
-    let uri = invite::uri(code, user, device);
-    if invite::parse(&uri).is_none() {
+    if !invite::carries(user) {
         return;
     }
+    let uri = invite::uri(code, user, device);
     let lines = qr_lines(&uri);
     let wide = lines.first().map_or(0, |l| l.chars().count() - QR_SGR.len() - QR_RESET.len());
     if lines.is_empty() || columns().is_some_and(|c| c < wide) {
         return;
     }
     let _ = writeln!(ctx.io.stderr, "\nOr scan this with the krowk app on your iPhone:");
-    for line in &lines {
+    for line in lines.iter() {
         let _ = writeln!(ctx.io.stderr, "{line}");
     }
 }
@@ -437,14 +438,13 @@ const QUIET: usize = 4;
 /// module rows to a character row, drawn with the half blocks `▀ ▄ █` and
 /// a space, a 4-module quiet zone around it, and each line wrapped in
 /// `QR_SGR` … `QR_RESET`. Empty when the URI is too long for any QR code.
-///
-/// qrcodegen's buffers hold the URI, so the code, in memory it does not
-/// wipe; as with what `spake2` holds (`krowk_client::pairing`), the code is
+/// The lines are wiped on drop; qrcodegen's buffers, which hold the URI
+/// and so the code, are not; as with what `spake2` holds (`krowk_client::pairing`), the code is
 /// single-use and dies with the pairing, so that is accepted.
-fn qr_lines(uri: &str) -> Vec<String> {
+fn qr_lines(uri: &str) -> Zeroizing<Vec<String>> {
     use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
     let Ok(qr) = QrCode::encode_segments_advanced(&QrSegment::make_segments(uri), QrCodeEcc::Medium, Version::MIN, Version::MAX, None, false) else {
-        return Vec::new();
+        return Zeroizing::new(Vec::new());
     };
     let size = qr.size();
     let quiet = QUIET as i32;
@@ -464,7 +464,8 @@ fn qr_lines(uri: &str) -> Vec<String> {
                 .collect();
             format!("{QR_SGR}{row}{QR_RESET}")
         })
-        .collect()
+        .collect::<Vec<_>>()
+        .into()
 }
 
 /// The terminal's width in columns, when stderr is one that says.

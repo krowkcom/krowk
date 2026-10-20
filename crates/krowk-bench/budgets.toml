@@ -270,8 +270,8 @@ unit = "bytes"
 # 307,064.
 # Ticket 68's QR code of the pairing invite in `krowk devices add`
 # (qrcodegen, Project Nayuki's encoder, MIT, no dependencies, and the
-# invite URI) adds -8,768 bytes on main's 16,118,184: 16,109,416 (15.36
-# MiB), the link laid out differently; `qrcode` without its image feature
+# invite URI) makes main's 16,118,184 8,768 bytes smaller: 16,109,416
+# (15.36 MiB), the link laid out differently; `qrcode` without its image feature
 # measured 16,128,040. 143,512 under this.
 max = { x86_64-linux = 16_252_928 }
 status = "enforced"

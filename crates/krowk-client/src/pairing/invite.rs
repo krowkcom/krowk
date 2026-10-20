@@ -40,10 +40,8 @@ impl Invite {
 }
 
 /// The invite URI for `code`, the person `user_id` and the paired device
-/// `a_device`. A user id `parse` would refuse (empty, over `MAX_USER_ID`,
-/// or not RFC 3986's unreserved characters) gives a URI that does not
-/// parse: check with `parse` before showing one built from a value the
-/// caller does not control.
+/// `a_device`. A user id `carries` refuses gives a URI that does not
+/// parse: check it first when the caller does not control it.
 pub fn uri(code: &PairingCode, user_id: &str, a_device: DeviceId) -> Zeroizing<String> {
     let mut s = Zeroizing::new(String::with_capacity(PREFIX.len() + 4 + 6 + CODE_LEN + 6 + user_id.len() + 8 + 32));
     s.push_str(PREFIX);
@@ -84,7 +82,7 @@ pub fn parse(uri: &str) -> Option<Invite> {
     }
     let code = PairingCode::parse(code)?;
     let user = user?;
-    if user.is_empty() || user.len() > MAX_USER_ID || !user.bytes().all(unreserved) {
+    if !carries(user) {
         return None;
     }
     let device = device?;
@@ -93,8 +91,16 @@ pub fn parse(uri: &str) -> Option<Invite> {
     }
     let a_device = DeviceId::parse(device)?;
     let invite = Invite { code, user_id: user.to_owned(), a_device };
-    // The keys in `uri`'s order too: one spelling per invite.
+    // The keys in `uri`'s order too: one spelling per invite. The checks
+    // above stay, each value refused on its own terms, so neither this nor
+    // they can be dropped as the other's duplicate.
     (*invite.to_uri() == uri).then_some(invite)
+}
+
+/// Whether an invite can carry `user_id` as it is: 1 to `MAX_USER_ID`
+/// bytes of RFC 3986's unreserved characters, so nothing is escaped.
+pub fn carries(user_id: &str) -> bool {
+    !user_id.is_empty() && user_id.len() <= MAX_USER_ID && user_id.bytes().all(unreserved)
 }
 
 /// RFC 3986's unreserved characters: the ones a URI carries as they are.

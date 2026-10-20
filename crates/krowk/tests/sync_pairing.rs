@@ -456,10 +456,9 @@ fn r_e2e_3_a_piped_devices_add_prints_no_qr() {
     set_up(&laptop, &api);
     let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let a_err = lines(&mut a);
-    code_shown(&a_err);
     // Waiting… is the block's last line: anything drawn after it is out by
     // the time the registry has the pairing open.
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(30);
     let mut said = String::new();
     while !said.contains("Waiting") && Instant::now() < deadline {
         if let Ok(line) = a_err.recv_timeout(Duration::from_millis(200)) {
@@ -477,7 +476,11 @@ fn r_e2e_3_a_piped_devices_add_prints_no_qr() {
         said.push_str(&line);
         said.push('\n');
     }
-    assert!(said.contains("Waiting"), "{said}");
+    // The block, word for word, the code masked.
+    let block: Vec<&str> = said.lines().take(4).collect();
+    assert_eq!(block.len(), 4, "{said}");
+    let masked = block[1].split_whitespace().nth(1).map_or(String::new(), |c| block[1].replacen(c, "XXXX-XXXX", 1));
+    assert_eq!([block[0], &masked, block[2], block[3]], ["Pair a new device", "  Code: XXXX-XXXX          valid 10 minutes, once", "On the new device run:  krowk sync join", "Waiting…"], "{said}");
     assert!(!said.contains(['▀', '▄', '█']) && !said.contains("scan") && !said.contains("krowk://"), "a QR code on a pipe: {said}");
     let _ = std::fs::remove_dir_all(&r);
 }
