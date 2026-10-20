@@ -74,7 +74,8 @@ pub struct Joined {
 
 /// Why a join did not finish. Which check failed is nothing the person or
 /// an attacker needs: either way the pairing is ended, the code is used up,
-/// and nothing is kept.
+/// and whatever this join kept is forgotten (best effort: a forget that
+/// fails is not reported). Keys the device held before it are left alone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum JoinFailed {
     /// Before A could post the entry: a step, a read, a check or the wait
