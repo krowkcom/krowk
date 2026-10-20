@@ -12,6 +12,8 @@
 //! - `pairing_payload`: what the paired device seals to the new one — the
 //!   chain, the wrapped user key, its signing key — and the new device's
 //!   checks that the chain adds exactly it.
+//! - `pairing_join`: the new device's side of a pairing, from the hello to
+//!   the claim, over a `Mailbox` each platform supplies.
 //! - `user_key`: the person's user key, by generation, HPKE-wrapped to each
 //!   device, each generation wrapping the one before it.
 //! - `recovery`: the 12-word recovery kit, its words, and the recovery
@@ -31,6 +33,7 @@
 pub mod e2e;
 pub mod keystore;
 pub mod pairing;
+pub mod pairing_join;
 pub mod pairing_payload;
 pub mod protocol;
 pub mod relay_link;

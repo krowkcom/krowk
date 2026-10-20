@@ -25,6 +25,9 @@
 //! after a step whose answer was lost rather than sending the step again,
 //! since a step sent twice is out of turn and ends the pairing.
 //!
+//! B's side, from the hello to the claim, is `krowk_client::pairing_join`,
+//! which holds every client to these rules; the CLI supplies its mailbox.
+//!
 //! What B cannot stop is the person typing the same code into a second
 //! `krowk sync join`: A's screen still shows it, and a registry that ended
 //! B's first run gets another guess from the second. So B says a code works
@@ -46,19 +49,19 @@ use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey};
 use krowk_client::keystore::{Keystore, Slot};
-use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairB, PairingCode, PeerKind};
+use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairingCode, PeerKind};
+use krowk_client::pairing_join::{self, Field, JoinFailed, Mailbox};
 use krowk_client::pairing_payload;
 use krowk_client::user_key::UserKeys;
 use serde_json::json;
 use std::time::{Duration, Instant};
 
-/// How often either side reads the pairing while it waits for the other: a
-/// person is walking between two machines.
+/// How often A reads the pairing while it waits for B: a person is walking
+/// between two machines. B waits by `pairing_join::Timing::default()`, the
+/// same 500 ms and ten minutes.
 const POLL: Duration = Duration::from_millis(500);
-/// How long either side waits for the other: the registry's ten minutes.
+/// How long A waits for B: the registry's ten minutes.
 const WAIT: Duration = Duration::from_secs(10 * 60);
-/// How long B waits, once it has sent its ack, for A to post the `add` entry.
-const POSTED: Duration = Duration::from_secs(60);
 
 fn unattended(ctx: &Ctx) -> bool {
     cfg!(debug_assertions) && ctx.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL") == "1"
@@ -113,17 +116,6 @@ fn hex(b: &[u8]) -> String {
     e2e::hex(b)
 }
 
-fn blob(field: &str, p: &Pairing) -> Option<Vec<u8>> {
-    let v = match field {
-        "joiner_message" => &p.joiner_message,
-        "initiator_message" => &p.initiator_message,
-        "joiner_confirmation" => &p.joiner_confirmation,
-        "sealed_reply" => &p.sealed_reply,
-        _ => &p.joiner_ack,
-    };
-    if v.is_empty() { None } else { e2e::unhex(v) }
-}
-
 /// Whether the person pressed ^C while `devices add` waits: the wait stops,
 /// and the pairing is ended on the registry rather than left open for its
 /// ten minutes.
@@ -164,22 +156,23 @@ fn interrupted() -> bool {
     INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
-/// Reads the pairing until `field` has arrived. A pairing that ended, or
-/// the window closing, is the failure `failed` names. On A, whose side
-/// holds no guess, a read the network lost is only a read, asked again
-/// until the window closes (`patient`); B ends at any failure.
-fn wait_for(client: &Client, id: &str, field: &str, patient: bool, failed: &dyn Fn(Option<Error>) -> Error) -> Result<Vec<u8>, Error> {
+/// A reads the pairing until `field` has arrived. A pairing that ended, or
+/// the window closing, is the failure `failed` names. A's side holds no
+/// guess, so a read the network lost is only a read, asked again until the
+/// window closes. B's wait, which ends at any failure, is
+/// `krowk_client::pairing_join`'s.
+fn wait_for(client: &Client, id: &str, field: Field, failed: &dyn Fn(Option<Error>) -> Error) -> Result<Vec<u8>, Error> {
     let deadline = Instant::now() + WAIT;
     loop {
         let p = match client.show_pairing(id) {
             Ok(p) => p,
-            Err(e) if patient && e.status == 0 && Instant::now() <= deadline && !interrupted() => {
+            Err(e) if e.status == 0 && Instant::now() <= deadline && !interrupted() => {
                 std::thread::sleep(POLL);
                 continue;
             }
             Err(e) => return Err(failed(Some(e))),
         };
-        if let Some(b) = blob(field, &p) {
+        if let Some(b) = field.blob(&p) {
             return Ok(b);
         }
         if p.state == "dead" || Instant::now() > deadline || interrupted() {
@@ -239,7 +232,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     // The reply went out with the user key in it: from here on the entry is
     // posted whatever B does, so a machine that may hold the key is listed.
-    let acked = wait_for(&client, &id, "joiner_ack", true, &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
+    let acked = wait_for(&client, &id, Field::JoinerAck, &a_failed).and_then(|ack| sealed.await_ack.receive_ack(&ack).map_err(|_| a_failed(None)));
     if acked.is_err() {
         let _ = client.end_pairing();
     }
@@ -318,11 +311,11 @@ fn a_failed(e: Option<Error>) -> Error {
 /// One of A's steps, sent once. When its answer is lost, the pairing is
 /// read back: the step landed if it holds what was sent, and the pairing is
 /// over otherwise — sending it again would be out of turn.
-fn a_step(client: &Client, id: &str, step: PairingStep, field: &str, message: &[u8]) -> Result<(), Error> {
+fn a_step(client: &Client, id: &str, step: PairingStep, field: Field, message: &[u8]) -> Result<(), Error> {
     match client.pairing_step(step, message) {
         Ok(_) => Ok(()),
         Err(e) if e.status == 0 => match client.show_pairing(id) {
-            Ok(p) if blob(field, &p).as_deref() == Some(message) => Ok(()),
+            Ok(p) if field.blob(&p).as_deref() == Some(message) => Ok(()),
             _ => Err(a_failed(Some(e))),
         },
         Err(e) => Err(a_failed(Some(e))),
@@ -340,7 +333,7 @@ fn send_reply(client: &Client, id: &str, reply: &[u8]) -> Result<(), Error> {
         // Lost on the way back, or a gateway's answer, which may come after
         // the registry stored it: either way it may have landed.
         Err(e) if matches!(e.status, 0 | 502..=504) => match client.show_pairing(id) {
-            Ok(p) if blob("sealed_reply", &p).as_deref() != Some(reply) => Err(a_failed(Some(e))),
+            Ok(p) if Field::SealedReply.blob(&p).as_deref() != Some(reply) => Err(a_failed(Some(e))),
             _ => Ok(()),
         },
         Err(e) => Err(a_failed(Some(e))),
@@ -367,10 +360,10 @@ struct Sealed {
 fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
     let _ = writeln!(ctx.io.stderr, "Pair a new device\n  Code: {}          valid 10 minutes, once\nOn the new device run:  krowk sync join\nWaiting…", a.code());
     let _ = ctx.io.stderr.flush();
-    let hello = wait_for(client, id, "joiner_message", true, &a_failed)?;
+    let hello = wait_for(client, id, Field::JoinerMessage, &a_failed)?;
     let (await_confirm, spake) = a.receive_hello(&hello).map_err(|_| a_failed(None))?;
-    a_step(client, id, PairingStep::Answer, "initiator_message", &spake)?;
-    let confirmation = wait_for(client, id, "joiner_confirmation", true, &a_failed)?;
+    a_step(client, id, PairingStep::Answer, Field::InitiatorMessage, &spake)?;
+    let confirmation = wait_for(client, id, Field::JoinerConfirmation, &a_failed)?;
     // A wrong code fails here: the pairing ends, and the person is asked
     // nothing.
     let confirmed = await_confirm.receive_confirm(&confirmation).map_err(|_| {
@@ -505,35 +498,20 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let _ = ctx.io.stderr.flush();
     let me = NewDevice { device: device.public(), signing: signing.public(), name: clip(&device_name(ctx), pairing::MAX_NAME), os: os_name().into() };
     let binding = Binding { kind: PeerKind::SamePersonDevice, user_id: key.user_id.clone(), a_device, b_device: device.id() };
-    let result = join_steps(&client, &open.id, binding, code, me, &device, &store);
-    let (seq, name) = match result {
-        Ok(done) => done,
-        Err(saved) => {
-            let _ = client.end_pairing();
-            if saved {
-                let _ = store.forget_user_keys();
-            }
-            return Err(b_failed(&from));
-        }
-    };
-    // A posts the entry once its reply is out, after waiting for the ack,
-    // acked or not; this key then claims the device, which the registry
-    // allows only once it is on the list. That,
-    // not whether the ack's answer arrived, says whether the join finished:
-    // an ack whose answer was lost may well have landed.
-    let signed = client.signed_by(shared);
-    let deadline = Instant::now() + POSTED;
-    while signed.claim_key_device().is_err() {
-        if Instant::now() > deadline {
-            let _ = signed.end_pairing();
-            let _ = store.forget_user_keys();
+    // One client for the whole join, signed by this device for the claim;
+    // B's steps still go with the key alone (`pairing_step` signs only A's).
+    let mailbox = ClientMailbox { client: client.signed_by(shared), id: open.id.clone() };
+    let joined = pairing_join::join(&mailbox, &store, &device, binding, code, me, &pairing_join::Timing::default());
+    let pairing_join::Joined { seq, name } = match joined {
+        Ok(joined) => joined,
+        Err(JoinFailed::CodeUsedUp) => return Err(b_failed(&from)),
+        Err(JoinFailed::NotAdded) => {
             return Err(fail(
                 "pairing_failed",
                 format!("'{from}' did not add this machine to your device list, or the registry could not be reached to see it — the keys were forgotten and the code is used up; on '{from}' run `krowk devices add` again for a new code"),
             ));
         }
-        std::thread::sleep(POLL);
-    }
+    };
     let summary = format!("Joined as '{name}'. This machine syncs in every workspace you're a member of.");
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");
@@ -567,35 +545,31 @@ fn listed(client: &Client, device: &DeviceId) -> Result<Listing, Error> {
     Ok(at)
 }
 
-/// B's side from the hello to the ack. Every failure is `Err(saved)`:
-/// which check it was is nothing the person or an attacker needs, and the
-/// caller ends the pairing and discards the code whatever it was — and
-/// forgets the keys only if this run kept them (`saved`).
-fn join_steps(client: &Client, id: &str, binding: Binding, code: PairingCode, me: NewDevice, device: &DeviceKey, store: &Keystore) -> Result<(u64, String), bool> {
-    let a_device = binding.a_device;
-    let (b, hello) = PairB::start(binding, code, me.clone()).map_err(|_| false)?;
-    client.pairing_step(PairingStep::Join, &hello).map_err(|_| false)?;
-    let none = |_: Option<Error>| fail("pairing_failed", "");
-    let spake = wait_for(client, id, "initiator_message", false, &none).map_err(|_| false)?;
-    let (await_reply, confirm) = b.receive_spake(&spake).map_err(|_| false)?;
-    client.pairing_step(PairingStep::Confirmation, &confirm).map_err(|_| false)?;
-    let reply = wait_for(client, id, "sealed_reply", false, &none).map_err(|_| false)?;
-    let received = await_reply.receive_reply(&reply).map_err(|_| false)?;
-    let checked = pairing_payload::check(received.payload(), a_device, &me, device).map_err(|_| false)?;
-    let seq = checked.chain.head().seq;
-    // Kept before the ack, so an ack that lands always leaves the keys
-    // here; a failure after this forgets them again. A user key an earlier
-    // pairing left goes only now, on A's authenticated word that this
-    // machine is new to the list.
-    store.forget_user_keys().map_err(|_| false)?;
-    store.save_user_keys(&checked.keys).map_err(|_| true)?;
-    store.save_device_list(&checked.entries).map_err(|_| true)?;
-    let (_, ack) = received.acknowledge();
-    match client.pairing_step(PairingStep::Acknowledgement, &ack) {
-        // Lost on the way back, it may have landed: the caller learns which
-        // from the list. Nothing is sent again either way.
-        Ok(_) => Ok((seq, me.name)),
-        Err(e) if e.status == 0 => Ok((seq, me.name)),
-        Err(_) => Err(true),
+/// The registry's mailbox as `krowk sync join` reaches it: `client` is
+/// the keyed client, signed by this device, and `id` the pairing it is in.
+struct ClientMailbox {
+    client: Client,
+    id: String,
+}
+
+impl Mailbox for ClientMailbox {
+    fn step(&self, step: PairingStep, message: &[u8]) -> Result<(), Error> {
+        self.client.pairing_step(step, message).map(|_| ())
+    }
+
+    fn read(&self) -> Result<Pairing, Error> {
+        self.client.show_pairing(&self.id)
+    }
+
+    fn end(&self) {
+        let _ = self.client.end_pairing();
+    }
+
+    fn claim_device(&self) -> Result<(), Error> {
+        self.client.claim_key_device().map(|_| ())
+    }
+
+    fn pause(&self, d: Duration) {
+        std::thread::sleep(d);
     }
 }

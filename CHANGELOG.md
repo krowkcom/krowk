@@ -46,6 +46,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk-client runs the new device's side of pairing.** Nothing
+  changes for you: `krowk sync join` sends the same steps, waits as long
+  and fails with the same messages. The sequence and its rules (a code is
+  tried once, nothing is retried, keys kept by a join that didn't finish
+  are forgotten) moved from the CLI into krowk-client, so the iPhone app
+  will join the same way and supply only the network.
 - **The iPhone app's project is in `apps/ios`.** It is a UIKit shell that
   shows the protocol version it reads from the Rust core. On a Mac,
   XcodeGen generates its Xcode project; on Linux, xtool builds the same
