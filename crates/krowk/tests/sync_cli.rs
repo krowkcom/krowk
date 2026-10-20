@@ -225,12 +225,18 @@ impl Running {
     /// Reads stdout until a line passes `want`, failing on a command A
     /// refused.
     fn until(&mut self, what: &str, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        self.heard(what, true, want)
+    }
+
+    /// Reads stdout until a line passes `want`; with `refusing`, failing on
+    /// a command A refused first.
+    fn heard(&mut self, what: &str, refusing: bool, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
         let deadline = Instant::now() + Duration::from_secs(20);
         while Instant::now() < deadline {
             let Ok(l) = self.out.recv_timeout(Duration::from_millis(100)) else { continue };
             self.seen.push(l.clone());
             let Ok(v) = serde_json::from_str::<serde_json::Value>(&l) else { continue };
-            assert!(!(v["type"] == "sync.acked" && !v["error"].is_null()), "A refused a command: {l}");
+            assert!(!(refusing && v["type"] == "sync.acked" && !v["error"].is_null()), "A refused a command: {l}");
             if want(&v) {
                 return v;
             }
@@ -389,6 +395,54 @@ fn r_sub_12_an_attached_tui_opens_a_childs_transcript_and_stops_it() {
     let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&child).join("events.jsonl")).unwrap();
     assert!(log.contains("\"status\":\"interrupted\""), "stopped on A: {log}");
     until("the view saying so", &|s| in_view(s) && s.contains("interrupted after"));
+}
+
+/// Todo 29b: a prompt from `krowk sync attach` that A's daemon refuses
+/// before its turn starts — a Claude Code session made with `-p --trust`,
+/// its repository on no trusted list — is acked with the refusal, not
+/// acked as taken and then never heard of again. Once A trusts the
+/// repository, B's next prompt runs, with nothing restarted.
+#[test]
+fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_once_trusted() {
+    let w = World::new("untrusted");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    // A fake `claude` first on A's PATH: Claude Code, signed in.
+    let bin = a.home.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude"), bin.join("claude")).unwrap();
+    for (k, v) in a.env.iter_mut() {
+        if k == "PATH" {
+            *v = format!("{}:{v}", bin.display());
+        }
+    }
+    let added = a.command(&["providers", "add", "claude", "--json"]).output().unwrap();
+    assert!(added.status.success(), "A adds Claude Code: {}", String::from_utf8_lossy(&added.stderr));
+    let made = a.command(&["-p", "hello", "--model", "claude/sonnet", "--trust"]).output().unwrap();
+    assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
+    let trusted = a.home.join(".krowk/trusted.json");
+    assert!(!trusted.exists(), "--trust is for one run");
+    let session = a.session();
+    let host = Running::spawn(a.command(&["sync", "host", &session]));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while a.api.show_sync_session(&session).is_err() {
+        assert!(Instant::now() < deadline, "A syncs the session: {:?}", host.stderr());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("hello from b");
+    let acked = view.heard("the refusal", false, is("sync.acked"));
+    assert!(acked["error"].as_str().is_some_and(|e| e.contains("untrusted_directory")), "B hears why A refused: {acked}\nA: {:?}", host.stderr());
+    assert_eq!(view.seen.iter().filter(|l| l.contains("\"turn.started\"")).count(), 1, "no turn ran on A but its first: {:?}", view.seen);
+
+    std::fs::write(&trusted, serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    view.type_line("hello again from b");
+    let acked = view.until("the ack", is("sync.acked"));
+    assert!(acked["error"].is_null(), "{acked}");
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "the turn ran once A trusted the repository: {result}");
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced

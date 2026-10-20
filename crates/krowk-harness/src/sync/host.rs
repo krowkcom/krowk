@@ -1177,21 +1177,40 @@ impl Hosting {
         tokio::spawn(async move {
             let streaming = matches!(command, Command::Prompt { .. });
             let (mine, mut rx) = mpsc::channel(1024);
+            let (started_tx, started) = tokio::sync::oneshot::channel();
             // The turn's lines go where every other line
             // goes, the turn remembered as a viewer's.
             tokio::spawn(async move {
+                let mut started_tx = Some(started_tx);
                 while let Some(l) = rx.recv().await {
                     if let StreamLine::Log(e) = &l && let LogBody::TurnStarted { turn_id, .. } = &e.body {
                         turns.lock().unwrap_or_else(|e| e.into_inner()).insert(turn_id.clone());
+                        if let Some(s) = started_tx.take() { let _ = s.send(()); }
                     }
                     if tx.send(l).await.is_err() { return; }
                 }
             });
             let run = daemon.execute(command, mine);
             if streaming {
-                // A prompt is acknowledged as taken, not when its turn ends.
-                let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
-                let _ = run.await;
+                // A prompt is acknowledged as taken — once its turn has
+                // started, not when it ends — or with why the daemon
+                // refused it before it started (an untrusted directory, a
+                // session busy): never as taken when no turn will come.
+                tokio::pin!(run);
+                // A turn that started and then failed is the turn's to
+                // report, not a refusal: started wins when both are ready.
+                let refused = tokio::select! {
+                    biased;
+                    Ok(()) = started => None,
+                    r = &mut run => Some(r.err().map(|e| e.to_string())),
+                };
+                match refused {
+                    Some(error) => { let _ = answers.send((from, Answer::Ack { id: r.id, error })); }
+                    None => {
+                        let _ = answers.send((from, Answer::Ack { id: r.id, error: None }));
+                        let _ = run.await;
+                    }
+                }
             } else {
                 let error = run.await.err().map(|e| e.to_string());
                 let _ = answers.send((from, Answer::Ack { id: r.id, error }));
