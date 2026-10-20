@@ -143,11 +143,12 @@ jobs:
           path: apps/ios/KrowkCore/build
           key: ${{ needs.key.outputs.key }}
 
-  # R-IOS-13, R-CLIENT-1, R-CLIENT-2: the app's Xcode project generates from
-  # project.yml with the right settings, builds, and the scheme Krowk-iOS
-  # passes LaunchTests (XCUITest), KrowkKit's HomeViewControllerTests and
-  # KrowkCore's BindingsTests on an iPhone simulator. Then a screenshot of
-  # the running app, kept as an artifact.
+  # R-IOS-13, R-CLIENT-1, R-CLIENT-2, R-IOS-8: the app's Xcode project
+  # generates from project.yml with the right settings, builds for a device
+  # (unsigned) and for the simulator, and the scheme Krowk-iOS passes
+  # LaunchTests (XCUITest), KrowkKit's HomeViewControllerTests, KrowkKeys'
+  # KeychainKeyStorageTests and KrowkCore's BindingsTests on an iPhone
+  # simulator. Then a screenshot of the running app, kept as an artifact.
   app:
     needs: [key, bindings]
     # Also when bindings was skipped on a cache hit.
@@ -207,6 +208,17 @@ jobs:
               and .SWIFT_VERSION == "6.0"
               and .SWIFT_STRICT_CONCURRENCY == "complete"' "$RUNNER_TEMP/settings.json"
 
+      # The Secure Enclave wrapping key is the only one a device build has:
+      # the software fallback is under #if targetEnvironment(simulator).
+      # Unsigned, since signing is the person's (xtool or ticket 74).
+      - name: "R-IOS-8: build for a device (generic/platform=iOS)"
+        run: |
+          xcodebuild build -quiet -skipPackagePluginValidation \
+            -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
+            -destination generic/platform=iOS \
+            -derivedDataPath "$RUNNER_TEMP/DeviceData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
+          test "$(lipo -archs "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app/Krowk")" = arm64
+
       - name: Boot an iPhone simulator
         run: |
           # An iPhone on the newest iOS runtime installed: the app needs
@@ -235,7 +247,7 @@ jobs:
 
       # Retried only when the simulator failed to start the test runner,
       # a known flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13: LaunchTests, HomeViewControllerTests and BindingsTests on the simulator"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8: LaunchTests, HomeViewControllerTests, KeychainKeyStorageTests and BindingsTests on the simulator"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do

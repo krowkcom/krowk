@@ -11,8 +11,10 @@ apps/ios/
   xtool.yml          xtool's app settings (Linux)
   xtool-Info.plist   the Info.plist keys xtool needs as a file (Linux)
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
-  KrowkKit/          local package: views and models, and their tests
+  KrowkKit/          local package: views and models (KrowkKit), the Keychain key
+                     storage (KrowkKeys), and their tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
+  AppTests/          unit tests hosted in the app: KeychainKeyStorageTests
   UITests/           XCUITest target: LaunchTests
 ```
 
@@ -39,8 +41,13 @@ xcodebuild test -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
 ```
 
 `xcrun simctl list devices available` lists the simulators and their udids.
-The scheme `Krowk-iOS` runs the UI test `LaunchTests`, KrowkKit's unit
-tests and KrowkCore's `BindingsTests`. The simulator slice is arm64 only,
+The scheme `Krowk-iOS` runs the UI test `LaunchTests`, the app-hosted
+`KeychainKeyStorageTests` (target `Krowk-iOSTests`), KrowkKit's unit tests
+and KrowkCore's `BindingsTests`. The Keychain tests are hosted because the
+Keychain refuses a SwiftPM test bundle with no host app (`-34018`, a
+missing entitlement). They clear and remake the app's Keychain items, so
+run them on a simulator, never on a phone whose krowk you use: its device
+identity would go. The simulator slice is arm64 only,
 so this needs an Apple silicon Mac.
 
 No machine of ours runs macOS, so this path runs on GitHub's `macos-26`
@@ -80,6 +87,50 @@ xtool's executable and module are both `KrowkApp`; Xcode's executable is
 `Krowk`, with the module `KrowkApp`. `Package.swift` turns off the
 `-all_load` that xtool's toolset adds, which would otherwise link Rust's
 `compiler_builtins` from `libkrowk_ffi.a` twice.
+
+## Where the keys are kept
+
+`KrowkKeys.KeychainKeyStorage` is the bindings' `KeyStorage` (R-IOS-8): the
+app makes one when its first scene connects and hands it to `Account.open`
+and `SignIn.wait`. Every slot Rust writes (`device.json`, `signing.json`,
+`credentials.json`, …) is a generic-password Keychain item under the service
+`com.krowk.keys`, `kSecAttrAccessibleWhenUnlockedThisDeviceOnly`, not
+synchronizable, its bytes sealed (ECDH, HKDF-SHA256, AES-GCM with the slot's
+name as authenticated data) to a non-exportable Secure Enclave P-256 key
+kept as the item `wrapping-key`. No key is written to a file. Swift only
+moves the bytes; krowk-client owns what they mean.
+
+- **No biometry on key reads.** The enclave key's access control is
+  `.privateKeyUsage` only: every registry call and the relay join read keys.
+  Face ID guards approvals (ticket 91).
+- **The simulator** has no Secure Enclave. Under
+  `#if targetEnvironment(simulator)` only, the wrapping key is a software
+  P-256 key in the same item, so the tests cover everything but the enclave.
+  A device build has no fallback: with no Secure Enclave the storage throws
+  and the app says it can't keep keys safely.
+- **Reinstalls and restores.** Keychain items outlive the app. The first
+  launch (no file `Library/Application Support/krowk.installed`) deletes
+  every `com.krowk.keys` item before anything reads one. The marker is a
+  file excluded from backups, not a `UserDefaults` key, which a backup
+  would carry: after a restore the old items are sealed to an enclave key
+  that may be gone, so a restore counts as a first launch too.
+- **When it can't open.** A phone with no Secure Enclave gets `Refused`
+  with the code `no_secure_enclave`, and the app says it can't keep keys
+  safely. Anything else (the phone locked, a Keychain error) says the keys
+  couldn't be opened and is tried again when the app comes forward.
+- **Plaintext.** Swift keeps no copy of its own: the bytes to seal arrive
+  in UniFFI's `Data` and the opened bytes leave in CryptoKit's, which
+  UniFFI copies and frees. Neither can be wiped from Swift (Canon
+  `crypto.md` → Zeroization). Logs name a slot and an `OSStatus`, never
+  bytes.
+- **Signing.** No `kSecAttrAccessGroup` and no `keychain-access-groups`
+  entitlement: the items are in the app's default group, its application
+  identifier, which both Xcode's and xtool's signing (a free Apple ID's
+  development profile too) give the app. Changing the team or the bundle
+  id changes that group, and the app no longer sees its earlier items. The
+  Notification Service Extension that would share them is M2.
+
+The Secure Enclave itself only runs on a real iPhone (ticket 107).
 
 ## Why the Xcode project is generated
 
