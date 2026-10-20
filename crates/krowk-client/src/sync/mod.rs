@@ -7,6 +7,7 @@
 //! the phone's viewer later, read and write the same JSON.
 
 pub mod store;
+pub mod viewer;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
