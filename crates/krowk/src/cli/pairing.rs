@@ -438,9 +438,10 @@ const QUIET: usize = 4;
 /// module rows to a character row, drawn with the half blocks `▀ ▄ █` and
 /// a space, a 4-module quiet zone around it, and each line wrapped in
 /// `QR_SGR` … `QR_RESET`. Empty when the URI is too long for any QR code.
-/// The lines are wiped on drop; qrcodegen's buffers, which hold the URI
-/// and so the code, are not; as with what `spake2` holds (`krowk_client::pairing`), the code is
-/// single-use and dies with the pairing, so that is accepted.
+/// The lines are each built in one buffer and wiped on drop. qrcodegen's
+/// buffers, which hold the URI and so the code, are not. As with what
+/// `spake2` holds (`krowk_client::pairing`), the code is single-use and
+/// dies with the pairing, so that is accepted.
 fn qr_lines(uri: &str) -> Zeroizing<Vec<String>> {
     use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
     let Ok(qr) = QrCode::encode_segments_advanced(&QrSegment::make_segments(uri), QrCodeEcc::Medium, Version::MIN, Version::MAX, None, false) else {
@@ -454,15 +455,17 @@ fn qr_lines(uri: &str) -> Zeroizing<Vec<String>> {
     (0..width)
         .step_by(2)
         .map(|y| {
-            let row: String = (0..width)
-                .map(|x| match (dark(x, y), dark(x, y + 1)) {
-                    (true, true) => '█',
-                    (true, false) => '▀',
-                    (false, true) => '▄',
-                    (false, false) => ' ',
-                })
-                .collect();
-            format!("{QR_SGR}{row}{QR_RESET}")
+            // Each half block is three bytes in UTF-8.
+            let mut line = String::with_capacity(QR_SGR.len() + 3 * width as usize + QR_RESET.len());
+            line.push_str(QR_SGR);
+            line.extend((0..width).map(|x| match (dark(x, y), dark(x, y + 1)) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            }));
+            line.push_str(QR_RESET);
+            line
         })
         .collect::<Vec<_>>()
         .into()
