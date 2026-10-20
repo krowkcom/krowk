@@ -516,8 +516,9 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             return Err(b_failed(&from));
         }
     };
-    // A posts the entry once it has the ack; this key then claims the
-    // device, which the registry allows only once it is on the list. That,
+    // A posts the entry once its reply is out, after waiting for the ack,
+    // acked or not; this key then claims the device, which the registry
+    // allows only once it is on the list. That,
     // not whether the ack's answer arrived, says whether the join finished:
     // an ack whose answer was lost may well have landed.
     let signed = client.signed_by(shared);
