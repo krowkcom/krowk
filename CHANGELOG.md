@@ -76,6 +76,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   just as fast. That reader moved from the harness into krowk-client, so
   the iPhone app will list and open a session without decrypting it in
   code of its own. Writing the log stays in the harness.
+- **krowk-client decides what a viewer of a synced session shows.**
+  Nothing changes for you: `krowk sync attach` and the TUI show the same
+  lines, each logged event and each waiting approval once, ack the relay
+  as often and try a direct path on the same schedule. How a stream batch
+  is applied, how events are deduped, the ack, the catch-ups a gap asks
+  for and the direct-path timings moved from the harness into
+  krowk-client, so the iPhone app will show a session the same way. The
+  live connection stays in the harness.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,
