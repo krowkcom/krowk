@@ -10,7 +10,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     /// The app's one key storage (R-IOS-8), made when the first scene
     /// connects, before anything reads a key: the sign-in, pairing and
-    /// session calls are opened with it. Nil when it could not be made.
+    /// session calls are opened with it. Nil until it could be made.
     private(set) static var keys: KeychainKeyStorage?
 
     func scene(
@@ -19,20 +19,32 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         options connectionOptions: UIScene.ConnectionOptions
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: windowScene)
+        self.window = window
+        showRoot()
+        window.makeKeyAndVisible()
+    }
+
+    /// A failure that may pass (the phone was locked when the scene
+    /// connected) is tried again when the app comes forward.
+    func sceneWillEnterForeground(_ scene: UIScene) {
+        if Self.keys == nil { showRoot() }
+    }
+
+    private func showRoot() {
         let root: UIViewController
         do throws(KrowkError) {
             if Self.keys == nil { Self.keys = try KeychainKeyStorage() }
             // protocolVersion() crosses into the Rust core (krowk-ffi).
             root = HomeViewController(protocolVersion: protocolVersion())
+        } catch .Refused(code: KeychainKeyStorage.noSecureEnclave, detail: let detail) {
+            root = KeysUnavailableViewController(cause: .noSecureEnclave, reason: detail)
         } catch {
-            root = KeysUnavailableViewController(reason: error.detail)
+            root = KeysUnavailableViewController(cause: .failed, reason: error.detail)
         }
         let navigation = UINavigationController(rootViewController: root)
         navigation.navigationBar.prefersLargeTitles = true
-        let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = navigation
-        window.makeKeyAndVisible()
-        self.window = window
+        window?.rootViewController = navigation
     }
 }
 

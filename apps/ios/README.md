@@ -14,6 +14,7 @@ apps/ios/
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
                      storage (KrowkKeys), and their tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
+  AppTests/          unit tests hosted in the app: KeychainKeyStorageTests
   UITests/           XCUITest target: LaunchTests
 ```
 
@@ -40,8 +41,11 @@ xcodebuild test -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
 ```
 
 `xcrun simctl list devices available` lists the simulators and their udids.
-The scheme `Krowk-iOS` runs the UI test `LaunchTests`, KrowkKit's and
-KrowkKeys' unit tests and KrowkCore's `BindingsTests`. The simulator slice is arm64 only,
+The scheme `Krowk-iOS` runs the UI test `LaunchTests`, the app-hosted
+`KeychainKeyStorageTests` (target `Krowk-iOSTests`), KrowkKit's unit tests
+and KrowkCore's `BindingsTests`. The Keychain tests are hosted because the
+Keychain refuses a SwiftPM test bundle with no host app (`-34018`, a
+missing entitlement). The simulator slice is arm64 only,
 so this needs an Apple silicon Mac.
 
 No machine of ours runs macOS, so this path runs on GitHub's `macos-26`
@@ -102,9 +106,21 @@ moves the bytes; krowk-client owns what they mean.
   P-256 key in the same item, so the tests cover everything but the enclave.
   A device build has no fallback: with no Secure Enclave the storage throws
   and the app says it can't keep keys safely.
-- **Reinstalls.** Keychain items outlive the app. The first launch (no
-  `UserDefaults` key `krowk.installed`) deletes every `com.krowk.keys` item
-  before anything reads one.
+- **Reinstalls and restores.** Keychain items outlive the app. The first
+  launch (no file `Library/Application Support/krowk.installed`) deletes
+  every `com.krowk.keys` item before anything reads one. The marker is a
+  file excluded from backups, not a `UserDefaults` key, which a backup
+  would carry: after a restore the old items are sealed to an enclave key
+  that may be gone, so a restore counts as a first launch too.
+- **When it can't open.** A phone with no Secure Enclave gets `Refused`
+  with the code `no_secure_enclave`, and the app says it can't keep keys
+  safely. Anything else (the phone locked, a Keychain error) says the keys
+  couldn't be opened and is tried again when the app comes forward.
+- **Plaintext.** Swift keeps no copy of its own: the bytes to seal arrive
+  in UniFFI's `Data` and the opened bytes leave in CryptoKit's, which
+  UniFFI copies and frees. Neither can be wiped from Swift (Canon
+  `crypto.md` → Zeroization). Logs name a slot and an `OSStatus`, never
+  bytes.
 - **Signing.** No `kSecAttrAccessGroup` and no `keychain-access-groups`
   entitlement: the items are in the app's default group, its application
   identifier, which both Xcode's and xtool's signing (a free Apple ID's

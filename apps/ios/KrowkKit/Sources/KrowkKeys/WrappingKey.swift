@@ -41,10 +41,10 @@ enum WrappingKeyFailure: Error, CustomStringConvertible {
 extension SecureEnclave.P256.KeyAgreement.PrivateKey: WrappingKey {}
 
 #if targetEnvironment(simulator)
-/// The simulator has no Secure Enclave. Debug builds on it seal the slots
-/// to a software key kept in the same Keychain item, so the tests cover
-/// everything but the enclave. A device build has no such fallback: this
-/// type is not compiled into it.
+/// The simulator has no Secure Enclave. A simulator build seals the slots
+/// to a software key kept in the same Keychain item (its raw 32 bytes), so
+/// the tests cover everything but the enclave. A device build has no such
+/// fallback: none of this is compiled into it.
 extension P256.KeyAgreement.PrivateKey: WrappingKey {}
 #endif
 
@@ -54,8 +54,7 @@ enum WrappingKeys {
     /// agree on whichever was stored first.
     static func loadOrCreate() throws(WrappingKeyFailure) -> any WrappingKey {
         if let key = try load() { return key }
-        var made = try make()
-        defer { wipe(&made.stored) }
+        let made = try make()
         do throws(KeychainFailure) {
             try Keychain.write(wrappingKeyAccount, made.stored, replace: false)
             return made.key
@@ -71,8 +70,7 @@ enum WrappingKeys {
     private static func load() throws(WrappingKeyFailure) -> (any WrappingKey)? {
         let stored: Data?
         do throws(KeychainFailure) { stored = try Keychain.read(wrappingKeyAccount) } catch { throw .keychain(error) }
-        guard var stored else { return nil }
-        defer { wipe(&stored) }
+        guard let stored else { return nil }
         return try restore(stored)
     }
 
@@ -117,12 +115,4 @@ enum WrappingKeys {
         }
     }
     #endif
-}
-
-/// Overwrites a buffer Swift owns with zeros before it is freed.
-func wipe(_ data: inout Data) {
-    data.withUnsafeMutableBytes { raw in
-        guard let base = raw.baseAddress else { return }
-        _ = memset_s(base, raw.count, 0, raw.count)
-    }
 }

@@ -21,15 +21,32 @@ import os
 /// info: "krowk ios keychain v1 " + slot), and the slot's name is the
 /// authenticated data: an item copied to another name does not open.
 ///
+/// Plaintext: Swift keeps none of its own. A slot's bytes reach `write` in
+/// the `Data` UniFFI built, and `read` returns them in the `Data`
+/// `AES.GCM.open` made, which UniFFI copies and frees; neither can be wiped
+/// from here (Canon crypto.md → Zeroization). CryptoKit wipes the shared
+/// secrets and AES keys it derives. Logs name a slot and an OSStatus, never
+/// bytes.
+///
 /// Rust may call it from any thread; the Security framework is thread-safe
 /// and the only stored property is an immutable key handle. ticket 78
 /// exports no lock: the slot lock is Rust's, in-process (krowk-ffi).
 public final class KeychainKeyStorage: KeyStorage {
-    /// The `UserDefaults` key set once a launch has purged what an earlier
-    /// install left in the Keychain.
-    public static let installedMarker = "krowk.installed"
+    /// The file whose presence says this install has already purged what an
+    /// earlier one left in the Keychain: `Library/Application Support/
+    /// krowk.installed`, empty, excluded from backups. Not `UserDefaults`,
+    /// which a backup carries: restored onto a phone, it would say "already
+    /// purged" over Keychain items sealed to a Secure Enclave key that the
+    /// erase before the restore destroyed, and the app would be stuck on keys
+    /// that never open. A file the backup leaves out makes any restore a
+    /// first launch. It holds no key.
+    public static var installMarker: URL {
+        URL.applicationSupportDirectory.appending(path: "krowk.installed", directoryHint: .notDirectory)
+    }
 
-    static let format: UInt8 = 1
+    /// The `KrowkError.Refused` code of a device with no Secure Enclave.
+    public static let noSecureEnclave = "no_secure_enclave"
+
     private static let ephemeralLength = 65
     /// AES-GCM's nonce and tag.
     private static let boxOverhead = 12 + 16
@@ -39,31 +56,46 @@ public final class KeychainKeyStorage: KeyStorage {
     /// Opens the install's keys, making its wrapping key on first use. On
     /// the first launch after an install it first deletes every item an
     /// earlier install left (Keychain items outlive an app's deletion), so
-    /// a reinstall never inherits a device identity. Throws on a device
-    /// with no Secure Enclave: krowk keeps no keys there.
-    public convenience init() throws(KrowkError) {
-        try self.init(defaults: .standard)
-    }
-
-    init(defaults: UserDefaults) throws(KrowkError) {
-        try Self.purgeIfFirstLaunch(defaults)
-        do {
+    /// a reinstall never inherits a device identity. On a device with no
+    /// Secure Enclave it throws `Refused` with the code `no_secure_enclave`:
+    /// krowk keeps no keys there. Anything else (the phone locked, a
+    /// Keychain error) is `Internal`, and may pass.
+    ///
+    /// `installMarker` is for tests; the app keeps the default.
+    public init(installMarker: URL = KeychainKeyStorage.installMarker) throws(KrowkError) {
+        try Self.purgeIfFirstLaunch(installMarker)
+        do throws(WrappingKeyFailure) {
             wrappingKey = try WrappingKeys.loadOrCreate()
+        } catch .noSecureEnclave {
+            log.error("no Secure Enclave")
+            throw .Refused(code: Self.noSecureEnclave, detail: WrappingKeyFailure.noSecureEnclave.description)
         } catch {
             log.error("no wrapping key: \(error.description, privacy: .public)")
             throw .Internal(detail: error.description)
         }
     }
 
-    /// Deletes every item under `com.krowk.keys` unless `defaults` says this
-    /// install already did, then says so.
-    static func purgeIfFirstLaunch(_ defaults: UserDefaults) throws(KrowkError) {
-        guard !defaults.bool(forKey: installedMarker) else { return }
+    /// Deletes every item under `com.krowk.keys` unless the marker says this
+    /// install already did, then writes the marker. The purge comes first:
+    /// a launch that dies between the two purges again, which loses
+    /// nothing, since no key was made in between.
+    private static func purgeIfFirstLaunch(_ marker: URL) throws(KrowkError) {
+        guard !FileManager.default.fileExists(atPath: marker.path(percentEncoded: false)) else { return }
         do throws(KeychainFailure) { try Keychain.removeAll() } catch {
             log.error("first-launch purge failed: OSStatus \(error.status, privacy: .public)")
             throw .Internal(detail: error.description)
         }
-        defaults.set(true, forKey: installedMarker)
+        do {
+            try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data().write(to: marker, options: .atomic)
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var url = marker
+            try url.setResourceValues(values)
+        } catch {
+            log.error("could not write the install marker")
+            throw .Internal(detail: "could not record that krowk's Keychain items were cleared: \(error.localizedDescription)")
+        }
     }
 
     public func read(slot: String) throws(KrowkError) -> Data? {
@@ -85,14 +117,14 @@ public final class KeychainKeyStorage: KeyStorage {
 
     // MARK: Sealing
 
-    func seal(_ plaintext: Data, slot: String) throws(KrowkError) -> Data {
+    private func seal(_ plaintext: Data, slot: String) throws(KrowkError) -> Data {
         let ephemeral = P256.KeyAgreement.PrivateKey()
         let share = ephemeral.publicKey.x963Representation
         do {
             let key = derive(try ephemeral.sharedSecretFromKeyAgreement(with: wrappingKey.publicKey), share, slot)
             let box = try AES.GCM.seal(plaintext, using: key, authenticating: Data(slot.utf8))
             guard let combined = box.combined else { throw CryptoKitError.incorrectParameterSize }
-            return Data([Self.format]) + share + combined
+            return Data([sealedFormat]) + share + combined
         } catch {
             log.error("sealing \(slot, privacy: .public) failed")
             throw .Internal(detail: "could not seal the Keychain item \(slot): \(error)")
@@ -101,11 +133,11 @@ public final class KeychainKeyStorage: KeyStorage {
 
     /// The slot's bytes, or an error: never the sealed bytes, and never
     /// "absent" for an item that is there but does not open.
-    func open(_ sealed: Data, slot: String) throws(KrowkError) -> Data {
+    private func open(_ sealed: Data, slot: String) throws(KrowkError) -> Data {
         let unreadable = KrowkError.Internal(
             detail: "the Keychain item \(slot) does not open with this install's key: it was not sealed here, or not under this name"
         )
-        guard sealed.count >= 1 + Self.ephemeralLength + Self.boxOverhead, sealed.first == Self.format else {
+        guard sealed.count >= 1 + Self.ephemeralLength + Self.boxOverhead, sealed.first == sealedFormat else {
             log.error("\(slot, privacy: .public) is not in krowk's sealed format")
             throw unreadable
         }
@@ -147,6 +179,9 @@ public final class KeychainKeyStorage: KeyStorage {
         }
     }
 }
+
+/// The sealed format's version, its first byte.
+private let sealedFormat: UInt8 = 1
 
 /// Names the slot and the OSStatus, nothing else: never a slot's bytes.
 private let log = Logger(subsystem: "com.krowk.app", category: "keychain")
