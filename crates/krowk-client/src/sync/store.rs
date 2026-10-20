@@ -1,6 +1,11 @@
 //! A synced session at rest (engineering/harness.md → Sync): the shapes of
-//! its sealed index and of the chunks of its log, checkpoints among them.
-//! Reading and writing them is the harness's (`krowk_harness::sync::store`).
+//! its sealed index and of the chunks of its log, checkpoints among them,
+//! and reading them back on a device attaching (`attach`, `catch_up`, the
+//! key and index openers), so no client reimplements the crypto
+//! (R-CLIENT-1). Writing them is the lease holder's, in the harness
+//! (`krowk_harness::sync::store::Writer`). Blocking: each read is a round
+//! trip through `krowk_api::Client`, so a phone calls these off its main
+//! thread.
 //!
 //! **A chunk** is JSON, sealed with `e2e::ChunkSealer`: `{"type": "events",
 //! "events": [LogEvent…]}`, the events logged since the chunk before, cut at
@@ -15,6 +20,11 @@
 //! with the log as it was then; what detects that is the host's live head
 //! in its welcome, and a device's own high-water mark (`Head::at_least`).
 
+use crate::device_chain::Chain;
+use crate::e2e::{self, ChunkReader, SessionKeys};
+use crate::session_record;
+use crate::user_key::UserKeys;
+use krowk_api::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -105,6 +115,171 @@ pub enum Chunk {
     Checkpoint(Checkpoint),
 }
 
+/// How many chunks are read from storage at once.
+const FETCH: usize = 8;
+
+fn api(e: krowk_api::Error) -> String {
+    e.to_string()
+}
+
+/// The whole log as the registry holds it: its events and where it ends,
+/// read from chunk 0, never from a checkpoint, with a checkpoint replacing
+/// the events gathered before it. What a holder taking a session up chains
+/// onto: public for the host's writer (`krowk_harness::sync::store`). It
+/// holds the log to no head, so a registry serving a prefix goes unseen: a
+/// reader that was not told the log's length goes through `attach` or
+/// `catch_up`, which do (`Head::at_least`).
+pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
+    let mut reader = ChunkReader::new(key, crate::sync::uuid(id));
+    let mut events = Vec::new();
+    let head = read_from(client, id, &mut reader, None, &mut |c, _| {
+        match c {
+            Chunk::Events { events: e } => events.extend(e),
+            Chunk::Checkpoint(cp) => events = cp.events,
+        }
+        Ok(())
+    })?;
+    Ok((events, reader, head))
+}
+
+/// Reads chunks from `reader`'s place to the end of what the registry lists,
+/// handing each to `each` with its head, the chunks of a page fetched
+/// `FETCH` at a time. What `attach`, `catch_up` and `read_all` (the host's
+/// writer's) are built on. It holds what it read to no head: a caller
+/// reading a session it was not told the length of goes through `attach`
+/// or `catch_up`, which do (`Head::at_least`).
+pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
+    let mut after = reader.next().checked_sub(1);
+    loop {
+        let page = client.list_chunks(id, after, 100).map_err(api)?;
+        let wanted: Vec<_> = page.chunks.iter().filter(|c| c.index >= reader.next()).collect();
+        // Each chunk is a round trip to storage, so a page is fetched
+        // FETCH at a time and opened in order: an attach costs a few round
+        // trips, not one a chunk (R-PERF-6).
+        let mut fetched = Vec::with_capacity(wanted.len());
+        for group in wanted.chunks(FETCH) {
+            let got: Vec<_> = std::thread::scope(|s| group.iter().map(|c| s.spawn(move || client.read_chunk(c))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap_or_else(|_| Err(krowk_api::fail("read_failed", "a chunk read panicked")))).collect());
+            fetched.extend(got);
+        }
+        for (c, sealed) in wanted.iter().zip(fetched) {
+            let sealed = sealed.map_err(api)?;
+            let plain = reader.open(&sealed).map_err(|e| e.to_string())?;
+            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| format!("chunk {} holds no chunk this krowk reads: {e}", c.index))?;
+            let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
+            last = Some(h);
+            each(chunk, h)?;
+        }
+        match page.next {
+            Some(n) if !page.chunks.is_empty() => after = Some(n),
+            _ => return Ok(last),
+        }
+    }
+}
+
+/// A session as a device attaching reads it at rest: the events to its
+/// head, from its latest checkpoint.
+#[derive(Debug, Clone, Default)]
+pub struct Attached {
+    pub index: Index,
+    pub events: Vec<Value>,
+    pub head: Option<Head>,
+    /// Where the reading stopped, for reading the tail again later.
+    pub next: u64,
+    pub previous: [u8; 32],
+    pub fence: u64,
+    /// The key epoch of the last chunk read.
+    pub epoch: u32,
+    /// Every chunk read, for holding the log to a head it was told of.
+    pub heads: Vec<Head>,
+}
+
+/// A session's keys, out of the session record: only a record signed by a
+/// device the verified list has held — listed now, `from` `Listed`, when a
+/// host takes it up to write under (`session_record::verify`) — and then
+/// opened with the generations this device holds. An unsigned record, one
+/// signed by a device the list never held, and one sealed some way other
+/// than to the user key, are refused before anything is unwrapped.
+pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserKeys, chain: &Chain, from: session_record::Signer) -> Result<SessionKeys, String> {
+    let raw = crate::sync::uuid(id);
+    let wrapped = e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?;
+    let seal = if s.seal.is_empty() { session_record::SEAL_USER } else { s.seal.as_str() };
+    let signer = e2e::DeviceId::parse(&s.signer).ok_or_else(|| format!("the registry's record of session {id} names no signer — refused, since anyone could have made it"))?;
+    let signature = e2e::unhex(&s.record_signature).ok_or_else(|| format!("the registry's record of session {id} carries no signature — refused"))?;
+    session_record::verify(&raw, &wrapped, seal, signer, &signature, chain, from).map_err(|e| e.to_string())?;
+    e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
+}
+
+/// Opens a session's sealed index: under the current key, or an older
+/// one's when a rotation's key landed and its index write did not — the
+/// holder's next index write seals it under the current one.
+pub fn open_index(key: &SessionKeys, id: &str, sealed_hex: &str) -> Result<Index, String> {
+    if sealed_hex.is_empty() {
+        return Ok(Index::default());
+    }
+    let blob = e2e::unhex(sealed_hex).ok_or("the session's index is not hex")?;
+    let session = crate::sync::uuid(id);
+    let mut opened = e2e::open_session_index(&blob, &session, key.current());
+    for epoch in (0..key.epoch()).rev() {
+        if opened.is_ok() {
+            break;
+        }
+        opened = e2e::open_session_index(&blob, &session, key.at(epoch).expect("within the ring"));
+    }
+    let plain = opened.map_err(|e| e.to_string())?;
+    serde_json::from_slice(&plain).map_err(|e| format!("the session's index is not one this krowk reads: {e}"))
+}
+
+/// Attaches from the latest checkpoint and reads the tail after it, then
+/// holds what was read to the index's head and to `known`.
+pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known: Option<Head>) -> Result<Attached, String> {
+    let session = crate::sync::uuid(id);
+    let mut reader = match index.checkpoint {
+        Some(m) => ChunkReader::resume(key, session, m.index, m.previous, m.fence, 0),
+        None => ChunkReader::new(key, session),
+    };
+    let mut events = Vec::new();
+    let mut heads = Vec::new();
+    let head = read_from(client, id, &mut reader, None, &mut |c, h| {
+        match c {
+            Chunk::Events { events: e } => events.extend(e),
+            Chunk::Checkpoint(cp) => {
+                // The head before the checkpoint, as the host sealed it in.
+                heads.extend(cp.chunk);
+                events = cp.events;
+            }
+        }
+        heads.push(h);
+        Ok(())
+    })?;
+    Head::at_least(&heads, index.head)?;
+    Head::at_least(&heads, known)?;
+    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), epoch: reader.epoch(), index, events, head, heads })
+}
+
+/// Reads the tail again from where `a` stopped, until it reaches `known`.
+pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, String> {
+    let mut reader = ChunkReader::resume(key, crate::sync::uuid(id), a.next, a.previous, a.fence, a.epoch);
+    let mut fresh = Vec::new();
+    let mut heads = std::mem::take(&mut a.heads);
+    let head = read_from(client, id, &mut reader, a.head, &mut |c, h| {
+        if let Chunk::Events { events } = c {
+            fresh.extend(events);
+        }
+        heads.push(h);
+        Ok(())
+    });
+    a.heads = heads;
+    let head = head?;
+    Head::at_least(&a.heads, known)?;
+    a.head = head;
+    a.next = reader.next();
+    a.previous = reader.previous();
+    a.fence = reader.fence();
+    a.epoch = reader.epoch();
+    a.events.extend(fresh.iter().cloned());
+    Ok(fresh)
+}
+
 mod hex32 {
     use serde::{Deserialize, Deserializer, Serializer};
     pub fn serialize<S: Serializer>(b: &[u8; 32], s: S) -> Result<S::Ok, S::Error> {
@@ -140,5 +315,33 @@ mod tests {
         assert!(Head::at_least(&log(5, 9), h(4, 1)).is_err(), "another chunk at the head");
         assert!(Head::at_least(&log(8, 9), h(4, 1)).is_err(), "a longer log that forked before the head");
         assert!(Head::at_least(&[], None).is_ok());
+    }
+
+    /// An index whose rotation's key landed and whose next index write did
+    /// not is still sealed under the older epoch: it opens, newest key
+    /// first, then each older one, and under no key the ring lacks.
+    #[test]
+    fn r_client_1_open_index_opens_under_an_older_epoch() {
+        let id = "0b1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5e";
+        let session = crate::sync::uuid(id);
+        let old = e2e::SessionKeys::from(e2e::SessionKey::generate());
+        let index = Index { title: "fix the build".into(), cwd: "/src".into(), updated_ms: 7, head: h(3, 2), checkpoint: None, host: None };
+        let seal = |k: &e2e::SessionKey| e2e::hex(&e2e::seal_session_index(k, &session, &serde_json::to_vec(&index).unwrap()));
+        let sealed = seal(old.current());
+        let rotated = old.rotated().unwrap();
+        assert_eq!(rotated.epoch(), 1);
+        assert_eq!(open_index(&rotated, id, &sealed).unwrap(), index);
+        assert_eq!(open_index(&old, id, &sealed).unwrap(), index);
+        // Rotated twice: epoch 0 is reached past epoch 1, and an index
+        // sealed under epoch 1 opens too.
+        let twice = rotated.rotated().unwrap();
+        assert_eq!(twice.epoch(), 2);
+        assert_eq!(open_index(&twice, id, &sealed).unwrap(), index);
+        assert_eq!(open_index(&twice, id, &seal(twice.at(1).unwrap())).unwrap(), index);
+        assert!(open_index(&old, id, &seal(twice.current())).is_err(), "a newer epoch than the ring holds");
+        let other = e2e::SessionKeys::from(e2e::SessionKey::generate()).rotated().unwrap();
+        assert!(open_index(&other, id, &sealed).is_err(), "no key of the ring");
+        assert!(open_index(&twice, "1b1d2e3f-4a5b-4c6d-8e7f-901a2b3c4d5e", &sealed).is_err(), "another session's index");
+        assert_eq!(open_index(&twice, id, "").unwrap(), Index::default());
     }
 }

@@ -25,7 +25,8 @@
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //! - `sync`: the wire and at-rest shapes of a synced session — a viewer's
 //!   frames, the host's answers, welcome and batches, and (`sync::store`)
-//!   the sealed index and chunks its log is kept in.
+//!   the sealed index and chunks its log is kept in, with the blocking
+//!   reader that opens them from the registry (`attach`, `catch_up`).
 //!
 //! The design, and what a hostile server can and cannot learn from it, is
 //! `docs/security/crypto.md` (R-OSS-1).

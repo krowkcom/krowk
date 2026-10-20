@@ -70,6 +70,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   kept at rest, are the same JSON byte for byte. Their types moved from
   the harness into krowk-client, so the iPhone app will read them without
   a copy of its own.
+- **krowk-client reads a synced session back.** Nothing changes for you:
+  attaching to a session, catching up with it, and opening its key and
+  index read the same chunks, check them the same way and fetch them
+  just as fast. That reader moved from the harness into krowk-client, so
+  the iPhone app will list and open a session without decrypting it in
+  code of its own. Writing the log stays in the harness.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,
