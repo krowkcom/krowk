@@ -18,7 +18,8 @@ apps/ios/
 
 Both manifests are thin and point at the same sources. Add a file to `App/`
 or a package and both pick it up. A new Info.plist key goes in both
-`project.yml` (as `INFOPLIST_KEY_*`) and `xtool-Info.plist`.
+`project.yml` (as `INFOPLIST_KEY_*`) and `xtool-Info.plist`; CI checks that
+the keys both set agree.
 
 ## On a Mac: Xcode, the simulator and UI tests
 
@@ -56,8 +57,9 @@ cd apps/ios && xtool dev build
 
 That writes `apps/ios/xtool/KrowkApp.app`, an arm64 iPhone build. From the
 same directory, omarchy-apple-dev's `device-run.sh` installs it on a paired
-iPhone, also over a tailnet, and `ship.sh` builds, signs and uploads a
-TestFlight build (ticket 74). There is no simulator, XcodeGen or XCUITest on
+iPhone, also over a tailnet, and `ship.sh` is how ticket 74 will sign and
+upload TestFlight builds (the app icon is still empty). Neither has been run
+for this app yet. There is no simulator, XcodeGen or XCUITest on
 Linux. KrowkKit's tests run on the Mac path.
 
 xtool's executable and module are both `KrowkApp`; Xcode's executable is

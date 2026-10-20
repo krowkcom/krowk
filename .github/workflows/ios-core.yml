@@ -196,22 +196,46 @@ jobs:
           test "$(lipo -archs "$app/Krowk")" = arm64
           test -d "$DERIVED/Build/Products/Debug-iphonesimulator/KrowkApp.swiftmodule"
           plutil -p "$app/Info.plist"
+          # Linux's xtool build reads apps/ios/xtool-Info.plist instead of
+          # project.yml's INFOPLIST_KEY_*: the keys both set must agree.
+          python3 - "$app/Info.plist" apps/ios/xtool-Info.plist <<'PY'
+          import plistlib, sys
+          xcode, xtool = (plistlib.load(open(p, "rb")) for p in sys.argv[1:])
+          keys = ["CFBundleIdentifier", "CFBundleDisplayName", "CFBundleShortVersionString", "CFBundleVersion",
+                  "UIDeviceFamily", "NSCameraUsageDescription", "UISupportedInterfaceOrientations"]
+          xtool.setdefault("CFBundleIdentifier", "com.krowk.app")  # xtool.yml's bundleID
+          bad = [k for k in keys if xcode.get(k) != xtool.get(k)]
+          scenes = lambda d: d.get("UIApplicationSceneManifest", {}).get("UIApplicationSupportsMultipleScenes")
+          if scenes(xcode) != scenes(xtool):
+              bad.append("UIApplicationSupportsMultipleScenes")
+          if bad:
+              sys.exit("xtool-Info.plist differs from Xcode's: " + ", ".join(f"{k}: {xcode.get(k)!r} vs {xtool.get(k)!r}" for k in bad))
+          PY
 
       - name: Screenshot of the running app
+        id: shot
+        # After a failed test too, when it says the most; not without an app.
+        if: ${{ !cancelled() && hashFiles('apps/ios/Krowk.xcodeproj/project.pbxproj') != '' }}
         run: |
+          app=$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app
+          test -d "$app" || { echo "no Krowk.app was built" >&2; exit 1; }
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b
-          xcrun simctl install "$UDID" "$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app"
+          xcrun simctl install "$UDID" "$app"
           xcrun simctl launch "$UDID" com.krowk.app
           sleep 5
           xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-home.png"
+          # A crashed app would leave the home screen in the picture.
+          xcrun simctl spawn "$UDID" launchctl list | grep -q 'UIKitApplication:com\.krowk\.app' \
+            || { echo "krowk is not running after 5 s" >&2; exit 1; }
 
       - name: Keep the screenshot
+        if: ${{ !cancelled() && steps.shot.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: krowk-ios-screenshot
           path: ${{ runner.temp }}/krowk-home.png
-          if-no-files-found: error
+          if-no-files-found: warn
 
       - name: Keep the test results on failure
         if: failure()

@@ -20,11 +20,18 @@
 	</array>
 	<key>UILaunchScreen</key>
 	<dict/>
+	<!-- As Xcode's UIApplicationSceneManifest_Generation writes it. -->
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>
-		<false/>
+		<true/>
 	</dict>
+	<key>UISupportedInterfaceOrientations</key>
+	<array>
+		<string>UIInterfaceOrientationPortrait</string>
+		<string>UIInterfaceOrientationLandscapeLeft</string>
+		<string>UIInterfaceOrientationLandscapeRight</string>
+	</array>
 	<key>NSCameraUsageDescription</key>
 	<string>krowk uses the camera to scan the pairing code another device shows.</string>
 </dict>
