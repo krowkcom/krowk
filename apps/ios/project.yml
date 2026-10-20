@@ -44,7 +44,7 @@ targets:
         INFOPLIST_KEY_CFBundleDisplayName: krowk
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations: "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         INFOPLIST_KEY_NSCameraUsageDescription: "krowk uses the camera to scan the pairing code another device shows."
         # ITSAppUsesNonExemptEncryption is deliberately absent: the export
         # compliance answer is the person's, in ticket 74.

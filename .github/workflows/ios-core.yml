@@ -197,19 +197,23 @@ jobs:
           test -d "$DERIVED/Build/Products/Debug-iphonesimulator/KrowkApp.swiftmodule"
           plutil -p "$app/Info.plist"
           # Linux's xtool build reads apps/ios/xtool-Info.plist instead of
-          # project.yml's INFOPLIST_KEY_*: the keys both set must agree.
+          # project.yml's INFOPLIST_KEY_*: every key it sets must be in
+          # Xcode's, the same. Xcode nests UILaunchScreen in itself, and
+          # adds an empty UISceneConfigurations to the scene manifest.
           python3 - "$app/Info.plist" apps/ios/xtool-Info.plist <<'PY'
           import plistlib, sys
           xcode, xtool = (plistlib.load(open(p, "rb")) for p in sys.argv[1:])
-          keys = ["CFBundleIdentifier", "CFBundleDisplayName", "CFBundleShortVersionString", "CFBundleVersion",
-                  "UIDeviceFamily", "NSCameraUsageDescription", "UISupportedInterfaceOrientations"]
-          xtool.setdefault("CFBundleIdentifier", "com.krowk.app")  # xtool.yml's bundleID
-          bad = [k for k in keys if xcode.get(k) != xtool.get(k)]
+          xtool["CFBundleIdentifier"] = "com.krowk.app"  # xtool.yml's bundleID
           scenes = lambda d: d.get("UIApplicationSceneManifest", {}).get("UIApplicationSupportsMultipleScenes")
-          if scenes(xcode) != scenes(xtool):
+          bad = [k for k in xtool if k not in ("UILaunchScreen", "UIApplicationSceneManifest")
+                 and (k not in xcode or xcode[k] != xtool[k])]
+          if "UILaunchScreen" not in xcode:
+              bad.append("UILaunchScreen")
+          if scenes(xtool) is None or scenes(xcode) != scenes(xtool):
               bad.append("UIApplicationSupportsMultipleScenes")
           if bad:
               sys.exit("xtool-Info.plist differs from Xcode's: " + ", ".join(f"{k}: {xcode.get(k)!r} vs {xtool.get(k)!r}" for k in bad))
+          print("xtool-Info.plist agrees with Xcode's on", len(xtool), "keys")
           PY
 
       - name: Screenshot of the running app

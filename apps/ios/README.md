@@ -19,7 +19,8 @@ apps/ios/
 Both manifests are thin and point at the same sources. Add a file to `App/`
 or a package and both pick it up. A new Info.plist key goes in both
 `project.yml` (as `INFOPLIST_KEY_*`) and `xtool-Info.plist`; CI checks that
-the keys both set agree.
+every key `xtool-Info.plist` sets is in Xcode's Info.plist, with the same
+value.
 
 ## On a Mac: Xcode, the simulator and UI tests
 
