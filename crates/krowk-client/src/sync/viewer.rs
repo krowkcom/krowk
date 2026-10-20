@@ -62,6 +62,7 @@ pub fn ack(session: &[u8; 16], seq: u64) -> Vec<u8> {
 /// A viewer acks at least every this many batches, well inside the relay's
 /// window of 16, and at the next display frame after any it applied.
 pub const ACK_EVERY: u64 = 4;
+const _: () = assert!(ACK_EVERY < 16, "inside the relay's window of 16");
 
 /// Keeps the newest logged event id: ids are UUIDv7, so the greatest is
 /// the latest.
@@ -305,7 +306,6 @@ mod tests {
         assert_eq!(b[1], KIND_ACK);
         assert_eq!(&b[4..20], &session);
         assert_eq!(&b[20..28], &[1, 2, 3, 4, 5, 6, 7, 8]);
-        assert!(ACK_EVERY < 16, "acked well inside the relay's window of 16");
     }
 
     /// An event with no id is dropped, and one already seen, even within
@@ -376,7 +376,7 @@ mod tests {
     fn r_off_2_a_gap_among_held_batches_shows_and_is_covered_by_the_welcomes_catch_up() {
         let (mut link, [b1, _, b3]) = three_batches();
         let mut c = CatchUps::default();
-        // `send_welcomed`: the catch-up from the newest event the chunks held.
+        // The harness's `send_welcomed`: the catch-up from the newest event the chunks held.
         assert_eq!(c.welcomed(Some(id(0))), Some(id(0)));
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), Some(id(0)), HashSet::new(), Vec::new(), 0);
         let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
@@ -459,7 +459,7 @@ mod tests {
 
     /// R-NET-2: while the session moves to a direct path, a gap in the
     /// relay's batches shows and is caught up, through the helper
-    /// `leaving_in` (and the live path) use.
+    /// the harness's `leaving_in` (and its live path) use.
     #[test]
     fn r_net_2_a_gap_in_the_relays_batches_while_moving_to_a_direct_path_is_caught_up() {
         let (mut link, [b1, _, b3]) = three_batches();

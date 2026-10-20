@@ -80,8 +80,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Nothing changes for you: `krowk sync attach` and the TUI show the same
   lines, each logged event and each waiting approval once, ack the relay
   as often and try a direct path on the same schedule. How a stream batch
-  is applied, how events are deduped, the ack and the catch-ups a gap
-  asks for moved from the harness into krowk-client, so the iPhone app
+  is applied, how events are deduped, the ack, the catch-ups a gap asks
+  for and the direct-path timings moved from the harness into krowk-client, so the iPhone app
   will show a session the same way. The live connection stays in the
   harness.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
