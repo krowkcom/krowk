@@ -3,7 +3,10 @@
 //! `LogEvent` or an ephemeral `LiveEvent`), and every line of a session's
 //! log (`LogEvent`) is declared here, once. The JSON Schema in `schema/` is
 //! generated from these types, never written beside them (R-PROTO-2), and a
-//! test fails when the checked-in copy is stale.
+//! test fails when the checked-in copy is stale. The Swift types come from
+//! them too: krowk-ffi's `src/protocol.rs` re-declares everything reachable
+//! from `StreamLine` and `Command` with `uniffi::remote`, and stops building
+//! until a change here is copied there.
 //!
 //! The shape is session → turn → item. A session is one conversation; a turn
 //! is one prompt and everything the engine did to answer it; an item is one

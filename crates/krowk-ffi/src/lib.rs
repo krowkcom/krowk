@@ -47,6 +47,13 @@
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
 //!
+//! # The protocol
+//!
+//! Every type reachable from `StreamLine` and `Command` is
+//! `krowk_client::protocol`'s own, re-declared remote in `src/protocol.rs`;
+//! JSON crosses only at the edges, through [`decode_stream_line`],
+//! [`decode_log_event`] and [`encode_command`].
+//!
 //! # Generating the Swift bindings
 //!
 //! Library mode reads the interface out of the host build's cdylib (on
@@ -69,11 +76,13 @@ uniffi::setup_scaffolding!();
 
 mod account;
 mod error;
+mod protocol;
 mod sign_in;
 mod storage;
 
 pub use account::Account;
 pub use error::KrowkError;
+pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 
@@ -82,7 +91,7 @@ use krowk_client::pairing::PairingCode;
 /// The version of this crate's exported API, the first line of
 /// `public-api.txt`: bumped whenever an existing export is removed or
 /// changed (rule 8), never for an addition.
-pub const FFI_API_VERSION: u32 = 2;
+pub const FFI_API_VERSION: u32 = 3;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]
