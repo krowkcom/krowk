@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Only for xtool (xtool.yml), which merges these keys over its own defaults.
+  Xcode generates its Info.plist from project.yml's INFOPLIST_KEY_* settings;
+  keep the two in step. No ITSAppUsesNonExemptEncryption: that answer is the
+  person's, in ticket 74.
+-->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>krowk</string>
+	<key>CFBundleShortVersionString</key>
+	<string>0.1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>UIDeviceFamily</key>
+	<array>
+		<integer>1</integer>
+	</array>
+	<key>UILaunchScreen</key>
+	<dict/>
+	<key>UIApplicationSceneManifest</key>
+	<dict>
+		<key>UIApplicationSupportsMultipleScenes</key>
+		<false/>
+	</dict>
+	<key>NSCameraUsageDescription</key>
+	<string>krowk uses the camera to scan the pairing code another device shows.</string>
+</dict>
+</plist>
