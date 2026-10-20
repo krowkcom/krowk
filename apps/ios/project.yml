@@ -32,6 +32,8 @@ targets:
         product: KrowkKit
       - package: KrowkKit
         product: KrowkKeys
+      - package: KrowkKit
+        product: KrowkAccount
       - package: KrowkCore
         product: Krowk
     settings:
@@ -62,6 +64,10 @@ targets:
       - target: Krowk-iOS
       - package: KrowkKit
         product: KrowkKeys
+      - package: KrowkKit
+        product: KrowkKit
+      - package: KrowkKit
+        product: KrowkAccount
       - package: KrowkCore
         product: Krowk
     settings:

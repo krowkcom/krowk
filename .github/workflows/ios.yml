@@ -9,8 +9,9 @@ name: iOS
 # krowk-api or krowk-ffi could break the app with no signal.
 #
 # Path-filtered (R-REPO-1): only a pull request or a push to main that
-# touches the phone's code, the crates it links, or what pins their build
-# starts it. A CLI-only change never queues behind macOS runners.
+# touches the phone's code, the crates it links, the fake fleet its tests
+# run against, or what pins their build starts it. A CLI-only change never
+# queues behind macOS runners.
 #
 # The framework is built once per distinct Rust input. `key` hashes those
 # inputs on a cheap Linux runner and looks the hash up in the Actions cache;
@@ -31,6 +32,13 @@ on:
       - "mise.toml"
       - ".cargo/**"
       - "scripts/ios_core.sh"
+      # The fake fleet the app's tests run against (R-IOS-15): the
+      # stand-in registry and the harness that runs it. Not crates/krowk:
+      # the fleet runs the CLI only to answer pairings, which no test here
+      # does yet, and a CLI-only change stays off macOS runners.
+      - "crates/krowk-devregistry/**"
+      - "crates/krowk-harness/**"
+      - ".github/actions/setup/**"
       - ".github/workflows/ios.yml"
   push:
     branches: [main]
@@ -44,6 +52,13 @@ on:
       - "mise.toml"
       - ".cargo/**"
       - "scripts/ios_core.sh"
+      # The fake fleet the app's tests run against (R-IOS-15): the
+      # stand-in registry and the harness that runs it. Not crates/krowk:
+      # the fleet runs the CLI only to answer pairings, which no test here
+      # does yet, and a CLI-only change stays off macOS runners.
+      - "crates/krowk-devregistry/**"
+      - "crates/krowk-harness/**"
+      - ".github/actions/setup/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
 
@@ -143,18 +158,21 @@ jobs:
           path: apps/ios/KrowkCore/build
           key: ${{ needs.key.outputs.key }}
 
-  # R-IOS-13, R-CLIENT-1, R-CLIENT-2, R-IOS-8: the app's Xcode project
-  # generates from project.yml with the right settings, builds for a device
-  # (unsigned) and for the simulator, and the scheme Krowk-iOS passes
-  # LaunchTests (XCUITest), KrowkKit's HomeViewControllerTests, KrowkKeys'
-  # KeychainKeyStorageTests and KrowkCore's BindingsTests on an iPhone
-  # simulator. Then a screenshot of the running app, kept as an artifact.
+  # R-IOS-13, R-CLIENT-1, R-CLIENT-2, R-IOS-8, R-IOS-9: the app's Xcode
+  # project generates from project.yml with the right settings, builds for a
+  # device (unsigned) and for the simulator, and the scheme Krowk-iOS passes
+  # LaunchTests and SignInUITests (XCUITest), KrowkKit's unit tests,
+  # the hosted KeychainKeyStorageTests and SignInTests, and KrowkCore's
+  # BindingsTests on an iPhone simulator, against the fake fleet
+  # (apps/ios/scripts/with-fleet.sh). The UI tests' screenshots, light and
+  # dark, and one of the running app are kept as artifacts.
   app:
     needs: [key, bindings]
     # Also when bindings was skipped on a cache hit.
     if: ${{ !failure() && !cancelled() }}
     runs-on: macos-26
-    timeout-minutes: 45
+    # The fleet's first build on a cold cache is most of it.
+    timeout-minutes: 75
     steps:
       - name: Xcode
         run: |
@@ -165,6 +183,21 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+
+      # The host's Rust and the CLI jobs' shared build cache, for the fake
+      # fleet: a debug krowk with the harness feature, which answers the
+      # phone's pairing, and the fleet itself.
+      - name: Set up Rust
+        uses: ./.github/actions/setup
+        with:
+          cache: ios-fleet
+
+      - name: "R-IOS-15: build the fake fleet"
+        run: |
+          cargo build -p krowk --features harness
+          cargo build -p krowk-harness --example fake_fleet
+          echo "KROWK_BIN=$GITHUB_WORKSPACE/target/debug/krowk" >> "$GITHUB_ENV"
+          echo "KROWK_FLEET_LOG=$RUNNER_TEMP/fake-fleet.log" >> "$GITHUB_ENV"
 
       - name: The framework the bindings job built
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -245,14 +278,16 @@ jobs:
             -derivedDataPath "$DERIVED" COMPILER_INDEX_STORE_ENABLE=NO
           echo "BUILT=1" >> "$GITHUB_ENV"
 
-      # Retried only when the simulator failed to start the test runner,
-      # a known flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8: LaunchTests, HomeViewControllerTests, KeychainKeyStorageTests and BindingsTests on the simulator"
+      # Against the fake fleet: with-fleet.sh starts it, hands its API URL
+      # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
+      # only when the simulator failed to start the test runner, a known
+      # flake; any other failure fails at once.
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1: the scheme's tests on the simulator, against the fake fleet"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do
             rm -rf "$RUNNER_TEMP/Tests.xcresult"
-            if xcodebuild test-without-building -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
+            if apps/ios/scripts/with-fleet.sh xcodebuild test-without-building -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
               -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath "$DERIVED" \
               -resultBundlePath "$RUNNER_TEMP/Tests.xcresult" 2>&1 | tee "$RUNNER_TEMP/test.log"; then
               exit 0
@@ -265,6 +300,34 @@ jobs:
             xcrun simctl bootstatus "$UDID" -b
           done
           exit 1
+
+      # The UI tests' screenshots (XCTAttachment, kept always), light and
+      # dark: onboarding, the approval page, waiting, signed in.
+      - name: The UI tests' screenshots
+        if: ${{ !cancelled() && env.BUILT == '1' }}
+        run: |
+          r=$RUNNER_TEMP/Tests.xcresult
+          test -d "$r" || { echo "no result bundle"; exit 0; }
+          out=$RUNNER_TEMP/screenshots
+          xcrun xcresulttool export attachments --path "$r" --output-path "$out"
+          # Named as the tests named them, not by UUID.
+          jq -r '.[].attachments[] | "\(.exportedFileName)\t\(.suggestedHumanReadableName)"' "$out/manifest.json" \
+            | while IFS=$'\t' read -r file name; do
+                case $name in krowk-*) mv "$out/$file" "$out/${name%%_*}.png" ;; esac
+              done
+          ls -l "$out"
+
+      - name: Keep the UI tests' screenshots
+        if: ${{ !cancelled() && env.BUILT == '1' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: krowk-ios-screenshots
+          path: ${{ runner.temp }}/screenshots/krowk-*.png
+          if-no-files-found: warn
+
+      - name: The fleet's log on failure
+        if: failure()
+        run: tail -n 200 "$RUNNER_TEMP/fake-fleet.log" || true
 
       - name: The failing tests
         if: failure()
@@ -319,10 +382,21 @@ jobs:
           test -d "$app" || { echo "no Krowk.app was built" >&2; exit 1; }
           xcrun simctl boot "$UDID" 2>/dev/null || true
           xcrun simctl bootstatus "$UDID" -b
+          # A fresh install: no install marker, so the first launch clears
+          # whatever the tests left in the Keychain, and opens on sign-in.
+          xcrun simctl uninstall "$UDID" com.krowk.app || true
           xcrun simctl install "$UDID" "$app"
-          xcrun simctl launch "$UDID" com.krowk.app
-          sleep 5
-          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-home.png"
+          # Each appearance set before a launch: a running app doesn't
+          # reliably redraw when it changes.
+          for look in dark light; do
+            xcrun simctl terminate "$UDID" com.krowk.app 2>/dev/null || true
+            xcrun simctl ui "$UDID" appearance "$look"
+            # The DEBUG build's own override too: this simulator does not
+            # reliably follow its appearance setting.
+            SIMCTL_CHILD_KROWK_APPEARANCE=$look xcrun simctl launch "$UDID" com.krowk.app
+            sleep 5
+            xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-launch-$look.png"
+          done
           # A crashed app would leave the home screen in the picture.
           xcrun simctl spawn "$UDID" launchctl list | grep -q 'UIKitApplication:com\.krowk\.app' \
             || { echo "krowk is not running after 5 s" >&2; exit 1; }
@@ -332,5 +406,5 @@ jobs:
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: krowk-ios-screenshot
-          path: ${{ runner.temp }}/krowk-home.png
+          path: ${{ runner.temp }}/krowk-launch-*.png
           if-no-files-found: warn

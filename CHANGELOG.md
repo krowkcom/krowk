@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app signs in through the browser.** Its first screen says
+  "Sign in to krowk" with one button, which opens krowk's approval page in
+  a browser sheet that uses your existing krowk login, naming the phone by
+  the name iOS gives apps ("iPhone"). Approve there and the sheet closes by itself. There is
+  no password field in the app. The key it receives is kept in the
+  Keychain only, never in a file or the app's settings. If you deny it or
+  15 minutes pass, the screen says so and offers "Start again". A
+  signed-in phone opens on "Signed in to <workspace>" until pairing
+  comes. Nothing changes for CLI users.
 - **The browser's approval page names the machine signing in, and the key
   it makes is named after it.** `krowk login`, and the sign-ins `krowk
   sync` and `krowk devices` ask for, used to show "Log in on this

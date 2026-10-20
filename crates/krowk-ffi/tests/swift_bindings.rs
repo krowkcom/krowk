@@ -85,6 +85,7 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "static func `open`(api: String, storage: KeyStorage) throws -> Account",
         "func deviceId() -> String",
         "func workspace() -> String",
+        "func workspaceName() -> String",
         "func hasUserKeys() throws -> Bool",
         "func signOut() throws",
         "case Refused(code: String, detail: String)",
