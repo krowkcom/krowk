@@ -17,7 +17,7 @@
 
 use super::store::{self, Attached, Head};
 use super::direct::Candidate;
-use super::{Answer, In, Join, Remote, ViewerFrame, Welcome, DEAD, FRAME, PING};
+use super::{Answer, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::protocol::{Command, StreamLine};
 use krowk_api::Client;
 use krowk_client::e2e::{self, DeviceId, SessionKeys, SigningKey};
@@ -26,10 +26,11 @@ use krowk_client::session_record::Signer;
 use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::KIND_BATCH;
 use krowk_client::relay_link::{Outbound, ViewerLink};
+use krowk_client::sync::commands::CommandBook;
 use krowk_client::sync::viewer::{ack, apply, fresh_only, gap_found, later, newest, replay, CatchUps, ACK_EVERY};
 pub use krowk_client::sync::viewer::{Update, HELD_MAX, PROBE, REPROBE, REPROBE_MAX};
 use serde_json::json;
-use std::collections::{BTreeMap, HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -148,6 +149,7 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
     }
     let (won_tx, mut won) = mpsc::unbounded_channel::<Option<(Candidate, super::Ws, serde_json::Value)>>();
     let mut v = Watching {
+        book: CommandBook::new(o.device),
         o,
         key,
         raw,
@@ -158,8 +160,6 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
         last_id,
         asked: HashSet::new(),
         frame: Vec::new(),
-        queued: VecDeque::new(),
-        unacked: BTreeMap::new(),
         held: Vec::new(),
         link: None,
         ws: None,
@@ -167,10 +167,6 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
         retry: Instant::now(),
         unjoined: None,
         heard: Instant::now(),
-        // Random per viewer run, so a restarted viewer's ids never read as a
-        // repeat of an earlier run's at the host, which dedups by them.
-        run_id: e2e::hex(&e2e::random::<8>()),
-        next_id: 0,
         candidates: Vec::new(),
         won_tx,
         probing: false,
@@ -183,7 +179,6 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
         applied: 0,
         acked: 0,
         catch_ups: CatchUps::default(),
-        handoff: None,
     };
     // The first frame went with the attach; the next is a frame after it,
     // and a late tick waits a whole frame rather than firing twice.
@@ -240,8 +235,9 @@ struct Watching {
     /// a move to a direct path is a second welcome, so each is shown once.
     asked: HashSet<String>,
     frame: Vec<Update>,
-    queued: VecDeque<Remote>,
-    unacked: BTreeMap<String, Remote>,
+    /// The commands sent and not yet acked, those waiting for a host, and
+    /// a handoff asked: ids, order and what a welcome sends again.
+    book: CommandBook,
     held: Vec<Vec<u8>>,
     link: Option<ViewerLink>,
     ws: Option<super::Ws>,
@@ -252,8 +248,6 @@ struct Watching {
     /// shows its prompts queued.
     unjoined: Option<String>,
     heard: Instant,
-    run_id: String,
-    next_id: u64,
     // Direct paths (R-NET-2): the candidates the host's welcome named, a
     // race of them against the relay in flight, the one being moved onto
     // (its hello said, its welcome awaited, the relay's connection still
@@ -277,42 +271,42 @@ struct Watching {
     acked: u64,
     /// The catch-up asked and not yet answered, and one owed after it.
     catch_ups: CatchUps,
-    /// A handoff asked and not yet answered, by its id: asked again of the
-    /// next host to welcome this viewer.
-    handoff: Option<String>,
 }
 
 impl Watching {
     /// A command of the person's: sent once the host has welcomed this
     /// viewer, queued for its welcome until then.
     async fn command(&mut self, command: Command) {
-        self.next_id += 1;
-        let r = Remote { id: format!("{}-{}-{}", self.o.device, self.run_id, self.next_id), command };
-        let ready = self.host && self.link.as_ref().is_some_and(|l| l.welcomed());
-        self.frame.push(Update::Sent { id: r.id.clone(), queued: !ready });
-        if ready {
-            let sealed = self.link.as_mut().expect("welcomed").frame(&serde_json::to_vec(&ViewerFrame::Command(r.clone())).expect("json"), false);
-            self.unacked.insert(r.id.clone(), r);
-            if let (Some(w), Ok(b)) = (self.ws.as_mut(), sealed) && !super::send(w, b).await { self.ws = None; }
-        } else {
-            self.queued.push_back(r);
+        let (now, shown) = self.book.command(command, self.ready());
+        self.frame.push(shown);
+        if let Some(r) = now {
+            self.send_frame(&ViewerFrame::Command(r)).await;
         }
+    }
+
+    /// Whether a host has welcomed this connection: a command or handoff
+    /// goes now, else at the next welcome.
+    fn ready(&self) -> bool {
+        self.host && self.link.as_ref().is_some_and(|l| l.welcomed())
+    }
+
+    /// One frame sealed and sent to the host; false when the connection
+    /// went with it.
+    async fn send_frame(&mut self, f: &ViewerFrame) -> bool {
+        let Some(l) = self.link.as_mut() else { return true };
+        if let (Some(w), Ok(sealed)) = (self.ws.as_mut(), l.frame(&serde_json::to_vec(f).expect("json"), false)) && !super::send(w, sealed).await {
+            self.ws = None;
+            return false;
+        }
+        true
     }
 
     /// Asks the host to hand the session to this device, now if a host
     /// has welcomed this viewer, else at the next welcome.
     async fn ask_handoff(&mut self) {
-        self.next_id += 1;
-        self.handoff = Some(format!("{}-{}-{}", self.o.device, self.run_id, self.next_id));
-        if self.host && self.link.as_ref().is_some_and(|l| l.welcomed()) {
-            self.send_handoff().await;
+        if let Some(f) = self.book.ask_handoff(self.ready()) {
+            self.send_frame(&f).await;
         }
-    }
-
-    async fn send_handoff(&mut self) {
-        let (Some(id), Some(l)) = (self.handoff.clone(), self.link.as_mut()) else { return };
-        let f = ViewerFrame::Handoff { id, device: self.o.device.to_string() };
-        if let (Some(w), Ok(sealed)) = (self.ws.as_mut(), l.frame(&serde_json::to_vec(&f).expect("json"), false)) && !super::send(w, sealed).await { self.ws = None; }
     }
 
     /// A display frame: the batches applied acked, and what was gathered
@@ -638,22 +632,18 @@ impl Watching {
 
     /// What goes to a host once it has welcomed this viewer.
     async fn send_welcomed(&mut self) {
-        let Some(l) = self.link.as_mut() else { return };
+        if self.link.is_none() { return }
         // What the chunks do not hold yet — the running
         // turn's events — the host sends.
         let mut sends = vec![ViewerFrame::CatchUp { after: self.catch_ups.welcomed(self.last_id.clone()) }];
-        // What waited for a host goes now, in order; what
-        // was sent before and never acked goes again, and
-        // runs once.
-        let resend: Vec<Remote> = self.unacked.values().cloned().collect();
-        for r in resend.into_iter().chain(self.queued.drain(..)) {
-            self.unacked.insert(r.id.clone(), r.clone());
-            sends.push(ViewerFrame::Command(r));
-        }
+        // What was sent before and never acked goes again,
+        // in the order first sent, and runs once; then what
+        // waited for a host, in order; then a handoff asked.
+        sends.extend(self.book.welcomed().into_iter().map(ViewerFrame::Command));
+        sends.extend(self.book.handoff_frame());
         for f in sends {
-            if let (Some(w), Ok(sealed)) = (self.ws.as_mut(), l.frame(&serde_json::to_vec(&f).expect("json"), false)) && !super::send(w, sealed).await { self.ws = None; break; }
+            if !self.send_frame(&f).await { break; }
         }
-        self.send_handoff().await;
     }
 
     /// Asks the host for the logged events after `after`: a catch-up now
@@ -669,15 +659,8 @@ impl Watching {
     /// the catch-up it asked for.
     async fn answer(&mut self, body: &[u8]) {
         match serde_json::from_slice(body) {
-            Ok(Answer::Ack { id, error }) => {
-                self.unacked.remove(&id);
-                self.frame.push(Update::Acked { id, error });
-            }
-            Ok(Answer::Handoff { id, handed, error }) if self.handoff.as_deref() == Some(id.as_str()) => {
-                self.handoff = None;
-                self.frame.push(Update::Handoff(handed.ok_or_else(|| error.unwrap_or_else(|| "the host refused the handoff".into()))));
-            }
-            Ok(Answer::Handoff { .. }) => {}
+            Ok(Answer::Ack { id, error }) => self.frame.push(self.book.acked(id, error)),
+            Ok(Answer::Handoff { id, handed, error }) => self.frame.extend(self.book.handoff_answered(&id, handed, error)),
             Ok(Answer::CatchUp { events, more }) => {
                 let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
                 let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);

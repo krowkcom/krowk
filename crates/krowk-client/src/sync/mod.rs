@@ -5,9 +5,10 @@
 //! is kept in, with the reader a device attaching opens them by. The wire
 //! shapes are types only, with no IO: the harness's host and viewer, and
 //! the phone's viewer later, read and write the same JSON. `join` is the
-//! relay's join handshake, and `viewer` what a viewer shows, both without
-//! IO.
+//! relay's join handshake, `viewer` what a viewer shows, and `commands` the
+//! book a viewer keeps of the commands it sends, all without IO.
 
+pub mod commands;
 pub mod join;
 pub mod store;
 pub mod viewer;
