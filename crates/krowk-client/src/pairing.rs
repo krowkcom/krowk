@@ -28,8 +28,10 @@
 //!    key) and A's own MAC. B opens it and checks A's MAC before it hands
 //!    the payload out.
 //! 5. B → A, `ack`: a MAC over the transcript and the reply. Only once A
-//!    has checked it does the caller get the `Paired` it posts with, so a
-//!    pairing that dies after the prompt leaves nothing on the chain.
+//!    has checked it does the caller get the `Paired` that completes the
+//!    pairing. The reply carried the user key, so A's caller posts the
+//!    `add` entry and the wrap once the reply is out, acked or not: a
+//!    machine that may hold the key is listed (canon, devices.md).
 //!
 //! Every state is consumed by the step that leaves it, and a failed step
 //! returns nothing to go on with: there is no retry against the same code.
@@ -555,8 +557,8 @@ pub struct AwaitAck {
 }
 
 impl AwaitAck {
-    /// Checks B's ack. Only the `Paired` this returns lets the caller post
-    /// the `add` entry and the wrap.
+    /// Checks B's ack. The `Paired` this returns is the only proof that B
+    /// confirmed the reply.
     pub fn receive_ack(self, ack: &[u8]) -> Result<Paired, Error> {
         let mut r = Reader::header(ack, ACK)?;
         let tag = r.array::<MAC>()?;
@@ -566,8 +568,8 @@ impl AwaitAck {
     }
 }
 
-/// Both sides confirmed: the one value A's caller posts to the registry
-/// with. Its fields are private, so it comes only from a verified ack.
+/// Both sides confirmed. Its fields are private, so it comes only from a
+/// verified ack.
 #[derive(Debug)]
 pub struct Paired {
     binding: Binding,
