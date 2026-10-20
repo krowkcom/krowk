@@ -234,7 +234,7 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
         on: None,
         applied: 0,
         acked: 0,
-        catching_up: false,
+        catch_ups: CatchUps::default(),
         handoff: None,
     };
     // The first frame went with the attach; the next is a frame after it,
@@ -259,7 +259,7 @@ async fn live(o: Arc<Options>, key: SessionKeys, at_rest: Attached, mut commands
             _ = tokio::time::sleep_until(v.reprobe.into()), if v.may_probe() => v.probe(),
             Some(w) = won.recv() => v.won(w).await,
             _ = tokio::time::sleep_until(v.moving_until.into()), if v.moving.is_some() => v.move_late(),
-            m = recv_on(&mut v.leaving) => v.leaving_in(m),
+            m = recv_on(&mut v.leaving) => v.leaving_in(m).await,
             m = recv_on(&mut v.ws) => {
                 if !v.inbound(m).await { break; }
             }
@@ -327,8 +327,8 @@ struct Watching {
     /// The last stream batch applied, and the last acked to the relay.
     applied: u64,
     acked: u64,
-    /// A catch-up asked and not yet answered: another is not asked meanwhile.
-    catching_up: bool,
+    /// The catch-up asked and not yet answered, and one owed after it.
+    catch_ups: CatchUps,
     /// A handoff asked and not yet answered, by its id: asked again of the
     /// next host to welcome this viewer.
     handoff: Option<String>,
@@ -418,7 +418,7 @@ impl Watching {
         let mut l = match self.link.take() { Some(l) => l.reconnect(n), None => ViewerLink::new(self.key.current(), self.raw, n) };
         self.host = joined["host"].as_bool().unwrap_or(false);
         self.held.clear();
-        self.catching_up = false;
+        self.catch_ups.reset();
         if self.host && let Ok(h) = l.hello(b"{}") && !super::send(&mut w, h).await { self.retry = Instant::now() + Duration::from_secs(1); self.link = Some(l); return; }
         // Where the stream stands for this viewer: its own cursor
         // on a stream it read, else the relay's count, live from
@@ -493,13 +493,17 @@ impl Watching {
     }
 
     /// The relay's connection, while the session moves off it: its batches
-    /// are the stream's too.
-    fn leaving_in(&mut self, m: In) {
+    /// are the stream's too, and a gap among them is caught up like one on
+    /// the live path.
+    async fn leaving_in(&mut self, m: In) {
         match m {
             In::Closed => self.leaving = None,
             In::Envelope(b) if b[1] == KIND_BATCH && b[20..28] != [0; 8] => match self.link.as_mut() {
                 Some(l) if l.welcomed() => {
-                    apply(l, &b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+                    let gap = apply(l, &b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+                    if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
+                        self.ask_catch_up(after).await;
+                    }
                 }
                 _ => {
                     self.held.push(b);
@@ -558,11 +562,11 @@ impl Watching {
             // its count on. Join again and be welcomed onto it.
             self.ws = None;
             self.retry = Instant::now();
-        } else if let Some(l) = self.link.as_mut().filter(|l| l.welcomed()) {
-            // The relay cannot fill the gap: the host can.
-            if !self.catching_up && let Ok(b) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: self.last_id.clone() }).expect("json"), false) {
-                self.catching_up = true;
-                if let Some(w) = self.ws.as_mut() && !super::send(w, b).await { self.ws = None; }
+        } else if self.link.as_ref().is_some_and(|l| l.welcomed()) {
+            // The relay cannot fill the gap: the host can, now, or once
+            // the catch-up in flight ends.
+            if let Some(after) = self.catch_ups.gap(self.last_id.clone(), false) {
+                self.ask_catch_up(after).await;
             }
         } else {
             // No host: the chunks, up to what was written.
@@ -617,11 +621,10 @@ impl Watching {
         } else {
             let gap = apply(l, &b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
             // A batch the relay dropped: the host fills the gap,
-            // from the newest event held before this batch.
-            if let Some(after) = gap && !self.catching_up && let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after }).expect("json"), false) {
-                self.catching_up = true;
-                self.frame.push(Update::Gap);
-                if let Some(w) = self.ws.as_mut() && !super::send(w, f).await { self.ws = None; }
+            // from the newest event held before this batch, now or
+            // once the catch-up in flight ends.
+            if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
+                self.ask_catch_up(after).await;
             }
             if self.applied >= self.acked + ACK_EVERY && let Some(w) = self.ws.as_mut() {
                 self.acked = self.applied;
@@ -636,7 +639,7 @@ impl Watching {
         let Some(l) = self.link.as_mut() else { return true };
         match l.open_routed(b) {
             Ok(Outbound::Welcome { body, .. }) => return self.welcome(&body).await,
-            Ok(Outbound::Routed { body, .. }) => self.answer(&body),
+            Ok(Outbound::Routed { body, .. }) => self.answer(&body).await,
             Err(_) => {}
         }
         true
@@ -667,9 +670,13 @@ impl Watching {
         }
         self.send_welcomed().await;
         let Some(l) = self.link.as_mut() else { return true };
-        for b in std::mem::take(&mut self.held) {
-            apply(l, &b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+        // Held batches arrived before the welcome, so the catch-up
+        // `send_welcomed` just asked covers a gap among them (by order).
+        let held = std::mem::take(&mut self.held);
+        if let Some(after) = replay(l, held, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied).and_then(|after| self.catch_ups.gap(after, true)) {
+            self.ask_catch_up(after).await;
         }
+        let Some(l) = self.link.as_mut() else { return true };
         // What was held may all have been batches opened
         // already by the relay: acked all the same, or a
         // direct listener, its window full of them, sends
@@ -687,7 +694,7 @@ impl Watching {
         // What the chunks do not hold yet — the running
         // turn's events — the host sends.
         let mut sends = vec![ViewerFrame::CatchUp { after: self.last_id.clone() }];
-        self.catching_up = true;
+        self.catch_ups.asked(self.last_id.clone());
         // What waited for a host goes now, in order; what
         // was sent before and never acked goes again, and
         // runs once.
@@ -702,9 +709,18 @@ impl Watching {
         self.send_handoff().await;
     }
 
+    /// Asks the host for the logged events after `after`: a catch-up now
+    /// in flight.
+    async fn ask_catch_up(&mut self, after: Option<String>) {
+        let Some(l) = self.link.as_mut() else { return };
+        let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: after.clone() }).expect("json"), false) else { return };
+        self.catch_ups.asked(after);
+        if let Some(w) = self.ws.as_mut() && !super::send(w, f).await { self.ws = None; }
+    }
+
     /// The host's answer to this viewer: a command's ack, or a page of
     /// the catch-up it asked for.
-    fn answer(&mut self, body: &[u8]) {
+    async fn answer(&mut self, body: &[u8]) {
         match serde_json::from_slice(body) {
             Ok(Answer::Ack { id, error }) => {
                 self.unacked.remove(&id);
@@ -719,7 +735,10 @@ impl Watching {
                 let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
                 let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
                 if !fresh.is_empty() { self.frame.push(Update::CaughtUp(fresh)); }
-                if !more { self.catching_up = false; }
+                // The last page: a gap it did not cover is asked now.
+                if !more && let Some(after) = self.catch_ups.done() {
+                    self.ask_catch_up(after).await;
+                }
             }
             Err(_) => {}
         }
@@ -825,6 +844,87 @@ fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, last: 
         .collect()
 }
 
+/// Whether a catch-up from `a` reaches back at least as far as one from
+/// `b`: ids are UUIDv7, compared as strings as `newest` does, and `None`
+/// (from the start) is older than any.
+fn no_newer(a: &Option<String>, b: &Option<String>) -> bool {
+    match (a, b) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(a), Some(b)) => a <= b,
+    }
+}
+
+/// The catch-up asked and not yet answered, and one owed after it. Every
+/// gap is caught up: by the one in flight when that one surely covers it,
+/// else by one asked as soon as nothing is in flight.
+#[derive(Debug, Default)]
+struct CatchUps {
+    in_flight: Option<Option<String>>,
+    owed: Option<Option<String>>,
+}
+
+impl CatchUps {
+    /// A gap from `after`: the `after` to ask from now, if any.
+    /// `covered_by_order` is true for a batch replayed from `held` at a
+    /// welcome: it arrived before the welcome, so the catch-up asked after
+    /// that welcome was answered from a log that holds its events.
+    fn gap(&mut self, after: Option<String>, covered_by_order: bool) -> Option<Option<String>> {
+        let Some(flying) = &self.in_flight else { return Some(after) };
+        if covered_by_order && no_newer(flying, &after) {
+            return None;
+        }
+        // Owed: the oldest, which covers the later ones.
+        if self.owed.as_ref().is_none_or(|o| !no_newer(o, &after)) {
+            self.owed = Some(after);
+        }
+        None
+    }
+
+    /// Asked (after a welcome, a resync, or a gap): now in flight from
+    /// `after`.
+    fn asked(&mut self, after: Option<String>) {
+        self.in_flight = Some(after);
+    }
+
+    /// The last page came: what to ask next, if a gap was owed.
+    fn done(&mut self) -> Option<Option<String>> {
+        self.in_flight = None;
+        self.owed.take()
+    }
+
+    /// Joined again: nothing in flight, nothing owed.
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    #[cfg(test)]
+    fn in_flight(&self) -> bool {
+        self.in_flight.is_some()
+    }
+}
+
+/// A gap from `after`, found as a batch applied: shown, once, and the
+/// `after` of the catch-up to ask now, if any.
+fn gap_found(c: &mut CatchUps, after: Option<String>, covered_by_order: bool, frame: &mut Vec<Update>) -> Option<Option<String>> {
+    frame.push(Update::Gap);
+    c.gap(after, covered_by_order)
+}
+
+/// The batches held for a welcome, applied in order, each gap among them
+/// shown once. Answers the first gap's `after`: the oldest, which covers
+/// the later ones.
+fn replay(l: &mut ViewerLink, held: Vec<Vec<u8>>, seen: &mut HashSet<String>, last: &mut Option<String>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
+    let mut first = None;
+    for b in held {
+        if let Some(after) = apply(l, &b, seen, last, asked, frame, applied) {
+            frame.push(Update::Gap);
+            first.get_or_insert(after);
+        }
+    }
+    first
+}
+
 /// One stream batch: its lines, the log's events among them once each.
 /// Answers, when it skipped past a batch this viewer never opened, the
 /// newest event held *before* it: what the catch-up asks from, since this
@@ -887,5 +987,138 @@ mod tests {
         let texts: Vec<&str> = frame.iter().filter_map(|u| match u { Update::Line(StreamLine::Live(LiveEvent::Notice { text, .. })) => Some(text.as_str()), _ => None }).collect();
         assert_eq!(texts, ["before", "after"]);
         assert_eq!(frame.len(), 2, "the unknown line, and the one missing its fields, are skipped");
+    }
+
+    /// A logged event, its id the UUIDv7-shaped `01900000-…-n`.
+    fn logged(n: u8) -> serde_json::Value {
+        json!({"id": id(n), "sessionId": "s", "timeMs": 0, "type": "session.started", "cwd": "/", "krowkVersion": "0", "protocolVersion": 1})
+    }
+
+    fn id(n: u8) -> String {
+        format!("01900000-0000-7000-8000-0000000000{n:02}")
+    }
+
+    /// A host and a welcomed viewer, no network, and the host's batches
+    /// 1, 2 and 3, each one logged event (ids 1, 2, 3).
+    fn three_batches() -> (ViewerLink, [Vec<u8>; 3]) {
+        let key = SessionKey::generate();
+        let (mut host, mut link) = (HostLink::new(&key, [7; 16]), ViewerLink::new(&key, [7; 16], 1));
+        host.open(1, &link.hello(b"{}").unwrap()).unwrap();
+        let w = host.welcome(1, b"{}").unwrap();
+        link.open_routed(&w[HEADER..]).unwrap();
+        let mut batch = |n: u8| host.batch(&serde_json::to_vec(&json!({"lines": [logged(n)], "head": null})).unwrap(), false).unwrap();
+        let b = [batch(1), batch(2), batch(3)];
+        (link, b)
+    }
+
+    fn gaps(frame: &[Update]) -> usize {
+        frame.iter().filter(|u| matches!(u, Update::Gap)).count()
+    }
+
+    /// R-OFF-2: batches 1 and 3 held for a welcome whose catch-up went out
+    /// from an older event: the gap shows once, and the welcome's catch-up
+    /// covers it, so no second one is asked.
+    #[test]
+    fn r_off_2_a_gap_among_held_batches_shows_and_is_covered_by_the_welcomes_catch_up() {
+        let (mut link, [b1, _, b3]) = three_batches();
+        let mut c = CatchUps::default();
+        // `send_welcomed`: the catch-up from the newest event the chunks held.
+        c.asked(Some(id(0)));
+        let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), Some(id(0)), HashSet::new(), Vec::new(), 0);
+        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!(first, Some(Some(id(1))), "the gap is after batch 1's event");
+        assert_eq!(gaps(&frame), 1, "the gap shows once");
+        assert_eq!(c.gap(first.unwrap(), true), None, "the welcome's catch-up covers it: none asked now");
+        assert_eq!(c.done(), None, "nor once it ends");
+        assert_eq!(applied, 3);
+    }
+
+    /// R-OFF-2: a gap found live while a catch-up is in flight is not
+    /// covered by it (that one may have been answered before the missing
+    /// batch was sealed): it is asked once the one in flight ends, from the
+    /// oldest gap owed.
+    #[test]
+    fn r_off_2_a_live_gap_while_a_catch_up_is_in_flight_is_asked_once_it_ends() {
+        let mut c = CatchUps::default();
+        assert_eq!(c.gap(Some(id(5)), false), Some(Some(id(5))), "nothing in flight: asked now");
+        c.asked(Some(id(5)));
+        assert!(c.in_flight());
+        assert_eq!(c.gap(Some(id(7)), false), None, "in flight: nothing asked now");
+        assert_eq!(c.done(), Some(Some(id(7))), "asked once the one in flight ends");
+        assert!(!c.in_flight());
+        assert_eq!(c.done(), None, "and only once");
+
+        // Two owed: the oldest is kept, whichever came first.
+        c.asked(Some(id(1)));
+        assert_eq!(c.gap(Some(id(8)), false), None);
+        assert_eq!(c.gap(Some(id(6)), false), None);
+        assert_eq!(c.gap(Some(id(9)), false), None);
+        assert_eq!(c.done(), Some(Some(id(6))));
+
+        // Joined again: nothing in flight, nothing owed.
+        c.asked(Some(id(1)));
+        c.gap(Some(id(2)), false);
+        c.reset();
+        assert!(!c.in_flight());
+        assert_eq!(c.done(), None);
+    }
+
+    /// The in-flight catch-up covers a held batch's gap only when it reaches
+    /// back as far: ids compared as strings, `None` from the start.
+    #[test]
+    fn r_off_2_a_catch_up_in_flight_covers_a_held_gap_only_from_no_newer_an_event() {
+        let covers = |flying: Option<String>, gap: Option<String>| {
+            let mut c = CatchUps::default();
+            c.asked(flying);
+            let now = c.gap(gap.clone(), true);
+            assert_eq!(now, None, "never asked while one is in flight");
+            match c.done() {
+                None => true,
+                Some(owed) => {
+                    assert_eq!(owed, gap);
+                    false
+                }
+            }
+        };
+        assert!(covers(None, None), "from the start covers from the start");
+        assert!(covers(None, Some(id(3))), "from the start covers everything");
+        assert!(!covers(Some(id(3)), None), "a gap from the start is covered only from the start");
+        assert!(covers(Some(id(3)), Some(id(3))), "the same event");
+        assert!(covers(Some(id(3)), Some(id(4))), "an older event");
+        assert!(!covers(Some(id(4)), Some(id(3))), "a newer event does not");
+        // Owed gaps keep the oldest, `None` the oldest of all.
+        let mut c = CatchUps::default();
+        c.asked(Some(id(5)));
+        c.gap(Some(id(2)), false);
+        c.gap(None, false);
+        c.gap(Some(id(1)), false);
+        assert_eq!(c.done(), Some(None));
+    }
+
+    /// R-NET-2: while the session moves to a direct path, a gap in the
+    /// relay's batches shows and is caught up, through the helper
+    /// `leaving_in` (and the live path) use.
+    #[test]
+    fn r_net_2_a_gap_in_the_relays_batches_while_moving_to_a_direct_path_is_caught_up() {
+        let (mut link, [b1, _, b3]) = three_batches();
+        let mut c = CatchUps::default();
+        let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), None, HashSet::new(), Vec::new(), 0);
+        let ask = |link: &mut ViewerLink, b: &[u8], c: &mut CatchUps, seen: &mut _, last: &mut _, asked: &mut _, frame: &mut Vec<Update>, applied: &mut _| {
+            apply(link, b, seen, last, asked, frame, applied).and_then(|after| gap_found(c, after, false, frame))
+        };
+        assert_eq!(ask(&mut link, &b1, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), None, "in order");
+        assert_eq!(gaps(&frame), 0);
+        assert_eq!(ask(&mut link, &b3, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), Some(Some(id(1))), "a catch-up from batch 1's event");
+        assert_eq!(gaps(&frame), 1);
+
+        // With one in flight already, the gap is still shown, and owed.
+        let (mut link, [b1, _, b3]) = three_batches();
+        let (mut seen, mut last, mut frame, mut applied) = (HashSet::new(), None, Vec::new(), 0);
+        c.reset();
+        c.asked(None);
+        ask(&mut link, &b1, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!(ask(&mut link, &b3, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), None);
+        assert_eq!(gaps(&frame), 1);
+        assert_eq!(c.done(), Some(Some(id(1))));
     }
 }
