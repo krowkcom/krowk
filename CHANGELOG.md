@@ -84,6 +84,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   for and the direct-path timings moved from the harness into
   krowk-client, so the iPhone app will show a session the same way. The
   live connection stays in the harness.
+- **krowk-client joins the relay.** Nothing changes for you: `krowk sync`
+  dials the same URL, signs the relay's challenge over the same origin
+  and sends the same join, and a refusal reads as before. The handshake
+  moved from the harness into krowk-client as a state machine with no
+  socket of its own, so the iPhone app will join the relay with the same
+  code. The connection, TLS and the 10-second waits stay in the harness.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,
