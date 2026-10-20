@@ -261,10 +261,11 @@ pub enum Effect {
     /// clone of it, blocking, off the main thread), up to `want` when
     /// given, and hand the result to `chunks_read`. Until then the core
     /// holds the stream's batches with those held for the welcome, and
-    /// keeps whatever else comes in to act on after, in order.
+    /// keeps whatever else the connections bring to act on after, in order.
     ReadChunks { want: Option<Head> },
-    /// Drop the current connection and any leaving one; at `at_ms` fetch a
-    /// fresh relay ticket and join as a viewer with `extra`
+    /// Drop the current connection and any leaving one, and pass nothing
+    /// more from them (a late close included); at `at_ms` fetch a fresh
+    /// relay ticket and join as a viewer with `extra`
     /// (`sync::join::Joining`), then call `joined`, or `join_failed` with
     /// why the ticket or the join failed. A later `Join` replaces one not
     /// yet run.
@@ -279,10 +280,12 @@ pub enum Effect {
     End,
 }
 
-/// What came in while a `ReadChunks` was out, acted on once it is answered:
-/// the harness's loop reads nothing else while it reads the chunks.
+/// An input from the person or a connection. While a `ReadChunks` is out,
+/// a connection's are kept and acted on once it is answered, in order, as
+/// the harness's loop reads nothing else while it reads the chunks; the
+/// person's go at once, queued for the welcome.
 #[derive(Debug)]
-enum Waiting {
+enum Input {
     Received(Vec<u8>),
     Leaving(Vec<u8>),
     Closed,
@@ -361,7 +364,7 @@ pub struct ViewerCore {
     acked: u64,
     catch_ups: CatchUps,
     reading: Option<Reading>,
-    waiting: VecDeque<Waiting>,
+    waiting: VecDeque<Input>,
     now_ms: u64,
     ended: bool,
     out: Vec<Effect>,
@@ -444,7 +447,8 @@ impl ViewerCore {
         }
     }
 
-    /// When `tick` next has something to do; none once ended.
+    /// When `tick` next has something to do, which may be past already:
+    /// then tick at once. None once ended. Ask again after every call.
     pub fn next_wake(&self) -> Option<u64> {
         if self.ended {
             return None;
@@ -519,44 +523,46 @@ impl ViewerCore {
     /// A binary message on the current connection: a relay control message
     /// (kind 4) or an envelope.
     pub fn received(&mut self, bytes: &[u8], now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, true, Waiting::Received(bytes.to_vec()))
+        self.input(now_ms, true, Input::Received(bytes.to_vec()))
     }
 
     /// Any other message on the current connection (`pong`): it lives.
     pub fn alive(&mut self, now_ms: u64) {
-        self.now_ms = now_ms;
-        self.heard_ms = now_ms;
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.heard_ms = now_ms;
+        }
     }
 
     /// The current connection closed.
     pub fn closed(&mut self, now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, true, Waiting::Closed)
+        self.input(now_ms, true, Input::Closed)
     }
 
     /// A binary message on the leaving connection: the relay's, while the
     /// session moves off it to a direct path. Once that one closes the
     /// caller drops it, and says nothing.
     pub fn leaving(&mut self, bytes: &[u8], now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, false, Waiting::Leaving(bytes.to_vec()))
+        self.input(now_ms, false, Input::Leaving(bytes.to_vec()))
     }
 
     /// The direct path was lost, or its welcome is late by the caller's
     /// reckoning: the relay joined again, from the cursor, at once.
     pub fn back_to_relay(&mut self, now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, false, Waiting::BackToRelay)
+        self.input(now_ms, false, Input::BackToRelay)
     }
 
     /// A command of the person's (R-LAG-8): shown at once, sent once a host
     /// has welcomed this viewer, queued for the next welcome until then
     /// (R-HAND-4).
     pub fn command(&mut self, c: Command, now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, false, Waiting::Command(c))
+        self.input(now_ms, false, Input::Command(c))
     }
 
     /// Asks the host to hand the session to this device (R-HAND-1), now if
     /// a host has welcomed this viewer, else at the next welcome.
     pub fn ask_handoff(&mut self, now_ms: u64) -> Vec<Effect> {
-        self.input(now_ms, false, Waiting::Handoff)
+        self.input(now_ms, false, Input::Handoff)
     }
 
     /// The chunks a `ReadChunks` read: the events in them and where the
@@ -602,9 +608,14 @@ impl ViewerCore {
         }
         self.now_ms = now_ms;
         self.probing = false;
+        // Won while a welcome's read is out: the race again once it is in,
+        // at the time it was due, with no wait added.
+        if self.reading.is_some() {
+            return self.take();
+        }
         // A candidate joined with no host there (its uplink to the listener
         // not up yet), or the session moved meanwhile: later.
-        if self.on.is_some() || self.moving.is_some() || !self.connected || self.reading.is_some() || joined["host"].as_bool() != Some(true) {
+        if self.on.is_some() || self.moving.is_some() || !self.connected || joined["host"].as_bool() != Some(true) {
             self.later();
             return self.take();
         }
@@ -627,9 +638,11 @@ impl ViewerCore {
 
     /// A race nobody won: the next one later, the wait doubled.
     pub fn probe_lost(&mut self, now_ms: u64) {
-        self.now_ms = now_ms;
-        self.probing = false;
-        self.later();
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.later();
+        }
     }
 
     /// The time passing: the batches applied acked, the frame shown if a
@@ -677,9 +690,8 @@ impl ViewerCore {
         std::mem::take(&mut self.out)
     }
 
-    /// An input that waits while a read is out; `heard` when it came on the
-    /// current connection.
-    fn input(&mut self, now_ms: u64, heard: bool, w: Waiting) -> Vec<Effect> {
+    /// An input; `heard` when it came on the current connection.
+    fn input(&mut self, now_ms: u64, heard: bool, w: Input) -> Vec<Effect> {
         if self.ended {
             return Vec::new();
         }
@@ -692,7 +704,10 @@ impl ViewerCore {
                 // A stream batch waits with those held for the welcome: it
                 // came before the catch-up the welcome asks for once the
                 // read is in, so that catch-up covers a gap among them.
-                Waiting::Received(b) if self.connected && b.len() >= HEADER && b[1] == KIND_BATCH && b[20..28] != [0; 8] => self.held.push(b),
+                Input::Received(b) if self.connected && b.len() >= HEADER && b[1] == KIND_BATCH && b[20..28] != [0; 8] => self.held.push(b),
+                // The person's: shown at once (R-LAG-8), and with the host's
+                // welcome not acted on yet, queued for it.
+                w @ (Input::Command(_) | Input::Handoff) => self.run(w),
                 w => self.waiting.push_back(w),
             }
         } else {
@@ -701,28 +716,28 @@ impl ViewerCore {
         self.take()
     }
 
-    fn run(&mut self, w: Waiting) {
+    fn run(&mut self, w: Input) {
         match w {
-            Waiting::Received(b) if self.connected => self.inbound(&b),
-            Waiting::Leaving(b) if self.leaving => self.leaving_in(&b),
+            Input::Received(b) if self.connected => self.inbound(&b),
+            Input::Leaving(b) if self.leaving => self.leaving_in(&b),
             // A direct path gone falls back to the relay at once, from the
             // cursor, which the relay's buffer fills (R-NET-2).
-            Waiting::Closed if self.connected && (self.on.is_some() || self.moving.is_some()) => self.relay_again(),
-            Waiting::Closed if self.connected => self.join(self.now_ms + RETRY_MS),
-            Waiting::BackToRelay if self.on.is_some() || self.moving.is_some() => self.relay_again(),
-            Waiting::Command(c) => {
+            Input::Closed if self.connected && (self.on.is_some() || self.moving.is_some()) => self.relay_again(),
+            Input::Closed if self.connected => self.join(self.now_ms + RETRY_MS),
+            Input::BackToRelay if self.on.is_some() || self.moving.is_some() => self.relay_again(),
+            Input::Command(c) => {
                 let (now, shown) = self.book.command(c, self.ready());
                 self.frame.push(shown);
                 if let Some(r) = now {
                     self.send_frame(&ViewerFrame::Command(r));
                 }
             }
-            Waiting::Handoff => {
+            Input::Handoff => {
                 if let Some(f) = self.book.ask_handoff(self.ready()) {
                     self.send_frame(&f);
                 }
             }
-            Waiting::Received(_) | Waiting::Leaving(_) | Waiting::Closed | Waiting::BackToRelay => {}
+            Input::Received(_) | Input::Leaving(_) | Input::Closed | Input::BackToRelay => {}
         }
     }
 
@@ -748,10 +763,10 @@ impl ViewerCore {
         self.link.as_ref().is_some_and(|l| l.welcomed())
     }
 
-    /// Whether a host has welcomed this connection: a command or handoff
-    /// goes now, else at the next welcome.
+    /// Whether a host has welcomed this connection, and the welcome has been
+    /// acted on: a command or handoff goes now, else at the next welcome.
     fn ready(&self) -> bool {
-        self.host && self.welcomed()
+        self.host && self.welcomed() && self.reading.is_none()
     }
 
     fn send(&mut self, bytes: Vec<u8>) {

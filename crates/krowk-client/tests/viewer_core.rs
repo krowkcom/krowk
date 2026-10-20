@@ -166,8 +166,9 @@ fn hosts(u: &[Update]) -> Vec<bool> {
 
 /// R-HAND-4: prompts typed with no host show as queued and go at the
 /// welcome — after the chunks are read up to its head, behind the catch-up,
-/// in the order typed — and one typed while the read is out goes after
-/// them. Nothing is sent between the welcome and the read.
+/// in the order typed — and one typed while the read is out shows at once,
+/// queued, and goes after them. Nothing is sent between the welcome and the
+/// read.
 #[test]
 fn r_hand_4_queued_prompts_go_at_the_welcome() {
     let mut r = Relay::new(vec![logged(1)], 0);
@@ -182,15 +183,17 @@ fn r_hand_4_queued_prompts_go_at_the_welcome() {
     assert!(matches!(r.take_rest().as_slice(), [Effect::ReadChunks { want: None }]));
     r.command(stop(3));
     assert!(r.frames.is_empty(), "nothing goes before the chunks are read: {:?}", r.frames);
+    r.at(32).tick();
+    assert!(matches!(r.updates().as_slice(), [Update::Path { .. }, Update::Sent { queued: true, .. }]), "shown at once, queued");
 
     r.read(Ok((vec![logged(1), logged(2)], Attached::default())));
     assert_eq!(catch_ups(&r.frames), [Some(id(2))], "the catch-up from the newest event the chunks held");
     assert!(matches!(r.frames[0], ViewerFrame::CatchUp { .. }), "the catch-up first");
     assert_eq!(commands(&r.frames), [stop(1), stop(2), stop(3)]);
     assert_eq!(r.acks, [0], "acked at the cursor");
-    r.at(32).tick();
+    r.at(48).tick();
     let shown = r.updates();
-    assert!(matches!(shown.as_slice(), [Update::Path { .. }, Update::CaughtUp(e), Update::Host(true), Update::Sent { queued: false, .. }] if e.len() == 1 && e[0]["id"] == id(2)), "{shown:?}");
+    assert!(matches!(shown.as_slice(), [Update::CaughtUp(e), Update::Host(true)] if e.len() == 1 && e[0]["id"] == id(2)), "{shown:?}");
 }
 
 /// R-OFF-2: batches 1 and 3 — the relay dropped 2 — show a gap and ask the
@@ -264,6 +267,15 @@ fn r_lag_4_an_ack_after_four_batches_and_on_the_next_tick() {
     assert_eq!(r.acks, [4, 5]);
     r.at(40).tick();
     assert_eq!(r.acks, [4, 5], "once");
+
+    // A batch with no lines leaves nothing to show: the ack alone is due,
+    // at the next display frame.
+    let b = r.batch(vec![], false);
+    r.at(45).receive(&b);
+    assert_eq!(r.core.next_wake(), Some(32), "a frame after the last show, at 16");
+    r.at(45).tick();
+    assert_eq!(r.acks, [4, 5, 6]);
+    assert_eq!(r.core.next_wake(), Some(10_000), "the heartbeat next");
 }
 
 /// R-LAG-7: two ticks 5 ms apart hand the screen one `Show`; the next
@@ -383,10 +395,12 @@ fn r_off_2_no_word_for_30_s_joins_again() {
 fn r_client_3_any_word_keeps_the_connection() {
     let mut r = Relay::new(vec![], 0);
     r.live();
-    r.core.alive(25_000);
     for t in [10_000, 20_000, 30_000, 40_000, 50_000] {
         r.at(t).tick();
         assert!(matches!(r.take_rest().as_slice(), [Effect::Ping]), "at {t}");
+        if t == 20_000 {
+            r.core.alive(25_000);
+        }
     }
     r.at(60_000).tick();
     assert!(matches!(r.take_rest().as_slice(), [Effect::Join { .. }]));
@@ -422,6 +436,9 @@ fn r_perm_2_a_welcomes_approvals_show_once() {
     let asked: ApprovalRequest = serde_json::from_value(approval("r1")).unwrap();
     r.welcome_with(Welcome { approvals: vec![asked.clone()], ..Welcome::default() });
     r.read(Ok((vec![], Attached::default())));
+    r.at(16).tick();
+    let first = r.updates();
+    assert!(first.iter().any(|u| matches!(u, Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(a))) if a.request_id == "r1")), "the welcome's approval shows: {first:?}");
     let b = r.batch(vec![approval("r1")], false);
     r.receive(&b);
     r.at(5_000).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
@@ -431,7 +448,7 @@ fn r_perm_2_a_welcomes_approvals_show_once() {
     r.at(6_000).tick();
     let shown = r.updates();
     let n = shown.iter().filter(|u| matches!(u, Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(a))) if a.request_id == "r1")).count();
-    assert_eq!(n, 1, "{shown:?}");
+    assert_eq!(n, 0, "not again: {shown:?}");
 }
 
 /// R-OFF-2: a host arriving while the viewer waits for one joins again; the
@@ -450,9 +467,71 @@ fn r_off_2_presence_a_close_and_a_refusal_join_again() {
         let e = r.core.join_failed("the relay could not be reached".into(), t);
         assert!(matches!(e.as_slice(), [Effect::Join { at_ms, .. }] if *at_ms == t + 1000));
     }
-    r.at(3000).tick();
-    let notes = r.updates().into_iter().filter(|u| matches!(u, Update::Note(n) if n.starts_with("not on the relay wss://relay.example: the relay could not be reached"))).count();
-    assert_eq!(notes, 1);
+    r.core.join_failed("the relay refused: forbidden — no".into(), 3200);
+    r.at(4200).tick();
+    let notes: Vec<String> = r.updates().into_iter().filter_map(|u| if let Update::Note(n) = u { Some(n) } else { None }).collect();
+    assert_eq!(notes.len(), 2, "once each error, as it changes: {notes:?}");
+    assert!(notes[0].starts_with("not on the relay wss://relay.example: the relay could not be reached; trying again every second"), "{notes:?}");
+
+    // Welcomed on the relay: a host arriving is one the relay let go and
+    // took back, so the viewer joins again; one leaving shows no host.
+    r.at(5000).live();
+    r.at(5100).control(json!({"type": "host", "present": false}));
+    assert!(r.take_rest().is_empty());
+    r.at(5200).tick();
+    assert_eq!(hosts(&r.updates()), [true, false]);
+    r.at(5300).control(json!({"type": "host", "present": true}));
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 5300, .. }]));
+}
+
+/// R-OFF-2: what the connection brings while the welcome's read is out is
+/// acted on once the read is in, in order: a close then joins again a
+/// second after it came. A read answered with none out does nothing.
+#[test]
+fn r_off_2_what_comes_during_the_read_is_acted_on_after_it() {
+    let mut r = Relay::new(vec![], 0);
+    r.joined(true, 0);
+    r.welcome_with(Welcome::default());
+    r.take_rest();
+    let e = r.core.closed(50);
+    assert!(e.is_empty(), "not yet: {e:?}");
+    r.at(80).read(Ok((vec![], Attached::default())));
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 1080, .. }]));
+    assert_eq!(catch_ups(&r.frames), [None], "the welcome acted on first");
+    r.at(90).read(Ok((vec![logged(1)], Attached::default())));
+    assert!(r.take_rest().is_empty());
+    r.at(200).tick();
+    assert!(!r.updates().iter().any(|u| matches!(u, Update::CaughtUp(_))), "a stale read shows nothing");
+}
+
+/// R-HAND-1, R-HAND-4: a handoff asked with no host goes at the welcome,
+/// after the commands.
+#[test]
+fn r_hand_4_a_handoff_asked_with_no_host_goes_after_the_commands() {
+    let mut r = Relay::new(vec![], 0);
+    r.command(stop(1));
+    let e = r.core.ask_handoff(1);
+    r.take(e);
+    r.at(2).live();
+    assert!(matches!(r.frames.as_slice(), [ViewerFrame::CatchUp { .. }, ViewerFrame::Command(_), ViewerFrame::Handoff { .. }]), "{:?}", r.frames);
+}
+
+/// R-HAND-4: with no host, a resync read that finds the session's key
+/// rotated since it was opened ends the viewer; any other failed read is
+/// let go.
+#[test]
+fn r_hand_4_a_resync_read_ends_only_on_a_rotated_key() {
+    let mut r = Relay::new(vec![], 0);
+    r.joined(false, 0);
+    let resync = json!({"type": "resync", "reason": "beyond_buffer", "stream": "00", "seq": 0});
+    r.control(resync.clone());
+    r.read(Err("the registry could not be reached".into()));
+    assert!(r.take_rest().iter().all(|e| !matches!(e, Effect::End)));
+    r.control(resync);
+    assert!(matches!(r.take_rest().as_slice(), [Effect::ReadChunks { want: None }]));
+    r.read(Err(format!("chunk 3 is sealed under a newer epoch — {}; open it again", krowk_client::e2e::ROTATED_SINCE_OPENED)));
+    assert!(matches!(r.take_rest().as_slice(), [Effect::End]));
+    assert!(matches!(r.updates().last(), Some(Update::Failed(_))));
 }
 
 /// R-NET-2: a race won moves the session to the direct path: hello on the
@@ -541,4 +620,105 @@ fn r_client_3_the_core_reads_no_clock_and_opens_no_socket() {
     assert_eq!(a, b);
     assert!(a.contains(&"join 40000 6".to_string()), "{a:?}");
     assert!(a.iter().filter(|l| l.as_str() == "Ping").count() == 3, "{a:?}");
+}
+
+/// Welcomed on the relay with one candidate to race.
+fn with_a_candidate(now: u64) -> (Relay, Candidate) {
+    let mut r = Relay::new(vec![], now);
+    r.joined(true, 0);
+    let c = Candidate { url: "ws://192.168.1.5:7000".into(), via: "lan".into() };
+    r.welcome_with(Welcome { candidates: vec![c.clone()], ..Welcome::default() });
+    r.read(Ok((vec![], Attached::default())));
+    r.take_rest();
+    (r, c)
+}
+
+fn probes(r: &mut Relay) -> usize {
+    r.take_rest().iter().filter(|e| matches!(e, Effect::Probe)).count()
+}
+
+/// R-NET-2: a race nobody wins is tried again 10 s later, then 20, 40 …
+/// up to 5 minutes; a direct welcome puts the wait back to 10 s, and a
+/// direct path closing goes back to the relay at once, the next race 10 s
+/// on.
+#[test]
+fn r_net_2_races_back_off_and_a_direct_welcome_resets_the_wait() {
+    let (mut r, c) = with_a_candidate(0);
+    r.at(0).tick();
+    assert_eq!(probes(&mut r), 1, "the first race at once");
+    assert_eq!(probes(&mut r), 0);
+    let mut t = 1000;
+    for wait in [10, 20, 40, 80, 160, 300, 300] {
+        r.core.probe_lost(t);
+        let due = t + wait * 1000;
+        r.core.alive(due - 1);
+        assert!(r.core.next_wake().is_some_and(|w| w <= due), "woken by {due}");
+        r.at(due - 1).tick();
+        assert_eq!(probes(&mut r), 0, "not before {due}");
+        r.at(due).tick();
+        assert_eq!(probes(&mut r), 1, "at {due}");
+        t = due;
+    }
+
+    r.link += 1;
+    let e = r.core.move_to(c.clone(), &json!({"type": "joined", "link": r.link, "host": true, "seq": 0}), t);
+    r.take(e);
+    r.at(t + 10).welcome_with(Welcome::default());
+    r.read(Ok((vec![], Attached::default())));
+    assert!(!r.core.may_probe(), "on a direct path");
+    let e = r.core.closed(t + 20);
+    assert!(matches!(e.as_slice(), [Effect::Join { at_ms, .. }] if *at_ms == t + 20), "at once: {e:?}");
+    r.at(t + 30).joined(true, 0);
+    r.welcome_with(Welcome { candidates: vec![c], ..Welcome::default() });
+    r.read(Ok((vec![], Attached::default())));
+    r.at(t + 20 + 10_000 - 1).tick();
+    assert_eq!(probes(&mut r), 0);
+    r.at(t + 20 + 10_000).tick();
+    assert_eq!(probes(&mut r), 1, "10 s after the direct path went");
+}
+
+/// R-NET-2: a direct welcome that has not come 3 s after the hello goes
+/// back to the relay; so do more than 1024 batches held waiting for it.
+#[test]
+fn r_net_2_a_late_direct_welcome_or_too_much_held_goes_back_to_the_relay() {
+    let (mut r, c) = with_a_candidate(0);
+    r.at(16).tick();
+    assert_eq!(probes(&mut r), 1);
+    let joined = |link| json!({"type": "joined", "link": link, "host": true, "seq": 0});
+    r.link += 1;
+    let e = r.core.move_to(c.clone(), &joined(r.link), 100);
+    r.take(e);
+    assert_eq!(r.core.next_wake(), Some(3100));
+    r.at(3099).tick();
+    assert!(r.take_rest().iter().all(|e| !matches!(e, Effect::Join { .. })));
+    r.at(3100).tick();
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 3100, .. }]));
+
+    let (mut r, c) = with_a_candidate(0);
+    r.at(16).tick();
+    r.take_rest();
+    r.link += 1;
+    let e = r.core.move_to(c, &joined(r.link), 100);
+    r.take(e);
+    for n in 0..1024 {
+        let b = r.batch(vec![], false);
+        assert!(r.core.leaving(&b, 200).is_empty(), "held, {n}");
+    }
+    let b = r.batch(vec![], false);
+    assert!(matches!(r.core.leaving(&b, 200).as_slice(), [Effect::Join { at_ms: 200, .. }]));
+}
+
+/// R-NET-2: a race won with no host at the candidate is refused, and the
+/// next one put off; the caller drops that connection.
+#[test]
+fn r_net_2_a_candidate_with_no_host_is_refused() {
+    let (mut r, c) = with_a_candidate(0);
+    r.at(0).tick();
+    assert_eq!(probes(&mut r), 1);
+    let e = r.core.move_to(c, &json!({"type": "joined", "link": 9, "host": false, "seq": 0}), 50);
+    assert!(e.is_empty(), "{e:?}");
+    r.at(10_049).tick();
+    assert_eq!(probes(&mut r), 0);
+    r.at(10_050).tick();
+    assert_eq!(probes(&mut r), 1);
 }
