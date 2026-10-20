@@ -69,6 +69,27 @@ enum Keychain {
         }
     }
 
+    /// Reads one item under the service, any one: succeeds when there is
+    /// none, or when the Keychain hands its bytes over, and throws on
+    /// anything else (`errSecInteractionNotAllowed` while locked). Asked
+    /// before a purge that rests on an item reading as absent, so a Keychain
+    /// that can't be read now is never taken for one that is empty.
+    static func checkReadable() throws(KeychainFailure) {
+        let q: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrSynchronizable as String: false,
+            kSecUseDataProtectionKeychain as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+            kSecReturnData as String: true,
+        ]
+        var out: CFTypeRef?
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainFailure(op: "read any item of", account: service, status: status)
+        }
+    }
+
     /// Removes every item under the service, synced or not: what a first
     /// launch does with what an earlier install left behind.
     static func removeAll() throws(KeychainFailure) {

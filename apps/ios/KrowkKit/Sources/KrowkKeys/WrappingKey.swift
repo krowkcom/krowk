@@ -58,7 +58,10 @@ enum WrappingKeys {
     /// to store one agree on whichever was stored first.
     static func loadOrCreate() throws(WrappingKeyFailure) -> any WrappingKey {
         if let key = try load() { return key }
-        do throws(KeychainFailure) { try Keychain.removeAll() } catch { throw .keychain(error) }
+        do throws(KeychainFailure) {
+            try Keychain.checkReadable()
+            try Keychain.removeAll()
+        } catch { throw .keychain(error) }
         let made = try make()
         do throws(KeychainFailure) {
             try Keychain.write(wrappingKeyAccount, made.stored, replace: false)
