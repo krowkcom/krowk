@@ -25,8 +25,11 @@ value.
 ## On a Mac: Xcode, the simulator and UI tests
 
 Needs Xcode with the iOS 26 SDK, Rust with the `aarch64-apple-ios` and
-`aarch64-apple-ios-sim` targets, and XcodeGen (`brew install xcodegen`).
-CI used XcodeGen 2.46.0 (Homebrew). From the repository root:
+`aarch64-apple-ios-sim` targets, and XcodeGen 2.46.0. CI uses exactly
+XcodeGen 2.46.0, the release's `xcodegen.zip` checked against its sha256
+(`.github/workflows/ios.yml`, which fails if this line names another
+version); `brew install xcodegen` gives the newest. From the repository
+root:
 
 ```
 make ios-core
@@ -36,13 +39,20 @@ xcodebuild test -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
 ```
 
 `xcrun simctl list devices available` lists the simulators and their udids.
-The scheme `Krowk-iOS` runs the UI test `LaunchTests` and KrowkKit's unit
-tests. The simulator slice is arm64 only, so this needs an Apple silicon Mac.
+The scheme `Krowk-iOS` runs the UI test `LaunchTests`, KrowkKit's unit
+tests and KrowkCore's `BindingsTests`. The simulator slice is arm64 only,
+so this needs an Apple silicon Mac.
 
-No machine of ours runs macOS, so for now this path runs on GitHub's
-`macos-26` runner: the `app` job in `.github/workflows/ios-core.yml` runs
-the three commands and saves a simulator screenshot as an artifact. Ticket
-72 owns the app's full CI.
+No machine of ours runs macOS, so this path runs on GitHub's `macos-26`
+runner, in `.github/workflows/ios.yml`, for every pull request and push to
+main that touches `apps/ios`, the crates the app links (krowk-ffi,
+krowk-client, krowk-api), the workspace's manifests and toolchain pin, or
+`scripts/ios_core.sh`. A CLI-only change does not start it. Its `bindings`
+job runs `make ios-core` once per distinct Rust input and caches the
+framework; the `app` job generates the project, checks its build settings,
+runs the scheme's tests on an iPhone simulator and keeps a screenshot as
+the artifact `krowk-ios-screenshot` (and the `.xcresult` when a test
+fails). `gh workflow run ios.yml --ref <branch>` runs it by hand.
 
 ## On Linux: xtool
 
