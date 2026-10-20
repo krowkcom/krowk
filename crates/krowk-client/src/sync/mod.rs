@@ -2,7 +2,8 @@
 //! (R-CLIENT-1; engineering/harness.md → Sync): what a viewer's frames and
 //! the host's answers, welcome and batches hold, sealed over the relay by
 //! `relay_link`, and (`store`) the sealed index and chunks a session's log
-//! is kept in. Types only, with no IO: the harness's host and viewer, and
+//! is kept in, with the reader a device attaching opens them by. The wire
+//! shapes are types only, with no IO: the harness's host and viewer, and
 //! the phone's viewer later, read and write the same JSON.
 
 pub mod store;

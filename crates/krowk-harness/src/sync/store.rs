@@ -1,33 +1,18 @@
-//! A synced session at rest (engineering/harness.md → Sync): its sealed
-//! index, the chunks of its log and the checkpoints among them, and reading
-//! them back from a checkpoint on another device.
-//!
-//! **A chunk** is JSON, sealed with `e2e::ChunkSealer`: `{"type": "events",
-//! "events": [LogEvent…]}`, the events logged since the chunk before, cut at
-//! each turn's end; or `{"type": "checkpoint", …}` (`Checkpoint`), which
-//! holds everything a device attaching needs up to its place in the log.
-//!
-//! **The sealed index** (`Index`) names the session for a listing and says
-//! where the log stands: the head (the last chunk's index and digest) and
-//! the latest checkpoint's place in the chain. A viewer starts reading at
-//! the checkpoint and must reach the head. The index is one message the
-//! holder replaces, so a hostile registry can serve an older one together
-//! with the log as it was then; what detects that is the host's live head
-//! in its welcome, and a device's own high-water mark (`Head::at_least`).
+//! A synced session at rest (engineering/harness.md → Sync): the lease
+//! holder's writer, which seals and stores the chunks of its log and the
+//! sealed index. The shapes of the index and the chunks, and reading them
+//! back (`attach`, `catch_up`, and the key and index openers), are every
+//! client's (R-CLIENT-1): `krowk_client::sync::store` declares them, and
+//! they are re-exported here so the harness's paths do not move.
 
 use krowk_api::Client;
-use krowk_client::e2e::{self, ChunkReader, ChunkSealer, SessionKeys};
-use krowk_client::device_chain::Chain;
-use krowk_client::session_record;
-use krowk_client::user_key::UserKeys;
+use krowk_client::e2e::{self, ChunkSealer, SessionKeys};
+use krowk_client::sync::store::read_all;
 use serde_json::Value;
 
-/// The shapes of the index and the chunks, shared by every client
-/// (R-CLIENT-1): `krowk_client::sync::store` declares them.
-pub use krowk_client::sync::store::{Checkpoint, Chunk, Head, HostedOn, Index, Mark};
-
-/// How many chunks are read from storage at once.
-const FETCH: usize = 8;
+/// The shapes of the index and the chunks, and the at-rest reader, shared
+/// by every client (R-CLIENT-1): `krowk_client::sync::store` declares them.
+pub use krowk_client::sync::store::{attach, catch_up, open_index, open_session_key, Attached, Checkpoint, Chunk, Head, HostedOn, Index, Mark};
 
 fn api(e: krowk_api::Error) -> String {
     e.to_string()
@@ -67,20 +52,6 @@ pub struct Writer {
     staged: Option<Staged>,
     /// The index write failed and is owed.
     index_owed: bool,
-}
-
-/// The whole log as the registry holds it: its events and where it ends.
-fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
-    let mut reader = ChunkReader::new(key, crate::daemon::ws::uuid(id));
-    let mut events = Vec::new();
-    let head = read_from(client, id, &mut reader, None, &mut |c, _| {
-        match c {
-            Chunk::Events { events: e } => events.extend(e),
-            Chunk::Checkpoint(cp) => events = cp.events,
-        }
-        Ok(())
-    })?;
-    Ok((events, reader, head))
 }
 
 impl Writer {
@@ -233,135 +204,3 @@ impl Writer {
     }
 }
 
-/// Reads chunks from `reader`'s place to the end of what the registry lists.
-fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
-    let mut after = reader.next().checked_sub(1);
-    loop {
-        let page = client.list_chunks(id, after, 100).map_err(api)?;
-        let wanted: Vec<_> = page.chunks.iter().filter(|c| c.index >= reader.next()).collect();
-        // Each chunk is a round trip to storage, so a page is fetched
-        // FETCH at a time and opened in order: an attach costs a few round
-        // trips, not one a chunk (R-PERF-6).
-        let mut fetched = Vec::with_capacity(wanted.len());
-        for group in wanted.chunks(FETCH) {
-            let got: Vec<_> = std::thread::scope(|s| group.iter().map(|c| s.spawn(move || client.read_chunk(c))).collect::<Vec<_>>().into_iter().map(|h| h.join().unwrap_or_else(|_| Err(krowk_api::fail("read_failed", "a chunk read panicked")))).collect());
-            fetched.extend(got);
-        }
-        for (c, sealed) in wanted.iter().zip(fetched) {
-            let sealed = sealed.map_err(api)?;
-            let plain = reader.open(&sealed).map_err(|e| e.to_string())?;
-            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| format!("chunk {} holds no chunk this krowk reads: {e}", c.index))?;
-            let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
-            last = Some(h);
-            each(chunk, h)?;
-        }
-        match page.next {
-            Some(n) if !page.chunks.is_empty() => after = Some(n),
-            _ => return Ok(last),
-        }
-    }
-}
-
-/// A session as a device attaching reads it at rest: the events to its
-/// head, from its latest checkpoint.
-#[derive(Debug, Clone, Default)]
-pub struct Attached {
-    pub index: Index,
-    pub events: Vec<Value>,
-    pub head: Option<Head>,
-    /// Where the reading stopped, for reading the tail again later.
-    pub next: u64,
-    pub previous: [u8; 32],
-    pub fence: u64,
-    /// The key epoch of the last chunk read.
-    pub epoch: u32,
-    /// Every chunk read, for holding the log to a head it was told of.
-    pub heads: Vec<Head>,
-}
-
-/// A session's keys, out of the session record: only a record signed by a
-/// device the verified list has held — listed now, `from` `Listed`, when a
-/// host takes it up to write under (`session_record::verify`) — and then
-/// opened with the generations this device holds. An unsigned record, one
-/// signed by a device the list never held, and one sealed some way other
-/// than to the user key, are refused before anything is unwrapped.
-pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserKeys, chain: &Chain, from: session_record::Signer) -> Result<SessionKeys, String> {
-    let raw = crate::daemon::ws::uuid(id);
-    let wrapped = e2e::unhex(&s.wrapped_key).ok_or("the session's wrapped key is not hex")?;
-    let seal = if s.seal.is_empty() { session_record::SEAL_USER } else { s.seal.as_str() };
-    let signer = e2e::DeviceId::parse(&s.signer).ok_or_else(|| format!("the registry's record of session {id} names no signer — refused, since anyone could have made it"))?;
-    let signature = e2e::unhex(&s.record_signature).ok_or_else(|| format!("the registry's record of session {id} carries no signature — refused"))?;
-    session_record::verify(&raw, &wrapped, seal, signer, &signature, chain, from).map_err(|e| e.to_string())?;
-    e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
-}
-
-/// Opens a session's sealed index: under the current key, or an older
-/// one's when a rotation's key landed and its index write did not — the
-/// holder's next index write seals it under the current one.
-pub fn open_index(key: &SessionKeys, id: &str, sealed_hex: &str) -> Result<Index, String> {
-    if sealed_hex.is_empty() {
-        return Ok(Index::default());
-    }
-    let blob = e2e::unhex(sealed_hex).ok_or("the session's index is not hex")?;
-    let session = crate::daemon::ws::uuid(id);
-    let mut opened = e2e::open_session_index(&blob, &session, key.current());
-    for epoch in (0..key.epoch()).rev() {
-        if opened.is_ok() {
-            break;
-        }
-        opened = e2e::open_session_index(&blob, &session, key.at(epoch).expect("within the ring"));
-    }
-    let plain = opened.map_err(|e| e.to_string())?;
-    serde_json::from_slice(&plain).map_err(|e| format!("the session's index is not one this krowk reads: {e}"))
-}
-
-/// Attaches from the latest checkpoint and reads the tail after it, then
-/// holds what was read to the index's head and to `known`.
-pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known: Option<Head>) -> Result<Attached, String> {
-    let session = crate::daemon::ws::uuid(id);
-    let mut reader = match index.checkpoint {
-        Some(m) => ChunkReader::resume(key, session, m.index, m.previous, m.fence, 0),
-        None => ChunkReader::new(key, session),
-    };
-    let mut events = Vec::new();
-    let mut heads = Vec::new();
-    let head = read_from(client, id, &mut reader, None, &mut |c, h| {
-        match c {
-            Chunk::Events { events: e } => events.extend(e),
-            Chunk::Checkpoint(cp) => {
-                // The head before the checkpoint, as the host sealed it in.
-                heads.extend(cp.chunk);
-                events = cp.events;
-            }
-        }
-        heads.push(h);
-        Ok(())
-    })?;
-    Head::at_least(&heads, index.head)?;
-    Head::at_least(&heads, known)?;
-    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), epoch: reader.epoch(), index, events, head, heads })
-}
-
-/// Reads the tail again from where `a` stopped, until it reaches `known`.
-pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, String> {
-    let mut reader = ChunkReader::resume(key, crate::daemon::ws::uuid(id), a.next, a.previous, a.fence, a.epoch);
-    let mut fresh = Vec::new();
-    let mut heads = std::mem::take(&mut a.heads);
-    let head = read_from(client, id, &mut reader, a.head, &mut |c, h| {
-        if let Chunk::Events { events } = c {
-            fresh.extend(events);
-        }
-        heads.push(h);
-        Ok(())
-    });
-    a.heads = heads;
-    let head = head?;
-    Head::at_least(&a.heads, known)?;
-    a.head = head;
-    a.next = reader.next();
-    a.previous = reader.previous();
-    a.fence = reader.fence();
-    a.epoch = reader.epoch();
-    a.events.extend(fresh.iter().cloned());
-    Ok(fresh)
-}
