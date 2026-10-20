@@ -105,6 +105,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   moved from the harness into krowk-client as a state machine with no
   socket of its own, so the iPhone app will join the relay with the same
   code. The connection, TLS and the 10-second waits stay in the harness.
+- **krowk-client can follow a synced session on its own rules.** Nothing
+  changes for you yet: `krowk sync attach` still runs its own loop. The
+  rules for following a session live (joining the relay, holding batches
+  until the host's welcome, reading the log up to the head it names,
+  acking, catching up on gaps, sending queued prompts at the welcome, the
+  heartbeat and one screen update a frame) now also exist in
+  krowk-client as a state machine you feed the bytes that arrived and the
+  time. It has no socket, thread or clock of its own, so the iPhone app
+  will follow a session with the same rules, using its own connection.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,

@@ -5,13 +5,20 @@
 //! asks for. The harness's viewer runs them on its tokio loop; the phone's
 //! viewer will run the same. The clock is the caller's: nothing here reads
 //! it.
+//!
+//! `ViewerCore` is the whole viewer built from them, sans IO (R-CLIENT-3):
+//! the bytes that arrived and the time go in, and the bytes to send, the
+//! updates to show and the reads and joins to run come out.
 
-use super::store::Head;
-use super::Batch;
-use crate::protocol::frame::KIND_ACK;
-use crate::protocol::{LiveEvent, StreamLine};
-use crate::relay_link::ViewerLink;
-use std::collections::HashSet;
+use super::commands::CommandBook;
+use super::join::read_control;
+use super::store::{Attached, Head};
+use super::{Answer, Batch, Candidate, ViewerFrame, Welcome, DEAD, FRAME, PING};
+use crate::e2e::{self, DeviceId, SessionKeys};
+use crate::protocol::frame::{HEADER, KIND_ACK, KIND_BATCH, KIND_RELAY};
+use crate::protocol::{Command, LiveEvent, StreamLine};
+use crate::relay_link::{Outbound, ViewerLink};
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 /// What a viewer hands its screen, one `Vec` a display frame.
@@ -238,6 +245,769 @@ pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mu
         frame.push(Update::Host(false));
     }
     gap
+}
+
+/// What the caller of a `ViewerCore` does next, in the order given.
+#[derive(Debug, Clone)]
+pub enum Effect {
+    /// A binary WebSocket message on the current connection.
+    Send(Vec<u8>),
+    /// The text message `ping` on the current connection.
+    Ping,
+    /// Updates for the screen: at most one `Show` per `FRAME` (R-LAG-7),
+    /// but for the last one, which says `Failed` before `End`.
+    Show(Vec<Update>),
+    /// Read the chunks written since `attached()` (`store::catch_up` on a
+    /// clone of it, blocking, off the main thread), up to `want` when
+    /// given, and hand the result to `chunks_read`. Until then the core
+    /// holds the stream's batches with those held for the welcome, and
+    /// keeps whatever else comes in to act on after, in order.
+    ReadChunks { want: Option<Head> },
+    /// Drop the current connection and any leaving one; at `at_ms` fetch a
+    /// fresh relay ticket and join as a viewer with `extra`
+    /// (`sync::join::Joining`), then call `joined`, or `join_failed` with
+    /// why the ticket or the join failed. A later `Join` replaces one not
+    /// yet run.
+    Join { extra: serde_json::Value, at_ms: u64 },
+    /// Race `candidates()` for a direct path, each joined with
+    /// `cursor_extra()` and given `PROBE` to answer; then `move_to` with
+    /// the first that joined, or `probe_lost` when none did.
+    Probe,
+    /// Drop the leaving connection: the move to a direct path is done.
+    Leave,
+    /// The viewer cannot go on (the `Show` before it says why).
+    End,
+}
+
+/// What came in while a `ReadChunks` was out, acted on once it is answered:
+/// the harness's loop reads nothing else while it reads the chunks.
+#[derive(Debug)]
+enum Waiting {
+    Received(Vec<u8>),
+    Leaving(Vec<u8>),
+    Closed,
+    BackToRelay,
+    Command(Command),
+    Handoff,
+}
+
+/// The read a `ReadChunks` is for: a welcome's prefix check, whose welcome
+/// is acted on once it is answered, or a resync with no host.
+#[derive(Debug)]
+enum Reading {
+    Welcome(Welcome),
+    Resync,
+}
+
+fn ms(d: Duration) -> u64 {
+    u64::try_from(d.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// How long a viewer waits to join again after the relay closed it or
+/// refused the join.
+const RETRY_MS: u64 = 1000;
+
+/// A viewer of a synced session following its host live, without IO
+/// (R-CLIENT-3; engineering/harness.md → Sync): the caller passes in what
+/// arrived and the time, a monotonic `now_ms` from any origin, and gets
+/// back the `Effect`s to carry out. It opens no socket, starts no thread
+/// and reads no clock, so the phone owns its sockets in Swift and the
+/// rules run under `cargo test`.
+///
+/// It joins the relay, says hello, holds batches until the welcome, reads
+/// the chunks up to the welcome's head (the prefix check), applies each
+/// batch once and acks the relay, catches up on gaps and resyncs, follows
+/// presence, sends commands again after a reconnect, and hands the screen
+/// one `Show` per display frame. Its timers are `tick`'s: the frame, the
+/// heartbeat, a move's welcome and the next race for a direct path, each
+/// due by `next_wake`.
+pub struct ViewerCore {
+    key: SessionKeys,
+    raw: [u8; 16],
+    relay: String,
+    at_rest: Attached,
+    seen: HashSet<String>,
+    last_id: Option<String>,
+    /// Approval requests shown and not yet resolved, by request id: each
+    /// welcome names the waiting ones and the stream carries them too.
+    asked: HashSet<String>,
+    frame: Vec<Update>,
+    shown_ms: u64,
+    book: CommandBook,
+    held: Vec<Vec<u8>>,
+    link: Option<ViewerLink>,
+    /// Whether the caller holds a current connection: from `joined` (or a
+    /// `move_to`) until a `Join`.
+    connected: bool,
+    host: bool,
+    /// Why the relay could not be joined, said once as it comes or changes.
+    unjoined: Option<String>,
+    heard_ms: u64,
+    last_ping_ms: u64,
+    // Direct paths (R-NET-2): the candidates the host's welcome named, a
+    // race out, the next one's time and the wait after it, the one being
+    // moved onto and by when its welcome must come, whether the relay's
+    // connection is still read meanwhile, and the one the session is on.
+    candidates: Vec<Candidate>,
+    probing: bool,
+    reprobe_ms: u64,
+    backoff_ms: u64,
+    moving: Option<Candidate>,
+    moving_until_ms: u64,
+    leaving: bool,
+    on: Option<Candidate>,
+    /// The last stream batch applied, and the last acked to the relay.
+    applied: u64,
+    acked: u64,
+    catch_ups: CatchUps,
+    reading: Option<Reading>,
+    waiting: VecDeque<Waiting>,
+    now_ms: u64,
+    ended: bool,
+    out: Vec<Effect>,
+}
+
+impl ViewerCore {
+    /// A viewer of `session`, attached at rest (`store::attach`): shows
+    /// what the chunks hold, as a display frame shown at `now_ms`, and
+    /// joins the relay now.
+    pub fn new(key: SessionKeys, session: &str, device: DeviceId, relay: &str, at_rest: Attached, now_ms: u64) -> (ViewerCore, Vec<Effect>) {
+        let seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
+        let mut last_id = None;
+        for id in &seen {
+            newest(&mut last_id, id);
+        }
+        let first = Effect::Show(vec![Update::Attached { events: at_rest.events.clone(), head: at_rest.head }]);
+        let mut v = ViewerCore {
+            key,
+            raw: super::uuid(session),
+            relay: relay.to_string(),
+            at_rest,
+            seen,
+            last_id,
+            asked: HashSet::new(),
+            frame: Vec::new(),
+            shown_ms: now_ms,
+            book: CommandBook::new(device),
+            held: Vec::new(),
+            link: None,
+            connected: false,
+            host: false,
+            unjoined: None,
+            heard_ms: now_ms,
+            last_ping_ms: now_ms,
+            candidates: Vec::new(),
+            probing: false,
+            reprobe_ms: now_ms,
+            backoff_ms: ms(REPROBE),
+            moving: None,
+            moving_until_ms: now_ms,
+            leaving: false,
+            on: None,
+            applied: 0,
+            acked: 0,
+            catch_ups: CatchUps::default(),
+            reading: None,
+            waiting: VecDeque::new(),
+            now_ms,
+            ended: false,
+            out: vec![first],
+        };
+        v.join(now_ms);
+        let out = v.take();
+        (v, out)
+    }
+
+    /// The session as read at rest so far: what a `ReadChunks` reads on
+    /// from.
+    pub fn attached(&self) -> &Attached {
+        &self.at_rest
+    }
+
+    /// The direct paths the host's welcome named (R-NET-1).
+    pub fn candidates(&self) -> &[Candidate] {
+        &self.candidates
+    }
+
+    /// Whether a race for a direct path may start: welcomed on the relay,
+    /// with candidates, no race out, no read out.
+    pub fn may_probe(&self) -> bool {
+        self.on.is_none() && self.moving.is_none() && !self.probing && !self.candidates.is_empty() && self.connected && self.reading.is_none() && self.welcomed()
+    }
+
+    /// What a join carries to resume where this viewer stopped: the stream
+    /// and the last batch it opened (`ViewerLink::cursor`), else nothing.
+    pub fn cursor_extra(&self) -> serde_json::Value {
+        match self.link.as_ref().and_then(|l| l.cursor()) {
+            Some((s, n)) => serde_json::json!({"stream": e2e::hex(&s), "afterSeq": n}),
+            None => serde_json::json!({}),
+        }
+    }
+
+    /// When `tick` next has something to do; none once ended.
+    pub fn next_wake(&self) -> Option<u64> {
+        if self.ended {
+            return None;
+        }
+        let mut at = self.last_ping_ms.saturating_add(ms(PING));
+        if !self.frame.is_empty() || (self.applied > self.acked && self.connected) {
+            at = at.min(self.shown_ms.saturating_add(ms(FRAME)));
+        }
+        if self.moving.is_some() && self.reading.is_none() {
+            at = at.min(self.moving_until_ms);
+        }
+        if self.may_probe() {
+            at = at.min(self.reprobe_ms);
+        }
+        Some(at)
+    }
+
+    /// On the relay (`joined` as the relay answered the join): hello said
+    /// to the host there, if one is.
+    pub fn joined(&mut self, joined: &serde_json::Value, now_ms: u64) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        self.unjoined = None;
+        (self.on, self.moving, self.leaving) = (None, None, false);
+        // A read out belonged to the connection before; none is, as the
+        // caller only joins after a `Join`.
+        (self.reading, self.waiting) = (None, VecDeque::new());
+        let n = joined["link"].as_u64().unwrap_or(0);
+        let mut l = match self.link.take() {
+            Some(l) => l.reconnect(n),
+            None => ViewerLink::new(self.key.current(), self.raw, n),
+        };
+        self.host = joined["host"].as_bool().unwrap_or(false);
+        self.held.clear();
+        self.catch_ups.reset();
+        self.connected = true;
+        self.heard_ms = now_ms;
+        if self.host && let Ok(h) = l.hello(b"{}") {
+            self.out.push(Effect::Send(h));
+        }
+        // Where the stream stands for this viewer: its own cursor on a
+        // stream it read, else the relay's count, live from the next batch.
+        self.applied = match l.cursor() {
+            Some((s, n)) if joined["stream"].as_str() == Some(e2e::hex(&s).as_str()) => n,
+            _ => joined["seq"].as_u64().unwrap_or(0),
+        };
+        self.acked = self.applied;
+        self.link = Some(l);
+        if !self.host {
+            self.frame.push(Update::Host(false));
+        }
+        self.take()
+    }
+
+    /// The relay could not be joined (the ticket, the dial or the join):
+    /// said once as it comes or changes, and joined again a second later.
+    pub fn join_failed(&mut self, error: String, now_ms: u64) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        if self.unjoined.as_deref() != Some(error.as_str()) {
+            self.frame.push(Update::Note(format!("not on the relay {}: {error}; trying again every second", self.relay)));
+            self.unjoined = Some(error);
+        }
+        self.join(now_ms + RETRY_MS);
+        self.take()
+    }
+
+    /// A binary message on the current connection: a relay control message
+    /// (kind 4) or an envelope.
+    pub fn received(&mut self, bytes: &[u8], now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, true, Waiting::Received(bytes.to_vec()))
+    }
+
+    /// Any other message on the current connection (`pong`): it lives.
+    pub fn alive(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
+        self.heard_ms = now_ms;
+    }
+
+    /// The current connection closed.
+    pub fn closed(&mut self, now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, true, Waiting::Closed)
+    }
+
+    /// A binary message on the leaving connection: the relay's, while the
+    /// session moves off it to a direct path. Once that one closes the
+    /// caller drops it, and says nothing.
+    pub fn leaving(&mut self, bytes: &[u8], now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, false, Waiting::Leaving(bytes.to_vec()))
+    }
+
+    /// The direct path was lost, or its welcome is late by the caller's
+    /// reckoning: the relay joined again, from the cursor, at once.
+    pub fn back_to_relay(&mut self, now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, false, Waiting::BackToRelay)
+    }
+
+    /// A command of the person's (R-LAG-8): shown at once, sent once a host
+    /// has welcomed this viewer, queued for the next welcome until then
+    /// (R-HAND-4).
+    pub fn command(&mut self, c: Command, now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, false, Waiting::Command(c))
+    }
+
+    /// Asks the host to hand the session to this device (R-HAND-1), now if
+    /// a host has welcomed this viewer, else at the next welcome.
+    pub fn ask_handoff(&mut self, now_ms: u64) -> Vec<Effect> {
+        self.input(now_ms, false, Waiting::Handoff)
+    }
+
+    /// The chunks a `ReadChunks` read: the events in them and where the
+    /// reading stopped, or why it failed.
+    pub fn chunks_read(&mut self, read: Result<(Vec<serde_json::Value>, Attached), String>, now_ms: u64) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        match self.reading.take() {
+            None => {}
+            Some(Reading::Resync) => match read {
+                Ok((fresh, a)) => self.caught_up(fresh, a),
+                // The session moved to a key epoch this viewer opened it
+                // before: nothing after it opens here until it is opened again.
+                Err(e) if e.contains(e2e::ROTATED_SINCE_OPENED) => self.fail(e),
+                Err(_) => {}
+            },
+            // The prefix check: the chunks must reach the head the host sealed.
+            Some(Reading::Welcome(w)) => match read {
+                Ok((fresh, a)) => {
+                    self.caught_up(fresh, a);
+                    self.welcomed_with(w);
+                }
+                Err(e) => self.fail(e),
+            },
+        }
+        while self.reading.is_none() && !self.ended {
+            let Some(w) = self.waiting.pop_front() else { break };
+            self.run(w);
+        }
+        self.take()
+    }
+
+    /// The direct path a race found, `joined` as its listener answered: the
+    /// same hello and welcome as on the relay, over it. With a `Send` (the
+    /// hello) the candidate's connection is the current one from here and
+    /// the relay's the leaving one, read by `leaving` until the welcome;
+    /// with none the caller drops the candidate's connection.
+    pub fn move_to(&mut self, c: Candidate, joined: &serde_json::Value, now_ms: u64) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        self.probing = false;
+        // A candidate joined with no host there (its uplink to the listener
+        // not up yet), or the session moved meanwhile: later.
+        if self.on.is_some() || self.moving.is_some() || !self.connected || self.reading.is_some() || joined["host"].as_bool() != Some(true) {
+            self.later();
+            return self.take();
+        }
+        let Some(old) = self.link.take() else { return self.take() };
+        let mut l = old.reconnect(joined["link"].as_u64().unwrap_or(0));
+        let hello = l.hello(b"{}");
+        self.link = Some(l);
+        match hello {
+            Ok(h) => {
+                self.out.push(Effect::Send(h));
+                self.leaving = true;
+                self.heard_ms = now_ms;
+                self.moving = Some(c);
+                self.moving_until_ms = now_ms.saturating_add(ms(PROBE));
+            }
+            Err(_) => self.relay_again(),
+        }
+        self.take()
+    }
+
+    /// A race nobody won: the next one later, the wait doubled.
+    pub fn probe_lost(&mut self, now_ms: u64) {
+        self.now_ms = now_ms;
+        self.probing = false;
+        self.later();
+    }
+
+    /// The time passing: the batches applied acked, the frame shown if a
+    /// display frame has passed since the last, a heartbeat every `PING`
+    /// (or, with no word for `DEAD`, the relay joined again), a move whose
+    /// welcome is late given up, and a race started when one is due.
+    pub fn tick(&mut self, now_ms: u64) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        if self.applied > self.acked && self.connected {
+            self.acked = self.applied;
+            self.out.push(Effect::Send(ack(&self.raw, self.applied)));
+        }
+        // Never two `Show`s inside one display frame, however often the
+        // caller ticks (R-LAG-7).
+        if !self.frame.is_empty() && now_ms >= self.shown_ms.saturating_add(ms(FRAME)) {
+            self.shown_ms = now_ms;
+            self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+        }
+        if now_ms >= self.last_ping_ms.saturating_add(ms(PING)) {
+            self.last_ping_ms = now_ms;
+            if self.connected {
+                // The harness hears nothing while it reads the chunks, so
+                // what it holds back meanwhile is no silence.
+                if self.reading.is_none() && now_ms.saturating_sub(self.heard_ms) > ms(DEAD) {
+                    self.join(now_ms);
+                } else {
+                    self.out.push(Effect::Ping);
+                }
+            }
+        }
+        if self.moving.is_some() && self.reading.is_none() && now_ms >= self.moving_until_ms {
+            self.relay_again();
+        }
+        if self.may_probe() && now_ms >= self.reprobe_ms {
+            self.probing = true;
+            self.out.push(Effect::Probe);
+        }
+        self.take()
+    }
+
+    fn take(&mut self) -> Vec<Effect> {
+        std::mem::take(&mut self.out)
+    }
+
+    /// An input that waits while a read is out; `heard` when it came on the
+    /// current connection.
+    fn input(&mut self, now_ms: u64, heard: bool, w: Waiting) -> Vec<Effect> {
+        if self.ended {
+            return Vec::new();
+        }
+        self.now_ms = now_ms;
+        if heard {
+            self.heard_ms = now_ms;
+        }
+        if self.reading.is_some() {
+            match w {
+                // A stream batch waits with those held for the welcome: it
+                // came before the catch-up the welcome asks for once the
+                // read is in, so that catch-up covers a gap among them.
+                Waiting::Received(b) if self.connected && b.len() >= HEADER && b[1] == KIND_BATCH && b[20..28] != [0; 8] => self.held.push(b),
+                w => self.waiting.push_back(w),
+            }
+        } else {
+            self.run(w);
+        }
+        self.take()
+    }
+
+    fn run(&mut self, w: Waiting) {
+        match w {
+            Waiting::Received(b) if self.connected => self.inbound(&b),
+            Waiting::Leaving(b) if self.leaving => self.leaving_in(&b),
+            // A direct path gone falls back to the relay at once, from the
+            // cursor, which the relay's buffer fills (R-NET-2).
+            Waiting::Closed if self.connected && (self.on.is_some() || self.moving.is_some()) => self.relay_again(),
+            Waiting::Closed if self.connected => self.join(self.now_ms + RETRY_MS),
+            Waiting::BackToRelay if self.on.is_some() || self.moving.is_some() => self.relay_again(),
+            Waiting::Command(c) => {
+                let (now, shown) = self.book.command(c, self.ready());
+                self.frame.push(shown);
+                if let Some(r) = now {
+                    self.send_frame(&ViewerFrame::Command(r));
+                }
+            }
+            Waiting::Handoff => {
+                if let Some(f) = self.book.ask_handoff(self.ready()) {
+                    self.send_frame(&f);
+                }
+            }
+            Waiting::Received(_) | Waiting::Leaving(_) | Waiting::Closed | Waiting::BackToRelay => {}
+        }
+    }
+
+    /// Drops the connections and joins the relay at `at_ms`, from the cursor.
+    fn join(&mut self, at_ms: u64) {
+        (self.connected, self.leaving, self.on, self.moving) = (false, false, None, None);
+        self.out.push(Effect::Join { extra: self.cursor_extra(), at_ms });
+    }
+
+    /// Off a direct path, or one being moved onto: the relay joined again
+    /// at once, and the next race put off.
+    fn relay_again(&mut self) {
+        self.join(self.now_ms);
+        self.later();
+    }
+
+    fn later(&mut self) {
+        self.reprobe_ms = self.now_ms.saturating_add(self.backoff_ms);
+        self.backoff_ms = self.backoff_ms.saturating_mul(2).min(ms(REPROBE_MAX));
+    }
+
+    fn welcomed(&self) -> bool {
+        self.link.as_ref().is_some_and(|l| l.welcomed())
+    }
+
+    /// Whether a host has welcomed this connection: a command or handoff
+    /// goes now, else at the next welcome.
+    fn ready(&self) -> bool {
+        self.host && self.welcomed()
+    }
+
+    fn send(&mut self, bytes: Vec<u8>) {
+        if self.connected {
+            self.out.push(Effect::Send(bytes));
+        }
+    }
+
+    /// One frame sealed and sent to the host.
+    fn send_frame(&mut self, f: &ViewerFrame) {
+        let Some(l) = self.link.as_mut() else { return };
+        if let Ok(sealed) = l.frame(&serde_json::to_vec(f).expect("json"), false) {
+            self.send(sealed);
+        }
+    }
+
+    /// The viewer cannot go on: shown at once, then the end.
+    fn fail(&mut self, e: String) {
+        self.frame.push(Update::Failed(e));
+        self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+        self.out.push(Effect::End);
+        self.ended = true;
+    }
+
+    /// What came on the current connection.
+    fn inbound(&mut self, b: &[u8]) {
+        if b.len() < HEADER {
+            return;
+        }
+        if b[1] == KIND_RELAY {
+            match read_control(b) {
+                Some(v) if v["type"] == "host" => self.presence(&v),
+                // A frame sent as the host went: dropped by the relay, so
+                // the host is not there, and what was sent waits,
+                // unacknowledged, for the welcome of the next.
+                Some(v) if v["type"] == "error" && v["code"] == "host_absent" => {
+                    if self.host {
+                        self.host = false;
+                        self.frame.push(Update::Host(false));
+                    }
+                }
+                Some(v) if v["type"] == "resync" => self.resync(&v),
+                _ => {}
+            }
+        } else if b[1] == KIND_BATCH {
+            self.batch(b);
+        }
+    }
+
+    /// Presence is the relay's word, not the host's. A host arriving is
+    /// joined again and said hello to: its welcome sends again every
+    /// command not yet acknowledged, and none runs twice.
+    fn presence(&mut self, v: &serde_json::Value) {
+        let present = v["present"].as_bool().unwrap_or(false);
+        let direct = self.on.is_some() || self.moving.is_some();
+        if !present && direct {
+            // The host's uplink to its direct listener went, not the host:
+            // back to the relay, where it may still be.
+            self.relay_again();
+        } else if present && (!self.welcomed() || !direct) {
+            self.join(self.now_ms);
+        } else if !present {
+            self.host = false;
+            self.frame.push(Update::Host(false));
+        }
+    }
+
+    /// The relay cannot carry the stream on for this viewer.
+    fn resync(&mut self, v: &serde_json::Value) {
+        if v["reason"] == "stream" {
+            // Another stream: a new host, or one that could not carry its
+            // count on. Join again and be welcomed onto it.
+            self.join(self.now_ms);
+        } else if self.welcomed() {
+            // The relay cannot fill the gap: the host can, now, or once the
+            // catch-up in flight ends.
+            if let Some(after) = self.catch_ups.gap(self.last_id.clone(), false) {
+                self.ask_catch_up(after);
+            }
+        } else {
+            // No host: the chunks, up to what was written.
+            self.reading = Some(Reading::Resync);
+            self.out.push(Effect::ReadChunks { want: None });
+        }
+    }
+
+    /// What the chunks held that was not seen yet, shown.
+    fn caught_up(&mut self, fresh: Vec<serde_json::Value>, a: Attached) {
+        let fresh = fresh_only(fresh, &mut self.seen, &mut self.last_id);
+        self.at_rest = a;
+        if !fresh.is_empty() {
+            self.frame.push(Update::CaughtUp(fresh));
+        }
+    }
+
+    /// A batch on the stream, or one routed to this viewer.
+    fn batch(&mut self, b: &[u8]) {
+        let Some(l) = self.link.as_mut() else { return };
+        if b[20..28] == [0; 8] {
+            return self.routed(b);
+        }
+        if !l.welcomed() {
+            self.held.push(b.to_vec());
+            if self.moving.is_some() && self.held.len() > HELD_MAX {
+                self.relay_again();
+            }
+        } else if let Some((_, have)) = l.cursor() && seq_of(b) <= have {
+            // A batch this viewer opened already, by the other uplink: acked
+            // all the same, as a direct listener counts its window in what
+            // it sent.
+            if self.connected {
+                self.acked = self.acked.max(have);
+                self.out.push(Effect::Send(ack(&self.raw, have)));
+            }
+        } else {
+            let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+            // A batch the relay dropped: the host fills the gap, from the
+            // newest event held before this batch, now or once the
+            // catch-up in flight ends.
+            if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
+                self.ask_catch_up(after);
+            }
+            if self.applied >= self.acked + ACK_EVERY && self.connected {
+                self.acked = self.applied;
+                self.out.push(Effect::Send(ack(&self.raw, self.applied)));
+            }
+        }
+    }
+
+    /// A batch routed to this viewer: the host's welcome, or its answer.
+    fn routed(&mut self, b: &[u8]) {
+        let Some(l) = self.link.as_mut() else { return };
+        match l.open_routed(b) {
+            Ok(Outbound::Welcome { body, .. }) => self.welcome(&body),
+            Ok(Outbound::Routed { body, .. }) => self.answer(&body),
+            Err(_) => {}
+        }
+    }
+
+    /// The host's welcome: the path shown, and the chunks read up to the
+    /// head it sealed before anything else is acted on.
+    fn welcome(&mut self, body: &[u8]) {
+        let w: Welcome = serde_json::from_slice(body).unwrap_or_default();
+        if let Some(c) = self.moving.take() {
+            if std::mem::take(&mut self.leaving) {
+                self.out.push(Effect::Leave);
+            }
+            self.backoff_ms = ms(REPROBE);
+            self.on = Some(c);
+        } else if self.on.is_none() {
+            self.candidates = w.candidates.clone();
+        }
+        self.frame.push(match &self.on {
+            Some(c) => Update::Path { path: c.path().into(), via: Some(c.url.clone()) },
+            None => Update::Path { path: "relay".into(), via: None },
+        });
+        self.out.push(Effect::ReadChunks { want: w.head });
+        self.reading = Some(Reading::Welcome(w));
+    }
+
+    /// The welcome, once the chunks reach its head: the host shown, its
+    /// approvals, the catch-up and the commands, then the batches held.
+    fn welcomed_with(&mut self, w: Welcome) {
+        self.host = true;
+        self.frame.push(Update::Host(true));
+        for r in w.approvals {
+            if self.asked.insert(r.request_id.clone()) {
+                self.frame.push(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))));
+            }
+        }
+        if self.link.is_none() {
+            return;
+        }
+        // What the chunks do not hold yet — the running turn's events — the
+        // host sends. What was sent before and never acked goes again, in
+        // the order first sent; then what waited for a host, in order; then
+        // a handoff asked.
+        let mut sends = vec![ViewerFrame::CatchUp { after: self.catch_ups.welcomed(self.last_id.clone()) }];
+        sends.extend(self.book.welcomed().into_iter().map(ViewerFrame::Command));
+        sends.extend(self.book.handoff_frame());
+        for f in &sends {
+            self.send_frame(f);
+        }
+        // Held batches arrived before the welcome, so the catch-up just
+        // asked covers a gap among them (by order).
+        let Some(l) = self.link.as_mut() else { return };
+        let held = std::mem::take(&mut self.held);
+        if let Some(after) = replay(l, held, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied).and_then(|after| self.catch_ups.gap(after, true)) {
+            self.ask_catch_up(after);
+        }
+        // What was held may all have been batches opened already: acked all
+        // the same, or a direct listener, its window full, sends no more.
+        if let Some((_, have)) = self.link.as_ref().and_then(|l| l.cursor())
+            && self.connected
+        {
+            self.acked = self.acked.max(have);
+            self.out.push(Effect::Send(ack(&self.raw, have)));
+        }
+    }
+
+    /// Asks the host for the logged events after `after`: a catch-up now
+    /// in flight.
+    fn ask_catch_up(&mut self, after: Option<String>) {
+        let Some(l) = self.link.as_mut() else { return };
+        let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: after.clone() }).expect("json"), false) else { return };
+        self.catch_ups.asked(after);
+        self.send(f);
+    }
+
+    /// The host's answer to this viewer: a command's ack, a handoff's, or a
+    /// page of the catch-up it asked for.
+    fn answer(&mut self, body: &[u8]) {
+        match serde_json::from_slice(body) {
+            Ok(Answer::Ack { id, error }) => self.frame.push(self.book.acked(id, error)),
+            Ok(Answer::Handoff { id, handed, error }) => self.frame.extend(self.book.handoff_answered(&id, handed, error)),
+            Ok(Answer::CatchUp { events, more }) => {
+                let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+                let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
+                if !fresh.is_empty() {
+                    self.frame.push(Update::CaughtUp(fresh));
+                }
+                // The last page: a gap it did not cover is asked now.
+                if !more && let Some(after) = self.catch_ups.done() {
+                    self.ask_catch_up(after);
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    /// The relay's connection, while the session moves off it: its batches
+    /// are the stream's too, and a gap among them is caught up like one on
+    /// the live path.
+    fn leaving_in(&mut self, b: &[u8]) {
+        if b.len() < HEADER || b[1] != KIND_BATCH || b[20..28] == [0; 8] {
+            return;
+        }
+        match self.link.as_mut() {
+            Some(l) if l.welcomed() => {
+                let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+                if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
+                    self.ask_catch_up(after);
+                }
+            }
+            _ => {
+                self.held.push(b.to_vec());
+                if self.held.len() > HELD_MAX {
+                    self.relay_again();
+                }
+            }
+        }
+    }
+}
+
+fn seq_of(b: &[u8]) -> u64 {
+    u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"))
 }
 
 #[cfg(test)]

@@ -5,8 +5,9 @@
 //! is kept in, with the reader a device attaching opens them by. The wire
 //! shapes are types only, with no IO: the harness's host and viewer, and
 //! the phone's viewer later, read and write the same JSON. `join` is the
-//! relay's join handshake, `viewer` what a viewer shows, and `commands` the
-//! book a viewer keeps of the commands it sends, all without IO.
+//! relay's join handshake, `viewer` what a viewer shows and `ViewerCore`,
+//! the viewer's whole state machine, and `commands` the book a viewer keeps
+//! of the commands it sends, all without IO.
 
 pub mod commands;
 pub mod join;
@@ -16,6 +17,16 @@ pub mod viewer;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::net::IpAddr;
+use std::time::Duration;
+
+/// How often a link says `ping`, and how long without a word from the
+/// relay it counts as gone (relay.md → Heartbeats).
+pub const PING: Duration = Duration::from_secs(10);
+pub const DEAD: Duration = Duration::from_secs(30);
+
+/// One display frame: a viewer hands on at most one batch of updates per
+/// frame (R-LAG-7), and the host seals at most one batch per frame (R-LAG-3).
+pub const FRAME: Duration = Duration::from_millis(16);
 
 /// A viewer's command to the host, sealed in its frames: `id` is the
 /// viewer's own, random per viewer run, which the host's `ack` names back
