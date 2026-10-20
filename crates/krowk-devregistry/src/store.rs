@@ -158,6 +158,8 @@ pub struct App {
     pub store: Mutex<Store>,
     pub limit_bytes: i64,
     pub site: String,
+    /// `Config::login_person`.
+    pub login_person: Option<String>,
 }
 
 impl App {
@@ -176,6 +178,7 @@ impl App {
             }),
             limit_bytes: if limit_bytes <= 0 { DEFAULT_LIMIT_BYTES } else { limit_bytes },
             site: site.to_owned(),
+            login_person: None,
         }
     }
 
