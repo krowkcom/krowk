@@ -125,7 +125,10 @@ fn api(e: krowk_api::Error) -> String {
 /// The whole log as the registry holds it: its events and where it ends,
 /// read from chunk 0, never from a checkpoint, with a checkpoint replacing
 /// the events gathered before it. What a holder taking a session up chains
-/// onto: public for the host's writer (`krowk_harness::sync::store`).
+/// onto: public for the host's writer (`krowk_harness::sync::store`). It
+/// holds the log to no head, so a registry serving a prefix goes unseen: a
+/// reader that was not told the log's length goes through `attach` or
+/// `catch_up`, which do (`Head::at_least`).
 pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
     let mut reader = ChunkReader::new(key, crate::sync::uuid(id));
     let mut events = Vec::new();
