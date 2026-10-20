@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use krowk_api::Client;
-use krowk_client::e2e::DeviceSigner;
+use krowk_client::e2e::{DeviceId, DeviceSigner};
 use krowk_client::keystore::Keystore;
 
 use crate::KrowkError;
@@ -21,6 +21,8 @@ pub struct Account {
     /// Signs every call as this device; the session exports call through it.
     pub(crate) client: Arc<Client>,
     pub(crate) keystore: Keystore,
+    /// This device, which a session's relay ticket is asked for.
+    pub(crate) device: DeviceId,
     storage: Arc<dyn KeyStorage>,
     device_id: String,
     workspace: String,
@@ -46,6 +48,7 @@ impl Account {
             api,
             client: Arc::new(client),
             keystore,
+            device: device_id,
             storage,
             device_id: device_id.to_string(),
             workspace: creds.workspace.clone(),

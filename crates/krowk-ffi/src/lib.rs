@@ -53,9 +53,14 @@
 //! sealed indexes, each record checked against the device list the phone
 //! holds; [`Account::open_session`] opens one from its latest checkpoint
 //! into an [`OpenedSession`], which reads on with `catch_up` and gets a
-//! relay ticket for the live viewer. All blocking registry calls (rule 2).
-//! The session's keys, the device's signing key and the read position stay
-//! inside `OpenedSession`; Swift gets events, titles and heads.
+//! relay ticket for the live viewer. Listing, opening, `catch_up` and the
+//! ticket are blocking registry calls (rule 2); the getters never wait on
+//! the network. The session's keys, the device's signing key and the read
+//! position stay inside `OpenedSession`; Swift gets events, titles and
+//! heads. A head crosses as [`HeadRecord`], a record of its own rather than
+//! the remote type rule 5 asks for: `Head`'s digest is a `[u8; 32]`, which
+//! UniFFI has no word for, so the record carries it as bytes, checked to be
+//! 32 on the way back in.
 //!
 //! # The protocol
 //!

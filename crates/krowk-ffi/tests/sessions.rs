@@ -12,13 +12,13 @@ use std::sync::{Arc, Mutex};
 use krowk_api::Client;
 use krowk_client::Zeroizing;
 use krowk_client::device_chain::{Chain, Change, Kind, Subject};
-use krowk_client::e2e::{self, DeviceKey, DeviceSigner, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceKey, DeviceSigner, SessionKey, SessionKeys, SigningKey};
 use krowk_client::keystore::{self, Keystore, Slot, StorageLock};
 use krowk_client::protocol::LogBody;
 use krowk_client::session_record;
 use krowk_client::user_key::UserKeys;
 use krowk_ffi::{Account, HeadRecord, KeyStorage, KrowkError};
-use krowk_harness::sync::store::{Index, Writer};
+use krowk_harness::sync::store::{HostedOn, Index, Writer};
 use serde_json::{Value, json};
 
 const TOKEN: &str = "krowk_sk_ffi_sessions_00000000000000000";
@@ -94,13 +94,23 @@ fn post(entries: &[krowk_client::device_chain::SignedEntry], wraps: Vec<(String,
 /// of their own in the registry, and the phone's storage holding what
 /// pairing leaves: its device keys, the list and the user keys.
 struct World {
-    _registry: krowk_devregistry::Running,
+    registry: krowk_devregistry::Running,
     api: String,
     host: Arc<Client>,
     host_device: DeviceKey,
     host_signing: SigningKey,
     user: krowk_client::user_key::UserKey,
     phone: Arc<Account>,
+    /// The phone's Keychain, for another `Account` over it.
+    storage: Arc<Memory>,
+}
+
+/// A session the host holds the lease of and writes.
+struct Hosted {
+    writer: Writer,
+    token: String,
+    keys: SessionKeys,
+    wrapped: String,
 }
 
 impl World {
@@ -126,9 +136,9 @@ impl World {
         assert_eq!(ks.save_device_list(&entries).unwrap().devices().len(), chain.devices().len());
         ks.save_user_keys(&UserKeys::new(user.clone(), []).unwrap()).unwrap();
 
-        let phone = Account::open(api.clone(), storage).unwrap();
+        let phone = Account::open(api.clone(), storage.clone()).unwrap();
         assert_eq!(phone.device_id(), phone_device.id().to_string());
-        World { _registry: registry, api, host: Arc::new(host), host_device, host_signing, user, phone }
+        World { registry, api, host: Arc::new(host), host_device, host_signing, user, phone, storage }
     }
 
     /// A session record for `id` under a new session key, signed by
@@ -139,27 +149,39 @@ impl World {
         let sealed_key = e2e::wrap_session_key(&key, &raw, &self.user);
         let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, &self.user, signer.1).unwrap();
         let wrapped = e2e::hex(&sealed_key);
-        let index = Index { title: title.into(), cwd: "/src/app".into(), ..Default::default() };
+        let host = Some(HostedOn { device: self.host_device.id().to_string(), tailnet: None });
+        let index = Index { title: title.into(), cwd: "/src/app".into(), host, ..Default::default() };
         let sealed_index = e2e::hex(&e2e::seal_session_index(&key, &raw, &serde_json::to_vec(&index).unwrap()));
         self.host.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &signer.0.to_string())), Some(&sealed_index), None).unwrap();
         (key, wrapped, index)
     }
 
-    /// The host takes session `id` up and writes `first` then a checkpoint
-    /// then `then`: the writer, holding the lease, and its token.
-    fn host_session(&self, id: &str, title: &str, first: &[Value], then: &[Value]) -> (Writer, String) {
+    /// The host takes session `id` up and writes `first` (chunk 0), then a
+    /// checkpoint (chunk 1), then `then` (chunk 2), holding the lease.
+    fn host_session(&self, id: &str, title: &str, first: &[Value], then: &[Value]) -> Hosted {
         let (key, wrapped, index) = self.record(id, title, (self.host_device.id(), &self.host_signing));
+        let keys = SessionKeys::from(key);
         let lease = self.host.acquire_lease(id, &self.host_device.id().to_string(), 60, "development").unwrap();
-        let mut w = Writer::take_up(self.host.clone(), key.into(), id, wrapped, index, lease.fence).unwrap();
+        let mut w = Writer::take_up(self.host.clone(), keys.clone(), id, wrapped.clone(), index, lease.fence).unwrap();
         for e in first {
             w.push(e.clone());
         }
+        w.flush(&lease.token).unwrap();
         w.checkpoint(None, &lease.token).unwrap();
         for e in then {
             w.push(e.clone());
         }
         w.flush(&lease.token).unwrap();
-        (w, lease.token)
+        Hosted { writer: w, token: lease.token, keys, wrapped }
+    }
+}
+
+impl Hosted {
+    fn write(&mut self, events: &[Value]) {
+        for e in events {
+            self.writer.push(e.clone());
+        }
+        self.writer.flush(&self.token).unwrap();
     }
 }
 
@@ -201,20 +223,24 @@ fn r_ios_3_list_sessions_shows_the_index_and_counts_a_record_signed_off_the_list
     assert_eq!((s.id.as_str(), s.title.as_str(), s.cwd.as_str()), (SESSION, "fix the build", "/src/app"));
     assert!(s.updated_ms > 0, "the index's write time: {s:?}");
     assert_eq!(s.hosted_by.as_deref(), Some(w.host_device.id().to_string().as_str()), "the lease holder: {s:?}");
-    assert!(s.head.as_ref().is_some_and(|h| h.digest.len() == 32), "{s:?}");
+    assert_eq!(s.host_device.as_deref(), Some(w.host_device.id().to_string().as_str()), "the index's host: {s:?}");
+    assert!(s.head.as_ref().is_some_and(|h| h.index == 1 && h.digest.len() == 32), "{s:?}");
 
     // A record a device the list never held signed: left out, counted.
     let (stranger, stranger_signing) = (DeviceKey::generate(), SigningKey::generate());
-    w.record("01a0ec7b-3333-7000-8000-0000000000ff", "forged", (stranger.id(), &stranger_signing));
+    let forged = "01a0ec7b-3333-7000-8000-0000000000ff";
+    w.record(forged, "forged", (stranger.id(), &stranger_signing));
     let list = w.phone.list_sessions().unwrap();
     assert_eq!(list.unreadable, 1, "{list:?}");
     assert_eq!(list.sessions.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(), [SESSION]);
+    // And it does not open.
+    assert_eq!(refused(w.phone.open_session(forged.into(), None, None)), "session_unreadable");
 }
 
 #[test]
-fn r_ios_3_r_perf_6_open_session_reads_from_the_checkpoint_and_catch_up_returns_only_whats_new() {
+fn r_ios_3_open_session_reads_from_the_checkpoint_and_catch_up_returns_only_whats_new() {
     let w = World::new();
-    let (mut host, token) = w.host_session(SESSION, "fix the build", &[event(SESSION, 1, "before")], &[event(SESSION, 2, "after")]);
+    let mut host = w.host_session(SESSION, "fix the build", &[event(SESSION, 1, "before")], &[event(SESSION, 2, "after")]);
 
     let opened = w.phone.open_session(SESSION.into(), None, None).unwrap();
     assert_eq!(opened.id(), SESSION);
@@ -226,9 +252,7 @@ fn r_ios_3_r_perf_6_open_session_reads_from_the_checkpoint_and_catch_up_returns_
     assert_eq!(head.index, 2);
     assert!(opened.catch_up().unwrap().is_empty(), "nothing written since");
 
-    host.push(event(SESSION, 3, "later"));
-    host.push(event(SESSION, 4, "latest"));
-    host.flush(&token).unwrap();
+    host.write(&[event(SESSION, 3, "later"), event(SESSION, 4, "latest")]);
     assert_eq!(runs(&opened.catch_up().unwrap()), ["later", "latest"]);
     assert_eq!(runs(&opened.events().unwrap()), ["before", "after", "later", "latest"]);
     assert_eq!(opened.head().unwrap().index, 3);
@@ -242,7 +266,7 @@ fn r_ios_3_r_perf_6_open_session_reads_from_the_checkpoint_and_catch_up_returns_
 #[test]
 fn r_ios_3_open_session_beyond_what_is_served_is_session_rolled_back() {
     let w = World::new();
-    let _host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[]);
+    let host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[]);
     let served = w.phone.open_session(SESSION.into(), None, None).unwrap().head().unwrap();
     let beyond = HeadRecord { index: served.index + 3, digest: vec![7; 32] };
     assert_eq!(refused(w.phone.open_session(SESSION.into(), Some(beyond), None)), "session_rolled_back");
@@ -251,6 +275,15 @@ fn r_ios_3_open_session_beyond_what_is_served_is_session_rolled_back() {
     assert_eq!(refused(w.phone.open_session(SESSION.into(), Some(forked), None)), "session_rolled_back");
     let short = HeadRecord { index: 0, digest: vec![7; 31] };
     assert!(matches!(w.phone.open_session(SESSION.into(), Some(short), None), Err(KrowkError::InvalidInput { .. })));
+
+    // The registry's sealed index names a head past the log it serves (the
+    // tail withheld): refused the same way, with no `known` at all.
+    let raw = krowk_client::sync::uuid(SESSION);
+    let mut index = host.writer.index.clone();
+    index.head = Some(krowk_client::sync::store::Head { index: served.index + 2, digest: [9; 32] });
+    let sealed = e2e::hex(&e2e::seal_session_index(host.keys.current(), &raw, &serde_json::to_vec(&index).unwrap()));
+    w.host.put_sync_session(SESSION, &host.wrapped, None, Some(&sealed), Some(&host.token)).unwrap();
+    assert_eq!(refused(w.phone.open_session(SESSION.into(), None, None)), "session_rolled_back");
 }
 
 #[test]
@@ -275,4 +308,86 @@ fn r_client_1_an_account_with_no_user_keys_is_not_paired() {
     let unpaired = Account::open(w.api.clone(), signed_in(&key("phone"))).unwrap();
     assert_eq!(refused(unpaired.list_sessions()), "not_paired");
     assert_eq!(refused(unpaired.open_session(SESSION.into(), None, None)), "not_paired");
+
+    // The device list held and the user keys not, as a pairing cut short
+    // between the two writes leaves it.
+    Keystore::with(Arc::new(Bridge(w.storage.clone()))).forget_user_keys().unwrap();
+    let half = Account::open(w.api.clone(), w.storage.clone()).unwrap();
+    assert!(!half.has_user_keys().unwrap());
+    assert_eq!(refused(half.list_sessions()), "not_paired");
+}
+
+#[test]
+fn r_proto_2_an_event_this_build_cannot_decode_is_a_decode_error_and_read_again() {
+    let w = World::new();
+    let mut host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[]);
+    let opened = w.phone.open_session(SESSION.into(), None, None).unwrap();
+    let head = opened.head();
+
+    // A newer host's event, then one this build reads.
+    let newer = json!({"id": "01a0ec7b-2222-7000-8000-0000000000aa", "sessionId": SESSION, "timeMs": 9, "type": "turn.teleported"});
+    host.write(&[newer, event(SESSION, 10, "known")]);
+    for _ in 0..2 {
+        assert!(matches!(opened.catch_up(), Err(KrowkError::Decode { .. })), "refused, every time: not skipped");
+        assert_eq!(opened.head(), head, "nothing kept of a read that did not decode");
+        assert_eq!(runs(&opened.events().unwrap()), ["before"]);
+    }
+    // Opened afresh, the attached events hold it: `events` refuses too.
+    let again = w.phone.open_session(SESSION.into(), None, None).unwrap();
+    assert!(matches!(again.events(), Err(KrowkError::Decode { .. })));
+}
+
+/// A TCP proxy to `to` that keeps every byte its clients sent, so a test
+/// reads the request lines of what was asked, in order. Its `/v1` URL.
+fn recording_proxy(to: std::net::SocketAddr) -> (String, Arc<Mutex<Vec<u8>>>) {
+    use std::io::{Read, Write};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let log = sent.clone();
+    std::thread::spawn(move || {
+        for client in listener.incoming().map_while(Result::ok) {
+            let upstream = std::net::TcpStream::connect(to).unwrap();
+            let (mut c_in, mut u_out) = (client.try_clone().unwrap(), upstream.try_clone().unwrap());
+            let (mut u_in, mut c_out) = (upstream, client);
+            let log = log.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 16 * 1024];
+                while let Ok(n @ 1..) = c_in.read(&mut buf) {
+                    log.lock().unwrap().extend_from_slice(&buf[..n]);
+                    if u_out.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                let _ = u_out.shutdown(std::net::Shutdown::Write);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut u_in, &mut c_out);
+                let _ = c_out.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    (url, sent)
+}
+
+#[test]
+fn r_perf_6_open_session_starts_at_the_checkpoint_never_at_chunk_0() {
+    let w = World::new();
+    let _host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[event(SESSION, 2, "after")]);
+    let chunks = w.host.list_chunks(SESSION, None, 100).unwrap().chunks;
+    assert_eq!(chunks.iter().map(|c| c.index).collect::<Vec<_>>(), [0, 1, 2]);
+
+    // The phone through a proxy that records what it asks the registry.
+    // The chunks' bytes come from where the listing points, not through
+    // it, so what shows the reading's start is the chunk listing it asks
+    // for: after chunk 0, never from the start.
+    let (proxy, sent) = recording_proxy(w.registry.addr());
+    let phone = Account::open(proxy, w.storage.clone()).unwrap();
+    let opened = phone.open_session(SESSION.into(), None, None).unwrap();
+    assert_eq!(runs(&opened.events().unwrap()), ["before", "after"]);
+    let sent = String::from_utf8_lossy(&sent.lock().unwrap()).into_owned();
+    let listings: Vec<&str> = sent.lines().filter(|l| l.starts_with("GET ") && l.contains("/chunks?")).collect();
+    assert!(!listings.is_empty(), "{sent}");
+    assert!(listings[0].contains("after=0"), "the first listing starts after chunk 0, at the checkpoint (chunk 1): {listings:#?}");
+    assert!(listings.iter().all(|l| l.contains("after=")), "no listing from the start of the log: {listings:#?}");
 }

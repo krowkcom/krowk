@@ -103,8 +103,9 @@ impl Account {
     /// record checked against the device list it holds and its index
     /// unsealed; the rest are counted in `unreadable`, not an error.
     /// Refused with `not_paired` until the phone holds the user keys and
-    /// the device list. Blocking: one call per page of the listing and one
-    /// per session; call it off the main thread.
+    /// the device list. A registry call that fails fails the listing, as
+    /// `Internal` with the registry's words. Blocking: one call per page of
+    /// the listing and one per session; call it off the main thread.
     pub fn list_sessions(&self) -> Result<SessionList, KrowkError> {
         let (keys, chain) = self.paired()?;
         let (listed, unreadable) = store::list(&self.client, &keys, &chain).map_err(internal)?;
@@ -112,14 +113,15 @@ impl Account {
     }
 
     /// Opens session `id` and reads its log from the latest checkpoint to
-    /// the end the registry serves. `known` is the head this phone saw of
-    /// it before (`OpenedSession::head`, kept): a log served shorter than
-    /// it, or another log at its place, is refused as
-    /// `session_rolled_back`. One whose record or index this phone cannot
-    /// open is refused as `session_unreadable`; `not_paired` as for
-    /// `list_sessions`. The session keeps `relay_url(relay_override)` as its
-    /// relay. Blocking: a few round trips, chunks fetched eight at a time;
-    /// call it off the main thread.
+    /// the end the registry serves. A log that ends before the head its
+    /// sealed index names, or before `known` — the head this phone saw of
+    /// it before (`OpenedSession::head`, kept) — or holds another chunk at
+    /// that head's place, is refused as `session_rolled_back`. One whose
+    /// record or index this phone cannot open is refused as
+    /// `session_unreadable`; `not_paired` as for `list_sessions`; a chunk
+    /// that fails to read or open is `Internal`. The session keeps
+    /// `relay_url(relay_override)` as its relay. Blocking: a few round
+    /// trips, chunks fetched eight at a time; call it off the main thread.
     pub fn open_session(&self, id: String, known: Option<HeadRecord>, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
         let known = known.map(Head::try_from).transpose()?;
         let (keys, chain) = self.paired()?;
@@ -127,18 +129,24 @@ impl Account {
         let unreadable = |detail: String| KrowkError::Refused { code: "session_unreadable".into(), detail };
         let key = store::open_session_key(&full, &id, &keys, &chain, Signer::EverHeld).map_err(unreadable)?;
         let index = store::open_index(&key, &id, &full.sealed_index).map_err(unreadable)?;
-        // Held to `known` here rather than inside `attach`, so a rollback is
-        // told apart from a read that failed; the same check either way.
-        let attached = store::attach(&self.client, &key, &id, index, None).map_err(internal)?;
-        Head::at_least(&attached.heads, known).map_err(|detail| KrowkError::Refused { code: "session_rolled_back".into(), detail })?;
-        let device = self.keystore.device_key().map_err(internal)?.id();
+        // Held to the index's head and to `known` here rather than inside
+        // `attach`, so a rollback is told apart from a read that failed: the
+        // same two checks `attach` makes, in the same order.
+        let sealed_head = index.head;
+        let mut attached = store::attach(&self.client, &key, &id, store::Index { head: None, ..index }, None).map_err(internal)?;
+        let rolled_back = |detail: String| KrowkError::Refused { code: "session_rolled_back".into(), detail };
+        Head::at_least(&attached.heads, sealed_head).map_err(rolled_back)?;
+        Head::at_least(&attached.heads, known).map_err(rolled_back)?;
+        attached.index.head = sealed_head;
         let signing = self.keystore.signing_key().map_err(internal)?;
         Ok(Arc::new(OpenedSession {
             id,
             keys: key,
+            title: attached.index.title.clone(),
+            reading: Mutex::new(()),
             attached: Mutex::new(attached),
             client: Arc::clone(&self.client),
-            device,
+            device: self.device,
             signing,
             relay: self.relay_url(relay_override),
             env: self.relay_env(),
@@ -148,7 +156,8 @@ impl Account {
     /// The relay the phone joins sessions through: `relay_override` when it
     /// names one, else krowk's hosted relay for krowk's own registry, else
     /// the address `krowk relay serve` listens on by default — as the
-    /// terminal picks it.
+    /// terminal picks it. That last is the phone itself, so the app names
+    /// the relay for any registry but krowk's (the fake fleet's, in tests).
     pub fn relay_url(&self, relay_override: Option<String>) -> String {
         match relay_override.as_deref().map(str::trim) {
             Some(r) if !r.is_empty() => r.to_owned(),
@@ -185,6 +194,12 @@ impl Account {
 pub struct OpenedSession {
     id: String,
     keys: SessionKeys,
+    /// From the sealed index, which an open reads once.
+    title: String,
+    /// Held for the whole of a `catch_up`, so two take turns; `attached`
+    /// only while one is read or committed, so the getters never wait on
+    /// the network.
+    reading: Mutex<()>,
     attached: Mutex<Attached>,
     client: Arc<Client>,
     device: DeviceId,
@@ -199,31 +214,52 @@ impl OpenedSession {
         self.id.clone()
     }
 
-    /// From the sealed index; empty when the session has none.
+    /// From the sealed index as the session was opened; empty when it has
+    /// none. Never blocks.
     pub fn title(&self) -> String {
-        self.attached().index.title.clone()
+        self.title.clone()
     }
 
     /// Where the log read so far ends: what to keep and pass to
     /// `open_session` as `known` next time. None for a log with no chunk.
+    /// Never waits on the network, a `catch_up` running or not.
     pub fn head(&self) -> Option<HeadRecord> {
         self.attached().head.map(Into::into)
     }
 
-    /// Every event read so far, from the checkpoint on, in order. One that
-    /// this build cannot decode — a newer host's — is a `Decode` error, not
-    /// dropped.
+    /// Every event read so far, from the checkpoint on, in order: each
+    /// decoded again on every call, so the app keeps what it shows. One
+    /// that this build cannot decode — a newer host's — is a `Decode`
+    /// error, not dropped. Never waits on the network.
     pub fn events(&self) -> Result<Vec<LogEvent>, KrowkError> {
         decode(&self.attached().events)
     }
 
     /// Reads what the host wrote since the last read and returns only those
-    /// events. Blocking: a round trip, more when there is more; call it off
-    /// the main thread. Two at once take turns.
+    /// events. A read that fails, or new events that do not decode
+    /// (`Decode`), leave the session where it was, so the next call reads
+    /// them again rather than skipping them. Blocking: a round trip, more
+    /// when there is more; call it off the main thread. Two at once take
+    /// turns; the other methods do not wait for it.
     pub fn catch_up(&self) -> Result<Vec<LogEvent>, KrowkError> {
+        let _turn = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        // Where the reading stopped, without the events read so far: the
+        // read runs on this copy, and only a read that decodes is kept.
+        let mut read = {
+            let a = self.attached();
+            Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads: a.heads.clone() }
+        };
+        let fresh = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None).map_err(internal)?;
+        let decoded = decode(&fresh)?;
         let mut a = self.attached();
-        let fresh = store::catch_up(&self.client, &self.keys, &self.id, &mut a, None).map_err(internal)?;
-        decode(&fresh)
+        a.events.extend(fresh);
+        a.head = read.head;
+        a.next = read.next;
+        a.previous = read.previous;
+        a.fence = read.fence;
+        a.epoch = read.epoch;
+        a.heads = read.heads;
+        Ok(decoded)
     }
 
     /// A relay ticket for this device to join the session as a viewer, from
@@ -262,7 +298,7 @@ impl OpenedSession {
     }
 
     /// The session as read so far; held while the caller reads it, so a
-    /// `catch_up` waits.
+    /// `catch_up` waits to commit what it read.
     pub(crate) fn attached(&self) -> MutexGuard<'_, Attached> {
         self.attached.lock().unwrap_or_else(PoisonError::into_inner)
     }
