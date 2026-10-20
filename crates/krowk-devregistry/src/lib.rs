@@ -64,11 +64,12 @@ pub struct Config {
     /// 10,000.
     pub max_sessions: usize,
     /// The token base (a token up to its first `#`) a browser-approved
-    /// login mints its key under, `{base}#{random}`, so the login lands in
-    /// that person and workspace rather than a new one: the fake fleet's
-    /// phone signs in as its host's person. `None` mints a person of its
-    /// own, as ever. It changes which person a login lands in and nothing
-    /// about what is refused.
+    /// authorization — a login, or any other action — mints its key under,
+    /// `{base}#{random}`, so it lands in that person and workspace rather
+    /// than a new one: the fake fleet's phone signs in as its host's
+    /// person. `None` mints a person of its own, as ever. It changes which
+    /// person a login lands in and nothing about what is refused; no flag
+    /// of `devregistry`'s sets it.
     pub login_person: Option<String>,
 }
 

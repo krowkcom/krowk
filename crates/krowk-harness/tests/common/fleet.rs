@@ -35,11 +35,14 @@ pub const T0: u64 = 1_790_000_000;
 pub const TOKEN: &str = "krowk_sk_fake_fleet_0000000000000000";
 /// The demo's held tool call, which the model makes on "make the file".
 pub const APPROVAL: &str = "toolu_01Touch";
-const TITLE: &str = "A demo session";
+/// The session's title: a readable one for the demo.
+const TITLE: &str = "fake fleet";
+const DEMO_TITLE: &str = "A demo session";
 const HELLO: &str = "Say hello";
 const ANSWER: &str = "Hello! I can read this project, change files in it and run commands, asking you first.";
 const MAKE: &str = "Please make the file approved.txt";
 const MADE: &str = "Done: approved.txt is in the project.";
+const DENIED: &str = "All right, I left the project as it was.";
 
 /// A device of the person's: its keys and the token that speaks for it.
 pub struct Device {
@@ -79,12 +82,12 @@ pub fn post(b: &Batch) -> krowk_api::sync::ListPost {
 }
 
 /// The model: a short answer to anything, except "make the file", which it
-/// answers with a `bash` call — an approval — and then says it is done.
+/// answers with a `bash` call — an approval — and then says how it went.
 fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
-    let answered = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    let text = if answered {
-        MADE
+    let result = last["content"].as_array().and_then(|c| c.iter().find(|b| b["type"] == "tool_result").cloned());
+    let text = if let Some(r) = result {
+        if r["is_error"] == true { DENIED } else { MADE }
     } else if last.to_string().contains("make the file") {
         return mock::Reply::sse(&mock::tool_use(APPROVAL, "bash", &serde_json::json!({"command": "touch approved.txt"})));
     } else {
@@ -131,13 +134,15 @@ impl Fleet {
         l
     }
 
-    pub fn keys(&self) -> UserKeys {
-        UserKeys::new(self.user.clone(), []).unwrap()
+    /// Takes the host away (R-HAND-4): the bridge stops and lets its lease
+    /// go, while the registry and the relay stay up.
+    pub fn stop_host(&self) {
+        let _ = self.stop.send(true);
     }
 
-    /// Takes the host away: the bridge stops and lets its lease go.
+    /// Stops the bridge, waits for it, and removes the scratch root.
     pub fn stop(self) {
-        let _ = self.stop.send(true);
+        self.stop_host();
         let _ = self.bridge.join();
         let _ = std::fs::remove_dir_all(&self.root);
     }
@@ -177,7 +182,7 @@ pub fn start(demo: bool) -> Fleet {
         keys: UserKeys::new(user.clone(), []).unwrap(),
         chain: chain.clone(),
         session: session.into(),
-        title: TITLE.into(),
+        title: if demo { DEMO_TITLE } else { TITLE }.into(),
         cwd: repo.display().to_string(),
         sessions: sessions.clone(),
         ttl: host::LEASE_TTL,
@@ -193,10 +198,10 @@ pub fn start(demo: bool) -> Fleet {
 
     // The first turn, then the bridge, on a runtime of their own thread.
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).ok().expect("the host daemon answers");
+    let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer: {}", connect_error(e)));
     let first = prompt(None, HELLO);
     let session = rt.block_on(async { d.execute(first, drain()).await }).expect("the first turn runs").expect("the first turn ends").session_id;
-    let bridged = rt.block_on(Client::connect(&socket, &repo, "test", true)).ok().expect("the host daemon answers the bridge");
+    let bridged = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer the bridge: {}", connect_error(e)));
     let (stop, stop_rx) = watch::channel(false);
     let o = options(&session);
     let bridge = std::thread::spawn(move || {
@@ -211,7 +216,7 @@ pub fn start(demo: bool) -> Fleet {
     // With `demo`, a second turn, typed at the host, held on its approval.
     let request = demo.then(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).ok().expect("the host daemon answers");
+        let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer: {}", connect_error(e)));
         let (tx, rx) = std::sync::mpsc::channel();
         let cmd = prompt(Some(&session), MAKE);
         std::thread::spawn(move || {
@@ -241,6 +246,13 @@ pub fn start(demo: bool) -> Fleet {
 
     let approve = format!("{}/_approve/cli/authorizations/{{code}}/approval", registry.url());
     Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, stop, bridge, _registry: registry, _mock: m }
+}
+
+fn connect_error(e: daemon::client::ConnectError) -> String {
+    match e {
+        daemon::client::ConnectError::Absent => "nothing listens".into(),
+        daemon::client::ConnectError::Failed(e) => e.message,
+    }
 }
 
 /// A turn's lines, read and dropped.

@@ -104,8 +104,10 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     assert_eq!((held.tool.as_str(), &held.input), ("bash", &serde_json::json!({"command": "touch approved.txt"})));
     assert!(!f.root.join("repo/approved.txt").exists(), "the approval is held");
 
-    // R-HAND-4: stopping the fleet's bridge takes the host away.
-    f.stop();
+    // R-HAND-4: stopping the fleet's bridge takes the host away, the
+    // registry and the relay still up.
+    f.stop_host();
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(false)))));
+    f.stop();
     assert!(started.elapsed() < Duration::from_secs(15), "the whole check took {:?}", started.elapsed());
 }

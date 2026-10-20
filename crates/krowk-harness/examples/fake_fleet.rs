@@ -18,13 +18,16 @@
 //! A test reads lines until `ready`, points the app at `api` and `relay`,
 //! approves the app's browser sign-in by POSTing to `approve` with the code
 //! the app shows (the login lands in the host's person, so it sees the
-//! session), and closes the fleet's stdin to stop it: the bridge stops, the
-//! host is gone, and the fleet exits 0.
+//! session), and closes the fleet's stdin to stop it: the bridge stops and
+//! the fleet exits 0. A line `stop-host` on stdin takes the host away
+//! first — the bridge stops, the registry and the relay stay — so the app
+//! can be seen read-only (R-HAND-4).
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
-//! for screenshots and App Review, adds a second, typed at the host and
-//! held on an approval for the model's `bash` call `approval=`; `request=`
-//! is the id an `approve` names to answer it.
+//! for screenshots and App Review, gives it a readable title and a second
+//! turn, typed at the host and held on an approval for the model's `bash`
+//! call `approval=`; `request=` is the request id a viewer's `approve`
+//! command names to answer it.
 //! Everything binds 127.0.0.1 and lives under `/tmp/krowk-fleet-<pid>`.
 
 #[cfg(unix)]
@@ -39,12 +42,13 @@ mod scratch;
 
 #[cfg(unix)]
 fn main() {
-    use std::io::{Read, Write};
-    let demo = match std::env::args().nth(1).as_deref() {
-        None => false,
-        Some("--demo") => true,
-        Some(other) => {
-            eprintln!("fake_fleet: unknown argument {other}; the only one is --demo");
+    use std::io::{BufRead, Write};
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let demo = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        [] => false,
+        ["--demo"] => true,
+        _ => {
+            eprintln!("fake_fleet: unknown arguments {args:?}; the only one is --demo");
             std::process::exit(2);
         }
     };
@@ -56,7 +60,13 @@ fn main() {
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
     drop(out);
-    let _ = std::io::stdin().lock().read_to_end(&mut Vec::new());
+    for line in std::io::stdin().lock().lines() {
+        match line.as_deref().map(str::trim) {
+            Ok("stop-host") => fleet.stop_host(),
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
     fleet.stop();
 }
 
