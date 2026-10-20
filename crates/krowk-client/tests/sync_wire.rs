@@ -60,6 +60,7 @@ fn r_client_1_each_answer_is_the_json_the_viewer_reads() {
 fn r_client_1_a_welcome_without_candidates_reads() {
     let w: Welcome = serde_json::from_str(r#"{"head":null,"approvals":[]}"#).unwrap();
     assert!(w.head.is_none() && w.approvals.is_empty() && w.candidates.is_empty());
+    assert_eq!(serde_json::to_string(&w).unwrap(), r#"{"head":null,"approvals":[],"candidates":[]}"#, "written with its candidates, none or not");
 
     let json = format!(r#"{{"head":{{"index":4,"digest":"{DIGEST}"}},"approvals":[],"candidates":[{{"url":"ws://100.64.0.1:51915","via":"tailscale"}},{{"url":"ws://192.168.1.2:51915","via":"lan"}}]}}"#);
     let w: Welcome = round_trip(&json);
@@ -103,6 +104,7 @@ fn r_client_1_an_index_reads_without_a_host_and_round_trips_with_one() {
     round_trip::<Index>(r#"{"title":"t","cwd":"/w","updatedMs":5,"head":null,"checkpoint":null,"host":{"device":"d1"}}"#);
     let t: Tailnet = serde_json::from_str(r#"{"name":"a","ips":[]}"#).unwrap();
     assert_eq!(t.dns_name, "", "a node without MagicDNS");
+    assert_eq!(serde_json::to_string(&t).unwrap(), r#"{"name":"a","dnsName":"","ips":[]}"#);
 }
 
 /// A chunk of the log, opened: the events since the chunk before, or a
