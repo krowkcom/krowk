@@ -1,8 +1,9 @@
 //! A synced session at rest (engineering/harness.md → Sync): the shapes of
 //! its sealed index and of the chunks of its log, checkpoints among them,
-//! and reading them back on a device attaching (`attach`, `catch_up`, the
-//! key and index openers), so no client reimplements the crypto
-//! (R-CLIENT-1). Writing them is the lease holder's, in the harness
+//! and reading them back on a device listing them (`list`) or attaching
+//! (`attach`, `catch_up`, the key and index openers), so no client
+//! reimplements the crypto (R-CLIENT-1). Writing them is the lease
+//! holder's, in the harness
 //! (`krowk_harness::sync::store::Writer`). Blocking: each read is a round
 //! trip through `krowk_api::Client`, so a phone calls these off its main
 //! thread.
@@ -207,6 +208,46 @@ pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserK
     let signature = e2e::unhex(&s.record_signature).ok_or_else(|| format!("the registry's record of session {id} carries no signature — refused"))?;
     session_record::verify(&raw, &wrapped, seal, signer, &signature, chain, from).map_err(|e| e.to_string())?;
     e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
+}
+
+/// A synced session as a listing shows it (`krowk sessions`, the phone's
+/// session list), from its sealed index.
+#[derive(Debug, Clone)]
+pub struct Listed {
+    pub id: String,
+    pub index: Index,
+    /// The device holding the session's lease, when one does.
+    pub holder: Option<String>,
+    /// The device whose signature the session's record carries.
+    pub signer: String,
+}
+
+/// Every synced session this device can open, most recently written first,
+/// and how many it cannot. One whose record no device the verified list
+/// has held signed, or whose key or index does not open under the user
+/// keys this device holds — one sealed under a generation newer than it
+/// has, say — is left out and counted, never an error. Blocking: a page of
+/// the listing and then one `show` a session, since a listing leaves the
+/// sealed index out.
+pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), String> {
+    let mut out = Vec::new();
+    let mut unreadable = 0;
+    let mut before = String::new();
+    loop {
+        let page = api.list_sync_sessions(&before, 100).map_err(|e| e.to_string())?;
+        for s in &page.sessions {
+            // A listing leaves the index out; `show` has it.
+            let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
+            match open_session_key(&full, &s.id, keys, chain, session_record::Signer::EverHeld).and_then(|k| open_index(&k, &s.id, &full.sealed_index)) {
+                Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device), signer: full.signer.clone() }),
+                Err(_) => unreadable += 1,
+            }
+        }
+        if page.next.is_empty() {
+            return Ok((out, unreadable));
+        }
+        before = page.next;
+    }
 }
 
 /// Opens a session's sealed index: under the current key, or an older
