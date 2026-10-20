@@ -180,7 +180,7 @@ mod tests {
         b.acked(first.unwrap().id, None);
         let again: Vec<String> = b.welcomed().iter().map(of).collect();
         assert_eq!(again, ["2", "3", "4"], "only what is still unacked, once each");
-        assert!(b.welcomed().len() == 3, "a welcome does not duplicate");
+        assert_eq!(b.welcomed().len(), 3, "a welcome does not duplicate");
     }
 
     /// R-IOS-5, R-LAG-8: twelve commands sent and none acked come back at a
@@ -226,7 +226,7 @@ mod tests {
     /// welcome, after the commands; only an answer under its own id
     /// settles it, and until then each welcome asks it again.
     #[test]
-    fn a_handoff_asked_before_any_welcome_goes_after_the_commands_and_only_its_answer_clears_it() {
+    fn r_hand_1_a_handoff_asked_before_any_welcome_goes_after_the_commands_and_only_its_answer_clears_it() {
         let mut b = CommandBook::new(DEVICE);
         assert!(b.command(stop(1), false).0.is_none());
         assert!(b.ask_handoff(false).is_none(), "no frame with no host");
