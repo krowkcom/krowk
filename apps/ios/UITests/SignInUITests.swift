@@ -17,7 +17,7 @@ final class SignInUITests: XCTestCase {
     /// The test ends signed in to the fleet: one more fresh launch clears
     /// the key it left in the simulator's Keychain.
     @MainActor
-    override func tearDown() {
+    private func forgetTheKey() {
         let app = XCUIApplication()
         app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
         app.launchEnvironment["KROWK_API_URL"] = "http://127.0.0.1:9/v1"
@@ -28,6 +28,7 @@ final class SignInUITests: XCTestCase {
 
     @MainActor
     func testSignInThroughTheBrowser() throws {
+        defer { forgetTheKey() }
         for appearance in Screenshots.appearances {
             XCUIDevice.shared.appearance = appearance
             try signIn(appearance)
