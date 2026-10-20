@@ -16,7 +16,7 @@ sessions = ["dep:krowk-store", "dep:krowk-import"]
 # agent build links none of it.
 # The inline TUI bare `krowk` opens on a terminal comes with it, and
 # `krowk sync`'s end-to-end keys (krowk-client): sync is a full-build thing.
-harness = ["sessions", "dep:krowk-harness", "dep:krowk-tui", "dep:krowk-client"]
+harness = ["sessions", "dep:krowk-harness", "dep:krowk-tui", "dep:krowk-client", "dep:qrcodegen"]
 
 [dependencies]
 krowk-api = { path = "../krowk-api" }
@@ -27,6 +27,13 @@ krowk-tui = { path = "../krowk-tui", optional = true }
 # End-to-end keys for `krowk sync` (full build only). Its crates are in its
 # own Cargo.toml.
 krowk-client = { path = "../krowk-client", optional = true }
+# `krowk devices add` draws the pairing invite as a QR code for the iPhone
+# app to scan (full build only, under `harness`). Project Nayuki's QR Code
+# generator: MIT, no dependencies, the encoder alone. The full build
+# measured 8,768 bytes smaller with it than without on x86_64 Linux (LTO's
+# layout moves more than it weighs); `qrcode` with default-features off
+# measured 9,856 bytes larger. Not in the agent build (lean-deps.txt).
+qrcodegen = { version = "1.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a record read back keeps the key order it arrived in.
 # raw_value: the models.dev file is parsed without building what it skips.
