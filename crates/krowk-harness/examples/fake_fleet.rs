@@ -4,7 +4,8 @@
 //! a sync bridge for one session:
 //!
 //! ```text
-//! cargo run -p krowk-harness --example fake_fleet -- --demo
+//! cargo build -p krowk --features harness
+//! KROWK_BIN=target/debug/krowk cargo run -p krowk-harness --example fake_fleet -- --demo
 //! api=http://127.0.0.1:53011/v1
 //! relay=ws://127.0.0.1:53012
 //! env=development
@@ -12,6 +13,7 @@
 //! session=0199c0de-…
 //! approval=toolu_01Touch
 //! request=0199c0de-…
+//! pair=7KQ2-M9XD
 //! ready
 //! ```
 //!
@@ -22,6 +24,14 @@
 //! the fleet exits 0. A line `stop-host` on stdin takes the host away
 //! first — the bridge stops, the registry and the relay stay — so the app
 //! can be seen read-only (R-HAND-4).
+//!
+//! A phone joins host A's device list with the code on `pair=` (R-E2E-3):
+//! with `--pair`, which `--demo` implies, the fleet runs `krowk devices add`
+//! as host A — the real CLI, from a debug build at `KROWK_BIN`, its keys in
+//! the fleet's home, saying yes to the device that joins — and prints its
+//! code before `ready`. A code works once: a line `pair` on stdin ends the
+//! running `devices add` and prints a fresh `pair=` line. Without
+//! `KROWK_BIN` the fleet exits 1 saying how to build one.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title and a second
@@ -42,22 +52,49 @@ mod mock;
 #[path = "../tests/common/scratch.rs"]
 mod scratch;
 
+/// What the fleet says when it has no `krowk` to pair with.
+#[cfg(unix)]
+const NO_BIN: &str = "fake_fleet: set KROWK_BIN to a debug krowk, which answers the phone's pairing as host A: build it with `cargo build -p krowk --features harness` (never --release) and pass KROWK_BIN=target/debug/krowk";
+
 #[cfg(unix)]
 fn main() {
     use std::io::{BufRead, Write};
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let demo = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
-        [] => false,
-        ["--demo"] => true,
-        _ => {
-            eprintln!("fake_fleet: unknown arguments {args:?}; the only one is --demo");
-            std::process::exit(2);
+    let (mut demo, mut pair) = (false, false);
+    for a in &args {
+        match a.as_str() {
+            "--demo" => demo = true,
+            "--pair" => pair = true,
+            _ => {
+                eprintln!("fake_fleet: unknown arguments {args:?}; the only ones are --demo and --pair");
+                std::process::exit(2);
+            }
         }
-    };
+    }
+    pair |= demo;
+    // Made absolute here: the fleet runs it in host A's home.
+    let bin = std::env::var_os("KROWK_BIN").filter(|b| !b.is_empty()).unwrap_or_else(|| {
+        eprintln!("{NO_BIN}");
+        std::process::exit(1);
+    });
+    let bin = std::fs::canonicalize(&bin).unwrap_or_else(|e| {
+        eprintln!("fake_fleet: KROWK_BIN={} cannot be found ({e})\n{NO_BIN}", bin.to_string_lossy());
+        std::process::exit(1);
+    });
     let fleet = fleet::start(demo);
+    let mut pairer = match fleet::Pairer::new(&fleet, &bin) {
+        Ok(p) => p,
+        Err(e) => fail(None, fleet, &e),
+    };
     let mut out = std::io::stdout().lock();
     for l in fleet.lines() {
         writeln!(out, "{l}").unwrap();
+    }
+    if pair {
+        match pairer.pair() {
+            Ok(code) => writeln!(out, "pair={code}").unwrap(),
+            Err(e) => fail(Some(pairer), fleet, &e),
+        }
     }
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
@@ -65,11 +102,30 @@ fn main() {
     for line in std::io::stdin().lock().lines() {
         match line.as_deref().map(str::trim) {
             Ok("stop-host") => fleet.stop_host(),
+            Ok("pair") => {
+                let code = match pairer.pair() {
+                    Ok(code) => code,
+                    Err(e) => fail(Some(pairer), fleet, &e),
+                };
+                let mut out = std::io::stdout().lock();
+                writeln!(out, "pair={code}").unwrap();
+                out.flush().unwrap();
+            }
             Ok(_) => {}
             Err(_) => break,
         }
     }
+    pairer.end();
     fleet.stop();
+}
+
+/// Stops everything and exits 1, saying why: no `pair=` line can follow.
+#[cfg(unix)]
+fn fail(pairer: Option<fleet::Pairer>, fleet: fleet::Fleet, why: &str) -> ! {
+    eprintln!("fake_fleet: {why}");
+    drop(pairer);
+    fleet.stop();
+    std::process::exit(1);
 }
 
 #[cfg(not(unix))]

@@ -1,6 +1,7 @@
 //! The fake fleet (Harness P4 ticket 75), in this process: what it prints,
 //! a second device of the person's attaching to its session, a browser
-//! sign-in landing in the host's person, and the host taken away.
+//! sign-in landing in the host's person, and the host taken away; and, as
+//! a process, a phone pairing with it (ticket 76).
 
 #![cfg(unix)]
 
@@ -12,11 +13,17 @@ mod mock;
 mod scratch;
 
 use krowk_api::types::LoginAction;
-use krowk_client::device_chain::Change;
+use krowk_client::device_chain::{Chain, Change, Kind, SignedEntry};
+use krowk_client::e2e;
 use krowk_client::user_key::UserKeys;
-use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, StreamLine};
+use krowk_harness::protocol::{ApprovalDecision, Command as Cmd, LiveEvent, StreamLine};
 use krowk_harness::sync::viewer;
-use std::io::{Read, Write};
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::path::Path;
+use std::process::{Child, ChildStdin, Command, Stdio};
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 /// The demo's second prompt.
@@ -105,7 +112,7 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     assert!(!f.root.join("repo/approved.txt").exists(), "the approval is held");
 
     // Answered from B, as App Review would tap it, the demo's turn ends.
-    v.commands.send(Command::Approve { session_id: held.session_id.clone(), request_id: held.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    v.commands.send(Cmd::Approve { session_id: held.session_id.clone(), request_id: held.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     let got = rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::Result(_)))))));
     assert!(format!("{got:?}").contains("Done: approved.txt is in the project."), "{got:?}");
     assert!(f.root.join("repo/approved.txt").exists(), "B's answer ran the call");
@@ -116,4 +123,209 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(false)))));
     f.stop();
     assert!(started.elapsed() < Duration::from_secs(15), "the whole check took {:?}", started.elapsed());
+}
+
+// ------------------------------------------------- the process, pairing (ticket 76)
+
+/// A binary cargo built beside this test's, `target/<profile>/<rel>`: the
+/// example and the full debug `krowk` a workspace test build makes.
+fn built(rel: &str) -> std::path::PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    let path = exe.parent().and_then(Path::parent).unwrap().join(rel);
+    assert!(path.exists(), "{} is not built: `cargo build -p krowk --features harness` and `cargo build -p krowk-harness --example fake_fleet` (make test builds both)", path.display());
+    path
+}
+
+/// The fleet as an app's test runs it, its stdout read up to `ready`.
+struct Proc {
+    child: Child,
+    stdin: Option<ChildStdin>,
+    out: Receiver<String>,
+    /// Its stderr, every line, as it comes.
+    err: Arc<Mutex<String>>,
+    lines: HashMap<String, String>,
+}
+
+impl Proc {
+    fn start(args: &[&str]) -> Proc {
+        let mut child = Command::new(built("examples/fake_fleet")).args(args).env("KROWK_BIN", built("krowk")).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let (tx, out) = std::sync::mpsc::channel();
+        let stdout = child.stdout.take().unwrap();
+        std::thread::spawn(move || {
+            for l in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(l);
+            }
+        });
+        let err = Arc::new(Mutex::new(String::new()));
+        let (stderr, kept) = (child.stderr.take().unwrap(), err.clone());
+        std::thread::spawn(move || {
+            for l in BufReader::new(stderr).lines().map_while(Result::ok) {
+                let mut k = kept.lock().unwrap();
+                k.push_str(&l);
+                k.push('\n');
+            }
+        });
+        let mut p = Proc { stdin: child.stdin.take(), child, out, err, lines: HashMap::new() };
+        loop {
+            let l = p.line();
+            if l == "ready" {
+                return p;
+            }
+            let (k, v) = l.split_once('=').unwrap_or_else(|| panic!("not key=value: {l}"));
+            p.lines.insert(k.into(), v.into());
+        }
+    }
+
+    fn line(&self) -> String {
+        self.out.recv_timeout(Duration::from_secs(30)).unwrap_or_else(|_| panic!("the fleet printed nothing more; its stderr:\n{}", self.err.lock().unwrap()))
+    }
+
+    fn get(&self, k: &str) -> &str {
+        self.lines.get(k).unwrap_or_else(|| panic!("no {k}= in {:?}", self.lines))
+    }
+
+    fn send(&mut self, line: &str) {
+        writeln!(self.stdin.as_mut().unwrap(), "{line}").unwrap();
+    }
+
+    /// Waits until the fleet has logged `n` `devices add` children ending
+    /// with `status`.
+    fn ended(&self, status: &str, n: usize) {
+        let want = format!("fleet: krowk devices add ended: {status}");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.err.lock().unwrap().matches(&want).count() < n {
+            assert!(Instant::now() < deadline, "no {want:?} ({n}); stderr:\n{}", self.err.lock().unwrap());
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Closes stdin, as a test does when it is done: the fleet exits 0.
+    fn stop(mut self) {
+        drop(self.stdin.take());
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while self.child.try_wait().unwrap().is_none() {
+            assert!(Instant::now() < deadline, "the fleet did not stop");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(self.child.wait().unwrap().success(), "{}", self.err.lock().unwrap());
+    }
+}
+
+/// A phone, as `krowk sync join` plays one: its own home, signed in through
+/// the fleet's `approve` URL as the app signs in.
+struct Phone {
+    home: std::path::PathBuf,
+    token: String,
+}
+
+impl Phone {
+    fn sign_in(f: &Proc, name: &str) -> Phone {
+        let anon = krowk_api::Client::new(f.get("api"), "");
+        let auth = anon.start_cli_authorization(LoginAction::Login, name).unwrap();
+        assert_eq!(post(&f.get("approve").replace("{code}", &auth.code)), "HTTP/1.1 200 OK");
+        let token = anon.read_cli_authorization(&auth.slug).unwrap().token;
+        let home = scratch::root(&format!("fleet-{name}"));
+        Phone { home, token }
+    }
+
+    /// `krowk sync join`, `typed` on its stdin.
+    fn join(&self, f: &Proc, typed: &str) -> std::process::Output {
+        let mut c = Command::new(built("krowk"))
+            .args(["sync", "join", "--json"])
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &self.home)
+            .env("KROWK_HOME", self.home.join(".krowk"))
+            .env("KROWK_API_URL", f.get("api"))
+            .env("KROWK_TOKEN", &self.token)
+            .env("KROWK_DEVICE_NAME", "phone")
+            .env("KROWK_NO_UPDATE_CHECK", "1")
+            .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+            .current_dir(&self.home)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        c.stdin.take().unwrap().write_all(format!("{typed}\n").as_bytes()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while c.try_wait().unwrap().is_none() {
+            if Instant::now() > deadline {
+                let _ = c.kill();
+                panic!("`krowk sync join` did not finish");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        c.wait_with_output().unwrap()
+    }
+
+    /// The names on the person's device list, as the registry serves it,
+    /// verified from seq 0.
+    fn devices(&self, f: &Proc) -> Vec<String> {
+        let list = krowk_api::Client::new(f.get("api"), &self.token).device_list_all().unwrap();
+        let entries: Vec<SignedEntry> = list.entries.iter().map(|e| SignedEntry::from_parts(e2e::unhex(&e.entry).unwrap(), &e2e::unhex(&e.signatures).unwrap()).unwrap()).collect();
+        let chain = Chain::verify(&entries, None).unwrap();
+        chain.devices().iter().filter(|d| d.kind == Kind::Device).map(|d| d.name.clone()).collect()
+    }
+}
+
+impl Drop for Phone {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.home);
+    }
+}
+
+fn said(out: &std::process::Output) -> String {
+    format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))
+}
+
+/// R-E2E-3, R-IOS-15: the fake fleet approves a phone through the real
+/// `krowk devices add`. Started with `--pair`, it prints a code before
+/// `ready`; a device signed in through its `approve` URL types it into
+/// `krowk sync join` and joins; A's `devices add` exits 0; and the person's
+/// device list holds host A and the phone.
+#[test]
+fn r_e2e_3_r_ios_15_a_phone_joins_the_fake_fleet_with_the_code_its_krowk_devices_add_shows() {
+    let f = Proc::start(&["--pair"]);
+    let code = f.get("pair").to_string();
+    assert!(code.len() == 9 && code.as_bytes()[4] == b'-', "{code}");
+    let phone = Phone::sign_in(&f, "phone");
+    let out = phone.join(&f, &code);
+    assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
+    f.ended("exit status: 0", 1);
+    assert_eq!(phone.devices(&f), ["host-a", "phone"]);
+    f.stop();
+}
+
+/// R-E2E-3: a code works once. After a wrong one has ended the pairing, a
+/// `pair` line on the fleet's stdin gives a new, different code, and the
+/// phone joins with it.
+#[test]
+fn r_e2e_3_after_a_wrong_code_a_pair_line_gives_the_fake_fleet_a_fresh_code_that_joins() {
+    let mut f = Proc::start(&["--pair"]);
+    let first = f.get("pair").to_string();
+    let phone = Phone::sign_in(&f, "phone-again");
+    let wrong = if first.starts_with('2') { "3" } else { "2" }.to_string() + &first[1..];
+    let out = phone.join(&f, &wrong);
+    assert!(!out.status.success(), "a wrong code joined: {}", said(&out));
+    f.send("pair");
+    let second = f.line();
+    let second = second.strip_prefix("pair=").unwrap_or_else(|| panic!("not a pair= line: {second}")).to_string();
+    assert_ne!(second, first, "a fresh code");
+    let out = phone.join(&f, &second);
+    assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
+    f.ended("exit status: 0", 1);
+    assert_eq!(phone.devices(&f), ["host-a", "phone"]);
+    f.stop();
+}
+
+/// R-IOS-15: without `KROWK_BIN` the fleet starts nothing, and says which
+/// variable and how to build the binary it names.
+#[test]
+fn r_ios_15_the_fake_fleet_refuses_to_start_without_krowk_bin() {
+    let out = Command::new(built("examples/fake_fleet")).env_remove("KROWK_BIN").stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert_eq!(out.status.code(), Some(1), "{err}");
+    assert!(out.stdout.is_empty(), "printed {:?}", String::from_utf8_lossy(&out.stdout));
+    assert!(err.contains("KROWK_BIN") && err.contains("cargo build -p krowk --features harness"), "{err}");
 }
