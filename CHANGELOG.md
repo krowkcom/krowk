@@ -99,6 +99,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   not check what the encryption claims to protect, from whom, or which
   risks krowk accepts.
 
+### Fixed
+
+- **A prompt sent from `krowk sync attach` that the host refuses now says
+  why.** If the host's daemon turned the prompt down before its turn
+  started, for example because the repository was trusted only for one
+  `krowk -p --trust` run, the viewer was told the prompt was taken and then
+  heard nothing more. Now its `sync.acked` line carries the refusal, and
+  the TUI shows it as an error. Fix the cause on the host and send the
+  prompt again: nothing needs restarting.
+
 ### Security
 
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
