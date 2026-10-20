@@ -153,7 +153,7 @@ fn a_key_speaks_for_one_device_and_goes_with_it() {
 
 /// The whole pairing through the mailbox, with krowk-client's two sides:
 /// B finds the person's one open pairing, the five messages go in order,
-/// and nothing reaches the chain until A has B's ack.
+/// and nothing reaches the chain before A's reply has gone out.
 #[test]
 fn a_pairing_runs_krowk_clients_five_messages_in_order() {
     let server = Server::new();

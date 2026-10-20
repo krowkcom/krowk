@@ -57,7 +57,7 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(500);
 /// How long either side waits for the other: the registry's ten minutes.
 const WAIT: Duration = Duration::from_secs(10 * 60);
-/// How long B waits for A to post the `add` entry once it has the ack.
+/// How long B waits, once it has sent its ack, for A to post the `add` entry.
 const POSTED: Duration = Duration::from_secs(60);
 
 fn unattended(ctx: &Ctx) -> bool {
