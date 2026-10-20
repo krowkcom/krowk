@@ -1,6 +1,8 @@
-// R-CLIENT-2, R-IOS-13, R-IOS-9: the native app launches on an iPhone
-// simulator and, with no krowk key in its Keychain (decided by the Rust
-// core, through Account.open), opens on onboarding's "Sign in to krowk".
+// R-IOS-13, R-IOS-9: the native app launches on an iPhone simulator and,
+// with no krowk key in its Keychain (decided by the Rust core, through
+// Account.open), opens on onboarding's "Sign in to krowk". The protocol
+// version read from Rust is KrowkCore's BindingsTests' now, as home is only
+// reached once paired.
 import XCTest
 
 final class LaunchTests: XCTestCase {
@@ -8,10 +10,11 @@ final class LaunchTests: XCTestCase {
         continueAfterFailure = false
     }
 
-    /// R-CLIENT-2, R-IOS-13, R-IOS-9: a fresh install opens on "Sign in to
-    /// krowk" with one button, in light and dark.
+    /// R-IOS-13, R-IOS-9: a fresh install opens on "Sign in to krowk" with
+    /// one button, in light and dark.
     @MainActor
     func testAFreshInstallOpensOnSignIn() {
+        addTeardownBlock { @MainActor in XCUIDevice.shared.appearance = .light }
         for appearance in Screenshots.appearances {
             XCUIDevice.shared.appearance = appearance
             let app = XCUIApplication()
@@ -29,7 +32,6 @@ final class LaunchTests: XCTestCase {
             Screenshots.keep("sign-in", in: app)
             app.terminate()
         }
-        XCUIDevice.shared.appearance = .light
     }
 }
 

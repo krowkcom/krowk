@@ -30,12 +30,14 @@ final class SignInUITests: XCTestCase {
     func testSignInThroughTheBrowser() throws {
         // A teardown block, not a defer: a failed assertion stops the test
         // with an exception, which skips a defer.
-        addTeardownBlock { @MainActor in self.forgetTheKey() }
+        addTeardownBlock { @MainActor in
+            self.forgetTheKey()
+            XCUIDevice.shared.appearance = .light
+        }
         for appearance in Screenshots.appearances {
             XCUIDevice.shared.appearance = appearance
             try signIn(appearance)
         }
-        XCUIDevice.shared.appearance = .light
     }
 
     @MainActor
