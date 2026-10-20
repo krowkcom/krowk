@@ -29,6 +29,9 @@ targets:
     sources: [App]
     dependencies:
       - package: KrowkKit
+        product: KrowkKit
+      - package: KrowkKit
+        product: KrowkKeys
       - package: KrowkCore
         product: Krowk
     settings:
@@ -69,4 +72,5 @@ schemes:
       targets:
         - Krowk-iOSUITests
         - package: KrowkKit/KrowkKitTests
+        - package: KrowkKit/KrowkKeysTests
         - package: KrowkCore/KrowkCoreTests

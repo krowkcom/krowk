@@ -52,6 +52,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   tried once, nothing is retried, keys kept by a join that didn't finish
   are forgotten) moved from the CLI into krowk-client, so the iPhone app
   will join the same way and supply only the network.
+- **The iPhone app keeps its keys in the Keychain, sealed by the Secure
+  Enclave.** Each key krowk keeps on the phone, and its krowk API key, is
+  a Keychain item that opens only while the phone is unlocked, never syncs
+  to iCloud and never moves to another device. It is sealed to a key that
+  can't leave this iPhone's Secure Enclave. Nothing is written to a file in
+  the app. Reinstalling the app starts with no keys. An iPhone with no
+  Secure Enclave keeps no keys, and the app says so. Nothing changes for
+  CLI users.
 - **The iPhone app's project is in `apps/ios`.** It is a UIKit shell that
   shows the protocol version it reads from the Rust core. On a Mac,
   XcodeGen generates its Xcode project; on Linux, xtool builds the same
