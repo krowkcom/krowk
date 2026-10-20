@@ -10,10 +10,14 @@ name: iOS core
 # with the XCFramework assembled by hand as on Linux (KROWK_IOS_ASSEMBLE=1,
 # omarchy-apple-dev), each held to the same tests, and the two layouts are
 # compared.
+#
+# The `app` job builds the iPhone app from apps/ios/project.yml (R-IOS-13)
+# and runs its UI and unit tests on a simulator: Linux has no simulator,
+# XcodeGen or XCUITest, so this is where they run until ticket 72.
 on:
   pull_request:
     paths:
-      - apps/ios/KrowkCore/**
+      - apps/ios/**
       - scripts/ios_core.sh
       - crates/krowk-ffi/**
       - crates/krowk-client/**
@@ -26,7 +30,7 @@ on:
   push:
     branches: [main]
     paths:
-      - apps/ios/KrowkCore/**
+      - apps/ios/**
       - scripts/ios_core.sh
       - crates/krowk-ffi/**
       - crates/krowk-client/**
@@ -116,3 +120,131 @@ jobs:
       - name: "R-CLIENT-1: BindingsTests on the simulator, hand-assembled XCFramework"
         working-directory: apps/ios/KrowkCore
         run: xcodebuild test -scheme "$SCHEME" -destination "platform=iOS Simulator,id=$UDID,arch=arm64"
+
+  app:
+    # R-IOS-13, R-CLIENT-2: the app's Xcode project generates from
+    # project.yml, builds, and passes LaunchTests (XCUITest) and KrowkKit's
+    # HomeViewControllerTests on an iPhone simulator. Then a screenshot of
+    # the running app, kept as an artifact.
+    runs-on: macos-26
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Rust
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+          rustup default 1.97.1
+
+      - name: make ios-core
+        run: |
+          make ios-core
+          echo "DERIVED=$RUNNER_TEMP/DerivedData" >> "$GITHUB_ENV"
+
+      - name: "R-IOS-13: xcodegen generate"
+        run: |
+          brew install xcodegen
+          xcodegen --version
+          xcodegen generate --spec apps/ios/project.yml
+          # Generated, and ignored: nothing for git to add.
+          git check-ignore -q apps/ios/Krowk.xcodeproj/project.pbxproj
+          test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
+          xcodebuild -list -project apps/ios/Krowk.xcodeproj -json | jq -e '.project.schemes | index("Krowk-iOS")'
+
+      - name: "R-IOS-13: build settings (module KrowkApp, iOS 26.0, iPhone only, no x86_64 simulator slice)"
+        run: |
+          xcodebuild -showBuildSettings -project apps/ios/Krowk.xcodeproj -target Krowk-iOS -sdk iphonesimulator -json \
+            > "$RUNNER_TEMP/settings.json"
+          jq -r '.[0].buildSettings | {PRODUCT_MODULE_NAME, PRODUCT_NAME, PRODUCT_BUNDLE_IDENTIFIER, IPHONEOS_DEPLOYMENT_TARGET,
+            TARGETED_DEVICE_FAMILY, EXCLUDED_ARCHS, ARCHS, SWIFT_VERSION, SWIFT_STRICT_CONCURRENCY}' "$RUNNER_TEMP/settings.json"
+          jq -e '.[0].buildSettings
+            | .PRODUCT_MODULE_NAME == "KrowkApp"
+              and .IPHONEOS_DEPLOYMENT_TARGET == "26.0"
+              and .TARGETED_DEVICE_FAMILY == "1"
+              and (.EXCLUDED_ARCHS | split(" ") | index("x86_64"))
+              and .SWIFT_VERSION == "6.0"
+              and .SWIFT_STRICT_CONCURRENCY == "complete"' "$RUNNER_TEMP/settings.json"
+
+      - name: Xcode and the simulator
+        run: |
+          xcodebuild -version
+          # An iPhone on the newest iOS runtime installed, as in ios-core.
+          udid=$(xcrun simctl list devices available -j | jq -r '
+            [.devices | to_entries[]
+              | select(.key | test("SimRuntime\\.iOS-[0-9]+-[0-9]+$"))
+              | (.key | capture("iOS-(?<a>[0-9]+)-(?<b>[0-9]+)$") | [(.a | tonumber), (.b | tonumber)]) as $v
+              | .value[] | select(.name | startswith("iPhone")) | {v: $v, udid, name}]
+            | sort_by(.v) | last
+            | if . then "\(.udid) \(.name), iOS \(.v | map(tostring) | join("."))" else empty end')
+          test -n "$udid" || { echo "no iPhone simulator available" >&2; exit 1; }
+          echo "simulator: $udid"
+          echo "UDID=${udid%% *}" >> "$GITHUB_ENV"
+
+      - name: "R-CLIENT-2, R-IOS-13: LaunchTests and HomeViewControllerTests on the simulator"
+        run: |
+          xcodebuild test -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
+            -destination "platform=iOS Simulator,id=$UDID,arch=arm64" \
+            -derivedDataPath "$DERIVED" -resultBundlePath "$RUNNER_TEMP/Krowk-iOS.xcresult"
+
+      - name: The app is arm64 only, module KrowkApp
+        run: |
+          app=$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app
+          lipo -archs "$app/Krowk"
+          test "$(lipo -archs "$app/Krowk")" = arm64
+          test -d "$DERIVED/Build/Products/Debug-iphonesimulator/KrowkApp.swiftmodule"
+          plutil -p "$app/Info.plist"
+          # Linux's xtool build reads apps/ios/xtool-Info.plist instead of
+          # project.yml's INFOPLIST_KEY_*: every key it sets must be in
+          # Xcode's, the same. Xcode nests UILaunchScreen in itself, and
+          # adds an empty UISceneConfigurations to the scene manifest.
+          python3 - "$app/Info.plist" apps/ios/xtool-Info.plist <<'PY'
+          import plistlib, sys
+          xcode, xtool = (plistlib.load(open(p, "rb")) for p in sys.argv[1:])
+          xtool["CFBundleIdentifier"] = "com.krowk.app"  # xtool.yml's bundleID
+          scenes = lambda d: d.get("UIApplicationSceneManifest", {}).get("UIApplicationSupportsMultipleScenes")
+          bad = [k for k in xtool if k not in ("UILaunchScreen", "UIApplicationSceneManifest")
+                 and (k not in xcode or xcode[k] != xtool[k])]
+          if "UILaunchScreen" not in xcode:
+              bad.append("UILaunchScreen")
+          if scenes(xtool) is None or scenes(xcode) != scenes(xtool):
+              bad.append("UIApplicationSupportsMultipleScenes")
+          if bad:
+              sys.exit("xtool-Info.plist differs from Xcode's: " + ", ".join(f"{k}: {xcode.get(k)!r} vs {xtool.get(k)!r}" for k in bad))
+          print("xtool-Info.plist agrees with Xcode's on", len(xtool), "keys")
+          PY
+
+      - name: Screenshot of the running app
+        id: shot
+        # After a failed test too, when it says the most; not without an app.
+        if: ${{ !cancelled() && hashFiles('apps/ios/Krowk.xcodeproj/project.pbxproj') != '' }}
+        run: |
+          app=$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app
+          test -d "$app" || { echo "no Krowk.app was built" >&2; exit 1; }
+          xcrun simctl boot "$UDID" 2>/dev/null || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$app"
+          xcrun simctl launch "$UDID" com.krowk.app
+          sleep 5
+          xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-home.png"
+          # A crashed app would leave the home screen in the picture.
+          xcrun simctl spawn "$UDID" launchctl list | grep -q 'UIKitApplication:com\.krowk\.app' \
+            || { echo "krowk is not running after 5 s" >&2; exit 1; }
+
+      - name: Keep the screenshot
+        if: ${{ !cancelled() && steps.shot.outcome != 'skipped' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: krowk-ios-screenshot
+          path: ${{ runner.temp }}/krowk-home.png
+          if-no-files-found: warn
+
+      - name: Keep the test results on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: Krowk-iOS-xcresult
+          path: ${{ runner.temp }}/Krowk-iOS.xcresult
+          if-no-files-found: ignore

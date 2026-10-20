@@ -46,6 +46,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app's project is in `apps/ios`.** It is a UIKit shell that
+  shows the protocol version it reads from the Rust core. On a Mac,
+  XcodeGen generates its Xcode project; on Linux, xtool builds the same
+  sources. Nothing changes for CLI users.
 - **krowk-client declares what a synced session's devices send each
   other.** Nothing changes for you: the frames, answers, welcome and
   batches a host and its viewers exchange, and the sealed index and chunks

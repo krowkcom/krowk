@@ -1,0 +1,9 @@
+# The iPhone app for xtool on Linux (omarchy-apple-dev): `xtool dev build`
+# in this directory. The bundle id is a proposal, pending the person's
+# confirmation (ticket 109); project.yml has the same one.
+version: 1
+bundleID: com.krowk.app
+product: KrowkApp
+# What Xcode generates from project.yml's INFOPLIST_KEY_* settings; xtool
+# needs it as a file.
+infoPath: xtool-Info.plist
