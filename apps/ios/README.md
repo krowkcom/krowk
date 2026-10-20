@@ -24,7 +24,7 @@ or a package and both pick it up. A new Info.plist key goes in both
 
 Needs Xcode with the iOS 26 SDK, Rust with the `aarch64-apple-ios` and
 `aarch64-apple-ios-sim` targets, and XcodeGen (`brew install xcodegen`).
-CI used XcodeGen 2.44.1. From the repository root:
+CI used XcodeGen 2.46.0 (Homebrew). From the repository root:
 
 ```
 make ios-core

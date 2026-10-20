@@ -37,6 +37,9 @@ targets:
         PRODUCT_NAME: Krowk
         # Not Krowk: on a case-insensitive disk it clashes with the bindings module.
         PRODUCT_MODULE_NAME: KrowkApp
+        # Again here: XcodeGen's iOS target preset sets "1,2" per target,
+        # which would win over the project-wide setting.
+        TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: krowk
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
@@ -53,6 +56,7 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app.uitests
+        TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
 schemes:
   Krowk-iOS:
