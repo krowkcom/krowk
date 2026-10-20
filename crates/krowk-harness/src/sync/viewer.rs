@@ -693,8 +693,7 @@ impl Watching {
         let Some(l) = self.link.as_mut() else { return };
         // What the chunks do not hold yet — the running
         // turn's events — the host sends.
-        let mut sends = vec![ViewerFrame::CatchUp { after: self.last_id.clone() }];
-        self.catch_ups.asked(self.last_id.clone());
+        let mut sends = vec![ViewerFrame::CatchUp { after: self.catch_ups.welcomed(self.last_id.clone()) }];
         // What waited for a host goes now, in order; what
         // was sent before and never acked goes again, and
         // runs once.
@@ -874,11 +873,26 @@ impl CatchUps {
         if covered_by_order && no_newer(flying, &after) {
             return None;
         }
-        // Owed: the oldest, which covers the later ones.
+        self.owe(after);
+        None
+    }
+
+    /// Owed: the oldest, which covers the later ones.
+    fn owe(&mut self, after: Option<String>) {
         if self.owed.as_ref().is_none_or(|o| !no_newer(o, &after)) {
             self.owed = Some(after);
         }
-        None
+    }
+
+    /// A host's welcome: the catch-up to ask after it, from the newest
+    /// event held, or from further back when one asked on an earlier link
+    /// was never answered or one is owed. Now in flight.
+    fn welcomed(&mut self, last: Option<String>) -> Option<String> {
+        self.reset();
+        self.owe(last);
+        let after = self.owed.take().expect("owed");
+        self.asked(after.clone());
+        after
     }
 
     /// Asked (after a welcome, a resync, or a gap): now in flight from
@@ -893,9 +907,13 @@ impl CatchUps {
         self.owed.take()
     }
 
-    /// Joined again: nothing in flight, nothing owed.
+    /// Joined again: nothing in flight. The one that was is owed, since
+    /// its answer, sealed for the link that asked it, never opens on the
+    /// next.
     fn reset(&mut self) {
-        *self = Self::default();
+        if let Some(after) = self.in_flight.take() {
+            self.owe(after);
+        }
     }
 
     #[cfg(test)]
@@ -1023,7 +1041,7 @@ mod tests {
         let (mut link, [b1, _, b3]) = three_batches();
         let mut c = CatchUps::default();
         // `send_welcomed`: the catch-up from the newest event the chunks held.
-        c.asked(Some(id(0)));
+        assert_eq!(c.welcomed(Some(id(0))), Some(id(0)));
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), Some(id(0)), HashSet::new(), Vec::new(), 0);
         let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
         assert_eq!(first, Some(Some(id(1))), "the gap is after batch 1's event");
@@ -1055,12 +1073,20 @@ mod tests {
         assert_eq!(c.gap(Some(id(9)), false), None);
         assert_eq!(c.done(), Some(Some(id(6))));
 
-        // Joined again: nothing in flight, nothing owed.
+        // Joined again: nothing in flight, and what was is owed to the
+        // next welcome's catch-up, which asks from the oldest.
         c.asked(Some(id(1)));
         c.gap(Some(id(2)), false);
         c.reset();
         assert!(!c.in_flight());
-        assert_eq!(c.done(), None);
+        assert_eq!(c.welcomed(Some(id(9))), Some(id(1)), "the unanswered one reaches back furthest");
+        assert!(c.in_flight());
+        assert_eq!(c.done(), None, "nothing owed after it");
+        // Moved to a direct path (no rejoin): the same.
+        c.asked(Some(id(3)));
+        assert_eq!(c.welcomed(Some(id(9))), Some(id(3)));
+        c.done();
+        assert_eq!(c.welcomed(Some(id(9))), Some(id(9)), "with nothing unanswered, from the newest");
     }
 
     /// The in-flight catch-up covers a held batch's gap only when it reaches
@@ -1120,5 +1146,16 @@ mod tests {
         assert_eq!(ask(&mut link, &b3, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), None);
         assert_eq!(gaps(&frame), 1);
         assert_eq!(c.done(), Some(Some(id(1))));
+        // Batches held until the direct welcome, a catch-up asked on the
+        // relay still unanswered: the welcome's catch-up reaches back to
+        // it, and covers the gap among them.
+        let (mut link, [b1, _, b3]) = three_batches();
+        let (mut seen, mut last, mut frame, mut applied) = (HashSet::new(), Some(id(0)), Vec::new(), 0);
+        c.asked(None);
+        assert_eq!(c.welcomed(Some(id(0))), None, "from the start, as the relay's was");
+        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!(gaps(&frame), 1);
+        assert_eq!(c.gap(first.unwrap(), true), None);
+        assert_eq!(c.done(), None);
     }
 }
