@@ -14,9 +14,8 @@
 //! out and B never acks: the reply carries the user key, so a machine that
 //! may hold it is put on the list, where `krowk devices remove` can take it
 //! off and rotate the key away from it, rather than left holding the key
-//! where nothing can see it. That departs from devices.md's "nothing
-//! reaches the chain until both sides have confirmed", deliberately; a
-//! reply that never went out posts nothing.
+//! where nothing can see it. devices.md states the same rule; a reply
+//! that never went out posts nothing.
 //!
 //! **After any failure on B, the code is gone.** A step that fails, a
 //! refusal, a timeout, a dropped connection — B ends the pairing, tells the
@@ -58,7 +57,7 @@ use std::time::{Duration, Instant};
 const POLL: Duration = Duration::from_millis(500);
 /// How long either side waits for the other: the registry's ten minutes.
 const WAIT: Duration = Duration::from_secs(10 * 60);
-/// How long B waits for A to post the `add` entry once it has the ack.
+/// How long B waits, once it has sent its ack, for A to post the `add` entry.
 const POSTED: Duration = Duration::from_secs(60);
 
 fn unattended(ctx: &Ctx) -> bool {
@@ -195,8 +194,12 @@ fn wait_for(client: &Client, id: &str, field: &str, patient: bool, failed: &dyn 
 const ADD_OFF_TERMINAL: &str = "`krowk devices add` hands your key to another machine once a person has said yes to it, so it needs a person at a terminal — run it in one";
 
 /// A: shows a code, waits for the new machine, checks its confirmation,
-/// asks the person, and only once the new machine has acknowledged posts
-/// its `add` entry and the user key wrapped to it.
+/// asks the person and sends the reply. Once the reply, which carries the
+/// user key, has gone out, posts the new machine's `add` entry and the user
+/// key wrapped to it whether or not the machine acknowledges, so a machine
+/// that may hold the key is listed and can be removed; with no ack it ends
+/// the pairing and fails `pairing_unconfirmed`, the machine listed. A
+/// pairing that ends before the reply posts nothing.
 pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if !args.is_empty() {
         return Err(fail("bad_argument", "`krowk devices add` takes no arguments — it shows a code for the new machine to type"));
@@ -513,8 +516,9 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             return Err(b_failed(&from));
         }
     };
-    // A posts the entry once it has the ack; this key then claims the
-    // device, which the registry allows only once it is on the list. That,
+    // A posts the entry once its reply is out, after waiting for the ack,
+    // acked or not; this key then claims the device, which the registry
+    // allows only once it is on the list. That,
     // not whether the ack's answer arrived, says whether the join finished:
     // an ack whose answer was lost may well have landed.
     let signed = client.signed_by(shared);

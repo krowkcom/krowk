@@ -3,7 +3,8 @@
 //! device): the laptop, already on the person's device list, runs `krowk
 //! devices add` and shows a code; the desktop runs `krowk sync join`, types
 //! it, and ends up holding the person's user key and a pin of the chain
-//! that adds it — and nothing reaches the chain unless both sides confirmed.
+//! that adds it. Nothing reaches the chain before the reply goes out; once
+//! it has, the desktop is listed whether or not it acknowledges.
 //!
 //! The laptop's list is made here with krowk-client, as `krowk sync init`
 //! will make it (D6), so this tests pairing alone.
