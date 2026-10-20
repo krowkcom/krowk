@@ -12,6 +12,11 @@
 // Its tests are not here but in ../AppTests, hosted in the app: the
 // Keychain refuses an unhosted test bundle (errSecMissingEntitlement), as
 // it has no application identifier.
+//
+// KrowkAccount is KrowkKit's sign-in over the bindings (R-IOS-9): the
+// registry's browser sign-in, its key kept through a KeyStorage, and which
+// screen a launch opens. Its tests are in ../AppTests too, for the same
+// reason.
 import PackageDescription
 
 let package = Package(
@@ -20,11 +25,13 @@ let package = Package(
     products: [
         .library(name: "KrowkKit", targets: ["KrowkKit"]),
         .library(name: "KrowkKeys", targets: ["KrowkKeys"]),
+        .library(name: "KrowkAccount", targets: ["KrowkAccount"]),
     ],
     dependencies: [.package(path: "../KrowkCore")],
     targets: [
         .target(name: "KrowkKit"),
         .testTarget(name: "KrowkKitTests", dependencies: ["KrowkKit"]),
         .target(name: "KrowkKeys", dependencies: [.product(name: "Krowk", package: "KrowkCore")]),
+        .target(name: "KrowkAccount", dependencies: ["KrowkKit", .product(name: "Krowk", package: "KrowkCore")]),
     ]
 )
