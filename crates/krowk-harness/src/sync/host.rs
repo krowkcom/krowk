@@ -1197,9 +1197,12 @@ impl Hosting {
                 // refused it before it started (an untrusted directory, a
                 // session busy): never as taken when no turn will come.
                 tokio::pin!(run);
+                // A turn that started and then failed is the turn's to
+                // report, not a refusal: started wins when both are ready.
                 let refused = tokio::select! {
-                    r = &mut run => Some(r.err().map(|e| e.to_string())),
+                    biased;
                     Ok(()) = started => None,
+                    r = &mut run => Some(r.err().map(|e| e.to_string())),
                 };
                 match refused {
                     Some(error) => { let _ = answers.send((from, Answer::Ack { id: r.id, error })); }
