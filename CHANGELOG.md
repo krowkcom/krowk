@@ -59,6 +59,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Linux with the [omarchy-apple-dev](https://github.com/joshuaswarren/omarchy-apple-dev)
   toolchain and an iOS SDK. `make check` doesn't build it, and the CLI is
   unaffected.
+- **The iPhone app's project is in `apps/ios`.** A UIKit shell that shows
+  the protocol version it reads from the Rust core. XcodeGen generates its
+  Xcode project for a Mac and its simulator tests, and xtool builds the
+  same sources on Linux. Nothing changes for CLI users.
 - **The iPhone app can sign in to krowk and keep its keys in the
   Keychain.** krowk-ffi now exports a browser sign-in that polls by the
   terminal's rules and names the phone on the approval page, an account
