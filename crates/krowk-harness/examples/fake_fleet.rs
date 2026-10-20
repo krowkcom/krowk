@@ -28,7 +28,9 @@
 //! turn, typed at the host and held on an approval for the model's `bash`
 //! call `approval=`; `request=` is the request id a viewer's `approve`
 //! command names to answer it.
-//! Everything binds 127.0.0.1 and lives under `/tmp/krowk-fleet-<pid>`.
+//! Everything binds 127.0.0.1 and lives under `/tmp/krowk-fleet-<pid>`,
+//! removed when stdin closes but not if the fleet is killed. Logs go to
+//! stderr: read or discard it, so a full pipe never blocks the fleet.
 
 #[cfg(unix)]
 #[path = "../tests/common/fleet.rs"]

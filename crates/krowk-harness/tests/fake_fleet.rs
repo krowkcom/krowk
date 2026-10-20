@@ -54,7 +54,7 @@ fn post(url: &str) -> String {
 /// to its session and sees the demo's transcript and its held approval; a
 /// browser sign-in approved at `approve` lands in the host's person; B's
 /// answer ends the held turn; and with the fleet's host stopped — its
-/// registry and relay still up — the viewer is read-only.
+/// registry and relay still up — the viewer is told no host is there.
 #[test]
 fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its_held_approval() {
     let started = Instant::now();

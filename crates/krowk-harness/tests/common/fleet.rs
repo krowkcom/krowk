@@ -96,8 +96,8 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     mock::Reply::paced(mock::text_stream(text), Duration::from_millis(20))
 }
 
-/// A running fleet. Dropping it without `stop` leaves its threads to the
-/// process's end.
+/// A running fleet. Dropping it without `stop` stops the registry and
+/// leaves the bridge, relay, daemon and model to the process's end.
 pub struct Fleet {
     /// The registry's API base, `http://127.0.0.1:…/v1`.
     pub api: String,
