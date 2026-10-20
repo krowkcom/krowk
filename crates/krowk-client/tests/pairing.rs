@@ -1,11 +1,13 @@
 //! Pairing by a short code (ticket D2, engineering/devices.md in Canon →
 //! Adding a device): the code, the flow both ways, each way it must fail,
 //! and the SPAKE2 crate held to the vectors magic-wormhole interoperates
-//! with.
+//! with; and the invite URI a phone scans instead of typing the code
+//! (ticket 68).
 
 use krowk_client::e2e::{DeviceKey, SigningKey};
 use krowk_client::pairing::{
-    ALPHABET, AwaitAck, AwaitConfirm, AwaitReply, Binding, NewDevice, PairA, PairB, Paired, PairingCode, PeerKind,
+    ALPHABET, AwaitAck, AwaitConfirm, AwaitReply, Binding, MAX_USER_ID, NewDevice, PairA, PairB, Paired, PairingCode, PeerKind,
+    invite,
 };
 
 const USER: &str = "0192f5a0-7e1c-7cc3-9d1a-5b6f00000001";
@@ -473,4 +475,93 @@ fn d2_bs_code_is_consumed_by_start() {
     let code = PairingCode::generate();
     let (_b, _hello) = PairB::start(binding(&s), code, s.b.clone()).unwrap();
     // `code` is moved: using it here would not compile.
+}
+
+// ------------------------------------------------- the invite URI (ticket 68)
+
+/// The URI `krowk devices add` draws as a QR code reads back to the same
+/// code, person and device, and the code in it is the one A shows.
+#[test]
+fn r_e2e_3_an_invite_uri_round_trips() {
+    let s = sides();
+    let a = PairA::new(PeerKind::SamePersonDevice, USER, s.a_device).unwrap();
+    let shown = invite::uri(a.code(), USER, s.a_device);
+    let code = std::str::from_utf8(a.code().as_bytes()).unwrap();
+    assert_eq!(*shown, format!("krowk://pair?v=1&code={code}&user={USER}&device={}", s.a_device));
+    let read = invite::parse(&shown).unwrap();
+    assert_eq!(read.code.as_bytes(), a.code().as_bytes());
+    assert_eq!(read.user_id, USER);
+    assert_eq!(read.a_device, s.a_device);
+    assert_eq!(*read.to_uri(), *shown);
+    // The code it carries starts B's side of the very pairing A shows.
+    let (b, hello) = PairB::start(binding(&s), read.code, s.b.clone()).unwrap();
+    let (confirm_a, spake) = a.receive_hello(&hello).unwrap();
+    let (_reply, confirm) = b.receive_spake(&spake).unwrap();
+    assert!(confirm_a.receive_confirm(&confirm).is_ok());
+    // Every unreserved character, and a user id of exactly MAX_USER_ID.
+    let user = "aZ09-._~".repeat(MAX_USER_ID / 8);
+    assert_eq!(invite::parse(&invite::uri(&PairingCode::generate(), &user, s.a_device)).unwrap().user_id, user);
+}
+
+#[test]
+fn r_e2e_3_an_invite_uri_is_parsed_strictly() {
+    let device = "0123456789abcdef0123456789abcdef";
+    let good = format!("krowk://pair?v=1&code=K7QF9M3X&user={USER}&device={device}");
+    assert!(invite::parse(&good).is_some());
+    let user = format!("user={USER}");
+    let dev = format!("device={device}");
+    let with = |parts: &[&str]| format!("krowk://pair?{}", parts.join("&"));
+    let refused = [
+        // The scheme, the host and the version.
+        good.replacen("krowk://", "https://", 1),
+        good.replacen("krowk://", "KROWK://", 1),
+        good.replacen("krowk://pair", "krowk://pairs", 1),
+        good.replacen("krowk://pair?", "krowk://pair/?", 1),
+        good.replacen("krowk://pair?", "krowk:pair?", 1),
+        good.replacen("v=1", "v=2", 1),
+        good.replacen("v=1", "v=01", 1),
+        format!("{good}#x"),
+        // A key missing, repeated, extra or empty.
+        with(&["code=K7QF9M3X", &user, &dev]),
+        with(&["v=1", &user, &dev]),
+        with(&["v=1", "code=K7QF9M3X", &dev]),
+        with(&["v=1", "code=K7QF9M3X", &user]),
+        with(&["v=1", "v=1", "code=K7QF9M3X", &user, &dev]),
+        with(&["v=1", "code=K7QF9M3X", "code=K7QF9M3X", &user, &dev]),
+        with(&["v=1", "code=K7QF9M3X", &user, &user, &dev]),
+        with(&["v=1", "code=K7QF9M3X", &user, &dev, &dev]),
+        with(&["v=1", "code=K7QF9M3X", &user, &dev, "name=x"]),
+        with(&["v=1", "code=K7QF9M3X", &user, &dev, ""]),
+        with(&["v=1", "code=K7QF9M3X", &user, &dev, "x"]),
+        format!("{good}&"),
+        // A bad code: wrong length, a symbol outside the alphabet, a form
+        // only a person types.
+        good.replacen("K7QF9M3X", "K7QF9M3", 1),
+        good.replacen("K7QF9M3X", "K7QF9M3XX", 1),
+        good.replacen("K7QF9M3X", "K7QF9M30", 1),
+        good.replacen("K7QF9M3X", "K7QF-9M3X", 1),
+        good.replacen("K7QF9M3X", "k7qf9m3x", 1),
+        good.replacen("K7QF9M3X", "K7QF%209M3X", 1),
+        good.replacen("K7QF9M3X", "", 1),
+        // A bad device id: short, long, upper case, not hex, grouped.
+        good.replacen(device, &device[..31], 1),
+        good.replacen(device, &format!("{device}0"), 1),
+        good.replacen(device, &device.to_uppercase(), 1),
+        good.replacen(device, &device.replace('a', "g"), 1),
+        good.replacen(device, "0123-4567-89ab-cdef-0123-4567-89ab-cdef", 1),
+        // A user id that is empty, overlong, non-ASCII or reserved.
+        good.replacen(USER, "", 1),
+        good.replacen(USER, &"u".repeat(MAX_USER_ID + 1), 1),
+        good.replacen(USER, "élvinas", 1),
+        good.replacen(USER, "a%20b", 1),
+        good.replacen(USER, "a+b", 1),
+        good.replacen(USER, "a b", 1),
+        good.replacen(USER, "a/b", 1),
+        good.replacen(USER, "a=b", 1),
+        good.replacen(USER, "a\nb", 1),
+    ];
+    for uri in &refused {
+        assert!(invite::parse(uri).is_none(), "{uri:?}");
+    }
+    assert!(invite::parse(&good.replacen(USER, &"u".repeat(MAX_USER_ID), 1)).is_some());
 }

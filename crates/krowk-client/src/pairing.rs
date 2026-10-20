@@ -59,6 +59,8 @@ use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 use crate::e2e::{DeviceId, DevicePublic, Error, SigningPublic, random};
 
+pub mod invite;
+
 /// The protocol's label, the first thing in both SPAKE2 identities and the
 /// transcript.
 pub const LABEL: &[u8] = b"krowk/pair/v1";
