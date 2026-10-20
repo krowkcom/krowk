@@ -32,10 +32,12 @@ on:
       - "mise.toml"
       - ".cargo/**"
       - "scripts/ios_core.sh"
-      # The fake fleet the app's tests run against (R-IOS-15).
+      # The fake fleet the app's tests run against (R-IOS-15): the
+      # stand-in registry and the harness that runs it. Not crates/krowk:
+      # the fleet runs the CLI only to answer pairings, which no test here
+      # does yet, and a CLI-only change stays off macOS runners.
       - "crates/krowk-devregistry/**"
-      - "crates/krowk-harness/examples/fake_fleet.rs"
-      - "crates/krowk-harness/tests/common/**"
+      - "crates/krowk-harness/**"
       - ".github/actions/setup/**"
       - ".github/workflows/ios.yml"
   push:
@@ -50,10 +52,12 @@ on:
       - "mise.toml"
       - ".cargo/**"
       - "scripts/ios_core.sh"
-      # The fake fleet the app's tests run against (R-IOS-15).
+      # The fake fleet the app's tests run against (R-IOS-15): the
+      # stand-in registry and the harness that runs it. Not crates/krowk:
+      # the fleet runs the CLI only to answer pairings, which no test here
+      # does yet, and a CLI-only change stays off macOS runners.
       - "crates/krowk-devregistry/**"
-      - "crates/krowk-harness/examples/fake_fleet.rs"
-      - "crates/krowk-harness/tests/common/**"
+      - "crates/krowk-harness/**"
       - ".github/actions/setup/**"
       - ".github/workflows/ios.yml"
   workflow_dispatch:
@@ -387,7 +391,9 @@ jobs:
           for look in dark light; do
             xcrun simctl terminate "$UDID" com.krowk.app 2>/dev/null || true
             xcrun simctl ui "$UDID" appearance "$look"
-            xcrun simctl launch "$UDID" com.krowk.app
+            # The DEBUG build's own override too: this simulator does not
+            # reliably follow its appearance setting.
+            SIMCTL_CHILD_KROWK_APPEARANCE=$look xcrun simctl launch "$UDID" com.krowk.app
             sleep 5
             xcrun simctl io "$UDID" screenshot "$RUNNER_TEMP/krowk-launch-$look.png"
           done

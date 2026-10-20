@@ -3,7 +3,8 @@ import UIKit
 
 /// Onboarding's first screen (R-IOS-9): "Sign in to krowk" and one button,
 /// which opens the registry's approval page. SwiftUI, as every cold screen
-/// is. Leaving the screen cancels the sign-in.
+/// is. The screen owns its model, so leaving it (the root replaced) ends
+/// the model, and its `deinit` cancels the sign-in.
 public struct SignInView: View {
     let model: SignInModel
 
@@ -22,7 +23,6 @@ public struct SignInView: View {
         }
         .padding(24)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .onDisappear { model.cancel() }
     }
 
     @ViewBuilder

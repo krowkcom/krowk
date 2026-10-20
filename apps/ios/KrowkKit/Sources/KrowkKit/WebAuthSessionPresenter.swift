@@ -1,5 +1,6 @@
 import AuthenticationServices
 import UIKit
+import os
 
 /// The approval page in an `ASWebAuthenticationSession` sheet (R-IOS-9).
 /// Not ephemeral: the browser's existing registry login is used, so a
@@ -35,6 +36,7 @@ public final class WebAuthSessionPresenter: NSObject, WebAuthPresenter, ASWebAut
         session.presentationContextProvider = self
         self.session = session
         if !session.start() {
+            Logger(subsystem: "com.krowk.app", category: "sign-in").error("the sign-in sheet would not open")
             self.session = nil
             onClose()
         }
@@ -53,6 +55,9 @@ public final class WebAuthSessionPresenter: NSObject, WebAuthPresenter, ASWebAut
         // An app showing a sheet has one.
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
         if let key = scenes.lazy.compactMap(\.keyWindow).first { return key }
-        return UIWindow(windowScene: scenes[0])
+        guard let scene = scenes.first else {
+            preconditionFailure("the sign-in sheet was asked for with no window scene connected")
+        }
+        return UIWindow(windowScene: scene)
     }
 }

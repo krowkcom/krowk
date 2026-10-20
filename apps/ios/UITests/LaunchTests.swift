@@ -19,6 +19,7 @@ final class LaunchTests: XCTestCase {
             // and never krowk's registry, should anything call it.
             app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
             app.launchEnvironment["KROWK_API_URL"] = "http://127.0.0.1:9/v1"
+            app.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
             app.launch()
 
             XCTAssertTrue(app.staticTexts["sign-in-title"].waitForExistence(timeout: 10), "no sign-in title after 10 s")
@@ -38,9 +39,13 @@ final class LaunchTests: XCTestCase {
 enum Screenshots {
     static let appearances: [XCUIDevice.Appearance] = [.light, .dark]
 
+    static func name(of appearance: XCUIDevice.Appearance) -> String {
+        appearance == .dark ? "dark" : "light"
+    }
+
     @MainActor
     static func keep(_ name: String, in app: XCUIApplication) {
-        let label = XCUIDevice.shared.appearance == .dark ? "dark" : "light"
+        let label = name(of: XCUIDevice.shared.appearance)
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "krowk-\(name)-\(label)"
         attachment.lifetime = .keepAlways
@@ -50,6 +55,8 @@ enum Screenshots {
     /// The element tree, kept when a test can't find what it looks for.
     @MainActor
     static func tree(of app: XCUIApplication) {
+        // Printed too, so the CI log shows it without the result bundle.
+        print(app.debugDescription)
         let attachment = XCTAttachment(string: app.debugDescription)
         attachment.name = "element-tree"
         attachment.lifetime = .keepAlways

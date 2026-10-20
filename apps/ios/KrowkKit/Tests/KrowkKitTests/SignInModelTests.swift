@@ -11,7 +11,7 @@ import Testing
 @MainActor
 struct SignInModelTests {
     @Test(
-        "R-IOS-9: an ftp:, a javascript: or a hostless page, and http against an https registry, are refused and never handed to the presenter",
+        "R-IOS-9: an ftp:, a javascript: or a hostless page, http against an https registry or on another host, and a page with a user, are refused and never handed to the presenter",
         arguments: [
             ("ftp://evil.example/approve", "https://api.krowk.com/v1"),
             ("javascript:alert(1)", "https://api.krowk.com/v1"),
@@ -20,6 +20,11 @@ struct SignInModelTests {
             ("https:///approve", "https://api.krowk.com/v1"),
             ("file:///etc/passwd", "http://127.0.0.1:9/v1"),
             ("krowk://approve", "http://127.0.0.1:9/v1"),
+            // http, against an http registry, on another host.
+            ("http://evil.example/approve?code=A", "http://127.0.0.1:9/v1"),
+            // A user before the host: the page is evil.example's.
+            ("https://api.krowk.com@evil.example/approve", "https://api.krowk.com/v1"),
+            ("https://user:pass@krowk.com/approve", "https://api.krowk.com/v1"),
         ]
     )
     func unsafePagesAreRefused(page: String, api: String) async throws {
@@ -41,10 +46,14 @@ struct SignInModelTests {
         #expect(SignInRules.browsablePage("https://127.0.0.1:5/x", api: "http://127.0.0.1:5/v1") != nil)
     }
 
-    @Test("R-IOS-9: the device name loses its control characters and is cut to 64 characters")
+    @Test("R-IOS-9: the device name loses its control and format characters and is cut to 64 bytes")
     func deviceName() {
         #expect(SignInRules.deviceName("Elvinas\u{0}'s\u{7} iPhone\n") == "Elvinas's iPhone")
-        #expect(SignInRules.deviceName(String(repeating: "é", count: 80)) == String(repeating: "é", count: 64))
+        // 64 bytes, at a character's edge: krowk-ffi cuts no further.
+        #expect(SignInRules.deviceName(String(repeating: "é", count: 80)) == String(repeating: "é", count: 32))
+        #expect(SignInRules.deviceName(String(repeating: "a", count: 63) + "é") == String(repeating: "a", count: 63))
+        // A right-to-left override would make the page read the name otherwise.
+        #expect(SignInRules.deviceName("Bob\u{202E}enohPi") == "BobenohPi")
         #expect(SignInRules.deviceName("\u{1}\u{2}") == "iPhone")
         #expect(SignInRules.deviceName("iPhone") == "iPhone")
     }
@@ -99,6 +108,8 @@ struct SignInModelTests {
     func sentences() async throws {
         #expect(SignInFailure.denied.sentence == "You said no in the browser. Start again to sign in.")
         #expect(SignInFailure.keychainRefused(detail: "OSStatus -25308").sentence == "This iPhone couldn't keep your sign-in safely.")
+        // What the registry wrote is for the log, never the screen.
+        #expect(!SignInFailure.other(detail: "<the registry's words>").sentence.contains("registry's words"))
         let attempt = StubAttempt(page: "https://krowk.com/p?code=A")
         let logged = Box<[String]>([])
         let model = SignInModel(
@@ -131,6 +142,39 @@ struct SignInModelTests {
         attempt.finish(.success(SignedInWorkspace(workspace: "ws_1", name: "Acme")))
         try await Task.sleep(for: .milliseconds(100))
         #expect(model.phase == .ready)
+    }
+
+    @Test("R-IOS-9: Cancel while the sign-in is still opening never shows its page, and cancels it")
+    func cancelWhileStarting() async throws {
+        let attempt = StubAttempt(page: "https://krowk.com/p?code=A")
+        let gate = Box(false)
+        let presenter = RecordingPresenter()
+        let model = SignInModel(
+            service: StubService(api: "https://api.krowk.com/v1", attempt: attempt, gate: gate), presenter: presenter, deviceName: "iPhone")
+        model.start()
+        #expect(model.phase == .starting)
+        model.cancel()
+        #expect(model.phase == .ready)
+        gate.value = true
+        try await until { attempt.cancelled }
+        #expect(presenter.presented.isEmpty)
+        #expect(model.phase == .ready)
+    }
+
+    @Test("R-IOS-9: a key saved by a sign-in the screen had cancelled is followed: the screen says signed in")
+    func lateSuccessIsFollowed() async throws {
+        let first = StubAttempt(page: "https://krowk.com/p?code=A")
+        let service = StubService(api: "https://api.krowk.com/v1", attempt: first)
+        let landed = Box<SignedInWorkspace?>(nil)
+        let model = SignInModel(service: service, presenter: RecordingPresenter(), deviceName: "iPhone", onSignedIn: { landed.value = $0 })
+        model.start()
+        try await until { if case .waiting = model.phase { true } else { false } }
+        // Approved in the browser just as the person pressed Cancel: the
+        // core had saved the key before it saw the cancel.
+        first.finishIgnoringCancel(SignedInWorkspace(workspace: "ws_1", name: "Acme"))
+        model.cancel()
+        try await until { landed.value != nil }
+        #expect(model.phase == .signedIn(SignedInWorkspace(workspace: "ws_1", name: "Acme")))
     }
 
     @Test("R-IOS-9: a model that goes away cancels its sign-in")
@@ -175,9 +219,12 @@ func until(_ condition: @MainActor () -> Bool, sourceLocation: SourceLocation = 
 struct StubService: SignInService {
     let api: String
     let attempt: StubAttempt
+    /// When given, `start` blocks until it is true, as a slow registry would.
+    var gate: Box<Bool>? = nil
 
     func start(deviceName: String) throws(SignInFailure) -> any SignInAttempt {
-        attempt
+        while let gate, !gate.value { Thread.sleep(forTimeInterval: 0.01) }
+        return attempt
     }
 }
 
@@ -185,7 +232,7 @@ struct StubService: SignInService {
 final class StubAttempt: SignInAttempt {
     let code = "K7QF-9M3X"
     let verificationURL: String
-    private let state = Mutex<(result: Result<SignedInWorkspace, SignInFailure>?, cancelled: Bool)>((nil, false))
+    private let state = Mutex<(result: Result<SignedInWorkspace, SignInFailure>?, cancelled: Bool, late: SignedInWorkspace?)>((nil, false, nil))
 
     init(page: String) {
         verificationURL = page
@@ -198,14 +245,24 @@ final class StubAttempt: SignInAttempt {
     }
 
     func reset() {
-        state.withLock { $0 = (nil, false) }
+        state.withLock { $0 = (nil, false, nil) }
+    }
+
+    /// A success that has already been saved, so a cancel after it can't stop it.
+    func finishIgnoringCancel(_ workspace: SignedInWorkspace) {
+        state.withLock { $0.late = workspace }
     }
 
     func wait() throws(SignInFailure) -> SignedInWorkspace {
         while true {
-            let (result, cancelled) = state.withLock { s in
-                defer { s.result = nil }
-                return (s.result, s.cancelled)
+            let (result, cancelled, late) = state.withLock { s in
+                defer { s.result = nil; s.late = nil }
+                return (s.result, s.cancelled, s.late)
+            }
+            if let late {
+                // Give the cancel time to land before the answer does.
+                Thread.sleep(forTimeInterval: 0.1)
+                return late
             }
             if cancelled { throw .cancelled }
             if let result { return try result.get() }

@@ -64,9 +64,10 @@ with cargo (and the debug `krowk --features harness` it pairs with, unless
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build
-reads `KROWK_API_URL` (and `KROWK_FIRST_LAUNCH=1`, which makes the launch
-a fresh install's); a release build ignores both and talks to
-`https://api.krowk.com/v1`.
+reads `KROWK_API_URL` (with `KROWK_FIRST_LAUNCH=1`, which makes the
+launch a fresh install's, and `KROWK_APPEARANCE=dark|light` for
+screenshots, which CI's simulator won't take from its own setting); a
+release build ignores them all and talks to `https://api.krowk.com/v1`.
 
 No machine of ours runs macOS, so this path runs on GitHub's `macos-26`
 runner, in `.github/workflows/ios.yml`, for every pull request and push to

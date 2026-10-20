@@ -11,7 +11,7 @@
 # xcodebuild hands every TEST_RUNNER_<NAME> variable to the test process as
 # <NAME>, so the tests read KROWK_API_URL, KROWK_RELAY_URL and
 # KROWK_PAIRING_CODE. The fleet binds 127.0.0.1 only; the simulator shares
-# the Mac's loopback. Its log goes to $KROWK_FLEET_LOG (default
+# the Mac's loopback. Its log is appended to $KROWK_FLEET_LOG (default
 # target/fake-fleet.log), and its last lines are shown if it fails to start.
 #
 # The fleet answers pairings with a debug krowk built with the harness
@@ -34,25 +34,36 @@ cargo build -q -p krowk-harness --example fake_fleet
 
 fifo=$(mktemp -d "${TMPDIR:-/tmp}/krowk-fleet.XXXXXX")
 mkfifo "$fifo/stdin" "$fifo/stdout"
-cargo run -q -p krowk-harness --example fake_fleet -- --pair <"$fifo/stdin" >"$fifo/stdout" 2>"$log" &
-fleet=$!
-# Holding the write end open keeps the fleet running; closing it stops it.
-exec 3>"$fifo/stdin"
-exec 4<"$fifo/stdout"
+fleet=''
 
 stop() {
-  exec 3>&- 2>/dev/null || true
-  # A clean stop takes a moment; one that hangs is killed.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    kill -0 "$fleet" 2>/dev/null || break
-    sleep 1
-  done
-  kill "$fleet" 2>/dev/null || true
-  wait "$fleet" 2>/dev/null || true
-  exec 4<&- 2>/dev/null || true
+  { exec 3>&-; } 2>/dev/null || true
+  if [ -n "$fleet" ]; then
+    # A clean stop takes a moment; one that hangs is killed, with every
+    # process it started (its own process group).
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      kill -0 "$fleet" 2>/dev/null || break
+      sleep 1
+    done
+    kill -- "-$fleet" 2>/dev/null || kill "$fleet" 2>/dev/null || true
+    wait "$fleet" 2>/dev/null || true
+  fi
+  { exec 4<&-; } 2>/dev/null || true
   rm -rf "$fifo"
 }
 trap stop EXIT
+trap 'exit 130' INT TERM
+
+# Appended, so a retried run keeps every attempt's log.
+echo "with-fleet: starting the fake fleet, $(date)" >>"$log"
+# Its own process group (job control), so stop() can end all of it.
+set -m
+cargo run -q -p krowk-harness --example fake_fleet -- --pair <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
+fleet=$!
+set +m
+# Holding the write end open keeps the fleet running; closing it stops it.
+exec 3>"$fifo/stdin"
+exec 4<"$fifo/stdout"
 
 api='' relay='' pair='' ready=''
 # Five minutes: the first start builds and seeds the stand-in registry.

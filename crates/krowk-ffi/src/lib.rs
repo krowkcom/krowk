@@ -90,8 +90,11 @@ use krowk_client::pairing::PairingCode;
 
 /// The version of this crate's exported API, the first line of
 /// `public-api.txt`: bumped whenever an existing export is removed or
-/// changed (rule 8), never for an addition.
-pub const FFI_API_VERSION: u32 = 3;
+/// changed (rule 8), never for an addition. A change to the error an
+/// export returns for a case counts too, though the file can't show it:
+/// Swift that matches on the old variant would misread it (4: `SignIn.wait`
+/// refuses a key the storage won't keep as `credentials_unwritable`).
+pub const FFI_API_VERSION: u32 = 4;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

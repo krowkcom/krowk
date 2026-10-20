@@ -29,6 +29,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     ) {
         guard let windowScene = scene as? UIWindowScene else { return }
         let window = UIWindow(windowScene: windowScene)
+        #if DEBUG
+        // Screenshots in both appearances: the CI simulator does not
+        // reliably follow its own appearance setting.
+        switch ProcessInfo.processInfo.environment["KROWK_APPEARANCE"] {
+        case "dark": window.overrideUserInterfaceStyle = .dark
+        case "light": window.overrideUserInterfaceStyle = .light
+        default: break
+        }
+        #endif
         self.window = window
         showRoot()
         window.makeKeyAndVisible()

@@ -17,32 +17,53 @@ public enum SignInRules {
         return defaultAPI
     }
 
-    /// The longest name the registry takes for a machine, in characters.
+    /// The longest name sent, in UTF-8 bytes: the registry takes 64
+    /// characters, and krowk-ffi cuts the name to 64 bytes.
     public static let deviceNameLimit = 64
 
-    /// What the approval page calls this phone: its name with the control
-    /// characters dropped and cut to 64 characters, both of which the
-    /// registry refuses; "iPhone" when nothing is left. iOS 16 and later
-    /// give an app the generic "iPhone" without a special entitlement.
+    /// What the approval page calls this phone: its name without control
+    /// or format characters (the registry refuses the first; the second,
+    /// like a right-to-left override, would make the name read otherwise
+    /// on the page), cut to 64 bytes at a character's edge; "iPhone" when
+    /// nothing is left. iOS 16 and later give an app the generic "iPhone"
+    /// without a special entitlement.
     public static func deviceName(_ raw: String) -> String {
-        let kept = raw.unicodeScalars.filter { $0.properties.generalCategory != .control }
-        let name = String(String.UnicodeScalarView(kept.prefix(deviceNameLimit)))
-            .trimmingCharacters(in: .whitespaces)
+        var kept = String.UnicodeScalarView()
+        var bytes = 0
+        for scalar in raw.unicodeScalars {
+            switch scalar.properties.generalCategory {
+            case .control, .format: continue
+            default: break
+            }
+            let width = String(scalar).utf8.count
+            guard bytes + width <= deviceNameLimit else { break }
+            kept.append(scalar)
+            bytes += width
+        }
+        let name = String(kept).trimmingCharacters(in: .whitespaces)
         return name.isEmpty ? "iPhone" : name
     }
 
-    /// The approval page, if the browser may open it: only https, or plain
-    /// http when the registry's own address is http (the terminal's
-    /// `browsable_url`). Anything else (`javascript:`, `ftp:`, a page with
-    /// no host, http against an https registry) is nil and never opened.
+    /// The approval page, if the browser may open it: https, or plain http
+    /// when the registry's own address is http (the terminal's
+    /// `browsable_url`, which checks it first), and then only on the
+    /// registry's own host. Never a page with a user or password in it.
+    /// Anything else (`javascript:`, `ftp:`, a page with no host, http
+    /// against an https registry) is nil and never opened.
     public static func browsablePage(_ raw: String, api: String) -> URL? {
-        guard let url = URL(string: raw), let scheme = url.scheme?.lowercased(),
-              let host = url.host(percentEncoded: false), !host.isEmpty
+        guard let url = URL(string: raw), let parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              let scheme = parts.scheme?.lowercased(), let host = parts.host, !host.isEmpty,
+              parts.user == nil, parts.password == nil
         else { return nil }
         switch scheme {
-        case "https": return url
-        case "http" where api.lowercased().hasPrefix("http://"): return url
-        default: return nil
+        case "https":
+            return url
+        // As krowk-api's `Client::insecure`: the address as given.
+        case "http" where api.hasPrefix("http://"):
+            let apiHost = URLComponents(string: api)?.host
+            return apiHost?.lowercased() == host.lowercased() ? url : nil
+        default:
+            return nil
         }
     }
 }

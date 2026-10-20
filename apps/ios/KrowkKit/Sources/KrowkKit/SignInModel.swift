@@ -56,7 +56,8 @@ public enum SignInFailure: Error, Sendable, Equatable {
     case network(detail: String)
     /// `cancelled`: this app ended it; never shown.
     case cancelled
-    /// Anything else, in the core's words.
+    /// Anything else. The core's words go to the log, not the screen:
+    /// they can carry text the registry chose.
     case other(detail: String)
 
     /// One sentence for the screen.
@@ -68,7 +69,7 @@ public enum SignInFailure: Error, Sendable, Equatable {
         case .unsafePage: "krowk's registry named a sign-in page this app won't open, so it wasn't opened."
         case .network: "krowk's registry couldn't be reached. Check the connection and start again."
         case .cancelled: "Sign-in was cancelled."
-        case .other(let detail): "Sign-in didn't finish: \(detail)."
+        case .other: "Sign-in didn't finish. Start again."
         }
     }
 }
@@ -155,12 +156,22 @@ public final class SignInModel {
         phase = .starting
         let service = service
         let name = deviceName
-        // The calls block (ureq): a detached task, never the main actor.
+        // The calls block (ureq): a detached task, never the main actor,
+        // which hands each call to a thread of its own (`blocking`) rather
+        // than holding one of Swift's few concurrency threads for up to 15
+        // minutes.
         Task.detached(priority: .userInitiated) { [weak self] in
+            let started = await blocking { () -> Result<any SignInAttempt, SignInFailure> in
+                do throws(SignInFailure) {
+                    return .success(try service.start(deviceName: name))
+                } catch {
+                    return .failure(error)
+                }
+            }
             let attempt: any SignInAttempt
-            do throws(SignInFailure) {
-                attempt = try service.start(deviceName: name)
-            } catch {
+            switch started {
+            case .success(let opened): attempt = opened
+            case .failure(let error):
                 await MainActor.run { self?.end(run, .failure(error)) }
                 return
             }
@@ -169,11 +180,12 @@ public final class SignInModel {
                 attempt.cancel()
                 return
             }
-            let result: Result<SignedInWorkspace, SignInFailure>
-            do throws(SignInFailure) {
-                result = .success(try attempt.wait())
-            } catch {
-                result = .failure(error)
+            let result = await blocking { () -> Result<SignedInWorkspace, SignInFailure> in
+                do throws(SignInFailure) {
+                    return .success(try attempt.wait())
+                } catch {
+                    return .failure(error)
+                }
             }
             await MainActor.run { self?.end(run, result) }
         }
@@ -186,7 +198,8 @@ public final class SignInModel {
         present(page, run)
     }
 
-    /// "Cancel", or the screen going away: ends the poll and the sheet.
+    /// "Cancel": ends the poll and the sheet. The screen going away ends
+    /// them too, through `deinit`.
     public func cancel() {
         run &+= 1
         current.take()?.cancel()
@@ -202,7 +215,9 @@ public final class SignInModel {
     private func opened(_ attempt: any SignInAttempt, _ run: Int) -> Bool {
         guard run == self.run, phase == .starting else { return false }
         guard let page = SignInRules.browsablePage(attempt.verificationURL, api: service.api) else {
-            log("sign-in: refused to open the page \(attempt.verificationURL) for the registry \(service.api)")
+            // The page's scheme and host only: its query holds the code.
+            let shown = URLComponents(string: attempt.verificationURL).map { "\($0.scheme ?? "")://\($0.host ?? "")" } ?? "unreadable"
+            log("sign-in: refused to open a page at \(shown) for the registry \(service.api)")
             phase = .failed(.unsafePage)
             return false
         }
@@ -221,14 +236,28 @@ public final class SignInModel {
     }
 
     private func end(_ run: Int, _ result: Result<SignedInWorkspace, SignInFailure>) {
+        // A key that was saved is in the Keychain whichever run saved it,
+        // even one the screen had moved on from (approved just as it was
+        // cancelled): the screen follows the Keychain, and whatever is
+        // under way now ends.
+        if case .success(let workspace) = result {
+            if run != self.run {
+                self.run &+= 1
+                current.take()?.cancel()
+            } else {
+                _ = current.take()
+            }
+            page = nil
+            phase = .signedIn(workspace)
+            presenter.dismiss()
+            onSignedIn(workspace)
+            return
+        }
         guard run == self.run else { return }
         _ = current.take()
         page = nil
         switch result {
-        case .success(let workspace):
-            phase = .signedIn(workspace)
-            presenter.dismiss()
-            onSignedIn(workspace)
+        case .success: break
         case .failure(.cancelled):
             presenter.dismiss()
             phase = .ready
@@ -240,6 +269,15 @@ public final class SignInModel {
             presenter.dismiss()
             phase = .failed(failure)
         }
+    }
+}
+
+/// Runs `work`, which blocks, on a thread of its own and returns its result.
+func blocking<T: Sendable>(_ work: @escaping @Sendable () -> T) async -> T {
+    await withCheckedContinuation { (done: CheckedContinuation<T, Never>) in
+        let thread = Thread { done.resume(returning: work()) }
+        thread.qualityOfService = .userInitiated
+        thread.start()
     }
 }
 

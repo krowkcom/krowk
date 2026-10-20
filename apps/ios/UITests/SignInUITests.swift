@@ -14,23 +14,36 @@ final class SignInUITests: XCTestCase {
         continueAfterFailure = false
     }
 
+    /// The test ends signed in to the fleet: one more fresh launch clears
+    /// the key it left in the simulator's Keychain.
+    @MainActor
+    override func tearDown() {
+        let app = XCUIApplication()
+        app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
+        app.launchEnvironment["KROWK_API_URL"] = "http://127.0.0.1:9/v1"
+        app.launch()
+        _ = app.staticTexts["sign-in-title"].waitForExistence(timeout: 10)
+        app.terminate()
+    }
+
     @MainActor
     func testSignInThroughTheBrowser() throws {
         for appearance in Screenshots.appearances {
             XCUIDevice.shared.appearance = appearance
-            try signIn()
+            try signIn(appearance)
         }
         XCUIDevice.shared.appearance = .light
     }
 
     @MainActor
-    private func signIn() throws {
+    private func signIn(_ appearance: XCUIDevice.Appearance) throws {
         let api = try XCTUnwrap(
             ProcessInfo.processInfo.environment["KROWK_API_URL"].flatMap { $0.isEmpty ? nil : $0 },
             "KROWK_API_URL is unset: run the tests through apps/ios/scripts/with-fleet.sh")
         let app = XCUIApplication()
         app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
         app.launchEnvironment["KROWK_API_URL"] = api
+        app.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
         app.launch()
 
         let signIn = app.buttons["sign-in"]
@@ -60,14 +73,15 @@ final class SignInUITests: XCTestCase {
         // The page again, approved there: the sheet closes by itself.
         reopen.tap()
         allowTheSignInPage()
-        let approve = app.webViews.buttons["Approve"]
+        // The page's button, in the sheet's web content.
+        let approve = app.buttons["Approve"].firstMatch
         if !approve.waitForExistence(timeout: 20) { Screenshots.tree(of: app) }
         XCTAssertTrue(approve.exists, "no Approve button on the page")
         approve.tap()
         let signedIn = app.staticTexts["signed-in"]
         XCTAssertTrue(signedIn.waitForExistence(timeout: 30), "not signed in 30 s after approving")
         XCTAssertTrue(signedIn.label.hasPrefix("Signed in to "), signedIn.label)
-        XCTAssertFalse(app.webViews.firstMatch.exists, "the sheet is still open")
+        XCTAssertFalse(app.buttons["Approve"].exists, "the sheet is still open")
         Screenshots.keep("signed-in", in: app)
         app.terminate()
     }

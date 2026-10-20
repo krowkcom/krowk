@@ -109,6 +109,10 @@ impl SignIn {
     /// the whole window.
     pub fn wait(&self, storage: Arc<dyn KeyStorage>) -> Result<SignedIn, KrowkError> {
         let granted = self.poll()?;
+        // A cancel that came while the last poll was out wins: the key is
+        // not kept, so a screen that moved on never finds one it didn't
+        // ask for (it was collected, so the registry keeps it unused).
+        self.check()?;
         let creds = Credentials {
             version: 1,
             token: granted.token.clone(),
@@ -124,7 +128,7 @@ impl SignIn {
     /// Ends a `wait` under way, and any later one at once: a cancelled
     /// sign-in stays cancelled. Within a quarter of a second while `wait`
     /// sleeps between polls, which is nearly all of it; a poll already sent
-    /// is answered, or times out, first.
+    /// is answered, or times out, first, and a key it collects is not saved.
     pub fn cancel(&self) {
         self.cancelled.store(true, Ordering::SeqCst);
     }
