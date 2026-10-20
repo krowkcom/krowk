@@ -425,6 +425,12 @@ fn r_proto_2_a_decode_error_names_what_is_wrong_with_a_known_type() {
         Err(KrowkError::Decode { detail }) => assert!(detail.contains("missing field `run`"), "{detail}"),
         other => panic!("{other:?}"),
     }
+    // A live event's bad value, not the log event's missing id.
+    let bad = json!({"type": "approval.resolved", "sessionId": SESSION, "turnId": TURN, "requestId": "r", "decision": "maybe"}).to_string();
+    match decode_stream_line(bad) {
+        Err(KrowkError::Decode { detail }) => assert!(detail.contains("unknown variant `maybe`"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
     // A log event without its id: that, not "unknown variant" of the live
     // events.
     let no_id = json!({"sessionId": SESSION, "timeMs": 1, "type": "run.opened", "turnId": TURN, "run": "r"}).to_string();

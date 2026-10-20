@@ -537,16 +537,29 @@ pub fn decode_stream_line(json: String) -> Result<StreamLine, KrowkError> {
     // match any variant of untagged enum StreamLine". Decoded again as each
     // kind, only to say what is wrong: the log event's error when the line
     // has an `id`, which every log event has and no live one declares, or
-    // when the live event's is only that the `type` is not one of its own;
-    // else the live event's.
+    // when its `type` is a log event's and not a live one's; else the live
+    // event's. A field given twice is refused above, and only there.
     let Ok(value) = serde_json::from_str::<Value>(&json) else {
         return Err(what(untagged));
     };
     let (Err(log), Err(live)) = (LogEvent::deserialize(&value), LiveEvent::deserialize(&value)) else {
         return Err(what(untagged));
     };
-    let unknown = |e: &serde_json::Error| e.to_string().contains("unknown variant");
-    if value.get("id").is_some() || (unknown(&live) && !unknown(&log)) { Err(what(log)) } else { Err(what(live)) }
+    let ty = value.get("type").and_then(Value::as_str).unwrap_or_default();
+    if value.get("id").is_some() || (is_tag::<LogBody>(ty) && !is_tag::<LiveEvent>(ty)) {
+        Err(what(log))
+    } else {
+        Err(what(live))
+    }
+}
+
+/// Whether `ty` is one of the `type` tags of `T`: `{"type": ty}` alone
+/// fails for a missing field, not for an unknown variant.
+fn is_tag<T: serde::de::DeserializeOwned>(ty: &str) -> bool {
+    match serde_json::from_value::<T>(serde_json::json!({ "type": ty })) {
+        Ok(_) => true,
+        Err(e) => !e.to_string().contains("unknown variant"),
+    }
 }
 
 /// One line of a session's log, as the log at rest holds it, from its JSON
