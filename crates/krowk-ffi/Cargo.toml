@@ -70,6 +70,11 @@ zeroize = "1"
 # tests/sign_in.rs signs in against the stand-in registry. Its krowk-client
 # is this crate's, so the types are one.
 krowk-devregistry = { path = "../krowk-devregistry" }
+# tests/sessions.rs writes a session at rest as a host does, with the
+# harness's own writer (`sync::store::Writer`), for the phone to list and
+# open. Test-only, test-hooks off: tests/dependency_graph.rs leaves
+# dev-dependencies out, since no build of krowk-ffi links them.
+krowk-harness = { path = "../krowk-harness" }
 # tests/public_api.rs renders the exported API from src/ (syn parses it,
 # prettyplease prints each item) to compare with public-api.txt. Test-only:
 # no build of krowk-ffi or krowk links either.

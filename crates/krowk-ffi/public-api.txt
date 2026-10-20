@@ -488,6 +488,89 @@ pub fn decode_log_event(json: String) -> Result<LogEvent, KrowkError> {}
 #[uniffi::export]
 pub fn encode_command(command: Command) -> Result<String, KrowkError> {}
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct HeadRecord {
+    pub index: u64,
+    pub digest: Vec<u8>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SessionList {
+    pub sessions: Vec<SessionSummary>,
+    pub unreadable: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct SessionSummary {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub updated_ms: u64,
+    pub head: Option<HeadRecord>,
+    pub hosted_by: Option<String>,
+    pub host_device: Option<String>,
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn list_sessions(&self) -> Result<SessionList, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn open_session(
+        &self,
+        id: String,
+        known: Option<HeadRecord>,
+        relay_override: Option<String>,
+    ) -> Result<Arc<OpenedSession>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn relay_url(&self, relay_override: Option<String>) -> String {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn relay_env(&self) -> String {}
+}
+
+#[derive(uniffi::Object)]
+pub struct OpenedSession {
+    // opaque: private fields
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn id(&self) -> String {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn title(&self) -> String {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn head(&self) -> Option<HeadRecord> {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn events(&self) -> Result<Vec<LogEvent>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn catch_up(&self) -> Result<Vec<LogEvent>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn relay_ticket(&self) -> Result<String, KrowkError> {}
+}
+
 #[derive(uniffi::Object)]
 pub struct SignIn {
     // opaque: private fields
@@ -543,6 +626,8 @@ pub use account::Account;
 pub use error::KrowkError;
 
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+
+pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 
 pub use sign_in::{SignIn, SignedIn};
 

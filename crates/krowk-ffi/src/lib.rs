@@ -47,6 +47,16 @@
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
 //!
+//! # Sessions
+//!
+//! [`Account::list_sessions`] lists the person's synced sessions from their
+//! sealed indexes, each record checked against the device list the phone
+//! holds; [`Account::open_session`] opens one from its latest checkpoint
+//! into an [`OpenedSession`], which reads on with `catch_up` and gets a
+//! relay ticket for the live viewer. All blocking registry calls (rule 2).
+//! The session's keys, the device's signing key and the read position stay
+//! inside `OpenedSession`; Swift gets events, titles and heads.
+//!
 //! # The protocol
 //!
 //! Every type reachable from `StreamLine` and `Command` is
@@ -77,12 +87,14 @@ uniffi::setup_scaffolding!();
 mod account;
 mod error;
 mod protocol;
+mod sessions;
 mod sign_in;
 mod storage;
 
 pub use account::Account;
 pub use error::KrowkError;
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 
