@@ -55,6 +55,8 @@ pub use store::{
 /// How a registry is started: the `--limit-bytes` and `--site` flags, and the
 /// clock — Go's `HandlerWithClock`. `limit_bytes <= 0` is the default limit;
 /// an empty `site` means links name whatever host a request arrived on.
+/// `max_sessions` and `login_person` are for tests and the fake fleet; no
+/// flag sets them.
 #[derive(Default, Clone)]
 pub struct Config {
     pub limit_bytes: i64,
@@ -63,6 +65,14 @@ pub struct Config {
     /// The most synced sessions a workspace holds; 0 is the registry's
     /// 10,000.
     pub max_sessions: usize,
+    /// The token base (a token up to its first `#`) a browser-approved
+    /// authorization — a login, or any other action — mints its key under,
+    /// `{base}#{random}`, so it lands in that person and workspace rather
+    /// than a new one: the fake fleet's phone signs in as its host's
+    /// person. `None` mints a person of its own, as ever. It changes which
+    /// person a login lands in and nothing about what is refused; no flag
+    /// of `devregistry`'s sets it.
+    pub login_person: Option<String>,
 }
 
 /// A registry serving on its own thread, stopped when dropped.
@@ -101,7 +111,8 @@ impl Drop for Running {
 
 fn app(config: Config) -> Arc<App> {
     let clock = config.clock.unwrap_or_else(|| Arc::new(jiff::Timestamp::now));
-    let app = App::new(config.limit_bytes, &config.site, clock);
+    let mut app = App::new(config.limit_bytes, &config.site, clock);
+    app.login_person = config.login_person;
     app.lock().sync.max_sessions = config.max_sessions;
     Arc::new(app)
 }
@@ -374,6 +385,35 @@ mod tests {
         assert!(field(&again, "token").starts_with("krowk_sk_"), "{again}");
         let spent = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
         assert!(spent.starts_with("HTTP/1.1 410") && spent.contains("\"spent\""), "{spent}");
+    }
+
+    /// `login_person` lands a browser login in the configured person and
+    /// workspace, and nothing else about it changes: the code is still one
+    /// to approve, and the key still collected once.
+    #[test]
+    fn a_browser_login_lands_in_the_login_person_when_one_is_set() {
+        let base = "krowk_sk_fake_fleet_person";
+        let running = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config { login_person: Some(base.into()), ..Config::default() }).unwrap();
+        let opened = call(running.addr(), "POST", "/v1/cli/authorizations?action=login");
+        let (slug, code) = (field(&opened, "slug"), field(&opened, "code"));
+        assert!(call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}")).contains("\"pending\""));
+        assert!(call(running.addr(), "POST", &format!("/_approve/cli/authorizations/{code}/approval")).starts_with("HTTP/1.1 200"));
+        let collected = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
+        let token = field(&collected, "token");
+        assert!(token.starts_with(&format!("{base}#")), "{collected}");
+        assert_eq!(store::person_for(&token), store::person_for(base));
+        assert_eq!(store::workspace_for(&token), store::workspace_for(base));
+        let spent = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
+        assert!(spent.starts_with("HTTP/1.1 410"), "{spent}");
+
+        // Unset, a login is a person of its own, as ever.
+        let plain = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config::default()).unwrap();
+        let opened = call(plain.addr(), "POST", "/v1/cli/authorizations?action=login");
+        let (slug, code) = (field(&opened, "slug"), field(&opened, "code"));
+        call(plain.addr(), "POST", &format!("/_approve/cli/authorizations/{code}/approval"));
+        let token = field(&call(plain.addr(), "GET", &format!("/v1/cli/authorizations/{slug}")), "token");
+        assert!(token.starts_with("krowk_sk_") && !token.contains('#') && token.len() == "krowk_sk_".len() + 32, "{token}");
+        assert_ne!(store::person_for(&token), store::person_for(base));
     }
 
     /// One GET on a connection kept open, its response read whole.
