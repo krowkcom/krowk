@@ -4,8 +4,9 @@ import KrowkKit
 /// KrowkKit's `SignInService` over krowk-ffi's `SignIn` (R-IOS-9,
 /// R-CLIENT-1): Rust opens the sign-in, polls with the terminal's policy,
 /// and writes the key straight into `storage`, the app's
-/// `KeychainKeyStorage`. Swift never holds the key: `wait` hands back the
-/// workspace only (R-CRED-1: krowk's own key, and nothing of a provider's).
+/// `KeychainKeyStorage`, which sees its bytes only to seal them. The model
+/// and the screens never hold the key: `wait` hands back the workspace
+/// only (R-CRED-1: krowk's own key, and nothing of a provider's).
 public struct RegistrySignIn: SignInService {
     public let api: String
     private let storage: any KeyStorage

@@ -58,10 +58,12 @@ public enum SignInRules {
         switch scheme {
         case "https":
             return url
-        // As krowk-api's `Client::insecure`: the address as given.
+        // As krowk-api's `Client::insecure`: the address as given. Then
+        // only the registry's own host and port.
         case "http" where api.hasPrefix("http://"):
-            let apiHost = URLComponents(string: api)?.host
-            return apiHost?.lowercased() == host.lowercased() ? url : nil
+            guard let registry = URLComponents(string: api), let apiHost = registry.host else { return nil }
+            let samePort = (parts.port ?? 80) == (registry.port ?? 80)
+            return apiHost.lowercased() == host.lowercased() && samePort ? url : nil
         default:
             return nil
         }

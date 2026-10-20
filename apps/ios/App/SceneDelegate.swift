@@ -100,7 +100,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             presenter: WebAuthSessionPresenter(window: { [weak self] in self?.window }),
             deviceName: UIDevice.current.name,
             // A Keychain status or a network error; never the key, which
-            // Swift doesn't hold.
+            // the model never holds (only the Keychain adapter, to seal it).
             log: { log.error("\($0, privacy: .public)") },
             onSignedIn: { [weak self] workspace in self?.show(SignInScreens.signedIn(workspace)) }
         )

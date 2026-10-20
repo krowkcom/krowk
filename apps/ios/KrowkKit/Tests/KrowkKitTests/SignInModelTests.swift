@@ -22,6 +22,8 @@ struct SignInModelTests {
             ("krowk://approve", "http://127.0.0.1:9/v1"),
             // http, against an http registry, on another host.
             ("http://evil.example/approve?code=A", "http://127.0.0.1:9/v1"),
+            // The registry's host, another service's port.
+            ("http://127.0.0.1:8080/approve?code=A", "http://127.0.0.1:9/v1"),
             // A user before the host: the page is evil.example's.
             ("https://api.krowk.com@evil.example/approve", "https://api.krowk.com/v1"),
             ("https://user:pass@krowk.com/approve", "https://api.krowk.com/v1"),
@@ -34,8 +36,9 @@ struct SignInModelTests {
         let model = SignInModel(service: StubService(api: api, attempt: attempt), presenter: presenter, deviceName: "iPhone")
         model.start()
         try await until { model.phase == .failed(.unsafePage) }
+        // Cancelled by the task, just after the model refused the page.
+        try await until { attempt.cancelled }
         #expect(presenter.presented.isEmpty)
-        #expect(attempt.cancelled)
         #expect(model.phase == .failed(.unsafePage))
     }
 
@@ -138,8 +141,7 @@ struct SignInModelTests {
         model.cancel()
         #expect(model.phase == .ready)
         #expect(attempt.cancelled)
-        // A late answer for the cancelled run changes nothing.
-        attempt.finish(.success(SignedInWorkspace(workspace: "ws_1", name: "Acme")))
+        // The cancelled run's own answer, `.cancelled`, changes nothing.
         try await Task.sleep(for: .milliseconds(100))
         #expect(model.phase == .ready)
     }

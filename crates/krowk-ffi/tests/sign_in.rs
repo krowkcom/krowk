@@ -195,3 +195,60 @@ fn r_client_1_a_page_that_is_not_http_s_is_never_handed_out() {
         Ok(_) => panic!("started"),
     }
 }
+
+/// Reads one request's head off `s`.
+fn read_head(s: &mut TcpStream) {
+    let mut head = Vec::new();
+    let mut byte = [0u8; 1];
+    while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).unwrap() == 1 {
+        head.push(byte[0]);
+    }
+}
+
+fn respond(s: &mut TcpStream, status: &str, body: &str) {
+    let _ = write!(
+        s,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+}
+
+#[test]
+fn r_ffi_3_a_cancel_while_the_approving_poll_is_out_keeps_no_key() {
+    // A registry that opens the sign-in, then holds the first poll until
+    // the test has cancelled, and answers it approved.
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = listener.local_addr().unwrap();
+    let (polled, poll_arrived) = std::sync::mpsc::channel::<()>();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut s, _) = listener.accept().unwrap();
+        read_head(&mut s);
+        respond(
+            &mut s,
+            "201 Created",
+            r#"{"slug":"aut_x","state":"pending","code":"ABCD-EFGH","verification_url":"http://127.0.0.1/approve?code=ABCD-EFGH","interval":1,"expires_at":"2099-01-01T00:00:00Z"}"#,
+        );
+        drop(s);
+        let (mut s, _) = listener.accept().unwrap();
+        read_head(&mut s);
+        polled.send(()).unwrap();
+        released.recv().unwrap();
+        respond(
+            &mut s,
+            "200 OK",
+            r#"{"slug":"aut_x","state":"approved","expires_at":"2099-01-01T00:00:00Z","token":"krowk_sk_late","key_id":"key_late","workspace":"ws_1","workspace_name":"Test"}"#,
+        );
+    });
+    let s = SignIn::start(format!("http://{addr}/v1"), "Test iPhone".into()).unwrap();
+    let storage = Arc::new(Memory::default());
+    let waiting = {
+        let (s, storage) = (Arc::clone(&s), storage.clone());
+        std::thread::spawn(move || s.wait(storage))
+    };
+    poll_arrived.recv_timeout(Duration::from_secs(10)).expect("the first poll");
+    s.cancel();
+    release.send(()).unwrap();
+    assert_eq!(refused(waiting.join().unwrap()), "cancelled");
+    assert!(storage.0.lock().unwrap().is_empty(), "a cancelled sign-in keeps no key");
+}

@@ -52,7 +52,8 @@ stop() {
   rm -rf "$fifo"
 }
 trap stop EXIT
-trap 'exit 130' INT TERM
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # Appended, so a retried run keeps every attempt's log.
 echo "with-fleet: starting the fake fleet, $(date)" >>"$log"
@@ -87,5 +88,7 @@ export TEST_RUNNER_KROWK_RELAY_URL=$relay
 export TEST_RUNNER_KROWK_PAIRING_CODE=$pair
 
 status=0
-"$@" || status=$?
+# Without the fleet's pipes: a helper the command leaves running must not
+# hold the fleet's stdin open.
+"$@" 3>&- 4<&- || status=$?
 exit "$status"

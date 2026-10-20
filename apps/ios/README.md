@@ -159,11 +159,14 @@ The Secure Enclave itself only runs on a real iPhone (ticket 107).
 A phone with no krowk key opens on onboarding's "Sign in to krowk"
 (R-IOS-9), a SwiftUI screen over `KrowkKit.SignInModel`. Its one button
 calls krowk-ffi's `SignIn.start` with the API URL and the device's name
-(`UIDevice.current.name`, control characters dropped, cut to 64), off the
-main actor, and opens the approval page in an `ASWebAuthenticationSession`
-that is not ephemeral, so the browser's registry login is used. Only https
-opens, or http when the API itself is http, as the terminal's
-`browsable_url`. The page never redirects back: `SignIn.wait`, Rust's poll
+(`UIDevice.current.name`, the generic "iPhone" without a special
+entitlement; control and format characters dropped, cut to 64 bytes), off
+the main actor, and opens the approval page in an
+`ASWebAuthenticationSession` that is not ephemeral, so the browser's
+registry login is used. Only https opens, or http when the API itself is
+http, as the terminal's `browsable_url`; Swift also refuses a page with a
+user or password before its host, and an http page anywhere but the API's
+own host and port. The page never redirects back: `SignIn.wait`, Rust's poll
 with the terminal's timing, finishes the sign-in, writes the key into the
 Keychain item `credentials.json` through `KeychainKeyStorage`, and hands
 Swift the workspace only, never the key; the sheet is then closed. A sheet
