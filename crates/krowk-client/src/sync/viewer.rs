@@ -486,7 +486,10 @@ impl ViewerCore {
         // caller only joins after a `Join`.
         (self.reading, self.waiting) = (None, VecDeque::new());
         let n = joined["link"].as_u64().unwrap_or(0);
-        let cursor = self.cursor();
+        // The cursor this join resumed from, kept while the reconnected
+        // link names no stream — but only on the stream the relay carries:
+        // another one's would make every join until a welcome a resync.
+        let cursor = self.cursor().filter(|(s, _)| joined["stream"].as_str() == Some(e2e::hex(s).as_str()));
         self.resume = cursor;
         let mut l = match self.link.take() {
             Some(l) => l.reconnect(n),
@@ -505,8 +508,8 @@ impl ViewerCore {
         // count, live from the next batch. The cursor is the one it joined
         // with: the link, reconnected, names no stream until its welcome.
         self.applied = match cursor {
-            Some((s, n)) if joined["stream"].as_str() == Some(e2e::hex(&s).as_str()) => n,
-            _ => joined["seq"].as_u64().unwrap_or(0),
+            Some((_, n)) => n,
+            None => joined["seq"].as_u64().unwrap_or(0),
         };
         self.acked = self.applied;
         self.link = Some(l);

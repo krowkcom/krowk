@@ -302,7 +302,9 @@ fn r_lag_7_one_show_per_display_frame() {
 }
 
 /// R-OFF-2: a `resync` for another stream joins again at once, carrying the
-/// cursor, so the relay's buffer fills the gap.
+/// cursor as the harness does. The relay, on another stream, answers with a
+/// `resync` `stream` again, and that join carries none: the viewer never
+/// loops on the old stream's cursor.
 #[test]
 fn r_off_2_a_stream_resync_joins_again() {
     let mut r = Relay::new(vec![], 0);
@@ -312,6 +314,11 @@ fn r_off_2_a_stream_resync_joins_again() {
     r.at(500).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
     let stream = krowk_client::e2e::hex(&r.host.stream());
     assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 500, extra }] if *extra == json!({"stream": stream, "afterSeq": 1})));
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": "22".repeat(16), "seq": 4}), 600);
+    r.take(e);
+    r.at(600).control(json!({"type": "resync", "reason": "stream", "stream": "22".repeat(16), "seq": 4}));
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 600, extra }] if *extra == json!({})), "no cursor on another stream");
 }
 
 /// R-HAND-4: with no host, a `resync` reads the chunks from where the
