@@ -471,7 +471,12 @@ fn r_e2e_3_a_piped_devices_add_prints_no_qr() {
     // SAFETY: signalling a child this test spawned.
     unsafe { libc::kill(a.id() as i32, libc::SIGINT) };
     assert!(!wait(a, Duration::from_secs(10)).status.success());
-    said.push_str(&rest(&a_err));
+    // Everything it wrote, to the end: the reader thread hangs up once
+    // stderr closes.
+    while let Ok(line) = a_err.recv_timeout(Duration::from_secs(5)) {
+        said.push_str(&line);
+        said.push('\n');
+    }
     assert!(said.contains("Waiting"), "{said}");
     assert!(!said.contains(['▀', '▄', '█']) && !said.contains("scan") && !said.contains("krowk://"), "a QR code on a pipe: {said}");
     let _ = std::fs::remove_dir_all(&r);

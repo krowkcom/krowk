@@ -268,11 +268,11 @@ unit = "bytes"
 # 15,945,864 (15.21 MiB). iroh, the ticket's other half, was measured at
 # about 6.9 MB alone and is not built. Raised 14.75 -> 15.50 MiB, leaving
 # 307,064.
-# Main measured 16,118,184 (15.37 MiB) before ticket 68. Its QR code of
-# the pairing invite in `krowk devices add` adds qrcodegen (Project
-# Nayuki's encoder, MIT, no dependencies) and the invite URI: 16,109,416,
-# 8,768 bytes smaller, the link laid out differently; `qrcode` without its
-# image feature measured 16,128,040. 143,512 under this.
+# Ticket 68's QR code of the pairing invite in `krowk devices add`
+# (qrcodegen, Project Nayuki's encoder, MIT, no dependencies, and the
+# invite URI) adds -8,768 bytes on main's 16,118,184: 16,109,416 (15.36
+# MiB), the link laid out differently; `qrcode` without its image feature
+# measured 16,128,040. 143,512 under this.
 max = { x86_64-linux = 16_252_928 }
 status = "enforced"
 

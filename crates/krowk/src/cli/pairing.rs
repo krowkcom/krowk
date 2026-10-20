@@ -393,11 +393,14 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, (a, user): (PairA, &str)
 
 /// The invite URI (`krowk_client::pairing::invite`) as a QR code under the
 /// code, for the iPhone app to scan instead of typing it: on a terminal
-/// only. Piped, under `--json` or in the test suite's stand-in, stderr is
-/// no terminal and nothing is drawn. Nor is it on a terminal too narrow to
+/// only. Piped stderr, as in an agent's run or the test suite's stand-in,
+/// gets nothing (`--json` at a terminal still draws it: the QR goes to
+/// stderr, the JSON to stdout). Nor is it drawn on a terminal too narrow to
 /// hold it, where every line would wrap and nothing could scan it, or for a
 /// user id the URI cannot carry as it is: the code on the screen still
-/// works. The URI goes to the screen and nowhere else.
+/// works. A terminal too short for it scrolls the code up off the window,
+/// and is drawn on anyway: the person scanning needs the QR whole, and the
+/// one typing scrolls back. The URI goes to the screen and nowhere else.
 fn show_qr(ctx: &mut Ctx, code: &PairingCode, user: &str, device: DeviceId) {
     if !ctx.io.err_tty {
         return;
@@ -421,6 +424,10 @@ fn show_qr(ctx: &mut Ctx, code: &PairingCode, user: &str, device: DeviceId) {
 /// dark terminal theme and a light one alike: a QR code needs dark modules
 /// on a light ground, and the terminal's own colours may be either. It is
 /// a functional image, not decoration, so `NO_COLOR` does not turn it off.
+/// A theme that draws "white" as a light grey, or "black" as a dark one,
+/// still leaves the contrast a reader needs. The half blocks are one column
+/// wide but for terminals set to draw Unicode's ambiguous-width characters
+/// wide, as some CJK setups are, where the code is drawn twice as wide.
 const QR_SGR: &str = "\x1b[30;47m";
 const QR_RESET: &str = "\x1b[0m";
 /// The light margin a reader needs around the code, in modules, each side.
@@ -463,9 +470,10 @@ fn qr_lines(uri: &str) -> Vec<String> {
 /// The terminal's width in columns, when stderr is one that says.
 #[cfg(unix)]
 fn columns() -> Option<usize> {
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
     // SAFETY: TIOCGWINSZ writes one winsize through the pointer, which
-    // points at one.
-    let mut ws: libc::winsize = unsafe { std::mem::zeroed() };
+    // points at one; on a closed or non-terminal stderr it fails, and
+    // writes nothing.
     let ok = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
     (ok && ws.ws_col > 0).then_some(usize::from(ws.ws_col))
 }

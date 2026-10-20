@@ -13,9 +13,9 @@
 //! log, and the string holding it is wiped on drop.
 //!
 //! Parsing is strict: the scheme, the host and `v=1` exactly, the four
-//! keys each once and nothing else, and every value already in the form
-//! `uri` writes it (no percent-encoding, no case folding, no separators).
-//! Anything else is `None`.
+//! keys each once, in `uri`'s order, and nothing else, and every value
+//! already in the form `uri` writes it (no percent-encoding, no case
+//! folding, no separators). Anything else is `None`.
 
 use zeroize::Zeroizing;
 
@@ -92,7 +92,9 @@ pub fn parse(uri: &str) -> Option<Invite> {
         return None;
     }
     let a_device = DeviceId::parse(device)?;
-    Some(Invite { code, user_id: user.to_owned(), a_device })
+    let invite = Invite { code, user_id: user.to_owned(), a_device };
+    // The keys in `uri`'s order too: one spelling per invite.
+    (*invite.to_uri() == uri).then_some(invite)
 }
 
 /// RFC 3986's unreserved characters: the ones a URI carries as they are.

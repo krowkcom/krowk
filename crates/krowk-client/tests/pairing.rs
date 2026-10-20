@@ -534,6 +534,9 @@ fn r_e2e_3_an_invite_uri_is_parsed_strictly() {
         with(&["v=1", "code=K7QF9M3X", &user, &dev, ""]),
         with(&["v=1", "code=K7QF9M3X", &user, &dev, "x"]),
         format!("{good}&"),
+        // The keys in another order.
+        with(&["code=K7QF9M3X", "v=1", &user, &dev]),
+        with(&["v=1", "code=K7QF9M3X", &dev, &user]),
         // A bad code: wrong length, a symbol outside the alphabet, a form
         // only a person types.
         good.replacen("K7QF9M3X", "K7QF9M3", 1),

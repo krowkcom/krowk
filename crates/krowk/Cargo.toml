@@ -32,7 +32,8 @@ krowk-client = { path = "../krowk-client", optional = true }
 # generator: MIT, no dependencies, the encoder alone. The full build
 # measured 8,768 bytes smaller with it than without on x86_64 Linux (LTO's
 # layout moves more than it weighs); `qrcode` with default-features off
-# measured 9,856 bytes larger. Not in the agent build (lean-deps.txt).
+# measured 9,856 bytes larger. RSS: one code's buffers, a few KB, only
+# while `devices add` draws it. Not in the agent build (lean-deps.txt).
 qrcodegen = { version = "1.8", optional = true }
 serde = { version = "1", features = ["derive"] }
 # preserve_order: a record read back keeps the key order it arrived in.
