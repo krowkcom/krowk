@@ -425,6 +425,21 @@ fn r_proto_2_a_decode_error_names_what_is_wrong_with_a_known_type() {
         Err(KrowkError::Decode { detail }) => assert!(detail.contains("missing field `run`"), "{detail}"),
         other => panic!("{other:?}"),
     }
+    // A log event without its id: that, not "unknown variant" of the live
+    // events.
+    let no_id = json!({"sessionId": SESSION, "timeMs": 1, "type": "run.opened", "turnId": TURN, "run": "r"}).to_string();
+    match decode_stream_line(no_id) {
+        Err(KrowkError::Decode { detail }) => assert!(detail.contains("missing field `id`"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn r_proto_2_decode_stream_line_is_as_strict_as_serde() {
+    // A repeated field is refused, as serde refuses it, not collapsed.
+    let line = format!(r#"{{"type":"background","sessionId":"{SESSION}","running":1,"running":2}}"#);
+    assert!(serde_json::from_str::<StreamLine>(&line).is_err());
+    assert!(matches!(decode_stream_line(line), Err(KrowkError::Decode { .. })));
 }
 
 #[test]
