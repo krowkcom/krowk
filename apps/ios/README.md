@@ -45,7 +45,9 @@ The scheme `Krowk-iOS` runs the UI test `LaunchTests`, the app-hosted
 `KeychainKeyStorageTests` (target `Krowk-iOSTests`), KrowkKit's unit tests
 and KrowkCore's `BindingsTests`. The Keychain tests are hosted because the
 Keychain refuses a SwiftPM test bundle with no host app (`-34018`, a
-missing entitlement). The simulator slice is arm64 only,
+missing entitlement). They clear and remake the app's Keychain items, so
+run them on a simulator, never on a phone whose krowk you use: its device
+identity would go. The simulator slice is arm64 only,
 so this needs an Apple silicon Mac.
 
 No machine of ours runs macOS, so this path runs on GitHub's `macos-26`

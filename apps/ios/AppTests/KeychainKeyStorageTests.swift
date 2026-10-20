@@ -177,6 +177,15 @@ struct KeychainKeyStorageTests {
         #expect(FileManager.default.fileExists(atPath: reinstalled.path(percentEncoded: false)))
     }
 
+    @Test("R-IOS-8: slots left without their wrapping key, which can never open, are cleared when a new key is made")
+    func orphanedSlotsAreCleared() throws {
+        try storage.write(slot: "device.json", bytes: Self.random(64))
+        SecItemDelete(Self.query("wrapping-key") as CFDictionary)
+        let reopened = try KeychainKeyStorage(installMarker: marker)
+        #expect(try reopened.read(slot: "device.json") == nil)
+        #expect(try Self.accounts() == ["wrapping-key"])
+    }
+
     @Test("R-IOS-8: after keys are made, no file in the app's container (Documents, Library, tmp) holds any slot's bytes")
     func noKeyFileInTheContainer() throws {
         try storage.write(slot: "credentials.json", bytes: Self.signedIn)
@@ -186,7 +195,18 @@ struct KeychainKeyStorageTests {
         for slot in ["device.json", "signing.json", "user-keys.json", "credentials.json"] {
             let bytes: Data = try #require(try storage.read(slot: slot))
             secrets[slot] = bytes
+            // And each key inside it on its own, as hex and as raw bytes,
+            // in case a file held it in some other wrapping.
+            guard slot == "device.json" || slot == "signing.json",
+                  let json = try JSONSerialization.jsonObject(with: bytes) as? [String: Any]
+            else { continue }
+            for (field, value) in json {
+                guard let hex = value as? String, hex.count >= 64, let raw = Self.unhex(hex) else { continue }
+                secrets["\(slot) \(field) (hex)"] = Data(hex.utf8)
+                secrets["\(slot) \(field)"] = raw
+            }
         }
+        #expect(secrets.count > 4, "no key field found in device.json or signing.json: \(secrets.keys.sorted())")
 
         // The whole container, which holds Documents, Library and tmp.
         let home = URL(fileURLWithPath: NSHomeDirectory())
@@ -218,6 +238,19 @@ struct KeychainKeyStorageTests {
     /// the service.
     static func freshMarker() -> URL {
         URL.applicationSupportDirectory.appending(path: "krowk-tests/\(UUID().uuidString).installed")
+    }
+
+    static func unhex(_ hex: String) -> Data? {
+        guard hex.count % 2 == 0 else { return nil }
+        var out = Data(capacity: hex.count / 2)
+        var index = hex.startIndex
+        while index < hex.endIndex {
+            let next = hex.index(index, offsetBy: 2)
+            guard let byte = UInt8(hex[index..<next], radix: 16) else { return nil }
+            out.append(byte)
+            index = next
+        }
+        return out
     }
 
     static func random(_ count: Int) -> Data {

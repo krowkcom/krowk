@@ -31,10 +31,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         if Self.keys == nil { showRoot() }
     }
 
+    private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
     private func showRoot() {
         let root: UIViewController
         do throws(KrowkError) {
-            if Self.keys == nil { Self.keys = try KeychainKeyStorage() }
+            // Hosting Krowk-iOSTests, the app leaves the Keychain to the
+            // tests, which clear and remake it.
+            if Self.keys == nil && !Self.hostingUnitTests { Self.keys = try KeychainKeyStorage() }
             // protocolVersion() crosses into the Rust core (krowk-ffi).
             root = HomeViewController(protocolVersion: protocolVersion())
         } catch .Refused(code: KeychainKeyStorage.noSecureEnclave, detail: let detail) {

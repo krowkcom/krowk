@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Krowk
 import os
+import Synchronization
 
 /// Where the iPhone keeps krowk's keys (R-IOS-8, R-FFI-3): every slot
 /// krowk-client's keystore writes, and the krowk API key, as a Keychain
@@ -63,15 +64,17 @@ public final class KeychainKeyStorage: KeyStorage {
     ///
     /// `installMarker` is for tests; the app keeps the default.
     public init(installMarker: URL = KeychainKeyStorage.installMarker) throws(KrowkError) {
-        try Self.purgeIfFirstLaunch(installMarker)
-        do throws(WrappingKeyFailure) {
-            wrappingKey = try WrappingKeys.loadOrCreate()
-        } catch .noSecureEnclave {
-            log.error("no Secure Enclave")
-            throw .Refused(code: Self.noSecureEnclave, detail: WrappingKeyFailure.noSecureEnclave.description)
-        } catch {
-            log.error("no wrapping key: \(error.description, privacy: .public)")
-            throw .Internal(detail: error.description)
+        wrappingKey = try opening.withLock { _ throws(KrowkError) -> any WrappingKey in
+            try Self.purgeIfFirstLaunch(installMarker)
+            do throws(WrappingKeyFailure) {
+                return try WrappingKeys.loadOrCreate()
+            } catch .noSecureEnclave {
+                log.error("no Secure Enclave")
+                throw .Refused(code: Self.noSecureEnclave, detail: WrappingKeyFailure.noSecureEnclave.description)
+            } catch {
+                log.error("no wrapping key: \(error.description, privacy: .public)")
+                throw .Internal(detail: error.description)
+            }
         }
     }
 
@@ -93,6 +96,9 @@ public final class KeychainKeyStorage: KeyStorage {
             var url = marker
             try url.setResourceValues(values)
         } catch {
+            // A marker a backup would carry is worse than none: the next
+            // launch purges again, which loses nothing.
+            try? FileManager.default.removeItem(at: marker)
             log.error("could not write the install marker")
             throw .Internal(detail: "could not record that krowk's Keychain items were cleared: \(error.localizedDescription)")
         }
@@ -179,6 +185,11 @@ public final class KeychainKeyStorage: KeyStorage {
         }
     }
 }
+
+/// Held while an install's keys are opened: the first-launch purge and the
+/// wrapping key's purge-and-make, so two `KeychainKeyStorage`s made at once
+/// in this process never purge each other's key.
+private let opening = Mutex(())
 
 /// The sealed format's version, its first byte.
 private let sealedFormat: UInt8 = 1

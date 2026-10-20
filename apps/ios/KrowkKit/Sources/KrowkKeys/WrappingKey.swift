@@ -22,8 +22,8 @@ enum WrappingKeyFailure: Error, CustomStringConvertible {
     /// software fallback, so krowk keeps no keys on it.
     case noSecureEnclave
     case keychain(KeychainFailure)
-    /// The item is there and is not a key this device can use: left as it
-    /// is, since replacing it would lose every slot sealed to it.
+    /// The item is there and did not open as a key on this device: left as
+    /// it is, since replacing it would lose every slot sealed to it.
     case unusable(String)
 
     var description: String {
@@ -33,7 +33,7 @@ enum WrappingKeyFailure: Error, CustomStringConvertible {
         case .keychain(let f):
             f.description
         case .unusable(let why):
-            "the Keychain item \(wrappingKeyAccount) holds no key this iPhone can use: \(why)"
+            "the Keychain item \(wrappingKeyAccount) did not open as a key on this iPhone: \(why)"
         }
     }
 }
@@ -50,10 +50,15 @@ extension P256.KeyAgreement.PrivateKey: WrappingKey {}
 
 enum WrappingKeys {
     /// The install's wrapping key: read from its Keychain item, or made and
-    /// stored there when there is none. Two launches racing to make one
-    /// agree on whichever was stored first.
+    /// stored there when there is none. With none, any slot left under the
+    /// service was sealed to a key that is gone and can never open, so the
+    /// service is cleared first rather than leaving reads that fail for
+    /// ever. The caller holds `opening`, so no other opener in this process
+    /// is between its purge and its key; two processes (none in M1) racing
+    /// to store one agree on whichever was stored first.
     static func loadOrCreate() throws(WrappingKeyFailure) -> any WrappingKey {
         if let key = try load() { return key }
+        do throws(KeychainFailure) { try Keychain.removeAll() } catch { throw .keychain(error) }
         let made = try make()
         do throws(KeychainFailure) {
             try Keychain.write(wrappingKeyAccount, made.stored, replace: false)
