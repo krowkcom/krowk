@@ -32,7 +32,9 @@ use std::time::{Duration, Instant};
 pub trait Mailbox {
     /// One of B's steps (Join, Confirmation, Acknowledgement), sent once.
     fn step(&self, step: PairingStep, message: &[u8]) -> Result<(), Error>;
-    /// The pairing this device is in (the CLI: `show_pairing(id)`).
+    /// The pairing this device is in (the CLI: `show_pairing(id)`). An
+    /// `Err` is final: `join` reads no more, whatever the transport retried
+    /// before giving it up.
     fn read(&self) -> Result<Pairing, Error>;
     /// Ends the pairing for good; best effort.
     fn end(&self);

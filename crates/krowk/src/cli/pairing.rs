@@ -21,10 +21,12 @@
 //! refusal, a timeout, a dropped connection — B ends the pairing, tells the
 //! person to get a new code from A, and never starts again with the typed
 //! string: each start gives a registry posing as A one more guess. Nothing
-//! is retried on B; `krowk_client::pairing_join` runs B's side from the
-//! hello to the claim by these rules, over the mailbox here. A, whose side holds no guess, reads the pairing back
+//! is retried on B. A, whose side holds no guess, reads the pairing back
 //! after a step whose answer was lost rather than sending the step again,
 //! since a step sent twice is out of turn and ends the pairing.
+//!
+//! B's side, from the hello to the claim, is `krowk_client::pairing_join`,
+//! which holds every client to these rules; the CLI supplies its mailbox.
 //!
 //! What B cannot stop is the person typing the same code into a second
 //! `krowk sync join`: A's screen still shows it, and a registry that ended

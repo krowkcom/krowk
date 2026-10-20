@@ -247,8 +247,11 @@ fn typed(a: &PairA) -> PairingCode {
 /// One join against an A that plays it with `faults`; `wrong` types another
 /// code than A shows.
 fn run(faults: Faults, wrong: bool) -> (Result<Joined, JoinFailed>, FakeMailbox, B, Chain) {
+    run_as(b(), faults, wrong)
+}
+
+fn run_as(b: B, faults: Faults, wrong: bool) -> (Result<Joined, JoinFailed>, FakeMailbox, B, Chain) {
     let side = side();
-    let b = b();
     let a = PairA::new(PeerKind::SamePersonDevice, USER, side.key.id()).unwrap();
     let code = if wrong { typed(&PairA::new(PeerKind::SamePersonDevice, USER, side.key.id()).unwrap()) } else { typed(&a) };
     let binding = Binding { kind: PeerKind::SamePersonDevice, user_id: USER.into(), a_device: side.key.id(), b_device: b.device.id() };
@@ -301,14 +304,33 @@ fn r_e2e_3_a_wrong_code_ends_the_pairing_and_keeps_nothing() {
 
 #[test]
 fn r_e2e_3_a_read_lost_mid_wait_ends_the_join_without_reading_again() {
-    // Read 3 is the first of the wait for the sealed reply.
-    let (result, m, b, _) = run(Faults { read_error_at: Some(3), ..Faults::default() }, false);
-    assert_eq!(result, Err(JoinFailed::CodeUsedUp));
-    assert_eq!(m.count(Call::Read), 3, "no read after the one that was lost");
-    assert_eq!(m.calls().last(), Some(&Call::End));
-    assert_eq!(m.sent(PairingStep::Join), 1);
-    assert_eq!(m.sent(PairingStep::Confirmation), 1);
-    kept_nothing(&b);
+    // Read 2 follows the first wait's pause; read 4, the second's.
+    for at in [2, 4] {
+        let (result, m, b, _) = run(Faults { read_error_at: Some(at), ..Faults::default() }, false);
+        assert_eq!(result, Err(JoinFailed::CodeUsedUp));
+        assert_eq!(m.count(Call::Read), at, "no read after the one that was lost");
+        assert_eq!(m.calls().last(), Some(&Call::End));
+        assert_eq!(m.sent(PairingStep::Join), 1);
+        assert_eq!(m.sent(PairingStep::Confirmation), usize::from(at == 4));
+        kept_nothing(&b);
+    }
+}
+
+#[test]
+fn r_e2e_3_a_join_that_fails_before_the_reply_checks_leaves_the_keys_held_before_it() {
+    // A user key and list an earlier pairing left go only on A's
+    // authenticated word, never because a pairing failed.
+    let b = b();
+    let earlier = side();
+    b.store.save_user_keys(&earlier.keys).unwrap();
+    b.store.save_device_list(&earlier.entries).unwrap();
+    for (faults, wrong) in [(Faults::default(), true), (Faults { tamper_reply: true, ..Faults::default() }, false)] {
+        let (result, m, held, _) = run_as(B { store: b.store.clone(), device: b.store.device_key().unwrap(), me: b.me.clone() }, faults, wrong);
+        assert_eq!(result, Err(JoinFailed::CodeUsedUp));
+        assert_eq!(m.count(Call::End), 1);
+        assert_eq!(held.store.user_keys().unwrap().expect("the held user key stays").newest(), earlier.keys.newest());
+        assert_eq!(held.store.device_list().unwrap().expect("the held list stays"), earlier.chain);
+    }
 }
 
 #[test]
