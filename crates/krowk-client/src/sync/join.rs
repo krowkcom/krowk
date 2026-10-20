@@ -73,12 +73,21 @@ impl Joining {
 
     /// One binary WebSocket message received. Anything but a relay control
     /// message is `Wait`. The challenge answers the join to send; `joined`
-    /// ends it; anything else in their place is the relay's refusal.
+    /// ends it; anything else in their place is the relay's refusal. Once
+    /// it has ended — joined, or any error — every message is an error, so
+    /// no second challenge is ever signed.
     pub fn message(&mut self, signing: &SigningKey, bytes: &[u8]) -> Result<Step, String> {
+        if self.state == State::Done {
+            return Err("the join is over".into());
+        }
         if !is_control(bytes) {
             return Ok(Step::Wait);
         }
-        let v = read_control(bytes).ok_or("the relay's control message is not JSON")?;
+        // Serde's own words, as the harness has always said them.
+        let v: Value = serde_json::from_slice(&bytes[HEADER..]).map_err(|e| {
+            self.state = State::Done;
+            e.to_string()
+        })?;
         match self.state {
             State::Challenge => {
                 // One challenge is answered, once: whatever goes wrong
@@ -223,6 +232,15 @@ mod tests {
         assert!(matches!(j.message(&signing(), &challenge()), Ok(Step::Send(_))));
         assert_eq!(j.message(&signing(), &error), Err("the relay refused: unauthorized — the ticket has expired".into()));
         assert_eq!(refusal(&json!({"type": "nope"})), "the relay refused: ? — ");
+        let mut j = new();
+        assert!(matches!(j.message(&signing(), &challenge()), Ok(Step::Send(_))));
+        assert_eq!(j.message(&signing(), &challenge()), Err("the relay refused: ? — ".into()), "a second challenge is not signed");
+        let mut j = new();
+        let mut garbled = control(&json!({}));
+        garbled.truncate(HEADER);
+        garbled.extend_from_slice(b"{not json");
+        assert!(j.message(&signing(), &garbled).is_err_and(|e| e.starts_with("key must be a string")), "serde's words, as before");
+        assert_eq!(j.message(&signing(), &challenge()), Err("the join is over".into()), "an error ends the join");
     }
 
     /// R-CLIENT-1: only kind-4 messages are the relay's; a stream batch
