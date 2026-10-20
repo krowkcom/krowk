@@ -246,6 +246,7 @@ jobs:
               exit 0
             fi
             grep -q "Failed to install or launch the test runner" "$RUNNER_TEMP/test.log" || exit 1
+            [ "$attempt" != 4 ] || exit 1
             echo "::warning::attempt $attempt: the simulator failed to launch the test runner; restarting it"
             xcrun simctl shutdown "$UDID" || true
             xcrun simctl boot "$UDID" || true

@@ -27,8 +27,8 @@ value.
 Needs Xcode with the iOS 26 SDK, Rust with the `aarch64-apple-ios` and
 `aarch64-apple-ios-sim` targets, and XcodeGen 2.46.0. CI uses exactly
 XcodeGen 2.46.0, the release's `xcodegen.zip` checked against its sha256
-(`.github/workflows/ios.yml`, which fails if this line names another
-version); `brew install xcodegen` gives the newest. From the repository
+(`.github/workflows/ios.yml`, which fails unless this README names the
+version it pins); `brew install xcodegen` gives the newest. From the repository
 root:
 
 ```
@@ -46,13 +46,16 @@ so this needs an Apple silicon Mac.
 No machine of ours runs macOS, so this path runs on GitHub's `macos-26`
 runner, in `.github/workflows/ios.yml`, for every pull request and push to
 main that touches `apps/ios`, the crates the app links (krowk-ffi,
-krowk-client, krowk-api), the workspace's manifests and toolchain pin, or
-`scripts/ios_core.sh`. A CLI-only change does not start it. Its `bindings`
-job runs `make ios-core` once per distinct Rust input and caches the
-framework; the `app` job generates the project, checks its build settings,
+krowk-client, krowk-api), the workspace's manifests, cargo config and
+toolchain pin, `scripts/ios_core.sh` or the workflow itself. A CLI-only
+change does not start it. Its `bindings` job builds the framework once per
+distinct Rust input (`make ios-core`, both as Xcode and as Linux lay it
+out, compared) and caches it; the `app` job generates the project, checks its build settings,
 runs the scheme's tests on an iPhone simulator and keeps a screenshot as
 the artifact `krowk-ios-screenshot` (and the `.xcresult` when a test
-fails). `gh workflow run ios.yml --ref <branch>` runs it by hand.
+fails). `gh workflow run ios.yml --ref <branch>` runs it by hand. If
+`app` fails to restore the framework (the cache was evicted after `key`
+looked), re-run all jobs, not just the failed one.
 
 ## On Linux: xtool
 
