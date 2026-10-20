@@ -55,6 +55,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The terminal follows a synced session with the same code the iPhone
+  app will.** `krowk sync attach`, `krowk sync take` and the TUI on a
+  synced session now run krowk-client's viewer, the one the phone links,
+  with only the sockets, the registry calls and the race for a direct
+  path left in the CLI. Nothing changes for you; the end-to-end sync
+  tests now cover the phone's viewer too.
 - **The protocol's types reach Swift.** The iPhone app will read the
   daemon's lines (log events, live deltas, approval requests, results)
   and build its commands as Swift enums and structs that UniFFI generates
@@ -163,6 +169,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A device that fails to move onto a direct path picks up where it
+  was.** When a device following a synced session tried a direct path
+  and the host never welcomed it there, it went back to the relay at
+  the live edge, so text streamed during the attempt could be missing
+  until the turn ended. It now rejoins the relay from the last batch it
+  showed, and the relay fills the gap.
 - **Commands an attached device sends again after a reconnect go in the
   order you typed them.** A device following a synced session sends every
   command the host hasn't answered yet again once it reconnects. Once it
