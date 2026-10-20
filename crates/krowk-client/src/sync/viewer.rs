@@ -261,7 +261,8 @@ pub enum Effect {
     /// clone of it, blocking, off the main thread), up to `want` when
     /// given, and hand the result to `chunks_read`. Until then the core
     /// holds the stream's batches with those held for the welcome, and
-    /// keeps whatever else the connections bring to act on after, in order.
+    /// keeps whatever else the connections bring to act on after them, in
+    /// order.
     ReadChunks { want: Option<Head> },
     /// Drop the current connection and any leaving one, and pass nothing
     /// more from them (a late close included); at `at_ms` fetch a fresh
@@ -281,9 +282,10 @@ pub enum Effect {
 }
 
 /// An input from the person or a connection. While a `ReadChunks` is out,
-/// a connection's are kept and acted on once it is answered, in order, as
-/// the harness's loop reads nothing else while it reads the chunks; the
-/// person's go at once, queued for the welcome.
+/// the stream's batches are held for the welcome and a connection's other
+/// inputs are kept, to be acted on in order once it is answered and the
+/// held batches replayed, as the harness's loop reads nothing else while it
+/// reads the chunks; the person's go at once, queued for the welcome.
 #[derive(Debug)]
 enum Input {
     Received(Vec<u8>),
@@ -339,6 +341,10 @@ pub struct ViewerCore {
     book: CommandBook,
     held: Vec<Vec<u8>>,
     link: Option<ViewerLink>,
+    /// The cursor the link had before it was last reconnected: a link not
+    /// welcomed yet names no stream, and a join before its welcome still
+    /// resumes from here.
+    resume: Option<([u8; 16], u64)>,
     /// Whether the caller holds a current connection: from `joined` (or a
     /// `move_to`) until a `Join`.
     connected: bool,
@@ -394,6 +400,7 @@ impl ViewerCore {
             book: CommandBook::new(device),
             held: Vec::new(),
             link: None,
+            resume: None,
             connected: false,
             host: false,
             unjoined: None,
@@ -441,7 +448,7 @@ impl ViewerCore {
     /// What a join carries to resume where this viewer stopped: the stream
     /// and the last batch it opened (`ViewerLink::cursor`), else nothing.
     pub fn cursor_extra(&self) -> serde_json::Value {
-        match self.link.as_ref().and_then(|l| l.cursor()) {
+        match self.cursor() {
             Some((s, n)) => serde_json::json!({"stream": e2e::hex(&s), "afterSeq": n}),
             None => serde_json::json!({}),
         }
@@ -479,6 +486,8 @@ impl ViewerCore {
         // caller only joins after a `Join`.
         (self.reading, self.waiting) = (None, VecDeque::new());
         let n = joined["link"].as_u64().unwrap_or(0);
+        let cursor = self.cursor();
+        self.resume = cursor;
         let mut l = match self.link.take() {
             Some(l) => l.reconnect(n),
             None => ViewerLink::new(self.key.current(), self.raw, n),
@@ -492,8 +501,10 @@ impl ViewerCore {
             self.out.push(Effect::Send(h));
         }
         // Where the stream stands for this viewer: its own cursor on a
-        // stream it read, else the relay's count, live from the next batch.
-        self.applied = match l.cursor() {
+        // stream it read (which the relay resumes after), else the relay's
+        // count, live from the next batch. The cursor is the one it joined
+        // with: the link, reconnected, names no stream until its welcome.
+        self.applied = match cursor {
             Some((s, n)) if joined["stream"].as_str() == Some(e2e::hex(&s).as_str()) => n,
             _ => joined["seq"].as_u64().unwrap_or(0),
         };
@@ -619,6 +630,7 @@ impl ViewerCore {
             self.later();
             return self.take();
         }
+        self.resume = self.cursor();
         let Some(old) = self.link.take() else { return self.take() };
         let mut l = old.reconnect(joined["link"].as_u64().unwrap_or(0));
         let hello = l.hello(b"{}");
@@ -759,14 +771,21 @@ impl ViewerCore {
         self.backoff_ms = self.backoff_ms.saturating_mul(2).min(ms(REPROBE_MAX));
     }
 
+    /// The stream this viewer reads and the last batch it opened of it:
+    /// the link's, else the one it had before it was reconnected.
+    fn cursor(&self) -> Option<([u8; 16], u64)> {
+        self.link.as_ref().and_then(|l| l.cursor()).or(self.resume)
+    }
+
     fn welcomed(&self) -> bool {
         self.link.as_ref().is_some_and(|l| l.welcomed())
     }
 
-    /// Whether a host has welcomed this connection, and the welcome has been
-    /// acted on: a command or handoff goes now, else at the next welcome.
+    /// Whether a host has welcomed this connection, the welcome has been
+    /// acted on and the connection is still there: a command or handoff
+    /// goes now, else at the next welcome.
     fn ready(&self) -> bool {
-        self.host && self.welcomed() && self.reading.is_none()
+        self.host && self.welcomed() && self.reading.is_none() && self.connected
     }
 
     fn send(&mut self, bytes: Vec<u8>) {
@@ -1005,6 +1024,8 @@ impl ViewerCore {
             return;
         }
         match self.link.as_mut() {
+            // Kept as the harness has it, though the direct welcome lets
+            // the relay's connection go as it welcomes the link.
             Some(l) if l.welcomed() => {
                 let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
                 if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {

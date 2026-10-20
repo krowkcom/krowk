@@ -384,10 +384,13 @@ fn r_off_2_no_word_for_30_s_joins_again() {
     assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 40_000, .. }]));
     r.at(40_000).tick();
     assert!(r.take_rest().is_empty(), "no ping with no connection");
+    r.command(stop(2));
+    r.at(40_016).tick();
+    assert!(r.updates().iter().any(|u| matches!(u, Update::Sent { queued: true, .. })), "no connection: queued");
 
     r.frames.clear();
     r.at(41_000).live();
-    assert_eq!(commands(&r.frames), [stop(1)], "sent again at the welcome");
+    assert_eq!(commands(&r.frames), [stop(1), stop(2)], "the unacked again, then the queued, at the welcome");
 }
 
 /// R-CLIENT-3: a `pong`, or any message, keeps the connection alive.
@@ -485,8 +488,9 @@ fn r_off_2_presence_a_close_and_a_refusal_join_again() {
 }
 
 /// R-OFF-2: what the connection brings while the welcome's read is out is
-/// acted on once the read is in, in order: a close then joins again a
-/// second after it came. A read answered with none out does nothing.
+/// acted on once the read is in: a close then joins again a second after
+/// the read is answered, when the viewer first hears of it. A read
+/// answered with none out does nothing.
 #[test]
 fn r_off_2_what_comes_during_the_read_is_acted_on_after_it() {
     let mut r = Relay::new(vec![], 0);
@@ -682,6 +686,8 @@ fn r_net_2_races_back_off_and_a_direct_welcome_resets_the_wait() {
 #[test]
 fn r_net_2_a_late_direct_welcome_or_too_much_held_goes_back_to_the_relay() {
     let (mut r, c) = with_a_candidate(0);
+    let b = r.batch(vec![logged(1)], false);
+    r.receive(&b);
     r.at(16).tick();
     assert_eq!(probes(&mut r), 1);
     let joined = |link| json!({"type": "joined", "link": link, "host": true, "seq": 0});
@@ -692,7 +698,8 @@ fn r_net_2_a_late_direct_welcome_or_too_much_held_goes_back_to_the_relay() {
     r.at(3099).tick();
     assert!(r.take_rest().iter().all(|e| !matches!(e, Effect::Join { .. })));
     r.at(3100).tick();
-    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 3100, .. }]));
+    let stream = krowk_client::e2e::hex(&r.host.stream());
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 3100, extra }] if *extra == json!({"stream": stream, "afterSeq": 1})), "back to the relay from the cursor");
 
     let (mut r, c) = with_a_candidate(0);
     r.at(16).tick();
@@ -706,6 +713,91 @@ fn r_net_2_a_late_direct_welcome_or_too_much_held_goes_back_to_the_relay() {
     }
     let b = r.batch(vec![], false);
     assert!(matches!(r.core.leaving(&b, 200).as_slice(), [Effect::Join { at_ms: 200, .. }]));
+
+    // The same on the direct connection, before its welcome.
+    let (mut r, c) = with_a_candidate(0);
+    r.at(16).tick();
+    r.take_rest();
+    r.link += 1;
+    let e = r.core.move_to(c, &joined(r.link), 100);
+    r.take(e);
+    for _ in 0..1024 {
+        let b = r.batch(vec![], false);
+        r.at(200).receive(&b);
+    }
+    assert!(r.take_rest().is_empty());
+    let b = r.batch(vec![], false);
+    r.receive(&b);
+    assert!(matches!(r.take_rest().as_slice(), [Effect::Join { at_ms: 200, .. }]));
+}
+
+/// R-NET-2: the caller giving up on a direct path goes back to the relay at
+/// once; on the relay already, it does nothing.
+#[test]
+fn r_net_2_back_to_relay_rejoins_only_off_the_relay() {
+    let (mut r, c) = with_a_candidate(0);
+    assert!(r.core.back_to_relay(10).is_empty(), "on the relay");
+    r.at(16).tick();
+    r.take_rest();
+    r.link += 1;
+    let e = r.core.move_to(c, &json!({"type": "joined", "link": r.link, "host": true, "seq": 0}), 100);
+    r.take(e);
+    assert!(matches!(r.core.back_to_relay(500).as_slice(), [Effect::Join { at_ms: 500, .. }]));
+    assert!(r.core.back_to_relay(600).is_empty(), "once");
+}
+
+/// R-OFF-2: a rejoin resumes from the cursor: the relay is asked for what
+/// follows the last batch opened, a batch it sends again is acked rather
+/// than opened, and the next one is no gap.
+#[test]
+fn r_off_2_a_rejoin_resumes_from_the_cursor() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    let b: Vec<Vec<u8>> = (1..=3).map(|n| r.batch(vec![logged(n)], false)).collect();
+    for b in &b {
+        r.receive(b);
+    }
+    let e = r.core.closed(100);
+    let stream = krowk_client::e2e::hex(&r.host.stream());
+    assert!(matches!(e.as_slice(), [Effect::Join { at_ms: 1100, extra }] if *extra == json!({"stream": stream, "afterSeq": 3})), "{e:?}");
+    r.at(1100);
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": stream, "seq": 9}), 1100);
+    r.take(e);
+    r.welcome_with(Welcome::default());
+    r.read(Ok((vec![], Attached::default())));
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.acks.clear();
+    r.frames.clear();
+    r.receive(&b[2]);
+    assert_eq!(r.acks, [3], "opened already: acked with the cursor");
+    let b4 = r.batch(vec![logged(4)], false);
+    r.receive(&b4);
+    r.at(1200).tick();
+    let shown = r.updates();
+    assert!(!shown.iter().any(|u| matches!(u, Update::Gap)), "{shown:?}");
+    assert!(catch_ups(&r.frames).is_empty());
+}
+
+/// R-OFF-2: a `resync` the relay sends a welcomed viewer asks the host to
+/// catch up from the newest event held; with one in flight, once it ends.
+#[test]
+fn r_off_2_a_resync_while_welcomed_asks_the_host() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    let b = r.batch(vec![logged(1)], false);
+    r.receive(&b);
+    r.frames.clear();
+    let resync = json!({"type": "resync", "reason": "behind", "stream": "00", "seq": 0});
+    r.control(resync.clone());
+    assert_eq!(catch_ups(&r.frames), [Some(id(1))]);
+    r.control(resync);
+    assert_eq!(catch_ups(&r.frames).len(), 1, "one in flight");
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    assert_eq!(catch_ups(&r.frames), [Some(id(1)), Some(id(1))], "asked once it ended");
+    assert!(r.take_rest().is_empty(), "no read, no join");
 }
 
 /// R-NET-2: a race won with no host at the candidate is refused, and the
