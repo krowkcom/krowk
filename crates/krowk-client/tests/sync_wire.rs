@@ -95,8 +95,8 @@ fn r_client_1_an_index_reads_without_a_host_and_round_trips_with_one() {
     assert_eq!(i.host, None);
     assert_eq!(i.checkpoint, Some(Mark { index: 1, previous: [1; 32], fence: 3 }));
 
-    let hosted = format!(r#"{{"title":"t","cwd":"/w","updatedMs":5,"head":null,"checkpoint":null,"host":{{"device":"d1","tailnet":{{"name":"a","dnsName":"a.tail1.ts.net","ips":["100.64.0.1","fd7a:115c:a1e0::1"]}}}}}}"#);
-    let i: Index = round_trip(&hosted);
+    let hosted = r#"{"title":"t","cwd":"/w","updatedMs":5,"head":null,"checkpoint":null,"host":{"device":"d1","tailnet":{"name":"a","dnsName":"a.tail1.ts.net","ips":["100.64.0.1","fd7a:115c:a1e0::1"]}}}"#;
+    let i: Index = round_trip(hosted);
     let tailnet = Tailnet { name: "a".into(), dns_name: "a.tail1.ts.net".into(), ips: vec!["100.64.0.1".parse().unwrap(), "fd7a:115c:a1e0::1".parse().unwrap()] };
     assert_eq!(i.host, Some(HostedOn { device: "d1".into(), tailnet: Some(tailnet) }));
 
