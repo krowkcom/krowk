@@ -5,7 +5,7 @@
 //! read from the JSON and written back to the same bytes.
 
 use krowk_client::protocol::{Command, LiveEvent, StreamLine};
-use krowk_client::sync::store::{Head, HostedOn, Index, Mark};
+use krowk_client::sync::store::{Checkpoint, Chunk, Head, HostedOn, Index, Mark};
 use krowk_client::sync::{uuid, Answer, Batch, Candidate, Handed, Remote, Tailnet, ViewerFrame, Welcome};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
@@ -103,6 +103,18 @@ fn r_client_1_an_index_reads_without_a_host_and_round_trips_with_one() {
     round_trip::<Index>(r#"{"title":"t","cwd":"/w","updatedMs":5,"head":null,"checkpoint":null,"host":{"device":"d1"}}"#);
     let t: Tailnet = serde_json::from_str(r#"{"name":"a","ips":[]}"#).unwrap();
     assert_eq!(t.dns_name, "", "a node without MagicDNS");
+}
+
+/// A chunk of the log, opened: the events since the chunk before, or a
+/// checkpoint naming the head it follows.
+#[test]
+fn r_client_1_each_chunk_is_the_json_a_reader_opens() {
+    let Chunk::Events { events } = round_trip(r#"{"type":"events","events":[{"id":"e1"}]}"#) else { panic!("not events") };
+    assert_eq!(events[0]["id"], "e1");
+    let json = format!(r#"{{"type":"checkpoint","events":[],"logOffset":9,"worktree":"abc","chunk":{{"index":8,"digest":"{DIGEST}"}}}}"#);
+    let Chunk::Checkpoint(cp) = round_trip(&json) else { panic!("not a checkpoint") };
+    assert_eq!(cp, Checkpoint { events: Vec::new(), log_offset: 9, worktree: Some("abc".into()), chunk: Some(Head { index: 8, digest: [1; 32] }) });
+    round_trip::<Chunk>(r#"{"type":"checkpoint","events":[],"logOffset":0,"worktree":null,"chunk":null}"#);
 }
 
 /// A head's digest is 32 bytes in hex, and nothing else reads as one.
