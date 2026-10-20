@@ -140,21 +140,9 @@ pub fn batch(session: &str, seq: u64, frames: &[u8]) -> Envelope {
     Envelope { kind: KIND_BATCH, flags, enc: ENC_NONE, session: uuid(session), seq, payload }
 }
 
-/// A session id's sixteen bytes; zero for none, or one that is no UUID.
-pub fn uuid(id: &str) -> [u8; 16] {
-    let hex: Vec<u8> = id.bytes().filter(|b| *b != b'-').collect();
-    let mut out = [0u8; 16];
-    if hex.len() != 32 {
-        return out;
-    }
-    for (i, pair) in hex.chunks(2).enumerate() {
-        match std::str::from_utf8(pair).ok().and_then(|p| u8::from_str_radix(p, 16).ok()) {
-            Some(b) => out[i] = b,
-            None => return [0u8; 16],
-        }
-    }
-    out
-}
+/// A session id's sixteen bytes, as every client binds them: in
+/// `krowk_client::sync`.
+pub use krowk_client::sync::uuid;
 
 /// Binds the listener and writes a fresh token beside the socket, `0600`:
 /// a daemon's token dies with it.

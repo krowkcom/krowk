@@ -19,7 +19,6 @@ pub mod viewer;
 use futures_util::{SinkExt, StreamExt};
 use krowk_client::e2e::{self, DeviceId, SigningKey};
 use krowk_client::protocol::frame::{KIND_RELAY, HEADER};
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::time::Duration;
 use tokio_tungstenite::tungstenite::Message;
@@ -132,97 +131,9 @@ pub async fn ping(ws: &mut Ws) -> bool {
     ws.send(Message::Text("ping".into())).await.is_ok()
 }
 
-/// A viewer's command to the host, sealed in its frames: `id` is the
-/// viewer's own, random per viewer run, which the host's `ack` names back
-/// (R-LAG-8) and dedups by, so a command sent again after a reconnect —
-/// its ack lost — runs once.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Remote {
-    pub id: String,
-    pub command: crate::protocol::Command,
-}
-
-/// What a viewer's frame holds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum ViewerFrame {
-    Command(Remote),
-    /// The logged events after `after` (the last this viewer holds; none
-    /// for all the host has), answered in this viewer's routed chain: what
-    /// a viewer asks after every welcome and on any gap in the stream, so a
-    /// batch the relay dropped, a resync or a new stream loses nothing.
-    #[serde(rename_all = "camelCase")]
-    CatchUp { after: Option<String> },
-    /// Move the session to `device`, the viewer's own (R-HAND-1): the host
-    /// checkpoints, ships the bundle as a transport artifact and hands its
-    /// lease over, answering `Answer::Handoff` under `id`.
-    #[serde(rename_all = "camelCase")]
-    Handoff { id: String, device: String },
-}
-
-/// What the host routes back to one viewer.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "camelCase")]
-pub enum Answer {
-    /// The command was taken (`error` none) or refused, by the viewer's id.
-    Ack { id: String, error: Option<String> },
-    /// Logged events a viewer asked for, in order; `more` when another
-    /// page follows.
-    CatchUp { events: Vec<crate::protocol::LogEvent>, more: bool },
-    /// The handoff `id` asked for: done, with what the new host needs, or
-    /// refused, the session staying here.
-    #[serde(rename_all = "camelCase")]
-    Handoff { id: String, handed: Option<Handed>, error: Option<String> },
-}
-
-/// What a host hands the device taking its session over, inside the E2E
-/// link and nowhere else: the transport artifact and the key it is sealed
-/// under, and the lease the registry minted for the new holder.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Handed {
-    pub transport: String,
-    pub key: String,
-    pub token: String,
-    pub fence: u64,
-    pub ticket: String,
-    /// The device that handed it over.
-    pub from_device: String,
-}
-
-/// The body of the host's welcome to one viewer.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Welcome {
-    /// The log's head as the host sealed it: what the viewer's reading of
-    /// the chunks must reach (the prefix check).
-    pub head: Option<store::Head>,
-    /// Approvals waiting for an answer, sent again to each viewer that
-    /// arrives (R-PERM-2).
-    pub approvals: Vec<crate::protocol::ApprovalRequest>,
-    /// Where else the viewer may reach the host directly (R-NET-1): sealed
-    /// in the welcome under the session key and bound to this connection's
-    /// challenge, so only the host could have sent it.
-    #[serde(default)]
-    pub candidates: Vec<direct::Candidate>,
-}
-
-/// A batch's body: the frames the host sent in one display frame.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Batch {
-    /// Read one by one: a line this viewer does not know — a frame a newer
-    /// host sends — is skipped, and the rest of the batch still applies.
-    #[serde(deserialize_with = "known_lines")]
-    pub lines: Vec<crate::protocol::StreamLine>,
-    /// The log's head once the chunks written so far are in.
-    pub head: Option<store::Head>,
-}
-
-/// The lines of a batch this krowk can read, in order, each decoded alone.
-fn known_lines<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::protocol::StreamLine>, D::Error> {
-    let raw = Vec::<Value>::deserialize(d)?;
-    Ok(raw.into_iter().filter_map(|l| serde_json::from_value(l).ok()).collect())
-}
+/// The wire shapes a viewer and its host send each other, shared by every
+/// client (R-CLIENT-1): `krowk_client::sync` declares them.
+pub use krowk_client::sync::{Answer, Batch, Handed, Remote, ViewerFrame, Welcome};
 
 fn runtime() -> Result<tokio::runtime::Runtime, String> {
     tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))

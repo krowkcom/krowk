@@ -339,17 +339,8 @@ impl Status {
 }
 
 /// A machine's tailnet node, as its host keeps it in a session's sealed
-/// index for `krowk hosts` to find on the tailnet.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Tailnet {
-    /// Tailscale's name for it.
-    pub name: String,
-    /// Its MagicDNS name, without the root's dot; empty without MagicDNS.
-    #[serde(default)]
-    pub dns_name: String,
-    pub ips: Vec<IpAddr>,
-}
+/// index: `krowk_client::sync` declares it for every client.
+pub use krowk_client::sync::Tailnet;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "PascalCase")]

@@ -21,6 +21,9 @@
 //!   that published it and checked against the device list.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
+//! - `sync`: the wire and at-rest shapes of a synced session — a viewer's
+//!   frames, the host's answers, welcome and batches, and (`sync::store`)
+//!   the sealed index and chunks its log is kept in.
 //!
 //! The design, and what a hostile server can and cannot learn from it, is
 //! `docs/security/crypto.md` (R-OSS-1).
@@ -35,6 +38,7 @@ pub mod relay_ticket;
 pub mod device_chain;
 pub mod recovery;
 pub mod session_record;
+pub mod sync;
 pub mod user_key;
 
 /// A secret the caller holds for a moment — the kit's words — wiped on drop.
