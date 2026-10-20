@@ -69,6 +69,10 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app.tests
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
+        # XcodeGen derives the host from the target's name; the app's
+        # product is Krowk.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Krowk.app/Krowk"
+        BUNDLE_LOADER: "$(TEST_HOST)"
   Krowk-iOSUITests:
     type: bundle.ui-testing
     platform: iOS
