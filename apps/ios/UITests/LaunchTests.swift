@@ -45,7 +45,7 @@ enum Screenshots {
 
     @MainActor
     static func keep(_ name: String, in app: XCUIApplication) {
-        let label = name(of: XCUIDevice.shared.appearance)
+        let label = Self.name(of: XCUIDevice.shared.appearance)
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = "krowk-\(name)-\(label)"
         attachment.lifetime = .keepAlways
