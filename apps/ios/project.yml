@@ -1,0 +1,66 @@
+# The iPhone app's Xcode project (R-IOS-13). `xcodegen generate --spec
+# apps/ios/project.yml` writes Krowk.xcodeproj, which git ignores: edit
+# this file, never the .pbxproj. On Linux, xtool builds the same sources
+# from Package.swift and xtool.yml beside this file (README.md).
+name: Krowk
+options:
+  bundleIdPrefix: com.krowk
+  deploymentTarget:
+    iOS: "26.0"
+  createIntermediateGroups: true
+packages:
+  KrowkCore:
+    path: KrowkCore
+  KrowkKit:
+    path: KrowkKit
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    TARGETED_DEVICE_FAMILY: "1"            # iPhone first; no iPad in M1
+    "EXCLUDED_ARCHS[sdk=iphonesimulator*]": x86_64   # the framework is arm64-only
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    MARKETING_VERSION: "0.1.0"             # overridden at archive time (ticket 74)
+    CURRENT_PROJECT_VERSION: "1"           # overridden at archive time (ticket 74)
+targets:
+  Krowk-iOS:
+    type: application
+    platform: iOS
+    sources: [App]
+    dependencies:
+      - package: KrowkKit
+      - package: KrowkCore
+        product: Krowk
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app   # pending the person's confirmation (ticket 109)
+        PRODUCT_NAME: Krowk
+        # Not Krowk: on a case-insensitive disk it clashes with the bindings module.
+        PRODUCT_MODULE_NAME: KrowkApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: krowk
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_NSCameraUsageDescription: "krowk uses the camera to scan the pairing code another device shows."
+        # ITSAppUsesNonExemptEncryption is deliberately absent: the export
+        # compliance answer is the person's, in ticket 74.
+  Krowk-iOSUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies:
+      - target: Krowk-iOS
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app.uitests
+        GENERATE_INFOPLIST_FILE: YES
+schemes:
+  Krowk-iOS:
+    build:
+      targets:
+        Krowk-iOS: all
+        Krowk-iOSUITests: [test]
+    test:
+      targets:
+        - Krowk-iOSUITests
+        - package: KrowkKit/KrowkKitTests
