@@ -55,6 +55,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app can list your synced sessions and open one.** Through
+  krowk-client, as `krowk sessions` does: each session's record is checked
+  against the device list the phone holds and its index unsealed, and an
+  opened session reads from its latest checkpoint, then whatever was
+  written since. Sessions the phone can't open yet are counted, not shown.
+  The session's keys and the phone's signing key never leave the Rust
+  core. The listing itself moved from the harness into krowk-client.
+  Nothing changes for CLI users.
 - **The terminal follows a synced session with the same code the iPhone
   app will.** `krowk sync attach`, `krowk sync take` and the TUI on a
   synced session now run krowk-client's viewer, the one the phone will
