@@ -27,14 +27,9 @@ use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
 pub type Ws = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 
-/// How often a link says `ping`, and how long without a word from the
-/// relay it counts as gone (relay.md → Heartbeats).
-pub const PING: Duration = Duration::from_secs(10);
-pub const DEAD: Duration = Duration::from_secs(30);
-
-/// One display frame: a viewer hands on at most one batch of updates per
-/// frame (R-LAG-7), and the host seals at most one batch per frame (R-LAG-3).
-pub const FRAME: Duration = Duration::from_millis(16);
+/// The heartbeat (`PING`, `DEAD`) and the display frame (`FRAME`), shared
+/// by every client (R-CLIENT-1): `krowk_client::sync` declares them.
+pub use krowk_client::sync::{DEAD, FRAME, PING};
 
 /// What a device joins a channel as.
 pub struct Join<'a> {
