@@ -19,12 +19,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `KROWK_SYNC_AUTO=0` for the daemon. To keep one directory off sync, list
   it in `sync.exclude` or put a `.krowk/no-sync` file in it. `krowk sync
   status` now says whether auto-sync is on, whether the directory you're
-  in is synced, and how many sessions the daemon is syncing. Sessions
-  stay synced while the daemon runs, and it exits once nobody has used it
-  for a while, so run `krowk host enable` to keep them synced on an
-  always-on machine. A machine without sync set up behaves as before and
-  makes no sync network call. `krowk sync host` still syncs one session by
-  hand, including one in an opted-out directory.
+  in is synced, and how many sessions the daemon is syncing. A session
+  nobody has used for 10 minutes stops syncing until its next prompt on
+  this machine (`sync.idleMinutes`; `0` keeps it synced while the daemon
+  runs); until then other devices see it read-only. A directory opted
+  out while its session syncs stops syncing at that session's next
+  prompt. A session you host by hand with `krowk sync host`
+  stays yours: the daemon never takes it over. On a workspace without a
+  paid plan the daemon stops trying for an hour. The daemon exits once
+  nobody has used it for a while, so run `krowk host enable` to keep
+  sessions synced on an always-on machine. A machine without sync set up
+  behaves as before and makes no sync network call. `krowk sync host`
+  still syncs one session by hand, including one in an opted-out
+  directory.
 - **The iPhone app signs in through the browser.** Its first screen says
   "Sign in to krowk" with one button, which opens krowk's approval page in
   a browser sheet that uses your existing krowk login, naming the phone by
