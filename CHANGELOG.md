@@ -55,6 +55,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app's core can list your synced sessions and open one.**
+  The app's screens for them come next. Each session's record is checked
+  against the device list the phone holds before its title is shown, and
+  an opened session is read from its latest checkpoint, then whatever was
+  written since. Sessions the phone can't open yet are counted, not shown.
+  The session's keys and the phone's signing key never leave the core.
+  Nothing changes for CLI users.
 - **The terminal follows a synced session with the same code the iPhone
   app will.** `krowk sync attach`, `krowk sync take` and the TUI on a
   synced session now run krowk-client's viewer, the one the phone will

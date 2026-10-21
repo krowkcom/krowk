@@ -12,7 +12,8 @@
 //!    plain sync methods; Swift calls them off the main thread.
 //! 3. Objects are `#[derive(uniffi::Object)]` held in `Arc`, constructed
 //!    with `#[uniffi::constructor] fn open(...) -> Result<Arc<Self>,
-//!    KrowkError>`.
+//!    KrowkError>`, or returned so by another object's method
+//!    (`Account::open_session`).
 //! 4. Every exported object is `Send + Sync + 'static`, checked at compile
 //!    time by `tests/send_sync.rs`.
 //! 5. Protocol and core types are re-declared with
@@ -47,6 +48,21 @@
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
 //!
+//! # Sessions
+//!
+//! [`Account::list_sessions`] lists the person's synced sessions from their
+//! sealed indexes, each record checked against the device list the phone
+//! holds; [`Account::open_session`] opens one from its latest checkpoint
+//! into an [`OpenedSession`], which reads on with `catch_up` and gets a
+//! relay ticket for the live viewer. Listing, opening, `catch_up` and the
+//! ticket are blocking registry calls (rule 2); the getters never wait on
+//! the network. The session's keys, the device's signing key and the read
+//! position stay inside `OpenedSession`; Swift gets events, titles and
+//! heads. A head crosses as [`HeadRecord`], a record of its own rather than
+//! the remote type rule 5 asks for: `Head`'s digest is a `[u8; 32]`, which
+//! UniFFI has no word for, so the record carries it as bytes, checked to be
+//! 32 on the way back in.
+//!
 //! # The protocol
 //!
 //! Every type reachable from `StreamLine` and `Command` is
@@ -77,12 +93,14 @@ uniffi::setup_scaffolding!();
 mod account;
 mod error;
 mod protocol;
+mod sessions;
 mod sign_in;
 mod storage;
 
 pub use account::Account;
 pub use error::KrowkError;
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 

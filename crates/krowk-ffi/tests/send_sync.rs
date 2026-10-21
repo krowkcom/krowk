@@ -13,6 +13,8 @@ fn r_ffi_1_exported_types_are_send_and_sync() {
     assert_send_sync::<krowk_ffi::SignedIn>();
     assert_send_sync::<krowk_ffi::SignIn>();
     assert_send_sync::<krowk_ffi::Account>();
+    assert_send_sync::<krowk_ffi::OpenedSession>();
+    assert_send_sync::<krowk_ffi::SessionList>();
     // The app's storage, which every thread may call.
     assert_send_sync::<std::sync::Arc<dyn krowk_ffi::KeyStorage>>();
 }

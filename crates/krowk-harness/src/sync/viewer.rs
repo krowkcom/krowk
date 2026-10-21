@@ -35,40 +35,10 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message;
 
-/// A synced session as `krowk sessions` lists it, from its sealed index.
-#[derive(Debug, Clone)]
-pub struct Listed {
-    pub id: String,
-    pub index: store::Index,
-    pub holder: Option<String>,
-    /// The device whose signature the session's record carries.
-    pub signer: String,
-}
-
-/// Every synced session this device can open, most recently written first.
-/// One whose record no device on the verified list signed, or whose key or
-/// index does not open under the user keys this device holds — one sealed under a generation newer than it has, say — is left
-/// out and counted.
-pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), String> {
-    let mut out = Vec::new();
-    let mut unreadable = 0;
-    let mut before = String::new();
-    loop {
-        let page = api.list_sync_sessions(&before, 100).map_err(|e| e.to_string())?;
-        for s in &page.sessions {
-            // A listing leaves the index out; `show` has it.
-            let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
-            match store::open_session_key(&full, &s.id, keys, chain, Signer::EverHeld).and_then(|k| store::open_index(&k, &s.id, &full.sealed_index)) {
-                Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device), signer: full.signer.clone() }),
-                Err(_) => unreadable += 1,
-            }
-        }
-        if page.next.is_empty() {
-            return Ok((out, unreadable));
-        }
-        before = page.next;
-    }
-}
+/// The listing of synced sessions, shared by every client (R-CLIENT-1):
+/// `krowk_client::sync::store` declares it, re-exported here so the
+/// harness's paths do not move.
+pub use krowk_client::sync::store::{list, Listed};
 
 pub struct Options {
     pub relay: String,
