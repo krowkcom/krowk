@@ -240,7 +240,10 @@ pub(super) fn discard_old(ctx: &mut Ctx) -> Result<(), Error> {
 }
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
-    let kept = super::sync::keystore(ctx)?.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(chain::not_set_up)?;
+    let kept = super::sync::keystore(ctx)?.device_list().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(|| {
+        let e = chain::not_set_up();
+        fail(&e.code(), format!("{} — automatic sync is off until sync is set up here", e.fix()))
+    })?;
     let me = Me::load(ctx)?;
     let client = super::sync::keyed_client(ctx, "`krowk sync status`")?;
     let v = match chain::verified(ctx, &client, &me) {
@@ -251,15 +254,22 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         Err(e) if e.code() == "network_unreachable" || e.status >= 500 => {
             let kit = if kept.recovery().is_some() { "recovery kit on the list" } else { NO_KIT };
             let summary = format!("not checked with the registry ({}); as last verified: device list at entry {}, {kit}", e.code(), kept.head().seq);
-            return say(ctx, json!({ "checked": false, "seq": kept.head().seq, "recovery_kit": kept.recovery().is_some() }), summary);
+            let auto = auto_sync(ctx);
+            let mut data = json!({ "checked": false, "seq": kept.head().seq, "recovery_kit": kept.recovery().is_some() });
+            auto.add_to(&mut data);
+            return say(ctx, data, [summary, auto.lines()].join("\n"));
         }
         Err(e) => return Err(e),
     };
     let listed = chain::listed_devices(ctx, &client);
     let revoked = chain::revoked_on_dashboard(&v.chain, &listed);
     let devices: Vec<_> = v.chain.devices().iter().map(|d| json!({ "id": d.id().to_string(), "kind": if d.kind == Kind::Recovery { "recovery" } else { "device" }, "name": d.name, "os": d.os, "this_device": d.id() == me.device.id(), "revoked": revoked.iter().any(|r| r.id() == d.id()) })).collect();
-    let data = json!({ "checked": true, "seq": v.chain.head().seq, "generation": v.chain.generation(), "devices": devices, "recovery_kit": v.chain.recovery().is_some() });
-    let summary = status_lines(&v, &me, &revoked).join("\n");
+    let mut data = json!({ "checked": true, "seq": v.chain.head().seq, "generation": v.chain.generation(), "devices": devices, "recovery_kit": v.chain.recovery().is_some() });
+    let auto = auto_sync(ctx);
+    auto.add_to(&mut data);
+    let mut lines = status_lines(&v, &me, &revoked);
+    lines.push(auto.lines());
+    let summary = lines.join("\n");
     say(ctx, data, summary)?;
     // A dashboard Revoke is finished from a device: the web can't sign the
     // list. Asked only of a person at a terminal reading the human format —
@@ -271,6 +281,107 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         return super::devices::finish(ctx, &me, &v, &revoked);
     }
     Ok(())
+}
+
+/// What automatic sync does here (R-SYNC-3), for `krowk sync status`:
+/// whether it is on, whether this directory is synced, and how many
+/// sessions this machine's host daemon bridges now.
+struct AutoSync {
+    /// On, or why off: `KROWK_SYNC_AUTO`, `sync.auto in config.json`, or
+    /// what in the policy does not read (which is off).
+    on: Result<(), String>,
+    /// Synced, or what opts it out (`sync.exclude (<entry>)`, a marker's
+    /// path); `None` when nothing opts it out but auto-sync is off.
+    directory: Result<(), Option<String>>,
+    /// Sessions bridged, and the note said beside them; `None` when the
+    /// daemon could not be asked.
+    bridged: Option<usize>,
+    bridged_note: Option<String>,
+}
+
+/// The policy from config.json and this command's environment — the
+/// daemon's own unless it was started with another, which `lines` points
+/// out when it shows — and this directory against its opt-outs. File
+/// reads, and one question to a daemon that runs (never one started for
+/// it).
+#[cfg(unix)]
+fn auto_sync(ctx: &Ctx) -> AutoSync {
+    use krowk_harness::sync::auto::{self, OptOut};
+    let policy = super::prompt::config_json().map_err(|e| e.fix()).and_then(|config| auto::policy(ctx.io.env, Some(&config)));
+    let on = match &policy {
+        Ok(p) if p.on => Ok(()),
+        Ok(p) => Err(p.off_by.unwrap_or("turned off").to_string()),
+        Err(e) => Err(e.clone()),
+    };
+    let home = krowk_api::home::dir(ctx.io.env).ok();
+    let directory = match (&policy, std::env::current_dir()) {
+        (Ok(p), Ok(cwd)) => match p.opted_out(&cwd, home.as_deref()) {
+            Some(OptOut::Excluded(entry)) => Err(Some(format!("sync.exclude ({})", entry.display()))),
+            Some(OptOut::Marker(marker)) => Err(Some(marker.display().to_string())),
+            None if p.on => Ok(()),
+            None => Err(None),
+        },
+        _ => Err(None),
+    };
+    let (bridged, bridged_note) = bridged(ctx);
+    AutoSync { on, directory, bridged, bridged_note }
+}
+
+/// How many sessions this machine's host daemon bridges now.
+#[cfg(unix)]
+fn bridged(ctx: &Ctx) -> (Option<usize>, Option<String>) {
+    match krowk_harness::daemon::status(ctx.io.env, super::VERSION) {
+        Ok(None) => (Some(0), Some("no host daemon running".into())),
+        Ok(Some(s)) => match s.bridged {
+            Some(b) => (Some(b.len()), None),
+            // A daemon from before automatic sync, or one without it.
+            None => (Some(0), Some(format!("the host daemon runs krowk {}, which does not sync by itself", s.krowk_version))),
+        },
+        Err(e) => (None, Some(format!("the host daemon could not be asked: {}", e.message))),
+    }
+}
+
+/// Off unix there is no host daemon, so nothing syncs by itself: the same
+/// keys, saying so.
+#[cfg(not(unix))]
+fn auto_sync(_: &Ctx) -> AutoSync {
+    let none = "there is no host daemon on this platform";
+    AutoSync { on: Err(none.into()), directory: Err(None), bridged: Some(0), bridged_note: Some(none.into()) }
+}
+
+impl AutoSync {
+    fn lines(&self) -> String {
+        let on = match &self.on {
+            Ok(()) => "auto-sync: on".to_string(),
+            Err(why) => format!("auto-sync: off ({why})"),
+        };
+        let directory = match &self.directory {
+            Ok(()) => "this directory: synced".to_string(),
+            Err(Some(by)) => format!("this directory: opted out by {by}"),
+            Err(None) => "this directory: not synced (auto-sync is off)".to_string(),
+        };
+        let bridged = match (self.bridged, &self.bridged_note) {
+            (Some(n), None) => format!("bridged: {n}"),
+            (Some(n), Some(note)) => format!("bridged: {n} ({note})"),
+            (None, note) => format!("bridged: unknown ({})", note.as_deref().unwrap_or("the host daemon could not be asked")),
+        };
+        let mut lines = vec![on, directory, bridged];
+        // Off as read here, yet the daemon bridges: it reads the
+        // environment it was started with, and keeps a bridge it started
+        // until it exits.
+        if let (Err(_), Some(n @ 1..)) = (&self.on, self.bridged) {
+            lines.push(format!("! the running host daemon still syncs {n} session(s): it reads the environment it was started with, and keeps what it started until it exits — `krowk host stop` ends them"));
+        }
+        lines.join("\n")
+    }
+
+    /// `autoSync: {on, why}`, `directory: {synced, optedOutBy}` and
+    /// `bridged` (null when the daemon could not be asked).
+    fn add_to(&self, data: &mut serde_json::Value) {
+        data["autoSync"] = json!({ "on": self.on.is_ok(), "why": self.on.as_ref().err() });
+        data["directory"] = json!({ "synced": self.directory.is_ok(), "optedOutBy": self.directory.as_ref().err().and_then(Option::as_ref) });
+        data["bridged"] = json!(self.bridged);
+    }
 }
 
 fn status_lines(v: &chain::Verified, me: &Me, revoked: &[&Device]) -> Vec<String> {
