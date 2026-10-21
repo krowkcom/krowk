@@ -488,9 +488,10 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
                     w.push(e.clone());
                 }
                 match (w.refence(h.fence), job) {
-                    // The lease's new fence could not be taken up: nothing
-                    // asked for is dropped — a flush is owed still, and a
-                    // handoff hears why.
+                    // The lease's new fence could not be taken up: the events
+                    // are kept and a flush is owed still, and a handoff hears
+                    // why. A checkpoint asked for then is not cut (the next
+                    // take-up cuts one).
                     (Err(e), Some(Write::Handoff(_, done))) => {
                         let _ = done.send(Err(e.clone()));
                         Err(e)

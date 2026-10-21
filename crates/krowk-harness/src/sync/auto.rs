@@ -679,8 +679,8 @@ fn read_lists(lists: &Lists, every: Duration) {
             let any = l.bridges.values().next().expect("one at least");
             let (api, device) = (any.api.clone(), any.device);
             let Some(chain) = l.chain.clone() else { continue };
-            // Judged by this read: the bridges there now. One added while
-            // it runs may be built on a list newer than it saw.
+            // Judged by this read: the bridges there now, and any added while
+            // it runs on the list it read.
             let read_for: HashSet<u64> = l.bridges.keys().copied().collect();
             (api, device, chain, read_for)
         };
@@ -699,7 +699,10 @@ fn read_lists(lists: &Lists, every: Duration) {
             Err(end) => Some(end),
         };
         l.bridges.retain(|id, b| {
-            let Some(why) = told(&b.chain, &chain, end.as_ref()).filter(|_| read_for.contains(id)) else { return true };
+            // One added during the read is judged too when built on the
+            // list it read: only a newer or another list may be what the
+            // read did not see.
+            let Some(why) = told(&b.chain, &chain, end.as_ref()).filter(|_| read_for.contains(id) || behind(&b.chain, &chain)) else { return true };
             b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.why(&b.session));
             false
         });
