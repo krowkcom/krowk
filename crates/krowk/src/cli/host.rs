@@ -146,6 +146,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             .map_err(|e| (e.code(), e.fix()))
         }),
         bridged,
+        paid_pause: auto::PAID_PAUSE,
     }
 }
 

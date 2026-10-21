@@ -131,6 +131,15 @@ struct Held {
     ticket: String,
 }
 
+/// How a bridge that could not take the lease up ends, the registry's code
+/// after it in brackets: `(lease_held)` when another bridge holds it — a
+/// `krowk sync host`, or a host that crashed and whose lease has not
+/// lapsed yet (the automatic sync's supervisor waits, and never takes it).
+pub const NOT_GRANTED: &str = "the registry did not grant the lease";
+
+/// How a bridge whose lease another device took ends (R-SYNC-2).
+pub const LEASE_LOST: &str = "another device holds session";
+
 /// Opens (or creates) the synced session and takes its lease: the session
 /// keys, the writer at the log's end, and the lease.
 fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
@@ -166,7 +175,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         // The fix said, not only the code: a lease that stalled must say the
         // registry stopped answering (R-REG-1), and a held one that another
         // device holds it.
-        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("the registry did not grant the lease ({}): {}", e.code(), e.fix()))?,
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()))?,
     };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
@@ -871,7 +880,7 @@ impl Hosting {
             return Err(self.moved.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_else(|| format!("{HANDED_OVER} session {}", self.o.session)));
         }
         if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
-            return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
+            return Err(format!("{LEASE_LOST} {}'s lease now; this machine stopped syncing it", self.o.session));
         }
         // The daemon let this client go (it exited, or dropped a client
         // that read nothing): nothing more of the session reaches the bridge,
