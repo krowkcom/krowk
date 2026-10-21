@@ -949,10 +949,14 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     // The terminal goes, its turn's command with it.
     turn.abort();
     drop((t, d));
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let left = Instant::now();
+    let deadline = left + Duration::from_secs(5);
     let results = loop {
         let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
         if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
+            // The bridge's doing, after its wait: not the daemon's, which
+            // would have denied it the moment the terminal went.
+            assert!(left.elapsed() >= Duration::from_millis(800), "denied {:?} after the terminal went", left.elapsed());
             break tool_results(&w, &session);
         }
         assert!(Instant::now() < deadline, "the turn still waits on the question");
@@ -970,9 +974,11 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
 async fn r_perm_2_a_question_the_terminal_still_follows_waits_and_a_viewer_can_answer_it() {
     let w = World::new("attended");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let (_d, session) = first_turn(&w).await;
+    let (d, session) = first_turn(&w).await;
     let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, Duration::from_secs(1));
     w.synced(&session).await;
+    // The terminal asking is the one other answering client.
+    drop(d);
     let (_t, turn, req) = ask_at_the_terminal(&w, &session).await;
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(!turn.is_finished() && tool_results(&w, &session).is_empty(), "the question still waits on the terminal");

@@ -426,6 +426,23 @@ fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool)
     }
 }
 
+/// How long `deny_late` waits on the daemon's status before taking it
+/// that another client answers.
+const STATUS_WAIT: Duration = Duration::from_secs(2);
+
+/// How soon `deny_late` asks the daemon again after it said another
+/// client answers the session's approvals.
+const OTHERS_AGAIN: Duration = Duration::from_secs(10);
+
+/// Whether, by the daemon's `status`, a client other than the bridge
+/// answers approvals on `session` (`HostSession::answering`, the bridge one
+/// of them). No status, a session not listed, or a count that leaves out
+/// the bridge itself — a daemon that does not count — is taken as yes: the
+/// bridge never denies on a guess.
+fn others_in(status: Option<&crate::protocol::HostStatus>, session: &str) -> bool {
+    status.and_then(|s| s.sessions.iter().find(|s| s.session_id == session)).is_none_or(|s| s.answering != 1)
+}
+
 /// The requests the bridge denies by itself (`deny_late`): of a turn a
 /// viewer started (`turns`), or of a child that turn started (`children`,
 /// each child by the turn its `subagent.started` was logged in) while that
@@ -608,6 +625,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         dheard: Instant::now(),
         dretry: Instant::now(),
         daemon_gone: false,
+        others_asked: None,
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
@@ -730,6 +748,9 @@ struct Hosting {
     dretry: Instant,
     /// A sweep saw the daemon's connection closed: the next one ends it.
     daemon_gone: bool,
+    /// When `deny_late` last heard another client answers the session's
+    /// approvals: asked again only a while later, not every second.
+    others_asked: Option<Instant>,
 }
 
 impl Hosting {
@@ -900,7 +921,17 @@ impl Hosting {
         if !alone || !self.approvals.values().any(|(_, t)| t.elapsed() > wait) {
             return;
         }
-        let others = self.others().await;
+        // Another answering client was there a moment ago: it is taken
+        // to be there still, and asked after again only once that moment
+        // has passed. A viewer's turn's request is denied meanwhile all
+        // the same.
+        let others = if self.others_asked.is_some_and(|at| at.elapsed() < wait.min(OTHERS_AGAIN)) {
+            true
+        } else {
+            let others = self.others().await;
+            self.others_asked = others.then(Instant::now);
+            others
+        };
         let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, others, |t| t.elapsed() > wait).into_iter().cloned().collect();
         for r in late {
@@ -911,13 +942,11 @@ impl Hosting {
     }
 
     /// Whether a client other than the bridge answers approvals on the
-    /// session, by the daemon's word (`HostSession::answering`, the bridge
-    /// one of them). A status that fails, a session not listed, or a count
-    /// that leaves out the bridge itself — a daemon that does not count —
-    /// is taken as yes: the bridge never denies on a guess.
+    /// session (`others_in`). A failed status, or one that does not come
+    /// in `STATUS_WAIT`, counts as yes, rather than holding up the bridge.
     async fn others(&self) -> bool {
-        let Ok(status) = self.daemon.status().await else { return true };
-        status.sessions.iter().find(|s| s.session_id == self.o.session).is_none_or(|s| s.answering != 1)
+        let status = tokio::time::timeout(STATUS_WAIT, self.daemon.status()).await;
+        others_in(status.ok().and_then(Result::ok).as_ref(), &self.o.session)
     }
 
     /// A beat far later than `PING`: this process did not run in
@@ -1450,6 +1479,21 @@ mod tests {
         assert_eq!(ids(true, true, true), ["own"], "the terminal still follows: only the viewer's turn's");
         assert!(ids(false, false, true).is_empty(), "a viewer is here to answer");
         assert!(ids(true, false, false).is_empty(), "not waited yet");
+    }
+
+    /// R-HOST-1: only the daemon saying the bridge is the session's one
+    /// answering client counts as nobody else; anything else is a guess,
+    /// and the bridge denies nothing on a guess.
+    #[test]
+    fn r_host_1_nobody_else_answers_only_when_the_daemon_counts_the_bridge_alone() {
+        let of = |session: serde_json::Value| serde_json::from_value::<crate::protocol::HostStatus>(serde_json::json!({"pid": 1, "krowkVersion": "t", "protocolVersion": 1, "socket": "s", "uptimeMs": 1, "clients": 1, "sessions": [session]})).unwrap();
+        let status = |answering: u32| of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2, "answering": answering}));
+        assert!(!others_in(Some(&status(1)), "s"), "the bridge alone");
+        assert!(others_in(Some(&status(2)), "s"), "the terminal too");
+        assert!(others_in(Some(&status(0)), "s"), "a count that leaves out the bridge");
+        assert!(others_in(Some(&of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2}))), "s"), "a daemon that does not count");
+        assert!(others_in(Some(&status(1)), "another"), "the session not listed");
+        assert!(others_in(None, "s"), "no status");
     }
 
     /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
