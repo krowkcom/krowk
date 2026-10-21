@@ -215,6 +215,70 @@ pub fn claim(app: &App, req: &mut Req) -> Resp {
     run().unwrap_or_else(|r| r)
 }
 
+/// The registry's PushToken::TOKEN_FORMAT: whole bytes in hex, 32 to 100.
+const PUSH_TOKEN_HEX: std::ops::RangeInclusive<usize> = 64..=200;
+
+/// PUT|DELETE /v1/key/device/push_token (the registry's
+/// Keys::Devices::PushTokensController, R-IOS-12): the APNs token of the
+/// device the key speaks for, set or cleared by that device itself. After
+/// the key, the paid gate and the key's device active, the signature — and
+/// it must be the key's own device's, so another of the person's devices
+/// is `device_mismatch` even where `signed_device` lets the recovery kit
+/// through. Then the keyed ceiling, counted after the signature as the
+/// registry counts it. A PUT answers the device and environment, never the
+/// token, and takes the token off any other device holding it; a DELETE is
+/// 204 whether or not there was one.
+pub fn push_token(app: &App, req: &mut Req) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let body = read_body(req)?;
+        let mut s = app.lock();
+        let now = s.now();
+        let who = caller_of(&s.sync, req)?;
+        let bound = key_device(&s.sync, &who)?;
+        let device = signed_device(&mut s.sync, req, &who, &body)?;
+        if device != bound {
+            return Err(error(403, "device_mismatch", &format!("this key speaks for device {bound} but the request is signed by device {device}"), None));
+        }
+        burst(&mut s.sync, &caller(req), "push_tokens", now)?;
+        if req.method == "DELETE" {
+            s.sync.push_tokens.remove(&device);
+            return Ok(Resp::empty(204));
+        }
+        // From the body only, never the query string.
+        let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
+        let given = v.get("push_token").map(|m| m.value.clone()).filter(|v| matches!(v, Value::Obj(_)));
+        let field = |name: &str| match given.as_ref().and_then(|g| g.get(name)).map(|m| &m.value) {
+            Some(Value::Str(s)) => s.clone(),
+            _ => String::new(),
+        };
+        let token = field("token").trim().to_ascii_lowercase();
+        if !PUSH_TOKEN_HEX.contains(&token.len()) || !token.len().is_multiple_of(2) || !token.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("token", "must be 64 to 200 hex characters"));
+        }
+        let environment = field("environment");
+        if !["sandbox", "production"].contains(&environment.as_str()) {
+            return Err(invalid("environment", "must be \"sandbox\" or \"production\""));
+        }
+        s.sync.push_tokens.retain(|d, (t, _)| *d == device || *t != token);
+        s.sync.push_tokens.insert(device.clone(), (token, environment.clone()));
+        let answer = Json::map([("device", Json::str(device)), ("environment", Json::str(environment)), ("updated_at", Json::str(rfc3339_nano(now)))]);
+        Ok(Resp::json(200, &Json::map([("push_token", answer)])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// `GET /_push_tokens`: which devices have a push token, and for which
+/// environment — never the token — for tests that reach the stand-in only
+/// over HTTP. Stand-in only: the real registry has no such read, and never
+/// will.
+pub fn push_tokens_seen(app: &App) -> Resp {
+    let s = app.lock();
+    let mut held: Vec<(&String, &String)> = s.sync.push_tokens.iter().map(|(d, (_, env))| (d, env)).collect();
+    held.sort();
+    let held = held.into_iter().map(|(d, env)| Json::map([("device", Json::str(d)), ("environment", Json::str(env))])).collect();
+    Resp::json(200, &Json::map([("push_tokens", Json::Arr(held))]))
+}
+
 fn no_device_list() -> Resp {
     error(409, "no_device_list", "you have no device list yet — set sync up with `krowk sync init`", None)
 }
@@ -519,12 +583,14 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
         person.wraps.push((chain.generation(), device, wrapped));
     }
     // Commit: the person, every key bound to a device this post removed, and
-    // at init the key doing it bound to the first device.
+    // at init the key doing it bound to the first device. A device removed
+    // or left behind by a start-over takes no more pushes (R-IOS-12).
     for (key, device) in &s.bindings {
         if revoke.contains(device) && !(spare && *key == caller.key) {
             s.revoked_keys.insert(key.clone());
         }
     }
+    s.push_tokens.retain(|device, _| !revoke.contains(device));
     if init && person.epoch > 1 && s.people.get(&caller.person).is_some_and(|old| old.epoch < person.epoch) {
         for p in s.pairings.values_mut().filter(|p| p.person == caller.person) {
             p.state = crate::pairings::State::Dead;

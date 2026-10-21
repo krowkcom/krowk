@@ -1836,6 +1836,7 @@ name = "krowk-api"
 version = "0.0.0"
 dependencies = [
  "jiff",
+ "krowk-client",
  "krowk-devregistry",
  "libc",
  "serde",

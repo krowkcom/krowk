@@ -22,3 +22,6 @@ libc = "0.2"
 [dev-dependencies]
 # The stand-in registry, served in-process for the integration tests.
 krowk-devregistry = { path = "../krowk-devregistry" }
+# A device list and a device's signer for the signed calls' tests; linked
+# already, through the stand-in.
+krowk-client = { path = "../krowk-client" }
