@@ -431,9 +431,24 @@ fn limited(e: &str) -> bool {
     e.contains("too_many_requests")
 }
 
+/// When this process last said the registry is limiting its writes: one
+/// key, so fifty writers refused together say it once a wait, not fifty
+/// times.
+static LIMITED_SAID: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn say_limited(e: &str) {
+    let mut said = LIMITED_SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if said.is_none_or(|at| at.elapsed() >= LIMITED) {
+        *said = Some(Instant::now());
+        eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
+    }
+}
+
 fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>, lost: Arc<AtomicBool>) {
-    // Until when the registry asked to be left alone (`LIMITED`).
+    // Until when the registry asked to be left alone (`LIMITED`), and
+    // whether a flush was put off meanwhile: owed as a staged chunk is.
     let mut quiet: Option<Instant> = None;
+    let mut put_off = false;
     loop {
         let job = match rx.recv_timeout(RETRY) {
             Ok(j) => Some(j),
@@ -454,24 +469,26 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
             // Kept, and put once the registry takes writes again: a
             // checkpoint and a handoff's are still asked for, being rare
             // and, the second, waited on.
-            Some(Write::Flush) | None if waiting => Ok(()),
-            Some(Write::Flush) => w.flush(&h.token),
-            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token),
+            Some(Write::Flush) if waiting => {
+                put_off = true;
+                Ok(())
+            }
+            None if waiting => Ok(()),
+            // Each of these flushes first: through, nothing put off is left.
+            Some(Write::Flush) => w.flush(&h.token).inspect(|()| put_off = false),
+            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
             Some(Write::Handoff(tree, done)) => {
-                let r = w.checkpoint(tree, &h.token);
+                let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
                 let _ = done.send(r.clone());
                 r
             }
             // What was owed is put again, the same chunk under the same index.
-            None if w.owes() => w.flush(&h.token),
+            None if w.owes() || put_off => w.flush(&h.token).inspect(|()| put_off = false),
             None => Ok(()),
         });
         match done {
             Err(e) if limited(&e) => {
-                // Said once a wait, not at every refusal.
-                if !waiting {
-                    eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the session's chunks are kept and put again in {} s", LIMITED.as_secs());
-                }
+                say_limited(&e);
                 quiet = Some(Instant::now() + LIMITED);
             }
             Err(e) => eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again"),
@@ -483,12 +500,14 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
     }
     // Stopping: what is owed gets a last few tries — one, while the
     // registry asks to be left alone, so a stop is not held up waiting on
-    // it. What is not stored the next holder writes, from the daemon's log.
+    // it. What is still not stored the next bridge of the session writes,
+    // from the daemon's log, when its next turn takes it up.
     let tries = if quiet.is_some_and(|until| Instant::now() < until) { 1 } else { 3 };
     for _ in 0..tries {
-        if !w.owes() || lost.load(Ordering::Relaxed) {
+        if !(w.owes() || put_off) || lost.load(Ordering::Relaxed) {
             break;
         }
+        put_off = false;
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         match w.flush(&h.token) {
             Ok(()) => {}

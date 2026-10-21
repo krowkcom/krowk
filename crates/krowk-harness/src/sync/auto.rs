@@ -314,6 +314,14 @@ pub const PAID_PAUSE: Duration = Duration::from_secs(60 * 60);
 /// by a host that crashed, which lapses within its TTL (`host::LEASE_TTL`,
 /// no longer than this): it is tried once more then.
 pub const LEASE_HELD_WAIT: Duration = Duration::from_secs(60);
+const _: () = assert!(LEASE_HELD_WAIT.as_secs() >= host::LEASE_TTL, "a crashed daemon's lease lapses before the one more try");
+
+/// How long a session waits when its take-up was refused as one write too
+/// many (`too_many_requests`, the registry's per-key ceiling on creates —
+/// fifty sessions taken up together come near it): the minute the
+/// registry's Retry-After asks for, rather than a backoff that would ask
+/// it again within it.
+pub const LIMITED_WAIT: Duration = Duration::from_secs(60);
 
 /// How long a session waits when another device took its lease while it
 /// was bridged.
@@ -585,7 +593,9 @@ impl Lists {
             }
             l.reading = true;
         }
-        if l.chain.as_ref().is_none_or(|c| c.head().seq < o.chain.head().seq) {
+        // The newer of the two: a longer one, or one started over since
+        // (a bridge is built on the list as the registry has it now).
+        if l.chain.as_ref().is_none_or(|c| c.root() != o.chain.root() || c.head().seq < o.chain.head().seq) {
             l.chain = Some(o.chain.clone());
         }
         let id = l.next;
@@ -596,14 +606,51 @@ impl Lists {
     }
 }
 
+/// Whether list `a` is one `b` reads on from — the same list, started from
+/// the same first entry — and no longer than it.
+fn behind(a: &krowk_client::device_chain::Chain, b: &krowk_client::device_chain::Chain) -> bool {
+    a.root() == b.root() && a.head().seq <= b.head().seq
+}
+
+/// Why a bridge built on list `built` stops after the reader read `read`
+/// and found `end` (`None`: nothing that stops a host), if it does: `end`
+/// when its list is `read` or an earlier state of it; nothing when it is a
+/// later one. One built on another list is stopped as started over — unless
+/// the read found `read` itself started over, when that other list may be
+/// the new one. Pure.
+fn told(built: &krowk_client::device_chain::Chain, read: &krowk_client::device_chain::Chain, end: Option<&host::ListEnd>) -> Option<host::ListEnd> {
+    if built.root() != read.root() {
+        (end != Some(&host::ListEnd::StartedOver)).then_some(host::ListEnd::StartedOver)
+    } else if behind(built, read) {
+        end.cloned()
+    } else {
+        None
+    }
+}
+
 /// The reader: the list read every `every` until no bridge is left. An
 /// added device's longer list is kept for the next read. A reason to stop
-/// is written into every bridge built on a list no longer than the one
-/// read, each in its own session's words (`ListEnd::why`, `LIST_MOVED`
+/// is written into every bridge built on the list read or an earlier state
+/// of it, each in its own session's words (`ListEnd::why`, `LIST_MOVED`
 /// first when a removal moved the key on, which the supervisor builds
-/// again at once); those are no longer read for, and the next read starts
-/// from the longest list a bridge still running holds.
+/// again at once), and into every bridge built on another list (`told`).
+/// Those are no longer read for;
+/// the next read starts from the list of the bridge built last.
 fn read_lists(lists: &Lists, every: Duration) {
+    // A panic (a registry answer no read expected) ends the thread: the
+    // next bridge added starts another rather than going unread. Its
+    // ordinary end says so itself, under the lock that decides it.
+    struct Panicked<'a>(&'a Lists);
+    impl Drop for Panicked<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let mut l = self.0.lock();
+                l.reading = false;
+                l.chain = None;
+            }
+        }
+    }
+    let _panicked = Panicked(lists);
     let mut next = std::time::Instant::now() + every;
     loop {
         std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(std::time::Instant::now())));
@@ -620,30 +667,31 @@ fn read_lists(lists: &Lists, every: Duration) {
             }
             next = std::time::Instant::now() + every;
             let any = l.bridges.values().next().expect("one at least");
-            (any.api.clone(), any.device, l.chain.clone().expect("a bridge's list"))
+            let (api, device) = (any.api.clone(), any.device);
+            let Some(chain) = l.chain.clone() else { continue };
+            (api, device, chain)
         };
         let (api, device, chain) = asked;
         // Unlocked: a slow registry never holds up a bridge starting.
         let read = host::list_news(&api, device, &chain);
         let mut l = lists.lock();
-        match read {
+        let end = match read {
             Ok(Some(longer)) => {
-                if l.chain.as_ref().is_none_or(|c| c.head().seq < longer.head().seq) {
+                if l.chain.as_ref().is_some_and(|c| behind(c, &longer)) {
                     l.chain = Some(longer);
                 }
+                None
             }
-            Ok(None) => {}
-            Err(end) => {
-                let read_at = chain.head().seq;
-                l.bridges.retain(|_, b| {
-                    if b.chain.head().seq > read_at {
-                        return true;
-                    }
-                    b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| end.why(&b.session));
-                    false
-                });
-                l.chain = l.bridges.values().map(|b| &b.chain).max_by_key(|c| c.head().seq).cloned();
-            }
+            Ok(None) => None,
+            Err(end) => Some(end),
+        };
+        l.bridges.retain(|_, b| {
+            let Some(why) = told(&b.chain, &chain, end.as_ref()) else { return true };
+            b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.why(&b.session));
+            false
+        });
+        if end.is_some() || l.chain.as_ref().is_some_and(|c| c.root() != chain.root()) {
+            l.chain = l.bridges.iter().max_by_key(|(id, _)| **id).map(|(_, b)| b.chain.clone());
         }
     }
 }
@@ -1125,6 +1173,9 @@ impl Sup {
                 let why = r.err().unwrap_or_else(|| "it ended with no error".into());
                 let ran = since.elapsed();
                 let wait = match self.waits.get(&session) {
+                    // The registry asked for its minute: a backoff shorter
+                    // than it would only be refused again.
+                    _ if why.contains("(too_many_requests)") => LIMITED_WAIT,
                     Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),
                     _ => BACKOFF_FIRST,
                 };
@@ -1147,8 +1198,13 @@ impl Sup {
         if self.gone {
             return;
         }
-        // Said once while the reason stands, not at every try.
-        let line = format!("{why}; it is left to it, and tried again {} {}", if once_more { "in" } else { "at a turn after" }, human(wait));
+        // Said once while the reason stands, not at every try: the same
+        // words for the one more try and the wait after it.
+        let line = if wait == LEASE_HELD_WAIT {
+            format!("{why}; it is left to it, tried once more in {}, then at a turn", human(wait))
+        } else {
+            format!("{why}; it is left to it, and tried again at a turn after {}", human(wait))
+        };
         if self.said_lease.get(&session) != Some(&line) {
             eprintln!("krowk: automatic sync skips session {session}: {line}");
             if self.said_lease.len() >= SAID_MOST {
@@ -1567,5 +1623,33 @@ mod tests {
         // once more as its wait runs out, used or not.
         let once = Wait { once_more: true, ..w(true, false) };
         assert!(wanted_again(&once, false, idle, late), "the refused turn's once more");
+    }
+
+    /// The reader's one read stops each bridge it should and no other: one
+    /// built on the list read or an earlier state of it gets the read's
+    /// reason; one built on a longer list is kept; one built on a list
+    /// started over since is stopped whatever the read says, and one built
+    /// on the new list is never stopped by a read of the old.
+    #[test]
+    fn one_list_read_stops_the_bridges_it_should_and_no_other() {
+        use krowk_client::device_chain::{Change, Chain, Kind, Subject};
+        use krowk_client::e2e::{DeviceKey, SigningKey};
+        let subject = |name: &str, d: &DeviceKey, s: &SigningKey| Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.public(), signing: s.public() };
+        let (laptop, laptop_s) = (DeviceKey::generate(), SigningKey::generate());
+        let (desktop, desktop_s) = (DeviceKey::generate(), SigningKey::generate());
+        let (one, start) = Chain::start(subject("laptop", &laptop, &laptop_s), &laptop_s, None, 1_790_000_000).unwrap();
+        let (two, _) = one.batch(&start.newest, vec![Change::Add(subject("desktop", &desktop, &desktop_s))], laptop.id(), &laptop_s, 1_790_000_001).unwrap();
+        let (over, _) = Chain::start(subject("laptop", &laptop, &laptop_s), &laptop_s, None, 1_790_000_002).unwrap();
+        let moved = host::ListEnd::Moved;
+        assert_eq!(told(&one, &one, Some(&moved)), Some(moved.clone()), "built on the list read");
+        assert_eq!(told(&one, &two, Some(&moved)), Some(moved.clone()), "built on an earlier state of it");
+        assert_eq!(told(&two, &one, Some(&moved)), None, "built on a longer list: its own");
+        assert_eq!(told(&one, &two, None), None, "nothing found: nothing stops");
+        assert_eq!(told(&one, &over, None), Some(host::ListEnd::StartedOver), "a list started over since");
+        assert_eq!(told(&over, &two, Some(&moved)), Some(host::ListEnd::StartedOver), "read on the other list");
+        assert_eq!(told(&over, &over, None), None, "the new list, read");
+        assert_eq!(told(&over, &two, Some(&host::ListEnd::StartedOver)), None, "the old list read and found started over: the new one is not");
+        assert_eq!(told(&two, &two, Some(&host::ListEnd::StartedOver)), Some(host::ListEnd::StartedOver));
+        assert!(moved.why("s1").starts_with(host::LIST_MOVED) && moved.why("s1").contains("s1"), "each bridge's own words, LIST_MOVED first");
     }
 }

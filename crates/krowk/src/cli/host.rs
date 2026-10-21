@@ -95,6 +95,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     // never this one, nor the daemon's. Its checks run per turn, so a
     // machine that does not sync (or has turned it off) builds nothing and
     // asks the network nothing (R-SYNC-1).
+    // Each synced session holds descriptors of its own — its daemon
+    // connection's two ends, its relay link, a direct listener, the
+    // registry's connections — beside its own host's, and launchd starts a
+    // daemon with a soft limit of 256 open files: fifty sessions need more
+    // (ticket 98).
+    raise_open_files(OPEN_FILES);
     let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
     let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
     let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone()), turns_rx);
@@ -113,6 +119,25 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     }
     auto.stop(krowk_harness::host::SHUTDOWN_GRACE);
     served
+}
+
+/// The open files the daemon asks for: room for well over fifty synced
+/// sessions, and under macOS's own ceiling for a process (`OPEN_MAX`, 10240).
+const OPEN_FILES: libc::rlim_t = 4096;
+
+/// The soft limit on open files raised to `want`, or the hard limit when
+/// that is lower; never lowered. One that cannot be raised is left: the
+/// daemon runs as before.
+fn raise_open_files(want: libc::rlim_t) {
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `l` is a valid rlimit for getrlimit to fill and setrlimit to read.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) != 0 || l.rlim_cur >= want {
+            return;
+        }
+        l.rlim_cur = want.min(l.rlim_max);
+        libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+    }
 }
 
 /// The supervisor's config: the policy and whether sync is set up, read
