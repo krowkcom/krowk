@@ -621,6 +621,109 @@ pub trait KeyStorage: Send + Sync {
     fn remove(&self, slot: String) -> Result<(), KrowkError>;
 }
 
+#[derive(Clone, uniffi::Enum)]
+pub enum Effect {
+    NeedTicket { at_ms: u64 },
+    Dial { url: String, ticket: String, connection: u64 },
+    Send { bytes: Vec<u8> },
+    Ping,
+    Close,
+    Show { updates: Vec<ViewerUpdate> },
+    ReadChunks,
+    End,
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum WsFrame {
+    Binary { bytes: Vec<u8> },
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, uniffi::Enum)]
+pub enum ViewerUpdate {
+    Attached { events: Vec<LogEvent>, head: Option<HeadRecord> },
+    Line { line: StreamLine },
+    Host { present: bool },
+    Sent { id: String, queued: bool },
+    Acked { id: String, error: Option<String> },
+    CaughtUp { events: Vec<LogEvent> },
+    Path { path: String, via: Option<String> },
+    Gap,
+    Failed { detail: String },
+    Note { text: String },
+    HandoffTaken,
+    HandoffRefused { detail: String },
+}
+
+#[derive(uniffi::Object)]
+pub struct ChunksRead {
+    // opaque: private fields
+}
+
+#[derive(uniffi::Object)]
+pub struct Viewer {
+    // opaque: private fields
+}
+
+#[uniffi::export]
+impl Viewer {
+    #[uniffi::constructor]
+    pub fn open(
+        session: Arc<OpenedSession>,
+        now_ms: u64,
+    ) -> Result<Arc<Viewer>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn start(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn ticket(&self, ticket: String, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn ticket_failed(&self, detail: String, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn received(&self, connection: u64, frame: WsFrame, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn closed(&self, connection: u64, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn tick(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn command(&self, command: Command, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn next_wake_ms(&self) -> Option<u64> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn read_chunks(&self) -> Arc<ChunksRead> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn chunks_read(&self, read: Arc<ChunksRead>, now_ms: u64) -> Vec<Effect> {}
+}
+
 pub use account::Account;
 
 pub use error::KrowkError;
@@ -632,6 +735,8 @@ pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 
 pub use storage::KeyStorage;
+
+pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
 
 pub const FFI_API_VERSION: u32 = _;
 
