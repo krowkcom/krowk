@@ -61,8 +61,9 @@ pub enum OptOut {
 /// A bad value is an `Err` naming the key and how to fix it. **An `Err`
 /// means off**: the supervisor syncs nothing while the policy cannot be
 /// read, so a typo never sends a session off the machine. Never read an
-/// error as "on". Every value is checked, so a broken `sync.exclude` is
-/// an `Err` even with `KROWK_SYNC_AUTO=0`: still off, named by the error.
+/// error as "on". Every value is checked, the config's under an env
+/// variable that overrides it too, so a broken `sync.exclude` is an `Err`
+/// even with `KROWK_SYNC_AUTO=0`: still off, named by the error.
 pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Policy, String> {
     let sync = match config {
         None => None,
@@ -79,13 +80,13 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
     }
     let key = |k: &str| sync.and_then(|o| o.get(k));
 
+    let configured = match key("auto") {
+        None | Some(Value::Bool(true)) => (true, None),
+        Some(Value::Bool(false)) => (false, Some(AUTO_KEY)),
+        Some(v) => return Err(format!("{AUTO_KEY} is {v}, not true or false — set it to false to turn automatic sync off, or remove it")),
+    };
     let (on, off_by) = match env(AUTO_ENV).trim() {
-        "" => match key("auto") {
-            None => (true, None),
-            Some(Value::Bool(true)) => (true, None),
-            Some(Value::Bool(false)) => (false, Some(AUTO_KEY)),
-            Some(v) => return Err(format!("{AUTO_KEY} is {v}, not true or false — set it to false to turn automatic sync off, or remove it")),
-        },
+        "" => configured,
         s => match s.to_ascii_lowercase().as_str() {
             "0" | "false" | "off" => (false, Some(AUTO_ENV)),
             "1" | "true" | "on" => (true, None),
@@ -106,14 +107,15 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
         Some(v) => return Err(format!("sync.exclude in config.json is {v}, not a list — write it as [\"/absolute/dir\", …], or remove it")),
     };
 
+    let configured = match key("idleMinutes") {
+        None => DEFAULT_IDLE.as_secs(),
+        // Under a second would round to 0, which is never: refused rather
+        // than turned into the opposite of what it says (the rule
+        // `daemon::idle_window` applies to host.idleMinutes).
+        Some(v) => v.as_f64().filter(|m| *m == 0.0 || *m * 60.0 >= 1.0).map(|m| (m * 60.0).round() as u64).ok_or_else(|| format!("sync.idleMinutes in config.json is {v}, not a number of minutes of at least one second (0 never lets go) — fix it, or remove it for {} minutes", DEFAULT_IDLE.as_secs() / 60))?,
+    };
     let secs = match env("KROWK_SYNC_IDLE").trim() {
-        "" => match key("idleMinutes") {
-            None => DEFAULT_IDLE.as_secs(),
-            // Under a second would round to 0, which is never: refused
-            // rather than turned into the opposite of what it says (the
-            // rule `daemon::idle_window` applies to host.idleMinutes).
-            Some(v) => v.as_f64().filter(|m| *m == 0.0 || *m * 60.0 >= 1.0).map(|m| (m * 60.0).round() as u64).ok_or_else(|| format!("sync.idleMinutes in config.json is {v}, not a number of minutes of at least one second (0 never lets go) — fix it, or remove it for {} minutes", DEFAULT_IDLE.as_secs() / 60))?,
-        },
+        "" => configured,
         s => s.parse::<u64>().map_err(|_| format!("KROWK_SYNC_IDLE is {s:?}, not a number of seconds — set it to one (0 never lets go), or unset it"))?,
     };
 
@@ -276,6 +278,9 @@ mod tests {
         // Every value is checked, the switch's override too: still an Err, so off.
         let e = [("KROWK_SYNC_AUTO", "0".to_string())];
         assert!(policy(&env(&e), Some(&json!({"sync": {"exclude": "/w"}}))).is_err());
+        let e = [("KROWK_SYNC_AUTO", "1".to_string()), ("KROWK_SYNC_IDLE", "5".to_string())];
+        assert!(policy(&env(&e), Some(&json!({"sync": {"auto": "no"}}))).unwrap_err().contains("sync.auto"), "a bad value under the override is still refused");
+        assert!(policy(&env(&e), Some(&json!({"sync": {"idleMinutes": 0.005}}))).unwrap_err().contains("sync.idleMinutes"));
     }
 
     #[test]
