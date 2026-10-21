@@ -1281,7 +1281,7 @@ stdout:
         {
           "name": "status",
           "usage": "krowk sync status",
-          "summary": "This device's list, key generation and recovery kit, checked"
+          "summary": "This device's list, recovery kit and auto-sync, checked"
         },
         {
           "name": "recovery",
@@ -2917,7 +2917,7 @@ tty:
         {
           "name": "status",
           "usage": "krowk sync status",
-          "summary": "This device's list, key generation and recovery kit, checked"
+          "summary": "This device's list, recovery kit and auto-sync, checked"
         },
         {
           "name": "recovery",

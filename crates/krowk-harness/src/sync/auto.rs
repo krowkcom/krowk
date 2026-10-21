@@ -284,6 +284,14 @@ pub const BACKOFF_MOST: Duration = Duration::from_secs(5 * 60);
 /// rather than stopped.
 const DROPPED_GRACE: Duration = Duration::from_secs(10);
 
+/// The daemon's turn hook (`server::Options::turns`) and the supervisor's
+/// end of it (`Supervisor::spawn`): unbounded, so the daemon's thread never
+/// waits on the supervisor. Here so the daemon's owner (`krowk host serve`)
+/// links no async runtime of its own to make it.
+pub fn turn_hook() -> (mpsc::UnboundedSender<TurnEvent>, mpsc::UnboundedReceiver<TurnEvent>) {
+    mpsc::unbounded_channel()
+}
+
 /// Starts a bridge for each session a turn starts in, as its policy allows.
 pub struct Supervisor;
 

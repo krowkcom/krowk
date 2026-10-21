@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Sessions sync by themselves.** On a machine with sync set up, every
+  session that runs a turn in the host daemon (the TUI, `krowk -p
+  --daemon`) is synced without `krowk sync host`: another machine lists it
+  within seconds, and `krowk sync attach` follows it. To turn it off, set
+  `"sync": {"auto": false}` in `~/.krowk/config.json`, or
+  `KROWK_SYNC_AUTO=0` for the daemon. To keep one directory off sync, list
+  it in `sync.exclude` or put a `.krowk/no-sync` file in it. `krowk sync
+  status` now says whether auto-sync is on, whether the directory you're
+  in is synced, and how many sessions the daemon is syncing. Sessions
+  stay synced while the daemon runs, and it exits once nobody has used it
+  for a while, so run `krowk host enable` to keep them synced on an
+  always-on machine. A machine without sync set up behaves as before and
+  makes no sync network call. `krowk sync host` still syncs one session by
+  hand, including one in an opted-out directory.
 - **The iPhone app signs in through the browser.** Its first screen says
   "Sign in to krowk" with one button, which opens krowk's approval page in
   a browser sheet that uses your existing krowk login, naming the phone by

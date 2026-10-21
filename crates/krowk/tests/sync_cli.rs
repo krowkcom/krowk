@@ -164,6 +164,35 @@ impl World {
         ];
         Machine { home, repo, run, env, api }
     }
+
+    /// A machine that has not set sync up: a home with a config.json and
+    /// no keys at all, its registry and relay `api` and `relay`.
+    fn bare(&self, name: &str, api: &str, relay: &str) -> (PathBuf, Vec<(String, String)>, PathBuf) {
+        let home = self.root.join(name);
+        let repo = home.join("repo");
+        std::fs::create_dir_all(repo.join(".git")).unwrap();
+        std::fs::create_dir_all(home.join(".krowk")).unwrap();
+        std::fs::write(home.join(".krowk/config.json"), "{}").unwrap();
+        let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
+        let _ = std::fs::remove_dir_all(&run);
+        std::fs::create_dir_all(&run).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let env = vec![
+            ("PATH".into(), "/usr/bin:/bin".into()),
+            ("HOME".into(), home.display().to_string()),
+            ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
+            ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
+            ("KROWK_HOST_IDLE".into(), "5".into()),
+            ("KROWK_API_URL".into(), api.into()),
+            ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
+            ("KROWK_RELAY_URL".into(), relay.into()),
+            ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
+            ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
+            ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
+        ];
+        (repo, env, run)
+    }
 }
 
 impl Drop for World {
@@ -792,4 +821,158 @@ fn r_net_1_krowk_relay_ticket_keys_overrides_the_published_keys() {
     let said = host.stderr();
     assert!(!said.iter().any(|l| l.contains("no direct path")), "A listened, under the named keys: {said:?}");
     assert!(said.iter().any(|l| l.contains("bad_ticket")), "B raced the direct path and its ticket was refused there: {said:?}");
+}
+
+/// Waits until `m`'s registry shows `session` with no lease, or panics.
+fn no_lease(m: &Machine, session: &str, within: Duration) {
+    let deadline = Instant::now() + within;
+    while a_lease(m, session).is_some() {
+        assert!(Instant::now() < deadline, "A still holds session {session}'s lease");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn a_lease(m: &Machine, session: &str) -> Option<String> {
+    m.api.show_sync_session(session).ok().and_then(|s| s.lease).map(|l| l.device)
+}
+
+/// `krowk sync status --json`'s data on `m`, with `env` added.
+fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
+    let out = m.command(&["sync", "status", "--json"]).envs(env.iter().copied()).stdin(Stdio::null()).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    v["data"].clone()
+}
+
+/// R-SYNC-3, R-HOST-2 (ticket 95): A runs a turn in its host daemon with no
+/// sync command — kept up as `krowk host enable` keeps it, with no idle
+/// exit — and B lists the session within 5 seconds of the command's start,
+/// then follows a prompt it sends to its result. `krowk sync status` on A
+/// counts the bridge, `krowk sync host` of the session says it is synced
+/// already, and `krowk host stop` gives the lease back as the daemon exits.
+#[test]
+fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
+    let w = World::new("auto");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    let started = Instant::now();
+    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+    assert!(made.status.success(), "A runs a turn in its daemon: {}", String::from_utf8_lossy(&made.stderr));
+    let session = a.session();
+    let host_log = || std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default();
+
+    let listed = loop {
+        let out = b.command(&["sync", "sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if v["sessions"].as_array().is_some_and(|l| l.iter().any(|s| s["id"] == session.as_str())) {
+            break started.elapsed();
+        }
+        assert!(started.elapsed() < Duration::from_secs(5), "B never listed {session} within 5 s: {v}\nA's host.log: {}", host_log());
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    eprintln!("listed on B {listed:?} after A's command started");
+
+    // B follows it, live: a prompt it sends runs on A, and its result comes back.
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session, "--json"]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("hello from b");
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "{result}");
+    assert!(result["result"].as_str().is_some_and(|r| r.contains(ANSWER)), "{result}");
+    drop(view);
+
+    let data = sync_status(&a, &[]);
+    assert!(data["bridged"].as_u64().is_some_and(|n| n >= 1), "A's daemon bridges it: {data}");
+    assert_eq!((data["autoSync"]["on"].as_bool(), data["directory"]["synced"].as_bool()), (Some(true), Some(true)), "{data}");
+
+    let again = a.command(&["sync", "host", &session]).stdin(Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&again.stdout);
+    assert!(again.status.success() && said.contains("synced already by this machine's host daemon"), "{said}{}", String::from_utf8_lossy(&again.stderr));
+
+    assert!(a_lease(&a, &session).is_some(), "A holds the lease while its daemon runs");
+    let stopped = a.command(&["host", "stop"]).stdin(Stdio::null()).output().unwrap();
+    assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
+    // The exit grace gave it back, rather than leaving it to lapse (60 s).
+    no_lease(&a, &session, Duration::from_secs(15));
+}
+
+/// R-SYNC-3 (ticket 95): `krowk sync status` says whether automatic sync is
+/// on and why not, whether this directory is synced or what opts it out,
+/// and how many sessions the host daemon bridges — none running here.
+#[test]
+fn r_sync_3_sync_status_says_what_applies_here() {
+    let w = World::new("autostatus");
+    let a = w.machine("a");
+    let data = sync_status(&a, &[]);
+    assert_eq!(data["autoSync"], serde_json::json!({"on": true, "why": null}), "{data}");
+    assert_eq!(data["directory"], serde_json::json!({"synced": true, "optedOutBy": null}), "{data}");
+    assert_eq!(data["bridged"], 0, "{data}");
+    let human = a.command(&["sync", "status", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    for line in ["auto-sync: on", "this directory: synced", "bridged: 0 (no host daemon running)"] {
+        assert!(human.lines().any(|l| l == line), "{line:?} in {human}");
+    }
+
+    let data = sync_status(&a, &[("KROWK_SYNC_AUTO", "0")]);
+    assert_eq!(data["autoSync"], serde_json::json!({"on": false, "why": "KROWK_SYNC_AUTO"}), "{data}");
+    assert_eq!(data["directory"]["synced"], false, "{data}");
+
+    let repo = a.repo.display().to_string();
+    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "sync": {"exclude": [repo]}}).to_string()).unwrap();
+    let data = sync_status(&a, &[]);
+    assert_eq!(data["directory"]["synced"], false, "{data}");
+    assert!(data["directory"]["optedOutBy"].as_str().is_some_and(|by| by.contains("sync.exclude") && by.contains(&repo)), "names the entry: {data}");
+    let human = a.command(&["sync", "status", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(human.lines().any(|l| l == format!("this directory: opted out by sync.exclude ({repo})")), "{human}");
+
+    std::fs::write(a.home.join(".krowk/config.json"), r#"{"sync": {"auto": "no"}}"#).unwrap();
+    let data = sync_status(&a, &[]);
+    assert_eq!(data["autoSync"]["on"], false, "a policy that does not read is off: {data}");
+    assert!(data["autoSync"]["why"].as_str().is_some_and(|w| w.contains("sync.auto")), "{data}");
+}
+
+/// A listener that counts the connections made to it.
+fn counting() -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+    let l = TcpListener::bind("127.0.0.1:0").unwrap();
+    let addr = l.local_addr().unwrap().to_string();
+    let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let counted = n.clone();
+    std::thread::spawn(move || {
+        for c in l.incoming() {
+            counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(c);
+        }
+    });
+    (addr, n)
+}
+
+/// R-SYNC-1 (ticket 95): a machine that has not set sync up runs a turn in
+/// its host daemon as before, and neither the registry nor the relay hears
+/// from it — not one connection. `krowk sync status` fails `not_set_up`,
+/// saying automatic sync is off until it is.
+#[test]
+fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
+    let w = World::new("nosync");
+    let ((api, api_seen), (relay, relay_seen)) = (counting(), counting());
+    let (repo, env, run) = w.bare("bare", &format!("http://{api}/v1"), &format!("ws://{relay}"));
+    let command = |args: &[&str]| {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        c.args(args).env_clear().envs(env.iter().map(|(k, v)| (k, v))).current_dir(&repo).stdin(Stdio::null());
+        c
+    };
+    let made = command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    assert!(made.status.success(), "the turn runs: {}", String::from_utf8_lossy(&made.stderr));
+    assert!(String::from_utf8_lossy(&made.stdout).contains(ANSWER));
+    std::thread::sleep(Duration::from_secs(3));
+    let seen = (api_seen.load(std::sync::atomic::Ordering::SeqCst), relay_seen.load(std::sync::atomic::Ordering::SeqCst));
+
+    let status = command(&["sync", "status"]).output().unwrap();
+    let _ = command(&["host", "stop", "--force"]).output();
+    let _ = std::fs::remove_dir_all(&run);
+    assert_eq!(seen, (0, 0), "no connection to the registry or the relay");
+    let err = String::from_utf8_lossy(&status.stderr);
+    assert!(!status.status.success() && err.contains("not_set_up") && err.contains("automatic sync is off until sync is set up here"), "{err}");
 }

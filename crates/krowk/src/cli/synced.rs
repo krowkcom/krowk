@@ -278,6 +278,14 @@ pub(super) fn host_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> 
         return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists this machine's")));
     }
     let session = local_log(ctx, &session)?;
+    // Synced already by this machine's daemon (automatic sync): a second
+    // bridge would only be refused the lease its first holds. Asked of a
+    // daemon that runs; never one started for it.
+    let bridged = krowk_harness::daemon::status(ctx.io.env, super::VERSION).ok().flatten().and_then(|s| s.bridged).unwrap_or_default();
+    if bridged.contains(&session) {
+        let summary = format!("session {session} is synced already by this machine's host daemon (automatic sync)");
+        return super::chain::say(ctx, json!({ "session": session, "synced": true, "by": "daemon" }), summary);
+    }
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     host_loop(ctx, &session, &cwd, None)
 }
@@ -299,16 +307,25 @@ fn host_loop(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, mut handed: Op
 
 /// One run of the bridge, from the list's check to the bridge's end.
 fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option<krowk_harness::sync::Handed>) -> Result<(), Error> {
-    let session = session.to_string();
+    let spawn = super::host::spawner(ctx)?;
+    let o = options(ctx, session, cwd, handed)?;
+    krowk_harness::sync::run_host(o, ctx.io.env, cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
+}
+
+/// A bridge's options for `session`, whose own directory is `cwd`: the
+/// device list brought up to date first, then the keys it leaves current,
+/// the signed registry client, the relay and the direct paths. What `krowk
+/// sync host` runs the bridge with, and what the host daemon's automatic
+/// sync builds each of its bridges with (`host::serve`). May ask the
+/// registry: never on the daemon's thread.
+pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option<krowk_harness::sync::Handed>) -> Result<host::Options, Error> {
     // The list first: a newer key it takes up is the one `keys` reads.
     current(ctx)?;
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync host")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
-    let cwd = cwd.to_path_buf();
-    let spawn = super::host::spawner(ctx)?;
     let direct = direct(ctx, &api)?;
-    let o = host::Options {
+    Ok(host::Options {
         relay: relay(ctx, &api.base_url),
         env,
         api,
@@ -316,7 +333,7 @@ fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option
         signing: k.signing,
         keys: k.user,
         chain: k.chain,
-        session,
+        session: session.to_string(),
         title: String::new(),
         cwd: cwd.display().to_string(),
         sessions: krowk_harness::log::sessions_dir(ctx.io.env)?,
@@ -327,8 +344,21 @@ fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option
         tailnet: krowk_harness::sync::tailscale::status(&krowk_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
         handed,
         approval_wait: host::APPROVAL_WAIT,
-    };
-    krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
+    })
+}
+
+/// Whether sync is set up here, as the host daemon's automatic sync asks
+/// before each bridge: this machine's device key, the person's user key and
+/// a verified device list kept, and a key to the workspace. File reads
+/// only — never the registry — so a machine that does not sync makes no
+/// network call at all (R-SYNC-1).
+pub(super) fn ready(ctx: &Ctx) -> Result<(), Error> {
+    let ks = keystore(ctx)?;
+    let unreadable = |e: String| fail("keys_unreadable", e);
+    if ks.device().map_err(unreadable)?.is_none() || ks.user_keys().map_err(unreadable)?.is_none() || ks.device_list().map_err(unreadable)?.is_none() {
+        return Err(super::chain::not_set_up());
+    }
+    keyed_client(ctx, "automatic sync").map(|_| ())
 }
 
 /// The id of the log this machine keeps for `session`: the id itself, or —
