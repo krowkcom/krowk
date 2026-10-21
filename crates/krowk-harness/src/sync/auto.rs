@@ -19,10 +19,24 @@
 //! Each turn event of a bridged session, and each idle check, reads the
 //! policy again: off stops every bridge, an opt-out that has come since
 //! stops that session's. A bridge refused because another holds the lease
-//! (`lease_held` — a `krowk sync host`, say) waits a minute; one whose
-//! lease another device took waits five; either is tried again only at a
-//! turn, and never takes the lease from anyone. A workspace without a paid
-//! plan stops every bridge and makes no sync call for an hour.
+//! (`lease_held` — a `krowk sync host`, say) waits a minute and is tried
+//! once more then, so the turn refused is not left unsynced when the lease
+//! was a crashed daemon's, which has lapsed by then (ticket 98); one whose
+//! lease another device took waits five. Past that either is tried again
+//! only at a turn, and never takes the lease from anyone. A workspace
+//! without a paid plan stops every bridge and makes no sync call for an
+//! hour.
+//!
+//! **A restart** needs nothing of its own (ticket 98): a daemon that stops
+//! stops its supervisor, each bridge sealing its stream and giving its
+//! lease back, and the next daemon's supervisor takes a session up at its
+//! next turn, on a new stream (`host::run` starts a new `HostLink`), onto
+//! which the relay tells a viewer still attached to resync. A daemon that
+//! crashed leaves its leases to lapse: a take-up meanwhile is refused
+//! `lease_held`, and tried once more a minute later.
+//!
+//! **One list reader** (ticket 98): the bridges' device list is read by one
+//! thread for all of them, `krowk-sync-list` (`Lists`), not one per bridge.
 //!
 //! It runs on a `std::thread` and a current-thread runtime of its own,
 //! never on the daemon's thread: the daemon runs every session on one
@@ -297,8 +311,22 @@ pub const PAID_PAUSE: Duration = Duration::from_secs(60 * 60);
 
 /// How long a session waits when another bridge holds its lease as its
 /// bridge starts — a `krowk sync host` here or elsewhere, or a lease left
-/// by a host that crashed, which lapses within its TTL.
+/// by a host that crashed, which lapses within its TTL (`host::LEASE_TTL`,
+/// no longer than this): it is tried once more then.
 pub const LEASE_HELD_WAIT: Duration = Duration::from_secs(60);
+const _: () = assert!(LEASE_HELD_WAIT.as_secs() >= host::LEASE_TTL, "a crashed daemon's lease lapses before the one more try");
+
+/// How much longer than `LEASE_HELD_WAIT` the one more try waits: a
+/// crashed daemon's lease lapses within a TTL of its last renewal, before
+/// the refusal; a little more covers the registry's clock and this one's.
+const ONCE_MORE_SLACK: Duration = Duration::from_secs(5);
+
+/// How long a session waits when its take-up was refused as one write too
+/// many (`too_many_requests`, the registry's per-key ceiling on creates —
+/// fifty sessions taken up together come near it): the minute the
+/// registry's Retry-After asks for, rather than a backoff that would ask
+/// it again within it.
+pub const LIMITED_WAIT: Duration = Duration::from_secs(60);
 
 /// How long a session waits when another device took its lease while it
 /// was bridged.
@@ -481,12 +509,12 @@ fn paid_fix(error: &str) -> String {
 /// session's own directory — a background one, so it never keeps the
 /// daemon up, and answering, so viewers and the phone can approve — and
 /// `host::run` until `stop` or its end.
-async fn bridge(c: Arc<Config>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>) -> Result<(), String> {
+async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>) -> Result<(), String> {
     let built = {
         let (c, session, cwd) = (c.clone(), session.clone(), cwd.clone());
         tokio::task::spawn_blocking(move || (c.build)(&session, &cwd)).await
     };
-    let o = match built {
+    let mut o = match built {
         Ok(o) => o.map_err(|(code, message)| format!("{message} ({code})"))?,
         // A panic in `build` is this bridge's, and only its.
         Err(e) => match e.try_into_panic() {
@@ -505,10 +533,183 @@ async fn bridge(c: Arc<Config>, session: String, cwd: PathBuf, stop: watch::Rece
         return Ok(());
     }
     lock(&c.bridged).insert(session.clone());
+    // Read for by the supervisor's one list reader for as long as it runs.
+    let _listed = Lists::add(&lists, &mut o);
     // Kept for the bridge's life: dropped, `on_demand` would close and
     // `run` spin on it.
     let (_checkpoint, on_demand) = mpsc::unbounded_channel();
     host::run(o, Arc::new(daemon), stop, on_demand).await
+}
+
+/// The supervisor's one device-list reader (ticket 98). Every bridge would
+/// otherwise read the same list each `host::LIST_EVERY`, fifty bridges
+/// fifty times a minute: one thread, `krowk-sync-list`, reads it while at
+/// least one bridge runs, with the registry client and device of any of
+/// them, and writes what ends them into each one's `Options::stale`.
+#[derive(Default)]
+struct Lists(Mutex<Listing>);
+
+#[derive(Default)]
+struct Listing {
+    bridges: HashMap<u64, Reader>,
+    next: u64,
+    /// The longest list known: a bridge's, or one the reader read.
+    chain: Option<krowk_client::device_chain::Chain>,
+    /// A reader thread runs.
+    reading: bool,
+}
+
+/// A bridge read for: where its reason to stop goes, and what to read as.
+struct Reader {
+    session: String,
+    stale: Arc<Mutex<Option<String>>>,
+    api: Arc<krowk_api::Client>,
+    device: krowk_client::e2e::DeviceId,
+    /// The list it was built with: a reason to stop found on a list no
+    /// longer is its own.
+    chain: krowk_client::device_chain::Chain,
+}
+
+/// A bridge's place with the reader, given up when dropped (its bridge's
+/// end, however it comes).
+struct Listed(Arc<Lists>, u64);
+
+impl Drop for Listed {
+    fn drop(&mut self) {
+        self.0.lock().bridges.remove(&self.1);
+    }
+}
+
+impl Lists {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Listing> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// `o`'s bridge read for: its `stale` the reader's to write, and the
+    /// reader started if none runs. With no thread to be had, the bridge
+    /// reads the list itself, as `krowk sync host` does.
+    fn add(lists: &Arc<Lists>, o: &mut host::Options) -> Option<Listed> {
+        let stale = Arc::new(Mutex::new(None));
+        let mut l = lists.lock();
+        if !l.reading {
+            let reader = lists.clone();
+            if std::thread::Builder::new().name("krowk-sync-list".into()).spawn(move || read_lists(&reader, host::LIST_EVERY)).is_err() {
+                return None;
+            }
+            l.reading = true;
+        }
+        // The newer of the two: a longer one, or one started over since
+        // (a bridge is built on the list as the registry has it now).
+        if l.chain.as_ref().is_none_or(|c| c.root() != o.chain.root() || c.head().seq < o.chain.head().seq) {
+            l.chain = Some(o.chain.clone());
+        }
+        let id = l.next;
+        l.next += 1;
+        l.bridges.insert(id, Reader { session: o.session.clone(), stale: stale.clone(), api: o.api.clone(), device: o.device, chain: o.chain.clone() });
+        o.stale = Some(stale);
+        Some(Listed(lists.clone(), id))
+    }
+}
+
+/// Whether list `a` is one `b` reads on from — the same list, started from
+/// the same first entry — and no longer than it.
+fn behind(a: &krowk_client::device_chain::Chain, b: &krowk_client::device_chain::Chain) -> bool {
+    a.root() == b.root() && a.head().seq <= b.head().seq
+}
+
+/// Why a bridge built on list `built` stops after the reader read `read`
+/// and found `end` (`None`: nothing that stops a host), if it does: `end`
+/// when its list is `read` or an earlier state of it; nothing when it is a
+/// later one. One built on another list is stopped as started over — unless
+/// the read found `read` itself started over, when that other list may be
+/// the new one. Pure.
+fn told(built: &krowk_client::device_chain::Chain, read: &krowk_client::device_chain::Chain, end: Option<&host::ListEnd>) -> Option<host::ListEnd> {
+    if built.root() != read.root() {
+        (end != Some(&host::ListEnd::StartedOver)).then_some(host::ListEnd::StartedOver)
+    } else if behind(built, read) {
+        end.cloned()
+    } else {
+        None
+    }
+}
+
+/// The reader: the list read every `every` until no bridge is left. An
+/// added device's longer list is kept for the next read. A reason to stop
+/// is written into every bridge built on the list read or an earlier state
+/// of it, each in its own session's words (`ListEnd::why`, `LIST_MOVED`
+/// first when a removal moved the key on, which the supervisor builds
+/// again at once), and into every bridge built on another list (`told`).
+/// Those are no longer read for;
+/// the next read starts from the list of the bridge built last.
+fn read_lists(lists: &Lists, every: Duration) {
+    // A panic (a registry answer no read expected) ends the thread. No
+    // bridge is left unread: each running one is told to stop, and is built
+    // again — and read for by a new reader — as any ended bridge is. Its
+    // ordinary end says so itself, under the lock that decides it.
+    struct Panicked<'a>(&'a Lists);
+    impl Drop for Panicked<'_> {
+        fn drop(&mut self) {
+            if std::thread::panicking() {
+                let mut l = self.0.lock();
+                for b in l.bridges.values() {
+                    b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the device list could not be read again (its reader stopped); this machine stopped syncing session {}", b.session));
+                }
+                l.bridges.clear();
+                l.reading = false;
+                l.chain = None;
+            }
+        }
+    }
+    let _panicked = Panicked(lists);
+    let mut next = std::time::Instant::now() + every;
+    loop {
+        std::thread::sleep(Duration::from_millis(100).min(next.saturating_duration_since(std::time::Instant::now())));
+        let asked = {
+            let mut l = lists.lock();
+            if l.bridges.is_empty() {
+                // Under the lock: a bridge added from here starts another.
+                l.reading = false;
+                l.chain = None;
+                return;
+            }
+            if std::time::Instant::now() < next {
+                continue;
+            }
+            next = std::time::Instant::now() + every;
+            let any = l.bridges.values().next().expect("one at least");
+            let (api, device) = (any.api.clone(), any.device);
+            let Some(chain) = l.chain.clone() else { continue };
+            // Judged by this read: the bridges there now, and any added while
+            // it runs on the list it read.
+            let read_for: HashSet<u64> = l.bridges.keys().copied().collect();
+            (api, device, chain, read_for)
+        };
+        let (api, device, chain, read_for) = asked;
+        // Unlocked: a slow registry never holds up a bridge starting.
+        let read = host::list_news(&api, device, &chain);
+        let mut l = lists.lock();
+        let end = match read {
+            Ok(Some(longer)) => {
+                if l.chain.as_ref().is_some_and(|c| behind(c, &longer)) {
+                    l.chain = Some(longer);
+                }
+                None
+            }
+            Ok(None) => None,
+            Err(end) => Some(end),
+        };
+        l.bridges.retain(|id, b| {
+            // One added during the read is judged too when built on the
+            // list it read: only a newer or another list may be what the
+            // read did not see.
+            let Some(why) = told(&b.chain, &chain, end.as_ref()).filter(|_| read_for.contains(id) || behind(&b.chain, &chain)) else { return true };
+            b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.why(&b.session));
+            false
+        });
+        if end.is_some() || l.chain.as_ref().is_some_and(|c| c.root() != chain.root()) {
+            l.chain = l.bridges.iter().max_by_key(|(id, _)| **id).map(|(_, b)| b.chain.clone());
+        }
+    }
 }
 
 fn lock(b: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
@@ -568,6 +769,12 @@ struct Sup {
     said_lease: HashMap<String, String>,
     /// The daemon's hook closed: it is gone, and nothing starts again.
     gone: bool,
+    /// The one device-list reader, shared by every bridge.
+    lists: Arc<Lists>,
+    /// Sessions being taken up again because a wait for another's lease
+    /// ran out, not because a turn asked: refused again, they wait for a
+    /// turn.
+    lease_retry: HashSet<String>,
 }
 
 /// Sessions whose last reason is remembered, past which the oldest are
@@ -589,6 +796,9 @@ struct Wait {
     quiet: Instant,
     /// A turn started in it while it waited.
     wanted: bool,
+    /// Tried again as the wait runs out even with no turn: the turn that
+    /// was refused another's lease is not left unsynced.
+    once_more: bool,
 }
 
 /// Whether a session whose wait ran out at `now` is started again: when a
@@ -597,7 +807,7 @@ struct Wait {
 /// window, so sync resumes by itself (R-OFF-2) for a session in use, and a
 /// session nobody uses makes no call until its next turn. Pure.
 fn wanted_again(w: &Wait, running: bool, idle: Option<Duration>, now: Instant) -> bool {
-    running || w.wanted || (!w.lazy && idle_at(w.quiet, false, false, idle).is_none_or(|at| now < at))
+    running || w.wanted || w.once_more || (!w.lazy && idle_at(w.quiet, false, false, idle).is_none_or(|at| now < at))
 }
 
 /// Whether a bridge's error is the registry's refusal of a workspace
@@ -633,6 +843,8 @@ impl Sup {
             said_of: HashMap::new(),
             said_lease: HashMap::new(),
             gone: false,
+            lists: Arc::default(),
+            lease_retry: HashSet::new(),
         }
     }
 
@@ -701,6 +913,8 @@ impl Sup {
     fn turn(&mut self, session: String, running: bool) {
         if running {
             self.running.insert(session.clone());
+            // A turn asks for it: refused the lease, it is tried again.
+            self.lease_retry.remove(&session);
         } else {
             self.running.remove(&session);
         }
@@ -720,7 +934,9 @@ impl Sup {
                 // Its wait runs: a turn meanwhile is why to start it again.
                 Some(w) if running => w.wanted = true,
                 Some(w) => w.quiet = Instant::now(),
-                None if running => self.start(session),
+                None if running => {
+                    self.start(session);
+                }
                 None => {}
             },
         }
@@ -741,9 +957,9 @@ impl Sup {
 
     /// A turn started in `session`, or its wait ran out: checked, then
     /// bridged — unless it is already, backs off, or sync is paused.
-    fn start(&mut self, session: String) {
+    fn start(&mut self, session: String) -> bool {
         if self.has.contains_key(&session) || self.backing.contains_key(&session) || self.paused() {
-            return;
+            return false;
         }
         self.has.insert(session.clone(), Has::Checking(self.generation));
         let c = self.c.clone();
@@ -753,6 +969,7 @@ impl Sup {
             // A check that panicked is a no: fail closed.
             (session, r.unwrap_or_else(|e| Err(No::Session(format!("its checks failed: {e}")))))
         });
+        true
     }
 
     fn checked(&mut self, r: Result<Checked, JoinError>) {
@@ -781,7 +998,7 @@ impl Sup {
                 self.said_of.remove(&session);
                 self.idle = idle;
                 let (stop, stop_rx) = watch::channel(false);
-                let task = self.bridges.spawn(bridge(self.c.clone(), session.clone(), cwd.clone(), stop_rx));
+                let task = self.bridges.spawn(bridge(self.c.clone(), self.lists.clone(), session.clone(), cwd.clone(), stop_rx));
                 self.of_task.insert(task.id(), session.clone());
                 let now = Instant::now();
                 self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false, again: false });
@@ -789,6 +1006,7 @@ impl Sup {
             Err(no) => {
                 self.has.remove(&session);
                 self.waits.remove(&session);
+                self.lease_retry.remove(&session);
                 match no {
                     No::Device(why) => {
                         if self.said.as_ref() != Some(&why) {
@@ -917,6 +1135,7 @@ impl Sup {
         }
         self.backing.clear();
         self.waits.clear();
+        self.lease_retry.clear();
     }
 
     /// A bridge ended: by itself, or as the supervisor told it to (idle,
@@ -927,6 +1146,7 @@ impl Sup {
             Err(e) => (e.id(), Err(panicked(e))),
         };
         let Some(session) = self.of_task.remove(&id) else { return };
+        let retried = self.lease_retry.remove(&session);
         let (since, quiet, stopping, again) = match self.has.remove(&session) {
             Some(Has::Bridging { since, quiet, stopping, again, .. }) => (since, quiet, stopping, again),
             _ => (Instant::now(), Instant::now(), false, false),
@@ -962,14 +1182,21 @@ impl Sup {
             }
             // Another bridge holds the lease — a `krowk sync host`, or a
             // crashed host's, which lapses: no error, and never taken from it.
-            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, quiet, LEASE_HELD_WAIT, "another bridge holds its lease"),
-            Err(e) if e.starts_with(host::LEASE_LOST) => self.wait_for_lease(session, quiet, LEASE_LOST_WAIT, "another device took its lease"),
+            // The turn that asked for it is not left unsynced: tried once
+            // more when the wait runs out, by when a crashed host's lease
+            // has lapsed (ticket 98). Refused again, it waits for a turn.
+            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, quiet, LEASE_HELD_WAIT, !retried, "another bridge holds its lease"),
+            Err(e) if e.starts_with(host::LEASE_LOST) => self.wait_for_lease(session, quiet, LEASE_LOST_WAIT, false, "another device took its lease"),
             // Any other end — an error, a panic, an end it gave no reason
             // for — is this session's alone: it backs off.
             r => {
                 let why = r.err().unwrap_or_else(|| "it ended with no error".into());
                 let ran = since.elapsed();
+                let limited = why.contains("(too_many_requests)");
                 let wait = match self.waits.get(&session) {
+                    // The registry asked for its minute: a backoff shorter
+                    // than it would only be refused again.
+                    _ if limited => LIMITED_WAIT,
                     Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),
                     _ => BACKOFF_FIRST,
                 };
@@ -978,21 +1205,31 @@ impl Sup {
                     return;
                 }
                 eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
-                self.waits.insert(session.clone(), wait);
-                self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: false, quiet, wanted: false });
+                // The registry's minute is no failure of the session's own
+                // to double the next backoff from.
+                if !limited {
+                    self.waits.insert(session.clone(), wait);
+                }
+                self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: false, quiet, wanted: false, once_more: false });
             }
         }
     }
 
     /// `session` left alone for `wait` — its lease is another's — and
-    /// then taken up at its next turn, or at once if one ran meanwhile.
-    fn wait_for_lease(&mut self, session: String, quiet: Instant, wait: Duration, why: &str) {
+    /// then taken up at its next turn, or at once if one ran meanwhile;
+    /// `once_more`, tried again as the wait runs out all the same.
+    fn wait_for_lease(&mut self, session: String, quiet: Instant, wait: Duration, once_more: bool, why: &str) {
         self.waits.remove(&session);
         if self.gone {
             return;
         }
-        // Said once while the reason stands, not at every try.
-        let line = format!("{why}; it is left to it, and tried again at a turn after {}", human(wait));
+        // Said once while the reason stands, not at every try: the same
+        // words for the one more try and the wait after it.
+        let line = if wait == LEASE_HELD_WAIT {
+            format!("{why}; it is left to it, tried once more in {}, then at a turn", human(wait + ONCE_MORE_SLACK))
+        } else {
+            format!("{why}; it is left to it, and tried again at a turn after {}", human(wait))
+        };
         if self.said_lease.get(&session) != Some(&line) {
             eprintln!("krowk: automatic sync skips session {session}: {line}");
             if self.said_lease.len() >= SAID_MOST {
@@ -1000,7 +1237,8 @@ impl Sup {
             }
             self.said_lease.insert(session.clone(), line);
         }
-        self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: true, quiet, wanted: false });
+        let at = Instant::now() + wait + if once_more { ONCE_MORE_SLACK } else { Duration::ZERO };
+        self.backing.insert(session, Wait { at, lazy: true, quiet, wanted: false, once_more });
     }
 
     /// Every session whose wait ran out, started again if it is still
@@ -1011,7 +1249,11 @@ impl Sup {
         for s in due {
             let Some(w) = self.backing.remove(&s) else { continue };
             if wanted_again(&w, self.running.contains(&s), self.idle, now) {
-                self.start(s);
+                // Asked for by no turn since: refused again, it waits for one.
+                let retry = w.lazy && !(w.wanted || self.running.contains(&s));
+                if self.start(s.clone()) && retry {
+                    self.lease_retry.insert(s);
+                }
             } else {
                 self.waits.remove(&s);
             }
@@ -1391,7 +1633,7 @@ mod tests {
     fn r_off_2_a_session_backing_off_is_started_again_only_while_in_use() {
         let quiet = Instant::now();
         let idle = Some(Duration::from_secs(600));
-        let w = |lazy: bool, wanted: bool| Wait { at: quiet, lazy, quiet, wanted };
+        let w = |lazy: bool, wanted: bool| Wait { at: quiet, lazy, quiet, wanted, once_more: false };
         let soon = quiet + Duration::from_secs(60);
         let late = quiet + Duration::from_secs(601);
         assert!(wanted_again(&w(false, false), false, idle, soon), "used a minute ago: sync resumes by itself");
@@ -1403,5 +1645,37 @@ mod tests {
         assert!(!wanted_again(&w(true, false), false, None, soon));
         assert!(wanted_again(&w(true, true), false, idle, late));
         assert!(wanted_again(&w(true, false), true, idle, late));
+        // The turn refused another's lease (a crashed host's, say) is tried
+        // once more as its wait runs out, used or not.
+        let once = Wait { once_more: true, ..w(true, false) };
+        assert!(wanted_again(&once, false, idle, late), "the refused turn's once more");
+    }
+
+    /// The reader's one read stops each bridge it should and no other: one
+    /// built on the list read or an earlier state of it gets the read's
+    /// reason; one built on a longer list is kept; one built on a list
+    /// started over since is stopped whatever the read says, and one built
+    /// on the new list is never stopped by a read of the old.
+    #[test]
+    fn one_list_read_stops_the_bridges_it_should_and_no_other() {
+        use krowk_client::device_chain::{Change, Chain, Kind, Subject};
+        use krowk_client::e2e::{DeviceKey, SigningKey};
+        let subject = |name: &str, d: &DeviceKey, s: &SigningKey| Subject { kind: Kind::Device, name: name.into(), os: "linux".into(), device: d.public(), signing: s.public() };
+        let (laptop, laptop_s) = (DeviceKey::generate(), SigningKey::generate());
+        let (desktop, desktop_s) = (DeviceKey::generate(), SigningKey::generate());
+        let (one, start) = Chain::start(subject("laptop", &laptop, &laptop_s), &laptop_s, None, 1_790_000_000).unwrap();
+        let (two, _) = one.batch(&start.newest, vec![Change::Add(subject("desktop", &desktop, &desktop_s))], laptop.id(), &laptop_s, 1_790_000_001).unwrap();
+        let (over, _) = Chain::start(subject("laptop", &laptop, &laptop_s), &laptop_s, None, 1_790_000_002).unwrap();
+        let moved = host::ListEnd::Moved;
+        assert_eq!(told(&one, &one, Some(&moved)), Some(moved.clone()), "built on the list read");
+        assert_eq!(told(&one, &two, Some(&moved)), Some(moved.clone()), "built on an earlier state of it");
+        assert_eq!(told(&two, &one, Some(&moved)), None, "built on a longer list: its own");
+        assert_eq!(told(&one, &two, None), None, "nothing found: nothing stops");
+        assert_eq!(told(&one, &over, None), Some(host::ListEnd::StartedOver), "a list started over since");
+        assert_eq!(told(&over, &two, Some(&moved)), Some(host::ListEnd::StartedOver), "read on the other list");
+        assert_eq!(told(&over, &over, None), None, "the new list, read");
+        assert_eq!(told(&over, &two, Some(&host::ListEnd::StartedOver)), None, "the old list read and found started over: the new one is not");
+        assert_eq!(told(&two, &two, Some(&host::ListEnd::StartedOver)), Some(host::ListEnd::StartedOver));
+        assert!(moved.why("s1").starts_with(host::LIST_MOVED) && moved.why("s1").contains("s1"), "each bridge's own words, LIST_MOVED first");
     }
 }

@@ -210,6 +210,7 @@ pub fn start(demo: bool) -> Fleet {
         tailnet: None,
         handed: None,
         approval_wait: host::APPROVAL_WAIT,
+        stale: None,
     };
     let prompt = |session: Option<&str>, text: &str| {
         let model = Registry::resolve(&InstancesConfig::default(), &env).parse_model("claude-sonnet-4-6").unwrap();

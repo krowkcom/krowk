@@ -114,6 +114,13 @@ pub struct Options {
     /// How long a request waits, with no viewer here, before the bridge
     /// denies it (`APPROVAL_WAIT`; a test makes it short).
     pub approval_wait: Duration,
+    /// Where an owner that reads the device list for many bridges writes
+    /// why this one must stop (the automatic sync's supervisor, which runs
+    /// one reader for all of them): `run` then starts no list reader of its
+    /// own, and ends with the reason at its next sweep, as with its own.
+    /// `None` — `krowk sync host` — reads the list itself every
+    /// `LIST_EVERY`.
+    pub stale: Option<Arc<Mutex<Option<String>>>>,
 }
 
 /// How a bridge that handed its session over ends: what `krowk sync host`
@@ -287,31 +294,62 @@ fn link_dead(gap: Duration, heard: Duration, unacked: usize, waited: Option<Dura
 /// How often a running host reads the device list again: the list it
 /// verified when it started is not the list for good, and a device removed
 /// while it runs must not go on reading what it seals.
-const LIST_EVERY: Duration = Duration::from_secs(60);
+pub const LIST_EVERY: Duration = Duration::from_secs(60);
 
 /// What a running host ends with when the list moved on under it and a
 /// device was removed: `krowk sync host` takes the session up again, under
 /// the new list and the user key it leaves current.
 pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
 
-/// The list read again past the head `chain` holds and verified onto it:
-/// `None` when nothing came, or the registry could not be reached (asked
-/// again later), the longer chain when it only added devices, and why the
-/// host must stop otherwise — a removal, this device's own, or entries that
-/// do not verify.
-fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
-    let session = &o.session;
-    let removed = || format!("this device was removed from your device list; it stopped hosting session {session}");
-    let refused = |e: String| format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again");
+/// Why the device list, read again, says a host must stop: what `ListEnd::why`
+/// says of each session it stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListEnd {
+    /// This device is no longer on the list (or the registry says it was
+    /// revoked).
+    Removed,
+    /// The registry refused this machine's key.
+    KeyRefused,
+    /// The list ends before the head held, or holds another entry there.
+    StartedOver,
+    /// Entries that do not verify onto the list held, and why.
+    Refused(String),
+    /// Another device was removed: the user key moved on (`LIST_MOVED`).
+    Moved,
+}
+
+impl ListEnd {
+    /// What a host of `session` ends with. A move starts with `LIST_MOVED`,
+    /// which is how `krowk sync host` and the automatic sync's supervisor
+    /// know to take the session up again under the new list.
+    pub fn why(&self, session: &str) -> String {
+        match self {
+            ListEnd::Removed => format!("this device was removed from your device list; it stopped hosting session {session}"),
+            // A removal revokes the device's keys, so this may be one; the
+            // key refused is all that is known, and all that is said.
+            ListEnd::KeyRefused => format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}"),
+            ListEnd::StartedOver => format!("your device list was started over; it stopped hosting session {session}"),
+            ListEnd::Refused(e) => format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again"),
+            ListEnd::Moved => format!("{LIST_MOVED}; session {session} is hosted again under the new list"),
+        }
+    }
+}
+
+/// The list read again, by `api` as `device`, past the head `chain` holds
+/// and verified onto it: `None` when nothing came, or the registry could
+/// not be reached (asked again later), the longer chain when it only added
+/// devices, and why a host must stop otherwise — a removal, this device's
+/// own, or entries that do not verify. One read answers for every session
+/// the device hosts: blocking, on a thread of the caller's.
+pub fn list_news(api: &Client, device: DeviceId, chain: &Chain) -> Result<Option<Chain>, ListEnd> {
+    let refused = |e: String| ListEnd::Refused(e);
     let mut next = chain.clone();
     let mut after = chain.head().seq;
     loop {
-        let served = match o.api.device_list(Some(after)) {
+        let served = match api.device_list(Some(after)) {
             Ok(s) => s,
-            Err(e) if e.code() == "device_revoked" => return Err(removed()),
-            // A removal revokes the device's keys, so this may be one; the
-            // key refused is all that is known, and all that is said.
-            Err(e) if e.status == 401 => return Err(format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}")),
+            Err(e) if e.code() == "device_revoked" => return Err(ListEnd::Removed),
+            Err(e) if e.status == 401 => return Err(ListEnd::KeyRefused),
             Err(_) => return Ok(None),
         };
         // A list that ends before the head held, or holds another entry
@@ -319,7 +357,7 @@ fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
         if let Some(h) = &served.head
             && (h.seq < chain.head().seq || (h.seq == chain.head().seq && e2e::unhex(&h.hash).as_deref() != Some(&chain.head().hash[..])))
         {
-            return Err(format!("your device list was started over; it stopped hosting session {session}"));
+            return Err(ListEnd::StartedOver);
         }
         let from = next.head().seq;
         for e in served.entries.iter().filter(|e| e.seq > from) {
@@ -335,18 +373,19 @@ fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
     if next.head() == chain.head() {
         return Ok(None);
     }
-    if !next.devices().iter().any(|d| d.id() == o.device) {
-        return Err(removed());
+    if !next.devices().iter().any(|d| d.id() == device) {
+        return Err(ListEnd::Removed);
     }
     if next.generation() > chain.generation() {
-        return Err(format!("{LIST_MOVED}; session {session} is hosted again under the new list"));
+        return Err(ListEnd::Moved);
     }
     Ok(Some(next))
 }
 
 /// Reads the device list again every `LIST_EVERY`, on a thread of its own
 /// so a slow read never holds up the lease's renewal, until the bridge
-/// stops or the list says it must (`stale`).
+/// stops or the list says it must (`stale`). A bridge whose owner reads
+/// the list for it (`Options::stale`) runs none.
 fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
     let mut chain = o.chain.clone();
     let mut next = Instant::now() + LIST_EVERY;
@@ -356,11 +395,11 @@ fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<Str
             continue;
         }
         next = Instant::now() + LIST_EVERY;
-        match list_news(&o, &chain) {
+        match list_news(&o.api, o.device, &chain) {
             Ok(Some(longer)) => chain = longer,
             Ok(None) => {}
-            Err(why) => {
-                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(why);
+            Err(end) => {
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(end.why(&o.session));
                 return;
             }
         }
@@ -379,7 +418,39 @@ enum Write {
 /// How often a write the registry refused is tried again.
 const RETRY: Duration = Duration::from_secs(2);
 
+/// How long the writer leaves the registry alone once it refuses a write as
+/// one too many (`too_many_requests`, its per-key ceiling on creates): the
+/// minute its Retry-After asks for. Fifty sessions taken up together and
+/// ending their turns in the same minute pass the ceiling (ticket 98), and
+/// fifty writers each trying again every `RETRY` would ask it some thirty
+/// times more than it said to. What is owed is kept, and put after.
+const LIMITED: Duration = Duration::from_secs(60);
+
+/// Whether a write's error is the registry's ceiling on creates.
+fn limited(e: &str) -> bool {
+    e.contains("too_many_requests")
+}
+
+/// When this process last said the registry is limiting its writes: one
+/// key, so fifty writers refused together say it once a wait, not fifty
+/// times.
+static LIMITED_SAID: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn say_limited(e: &str) {
+    let mut said = LIMITED_SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if said.is_none_or(|at| at.elapsed() >= LIMITED) {
+        *said = Some(Instant::now());
+        eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
+    }
+}
+
 fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>, lost: Arc<AtomicBool>) {
+    // Until when the registry asked to be left alone (`LIMITED`), and
+    // whether a flush was put off meanwhile: owed as a staged chunk is.
+    let mut quiet: Option<Instant> = None;
+    let mut put_off = false;
+    // When a write last went to the registry.
+    let mut tried = Instant::now();
     loop {
         let job = match rx.recv_timeout(RETRY) {
             Ok(j) => Some(j),
@@ -391,37 +462,84 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
             continue;
         }
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let done = w.refence(h.fence).and_then(|()| match job {
-            Some(Write::Event(e)) => {
+        let waiting = quiet.is_some_and(|until| Instant::now() < until);
+        // What was owed, or put off, is put again every `RETRY` however busy
+        // the session is — not only once it falls quiet — unless the
+        // registry asked to be left alone.
+        let due = !waiting && (w.owes() || put_off) && tried.elapsed() >= RETRY;
+        let done = match job {
+            // Kept in order, whatever the registry says: the fence is looked
+            // at when something is written.
+            Some(Write::Event(e)) if !due => {
                 w.push(e);
                 Ok(())
             }
-            Some(Write::Flush) => w.flush(&h.token),
-            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token),
-            Some(Write::Handoff(tree, done)) => {
-                let r = w.checkpoint(tree, &h.token);
-                let _ = done.send(r.clone());
-                r
+            // Kept, and put once the registry takes writes again: a
+            // checkpoint and a handoff's are still asked for, being rare
+            // and, the second, waited on.
+            Some(Write::Flush) if waiting => {
+                put_off = true;
+                Ok(())
             }
-            // What was owed is put again, the same chunk under the same index.
-            None if w.owes() => w.flush(&h.token),
-            None => Ok(()),
-        });
-        if let Err(e) = done {
-            eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again");
+            None if !due => Ok(()),
+            job => {
+                tried = Instant::now();
+                if let Some(Write::Event(e)) = &job {
+                    w.push(e.clone());
+                }
+                match (w.refence(h.fence), job) {
+                    // The lease's new fence could not be taken up: the events
+                    // are kept and a flush is owed still, and a handoff hears
+                    // why. A checkpoint asked for then is not cut (the next
+                    // take-up cuts one).
+                    (Err(e), Some(Write::Handoff(_, done))) => {
+                        let _ = done.send(Err(e.clone()));
+                        Err(e)
+                    }
+                    (Err(e), _) => {
+                        put_off = true;
+                        Err(e)
+                    }
+                    // Each of these flushes first: through, nothing put off
+                    // is left. What was owed is put again, the same chunk
+                    // under the same index.
+                    (Ok(()), Some(Write::Checkpoint(tree))) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
+                    (Ok(()), Some(Write::Handoff(tree, done))) => {
+                        let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), _) => w.flush(&h.token).inspect(|()| put_off = false),
+                }
+            }
+        };
+        match done {
+            Err(e) if limited(&e) => {
+                say_limited(&e);
+                quiet = Some(Instant::now() + LIMITED);
+            }
+            Err(e) => eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again"),
+            Ok(()) => {}
         }
         if let Some(head) = w.head() {
             let _ = heads.send(head);
         }
     }
-    // Stopping: what is owed gets a last few tries.
-    for _ in 0..3 {
-        if !w.owes() || lost.load(Ordering::Relaxed) {
+    // Stopping: what is owed gets a last few tries — one, while the
+    // registry asks to be left alone, so a stop is not held up waiting on
+    // it. What is still not stored the next bridge of the session writes,
+    // from the daemon's log, when its next turn takes it up.
+    let tries = if quiet.is_some_and(|until| Instant::now() < until) { 1 } else { 3 };
+    for _ in 0..tries {
+        if !(w.owes() || put_off) || lost.load(Ordering::Relaxed) {
             break;
         }
+        put_off = false;
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if w.flush(&h.token).is_err() {
-            std::thread::sleep(RETRY);
+        match w.flush(&h.token) {
+            Ok(()) => {}
+            Err(e) if limited(&e) => break,
+            Err(_) => std::thread::sleep(RETRY),
         }
     }
 }
@@ -647,11 +765,15 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
     if *stop.borrow() {
         return Ok(());
     }
+    // The take-up's checkpoint names the worktree's commit, read here too:
+    // `git rev-parse` is a process, and the runtime may be one many bridges
+    // share (the automatic sync's), where one slow repository would hold up
+    // every other session's stream.
     let taken = {
         let o = o.clone();
-        tokio::task::spawn_blocking(move || take(&o)).await.map_err(|e| e.to_string())??
+        tokio::task::spawn_blocking(move || take(&o).map(|t| (t, worktree(&o.cwd)))).await.map_err(|e| e.to_string())??
     };
-    let (key, writer, held) = taken;
+    let ((key, writer, held), commit) = taken;
     let held = Arc::new(Mutex::new(held));
     let halt = Arc::new(AtomicBool::new(false));
     // However `run` ends — an error before its loop, a panic, its future
@@ -662,12 +784,14 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
     let lost = Arc::new(AtomicBool::new(false));
     // Set when the device list moved on under the host, or the registry
     // refused the lease for want of a paid plan: why it stops.
-    let stale = Arc::new(Mutex::new(None));
+    // An owner that reads the list for it writes there; otherwise the
+    // bridge reads it itself.
+    let stale = o.stale.clone().unwrap_or_default();
     {
         let (o, held, halt, lost, stale) = (o.clone(), held.clone(), halt.clone(), lost.clone(), stale.clone());
         std::thread::spawn(move || renew_loop(o, held, halt, lost, stale));
     }
-    {
+    if o.stale.is_none() {
         let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
         std::thread::spawn(move || list_loop(o, halt, stale));
     }
@@ -688,7 +812,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
     }
     // A checkpoint as the bridge takes the session up, so a device
     // attaching reads one chunk and the tail, not the whole log.
-    let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd)));
+    let _ = jobs.send(Write::Checkpoint(commit));
 
     let (lines_tx, lines) = mpsc::channel(4096);
     if let Err(e) = daemon.attach(&o.session, None, lines_tx.clone()).await {
@@ -700,7 +824,11 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
     }
     let raw = crate::daemon::ws::uuid(&o.session);
     let link = HostLink::new(key.current(), raw);
-    let listening = listen_direct(&o);
+    // Off the runtime too: it asks tailscaled and binds listeners.
+    let listening = {
+        let o = o.clone();
+        tokio::task::spawn_blocking(move || listen_direct(&o)).await.ok().flatten()
+    };
     let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
     let (answers_tx, answers) = mpsc::unbounded_channel::<(u64, Answer)>();
     let mut h = Hosting {
@@ -1873,7 +2001,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT, stale: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {
@@ -1894,6 +2022,9 @@ mod tests {
         let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
         let o = options(&url, &laptop, UserKeys::new(start.newest.clone(), []).unwrap(), chain.clone(), id);
         o.api.init_device_list(&post(&start)).unwrap();
+        // What the host's own reader (`list_loop`, as `krowk sync host`
+        // runs it with no `stale` given) ends the bridge with.
+        let list_news = |o: &Options, chain: &Chain| list_news(&o.api, o.device, chain).map_err(|e| e.why(&o.session));
         assert!(list_news(&o, &chain).unwrap().is_none(), "nothing new");
 
         let (two, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop")), Change::Add(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();
