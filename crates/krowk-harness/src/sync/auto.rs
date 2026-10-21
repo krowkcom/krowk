@@ -15,6 +15,15 @@ use std::time::Duration;
 /// `KROWK_SYNC_IDLE` nor `sync.idleMinutes` says.
 pub const DEFAULT_IDLE: Duration = Duration::from_secs(10 * 60);
 
+/// The keys `sync` takes. Any other is refused, so a misspelt opt-out
+/// (`"Auto": false`, `"excludes"`) is never read as nothing said.
+const KEYS: [&str; 3] = ["auto", "exclude", "idleMinutes"];
+
+/// A window this long or longer is never: no supervisor runs for a
+/// century, and a `Duration` near `u64::MAX` seconds would overflow an
+/// `Instant` it is added to.
+const NEVER_AFTER: u64 = 100 * 365 * 24 * 60 * 60;
+
 const AUTO_KEY: &str = "sync.auto in config.json";
 const AUTO_ENV: &str = "KROWK_SYNC_AUTO";
 
@@ -52,14 +61,22 @@ pub enum OptOut {
 /// A bad value is an `Err` naming the key and how to fix it. **An `Err`
 /// means off**: the supervisor syncs nothing while the policy cannot be
 /// read, so a typo never sends a session off the machine. Never read an
-/// error as "on".
+/// error as "on". Every value is checked, so a broken `sync.exclude` is
+/// an `Err` even with `KROWK_SYNC_AUTO=0`: still off, named by the error.
 pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Policy, String> {
-    let sync = match config.and_then(|c| c.get("sync")) {
+    let sync = match config {
         None => None,
-        Some(Value::Object(o)) => Some(o),
-        // `"sync": false` must not read as "absent, so on".
-        Some(v) => return Err(format!("sync in config.json is {v}, not an object — write it as {{\"auto\": false}} to turn automatic sync off, or remove it")),
+        Some(Value::Object(c)) => match c.get("sync") {
+            None => None,
+            Some(Value::Object(o)) => Some(o),
+            // `"sync": false` must not read as "absent, so on".
+            Some(v) => return Err(format!("sync in config.json is {v}, not an object — write it as {{\"auto\": false}} to turn automatic sync off, or remove it")),
+        },
+        Some(v) => return Err(format!("config.json is {v}, not an object — fix it, or remove it")),
     };
+    if let Some(k) = sync.and_then(|o| o.keys().find(|k| !KEYS.contains(&k.as_str()))) {
+        return Err(format!("sync.{k} in config.json is not a setting — sync takes {}; fix the name, or remove it", KEYS.join(", ")));
+    }
     let key = |k: &str| sync.and_then(|o| o.get(k));
 
     let (on, off_by) = match env(AUTO_ENV).trim() {
@@ -100,7 +117,7 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
         s => s.parse::<u64>().map_err(|_| format!("KROWK_SYNC_IDLE is {s:?}, not a number of seconds — set it to one (0 never lets go), or unset it"))?,
     };
 
-    Ok(Policy { on, off_by, exclude, idle: (secs > 0).then(|| Duration::from_secs(secs)) })
+    Ok(Policy { on, off_by, exclude, idle: (secs > 0 && secs < NEVER_AFTER).then(|| Duration::from_secs(secs)) })
 }
 
 impl Policy {
@@ -113,9 +130,13 @@ impl Policy {
     ///
     /// Paths are compared both as given and canonicalized (each falling
     /// back to itself when it cannot be), so a symlink on either side
-    /// never lets a directory slip out of an opt-out. Blocking: a few
-    /// `stat`s per ancestor.
+    /// never lets a directory slip out of an opt-out. A marker that cannot
+    /// be looked up for any reason but its absence (`EACCES` on a
+    /// `.krowk`, say) counts as there. `cwd` is absolute, as `session_dir`
+    /// gives it; a relative one would be read against this process's own
+    /// directory. Blocking: a few `stat`s per ancestor.
     pub fn opted_out(&self, cwd: &Path, krowk_home: Option<&Path>) -> Option<OptOut> {
+        debug_assert!(cwd.is_absolute(), "a session's directory is absolute: {}", cwd.display());
         let cwds = forms(cwd);
         for entry in &self.exclude {
             if forms(entry).iter().any(|e| cwds.iter().any(|c| c.starts_with(e))) {
@@ -130,8 +151,10 @@ impl Policy {
                     continue;
                 }
                 let marker = dot.join("no-sync");
-                if std::fs::symlink_metadata(&marker).is_ok() {
-                    return Some(OptOut::Marker(marker));
+                match std::fs::symlink_metadata(&marker) {
+                    // `.krowk` a file is no marker either.
+                    Err(e) if matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory) => {}
+                    _ => return Some(OptOut::Marker(marker)),
                 }
             }
         }
@@ -162,6 +185,8 @@ pub struct SessionDir {
 /// that prompted it, since a resumed session keeps its own. `None` for an
 /// id that is no session id, no log, a first line that does not parse, an
 /// event of another kind or session, or a `cwd` that is not absolute.
+/// **`None` is a directory unknown, so not synced**: a caller never reads
+/// it as "not opted out".
 ///
 /// Reads the first line only, so a `session.moved` later in the log (a
 /// handoff, which syncs the session by a command of its own) is not
@@ -228,6 +253,17 @@ mod tests {
         for bad in [json!({"sync": false}), json!({"sync": "off"}), json!({"sync": null})] {
             assert!(policy(&env(&NONE), Some(&bad)).unwrap_err().contains("sync in config.json"), "{bad}");
         }
+        for bad in [json!(null), json!([]), json!(false)] {
+            assert!(policy(&env(&NONE), Some(&bad)).unwrap_err().contains("config.json is"), "{bad}");
+        }
+        // A misspelt opt-out is refused, never read as nothing said.
+        for (bad, named) in [(json!({"sync": {"Auto": false}}), "sync.Auto"), (json!({"sync": {"excludes": ["/w"]}}), "sync.excludes"), (json!({"sync": {"auto": false, "enabled": false}}), "sync.enabled")] {
+            let err = policy(&env(&NONE), Some(&bad)).unwrap_err();
+            assert!(err.contains(named) && err.contains("not a setting"), "{err}");
+        }
+        // Every value is checked, the switch's override too: still an Err, so off.
+        let e = [("KROWK_SYNC_AUTO", "0".to_string())];
+        assert!(policy(&env(&e), Some(&json!({"sync": {"exclude": "/w"}}))).is_err());
     }
 
     #[test]
@@ -261,6 +297,9 @@ mod tests {
             let err = policy(&env(&NONE), Some(&json!({"sync": {"idleMinutes": tiny}}))).unwrap_err();
             assert!(err.contains("sync.idleMinutes in config.json") && err.contains("at least one second"), "not rounded down to never: {err}");
         }
+        let e = [("KROWK_SYNC_IDLE", u64::MAX.to_string())];
+        assert_eq!(policy(&env(&e), None).unwrap().idle, None, "past a century is never, and no Instant overflows");
+        assert_eq!(policy(&env(&NONE), Some(&json!({"sync": {"idleMinutes": 1e300}}))).unwrap().idle, None);
         for bad in ["soon", "-1", "1.5"] {
             let e = [("KROWK_SYNC_IDLE", bad.to_string())];
             assert!(policy(&env(&e), None).unwrap_err().contains("KROWK_SYNC_IDLE"), "{bad}");
@@ -301,6 +340,20 @@ mod tests {
         assert_eq!(p.opted_out(&in_home, home), None, "krowk's home is no repository");
         assert_eq!(p.opted_out(&root.join("home"), home), None);
         assert_eq!(p.opted_out(&in_home, None), Some(OptOut::Marker(root.join("home/.krowk/no-sync"))), "without the home given, it is just a .krowk");
+
+        // A `.krowk` that is a file holds no marker; one that cannot be
+        // looked into counts as one.
+        let (plain, shut) = (mk("plain/src"), mk("shut/src"));
+        std::fs::write(root.join("plain/.krowk"), "").unwrap();
+        assert_eq!(p.opted_out(&plain, home), None);
+        mk("shut/.krowk");
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o000)).unwrap();
+        let unreadable = std::fs::symlink_metadata(root.join("shut/.krowk/no-sync")).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
+        if unreadable {
+            assert_eq!(p.opted_out(&shut, home), Some(OptOut::Marker(root.join("shut/.krowk/no-sync"))), "fails closed");
+        } // else root, which reads through any mode
+        std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o700)).unwrap();
 
         // A symlink on either side does not slip out.
         let link = root.join("link-to-a");
