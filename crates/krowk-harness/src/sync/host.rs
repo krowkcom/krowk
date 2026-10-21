@@ -497,7 +497,7 @@ const PAGE: usize = 256;
 
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
-pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
+pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
     let taken = {
         let o = o.clone();
@@ -506,6 +506,11 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     let (key, writer, held) = taken;
     let held = Arc::new(Mutex::new(held));
     let halt = Arc::new(AtomicBool::new(false));
+    // However `run` ends — an error before its loop, a panic, its future
+    // dropped with its runtime — the lease and list threads end with it,
+    // rather than renewing a lease nothing uses for as long as the process
+    // lives (the automatic sync's supervisor runs in the daemon's).
+    let _halting = Halting(halt.clone());
     let lost = Arc::new(AtomicBool::new(false));
     // Set when the device list moved on under the host: why it stops.
     let stale = Arc::new(Mutex::new(None));
@@ -517,7 +522,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
         std::thread::spawn(move || list_loop(o, halt, stale));
     }
-    let (heads_tx, mut heads) = mpsc::unbounded_channel();
+    let (heads_tx, heads) = mpsc::unbounded_channel();
     let head = writer.head();
     let stored = writer.stored_ids();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
@@ -529,13 +534,19 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
     // attaching reads one chunk and the tail, not the whole log.
     let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd)));
 
-    let (lines_tx, mut lines) = mpsc::channel(4096);
-    daemon.attach(&o.session, None, lines_tx.clone()).await.map_err(|e| e.to_string())?;
+    let (lines_tx, lines) = mpsc::channel(4096);
+    if let Err(e) = daemon.attach(&o.session, None, lines_tx.clone()).await {
+        // Nothing follows: the writer puts the checkpoint, and the lease goes
+        // back, as a stopped bridge's does.
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Err(e.to_string());
+    }
     let raw = crate::daemon::ws::uuid(&o.session);
     let link = HostLink::new(key.current(), raw);
     let listening = listen_direct(&o);
     let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
-    let (answers_tx, mut answers) = mpsc::unbounded_channel::<(u64, Answer)>();
+    let (answers_tx, answers) = mpsc::unbounded_channel::<(u64, Answer)>();
     let mut h = Hosting {
         o: o.clone(),
         daemon,
@@ -584,35 +595,10 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         dws: None,
         dheard: Instant::now(),
         dretry: Instant::now(),
+        daemon_gone: false,
     };
-    let mut tick = tokio::time::interval(FRAME);
-    let mut beat = tokio::time::interval(PING);
-    let mut beaten = Instant::now();
-    let mut sweep = tokio::time::interval(Duration::from_secs(1));
-    let mut ended = Ok(());
-    loop {
-        tokio::select! {
-            line = lines.recv() => {
-                let Some(line) = line else { break };
-                h.line(line);
-            }
-            _ = tick.tick(), if !h.waiting.is_empty() => h.send_batch().await?,
-            Some(head) = heads.recv() => h.head = Some(head),
-            Some((to, a)) = answers.recv() => h.answer(to, a).await,
-            _ = on_demand.recv() => { let _ = h.jobs.send(Write::Checkpoint(worktree(&h.o.cwd))); }
-            _ = sweep.tick() => {
-                if let Err(e) = h.sweep().await {
-                    ended = Err(e);
-                    break;
-                }
-            }
-            _ = beat.tick() => h.beat(&mut beaten).await,
-            _ = tokio::time::sleep_until(h.dretry.into()), if h.dws.is_none() && h.listening.is_some() => h.join_direct().await,
-            _ = tokio::time::sleep_until(h.retry.into()), if h.ws.is_none() => h.join_relay().await,
-            (direct, m) = recv_either(&mut h.ws, &mut h.dws) => h.inbound(direct, m).await,
-            _ = stop.changed() => break,
-        }
-    }
+    // The loop's end, however it comes, stops the bridge the one way.
+    let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
     h.stop(&halt, writing).await;
     ended
 }
@@ -729,6 +715,8 @@ struct Hosting {
     dws: Option<super::Ws>,
     dheard: Instant,
     dretry: Instant,
+    /// A sweep saw the daemon's connection closed: the next one ends it.
+    daemon_gone: bool,
 }
 
 impl Hosting {
@@ -845,6 +833,17 @@ impl Hosting {
         }
         if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
             return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
+        }
+        // The daemon let this client go (it exited, or dropped a client
+        // that read nothing): nothing more of the session reaches the bridge,
+        // which ends rather than holding the lease over a frozen stream —
+        // a sweep later, so the lines it had already read go out first, and
+        // never across a handoff, which needs no daemon and ends its own way.
+        if self.daemon.closed() && !self.handing && self.handed_at.is_none() {
+            if self.daemon_gone {
+                return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+            }
+            self.daemon_gone = true;
         }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
             return Err(why);
@@ -1218,6 +1217,33 @@ impl Hosting {
         });
     }
 
+    /// Bridges until stopped, the daemon's lines end, or a batch or a
+    /// sweep fails: the error `run` ends with.
+    async fn serve(&mut self, mut i: Inbox) -> Result<(), String> {
+        let mut tick = tokio::time::interval(FRAME);
+        let mut beat = tokio::time::interval(PING);
+        let mut beaten = Instant::now();
+        let mut sweep = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                line = i.lines.recv() => {
+                    let Some(line) = line else { return Ok(()) };
+                    self.line(line);
+                }
+                _ = tick.tick(), if !self.waiting.is_empty() => self.send_batch().await?,
+                Some(head) = i.heads.recv() => self.head = Some(head),
+                Some((to, a)) = i.answers.recv() => self.answer(to, a).await,
+                _ = i.on_demand.recv() => { let _ = self.jobs.send(Write::Checkpoint(worktree(&self.o.cwd))); }
+                _ = sweep.tick() => self.sweep().await?,
+                _ = beat.tick() => self.beat(&mut beaten).await,
+                _ = tokio::time::sleep_until(self.dretry.into()), if self.dws.is_none() && self.listening.is_some() => self.join_direct().await,
+                _ = tokio::time::sleep_until(self.retry.into()), if self.ws.is_none() => self.join_relay().await,
+                (direct, m) = recv_either(&mut self.ws, &mut self.dws) => self.inbound(direct, m).await,
+                _ = i.stop.changed() => return Ok(()),
+            }
+        }
+    }
+
     /// Stops the bridge: the stream ended, the listener closed, and the
     /// lease given back once the writer is done.
     async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
@@ -1225,19 +1251,7 @@ impl Hosting {
         drop(self.listening.take());
         let _ = self.jobs.send(Write::Flush);
         drop(self.jobs);
-        halt.store(true, Ordering::Relaxed);
-        // The lease goes back, so the next host takes it at once rather than
-        // after its TTL, once the writer has put its last chunk — unless it is
-        // another device's already.
-        let token = self.held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
-        let (o2, lost2) = (self.o.clone(), self.lost.clone());
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = writing.join();
-            if !lost2.load(Ordering::Relaxed) {
-                let _ = o2.api.release_lease(&o2.session, &token);
-            }
-        })
-        .await;
+        give_back(self.o, self.held, self.lost, halt, writing).await;
     }
 
     /// The stream's end, sealed: a viewer that sees the link stop without
@@ -1252,6 +1266,41 @@ impl Hosting {
             }
         }
     }
+}
+
+/// What a running bridge is told: the daemon's lines, the writer's heads,
+/// the answers to viewers its tasks give, checkpoints asked for, and stop.
+struct Inbox {
+    lines: mpsc::Receiver<StreamLine>,
+    heads: mpsc::UnboundedReceiver<store::Head>,
+    answers: mpsc::UnboundedReceiver<(u64, Answer)>,
+    on_demand: mpsc::UnboundedReceiver<()>,
+    stop: watch::Receiver<bool>,
+}
+
+/// Sets its flag when dropped: `run`'s threads' halt, however it ends.
+struct Halting(Arc<AtomicBool>);
+
+impl Drop for Halting {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The lease and list threads halted, and the lease given back so the next
+/// host takes it at once rather than after its TTL — once the writer, its
+/// jobs' sender dropped, has put its last chunk, and unless the lease is
+/// another device's already.
+async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool>, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
+    halt.store(true, Ordering::Relaxed);
+    let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = writing.join();
+        if !lost.load(Ordering::Relaxed) {
+            let _ = o.api.release_lease(&o.session, &token);
+        }
+    })
+    .await;
 }
 
 /// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with
