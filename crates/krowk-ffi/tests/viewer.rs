@@ -40,6 +40,8 @@ struct Phone {
     viewer: Arc<Viewer>,
     host: HostLink,
     link: u64,
+    /// The connection the last `Dial` named.
+    conn: u64,
     now: u64,
     /// Every `Show`'s updates, one after the other.
     shown: Vec<ViewerUpdate>,
@@ -62,7 +64,7 @@ impl Phone {
         let opened = world.phone.open_session(SESSION.into(), None, Some(RELAY.into())).unwrap();
         let viewer = Viewer::open(opened.clone(), 0).unwrap();
         let host = HostLink::new(hosted.keys.current(), uuid(SESSION));
-        Phone { world, hosted, opened, viewer, host, link: 0, now: 0, shown: Vec::new(), frames: Vec::new(), hellos: 0, acks: Vec::new(), rest: Vec::new() }
+        Phone { world, hosted, opened, viewer, host, link: 0, conn: 0, now: 0, shown: Vec::new(), frames: Vec::new(), hellos: 0, acks: Vec::new(), rest: Vec::new() }
     }
 
     fn take(&mut self, effects: Vec<Effect>) {
@@ -89,13 +91,25 @@ impl Phone {
         self.take(e);
     }
 
+    /// The ticket handed in: the connection its `Dial` names is the
+    /// current one from here.
     fn ticket(&mut self, t: &str) {
         let e = self.viewer.ticket(t.into(), self.now);
+        for e in &e {
+            if let Effect::Dial { connection, .. } = e {
+                self.conn = *connection;
+            }
+        }
+        self.take(e);
+    }
+
+    fn closed(&mut self) {
+        let e = self.viewer.closed(self.conn, self.now);
         self.take(e);
     }
 
     fn receive(&mut self, bytes: &[u8]) {
-        let e = self.viewer.received(WsFrame::Binary { bytes: bytes.to_vec() }, self.now);
+        let e = self.viewer.received(self.conn, WsFrame::Binary { bytes: bytes.to_vec() }, self.now);
         self.take(e);
     }
 
@@ -226,7 +240,7 @@ fn r_client_1_the_viewer_joins_the_relay_through_the_handshake() {
     p.take_rest();
     p.ticket("secret-ticket");
     match p.take_rest().as_slice() {
-        [Effect::Dial { url, ticket }] => {
+        [Effect::Dial { url, ticket, .. }] => {
             assert_eq!(url, &format!("{RELAY}/v1/relay/{SESSION}?env=development"));
             assert!(!url.contains("secret-ticket"), "the ticket rides the header, never the URL");
             assert_eq!(ticket, "secret-ticket");
@@ -312,8 +326,7 @@ fn r_hand_4_r_ios_5_a_command_with_no_host_queues_and_goes_at_the_welcome() {
 
     // The connection goes before the ack: sent again, same id.
     p.frames.clear();
-    let e = p.viewer.closed(p.now);
-    p.take(e);
+    p.closed();
     p.join(true, 0);
     p.welcome(Welcome::default());
     assert_eq!(commands(&p.frames), [(id.clone(), stop())], "the same id again: the host dedups on it");
@@ -338,24 +351,21 @@ fn r_hand_4_r_ios_5_a_command_with_no_host_queues_and_goes_at_the_welcome() {
 #[test]
 fn r_client_1_a_closed_connection_or_a_failed_join_asks_for_a_ticket_again() {
     let mut p = Phone::live();
+    assert!(p.viewer.ticket_failed("unasked".into(), p.now).is_empty(), "no join waits for a ticket");
     p.at(5_000);
-    let e = p.viewer.closed(p.now);
-    p.take(e);
+    p.closed();
     match p.take_rest().as_slice() {
         [Effect::NeedTicket { at_ms }] => assert!(*at_ms > 5_000, "later, not at once: {at_ms}"),
         other => panic!("a ticket again, no Close: {other:?}"),
     }
-    let e = p.viewer.ticket("t".into(), p.now);
-    p.take(e);
+    p.ticket("t");
     assert!(matches!(p.take_rest().as_slice(), [Effect::Dial { .. }]));
-    let e = p.viewer.closed(p.now);
-    p.take(e);
+    p.closed();
     assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { .. }]));
     assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Note { text } if text.contains(RELAY))), "why it is not on the relay");
 
     // The relay refuses the join: that connection dropped, a ticket again.
-    let e = p.viewer.ticket("t".into(), p.now);
-    p.take(e);
+    p.ticket("t");
     p.take_rest();
     p.challenge();
     p.relay(json!({"type": "error", "code": "unauthorized", "message": "the ticket has expired"}));
@@ -420,11 +430,135 @@ fn r_client_1_a_race_for_a_direct_path_is_lost_at_once_on_the_phone() {
     for at in [10_000, 30_000, 70_000] {
         p.at(at);
         // The relay's pong: the link lives.
-        assert!(p.viewer.received(WsFrame::Text { text: "pong".into() }, at).is_empty());
+        assert!(p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, at).is_empty());
         let e = p.viewer.tick(at);
         p.take(e);
         assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "nothing Swift must race");
         let next = p.viewer.next_wake_ms().unwrap();
         assert!(next > at, "the next race backed off, not due at once: {next} at {at}");
     }
+}
+
+/// R-CLIENT-1: a join the relay leaves unanswered — the connection open,
+/// no challenge — fails after ten seconds, said, and is asked for again;
+/// `next_wake_ms` says when, so Swift needs no timer of its own for it.
+#[test]
+fn r_client_1_a_join_the_relay_never_answers_fails_and_is_tried_again() {
+    let mut p = Phone::new();
+    p.start();
+    p.take_rest();
+    p.ticket("t");
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Dial { .. }]));
+    assert_eq!(p.viewer.next_wake_ms(), Some(10_000), "the join's wait");
+    p.at(9_999);
+    let e = p.viewer.tick(p.now);
+    p.take(e);
+    assert!(p.take_rest().is_empty());
+    p.at(10_000);
+    let e = p.viewer.tick(p.now);
+    p.take(e);
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { at_ms: 11_000 }]), "dropped, and tried again a second later");
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Note { text } if text.contains("did not answer the join"))));
+
+    // Each message of the join gives the relay ten seconds more.
+    p.at(11_000);
+    p.ticket("t");
+    p.take_rest();
+    p.at(15_000);
+    p.challenge();
+    let e = p.viewer.tick(20_000);
+    p.take(e);
+    assert!(p.take_rest().is_empty(), "not yet");
+    assert_eq!(p.viewer.next_wake_ms(), Some(25_000));
+}
+
+/// R-CLIENT-1: a live connection silent for longer than the heartbeat
+/// allows is dropped (`Close`) and joined again.
+#[test]
+fn r_client_1_a_silent_connection_is_dropped_and_joined_again() {
+    let mut p = Phone::live();
+    for at in [10_016, 20_032] {
+        let e = p.viewer.tick(at);
+        p.take(e);
+    }
+    let rest = p.take_rest();
+    assert!(rest.iter().all(|e| matches!(e, Effect::Ping)), "{rest:?}");
+    let e = p.viewer.tick(40_064);
+    p.take(e);
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { .. }]), "silent for over 30 s: dropped");
+}
+
+/// R-CLIENT-1: what the old connection still says after `Close` — a
+/// message or its close, queued in Swift — is ignored: the new join goes
+/// through, and the session after it is undisturbed.
+#[test]
+fn r_client_1_inputs_from_a_dropped_connection_are_ignored() {
+    let mut p = Phone::live();
+    let old = p.conn;
+    p.relay(json!({"type": "host", "present": true}));
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { .. }]));
+    p.rest.push(Effect::NeedTicket { at_ms: 0 });
+    p.ticket("t");
+    assert!(p.conn > old, "a new connection");
+    p.take_rest();
+    let stale = control(&json!({"type": "host", "present": false}));
+    assert!(p.viewer.received(old, WsFrame::Binary { bytes: stale }, p.now).is_empty(), "the old one's message: ignored");
+    assert!(p.viewer.closed(old, p.now).is_empty(), "the old one's close: ignored");
+    p.challenge();
+    p.joined(true, 0);
+    p.welcome(Welcome::default());
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
+    assert!(p.viewer.closed(old, p.now).is_empty(), "still ignored once live");
+    assert!(p.take_rest().is_empty());
+}
+
+/// R-CLIENT-1: a `ChunksRead` is answered only by the viewer that read
+/// it: another viewer's, handed in by mistake, is dropped and its own
+/// read still awaited.
+#[test]
+fn r_client_1_a_chunks_read_from_another_viewer_is_dropped() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    p.welcome_with(Welcome::default());
+    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+
+    let other = Viewer::open(p.opened.clone(), 0).unwrap();
+    let theirs = other.read_chunks();
+    assert!(p.viewer.chunks_read(theirs, p.now).is_empty(), "another viewer's read");
+    assert!(!p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })), "still waiting for its own");
+    let mine = p.viewer.read_chunks();
+    let e = p.viewer.chunks_read(mine, p.now);
+    p.take(e);
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
+}
+
+/// R-PROTO-2: an event at rest this build cannot decode — a newer host's —
+/// is left out of `CaughtUp` and said in a `Failed` with no `End`: the
+/// events around it still show, and the viewer goes on.
+#[test]
+fn r_proto_2_an_event_that_does_not_decode_is_left_out_and_the_viewer_goes_on() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    let newer = json!({"id": "01a0ec7b-2222-7000-8000-0000000000aa", "sessionId": SESSION, "timeMs": 9, "type": "turn.teleported"});
+    p.hosted.write(&[newer, event(SESSION, 10, "known")]);
+    p.welcome(Welcome::default());
+    let shown = p.frame();
+    let at = shown.iter().position(|u| matches!(u, ViewerUpdate::CaughtUp { events } if events.len() == 1)).expect("the event that decodes");
+    assert!(matches!(&shown[at + 1], ViewerUpdate::Failed { detail } if detail.contains("0000000000aa")), "{shown:?}");
+    assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })), "and goes on");
+    assert!(!p.rest.iter().any(|e| matches!(e, Effect::End)));
+}
+
+/// R-CLIENT-1: a relay address a join cannot sign over is refused as the
+/// viewer opens, not found a ticket at a time.
+#[test]
+fn r_client_1_a_viewer_on_a_relay_with_no_origin_is_invalid_input() {
+    let w = World::new();
+    let _host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[]);
+    let opened = w.phone.open_session(SESSION.into(), None, Some("relay.example".into())).unwrap();
+    assert!(matches!(Viewer::open(opened, 0), Err(krowk_ffi::KrowkError::InvalidInput { .. })));
 }

@@ -73,9 +73,11 @@
 //! `command`s and the chunks `read_chunks` read (`chunks_read`), each with
 //! its own clock's `now_ms`, and carries out the [`Effect`]s each returns:
 //! dial, send, ping, close, show the [`ViewerUpdate`]s, read the chunks,
-//! end. Every rule of the viewer is the core's; the session's keys and the
-//! signing key stay inside. Relay only: a race for a direct path the core
-//! asks for is lost at once, here.
+//! end. Each dial is numbered and what comes from a connection names it,
+//! so a dropped one's late messages are ignored; the join's ten-second
+//! waits are `tick`'s too. Every rule of the viewer is Rust's; the
+//! session's keys and the signing key stay inside. Relay only: a race for
+//! a direct path the core asks for is lost at once, here.
 //!
 //! # The protocol
 //!

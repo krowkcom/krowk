@@ -530,7 +530,7 @@ impl ViewerCore {
             self.frame.push(Update::Note(format!("not on the relay {}: {error}; trying again every second", self.relay)));
             self.unjoined = Some(error);
         }
-        self.join(now_ms + RETRY_MS);
+        self.join(now_ms.saturating_add(RETRY_MS));
         self.take()
     }
 
@@ -738,7 +738,7 @@ impl ViewerCore {
             // A direct path gone falls back to the relay at once, from the
             // cursor, which the relay's buffer fills (R-NET-2).
             Input::Closed if self.connected && (self.on.is_some() || self.moving.is_some()) => self.relay_again(),
-            Input::Closed if self.connected => self.join(self.now_ms + RETRY_MS),
+            Input::Closed if self.connected => self.join(self.now_ms.saturating_add(RETRY_MS)),
             Input::BackToRelay if self.on.is_some() || self.moving.is_some() => self.relay_again(),
             Input::Command(c) => {
                 let (now, shown) = self.book.command(c, self.ready());

@@ -621,10 +621,10 @@ pub trait KeyStorage: Send + Sync {
     fn remove(&self, slot: String) -> Result<(), KrowkError>;
 }
 
-#[derive(Debug, Clone, uniffi::Enum)]
+#[derive(Clone, uniffi::Enum)]
 pub enum Effect {
     NeedTicket { at_ms: u64 },
-    Dial { url: String, ticket: String },
+    Dial { url: String, ticket: String, connection: u64 },
     Send { bytes: Vec<u8> },
     Ping,
     Close,
@@ -691,12 +691,12 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
-    pub fn received(&self, frame: WsFrame, now_ms: u64) -> Vec<Effect> {}
+    pub fn received(&self, connection: u64, frame: WsFrame, now_ms: u64) -> Vec<Effect> {}
 }
 
 #[uniffi::export]
 impl Viewer {
-    pub fn closed(&self, now_ms: u64) -> Vec<Effect> {}
+    pub fn closed(&self, connection: u64, now_ms: u64) -> Vec<Effect> {}
 }
 
 #[uniffi::export]
