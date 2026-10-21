@@ -8,7 +8,8 @@
 //!
 //! None of it takes an Idempotency-Key. A device list entry names its seq,
 //! a session's id is the client's own and in the path, and a pairing step is
-//! sent once — a lost response costs reading again.
+//! sent once — a lost response costs reading again. A notification carries
+//! its own dedup, and a push token is put whole, so both are retried.
 //!
 //! This crate carries bytes and nothing else. What makes adding a device safe
 //! against a hostile registry — pairing under a short code the registry
@@ -398,6 +399,37 @@ pub struct Transport {
     pub url: String,
 }
 
+/// What a notification is about (R-IOS-12): the only thing the registry
+/// learns besides the session's id and the time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotifyKind {
+    Approval,
+    Done,
+}
+
+impl NotifyKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Done => "done",
+        }
+    }
+}
+
+/// A notification's answer, of which only whether it was a repeat is read:
+/// the kind is the one the caller sent, or for a repeat the first call's.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct Notified {
+    #[serde(default, deserialize_with = "nullable")]
+    duplicate: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct NotifiedAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    notification: Notified,
+}
+
 /// The most a transport read back may be: the registry's own cap on one.
 pub const MAX_TRANSPORT_BYTES: u64 = 256 << 20;
 
@@ -593,6 +625,35 @@ impl Client {
     /// again is a no-op, so it is retried.
     pub fn claim_key_device(&self) -> Result<Value, Error> {
         Ok(self.call_as_device("PUT", "/key/device", Some(json!({})), ATTEMPTS, None)?.0)
+    }
+
+    /// Asks the registry to ring the person's other devices about `session`
+    /// (R-IOS-12): the lease holder's to ask, under its token (R-SYNC-2).
+    /// `dedup` is 64 lowercase hex chars (the SHA-256 of what is notified,
+    /// e.g. `approval:<request id>`): a retry or a repeat collapses at the
+    /// registry, which is why this is retried without an Idempotency-Key.
+    /// Ok(true) when it was new, Ok(false) when it was a duplicate — which a
+    /// retry after a lost answer also reads as, having rung the first time.
+    /// A registry without its APNs key refuses `push_unconfigured`, at once.
+    pub fn notify_session(&self, session: &str, kind: NotifyKind, dedup: &str, lease_token: &str) -> Result<bool, Error> {
+        let body = json!({ "notification": { "kind": kind.as_str(), "dedup": dedup, "lease_token": lease_token } });
+        let (answer, status): (NotifiedAnswer, u16) = self.call_as_device("POST", &format!("/sessions/{}/notification", slug_path(session)), Some(body), ATTEMPTS, None)?;
+        // 202 is a new event and 200 a repeat; the body says so too.
+        Ok(!answer.notification.duplicate.unwrap_or(status != 202))
+    }
+
+    /// This device's APNs token, for the registry's pushes: `environment` is
+    /// `sandbox` (a debug build) or `production`. It replaces any token the
+    /// device had, and moves this one off any other device that held it. The
+    /// token goes in the body only and never comes back.
+    pub fn put_push_token(&self, token_hex: &str, environment: &str) -> Result<(), Error> {
+        let body = json!({ "push_token": { "token": token_hex, "environment": environment } });
+        self.call_as_device::<Value>("PUT", "/key/device/push_token", Some(body), ATTEMPTS, None).map(|_| ())
+    }
+
+    /// This device takes no more pushes. Ok also when it had no token.
+    pub fn delete_push_token(&self) -> Result<(), Error> {
+        self.call_as_device::<Value>("DELETE", "/key/device/push_token", None, ATTEMPTS, None).map(|_| ())
     }
 
     /// The user key's generations, and those wrapped to this device.

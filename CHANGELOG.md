@@ -55,6 +55,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **krowk can now ask the registry to notify your other devices, and a
+  device can register for push notifications.** Nothing calls this yet.
+  Notifications from a host come in a later release. Nothing changes for
+  CLI users.
 - **The iPhone app's core can follow a session live.** The app's viewer
   screens come next. The phone joins the session through the relay with
   the same viewer the terminal runs: the handshake, the host's welcome,

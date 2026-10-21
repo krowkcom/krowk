@@ -94,7 +94,8 @@ fn wire_shape_matches_the_registrys_routes() {
 
 /// The sync calls (R-SYNC-1): the device list `krowk sync init` posts, and
 /// the session and lease calls krowk-api makes for the host (ticket 19 puts
-/// them behind a command).
+/// them behind a command), with the host's notifications and a device's
+/// push token (R-IOS-12).
 #[cfg(all(feature = "harness", unix))]
 #[test]
 fn sync_wire_shape_matches_the_registrys_routes() {
@@ -143,6 +144,11 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let listed = client.list_chunks(id, None, 50).unwrap();
     assert_eq!(client.read_chunk(&listed.chunks[0]).unwrap(), sealed);
     assert_eq!(chunk.index, 0);
+    use krowk_api::sync::NotifyKind;
+    assert!(client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap());
+    assert!(!client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap(), "a repeat is a duplicate");
+    client.put_push_token(&"cd".repeat(32), "sandbox").unwrap();
+    client.delete_push_token().unwrap();
     client.release_lease(id, &lease.token).unwrap();
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
@@ -171,6 +177,15 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "POST /v1/sessions/{id}/chunks +key +signed",
         "PUT /v1/sessions/{id}/chunks/0/finalization +signed",
         "GET /v1/sessions/{id}/chunks +signed",
+        // The holder asking for the person's other devices to be rung: a
+        // singular resource of the session, its dedup in the body rather
+        // than an Idempotency-Key, so the repeat is a second POST.
+        "POST /v1/sessions/{id}/notification +signed",
+        "POST /v1/sessions/{id}/notification +signed",
+        // The device's own APNs token, a singular resource of the key's
+        // device: PUT sets or replaces it, DELETE clears it.
+        "PUT /v1/key/device/push_token +signed",
+        "DELETE /v1/key/device/push_token +signed",
         "DELETE /v1/sessions/{id}/lease +signed",
     ];
     let got = calls.lock().unwrap().clone();
