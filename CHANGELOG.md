@@ -24,7 +24,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   this machine (`sync.idleMinutes`; `0` keeps it synced while the daemon
   runs); until then other devices see it read-only. A directory opted
   out while its session syncs stops syncing at that session's next
-  prompt. A session you host by hand with `krowk sync host`
+  prompt. When the daemon restarts (`krowk upgrade`, `krowk host stop`, a
+  crash), each session picks up syncing again at its next prompt, and a
+  device following it carries on by itself; after a crash that can take
+  up to a minute. A session you host by hand with `krowk sync host`
   stays yours: the daemon never takes it over. On a workspace without a
   paid plan the daemon stops trying for an hour. The daemon exits once
   nobody has used it for a while, so run `krowk host enable` to keep
