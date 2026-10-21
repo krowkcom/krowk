@@ -1298,8 +1298,8 @@ pub struct HostStatus {
     pub protocol_version: u32,
     pub socket: String,
     pub uptime_ms: u64,
-    /// Clients connected now, this one included; background ones (an
-    /// automatic sync bridge) are not counted.
+    /// Clients connected now, this one included unless it is a background
+    /// one: background clients (an automatic sync bridge) are not counted.
     pub clients: u32,
     /// How long it stays up with nothing to do; none when it never exits
     /// by itself (run as a service).
@@ -1342,7 +1342,7 @@ pub struct HostSession {
     pub session_id: String,
     /// A turn of it is under way.
     pub running: bool,
-    /// Clients following it now.
+    /// Clients following it now, background ones included.
     pub clients: u32,
     /// Of those, the ones that answer approvals.
     #[serde(default)]

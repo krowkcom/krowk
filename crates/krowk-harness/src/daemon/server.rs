@@ -551,6 +551,12 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 let e = stopping_error();
                 return state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error: Some(error_info(&e)) }));
             }
+            // A turn asked for by a background client, which does not hold
+            // the daemon up: the idle window starts again now, not once the
+            // turn is counted, so it cannot run out in between.
+            if matches!(command, Command::Prompt { .. } | Command::Continue { .. }) {
+                state.borrow().wake.notify_one();
+            }
             tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
         }
         ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
@@ -884,6 +890,27 @@ impl State {
         }
     }
 
+    /// A streaming command in `session` is over. With none left its
+    /// followers are told it settled; and a turn that started and never
+    /// logged its end — its log write failed — is over all the same: the
+    /// hub and the turn hook are told so, rather than left running.
+    fn unregister(&mut self, session: &str, turn: bool) {
+        let Some(h) = self.hubs.get_mut(session) else { return };
+        h.in_flight = h.in_flight.saturating_sub(1);
+        if h.in_flight > 0 {
+            return;
+        }
+        let stuck = turn && h.running;
+        h.running &= !stuck;
+        let followers = h.followers.clone();
+        for f in followers {
+            self.send(f, session, control(&ServerFrame::Settled { session: session.to_string() }));
+        }
+        if stuck && let Some(tx) = &self.opts.turns {
+            let _ = tx.send(TurnEvent { session: session.to_string(), running: false });
+        }
+    }
+
     /// One frame of a command run for `client` in `root`'s session — a
     /// subagent's frames included, which are the parent's turn's. Numbered,
     /// encoded once, and queued for every follower: nothing between the
@@ -1069,16 +1096,8 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
         s.working -= 1;
     }
     if registers {
-        if let Some(r) = &root
-            && let Some(h) = s.hubs.get_mut(r)
-        {
-            h.in_flight = h.in_flight.saturating_sub(1);
-            if h.in_flight == 0 {
-                let followers = h.followers.clone();
-                for f in followers {
-                    s.send(f, r, control(&ServerFrame::Settled { session: r.clone() }));
-                }
-            }
+        if let Some(r) = &root {
+            s.unregister(r, turn);
         }
         s.wake.notify_one();
     }

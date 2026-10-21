@@ -2043,7 +2043,7 @@
           "minimum": 0
         },
         "clients": {
-          "description": "Clients connected now, this one included; background ones (an\nautomatic sync bridge) are not counted.",
+          "description": "Clients connected now, this one included unless it is a background\none: background clients (an automatic sync bridge) are not counted.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -2136,7 +2136,7 @@
           "type": "boolean"
         },
         "clients": {
-          "description": "Clients following it now.",
+          "description": "Clients following it now, background ones included.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
