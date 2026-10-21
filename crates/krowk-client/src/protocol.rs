@@ -1163,6 +1163,10 @@ pub enum ClientFrame {
         /// keep everyone else out.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         token: Option<String>,
+        /// A client that never holds the daemon up: the idle exit and `stop`
+        /// do not count it (an automatic sync bridge).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        background: bool,
     },
     /// Runs a command; answered by `done` with the same `id`. The session a
     /// `prompt` or `continue` runs in is followed from its first line.
@@ -1294,7 +1298,8 @@ pub struct HostStatus {
     pub protocol_version: u32,
     pub socket: String,
     pub uptime_ms: u64,
-    /// Clients connected now, this one included.
+    /// Clients connected now, this one included unless it is a background
+    /// one: background clients (an automatic sync bridge) are not counted.
     pub clients: u32,
     /// How long it stays up with nothing to do; none when it never exits
     /// by itself (run as a service).
@@ -1323,6 +1328,10 @@ pub struct HostStatus {
     /// None from a daemon that does not name them (before 0.14).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub background_sessions: Option<Vec<String>>,
+    /// The sessions the process's automatic sync bridges now. None from a
+    /// daemon that has no supervisor.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bridged: Option<Vec<String>>,
     /// The sessions it has run since it started, newest first.
     pub sessions: Vec<HostSession>,
 }
@@ -1333,6 +1342,9 @@ pub struct HostSession {
     pub session_id: String,
     /// A turn of it is under way.
     pub running: bool,
-    /// Clients following it now.
+    /// Clients following it now, background ones included.
     pub clients: u32,
+    /// Of those, the ones that answer approvals.
+    #[serde(default)]
+    pub answering: u32,
 }

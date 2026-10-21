@@ -172,9 +172,16 @@ impl Client {
     /// Connects and says hello: `cwd` is where a new session this client
     /// starts runs, and `answers` whether it answers approval requests.
     pub async fn connect(path: &Path, cwd: &Path, version: &str, answers: bool) -> Result<Client, ConnectError> {
+        Client::connect_as(path, cwd, version, answers, false).await
+    }
+
+    /// `connect`, saying whether the client is a background one (an
+    /// automatic sync bridge): served like any other, but never holding the
+    /// daemon up — its idle exit and `stop` do not count it.
+    pub async fn connect_as(path: &Path, cwd: &Path, version: &str, answers: bool, background: bool) -> Result<Client, ConnectError> {
         let stream = UnixStream::connect(path).await.map_err(|e| if absent(&e) { ConnectError::Absent } else { ConnectError::Failed(EngineError::new("host_unavailable", format!("{} cannot be reached: {e}", path.display()))) })?;
         let (r, mut w) = stream.into_split();
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers, token: None };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: version.to_string(), answers_approvals: answers, token: None, background };
         let fail = |e: std::io::Error| ConnectError::Failed(EngineError::new("host_unavailable", format!("{} did not answer: {e}", path.display())));
         w.write_all((serde_json::to_string(&hello).expect("a frame serializes") + "\n").as_bytes()).await.map_err(fail)?;
         let mut lines = BufReader::new(r).lines();
