@@ -595,6 +595,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         dws: None,
         dheard: Instant::now(),
         dretry: Instant::now(),
+        daemon_gone: false,
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
@@ -714,6 +715,8 @@ struct Hosting {
     dws: Option<super::Ws>,
     dheard: Instant,
     dretry: Instant,
+    /// A sweep saw the daemon's connection closed: the next one ends it.
+    daemon_gone: bool,
 }
 
 impl Hosting {
@@ -832,10 +835,15 @@ impl Hosting {
             return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
         }
         // The daemon let this client go (it exited, or dropped a client
-        // that fell behind): nothing more of the session reaches the bridge,
-        // which ends rather than holding the lease over a frozen stream.
-        if self.daemon.closed() {
-            return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+        // that read nothing): nothing more of the session reaches the bridge,
+        // which ends rather than holding the lease over a frozen stream —
+        // a sweep later, so the lines it had already read go out first, and
+        // never across a handoff, which needs no daemon and ends its own way.
+        if self.daemon.closed() && !self.handing && self.handed_at.is_none() {
+            if self.daemon_gone {
+                return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+            }
+            self.daemon_gone = true;
         }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
             return Err(why);
