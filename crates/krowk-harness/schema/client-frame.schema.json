@@ -31,6 +31,10 @@
             "null"
           ]
         },
+        "background": {
+          "description": "A client that never holds the daemon up: the idle exit and `stop`\ndo not count it (an automatic sync bridge).",
+          "type": "boolean"
+        },
         "type": {
           "type": "string",
           "const": "hello"

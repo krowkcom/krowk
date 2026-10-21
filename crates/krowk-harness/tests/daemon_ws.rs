@@ -177,7 +177,7 @@ impl Ws {
         // time the client's TCP, not the daemon.
         let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
         let mut ws = Ws { wire, batches: 0, acks: true };
-        ws.send(&ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: token.map(String::from) }).await;
+        ws.send(&ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: token.map(String::from), background: false }).await;
         loop {
             if let Got::Batch(_, mut frames) = ws.next().await.expect("the daemon answers the hello") {
                 return (ws, frames.remove(0));
@@ -546,7 +546,7 @@ fn r_lag_4_r_lag_10_a_suspended_unix_client_is_caught_up_from_its_cursor_in_boun
     let cap = 32 * 1024;
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
-    let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None };
+    let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None, background: false };
     let exec = ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default) };
     writeln!(s, "{}\n{}", serde_json::to_string(&hello).unwrap(), serde_json::to_string(&exec).unwrap()).unwrap();
     // Suspended: not a byte read, while a second client watches the
@@ -760,7 +760,7 @@ impl Raw {
         let s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
         let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0 };
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None, background: false };
         writeln!(raw.w, "{}", serde_json::to_string(&hello).unwrap()).unwrap();
         match raw.next() {
             ServerFrame::Welcome { epoch, .. } => raw.epoch = epoch,
@@ -977,13 +977,13 @@ fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
         // Another protocol, no token: unauthorized, not a version to read.
         let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
         let mut ws = Ws { wire, batches: 0, acks: true };
-        ws.send(&ClientFrame::Hello { protocol_version: 999, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: None }).await;
+        ws.send(&ClientFrame::Hello { protocol_version: 999, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: None, background: false }).await;
         let Some(Got::Batch(_, f)) = ws.next().await else { panic!("no answer") };
         assert!(matches!(&f[0], ServerFrame::Refused { code, message, .. } if code == "unauthorized" && !message.contains("pid")), "{:?}", f[0]);
         // A compressed hello is not decompressed, token or not.
         let (wire, _) = tokio_tungstenite::connect_async_with_config(format!("ws://{addr}"), None, true).await.unwrap();
         let mut ws = Ws { wire, batches: 0, acks: true };
-        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: Some(token.clone()) };
+        let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: "/".into(), krowk_version: String::new(), answers_approvals: false, token: Some(token.clone()), background: false };
         let packed = ws::batch("", 0, serde_json::to_string(&hello).unwrap().repeat(20).as_bytes());
         assert_eq!(packed.flags & ws::FLAG_ZSTD, ws::FLAG_ZSTD);
         let e = Envelope { kind: ws::KIND_FRAME, ..packed };

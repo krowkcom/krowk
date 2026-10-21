@@ -2043,7 +2043,7 @@
           "minimum": 0
         },
         "clients": {
-          "description": "Clients connected now, this one included.",
+          "description": "Clients connected now, this one included; background ones (an\nautomatic sync bridge) are not counted.",
           "type": "integer",
           "format": "uint32",
           "minimum": 0
@@ -2097,6 +2097,16 @@
             "type": "string"
           }
         },
+        "bridged": {
+          "description": "The sessions the process's automatic sync bridges now. None from a\ndaemon that has no supervisor.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "sessions": {
           "description": "The sessions it has run since it started, newest first.",
           "type": "array",
@@ -2130,6 +2140,13 @@
           "type": "integer",
           "format": "uint32",
           "minimum": 0
+        },
+        "answering": {
+          "description": "Of those, the ones that answer approvals.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0,
+          "default": 0
         }
       },
       "required": [

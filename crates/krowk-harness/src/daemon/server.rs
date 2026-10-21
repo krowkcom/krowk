@@ -27,9 +27,10 @@
 //! last one went away — is denied, so no turn waits on nobody. Everything runs on one thread, as the
 //! in-process host does: nothing here is shared across threads.
 //!
-//! It exits after the idle window with no client connected, no turn
-//! running and no background job (R-HOST-1), so nothing stays resident
-//! when unused; run as a service it has no window and stays.
+//! It exits after the idle window with no client connected but background
+//! ones (`hello.background`, an automatic sync bridge), no turn running and
+//! no background job (R-HOST-1), so nothing stays resident when unused; run
+//! as a service it has no window and stays.
 
 use crate::engine::EngineError;
 use crate::host::{Host, HostConfig};
@@ -38,7 +39,7 @@ use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::replay::{self, Tail};
 use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -72,11 +73,27 @@ pub struct Options {
     /// one is that falls past what a catch-up can read (`extent`), so a
     /// client's re-following from its cursor can be seen.
     pub kick: Option<std::sync::Arc<Notify>>,
+    /// Told each time a session's own turn starts and ends — never a
+    /// subagent's — for whatever else runs in the daemon's process (the
+    /// automatic sync's supervisor). Unbounded, so telling it never waits
+    /// on the daemon's thread (R-LAG-9).
+    pub turns: Option<mpsc::UnboundedSender<TurnEvent>>,
+    /// The sessions the process's automatic sync bridges now, as its owner
+    /// keeps them: `status` reports them (`HostStatus.bridged`). The owner
+    /// holds the lock only to insert or remove one id.
+    pub bridged: Option<std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>>,
+}
+
+/// A session's own turn started (`running`) or ended (`Options::turns`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TurnEvent {
+    pub session: String,
+    pub running: bool,
 }
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None }
     }
 }
 
@@ -182,6 +199,9 @@ struct Client {
     outbox: Rc<Outbox>,
     cwd: PathBuf,
     answers: bool,
+    /// Never holds the daemon up: the idle exit and `stop` do not count it
+    /// (`hello.background`).
+    background: bool,
 }
 
 pub(super) type Shared = Rc<RefCell<State>>;
@@ -290,7 +310,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     loop {
         let (quiet, stopping) = {
             let s = state.borrow();
-            (s.clients.is_empty() && s.working == 0 && s.hosts.values().all(|h| h.running_jobs().is_empty()), s.stopping)
+            (s.clients.values().all(|c| c.background) && s.working == 0 && s.hosts.values().all(|h| h.running_jobs().is_empty()), s.stopping)
         };
         if stopping {
             eprintln!("asked to stop: exiting");
@@ -446,8 +466,8 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
             return Err(refuse("unauthorized", "the hello carries no token, or not this daemon's".into(), "send the token in host.token, beside the daemon's socket, as `hello.token`".into()));
         }
     }
-    let (cwd, answers) = match hello {
-        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, .. }) if protocol_version == PROTOCOL_VERSION => (PathBuf::from(cwd), answers_approvals),
+    let (cwd, answers, background) = match hello {
+        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, background, .. }) if protocol_version == PROTOCOL_VERSION => (PathBuf::from(cwd), answers_approvals, background),
         Some(ClientFrame::Hello { protocol_version, .. }) => {
             let pid = std::process::id();
             return Err(refuse(
@@ -463,7 +483,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
     let id = s.next_client;
     let outbox = Rc::new(Outbox::new(s.opts.caps));
     outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id(), epoch: s.epoch }));
-    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers });
+    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background });
     s.wake.notify_one();
     Ok((id, outbox))
 }
@@ -560,7 +580,8 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
         }
         ClientFrame::Stop { id: cmd_id, force } => {
             let mut s = state.borrow_mut();
-            let others = s.clients.len().saturating_sub(1);
+            // A background client (a sync bridge) is not someone using it.
+            let others = s.clients.iter().filter(|(c, x)| **c != id && !x.background).count();
             let error = if s.working > 0 {
                 Some(ErrorInfo {
                     code: "host_busy".into(),
@@ -637,14 +658,15 @@ fn status(s: &State) -> HostStatus {
         protocol_version: PROTOCOL_VERSION,
         socket: s.opts.socket.display().to_string(),
         uptime_ms: s.started.elapsed().as_millis() as u64,
-        clients: s.clients.len() as u32,
+        clients: s.clients.values().filter(|c| !c.background).count() as u32,
         idle_exit_ms: s.opts.idle.map(|d| d.as_millis() as u64),
         websocket: s.websocket.as_ref().map(|(a, _)| a.to_string()),
         queued_bytes: s.clients.values().map(|c| c.outbox.bytes() as u64).sum(),
         caught_up: s.caught_up,
         background: Some(s.hosts.values().map(|h| h.background()).sum()),
         background_sessions: Some(s.hosts.values().flat_map(|h| h.background_sessions()).collect()),
-        sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32 }).collect(),
+        bridged: s.opts.bridged.as_ref().and_then(|b| b.lock().map(|s| s.iter().cloned().collect()).ok()),
+        sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32, answering: s.answering(h) }).collect(),
     }
 }
 
@@ -827,6 +849,11 @@ impl State {
         hub.followers.iter().any(|f| self.clients.get(f).is_some_and(|c| c.answers))
     }
 
+    /// How many clients following `hub` answer approval requests.
+    fn answering(&self, hub: &Hub) -> u32 {
+        hub.followers.iter().filter(|f| self.clients.get(f).is_some_and(|c| c.answers)).count() as u32
+    }
+
     /// Denies the waiting requests of every session no answering client
     /// follows any more.
     fn unanswerable(&self) {
@@ -870,6 +897,8 @@ impl State {
         }
         let json = serde_json::to_string(&line).expect("a stream line serializes");
         let mut own_log: Option<Rc<str>> = None;
+        // The session's own turn started (`true`) or ended.
+        let mut turned: Option<bool> = None;
         if let StreamLine::Log(ev) = &line
             && own
         {
@@ -888,6 +917,9 @@ impl State {
                 LogBody::TurnCompleted { .. } => hub.running = false,
                 _ => {}
             }
+            if matches!(ev.body, LogBody::TurnStarted { .. } | LogBody::TurnCompleted { .. }) {
+                turned = Some(!over);
+            }
             // The log holds everything up to here: what catching up
             // replays of the turn starts after it, but for the running
             // children's state, which no log holds.
@@ -900,6 +932,12 @@ impl State {
         for f in followers {
             let out = line_out(&json, &line, root, (f == client).then_some(cmd), seq, own_log.as_ref());
             self.send(f, root, out);
+        }
+        // Told without waiting: an unbounded send never blocks the daemon's
+        // thread (R-LAG-9), and one whose receiver is gone is nothing to
+        // anyone.
+        if let (Some(running), Some(tx)) = (turned, &self.opts.turns) {
+            let _ = tx.send(TurnEvent { session: root.to_string(), running });
         }
         // Asked with nobody left who could answer: denied at once.
         if asks && !self.hubs.get(root).is_some_and(|h| self.answered(h)) {
