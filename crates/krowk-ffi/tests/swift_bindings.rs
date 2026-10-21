@@ -119,6 +119,29 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "func decodeStreamLine(json: String) throws -> StreamLine",
         "func decodeLogEvent(json: String) throws -> LogEvent",
         "func encodeCommand(command: Command) throws -> String",
+        // R-CLIENT-1: the live viewer, its inputs and the effects Swift
+        // carries out; the socket and the timers are Swift's.
+        "class Viewer",
+        "static func `open`(session: OpenedSession, nowMs: UInt64) throws -> Viewer",
+        "func start(nowMs: UInt64) -> [Effect]",
+        "func ticket(ticket: String, nowMs: UInt64) -> [Effect]",
+        "func ticketFailed(detail: String, nowMs: UInt64) -> [Effect]",
+        "func received(frame: WsFrame, nowMs: UInt64) -> [Effect]",
+        "func closed(nowMs: UInt64) -> [Effect]",
+        "func tick(nowMs: UInt64) -> [Effect]",
+        "func command(command: Command, nowMs: UInt64) -> [Effect]",
+        "func nextWakeMs() -> UInt64?",
+        "func readChunks() -> ChunksRead",
+        "func chunksRead(read: ChunksRead, nowMs: UInt64) -> [Effect]",
+        "enum Effect",
+        "case needTicket(atMs: UInt64)",
+        "case dial(url: String, ticket: String)",
+        "case send(bytes: Data)",
+        "enum WsFrame",
+        "enum ViewerUpdate",
+        "case sent(id: String, queued: Bool)",
+        "case acked(id: String, error: String?)",
+        "class ChunksRead",
     ] {
         assert!(swift.contains(&squeeze(decl)), "Krowk.swift declares `{decl}`");
     }

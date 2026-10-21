@@ -285,10 +285,17 @@ impl OpenedSession {
     }
 }
 
-// What the live viewer reads to join the relay and open what arrives, and
-// nothing outside the crate can.
-#[allow(dead_code)] // The live viewer (ticket 80) is the first to read these.
+// What the live viewer (`crate::viewer`) reads to join the relay and open
+// what arrives, and nothing outside the crate can.
 impl OpenedSession {
+    /// The session as read so far, copied whole: taken under the `reading`
+    /// turn, so a `catch_up` running is waited for rather than copied with
+    /// its `heads` lent out. Blocks while one runs.
+    pub(crate) fn snapshot(&self) -> Attached {
+        let _turn = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
+        self.attached().clone()
+    }
+
     pub(crate) fn keys(&self) -> &SessionKeys {
         &self.keys
     }

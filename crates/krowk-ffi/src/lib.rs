@@ -63,6 +63,20 @@
 //! UniFFI has no word for, so the record carries it as bytes, checked to be
 //! 32 on the way back in.
 //!
+//! # Following a session live
+//!
+//! [`Viewer`] opens on an `OpenedSession` and wraps krowk-client's
+//! `ViewerCore` and the relay's join handshake behind a mutex. Swift owns
+//! the WebSocket and the timers (rule 1): it passes in `start`, the relay
+//! ticket (`ticket`, `ticket_failed`), each message received (a
+//! [`WsFrame`]), `closed`, `tick` at `next_wake_ms`, the person's
+//! `command`s and the chunks `read_chunks` read (`chunks_read`), each with
+//! its own clock's `now_ms`, and carries out the [`Effect`]s each returns:
+//! dial, send, ping, close, show the [`ViewerUpdate`]s, read the chunks,
+//! end. Every rule of the viewer is the core's; the session's keys and the
+//! signing key stay inside. Relay only: a race for a direct path the core
+//! asks for is lost at once, here.
+//!
 //! # The protocol
 //!
 //! Every type reachable from `StreamLine` and `Command` is
@@ -96,6 +110,7 @@ mod protocol;
 mod sessions;
 mod sign_in;
 mod storage;
+mod viewer;
 
 pub use account::Account;
 pub use error::KrowkError;
@@ -103,6 +118,7 @@ pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
+pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
 
 use krowk_client::pairing::PairingCode;
 
