@@ -306,10 +306,16 @@ impl Supervisor {
         let thread = std::thread::Builder::new().name("krowk-sync".into()).spawn(move || {
             match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => {
-                    rt.block_on(Sup::new(c).run(turns, stop_rx));
+                    let bridged = c.bridged.clone();
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(Sup::new(c).run(turns, stop_rx))));
                     // A check or build still on the blocking pool (a dead
-                    // disk, a registry that never answers) is not waited for.
+                    // disk, a registry that never answers) is not waited for,
+                    // even after a panic: a runtime merely dropped would.
                     rt.shutdown_background();
+                    if ran.is_err() {
+                        eprintln!("krowk: automatic sync stopped: its supervisor panicked; `krowk sync host` still syncs a session");
+                        lock(&bridged).clear();
+                    }
                 }
                 Err(e) => eprintln!("krowk: automatic sync could not start: the async runtime did not: {e}"),
             }
@@ -548,10 +554,10 @@ impl Sup {
                 eprintln!("krowk: automatic sync of session {session} ended: {e}");
                 self.waits.remove(&session);
             }
-            // Any other end — an error, a panic, the daemon letting its
-            // client go — is this session's alone: it backs off.
+            // Any other end — an error, a panic, an end it gave no reason
+            // for — is this session's alone: it backs off.
             r => {
-                let why = r.err().unwrap_or_else(|| "its link to the host daemon closed".into());
+                let why = r.err().unwrap_or_else(|| "it ended with no error".into());
                 let ran = since.elapsed();
                 let wait = match self.waits.get(&session) {
                     Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),

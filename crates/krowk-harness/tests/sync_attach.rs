@@ -2363,6 +2363,12 @@ async fn r_sync_3_one_bridges_panic_leaves_the_others() {
     let mut auto = w.auto(&a, true);
     let d = w.daemon().await;
     let x = prompted(&w, &d, None, "say hello").await;
+    // X's build first, so the panic is X's.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auto.built(&x).is_empty() {
+        assert!(Instant::now() < deadline, "X was never built");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let y = prompted(&w, &d, None, "say hello").await;
     w.listed_on(&b, &y, Instant::now() + Duration::from_secs(10)).await;
     let by = Instant::now() + auto::BACKOFF_FIRST + Duration::from_secs(10);
