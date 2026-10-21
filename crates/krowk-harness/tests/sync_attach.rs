@@ -3018,12 +3018,20 @@ async fn r_ios_12_a_finished_turn_rings_once_and_taking_the_session_up_again_aft
 /// thread too, held: a watchdog of its own fails it rather than let it hang.
 #[tokio::test]
 async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
+    // Disarmed however the test ends, a failed assertion too, so only a
+    // hang ends the process; said past the test's captured output.
+    struct Disarm(Arc<AtomicBool>);
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
     let finished = Arc::new(AtomicBool::new(false));
-    let watching = finished.clone();
+    let _disarm = Disarm(finished.clone());
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_secs(90));
-        if !watching.load(Ordering::SeqCst) {
-            eprintln!("r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running hung: a notification held the bridge");
+        if !finished.load(Ordering::SeqCst) {
+            let _ = writeln!(std::io::stderr(), "r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running hung: a notification held the bridge");
             std::process::exit(101);
         }
     });
@@ -3063,5 +3071,4 @@ async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
     let seen = notified(&w, &session, "done", 3, Duration::from_secs(10)).await;
     assert_eq!(seen.len(), 3, "the refused one never rang: {seen:?}");
     assert!(!bridge.is_finished(), "the bridge runs on");
-    finished.store(true, Ordering::SeqCst);
 }

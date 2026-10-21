@@ -268,7 +268,13 @@ unit = "bytes"
 # 15,945,864 (15.21 MiB). iroh, the ticket's other half, was measured at
 # about 6.9 MB alone and is not built. Raised 14.75 -> 15.50 MiB, leaving
 # 307,064.
-max = { x86_64-linux = 16_252_928 }
+# Main measured 16,245,832 (15.49 MiB) before ticket 104, 7,096 under
+# 15.50 MiB (the sync waves since ticket 27; bench runs on release only).
+# The bridge ringing the person's devices (no new crate: sha2 and
+# krowk-api's notify were linked already; the decision, the bounded set,
+# the off-loop call and its messages) adds 15,488: 16,261,320 (15.51 MiB).
+# Raised 15.50 -> 15.75 MiB, leaving 253,752.
+max = { x86_64-linux = 16_515_072 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
