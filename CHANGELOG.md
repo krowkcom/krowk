@@ -55,6 +55,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app's core can follow a session live.** The app's viewer
+  screens come next. The phone joins the session through the relay with
+  the same viewer the terminal runs: the handshake, the host's welcome,
+  batches applied in order, gaps caught up, commands queued while no host
+  is there and sent once one welcomes it. The app only opens the socket
+  and keeps the time. Nothing changes for CLI users.
 - **The iPhone app's core can list your synced sessions and open one.**
   The app's screens for them come next. Each session's record is checked
   against the device list the phone holds before its title is shown, and
