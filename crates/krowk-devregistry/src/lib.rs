@@ -210,6 +210,8 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "key"]) if get => auth::show_key(req),
         ("PUT" | "PATCH", ["v1", "key", "device"]) => devices::claim(a, req),
+        // The device's own APNs token (R-IOS-12), signed by it.
+        ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "push_token"]) => devices::push_token(a, req),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
         ("POST", ["v1", "cli", "authorizations"]) => {
@@ -264,7 +266,15 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             sync::signed(a, req, |a, req, by| sync::show_transport(a, req, slug, &site, by))
         }
         ("DELETE", ["v1", "transports", slug]) => sync::signed(a, req, |a, req, by| sync::spend_transport(a, req, slug, by)),
+        // The lease holder asking for the person's other devices to be rung
+        // (R-IOS-12).
+        ("POST", ["v1", "sessions", id, "notification"]) => sync::signed(a, req, |a, req, by| sync::notify(a, req, id, by)),
         ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
+        // Stand-in only, never in the real registry: what was asked of the
+        // pushes, for tests in other crates, which reach the stand-in only
+        // over HTTP, to assert on. Neither ever shows a token.
+        (_, ["_notifications"]) if get => sync::notifications_seen(a),
+        (_, ["_push_tokens"]) if get => devices::push_tokens_seen(a),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }
@@ -414,6 +424,40 @@ mod tests {
         let token = field(&call(plain.addr(), "GET", &format!("/v1/cli/authorizations/{slug}")), "token");
         assert!(token.starts_with("krowk_sk_") && !token.contains('#') && token.len() == "krowk_sk_".len() + 32, "{token}");
         assert_ne!(store::person_for(&token), store::person_for(base));
+    }
+
+    /// R-IOS-12: the stand-in-only reads answer what was recorded — every
+    /// notification in order, and which devices hold a push token for which
+    /// environment, never the token itself — so a test in another crate can
+    /// assert over HTTP. Empty, they answer empty lists.
+    #[test]
+    fn r_ios_12_the_stand_in_shows_the_notifications_and_push_tokens_recorded() {
+        let app = app(Config::default());
+        let running = spawn(TcpListener::bind("127.0.0.1:0").unwrap(), Arc::clone(&app)).unwrap();
+        let body = |path: &str| {
+            let answer = call(running.addr(), "GET", path);
+            assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+            answer[answer.find("\r\n\r\n").unwrap() + 4..].split_whitespace().collect::<String>()
+        };
+        assert_eq!(body("/_notifications"), r#"{"notifications":[]}"#);
+        assert_eq!(body("/_push_tokens"), r#"{"push_tokens":[]}"#);
+        {
+            let mut s = app.lock();
+            let at = s.now();
+            for (dedup, kind) in [("aa", "approval"), ("bb", "done")] {
+                s.sync.notifications.push(sync::Notified { session: "s1".into(), kind: kind.into(), dedup: dedup.repeat(32), from_device: "d1".into(), at });
+            }
+            s.sync.push_tokens.insert("d2".into(), ("cd".repeat(32), "sandbox".into()));
+            s.sync.push_tokens.insert("d1".into(), ("ef".repeat(32), "production".into()));
+        }
+        let (aa, bb) = ("aa".repeat(32), "bb".repeat(32));
+        assert_eq!(
+            body("/_notifications"),
+            format!(r#"{{"notifications":[{{"dedup":"{aa}","device":"d1","kind":"approval","session":"s1"}},{{"dedup":"{bb}","device":"d1","kind":"done","session":"s1"}}]}}"#)
+        );
+        let tokens = body("/_push_tokens");
+        assert_eq!(tokens, r#"{"push_tokens":[{"device":"d1","environment":"production"},{"device":"d2","environment":"sandbox"}]}"#);
+        assert!(!tokens.contains(&"cd".repeat(32)) && !tokens.contains(&"ef".repeat(32)));
     }
 
     /// One GET on a connection kept open, its response read whole.

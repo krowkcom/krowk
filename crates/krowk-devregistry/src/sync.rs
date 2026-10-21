@@ -1,4 +1,5 @@
-//! Sync: sessions with their leases, chunks, vintages and transports — the shapes and
+//! Sync: sessions with their leases, chunks, vintages, transports and the
+//! holder's notifications — the shapes and
 //! refusals of the registry's Api::V1::SessionsController and
 //! Sessions::LeasesController. A person's device list, user key and pairings
 //! are `devices.rs` and `pairings.rs`, and every device a call names or is
@@ -139,6 +140,14 @@ const TRANSPORT_BURST: usize = 10;
 const MAX_TRANSPORT_BYTES: i64 = 256 << 20;
 /// How long a transport artifact lives unspent: the registry's 24 hours.
 const TRANSPORT_LIFETIME: SignedDuration = SignedDuration::from_hours(24);
+/// The registry's SessionNotification::BURST: each one sounds every other
+/// device of the person, so a phone's limit rather than a table's.
+const NOTIFICATION_BURST: usize = 20;
+/// The registry's SessionNotification::KEPT_FOR: a repeat after this long
+/// is a new event.
+const NOTIFICATION_KEPT_FOR: SignedDuration = SignedDuration::from_hours(24);
+/// The registry's SessionNotification::KINDS.
+const NOTIFICATION_KINDS: [&str; 2] = ["approval", "done"];
 /// The registry's SyncSession::MAX_PER_WORKSPACE.
 pub const MAX_SESSIONS: usize = 10_000;
 const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
@@ -184,6 +193,29 @@ pub struct SyncStore {
     /// The signed requests accepted in the last few minutes, by digest,
     /// until their window closes: a replay is refused (SignedRequest).
     pub signed: HashMap<[u8; 32], Timestamp>,
+    /// Every new notification a lease holder asked for, in order: what the
+    /// real registry would have rung the person's other devices about
+    /// (R-IOS-12). Read by tests, here and over `GET /_notifications`.
+    pub notifications: Vec<Notified>,
+    /// Workspace, session and dedup → the kind recorded and when: a repeat
+    /// within `NOTIFICATION_KEPT_FOR` is a duplicate
+    /// (SessionNotification.record!).
+    pub notified: HashMap<(String, String, String), (String, Timestamp)>,
+    /// Device id → its APNs token and environment (`sandbox` or
+    /// `production`), set and cleared by the device itself. Dropped when the
+    /// device is revoked or removed from its list.
+    pub push_tokens: HashMap<String, (String, String)>,
+}
+
+/// One notification a lease holder asked for: the session, the kind
+/// (`approval` or `done`), the dedup, the device that asked and when.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Notified {
+    pub session: String,
+    pub kind: String,
+    pub dedup: String,
+    pub from_device: String,
+    pub at: Timestamp,
 }
 
 /// How far a signed request's timestamp may be from this clock, in
@@ -829,6 +861,8 @@ pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
     let device = d.id.clone();
     let keys: Vec<String> = s.sync.bindings.iter().filter(|(_, bound)| **bound == device).map(|(key, _)| key.clone()).collect();
     s.sync.revoked_keys.extend(keys);
+    // Its push token goes with it (R-IOS-12).
+    s.sync.push_tokens.remove(&device);
     Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
 
@@ -1462,6 +1496,76 @@ pub fn spend_transport(app: &App, req: &mut Req, slug: &str, signer: &str) -> Re
         Ok(Resp::empty(204))
     };
     run().unwrap_or_else(|r| r)
+}
+
+/// `POST /v1/sessions/:id/notification`: the lease holder asks the registry
+/// to ring the person's other devices (the registry's
+/// Sessions::NotificationsController, R-IOS-12). Signed, by the holder and
+/// under its live token (R-SYNC-2); counted against the key's minute after
+/// the signature, before anything is read; a repeat of a dedup is 200
+/// `duplicate` with the kind first recorded, a new one 202. The stand-in's
+/// APNs is always configured and its deliveries always queue, so it never
+/// answers `push_unconfigured` or `push_unqueued`; it rings nobody, and
+/// records the event in `SyncStore::notifications` instead.
+pub fn notify(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        {
+            let mut s = app.lock();
+            let now = s.now();
+            burst_under(&mut s.sync, &caller(req), "notifications", now, NOTIFICATION_BURST)?;
+        }
+        let id = session_id(id).ok_or_else(not_found)?;
+        let v = body(req, "notification")?;
+        let mut f = v.fields();
+        let (token, kind, dedup) = (f.string("lease_token"), f.string("kind"), f.string("dedup"));
+        let mut s = app.lock();
+        let now = s.now();
+        let key = (workspace.clone(), id.clone());
+        let x = s.sync.sessions.get(&key).ok_or_else(not_found)?;
+        if x.holder.is_empty() {
+            return Err(error(409, "lease_stale", "only the session's lease holder notifies, and nobody holds this one", None));
+        }
+        signed_by_holder(x, signer)?;
+        if token.is_empty() {
+            return Err(error(409, "lease_stale", "no lease token was presented — only the session's lease holder notifies", None));
+        }
+        holder(x, &token, now, signer)?;
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
+        }
+        if !NOTIFICATION_KINDS.contains(&kind.as_str()) {
+            return Err(invalid("kind", &format!("must be one of {}", NOTIFICATION_KINDS.join(", "))));
+        }
+        if dedup.len() != 64 || !dedup.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+            return Err(invalid("dedup", "must be 64 lowercase hex characters, the SHA-256 of the event's id"));
+        }
+        // The session's rows past their day go first, as record! prunes.
+        s.sync.notified.retain(|(w, session, _), (_, at)| !(*w == workspace && *session == id) || now.duration_since(*at) < NOTIFICATION_KEPT_FOR);
+        let seen = (workspace, id.clone(), dedup.clone());
+        if let Some((recorded, _)) = s.sync.notified.get(&seen) {
+            let answer = Json::map([("notification", Json::map([("kind", Json::str(recorded)), ("duplicate", Json::Raw("true".into()))]))]);
+            return Ok(Resp::json(200, &answer));
+        }
+        s.sync.notified.insert(seen, (kind.clone(), now));
+        s.sync.notifications.push(Notified { session: id, kind: kind.clone(), dedup, from_device: signer.to_owned(), at: now });
+        Ok(Resp::json(202, &Json::map([("notification", Json::map([("kind", Json::str(kind)), ("duplicate", Json::Raw("false".into()))]))])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// `GET /_notifications`: every notification recorded, oldest first, for
+/// tests that reach the stand-in only over HTTP. Stand-in only: the real
+/// registry has no such read, and never will.
+pub fn notifications_seen(app: &App) -> Resp {
+    let s = app.lock();
+    let seen = s
+        .sync
+        .notifications
+        .iter()
+        .map(|n| Json::map([("session", Json::str(&n.session)), ("kind", Json::str(&n.kind)), ("dedup", Json::str(&n.dedup)), ("device", Json::str(&n.from_device))]))
+        .collect();
+    Resp::json(200, &Json::map([("notifications", Json::Arr(seen))]))
 }
 
 #[cfg(test)]
