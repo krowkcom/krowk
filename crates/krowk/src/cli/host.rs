@@ -101,7 +101,16 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `krowk host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
-    // exits, rather than leaving it to lapse.
+    // exits, rather than leaving it to lapse. The daemon's runtime is gone,
+    // and its signal handlers with nothing reading them: SIGTERM and SIGINT
+    // go back to their defaults, so a signal during the grace ends the
+    // process at once — as a second one does while the daemon winds down —
+    // the leases then left to lapse.
+    // SAFETY: setting a disposition to SIG_DFL has no preconditions.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+    }
     auto.stop(krowk_harness::host::SHUTDOWN_GRACE);
     served
 }
