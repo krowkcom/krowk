@@ -12,7 +12,8 @@
 //!    plain sync methods; Swift calls them off the main thread.
 //! 3. Objects are `#[derive(uniffi::Object)]` held in `Arc`, constructed
 //!    with `#[uniffi::constructor] fn open(...) -> Result<Arc<Self>,
-//!    KrowkError>`.
+//!    KrowkError>`, or returned so by another object's method
+//!    (`Account::open_session`).
 //! 4. Every exported object is `Send + Sync + 'static`, checked at compile
 //!    time by `tests/send_sync.rs`.
 //! 5. Protocol and core types are re-declared with

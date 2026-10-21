@@ -337,7 +337,11 @@ fn r_proto_2_an_event_this_build_cannot_decode_is_a_decode_error_and_read_again(
     let newer = json!({"id": "01a0ec7b-2222-7000-8000-0000000000aa", "sessionId": SESSION, "timeMs": 9, "type": "turn.teleported"});
     host.write(&[newer, event(SESSION, 10, "known")]);
     for _ in 0..2 {
-        assert!(matches!(opened.catch_up(), Err(KrowkError::Decode { .. })), "refused, every time: not skipped");
+        match opened.catch_up() {
+            // Its place counted from the checkpoint: "before" is event 0.
+            Err(KrowkError::Decode { detail }) => assert!(detail.contains("event 1 read since the session's checkpoint"), "{detail}"),
+            other => panic!("refused, every time, not skipped: {:?}", other.map(|e| e.len())),
+        }
         assert_eq!(opened.head(), head, "nothing kept of a read that did not decode");
         assert_eq!(runs(&opened.events().unwrap()), ["before"]);
     }

@@ -316,7 +316,8 @@ impl OpenedSession {
     /// The session as read so far; held while the caller reads it, so a
     /// `catch_up` waits to commit what it read. Only to read: a `catch_up`
     /// commits over the fields it read from, so whatever changes `Attached`
-    /// takes the `reading` turn first, as `catch_up` does.
+    /// takes the `reading` turn first, as `catch_up` does. `heads` is lent
+    /// out, and empty, while a `catch_up` runs: read it under the turn.
     pub(crate) fn attached(&self) -> MutexGuard<'_, Attached> {
         self.attached.lock().unwrap_or_else(PoisonError::into_inner)
     }
