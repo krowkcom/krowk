@@ -549,18 +549,38 @@ const PAGE: usize = 256;
 /// devices: a host that comes back and republishes an old turn rings nobody.
 const RECENT_TURN_MS: i64 = 120_000;
 
-/// Notifications on their way to the registry at once: past this a new one
-/// is let go, said once, rather than piling up threads that each wait out a
-/// registry that stalls or rate-limits (krowk-api retries each, and waits a
-/// 429 out).
-const NOTIFYING_AT_MOST: usize = 8;
+/// Notifications on their way to the registry at once, across every bridge
+/// in the process: past this a new one is let go, said once, rather than
+/// piling up threads that each wait out a registry that stalls or
+/// rate-limits (krowk-api retries each, and waits a 429 out).
+const NOTIFYING_AT_MOST: usize = 16;
+
+/// The notifications on their way now (`NOTIFYING_AT_MOST`).
+static NOTIFYING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One of `NOTIFYING`, given back however its call ends.
+struct Notifying;
+
+impl Notifying {
+    /// A place among the notifications on their way, if there is one.
+    fn take() -> Option<Notifying> {
+        NOTIFYING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n < NOTIFYING_AT_MOST).then_some(n + 1)).ok().map(|_| Notifying)
+    }
+}
+
+impl Drop for Notifying {
+    fn drop(&mut self) {
+        NOTIFYING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// What a line rings the person's devices about (R-IOS-12), if anything:
 /// the kind and the text its dedup key is the SHA-256 of. An approval asked
 /// — the session's, or one of its children's, which blocks the session's
 /// turn just the same — only on the transition into waiting
-/// (`newly_waiting`): one already held is the daemon's replay as the bridge
-/// attaches again. A turn finished only when it is the session's own (a
+/// (`newly_waiting`): one this bridge holds already, sent again, is not. A
+/// bridge started afresh holds none, so one still waiting from before rings
+/// again under the same key, which the registry's dedup collapses. A turn finished only when it is the session's own (a
 /// child ending is no end of the session's turn), not one the registry held
 /// already when the bridge took the session up (the daemon replays those),
 /// and only within `RECENT_TURN_MS` of `now_ms`; whatever its status, since
@@ -603,11 +623,13 @@ impl Notified {
     }
 }
 
-/// Says why the registry could not notify, once per code: a registry
-/// without push (`push_unconfigured`), a lease that moved, a network gone
-/// would otherwise say it at every turn.
-fn notify_failed(said: &Mutex<HashSet<String>>, code: String, fix: &str) {
-    if said.lock().unwrap_or_else(|e| e.into_inner()).insert(code.clone()) {
+/// Says why the registry could not notify, once per code for as long as
+/// the process runs — the automatic sync's supervisor starts a bridge again
+/// and again: a registry without push (`push_unconfigured`), a lease that
+/// moved, a network gone would otherwise say it at every turn.
+fn notify_failed(code: String, fix: &str) {
+    static SAID: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    if SAID.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(code.clone()) {
         eprintln!("krowk: the registry could not notify your other devices ({code}): {fix}");
     }
 }
@@ -733,8 +755,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         others_asked: None,
         nobody_since: None,
         notified: Notified::default(),
-        notifying: Arc::default(),
-        notify_said: Arc::default(),
+        halt: halt.clone(),
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
@@ -867,10 +888,9 @@ struct Hosting {
     nobody_since: Option<Instant>,
     /// The events the person's devices were rung about (`alert_for`).
     notified: Notified,
-    /// Notifications on their way, off the loop (`NOTIFYING_AT_MOST`).
-    notifying: Arc<std::sync::atomic::AtomicUsize>,
-    /// The codes a notification failed with, each said once.
-    notify_said: Arc<Mutex<HashSet<String>>>,
+    /// Set as the bridge stops, before its lease is given back: a
+    /// notification still to go then asks for nothing.
+    halt: Arc<AtomicBool>,
 }
 
 impl Hosting {
@@ -935,24 +955,29 @@ impl Hosting {
     /// nothing is sent; the token is read as the call goes, a renewal may
     /// have replaced it.
     fn notify(&mut self, kind: NotifyKind, key: &str) {
-        if self.lost.load(Ordering::Relaxed) || !self.notified.first(key) {
+        if self.lost.load(Ordering::Relaxed) || self.notified.seen.contains(key) {
             return;
         }
-        if self.notifying.fetch_add(1, Ordering::Relaxed) >= NOTIFYING_AT_MOST {
-            self.notifying.fetch_sub(1, Ordering::Relaxed);
-            notify_failed(&self.notify_said, "notifications_backed_up".into(), &format!("{NOTIFYING_AT_MOST} notifications are still on their way to the registry, so this one was let go"));
+        let Some(place) = Notifying::take() else {
+            notify_failed("notifications_backed_up".into(), &format!("{NOTIFYING_AT_MOST} notifications are still on their way to the registry, so this one was let go"));
             return;
-        }
+        };
+        self.notified.first(key);
         let dedup = e2e::hex(&Sha256::digest(key.as_bytes()));
-        let (o, held, lost, notifying, said) = (self.o.clone(), self.held.clone(), self.lost.clone(), self.notifying.clone(), self.notify_said.clone());
+        let (o, held, lost, halt) = (self.o.clone(), self.held.clone(), self.lost.clone(), self.halt.clone());
         tokio::task::spawn_blocking(move || {
-            if !lost.load(Ordering::Relaxed) {
-                let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
-                if let Err(e) = o.api.notify_session(&o.session, kind, &dedup, &token) {
-                    notify_failed(&said, e.code(), &e.fix());
-                }
+            let _place = place;
+            if lost.load(Ordering::Relaxed) || halt.load(Ordering::Relaxed) {
+                return;
             }
-            notifying.fetch_sub(1, Ordering::Relaxed);
+            let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+            // A refusal that comes once the bridge has stopped is of a lease
+            // it gave back meanwhile: nothing to say.
+            if let Err(e) = o.api.notify_session(&o.session, kind, &dedup, &token)
+                && !halt.load(Ordering::Relaxed)
+            {
+                notify_failed(e.code(), &e.fix());
+            }
         });
     }
 

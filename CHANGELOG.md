@@ -39,7 +39,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   turn that ended more than two minutes before it was synced rings
   nobody. If the registry can't send pushes, the host says so once and
   the session syncs as before. For now a turn you run at the host's own
-  terminal rings your phone too.
+  terminal, and an approval it asks there, rings your phone too.
 - **The iPhone app signs in through the browser.** Its first screen says
   "Sign in to krowk" with one button, which opens krowk's approval page in
   a browser sheet that uses your existing krowk login, naming the phone by

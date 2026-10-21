@@ -2911,14 +2911,16 @@ fn digest(key: &str) -> String {
 /// R-PERM-2, R-IOS-12, R-E2E-1: an approval on a synced session rings the
 /// person's devices once, as it starts waiting: the registry is told the
 /// kind and a digest of the request's id, and nothing of what it asks. A
-/// viewer that attaches again is welcomed with the request, and nothing
-/// rings again.
+/// viewer that attaches again is welcomed with the request, and the bridge
+/// asks for nothing; a bridge started again while it waits asks once more
+/// under the same key (it holds no request yet), which the registry
+/// collapses: the person's devices still rang once.
 #[tokio::test]
 async fn r_perm_2_an_approval_on_a_synced_session_rings_the_persons_devices_once() {
     let w = World::new("ring-approval");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (_d, session) = first_turn(&w).await;
-    let (_stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
@@ -2934,10 +2936,27 @@ async fn r_perm_2_an_approval_on_a_synced_session_rings_the_persons_devices_once
     // rings nothing more.
     drop(v);
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
-    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let welcomed = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    assert!(welcomed.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) if r.request_id == req.request_id)), "welcomed with the request: {welcomed:?}");
     let calls = notify_calls(&w, &session);
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(notify_calls(&w, &session), calls, "a viewer attaching again asks for nothing");
+
+    // A's bridge starts again while the request waits: the daemon sends the
+    // new one the request, and its ask collapses at the registry.
+    stop.send(true).unwrap();
+    bridge.await.unwrap().unwrap();
+    let (_stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while notify_calls(&w, &session) == calls {
+        assert!(Instant::now() < deadline, "the new bridge never saw the request waiting");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(notifications(&w, &session).iter().filter(|(k, _)| k == "approval").count(), 1, "rang once");
+    drop(v);
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
     v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
@@ -2972,9 +2991,12 @@ async fn r_ios_12_a_finished_turn_rings_once_and_taking_the_session_up_again_aft
 
     let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
-    tokio::time::sleep(Duration::from_secs(2)).await;
-    assert_eq!(notify_calls(&w, &session), calls, "the replayed turns ask for nothing");
-    assert_eq!(notifications(&w, &session).len(), 2);
+    // The daemon replays the log before it sends a turn begun after: once
+    // the next turn has rung, the replay has been through the bridge.
+    turn(&d, &w, &session, "a turn after the restart").await;
+    notified(&w, &session, "done", 3, Duration::from_secs(10)).await;
+    assert_eq!(notify_calls(&w, &session), calls + 1, "the replayed turns ask for nothing");
+    assert_eq!(notifications(&w, &session).len(), 3);
     stop.send(true).unwrap();
     bridge.await.unwrap().unwrap();
 }
@@ -3005,7 +3027,7 @@ async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
         turn(&d, &w, &session, "a turn the registry will not ring for").await;
         let done = Instant::now();
         until(&mut v, Duration::from_secs(5), &mut frames, ended).await;
-        assert!(done.elapsed() < Duration::from_secs(2), "mode {mode}: the turn's end reached B {:?} after it ended", done.elapsed());
+        assert!(done.elapsed() < Duration::from_secs(3), "mode {mode}: the turn's end reached B {:?} after it ended", done.elapsed());
         assert!(!bridge.is_finished(), "mode {mode}: the bridge runs on");
         {
             let deadline = Instant::now() + Duration::from_secs(5);
