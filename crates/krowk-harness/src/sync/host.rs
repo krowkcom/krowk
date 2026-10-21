@@ -448,7 +448,7 @@ fn others_in(status: Option<&crate::protocol::HostStatus>, session: &str) -> boo
 /// each child by the turn its `subagent.started` was logged in) while that
 /// turn is still the session's `current` one — a background agent asking
 /// in a later turn, begun at the host's terminal, is that turn's to wait
-/// on — once nobody has been here to answer for `APPROVAL_WAIT` (`alone`),
+/// on — once nobody has been here to answer for `approval_wait` (`alone`),
 /// and the request has waited as long (`waited`). With no client but the
 /// bridge answering the session's approvals (`!others`) — the terminal
 /// that started a turn went away — every such request is denied, whoever
@@ -753,8 +753,8 @@ struct Hosting {
     /// approvals: asked again only a while later, not every second.
     others_asked: Option<Instant>,
     /// Since when every answer the daemon gave said no other client
-    /// answers: one is not enough, since a terminal that fell behind is
-    /// left out while it follows again.
+    /// answers: one is not enough, since a terminal reconnecting is left
+    /// out until it follows again.
     nobody_since: Option<Instant>,
 }
 
