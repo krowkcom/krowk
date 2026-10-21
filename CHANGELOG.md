@@ -55,6 +55,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A closed terminal no longer leaves a synced session waiting on a
+  question.** If you close krowk while it asks to approve a tool call, and
+  nobody is attached from another device, the question is declined once
+  it has been waiting five minutes and nobody has been attached for as
+  long, instead of waiting for good. That includes a question a
+  background agent asks after its turn ended. While krowk is still open,
+  or someone is attached, the question waits for an answer as before.
 - **krowk can now ask the registry to notify your other devices, and a
   device can register for push notifications.** Nothing calls this yet.
   Notifications from a host come in a later release. Nothing changes for

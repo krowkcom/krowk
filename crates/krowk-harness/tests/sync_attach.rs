@@ -28,7 +28,7 @@ use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
-use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, PermissionMode, StreamLine};
+use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, Command, Item, LiveEvent, LogBody, PermissionMode, StreamLine};
 use krowk_harness::sync::{auto, direct, host, viewer};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
@@ -325,10 +325,10 @@ impl World {
 
     /// A's bridge for `session`, running until the handle is stopped.
     fn bridge(&self, a: &Device, session: &str, daemon: Arc<Client>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        self.bridge_with(a, session, daemon, host::LEASE_TTL, host::KEEP)
+        self.bridge_with(a, session, daemon, host::LEASE_TTL, host::KEEP, host::APPROVAL_WAIT)
     }
 
-    fn bridge_with(&self, a: &Device, session: &str, daemon: Arc<Client>, ttl: u64, keep: usize) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
+    fn bridge_with(&self, a: &Device, session: &str, daemon: Arc<Client>, ttl: u64, keep: usize, approval_wait: Duration) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
         let o = host::Options {
             relay: self.relay_a.clone(),
             env: "development".into(),
@@ -346,6 +346,7 @@ impl World {
             direct: None,
             tailnet: None,
             handed: None,
+            approval_wait,
         };
         self.run_bridge(o, daemon)
     }
@@ -388,6 +389,7 @@ impl World {
             direct: Some(config),
             tailnet,
             handed: None,
+            approval_wait: host::APPROVAL_WAIT,
         };
         self.run_bridge(o, daemon)
     }
@@ -898,6 +900,100 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     }
 }
 
+/// An answering client — the terminal — prompts "make the file" in
+/// `session`, with A's bridge on it denying late after a second; returns
+/// the client, its turn (running on the runtime) and the request it saw.
+async fn ask_at_the_terminal(w: &World, session: &str) -> (Arc<Client>, tokio::task::JoinHandle<()>, ApprovalRequest) {
+    let t = w.daemon().await;
+    let (tx, mut rx) = mpsc::channel(1024);
+    let (run, cmd) = (t.clone(), w.prompt(Some(session), "make the file"));
+    let turn = tokio::spawn(async move {
+        let _ = run.execute(cmd, tx).await;
+    });
+    let req = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if let Some(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = rx.recv().await {
+                break r;
+            }
+        }
+    })
+    .await
+    .expect("the terminal is asked");
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    (t, turn, req)
+}
+
+/// The tool results logged in A's log of `session`.
+fn tool_results(w: &World, session: &str) -> Vec<(String, bool)> {
+    let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(session).join(log::EVENTS_FILE)).unwrap();
+    events.into_iter().filter_map(|e| match e.body {
+        LogBody::ItemCompleted { item: Item::ToolResult { output, is_error, .. }, .. } => Some((output, is_error)),
+        _ => None,
+    }).collect()
+}
+
+/// R-HOST-1, R-SYNC-3: the terminal that started a turn closes with its
+/// question on screen, and A's bridge — an answering client too, so the
+/// daemon's own denial never fires — is the session's one answering client
+/// left. With no viewer there either, the bridge denies the request once
+/// it has waited, rather than leaving the turn waiting on nobody.
+#[tokio::test]
+async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waiting_by_the_bridge() {
+    let w = World::new("unattended");
+    let a = w.device("machine-a");
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, Duration::from_secs(1));
+    w.synced(&session).await;
+    let (t, turn, req) = ask_at_the_terminal(&w, &session).await;
+    assert_eq!(req.tool, "bash");
+    // The terminal goes, its turn's command with it.
+    turn.abort();
+    drop((t, d));
+    let left = Instant::now();
+    let deadline = left + Duration::from_secs(5);
+    let results = loop {
+        let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+        if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
+            // The bridge's doing, after its wait: not the daemon's, which
+            // would have denied it the moment the terminal went.
+            assert!(left.elapsed() >= Duration::from_millis(500), "denied {:?} after the terminal went", left.elapsed());
+            break tool_results(&w, &session);
+        }
+        assert!(Instant::now() < deadline, "the turn still waits on the question");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(matches!(results.as_slice(), [(_, true)]), "bash was denied: {results:?}");
+    assert!(!w.repo().join("approved.txt").exists());
+}
+
+/// R-PERM-2, R-HOST-1: while the terminal that started the turn still
+/// follows the session, the bridge leaves its question to it — still
+/// waiting well past the bridge's wait — and a viewer B attached can
+/// still answer it.
+#[tokio::test]
+async fn r_perm_2_a_question_the_terminal_still_follows_waits_and_a_viewer_can_answer_it() {
+    let w = World::new("attended");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, Duration::from_secs(1));
+    w.synced(&session).await;
+    // The terminal asking is the one other answering client.
+    drop(d);
+    let (_t, turn, req) = ask_at_the_terminal(&w, &session).await;
+    // A status that failed would leave it waiting too: r_host_1's test
+    // above is the one that needs it to work and count the bridge alone.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(!turn.is_finished() && tool_results(&w, &session).is_empty(), "the question still waits on the terminal");
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    tokio::time::timeout(Duration::from_secs(15), turn).await.expect("B's answer ends the turn").unwrap();
+    assert!(matches!(tool_results(&w, &session).as_slice(), [(_, false)]), "bash ran");
+    assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked the terminal's turn");
+}
+
 /// R-OFF-2: A's network is gone for 30 seconds while A runs a turn by
 /// itself; once it is back, sync resumes with nothing more than waiting,
 /// and B holds every event A's log holds.
@@ -1051,7 +1147,7 @@ async fn r_off_2_a_lease_lapsed_while_the_registry_was_gone_is_taken_again_and_n
     let w = World::new("lapse");
     let a = w.device("machine-a");
     let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP);
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP, host::APPROVAL_WAIT);
     w.synced(&session).await;
     w.reg_mode.store(CUT, Ordering::SeqCst);
     turn(&d, &w, &session, "a turn while the lease lapses").await;
@@ -1069,7 +1165,7 @@ async fn r_sync_2_a_bridge_whose_lease_another_device_took_stops() {
     let w = World::new("lost");
     let (a, c) = (w.device("machine-a"), w.device("machine-c"));
     let (_d, session) = first_turn(&w).await;
-    let (_stop, _cp, bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP);
+    let (_stop, _cp, bridge) = w.bridge_with(&a, &session, w.daemon().await, 10, host::KEEP, host::APPROVAL_WAIT);
     w.synced(&session).await;
     w.reg_mode.store(CUT, Ordering::SeqCst);
     tokio::time::sleep(Duration::from_secs(11)).await;
@@ -1263,7 +1359,7 @@ async fn r_off_2_a_new_stream_after_a_long_cut_loses_nothing() {
     let w = World::new("newstream");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, 4);
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, 4, host::APPROVAL_WAIT);
     w.synced(&session).await;
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
@@ -1815,6 +1911,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         direct: None,
         tailnet: None,
         handed: Some(handed),
+        approval_wait: host::APPROVAL_WAIT,
     };
     let (_b_stop, _b_cp, _b_bridge) = w.run_bridge(o, b_daemon);
 
@@ -2271,6 +2368,7 @@ impl World {
                 direct: None,
                 tailnet: None,
                 handed: None,
+                approval_wait: host::APPROVAL_WAIT,
             })
         });
         let env = self.env();

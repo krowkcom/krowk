@@ -326,6 +326,7 @@ fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option
         // Kept in the session's sealed index, for `krowk hosts`.
         tailnet: krowk_harness::sync::tailscale::status(&krowk_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
         handed,
+        approval_wait: host::APPROVAL_WAIT,
     };
     krowk_harness::sync::run_host(o, ctx.io.env, &cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
 }
