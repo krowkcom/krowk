@@ -29,7 +29,8 @@ use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, Command, LiveEvent, PermissionMode, StreamLine};
-use krowk_harness::sync::{direct, host, viewer};
+use krowk_harness::sync::{auto, direct, host, viewer};
+use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -195,6 +196,11 @@ impl World {
         UserKeys::new(self.list.lock().unwrap().as_ref().expect("a device first").1.clone(), []).unwrap()
     }
 
+    /// The user key every device holds.
+    fn user_key(&self) -> UserKey {
+        self.list.lock().unwrap().as_ref().expect("a device first").1.clone()
+    }
+
     /// The device list, verified, with every device made so far on it.
     fn chain(&self) -> Chain {
         self.list.lock().unwrap().as_ref().expect("a device first").0.clone()
@@ -271,10 +277,18 @@ impl World {
 
     /// `serve_env`, the daemon's instances `instances`.
     fn serve_with(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str, instances: InstancesConfig) {
+        self.serve_hooked(env, home, instances, None, None);
+    }
+
+    /// `serve_with`, telling `turns` of each session's own turn starting and
+    /// ending, and reporting `bridged` in its status: the hooks the
+    /// automatic sync's supervisor rides (ticket 92). Its thread is named
+    /// `DAEMON_THREAD`.
+    fn serve_hooked(&self, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, home: &str, instances: InstancesConfig, turns: Option<mpsc::UnboundedSender<server::TurnEvent>>, bridged: Option<Arc<Mutex<BTreeSet<String>>>>) {
         let socket = daemon::socket(&env).unwrap();
         let credentials = self.root.join(home).join(".krowk/credentials.json");
         let wait = env.clone();
-        std::thread::spawn(move || {
+        std::thread::Builder::new().name(DAEMON_THREAD.into()).spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
@@ -291,8 +305,8 @@ impl World {
                     session: Default::default(),
                 })
             });
-            server::run(server::Options { socket, idle: None, krowk_version: "test".into(), ..Default::default() }, factory)
-        });
+            server::run(server::Options { socket, idle: None, krowk_version: "test".into(), turns, bridged, ..Default::default() }, factory)
+        }).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(daemon::socket(&wait).unwrap()).is_err() {
             assert!(Instant::now() < deadline, "the daemon never listened");
@@ -2192,4 +2206,216 @@ async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_
     // The chunks: the child's log whole, its end last.
     assert_eq!(log_ids(&w, &kid).last(), Some(&ended.id));
     chunks_hold(&w, &session, &[&kid], Duration::from_secs(30)).await;
+}
+
+/// The name of the thread A's daemon runs on in these tests.
+const DAEMON_THREAD: &str = "test-daemon";
+
+/// Each `build` call: its session, when, and the thread it ran on.
+type Built = Arc<Mutex<Vec<(String, Instant, Option<String>)>>>;
+
+/// A's daemon with the automatic sync's supervisor beside it (ticket 94):
+/// no bridge started by hand.
+struct Auto {
+    handle: Option<auto::Handle>,
+    bridged: Arc<Mutex<BTreeSet<String>>>,
+    built: Built,
+    /// The daemon's turn hook, which a test may tell of a turn itself.
+    turns: mpsc::UnboundedSender<server::TurnEvent>,
+}
+
+impl Auto {
+    fn built(&self, session: &str) -> Vec<Instant> {
+        self.built.lock().unwrap().iter().filter(|(s, ..)| s == session).map(|(_, at, _)| *at).collect()
+    }
+
+    /// `Handle::stop`, off the runtime: it blocks.
+    async fn stop(&mut self, grace: Duration) {
+        let h = self.handle.take().expect("running");
+        tokio::task::spawn_blocking(move || h.stop(grace)).await.unwrap();
+    }
+}
+
+impl World {
+    /// A's daemon, hooked, and its supervisor, whose `build` makes A's
+    /// bridges as `bridge_with` does — panicking the first time it is
+    /// called when `panic_first`.
+    fn auto(&self, a: &Device, panic_first: bool) -> Auto {
+        let (turns, turns_rx) = mpsc::unbounded_channel();
+        let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
+        self.serve_hooked(self.env(), "home", InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
+        let built: Built = Arc::default();
+        let (seen, a2, api, relay, keys, chain, sessions) = (built.clone(), a.copy(), self.a_client(a), self.relay_a.clone(), self.user_key(), self.chain(), log::sessions_dir(&self.env()).unwrap());
+        let first = AtomicBool::new(panic_first);
+        let build: auto::Build = Box::new(move |session: &str, cwd: &Path| {
+            seen.lock().unwrap().push((session.to_string(), Instant::now(), std::thread::current().name().map(String::from)));
+            if first.swap(false, Ordering::SeqCst) {
+                panic!("the test's build panics, once");
+            }
+            Ok(host::Options {
+                relay: relay.clone(),
+                env: "development".into(),
+                api: api.clone(),
+                device: a2.key.id(),
+                signing: SigningKey::from_secret(&*a2.signing.secret_bytes()).unwrap(),
+                keys: UserKeys::new(keys.clone(), []).unwrap(),
+                chain: chain.clone(),
+                session: session.into(),
+                title: "the title is sealed too".into(),
+                cwd: cwd.display().to_string(),
+                sessions: sessions.clone(),
+                ttl: host::LEASE_TTL,
+                keep: host::KEEP,
+                direct: None,
+                tailnet: None,
+                handed: None,
+            })
+        });
+        let env = self.env();
+        let c = auto::Config {
+            socket: daemon::socket(&env).unwrap(),
+            sessions: log::sessions_dir(&env).unwrap(),
+            version: "test".into(),
+            krowk_home: Some(self.root.join("home/.krowk")),
+            build,
+            policy: Box::new(|| auto::policy(&|_| String::new(), None)),
+            ready: Box::new(|| Ok(())),
+            bridged: bridged.clone(),
+        };
+        Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), bridged, built, turns }
+    }
+
+    /// Waits until B lists `session`, or panics at `by`.
+    async fn listed_on(&self, b: &Device, session: &str, by: Instant) {
+        loop {
+            let (api, keys, chain) = (self.as_device(b), self.keys(), self.chain());
+            let listed = tokio::task::spawn_blocking(move || viewer::list(&api, &keys, &chain)).await.unwrap();
+            if listed.as_ref().is_ok_and(|(l, _)| l.iter().any(|s| s.id == session)) {
+                return;
+            }
+            assert!(Instant::now() < by, "B never listed {session}: {:?}", listed.map(|(l, n)| (l.into_iter().map(|s| s.id).collect::<Vec<_>>(), n)));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+}
+
+/// A turn of a new session (`None`) or `session`, run to its end by `d`.
+async fn prompted(w: &World, d: &Client, session: Option<&str>, text: &str) -> String {
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    d.execute(w.prompt(session, text), tx).await.unwrap().unwrap().session_id
+}
+
+/// R-SYNC-3: a session prompted at A's terminal, with no `krowk sync`
+/// command, is bridged by A's supervisor the moment its turn starts and
+/// listed on B within 5 seconds; B follows it live (R-SYNC-2: the bridge
+/// is its one writer, and B's view is the bridge's). R-LAG-9: the bridge's
+/// blocking work — its `build` — runs off the daemon's thread. Stopping the
+/// supervisor ends the bridge and gives its lease back: nothing is left
+/// bridged and the registry holds no lease.
+#[tokio::test]
+async fn r_sync_3_a_session_prompted_with_no_sync_command_is_listed_on_b_within_5_seconds() {
+    let w = World::new("auto");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto(&a, false);
+    let d = w.daemon().await;
+    let sent = Instant::now();
+    let session = prompted(&w, &d, None, "say hello").await;
+    w.listed_on(&b, &session, sent + Duration::from_secs(5)).await;
+    println!("R-SYNC-3 listed on B {:?} after the prompt", sent.elapsed());
+    assert_eq!(auto.built(&session).len(), 1, "one bridge for the session");
+    assert!(auto.bridged.lock().unwrap().contains(&session), "the status names it bridged");
+    let on = auto.built.lock().unwrap()[0].2.clone();
+    assert_ne!(on.as_deref(), Some(DAEMON_THREAD), "R-LAG-9: never on the daemon's thread");
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let again = {
+        let (d, w2, s) = (d.clone(), w.prompt(Some(&session), "say it again"), session.clone());
+        tokio::spawn(async move {
+            let (tx, mut rx) = mpsc::channel(1024);
+            tokio::spawn(async move { while rx.recv().await.is_some() {} });
+            d.execute(w2, tx).await.unwrap().unwrap();
+            s
+        })
+    };
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    assert!(got.iter().any(|u| format!("{u:?}").contains("say it again")), "the second turn's own result reached B: {got:?}");
+    again.await.unwrap();
+    assert_eq!(auto.built(&session).len(), 1, "a second turn rides the same bridge");
+
+    auto.stop(Duration::from_secs(10)).await;
+    assert!(auto.bridged.lock().unwrap().is_empty(), "nothing bridged after stop");
+    let (api, id) = (w.client(), session.clone());
+    let s = tokio::task::spawn_blocking(move || api.show_sync_session(&id)).await.unwrap().unwrap();
+    assert!(s.lease.is_none(), "the stopped bridge gave its lease back: {:?}", s.lease);
+}
+
+/// R-SYNC-3: one bridge's panic is its session's alone. The first `build`
+/// (session X's) panics; session Y, prompted after it, is bridged and
+/// listed on B all the same, and X is built again once its backoff has
+/// run out, and listed too.
+#[tokio::test]
+async fn r_sync_3_one_bridges_panic_leaves_the_others() {
+    let w = World::new("auto-panic");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto(&a, true);
+    let d = w.daemon().await;
+    let x = prompted(&w, &d, None, "say hello").await;
+    let y = prompted(&w, &d, None, "say hello").await;
+    w.listed_on(&b, &y, Instant::now() + Duration::from_secs(10)).await;
+    let by = Instant::now() + auto::BACKOFF_FIRST + Duration::from_secs(10);
+    w.listed_on(&b, &x, by).await;
+    let calls = auto.built(&x);
+    assert_eq!(calls.len(), 2, "built once, panicked, and built again: {calls:?}");
+    assert!(calls[1] - calls[0] >= auto::BACKOFF_FIRST - Duration::from_millis(100), "again only after its backoff: {:?}", calls[1] - calls[0]);
+    assert_eq!(auto.built(&y).len(), 1);
+    auto.stop(Duration::from_secs(10)).await;
+    assert!(auto.bridged.lock().unwrap().is_empty());
+}
+
+/// R-SYNC-3: a subagent's session rides its parent's bridge and a session
+/// in a directory with `.krowk/no-sync` stays on the machine — neither gets
+/// a `build` call. A plain session's turn after them is bridged.
+#[tokio::test]
+async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
+    let w = World::new("auto-out");
+    let a = w.device("machine-a");
+    let mut auto = w.auto(&a, false);
+
+    // A turn in a directory that opts out.
+    let private = w.root.join("private");
+    std::fs::create_dir_all(private.join(".krowk")).unwrap();
+    std::fs::write(private.join(".krowk/no-sync"), "").unwrap();
+    let there = Arc::new(Client::connect(&daemon::socket(&w.env()).unwrap(), &private, "test", true).await.ok().expect("the daemon answers"));
+    let out = prompted(&w, &there, None, "say hello").await;
+
+    // A child's turn, as the hook would tell of one: its log names a parent.
+    let (parent, kid) = ("01a0ec7b-0000-7000-8000-0000000000e1", "01a0ec7b-0000-7000-8000-0000000000e2");
+    let dir = log::sessions_dir(&w.env()).unwrap().join(kid);
+    std::fs::create_dir_all(&dir).unwrap();
+    let started = krowk_harness::protocol::LogEvent {
+        id: "01a0ec7b-0000-7000-8000-0000000000e3".into(),
+        parent_id: None,
+        session_id: kid.into(),
+        time_ms: 1,
+        body: krowk_harness::protocol::LogBody::SessionStarted { cwd: w.repo().display().to_string(), krowk_version: "test".into(), protocol_version: 1, parent_session_id: Some(parent.into()), agent: None },
+    };
+    std::fs::write(dir.join(log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&started).unwrap())).unwrap();
+    auto.turns.send(server::TurnEvent { session: kid.into(), running: true }).unwrap();
+
+    // A plain session after both: built.
+    let d = w.daemon().await;
+    let plain = prompted(&w, &d, None, "say hello").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auto.built(&plain).is_empty() {
+        assert!(Instant::now() < deadline, "the plain session was never built");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(auto.built(&out).is_empty(), "an opted-out directory's session is never built");
+    assert!(auto.built(kid).is_empty(), "a child's session is never built");
+    assert!(!auto.bridged.lock().unwrap().contains(&out));
+    auto.stop(Duration::from_secs(10)).await;
 }

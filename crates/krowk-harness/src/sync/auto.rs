@@ -1,15 +1,42 @@
-//! Automatic sync's policy (spec R-SYNC-3; engineering/harness.md → Sync →
-//! Automatic sync): whether this device syncs its sessions without a
+//! Automatic sync (spec R-SYNC-3; engineering/harness.md → Sync →
+//! Automatic sync).
+//!
+//! **The policy** — whether this device syncs its sessions without a
 //! command, which directories opt out, how long a bridge may sit idle, and
-//! which directory a session belongs to. Pure reads of the environment, the
-//! person's own `config.json` and the files on disk — no network, nothing
-//! spawned. The supervisor (Harness P4 tickets 94, 96) and `krowk sync
-//! status` (ticket 95) call it.
+//! which directory a session belongs to — is pure reads of the environment,
+//! the person's own `config.json` and the files on disk: no network,
+//! nothing spawned. The supervisor and `krowk sync status` (Harness P4
+//! ticket 95) call it.
+//!
+//! **The supervisor** (`Supervisor::spawn`) runs in the host daemon's
+//! process and starts the existing bridge (`host::run`, what `krowk sync
+//! host` runs) for each session the moment a turn starts in it, told by the
+//! daemon's turn hook (`server::Options::turns`) — never by polling.
+//!
+//! It runs on a `std::thread` and a current-thread runtime of its own,
+//! never on the daemon's thread: the daemon runs every session on one
+//! thread, so a blocking call there stalls them all (R-LAG-9), and a bridge
+//! blocks — the `ureq` registry client, its lease, list and writer threads'
+//! joins, `parent_here`'s `File::open` from `frame()`, a checkpoint's `git
+//! rev-parse`. So it never touches the daemon's `State`: its only links to
+//! the daemon are the socket, which each bridge connects to as a client of
+//! its own, and the in-process hooks (`turns`, `bridged`). For the same
+//! reason this file is not in the list
+//! `daemon::tests::r_lag_9_no_blocking_io_on_the_daemons_thread` checks:
+//! nothing in it runs on that thread.
 
+use crate::daemon::client::Client as Daemon;
+use crate::daemon::server::TurnEvent;
 use crate::protocol::LogBody;
+use super::host;
 use serde_json::Value;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::{JoinError, JoinSet};
+use tokio::time::Instant;
 
 /// How long a bridge may sit idle before it is let go, when neither
 /// `KROWK_SYNC_IDLE` nor `sync.idleMinutes` says.
@@ -219,6 +246,390 @@ pub fn session_dir(sessions: &Path, id: &str) -> Option<SessionDir> {
     }
 }
 
+/// Builds a bridge's options for `session`, whose own directory is `cwd`:
+/// the keys, the signed registry client, the relay, direct paths. The
+/// CLI's (ticket 95); a test's own. Blocking (it may ask the registry): the
+/// supervisor runs it on the blocking pool. Errors are `(code, message)`.
+pub type Build = Box<dyn Fn(&str, &Path) -> Result<host::Options, (String, String)> + Send + Sync>;
+
+/// What the supervisor needs from its owner.
+pub struct Config {
+    /// The daemon's socket (`daemon::socket`), which each bridge connects
+    /// to. Never started from here (`daemon::ensure` is not called): a
+    /// supervisor whose daemon is exiting must not start the next one.
+    pub socket: PathBuf,
+    /// This machine's session logs (`log::sessions_dir`).
+    pub sessions: PathBuf,
+    /// Said in each bridge's hello: the daemon's own version.
+    pub version: String,
+    /// krowk's own home (`~/.krowk`), whose `no-sync` is no repository's.
+    pub krowk_home: Option<PathBuf>,
+    pub build: Build,
+    /// The policy, read again each time a bridge would start (`policy`
+    /// over `config.json`). An `Err` is off.
+    pub policy: Box<dyn Fn() -> Result<Policy, String> + Send + Sync>,
+    /// Whether sync is set up here; why not otherwise. File reads only.
+    pub ready: Box<dyn Fn() -> Result<(), String> + Send + Sync>,
+    /// The sessions bridged now, shared with the daemon's status
+    /// (`server::Options::bridged`).
+    pub bridged: Arc<Mutex<BTreeSet<String>>>,
+}
+
+/// A failed bridge's first wait before it is started again; each failure
+/// after a run no longer than its wait doubles it, up to `BACKOFF_MOST`.
+pub const BACKOFF_FIRST: Duration = Duration::from_secs(5);
+pub const BACKOFF_MOST: Duration = Duration::from_secs(5 * 60);
+
+/// How long the bridges are given to end when the `Handle` is dropped
+/// rather than stopped.
+const DROPPED_GRACE: Duration = Duration::from_secs(10);
+
+/// Starts a bridge for each session a turn starts in, as its policy allows.
+pub struct Supervisor;
+
+/// The running supervisor. Dropping it stops the bridges too, without
+/// waiting for them.
+pub struct Handle {
+    stop: Option<oneshot::Sender<Duration>>,
+    /// Said (or dropped) as the supervisor's thread ends.
+    done: std::sync::mpsc::Receiver<()>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Supervisor {
+    /// Starts the supervisor on a thread of its own, `krowk-sync`, with a
+    /// runtime of its own, listening to the daemon's turn hook `turns`.
+    /// Nothing runs on the daemon's thread (see the module's doc).
+    pub fn spawn(c: Config, turns: mpsc::UnboundedReceiver<TurnEvent>) -> Handle {
+        let (stop, stop_rx) = oneshot::channel();
+        let (done_tx, done) = std::sync::mpsc::channel();
+        let thread = std::thread::Builder::new().name("krowk-sync".into()).spawn(move || {
+            match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+                Ok(rt) => {
+                    rt.block_on(Sup::new(c).run(turns, stop_rx));
+                    // A check or build still on the blocking pool (a dead
+                    // disk, a registry that never answers) is not waited for.
+                    rt.shutdown_background();
+                }
+                Err(e) => eprintln!("krowk: automatic sync could not start: the async runtime did not: {e}"),
+            }
+            let _ = done_tx.send(());
+        });
+        let thread = match thread {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("krowk: automatic sync could not start: no thread for it: {e}");
+                None
+            }
+        };
+        Handle { stop: Some(stop), done, thread }
+    }
+}
+
+impl Handle {
+    /// Stops every bridge — each ends its stream and gives its lease back
+    /// (`Hosting::stop`) — and waits for them up to `grace`. A bridge still
+    /// going then is left to the process's exit, its lease to lapse.
+    pub fn stop(mut self, grace: Duration) {
+        if let Some(tx) = self.stop.take() {
+            let _ = tx.send(grace);
+        }
+        // `JoinHandle::join` has no timeout: the thread says it is done.
+        // It waits `grace` for the bridges itself; a moment more for its end.
+        match self.done.recv_timeout(grace + Duration::from_secs(1)) {
+            Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                if let Some(t) = self.thread.take() {
+                    let _ = t.join();
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => eprintln!("krowk: automatic sync did not stop in {}; leaving it", human(grace)),
+        }
+    }
+}
+
+/// Why a session is not bridged.
+enum No {
+    /// Nothing is, here: the switch, the policy, the setup.
+    Device(String),
+    /// This session is not.
+    Session(String),
+}
+
+/// Whether `session` may be bridged and in which directory: the policy on,
+/// sync set up, the session's directory known, not a subagent's, and not
+/// opted out — in that order, the first no ending it. Blocking.
+fn check(c: &Config, session: &str) -> Result<PathBuf, No> {
+    let p = match (c.policy)() {
+        Ok(p) if p.on => p,
+        Ok(p) => return Err(No::Device(format!("automatic sync is off ({}); a session syncs only with `krowk sync host`", p.off_by.unwrap_or("turned off")))),
+        // Fail closed: a policy that cannot be read is off.
+        Err(e) => return Err(No::Device(format!("automatic sync is off: {e}"))),
+    };
+    (c.ready)().map_err(|e| No::Device(format!("automatic sync is not set up here: {e}")))?;
+    let dir = session_dir(&c.sessions, session).ok_or_else(|| No::Session("its log does not say which directory it runs in".into()))?;
+    if dir.child {
+        return Err(No::Session("it is a subagent's, which rides its parent's bridge".into()));
+    }
+    match p.opted_out(&dir.cwd, c.krowk_home.as_deref()) {
+        None => Ok(dir.cwd),
+        Some(OptOut::Excluded(e)) => Err(No::Session(format!("{} is under {}, in sync.exclude", dir.cwd.display(), e.display()))),
+        Some(OptOut::Marker(m)) => Err(No::Session(format!("{} opts {} out", m.display(), dir.cwd.display()))),
+    }
+}
+
+/// One bridge: its options built, its own daemon client connected in the
+/// session's own directory — a background one, so it never keeps the
+/// daemon up, and answering, so viewers and the phone can approve — and
+/// `host::run` until `stop` or its end.
+async fn bridge(c: Arc<Config>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>) -> Result<(), String> {
+    let built = {
+        let (c, session, cwd) = (c.clone(), session.clone(), cwd.clone());
+        tokio::task::spawn_blocking(move || (c.build)(&session, &cwd)).await
+    };
+    let o = match built {
+        Ok(o) => o.map_err(|(code, message)| format!("{message} ({code})"))?,
+        // A panic in `build` is this bridge's, and only its.
+        Err(e) => match e.try_into_panic() {
+            Ok(p) => std::panic::resume_unwind(p),
+            Err(e) => return Err(e.to_string()),
+        },
+    };
+    if *stop.borrow() {
+        return Ok(());
+    }
+    let daemon = Daemon::connect_as(&c.socket, &cwd, &c.version, true, true).await.map_err(|e| match e {
+        crate::daemon::client::ConnectError::Absent => "the host daemon does not answer".to_string(),
+        crate::daemon::client::ConnectError::Failed(e) => format!("the host daemon refused it: {}", e.message),
+    })?;
+    lock(&c.bridged).insert(session.clone());
+    // Kept for the bridge's life: dropped, `on_demand` would close and
+    // `run` spin on it.
+    let (_checkpoint, on_demand) = mpsc::unbounded_channel();
+    host::run(o, Arc::new(daemon), stop, on_demand).await
+}
+
+fn lock(b: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<String>> {
+    b.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// A session the supervisor has: its checks running, or its bridge.
+enum Has {
+    Checking,
+    Bridging { stop: watch::Sender<bool>, since: Instant },
+}
+
+/// The supervisor's own state, on its own thread.
+struct Sup {
+    c: Arc<Config>,
+    has: HashMap<String, Has>,
+    checks: JoinSet<(String, Result<PathBuf, No>)>,
+    bridges: JoinSet<Result<(), String>>,
+    of_task: HashMap<tokio::task::Id, String>,
+    /// Sessions backing off, and when each starts again.
+    backing: HashMap<String, Instant>,
+    /// Each failed session's last wait, for the next.
+    waits: HashMap<String, Duration>,
+    /// The last thing said of the device, and of each session, so a reason
+    /// is said once per change rather than once per turn.
+    said: Option<String>,
+    said_of: HashMap<String, String>,
+}
+
+/// Sessions whose last reason is remembered, past which the oldest are
+/// forgotten (and may be said again).
+const SAID_MOST: usize = 4096;
+
+impl Sup {
+    fn new(c: Config) -> Sup {
+        Sup { c: Arc::new(c), has: HashMap::new(), checks: JoinSet::new(), bridges: JoinSet::new(), of_task: HashMap::new(), backing: HashMap::new(), waits: HashMap::new(), said: None, said_of: HashMap::new() }
+    }
+
+    async fn run(mut self, mut turns: mpsc::UnboundedReceiver<TurnEvent>, mut stop: oneshot::Receiver<Duration>) {
+        let mut hooked = true;
+        let grace = loop {
+            // No timer at all unless something backs off (R-PERF-2).
+            let next = self.backing.values().min().copied();
+            let due = async move {
+                match next {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            };
+            tokio::select! {
+                // A dropped handle stops it too.
+                g = &mut stop => break g.unwrap_or(DROPPED_GRACE),
+                t = turns.recv(), if hooked => match t {
+                    Some(TurnEvent { session, running: true }) => self.start(session),
+                    Some(_) => {}
+                    // The daemon is gone: the bridges end by themselves.
+                    None => hooked = false,
+                },
+                Some(r) = self.checks.join_next(), if !self.checks.is_empty() => self.checked(r),
+                Some(r) = self.bridges.join_next_with_id(), if !self.bridges.is_empty() => self.ended(r),
+                () = due => self.retry(),
+            }
+        };
+        self.stop_all(grace).await;
+    }
+
+    /// A turn started in `session`, or its wait ran out: checked, then
+    /// bridged — unless it is already, or backs off.
+    fn start(&mut self, session: String) {
+        if self.has.contains_key(&session) || self.backing.contains_key(&session) {
+            return;
+        }
+        self.has.insert(session.clone(), Has::Checking);
+        let c = self.c.clone();
+        self.checks.spawn(async move {
+            let s = session.clone();
+            let r = tokio::task::spawn_blocking(move || check(&c, &s)).await;
+            // A check that panicked is a no: fail closed.
+            (session, r.unwrap_or_else(|e| Err(No::Session(format!("its checks failed: {e}")))))
+        });
+    }
+
+    fn checked(&mut self, r: Result<(String, Result<PathBuf, No>), JoinError>) {
+        let Ok((session, r)) = r else { return };
+        match r {
+            Ok(cwd) => {
+                self.said = None;
+                self.said_of.remove(&session);
+                let (stop, stop_rx) = watch::channel(false);
+                let task = self.bridges.spawn(bridge(self.c.clone(), session.clone(), cwd, stop_rx));
+                self.of_task.insert(task.id(), session.clone());
+                self.has.insert(session, Has::Bridging { stop, since: Instant::now() });
+            }
+            Err(no) => {
+                self.has.remove(&session);
+                self.waits.remove(&session);
+                match no {
+                    No::Device(why) => {
+                        if self.said.as_ref() != Some(&why) {
+                            eprintln!("krowk: {why}");
+                            self.said = Some(why);
+                        }
+                    }
+                    No::Session(why) => {
+                        if self.said_of.get(&session) != Some(&why) {
+                            eprintln!("krowk: session {session} is not synced automatically: {why}");
+                            if self.said_of.len() >= SAID_MOST {
+                                self.said_of.clear();
+                            }
+                            self.said_of.insert(session, why);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// A bridge ended by itself — the supervisor stops them only in
+    /// `stop_all`, which waits for them there.
+    fn ended(&mut self, r: Result<(tokio::task::Id, Result<(), String>), JoinError>) {
+        let (id, r) = match r {
+            Ok((id, r)) => (id, r),
+            Err(e) => (e.id(), Err(panicked(e))),
+        };
+        let Some(session) = self.of_task.remove(&id) else { return };
+        let since = match self.has.remove(&session) {
+            Some(Has::Bridging { since, .. }) => since,
+            _ => Instant::now(),
+        };
+        lock(&self.c.bridged).remove(&session);
+        match r {
+            // The device list moved on: built again at once, so the new list
+            // is verified and its user key taken up (as `krowk sync host`).
+            Err(e) if e.starts_with(host::LIST_MOVED) => {
+                eprintln!("krowk: automatic sync of session {session} starts again: {e}");
+                self.start(session);
+            }
+            // The session moved to another device: its sync is there now.
+            Err(e) if e.starts_with(host::HANDED_OVER) => {
+                eprintln!("krowk: automatic sync of session {session} ended: {e}");
+                self.waits.remove(&session);
+            }
+            // Any other end — an error, a panic, the daemon letting its
+            // client go — is this session's alone: it backs off.
+            r => {
+                let why = r.err().unwrap_or_else(|| "its link to the host daemon closed".into());
+                let ran = since.elapsed();
+                let wait = match self.waits.get(&session) {
+                    Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),
+                    _ => BACKOFF_FIRST,
+                };
+                eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
+                self.waits.insert(session.clone(), wait);
+                self.backing.insert(session, Instant::now() + wait);
+            }
+        }
+    }
+
+    /// Every session whose wait ran out, started again.
+    fn retry(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self.backing.iter().filter(|(_, at)| **at <= now).map(|(s, _)| s.clone()).collect();
+        for s in due {
+            self.backing.remove(&s);
+            self.start(s);
+        }
+    }
+
+    /// Every bridge told to stop, and waited for up to `grace`.
+    async fn stop_all(mut self, grace: Duration) {
+        self.checks.abort_all();
+        for h in self.has.values() {
+            if let Has::Bridging { stop, .. } = h {
+                let _ = stop.send(true);
+            }
+        }
+        let deadline = Instant::now() + grace;
+        while !self.bridges.is_empty() {
+            match tokio::time::timeout_at(deadline, self.bridges.join_next_with_id()).await {
+                Ok(Some(r)) => {
+                    let id = match &r {
+                        Ok((id, _)) => *id,
+                        Err(e) => e.id(),
+                    };
+                    if let Some(s) = self.of_task.remove(&id) {
+                        lock(&self.c.bridged).remove(&s);
+                    }
+                }
+                Ok(None) => break,
+                Err(_) => {
+                    eprintln!("krowk: automatic sync left {} bridge(s) that did not stop in {}", self.bridges.len(), human(grace));
+                    break;
+                }
+            }
+        }
+        // Whatever is left is no longer bridged: the runtime goes with it.
+        let mut b = lock(&self.c.bridged);
+        for s in self.of_task.values() {
+            b.remove(s);
+        }
+    }
+}
+
+/// Why a bridge's task ended without its own answer: what it panicked with.
+fn panicked(e: JoinError) -> String {
+    match e.try_into_panic() {
+        Ok(p) => match p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()) {
+            Some(m) => format!("its bridge panicked: {m}"),
+            None => "its bridge panicked".into(),
+        },
+        Err(e) => e.to_string(),
+    }
+}
+
+/// A wait for a person: `5 s`, `1 min 20 s`, `5 min`.
+fn human(d: Duration) -> String {
+    let s = d.as_secs();
+    match (s / 60, s % 60) {
+        (0, s) => format!("{s} s"),
+        (m, 0) => format!("{m} min"),
+        (m, s) => format!("{m} min {s} s"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -420,5 +831,70 @@ mod tests {
             assert_eq!(session_dir(&sessions, id), None, "{why}");
         }
         let _ = std::fs::remove_dir_all(&sessions);
+    }
+
+    /// R-SYNC-3, failing closed: with the switch off, a policy that cannot
+    /// be read, or sync not set up here, a session's turn builds no bridge.
+    /// With all three yes it does; a build that fails backs that session
+    /// off, so a second turn meanwhile builds nothing more. R-PERF-2: with
+    /// nothing bridged the supervisor only waits, and `stop` is prompt.
+    #[test]
+    fn r_sync_3_off_unreadable_or_not_set_up_builds_nothing() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let sessions = std::env::temp_dir().join(format!("krowk-sync3-sup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&sessions);
+        let id = "01a0ec7b-0000-7000-8000-0000000000c1";
+        std::fs::create_dir_all(sessions.join(id)).unwrap();
+        let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None } };
+        std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
+        let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None };
+        let off = Policy { on: false, off_by: Some("KROWK_SYNC_AUTO"), ..on.clone() };
+        type Case = (Result<Policy, String>, Result<(), String>, usize);
+        let cases: [Case; 4] = [
+            (Ok(off), Ok(()), 0),
+            (Err("sync.auto in config.json is \"no\"".into()), Ok(()), 0),
+            (Ok(on.clone()), Err("no device key".into()), 0),
+            (Ok(on), Ok(()), 1),
+        ];
+        for (policy, ready, want) in cases {
+            let built = Arc::new(AtomicUsize::new(0));
+            let n = built.clone();
+            let c = Config {
+                socket: sessions.join("nothing.sock"),
+                sessions: sessions.clone(),
+                version: "t".into(),
+                krowk_home: None,
+                build: Box::new(move |_, _| {
+                    n.fetch_add(1, Ordering::SeqCst);
+                    Err(("unbuilt".into(), "the test's build fails".into()))
+                }),
+                policy: Box::new(move || policy.clone()),
+                ready: Box::new(move || ready.clone()),
+                bridged: Arc::default(),
+            };
+            let (turns, rx) = mpsc::unbounded_channel();
+            let h = Supervisor::spawn(c, rx);
+            turns.send(TurnEvent { session: id.into(), running: true }).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            while want > 0 && built.load(Ordering::SeqCst) < want {
+                assert!(std::time::Instant::now() < deadline, "never built");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            // A second turn: the first is backing off, or still refused.
+            turns.send(TurnEvent { session: id.into(), running: true }).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(built.load(Ordering::SeqCst), want);
+            let t = std::time::Instant::now();
+            h.stop(Duration::from_secs(5));
+            assert!(t.elapsed() < Duration::from_secs(1), "nothing to wait for: {:?}", t.elapsed());
+        }
+        let _ = std::fs::remove_dir_all(&sessions);
+    }
+
+    #[test]
+    fn a_wait_reads_as_a_person_says_it() {
+        assert_eq!(human(BACKOFF_FIRST), "5 s");
+        assert_eq!(human(Duration::from_secs(80)), "1 min 20 s");
+        assert_eq!(human(BACKOFF_MOST), "5 min");
     }
 }
