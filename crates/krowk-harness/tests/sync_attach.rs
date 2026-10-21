@@ -3219,7 +3219,7 @@ async fn r_off_2_a_restarted_daemon_takes_its_sessions_up_again_on_the_next_prom
 
 /// R-OFF-2, R-SYNC-2 (ticket 98): a daemon that crashed leaves its lease
 /// held until it lapses. A daemon thread cannot be killed in-process, so
-/// the leftover is A's own device taking the lease (a 10-second one) after
+/// the leftover is A's own device taking the lease (a 30-second one) after
 /// a clean stop. The new daemon's first prompt is refused it
 /// (`lease_held`) and never takes it from its holder; once it has lapsed,
 /// the session is taken up within 75 seconds of the prompt — the
@@ -3236,7 +3236,7 @@ async fn r_off_2_a_crashed_daemons_leftover_lease_is_waited_out_and_the_session_
     auto.stop_daemon(&w, &d).await;
     drop(d);
     let (api, id, dev) = (w.as_device(&a), session.clone(), a.key.id().to_string());
-    tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 10, "development")).await.unwrap().expect("the crashed daemon's lease");
+    tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 30, "development")).await.unwrap().expect("the crashed daemon's lease");
 
     let mut again = w.auto(&a, false);
     let d = w.daemon().await;

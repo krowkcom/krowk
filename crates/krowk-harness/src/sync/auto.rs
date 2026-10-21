@@ -316,6 +316,11 @@ pub const PAID_PAUSE: Duration = Duration::from_secs(60 * 60);
 pub const LEASE_HELD_WAIT: Duration = Duration::from_secs(60);
 const _: () = assert!(LEASE_HELD_WAIT.as_secs() >= host::LEASE_TTL, "a crashed daemon's lease lapses before the one more try");
 
+/// How much longer than `LEASE_HELD_WAIT` the one more try waits: a
+/// crashed daemon's lease lapses within a TTL of its last renewal, before
+/// the refusal; a little more covers the registry's clock and this one's.
+const ONCE_MORE_SLACK: Duration = Duration::from_secs(5);
+
 /// How long a session waits when its take-up was refused as one write too
 /// many (`too_many_requests`, the registry's per-key ceiling on creates —
 /// fifty sessions taken up together come near it): the minute the
@@ -637,14 +642,19 @@ fn told(built: &krowk_client::device_chain::Chain, read: &krowk_client::device_c
 /// Those are no longer read for;
 /// the next read starts from the list of the bridge built last.
 fn read_lists(lists: &Lists, every: Duration) {
-    // A panic (a registry answer no read expected) ends the thread: the
-    // next bridge added starts another rather than going unread. Its
+    // A panic (a registry answer no read expected) ends the thread. No
+    // bridge is left unread: each running one is told to stop, and is built
+    // again — and read for by a new reader — as any ended bridge is. Its
     // ordinary end says so itself, under the lock that decides it.
     struct Panicked<'a>(&'a Lists);
     impl Drop for Panicked<'_> {
         fn drop(&mut self) {
             if std::thread::panicking() {
                 let mut l = self.0.lock();
+                for b in l.bridges.values() {
+                    b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the device list could not be read again (its reader stopped); this machine stopped syncing session {}", b.session));
+                }
+                l.bridges.clear();
                 l.reading = false;
                 l.chain = None;
             }
@@ -669,9 +679,12 @@ fn read_lists(lists: &Lists, every: Duration) {
             let any = l.bridges.values().next().expect("one at least");
             let (api, device) = (any.api.clone(), any.device);
             let Some(chain) = l.chain.clone() else { continue };
-            (api, device, chain)
+            // Judged by this read: the bridges there now. One added while
+            // it runs may be built on a list newer than it saw.
+            let read_for: HashSet<u64> = l.bridges.keys().copied().collect();
+            (api, device, chain, read_for)
         };
-        let (api, device, chain) = asked;
+        let (api, device, chain, read_for) = asked;
         // Unlocked: a slow registry never holds up a bridge starting.
         let read = host::list_news(&api, device, &chain);
         let mut l = lists.lock();
@@ -685,8 +698,8 @@ fn read_lists(lists: &Lists, every: Duration) {
             Ok(None) => None,
             Err(end) => Some(end),
         };
-        l.bridges.retain(|_, b| {
-            let Some(why) = told(&b.chain, &chain, end.as_ref()) else { return true };
+        l.bridges.retain(|id, b| {
+            let Some(why) = told(&b.chain, &chain, end.as_ref()).filter(|_| read_for.contains(id)) else { return true };
             b.stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| why.why(&b.session));
             false
         });
@@ -918,7 +931,9 @@ impl Sup {
                 // Its wait runs: a turn meanwhile is why to start it again.
                 Some(w) if running => w.wanted = true,
                 Some(w) => w.quiet = Instant::now(),
-                None if running => self.start(session),
+                None if running => {
+                    self.start(session);
+                }
                 None => {}
             },
         }
@@ -939,9 +954,9 @@ impl Sup {
 
     /// A turn started in `session`, or its wait ran out: checked, then
     /// bridged — unless it is already, backs off, or sync is paused.
-    fn start(&mut self, session: String) {
+    fn start(&mut self, session: String) -> bool {
         if self.has.contains_key(&session) || self.backing.contains_key(&session) || self.paused() {
-            return;
+            return false;
         }
         self.has.insert(session.clone(), Has::Checking(self.generation));
         let c = self.c.clone();
@@ -951,6 +966,7 @@ impl Sup {
             // A check that panicked is a no: fail closed.
             (session, r.unwrap_or_else(|e| Err(No::Session(format!("its checks failed: {e}")))))
         });
+        true
     }
 
     fn checked(&mut self, r: Result<Checked, JoinError>) {
@@ -987,6 +1003,7 @@ impl Sup {
             Err(no) => {
                 self.has.remove(&session);
                 self.waits.remove(&session);
+                self.lease_retry.remove(&session);
                 match no {
                     No::Device(why) => {
                         if self.said.as_ref() != Some(&why) {
@@ -1172,10 +1189,11 @@ impl Sup {
             r => {
                 let why = r.err().unwrap_or_else(|| "it ended with no error".into());
                 let ran = since.elapsed();
+                let limited = why.contains("(too_many_requests)");
                 let wait = match self.waits.get(&session) {
                     // The registry asked for its minute: a backoff shorter
                     // than it would only be refused again.
-                    _ if why.contains("(too_many_requests)") => LIMITED_WAIT,
+                    _ if limited => LIMITED_WAIT,
                     Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),
                     _ => BACKOFF_FIRST,
                 };
@@ -1184,7 +1202,11 @@ impl Sup {
                     return;
                 }
                 eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
-                self.waits.insert(session.clone(), wait);
+                // The registry's minute is no failure of the session's own
+                // to double the next backoff from.
+                if !limited {
+                    self.waits.insert(session.clone(), wait);
+                }
                 self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: false, quiet, wanted: false, once_more: false });
             }
         }
@@ -1201,7 +1223,7 @@ impl Sup {
         // Said once while the reason stands, not at every try: the same
         // words for the one more try and the wait after it.
         let line = if wait == LEASE_HELD_WAIT {
-            format!("{why}; it is left to it, tried once more in {}, then at a turn", human(wait))
+            format!("{why}; it is left to it, tried once more in {}, then at a turn", human(wait + ONCE_MORE_SLACK))
         } else {
             format!("{why}; it is left to it, and tried again at a turn after {}", human(wait))
         };
@@ -1212,7 +1234,8 @@ impl Sup {
             }
             self.said_lease.insert(session.clone(), line);
         }
-        self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: true, quiet, wanted: false, once_more });
+        let at = Instant::now() + wait + if once_more { ONCE_MORE_SLACK } else { Duration::ZERO };
+        self.backing.insert(session, Wait { at, lazy: true, quiet, wanted: false, once_more });
     }
 
     /// Every session whose wait ran out, started again if it is still
@@ -1224,10 +1247,10 @@ impl Sup {
             let Some(w) = self.backing.remove(&s) else { continue };
             if wanted_again(&w, self.running.contains(&s), self.idle, now) {
                 // Asked for by no turn since: refused again, it waits for one.
-                if w.lazy && !(w.wanted || self.running.contains(&s)) {
-                    self.lease_retry.insert(s.clone());
+                let retry = w.lazy && !(w.wanted || self.running.contains(&s));
+                if self.start(s.clone()) && retry {
+                    self.lease_retry.insert(s);
                 }
-                self.start(s);
             } else {
                 self.waits.remove(&s);
             }

@@ -449,6 +449,8 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
     // whether a flush was put off meanwhile: owed as a staged chunk is.
     let mut quiet: Option<Instant> = None;
     let mut put_off = false;
+    // When a write last went to the registry.
+    let mut tried = Instant::now();
     loop {
         let job = match rx.recv_timeout(RETRY) {
             Ok(j) => Some(j),
@@ -461,8 +463,14 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
         }
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let waiting = quiet.is_some_and(|until| Instant::now() < until);
-        let done = w.refence(h.fence).and_then(|()| match job {
-            Some(Write::Event(e)) => {
+        // What was owed, or put off, is put again every `RETRY` however busy
+        // the session is — not only once it falls quiet — unless the
+        // registry asked to be left alone.
+        let due = !waiting && (w.owes() || put_off) && tried.elapsed() >= RETRY;
+        let done = match job {
+            // Kept in order, whatever the registry says: the fence is looked
+            // at when something is written.
+            Some(Write::Event(e)) if !due => {
                 w.push(e);
                 Ok(())
             }
@@ -473,19 +481,37 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
                 put_off = true;
                 Ok(())
             }
-            None if waiting => Ok(()),
-            // Each of these flushes first: through, nothing put off is left.
-            Some(Write::Flush) => w.flush(&h.token).inspect(|()| put_off = false),
-            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
-            Some(Write::Handoff(tree, done)) => {
-                let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
-                let _ = done.send(r.clone());
-                r
+            None if !due => Ok(()),
+            job => {
+                tried = Instant::now();
+                if let Some(Write::Event(e)) = &job {
+                    w.push(e.clone());
+                }
+                match (w.refence(h.fence), job) {
+                    // The lease's new fence could not be taken up: nothing
+                    // asked for is dropped — a flush is owed still, and a
+                    // handoff hears why.
+                    (Err(e), Some(Write::Handoff(_, done))) => {
+                        let _ = done.send(Err(e.clone()));
+                        Err(e)
+                    }
+                    (Err(e), _) => {
+                        put_off = true;
+                        Err(e)
+                    }
+                    // Each of these flushes first: through, nothing put off
+                    // is left. What was owed is put again, the same chunk
+                    // under the same index.
+                    (Ok(()), Some(Write::Checkpoint(tree))) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
+                    (Ok(()), Some(Write::Handoff(tree, done))) => {
+                        let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), _) => w.flush(&h.token).inspect(|()| put_off = false),
+                }
             }
-            // What was owed is put again, the same chunk under the same index.
-            None if w.owes() || put_off => w.flush(&h.token).inspect(|()| put_off = false),
-            None => Ok(()),
-        });
+        };
         match done {
             Err(e) if limited(&e) => {
                 say_limited(&e);
