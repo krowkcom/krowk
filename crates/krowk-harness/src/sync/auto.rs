@@ -70,9 +70,9 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
             None => None,
             Some(Value::Object(o)) => Some(o),
             // `"sync": false` must not read as "absent, so on".
-            Some(v) => return Err(format!("sync in config.json is {v}, not an object — write it as {{\"auto\": false}} to turn automatic sync off, or remove it")),
+            Some(v) => return Err(format!("sync in config.json is {}, not an object — write it as {{\"auto\": false}} to turn automatic sync off, or remove it", kind(v))),
         },
-        Some(v) => return Err(format!("config.json is {v}, not an object — fix it, or remove it")),
+        Some(v) => return Err(format!("config.json is {}, not an object — fix it, or remove it", kind(v))),
     };
     if let Some(k) = sync.and_then(|o| o.keys().find(|k| !KEYS.contains(&k.as_str()))) {
         return Err(format!("sync.{k} in config.json is not a setting — sync takes {}; fix the name, or remove it", KEYS.join(", ")));
@@ -159,6 +159,18 @@ impl Policy {
             }
         }
         None
+    }
+}
+
+/// What a JSON value is, for an error that should not repeat all of it.
+fn kind(v: &Value) -> &'static str {
+    match v {
+        Value::Null => "null",
+        Value::Bool(_) => "a boolean",
+        Value::Number(_) => "a number",
+        Value::String(_) => "a string",
+        Value::Array(_) => "a list",
+        Value::Object(_) => "an object",
     }
 }
 
@@ -350,10 +362,11 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o000)).unwrap();
         let unreadable = std::fs::symlink_metadata(root.join("shut/.krowk/no-sync")).is_err_and(|e| e.kind() == std::io::ErrorKind::PermissionDenied);
-        if unreadable {
-            assert_eq!(p.opted_out(&shut, home), Some(OptOut::Marker(root.join("shut/.krowk/no-sync"))), "fails closed");
-        } // else root, which reads through any mode
+        let got = p.opted_out(&shut, home);
         std::fs::set_permissions(root.join("shut/.krowk"), std::fs::Permissions::from_mode(0o700)).unwrap();
+        if unreadable {
+            assert_eq!(got, Some(OptOut::Marker(root.join("shut/.krowk/no-sync"))), "fails closed");
+        } // else root, which reads through any mode
 
         // A symlink on either side does not slip out.
         let link = root.join("link-to-a");
