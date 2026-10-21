@@ -590,7 +590,7 @@ fn alert_for(line: &StreamLine, session: &str, stored: &HashSet<String>, newly_w
     match line {
         StreamLine::Live(LiveEvent::ApprovalRequested(r)) if newly_waiting => Some((NotifyKind::Approval, format!("approval:{}", r.request_id))),
         StreamLine::Log(e) => match &e.body {
-            LogBody::TurnCompleted { turn_id, .. } if e.session_id == session && !stored.contains(&e.id) && now_ms - e.time_ms <= RECENT_TURN_MS => Some((NotifyKind::Done, format!("turn:{turn_id}"))),
+            LogBody::TurnCompleted { turn_id, .. } if e.session_id == session && !stored.contains(&e.id) && now_ms.saturating_sub(e.time_ms) <= RECENT_TURN_MS => Some((NotifyKind::Done, format!("turn:{turn_id}"))),
             _ => None,
         },
         _ => None,
@@ -955,7 +955,9 @@ impl Hosting {
     /// nothing is sent; the token is read as the call goes, a renewal may
     /// have replaced it.
     fn notify(&mut self, kind: NotifyKind, key: &str) {
-        if self.lost.load(Ordering::Relaxed) || self.notified.seen.contains(key) {
+        // A handoff under way hands the lease over before `lost` is set:
+        // the session is the other device's to ring for from there.
+        if self.lost.load(Ordering::Relaxed) || self.handing || self.handed_at.is_some() || self.notified.seen.contains(key) {
             return;
         }
         let Some(place) = Notifying::take() else {

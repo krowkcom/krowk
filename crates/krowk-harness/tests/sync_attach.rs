@@ -631,9 +631,13 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog) -> SocketAdd
                     while notify && mode.load(Ordering::SeqCst) == HOLD_NOTIFY {
                         std::thread::sleep(Duration::from_millis(10));
                     }
+                    // A notification is logged as it is handed on, not once
+                    // answered: the stand-in records it before it answers.
+                    if notify {
+                        log.lock().unwrap().push((asked, None));
+                    }
                     if notify && mode.load(Ordering::SeqCst) == REFUSE_NOTIFY {
                         let body = r#"{"error":"push_unconfigured","message":"this registry cannot send pushes","fix":"nothing to do here; the registry's operator adds its APNs key"}"#;
-                        log.lock().unwrap().push((asked, None));
                         let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
                     }
@@ -657,7 +661,9 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog) -> SocketAdd
                     }
                     let mut resp = Vec::new();
                     let _ = up.read_to_end(&mut resp);
-                    log.lock().unwrap().push((first.clone(), fence_in(&resp)));
+                    if !notify {
+                        log.lock().unwrap().push((first.clone(), fence_in(&resp)));
+                    }
                     // The answer closes: the client opens another for its next.
                     if c.write_all(&resp).is_err() {
                         return;
@@ -3007,8 +3013,20 @@ async fn r_ios_12_a_finished_turn_rings_once_and_taking_the_session_up_again_aft
 /// bridge streams on; with it stalling on the next, the same; once the
 /// registry answers again, what it stalled on rings, and so does the turn
 /// after. The refused one never does.
+///
+/// A notification that blocked the bridge would block this test's one
+/// thread too, held: a watchdog of its own fails it rather than let it hang.
 #[tokio::test]
 async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
+    let finished = Arc::new(AtomicBool::new(false));
+    let watching = finished.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_secs(90));
+        if !watching.load(Ordering::SeqCst) {
+            eprintln!("r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running hung: a notification held the bridge");
+            std::process::exit(101);
+        }
+    });
     let w = World::new("ring-refused");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (d, session) = first_turn(&w).await;
@@ -3045,4 +3063,5 @@ async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
     let seen = notified(&w, &session, "done", 3, Duration::from_secs(10)).await;
     assert_eq!(seen.len(), 3, "the refused one never rang: {seen:?}");
     assert!(!bridge.is_finished(), "the bridge runs on");
+    finished.store(true, Ordering::SeqCst);
 }
