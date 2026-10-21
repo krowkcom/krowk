@@ -39,6 +39,7 @@ use super::store::{self, Index, Writer};
 use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
+use krowk_api::sync::NotifyKind;
 use krowk_api::Client;
 use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
 use krowk_client::device_chain::{Chain, SignedEntry};
@@ -47,6 +48,7 @@ use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
 use krowk_client::relay_link::{HostLink, Inbound};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -543,6 +545,77 @@ const REMEMBERED: usize = 4096;
 /// Logged events a catch-up page holds.
 const PAGE: usize = 256;
 
+/// How recently a turn must have finished for its end to ring the person's
+/// devices: a host that comes back and republishes an old turn rings nobody.
+const RECENT_TURN_MS: i64 = 120_000;
+
+/// Notifications on their way to the registry at once: past this a new one
+/// is let go, said once, rather than piling up threads that each wait out a
+/// registry that stalls or rate-limits (krowk-api retries each, and waits a
+/// 429 out).
+const NOTIFYING_AT_MOST: usize = 8;
+
+/// What a line rings the person's devices about (R-IOS-12), if anything:
+/// the kind and the text its dedup key is the SHA-256 of. An approval asked
+/// — the session's, or one of its children's, which blocks the session's
+/// turn just the same — only on the transition into waiting
+/// (`newly_waiting`): one already held is the daemon's replay as the bridge
+/// attaches again. A turn finished only when it is the session's own (a
+/// child ending is no end of the session's turn), not one the registry held
+/// already when the bridge took the session up (the daemon replays those),
+/// and only within `RECENT_TURN_MS` of `now_ms`; whatever its status, since
+/// the person wants to know it stopped. Nothing of the session's content is
+/// in either: the registry is told the kind, and a digest of the key.
+fn alert_for(line: &StreamLine, session: &str, stored: &HashSet<String>, newly_waiting: bool, now_ms: i64) -> Option<(NotifyKind, String)> {
+    match line {
+        StreamLine::Live(LiveEvent::ApprovalRequested(r)) if newly_waiting => Some((NotifyKind::Approval, format!("approval:{}", r.request_id))),
+        StreamLine::Log(e) => match &e.body {
+            LogBody::TurnCompleted { turn_id, .. } if e.session_id == session && !stored.contains(&e.id) && now_ms - e.time_ms <= RECENT_TURN_MS => Some((NotifyKind::Done, format!("turn:{turn_id}"))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The events already notified, by their key: bounded as the commands
+/// remembered are, the oldest let go past `REMEMBERED`. Within it, an
+/// event rings once however often its line comes; past it, and across a
+/// restart, the registry's dedup on the same key still collapses it.
+#[derive(Default)]
+struct Notified {
+    seen: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl Notified {
+    /// Whether `key` is new, remembering it.
+    fn first(&mut self, key: &str) -> bool {
+        if !self.seen.insert(key.to_string()) {
+            return false;
+        }
+        self.order.push_back(key.to_string());
+        if self.order.len() > REMEMBERED
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        true
+    }
+}
+
+/// Says why the registry could not notify, once per code: a registry
+/// without push (`push_unconfigured`), a lease that moved, a network gone
+/// would otherwise say it at every turn.
+fn notify_failed(said: &Mutex<HashSet<String>>, code: String, fix: &str) {
+    if said.lock().unwrap_or_else(|e| e.into_inner()).insert(code.clone()) {
+        eprintln!("krowk: the registry could not notify your other devices ({code}): {fix}");
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
 pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
@@ -659,6 +732,9 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         daemon_gone: false,
         others_asked: None,
         nobody_since: None,
+        notified: Notified::default(),
+        notifying: Arc::default(),
+        notify_said: Arc::default(),
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
@@ -789,6 +865,12 @@ struct Hosting {
     /// answers: one is not enough, since a terminal reconnecting is left
     /// out until it follows again.
     nobody_since: Option<Instant>,
+    /// The events the person's devices were rung about (`alert_for`).
+    notified: Notified,
+    /// Notifications on their way, off the loop (`NOTIFYING_AT_MOST`).
+    notifying: Arc<std::sync::atomic::AtomicUsize>,
+    /// The codes a notification failed with, each said once.
+    notify_said: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Hosting {
@@ -833,12 +915,45 @@ impl Hosting {
             }
             self.log.push(e.clone());
         }
-        match &line {
-            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => { self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())); }
-            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { self.approvals.remove(request_id); }
-            _ => {}
+        let newly_waiting = match &line {
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())).is_none(),
+            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { self.approvals.remove(request_id); false }
+            _ => false,
+        };
+        if let Some((kind, key)) = alert_for(&line, &self.o.session, &self.stored, newly_waiting, now_ms()) {
+            self.notify(kind, &key);
         }
         self.waiting.push(line);
+    }
+
+    /// Asks the registry to ring the person's other devices, once per event
+    /// (`notified`, then the registry's dedup on the key's digest), and never
+    /// on the bridge's loop: the call blocks for as long as the registry
+    /// takes, so it runs on a blocking thread, fire and forget. A failure
+    /// never stops or slows the bridge, and is said once per code. Only the
+    /// lease holder notifies (R-SYNC-2): once the lease is another device's,
+    /// nothing is sent; the token is read as the call goes, a renewal may
+    /// have replaced it.
+    fn notify(&mut self, kind: NotifyKind, key: &str) {
+        if self.lost.load(Ordering::Relaxed) || !self.notified.first(key) {
+            return;
+        }
+        if self.notifying.fetch_add(1, Ordering::Relaxed) >= NOTIFYING_AT_MOST {
+            self.notifying.fetch_sub(1, Ordering::Relaxed);
+            notify_failed(&self.notify_said, "notifications_backed_up".into(), &format!("{NOTIFYING_AT_MOST} notifications are still on their way to the registry, so this one was let go"));
+            return;
+        }
+        let dedup = e2e::hex(&Sha256::digest(key.as_bytes()));
+        let (o, held, lost, notifying, said) = (self.o.clone(), self.held.clone(), self.lost.clone(), self.notifying.clone(), self.notify_said.clone());
+        tokio::task::spawn_blocking(move || {
+            if !lost.load(Ordering::Relaxed) {
+                let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+                if let Err(e) = o.api.notify_session(&o.session, kind, &dedup, &token) {
+                    notify_failed(&said, e.code(), &e.fix());
+                }
+            }
+            notifying.fetch_sub(1, Ordering::Relaxed);
+        });
     }
 
     /// The lines waiting, sealed as one batch and sent up both uplinks.
@@ -1447,6 +1562,88 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    fn asked(id: &str, session: &str) -> StreamLine {
+        StreamLine::Live(LiveEvent::ApprovalRequested(ApprovalRequest { session_id: session.into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({"command": "rm -rf secret"}), summary: "Bash `rm -rf secret`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() }))
+    }
+
+    fn ended(id: &str, session: &str, turn: &str, time_ms: i64) -> StreamLine {
+        StreamLine::Log(crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: session.into(), time_ms, body: LogBody::TurnCompleted { turn_id: turn.into(), status: crate::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None } })
+    }
+
+    const NOW: i64 = 1_790_000_000_000;
+
+    /// R-IOS-12, R-PERM-2: an approval rings on the transition into
+    /// waiting only, under a key that names the request and nothing of what
+    /// it asks.
+    #[test]
+    fn r_ios_12_an_approval_newly_waiting_notifies_one_already_held_does_not() {
+        let none = HashSet::new();
+        assert_eq!(alert_for(&asked("r1", "s"), "s", &none, true, NOW), Some((NotifyKind::Approval, "approval:r1".into())));
+        assert_eq!(alert_for(&asked("r1", "s"), "s", &none, false, NOW), None, "a request already held is a replay");
+    }
+
+    /// R-IOS-12, R-PERM-2: a child's request blocks the session's turn just
+    /// the same, and rings for the session.
+    #[test]
+    fn r_ios_12_a_childs_approval_notifies_for_the_session() {
+        assert_eq!(alert_for(&asked("r2", "kid"), "s", &HashSet::new(), true, NOW), Some((NotifyKind::Approval, "approval:r2".into())));
+    }
+
+    /// R-IOS-12: the session's own turn ending rings, whatever its status;
+    /// a child's ending is no end of the session's turn.
+    #[test]
+    fn r_ios_12_the_sessions_own_turn_completed_notifies_a_childs_does_not() {
+        let none = HashSet::new();
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW), "s", &none, false, NOW), Some((NotifyKind::Done, "turn:t1".into())));
+        let StreamLine::Log(mut e) = ended("e1", "s", "t1", NOW) else { unreachable!() };
+        if let LogBody::TurnCompleted { status, .. } = &mut e.body {
+            *status = crate::protocol::TurnStatus::Failed;
+        }
+        assert_eq!(alert_for(&StreamLine::Log(e), "s", &none, false, NOW), Some((NotifyKind::Done, "turn:t1".into())), "a failed turn stopped too");
+        assert_eq!(alert_for(&ended("e2", "kid", "t2", NOW), "s", &none, false, NOW), None);
+    }
+
+    /// R-IOS-12: a turn's end the registry already held is the daemon's
+    /// replay as the bridge takes the session up again: it rang once.
+    #[test]
+    fn r_ios_12_a_stored_turn_completed_a_replay_does_not_notify() {
+        let stored = HashSet::from(["e1".to_string()]);
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW), "s", &stored, false, NOW), None);
+    }
+
+    /// R-IOS-12: a host that comes back and republishes an old turn rings
+    /// nobody: two minutes, and not a millisecond more.
+    #[test]
+    fn r_ios_12_a_turn_completed_more_than_2_minutes_ago_does_not_notify() {
+        let none = HashSet::new();
+        assert!(alert_for(&ended("e1", "s", "t1", NOW - 120_000), "s", &none, false, NOW).is_some());
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW - 120_001), "s", &none, false, NOW), None);
+    }
+
+    /// R-IOS-12: nothing else rings — a resolution, a turn starting.
+    #[test]
+    fn r_ios_12_nothing_else_notifies() {
+        let resolved = StreamLine::Live(LiveEvent::ApprovalResolved { session_id: "s".into(), turn_id: "t".into(), request_id: "r1".into(), decision: ApprovalDecision::Allow });
+        assert_eq!(alert_for(&resolved, "s", &HashSet::new(), true, NOW), None);
+    }
+
+    /// R-IOS-12: the set of events rung about is bounded: each rings once
+    /// while remembered, and past `REMEMBERED` the oldest is let go.
+    #[test]
+    fn r_ios_12_the_notified_set_lets_the_oldest_go_past_4096() {
+        let mut n = Notified::default();
+        assert!(n.first("turn:0"));
+        assert!(!n.first("turn:0"), "once");
+        for i in 1..REMEMBERED {
+            assert!(n.first(&format!("turn:{i}")));
+        }
+        assert!(!n.first("turn:0"), "still remembered at {REMEMBERED}");
+        assert!(n.first(&format!("turn:{REMEMBERED}")));
+        assert_eq!((n.seen.len(), n.order.len()), (REMEMBERED, REMEMBERED));
+        assert!(n.first("turn:0"), "the oldest let go");
+        assert!(!n.first(&format!("turn:{REMEMBERED}")));
     }
 
     /// R-SUB-12: the children a viewer may interrupt are the ones the

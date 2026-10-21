@@ -128,7 +128,7 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 /// Ctrl-C or SIGTERM. Errors are `(code, message)`.
 pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>) -> Result<(), (String, String)> {
     let rt = runtime().map_err(|e| ("runtime_unavailable".to_string(), e))?;
-    rt.block_on(async move {
+    let ended = rt.block_on(async move {
         let daemon = crate::daemon::ensure(env, cwd, version, true, spawn).await.map_err(|e| (e.code.clone(), e.message.clone()))?;
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let (_cp, cp_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -152,7 +152,11 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
             }
             r => r.map_err(|e| (code(&e), e)),
         }
-    })
+    });
+    // The lease is given back by now; a notification still on its way
+    // (`host::Hosting::notify`, fire and forget) never holds up the exit.
+    rt.shutdown_background();
+    ended
 }
 
 /// `krowk sync take`'s ask: attached to the session as a viewer, its host
