@@ -165,7 +165,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
             let wrapped = e2e::hex(&sealed_key);
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), host: Some(hosted_on(o)), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).expect("json")));
-            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| e.to_string())?;
+            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| format!("the registry did not publish session {id} ({}): {}", e.code(), e.fix()))?;
             (keys, wrapped, index)
         }
         Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
@@ -235,6 +235,9 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let device = o.device.to_string();
         let answer = match o.api.renew_lease(&o.session, &device, &h.token, o.ttl, &o.env) {
+            // Never once halted: the halt comes before the lease is given
+            // back, so a renewal refused because it was is not taken again.
+            Err(_) if stop.load(Ordering::Relaxed) => return,
             Err(e) if e.code().contains("lease") => o.api.acquire_lease(&o.session, &device, o.ttl, &o.env),
             other => other,
         };
@@ -1396,9 +1399,10 @@ async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool
     halt.store(true, Ordering::Relaxed);
     let _ = tokio::task::spawn_blocking(move || {
         let _ = writing.join();
-        // Read once the writer is done, by when a renewal in flight as the
-        // halt came has answered: one that took the lease again holds a new
-        // token, and the old one would release nothing.
+        // Read once the writer is done rather than at the halt: a renewal
+        // that took a lapsed lease again just before it holds a new token,
+        // and the old one would release nothing. (One refused after the
+        // halt takes nothing again: `renew_loop`.)
         let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
         if !lost.load(Ordering::Relaxed) {
             let _ = o.api.release_lease(&o.session, &token);

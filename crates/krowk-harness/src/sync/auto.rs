@@ -517,7 +517,8 @@ fn lock(b: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<Strin
 
 /// A session the supervisor has: its checks running, or its bridge.
 enum Has {
-    /// Its checks run, begun under this policy generation.
+    /// Its checks run, begun under this policy generation (`u64::MAX`
+    /// once a turn event came meanwhile: checked again when they answer).
     Checking(u64),
     Bridging {
         stop: watch::Sender<bool>,
@@ -553,8 +554,8 @@ struct Sup {
     /// A rescan reading the policy again; at most one at a time.
     rescans: JoinSet<Rescan>,
     rescan_again: bool,
-    /// Counts the rescans answered: a check begun under an older one is
-    /// read again once bridged.
+    /// Moves on with each rescan that stops something or finds sync off: a
+    /// check begun before it is checked again rather than bridged.
     generation: u64,
     /// Until when nothing is bridged: the workspace has no paid plan.
     paused: Option<Instant>,
@@ -562,8 +563,8 @@ struct Sup {
     /// is said once per change rather than once per turn.
     said: Option<String>,
     said_of: HashMap<String, String>,
-    /// The same for a session left to another's lease, forgotten only once
-    /// its own bridge has held it (and been let go).
+    /// The same for a session left to another's lease, forgotten once the
+    /// supervisor has let a bridge of it go.
     said_lease: HashMap<String, String>,
     /// The daemon's hook closed: it is gone, and nothing starts again.
     gone: bool,
