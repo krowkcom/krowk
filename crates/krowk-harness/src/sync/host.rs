@@ -221,8 +221,10 @@ fn rotate_if_behind(o: &Options, keys: SessionKeys, wrapped: String, index: &Ind
 /// that fails is tried again every two seconds; one refused because the
 /// lease lapsed takes it again when nobody else has. One that finds another
 /// device holding it sets `lost`: the bridge then writes nothing more and
-/// ends (R-SYNC-2's one writer).
-fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>) {
+/// ends (R-SYNC-2's one writer). One refused because the workspace has no
+/// paid plan (any more) is not tried again: it says so in `stale`, and the
+/// bridge ends with it at its next sweep.
+fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
     let every = renew_every(o.ttl);
     let mut next = Instant::now() + every;
     while !stop.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
@@ -249,6 +251,10 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
                 next = Instant::now() + every;
             }
             Err(e) if e.code() == "lease_held" => lost.store(true, Ordering::Relaxed),
+            Err(e) if e.code() == "sync_requires_paid_plan" => {
+                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
+                return;
+            }
             Err(_) => next = Instant::now() + Duration::from_secs(2),
         }
     }
@@ -537,6 +543,11 @@ const PAGE: usize = 256;
 /// says it answers approvals.
 pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
+    // Stopped before it began (the automatic sync's supervisor lets a
+    // starting bridge go when its directory opts out): nothing is sent.
+    if *stop.borrow() {
+        return Ok(());
+    }
     let taken = {
         let o = o.clone();
         tokio::task::spawn_blocking(move || take(&o)).await.map_err(|e| e.to_string())??
@@ -550,11 +561,12 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
     // lives (the automatic sync's supervisor runs in the daemon's).
     let _halting = Halting(halt.clone());
     let lost = Arc::new(AtomicBool::new(false));
-    // Set when the device list moved on under the host: why it stops.
+    // Set when the device list moved on under the host, or the registry
+    // refused the lease for want of a paid plan: why it stops.
     let stale = Arc::new(Mutex::new(None));
     {
-        let (o, held, halt, lost) = (o.clone(), held.clone(), halt.clone(), lost.clone());
-        std::thread::spawn(move || renew_loop(o, held, halt, lost));
+        let (o, held, halt, lost, stale) = (o.clone(), held.clone(), halt.clone(), lost.clone(), stale.clone());
+        std::thread::spawn(move || renew_loop(o, held, halt, lost, stale));
     }
     {
         let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
@@ -568,6 +580,13 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         let (held, lost) = (held.clone(), lost.clone());
         std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx, lost))
     };
+    // Stopped while it took the lease up: nothing is written, and the
+    // lease goes back at once.
+    if *stop.borrow() {
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Ok(());
+    }
     // A checkpoint as the bridge takes the session up, so a device
     // attaching reads one chunk and the tail, not the whole log.
     let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd)));

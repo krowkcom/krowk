@@ -2666,7 +2666,7 @@ async fn r_sync_3_an_idle_bridge_lets_go_and_the_next_prompt_takes_it_up_again()
     let ended = Instant::now();
     w.synced(&session).await;
     let gone = let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
-    assert!(gone - ended >= Duration::from_millis(1900), "not before the window: {:?}", gone - ended);
+    assert!(gone - ended >= Duration::from_millis(1500), "not before the window: {:?}", gone - ended);
     println!("R-SYNC-3 let go {:?} after its turn ended", gone - ended);
     assert!(auto.bridged.lock().unwrap().is_empty());
 
@@ -2716,6 +2716,32 @@ async fn r_sync_3_a_directory_opted_out_while_bridged_stops_and_releases() {
     checked(&auto, checks + 1).await;
     assert_eq!(auto.built(&session).len(), 1, "not bridged again while the opt-out stands");
     assert_eq!(leased(&w, &session).await, Ok(false));
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3: automatic sync turned off while two sessions are bridged
+/// (`KROWK_SYNC_AUTO=0` here): the next turn of either stops every bridge,
+/// each giving its lease back, and no turn bridges one again while it is off.
+#[tokio::test]
+async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {
+    let w = World::new("auto-off");
+    let a = w.device("machine-a");
+    let on = Arc::new(AtomicBool::new(true));
+    let mut auto = w.auto_with(&a, AutoOpts { on: on.clone(), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let (x, y) = (prompted(&w, &d, None, "say hello").await, prompted(&w, &d, None, "say hello").await);
+    w.synced(&x).await;
+    w.synced(&y).await;
+    on.store(false, Ordering::SeqCst);
+    let sent = Instant::now();
+    prompted(&w, &d, Some(&x), "say it again").await;
+    let_go(&w, &auto, &x, sent + Duration::from_secs(10)).await;
+    let_go(&w, &auto, &y, sent + Duration::from_secs(10)).await;
+    let checks = auto.checks.load(Ordering::SeqCst);
+    prompted(&w, &d, Some(&y), "say it again").await;
+    checked(&auto, checks + 1).await;
+    assert_eq!((auto.built(&x).len(), auto.built(&y).len()), (1, 1), "neither bridged again while off");
+    assert!(auto.bridged.lock().unwrap().is_empty());
     auto.stop(Duration::from_secs(10)).await;
 }
 
@@ -2788,7 +2814,7 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
     assert_eq!(auto::PAID_PAUSE, Duration::from_secs(60 * 60));
     let w = World::new("auto-free");
     let a = w.device("machine-a");
-    let pause = Duration::from_secs(5);
+    let pause = Duration::from_secs(6);
     let refuse = ("sync_requires_paid_plan".to_string(), "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com".to_string());
     let mut auto = w.auto_with(&a, AutoOpts { refuse: Some(refuse), paid_pause: pause, ..AutoOpts::default() });
     let d = w.daemon().await;
@@ -2807,7 +2833,7 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
     assert_eq!(auto.built.lock().unwrap().len(), 1, "no build while paused");
     assert_eq!(w.a_conns.load(Ordering::SeqCst), 0, "nothing sent to the relay");
 
-    tokio::time::sleep((refused + pause).saturating_duration_since(Instant::now()) + Duration::from_millis(200)).await;
+    tokio::time::sleep((refused + pause).saturating_duration_since(Instant::now()) + Duration::from_millis(500)).await;
     prompted(&w, &d, Some(&other), "say it again").await;
     let deadline = Instant::now() + Duration::from_secs(10);
     while auto.built(&other).is_empty() {

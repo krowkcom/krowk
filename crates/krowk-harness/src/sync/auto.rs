@@ -501,6 +501,9 @@ async fn bridge(c: Arc<Config>, session: String, cwd: PathBuf, stop: watch::Rece
         crate::daemon::client::ConnectError::Absent => "the host daemon does not answer".to_string(),
         crate::daemon::client::ConnectError::Failed(e) => format!("the host daemon refused it: {}", e.message),
     })?;
+    if *stop.borrow() {
+        return Ok(());
+    }
     lock(&c.bridged).insert(session.clone());
     // Kept for the bridge's life: dropped, `on_demand` would close and
     // `run` spin on it.
@@ -514,7 +517,8 @@ fn lock(b: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<Strin
 
 /// A session the supervisor has: its checks running, or its bridge.
 enum Has {
-    Checking,
+    /// Its checks run, begun under this policy generation.
+    Checking(u64),
     Bridging {
         stop: watch::Sender<bool>,
         since: Instant,
@@ -535,15 +539,10 @@ struct Sup {
     checks: JoinSet<Checked>,
     bridges: JoinSet<Result<(), String>>,
     of_task: HashMap<tokio::task::Id, String>,
-    /// Sessions backing off, and when each starts again.
-    backing: HashMap<String, Instant>,
+    /// Sessions backing off.
+    backing: HashMap<String, Wait>,
     /// Each failed session's last wait, for the next.
     waits: HashMap<String, Duration>,
-    /// Sessions backing off for their lease (another holds it): started
-    /// again when the wait runs out only if a turn ran meanwhile or runs.
-    lazy: HashSet<String>,
-    /// Of those, the ones a turn started in while they waited.
-    wanted: HashSet<String>,
     /// Sessions whose turn runs now, as the daemon's hook tells.
     running: HashSet<String>,
     /// The idle window the policy said last.
@@ -551,6 +550,9 @@ struct Sup {
     /// A rescan reading the policy again; at most one at a time.
     rescans: JoinSet<Rescan>,
     rescan_again: bool,
+    /// Counts the rescans answered: a check begun under an older one is
+    /// read again once bridged.
+    generation: u64,
     /// Until when nothing is bridged: the workspace has no paid plan.
     paused: Option<Instant>,
     /// The last thing said of the device, and of each session, so a reason
@@ -564,6 +566,40 @@ struct Sup {
 /// Sessions whose last reason is remembered, past which the oldest are
 /// forgotten (and may be said again).
 const SAID_MOST: usize = 4096;
+
+/// How long a rescan may take to read the policy and the bridged sessions'
+/// directories (a hung network mount, a dead disk): past it, the policy
+/// counts as unreadable, so off, and every bridge stops.
+const RESCAN_MOST: Duration = Duration::from_secs(10);
+
+/// A session backing off.
+struct Wait {
+    /// When its wait runs out.
+    at: Instant,
+    /// Another holds its lease: started again only for a turn.
+    lazy: bool,
+    /// When its last turn ended (or its bridge started).
+    quiet: Instant,
+    /// A turn started in it while it waited.
+    wanted: bool,
+}
+
+/// Whether a session whose wait ran out at `now` is started again: when a
+/// turn runs in it or started while it waited; when it waited for another's
+/// lease, only then; otherwise also while its last turn is within the idle
+/// window, so sync resumes by itself (R-OFF-2) for a session in use, and a
+/// session nobody uses makes no call until its next turn. Pure.
+fn wanted_again(w: &Wait, running: bool, idle: Option<Duration>, now: Instant) -> bool {
+    running || w.wanted || (!w.lazy && idle_at(w.quiet, false, false, idle).is_none_or(|at| now < at))
+}
+
+/// Whether a bridge's error is the registry's refusal of a workspace
+/// without a paid plan: the code in brackets, as `take`'s and `build`'s
+/// errors name it, or alone, as a write's does. A handoff's end names a
+/// device, which could say anything, so it never is.
+fn unpaid(error: &str) -> bool {
+    !error.starts_with(host::HANDED_OVER) && (error.contains(PAID) || error.starts_with(&PAID[1..PAID.len() - 1]))
+}
 
 /// How a person reads a pause: an hour, or what `human` says.
 fn for_how_long(d: Duration) -> String {
@@ -580,12 +616,11 @@ impl Sup {
             of_task: HashMap::new(),
             backing: HashMap::new(),
             waits: HashMap::new(),
-            lazy: HashSet::new(),
-            wanted: HashSet::new(),
             running: HashSet::new(),
             idle: None,
             rescans: JoinSet::new(),
             rescan_again: false,
+            generation: 0,
             paused: None,
             said: None,
             said_of: HashMap::new(),
@@ -618,6 +653,7 @@ impl Sup {
                         hooked = false;
                         self.gone = true;
                         self.backing.clear();
+                        self.waits.clear();
                         self.running.clear();
                     }
                 },
@@ -635,13 +671,13 @@ impl Sup {
     /// answer lets it go.
     fn next_due(&self) -> Option<Instant> {
         let idle = if self.rescans.is_empty() { self.idle_deadlines().min() } else { None };
-        self.backing.values().copied().chain(idle).min()
+        self.backing.values().map(|w| w.at).chain(idle).min()
     }
 
     fn idle_deadlines(&self) -> impl Iterator<Item = Instant> + '_ {
         self.has.iter().filter_map(|(s, h)| match h {
             Has::Bridging { quiet, stopping, .. } => idle_at(*quiet, self.running.contains(s), *stopping, self.idle),
-            Has::Checking => None,
+            Has::Checking(_) => None,
         })
     }
 
@@ -667,14 +703,14 @@ impl Sup {
                     self.rescan();
                 }
             }
-            Some(Has::Checking) => {}
-            None if !running => {}
-            None if self.backing.contains_key(&session) => {
-                if self.lazy.contains(&session) {
-                    self.wanted.insert(session);
-                }
-            }
-            None => self.start(session),
+            Some(Has::Checking(_)) => {}
+            None => match self.backing.get_mut(&session) {
+                // Its wait runs: a turn meanwhile is why to start it again.
+                Some(w) if running => w.wanted = true,
+                Some(w) => w.quiet = Instant::now(),
+                None if running => self.start(session),
+                None => {}
+            },
         }
     }
 
@@ -697,7 +733,7 @@ impl Sup {
         if self.has.contains_key(&session) || self.backing.contains_key(&session) || self.paused() {
             return;
         }
-        self.has.insert(session.clone(), Has::Checking);
+        self.has.insert(session.clone(), Has::Checking(self.generation));
         let c = self.c.clone();
         self.checks.spawn(async move {
             let s = session.clone();
@@ -711,9 +747,12 @@ impl Sup {
         // Only `abort_all` ends a check task without its answer, but a
         // session must never be left checking for good.
         let Ok((session, r)) = r else {
-            self.has.retain(|_, h| !matches!(h, Has::Checking));
+            self.has.retain(|_, h| !matches!(h, Has::Checking(_)));
             return;
         };
+        // A rescan answered while it was checked may have turned sync off,
+        // or opted its directory out: read again once it is bridged.
+        let stale = matches!(self.has.get(&session), Some(Has::Checking(g)) if *g != self.generation);
         match r {
             // Paused since the check began: nothing is sent.
             Ok(_) if self.paused() => {
@@ -728,6 +767,9 @@ impl Sup {
                 self.of_task.insert(task.id(), session.clone());
                 let now = Instant::now();
                 self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false });
+                if stale {
+                    self.rescan();
+                }
             }
             Err(no) => {
                 self.has.remove(&session);
@@ -773,12 +815,17 @@ impl Sup {
         let c = self.c.clone();
         self.rescans.spawn(async move {
             // A rescan that panicked reads as a policy that does not: off.
-            tokio::task::spawn_blocking(move || rescan(&c, dirs)).await.unwrap_or_else(|e| (Err(format!("its policy could not be read again: {e}")), Vec::new()))
+            match tokio::time::timeout(RESCAN_MOST, tokio::task::spawn_blocking(move || rescan(&c, dirs))).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => (Err(format!("its policy could not be read again: {e}")), Vec::new()),
+                Err(_) => (Err(format!("its policy and the sessions' directories took over {} to read", human(RESCAN_MOST))), Vec::new()),
+            }
         });
     }
 
     fn rescanned(&mut self, r: Result<Rescan, JoinError>) {
         let (policy, outs) = r.unwrap_or_else(|e| (Err(format!("its policy could not be read again: {e}")), Vec::new()));
+        self.generation += 1;
         match policy {
             Ok(p) if p.on => {
                 self.idle = p.idle;
@@ -852,8 +899,6 @@ impl Sup {
         }
         self.backing.clear();
         self.waits.clear();
-        self.lazy.clear();
-        self.wanted.clear();
     }
 
     /// A bridge ended: by itself, or as the supervisor told it to (idle,
@@ -864,13 +909,13 @@ impl Sup {
             Err(e) => (e.id(), Err(panicked(e))),
         };
         let Some(session) = self.of_task.remove(&id) else { return };
-        let (since, stopping) = match self.has.remove(&session) {
-            Some(Has::Bridging { since, stopping, .. }) => (since, stopping),
-            _ => (Instant::now(), false),
+        let (since, quiet, stopping) = match self.has.remove(&session) {
+            Some(Has::Bridging { since, quiet, stopping, .. }) => (since, quiet, stopping),
+            _ => (Instant::now(), Instant::now(), false),
         };
         lock(&self.c.bridged).remove(&session);
         if let Err(e) = &r
-            && e.contains(PAID)
+            && unpaid(e)
         {
             self.pause(e);
             return;
@@ -898,8 +943,8 @@ impl Sup {
             }
             // Another bridge holds the lease — a `krowk sync host`, or a
             // crashed host's, which lapses: no error, and never taken from it.
-            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, LEASE_HELD_WAIT, "another bridge holds its lease"),
-            Err(e) if e.starts_with(host::LEASE_LOST) => self.wait_for_lease(session, LEASE_LOST_WAIT, "another device took its lease"),
+            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, quiet, LEASE_HELD_WAIT, "another bridge holds its lease"),
+            Err(e) if e.starts_with(host::LEASE_LOST) => self.wait_for_lease(session, quiet, LEASE_LOST_WAIT, "another device took its lease"),
             // Any other end — an error, a panic, an end it gave no reason
             // for — is this session's alone: it backs off.
             r => {
@@ -915,37 +960,42 @@ impl Sup {
                 }
                 eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
                 self.waits.insert(session.clone(), wait);
-                self.backing.insert(session, Instant::now() + wait);
+                self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: false, quiet, wanted: false });
             }
         }
     }
 
     /// `session` left alone for `wait` — its lease is another's — and
     /// then taken up at its next turn, or at once if one ran meanwhile.
-    fn wait_for_lease(&mut self, session: String, wait: Duration, why: &str) {
+    fn wait_for_lease(&mut self, session: String, quiet: Instant, wait: Duration, why: &str) {
         self.waits.remove(&session);
         if self.gone {
             return;
         }
-        eprintln!("krowk: automatic sync skips session {session} for {}: {why}", human(wait));
-        self.lazy.insert(session.clone());
-        self.wanted.remove(&session);
-        self.backing.insert(session, Instant::now() + wait);
+        // Said once while the reason stands, not at every try.
+        let line = format!("{why}; it is left to it, and tried again at a turn after {}", human(wait));
+        if self.said_of.get(&session) != Some(&line) {
+            eprintln!("krowk: automatic sync skips session {session}: {line}");
+            if self.said_of.len() >= SAID_MOST {
+                self.said_of.clear();
+            }
+            self.said_of.insert(session.clone(), line);
+        }
+        self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: true, quiet, wanted: false });
     }
 
-    /// Every session whose wait ran out, started again — one waiting for
-    /// its lease only if a turn ran in it meanwhile, or runs.
+    /// Every session whose wait ran out, started again if it is still
+    /// wanted (`wanted_again`); otherwise left for its next turn.
     fn retry(&mut self) {
         let now = Instant::now();
-        let due: Vec<String> = self.backing.iter().filter(|(_, at)| **at <= now).map(|(s, _)| s.clone()).collect();
+        let due: Vec<String> = self.backing.iter().filter(|(_, w)| w.at <= now).map(|(s, _)| s.clone()).collect();
         for s in due {
-            self.backing.remove(&s);
-            let lazy = self.lazy.remove(&s);
-            let wanted = self.wanted.remove(&s);
-            if lazy && !wanted && !self.running.contains(&s) {
-                continue;
+            let Some(w) = self.backing.remove(&s) else { continue };
+            if wanted_again(&w, self.running.contains(&s), self.idle, now) {
+                self.start(s);
+            } else {
+                self.waits.remove(&s);
             }
-            self.start(s);
         }
     }
 
@@ -1303,12 +1353,37 @@ mod tests {
         let taken = format!("{} (sync_requires_paid_plan): {fix}", host::NOT_GRANTED);
         let built = format!("{fix} (sync_requires_paid_plan)");
         let shown = "the registry did not say whether it holds session x (sync_requires_paid_plan) — nothing was published; try again";
-        for e in [&taken, &built] {
-            assert!(e.contains(PAID));
+        let renewed = format!("the registry refused to renew the lease (sync_requires_paid_plan): {fix}");
+        for e in [&taken, &built, &renewed] {
+            assert!(unpaid(e), "{e}");
             assert_eq!(paid_fix(e), fix, "{e}");
         }
-        assert!(shown.contains(PAID));
+        assert!(unpaid(shown));
         assert!(paid_fix(shown).contains("upgrade this workspace to Pro"), "{}", paid_fix(shown));
-        assert!(!format!("{} (lease_held): device x holds it", host::NOT_GRANTED).contains(PAID));
+        assert!(unpaid("sync_requires_paid_plan"), "a write's bare code");
+        assert!(!unpaid(&format!("{} (lease_held): device x holds it", host::NOT_GRANTED)));
+        assert!(!unpaid(&format!("{} session x to device (sync_requires_paid_plan)", host::HANDED_OVER)), "a device's name says nothing");
+    }
+
+    /// R-OFF-2 and R-SYNC-2: a session whose wait ran out is started again
+    /// while it is in use — a turn running or started meanwhile, or its last
+    /// within the idle window — and one waiting on another's lease only for
+    /// a turn; one nobody uses waits for its next turn.
+    #[test]
+    fn r_off_2_a_session_backing_off_is_started_again_only_while_in_use() {
+        let quiet = Instant::now();
+        let idle = Some(Duration::from_secs(600));
+        let w = |lazy: bool, wanted: bool| Wait { at: quiet, lazy, quiet, wanted };
+        let soon = quiet + Duration::from_secs(60);
+        let late = quiet + Duration::from_secs(601);
+        assert!(wanted_again(&w(false, false), false, idle, soon), "used a minute ago: sync resumes by itself");
+        assert!(!wanted_again(&w(false, false), false, idle, late), "nobody used it for the window: its next turn");
+        assert!(wanted_again(&w(false, false), false, None, late), "no window: as before, always");
+        assert!(wanted_again(&w(false, false), true, idle, late), "a turn runs");
+        assert!(wanted_again(&w(false, true), false, idle, late), "a turn started meanwhile");
+        assert!(!wanted_again(&w(true, false), false, idle, soon), "another's lease: only for a turn");
+        assert!(!wanted_again(&w(true, false), false, None, soon));
+        assert!(wanted_again(&w(true, true), false, idle, late));
+        assert!(wanted_again(&w(true, false), true, idle, late));
     }
 }

@@ -20,10 +20,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it in `sync.exclude` or put a `.krowk/no-sync` file in it. `krowk sync
   status` now says whether auto-sync is on, whether the directory you're
   in is synced, and how many sessions the daemon is syncing. A session
-  nobody has used for 10 minutes stops syncing until its next prompt
-  (`sync.idleMinutes`; `0` keeps it synced while the daemon runs). A
-  directory opted out while its session syncs stops syncing at that
-  session's next prompt. A session you host by hand with `krowk sync host`
+  nobody has used for 10 minutes stops syncing until its next prompt on
+  this machine (`sync.idleMinutes`; `0` keeps it synced while the daemon
+  runs); until then other devices see it read-only. A directory opted
+  out while its session syncs stops syncing at that session's next
+  prompt. A session you host by hand with `krowk sync host`
   stays yours: the daemon never takes it over. On a workspace without a
   paid plan the daemon stops trying for an hour. The daemon exits once
   nobody has used it for a while, so run `krowk host enable` to keep
