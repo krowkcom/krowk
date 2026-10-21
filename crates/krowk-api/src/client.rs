@@ -993,6 +993,9 @@ fn fix_for(code: &str, status: u16) -> String {
         "device_revoked" => "this device was revoked or removed from your device list — pair it again with `krowk sync join` from a device on the list",
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
+        "key_has_no_device" => "this key speaks for no device yet — set sync up on this machine with `krowk sync init`, or join it with `krowk sync join`",
+        "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
+        "too_many_requests" => "the registry is refusing this key's calls for a moment — wait a minute and try again",
         "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself, with its own key and its own sign-in",
         // Pushes (R-IOS-12): the registry sends them, never the host.
         "push_unconfigured" => "this registry cannot send pushes yet (it has no APNs key) — your other devices were not notified; nothing else is affected",

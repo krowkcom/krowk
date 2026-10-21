@@ -1516,9 +1516,9 @@ pub fn notify(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
             burst_under(&mut s.sync, &caller(req), "notifications", now, NOTIFICATION_BURST)?;
         }
         let id = session_id(id).ok_or_else(not_found)?;
-        let v = body(req, "notification")?;
-        let mut f = v.fields();
-        let (token, kind, dedup) = (f.string("lease_token"), f.string("kind"), f.string("dedup"));
+        // Read now, refused only where the registry first reads it: after
+        // the session and its holder.
+        let v = body(req, "notification");
         let mut s = app.lock();
         let now = s.now();
         let key = (workspace.clone(), id.clone());
@@ -1527,6 +1527,9 @@ pub fn notify(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
             return Err(error(409, "lease_stale", "only the session's lease holder notifies, and nobody holds this one", None));
         }
         signed_by_holder(x, signer)?;
+        let v = v?;
+        let mut f = v.fields();
+        let (token, kind, dedup) = (f.string("lease_token"), f.string("kind"), f.string("dedup"));
         if token.is_empty() {
             return Err(error(409, "lease_stale", "no lease token was presented — only the session's lease holder notifies", None));
         }

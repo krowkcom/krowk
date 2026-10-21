@@ -143,7 +143,9 @@ fn r_sync_2_a_device_without_the_lease_is_refused_lease_stale() {
     host.release_lease(SESSION, &lease.token).unwrap();
     assert_eq!(host.notify_session(SESSION, NotifyKind::Approval, &dedup, &lease.token).unwrap_err().code(), "lease_stale", "a released lease");
     let other = "0190f3a8-7c1e-7a9b-8c2d-000000000000";
-    assert_eq!(host.notify_session(other, NotifyKind::Done, &dedup, &lease.token).unwrap_err().status, 404, "no such session");
+    let missing = host.notify_session(other, NotifyKind::Done, &dedup, &lease.token).unwrap_err();
+    assert_eq!(missing.status, 404, "no such session");
+    assert!(missing.fix().contains("no synced session"), "{missing:?}");
     assert_eq!(seen(p.addr, "/_notifications"), serde_json::json!({ "notifications": [] }));
 }
 
@@ -172,6 +174,12 @@ fn r_ios_12_a_device_registers_replaces_and_deletes_its_push_token() {
     phone.delete_push_token().unwrap();
     phone.delete_push_token().unwrap();
     held(serde_json::json!([]));
+    // Upper case and a space around it are the same token, as the registry
+    // normalises it.
+    phone.put_push_token(&format!(" {} ", "CD".repeat(32)), "sandbox").unwrap();
+    laptop.put_push_token(&token, "production").unwrap();
+    held(serde_json::json!([{ "device": p.laptop.id(), "environment": "production" }]));
+    laptop.delete_push_token().unwrap();
 
     for (bad_token, environment, field) in [("ab".repeat(31), "sandbox", "token"), ("ab".repeat(101), "sandbox", "token"), ("xy".repeat(32), "sandbox", "token"), (format!("{}a", "ab".repeat(32)), "sandbox", "token"), (token.clone(), "staging", "environment")] {
         let e = phone.put_push_token(&bad_token, environment).unwrap_err();
@@ -185,7 +193,7 @@ fn r_ios_12_a_device_registers_replaces_and_deletes_its_push_token() {
 /// phone's key signed by the laptop is refused `device_mismatch`, and nothing
 /// changes.
 #[test]
-fn a_push_token_call_signed_by_another_device_is_refused_device_mismatch() {
+fn r_ios_12_a_push_token_call_signed_by_another_device_is_refused_device_mismatch() {
     let p = person();
     p.phone.client(&p.url).put_push_token(&"cd".repeat(32), "sandbox").unwrap();
     let crossed = p.laptop.client_as(&p.url, &p.phone.key);
@@ -215,4 +223,39 @@ fn r_sync_1_a_free_workspace_is_refused() {
         assert_eq!((e.code().as_str(), e.status), ("sync_requires_paid_plan", 402), "{e:?}");
         assert!(e.fix().contains("paid plan"), "{e:?}");
     }
+}
+
+/// R-IOS-12: a device the dashboard revokes takes no more pushes: its token
+/// goes with it.
+#[test]
+fn r_ios_12_a_revoked_devices_push_token_is_dropped() {
+    let p = person();
+    p.phone.client(&p.url).put_push_token(&"cd".repeat(32), "sandbox").unwrap();
+    p.laptop.client(&p.url).put_push_token(&"ef".repeat(32), "production").unwrap();
+    let mut conn = std::net::TcpStream::connect(p.addr).unwrap();
+    write!(conn, "POST /_settings/devices/{}/revocation HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", p.phone.id(), p.laptop.key).unwrap();
+    let mut answer = String::new();
+    conn.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    assert_eq!(seen(p.addr, "/_push_tokens"), serde_json::json!({ "push_tokens": [{ "device": p.laptop.id(), "environment": "production" }] }));
+}
+
+/// R-IOS-12: each notification sounds the person's other devices, so a key
+/// asks for at most 20 a minute, the registry's ceiling, and the 21st is
+/// `too_many_requests`, with a fix.
+#[test]
+fn r_ios_12_notifications_meet_a_ceiling_of_20_a_minute() {
+    let p = person();
+    let mut host = p.laptop.client(&p.url);
+    // Retry-After is a minute; the test does not wait it out.
+    host.sleep = |_| {};
+    host.put_sync_session(SESSION, &"00".repeat(74), None, None, None).unwrap();
+    let lease = host.acquire_lease(SESSION, &p.laptop.id(), 60, "production").unwrap();
+    for i in 0..20 {
+        assert!(host.notify_session(SESSION, NotifyKind::Done, &format!("{i:064x}"), &lease.token).unwrap());
+    }
+    let refused = host.notify_session(SESSION, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap_err();
+    assert_eq!((refused.code().as_str(), refused.status), ("too_many_requests", 429), "{refused:?}");
+    assert!(!refused.fix().is_empty(), "{refused:?}");
+    assert_eq!(seen(p.addr, "/_notifications")["notifications"].as_array().unwrap().len(), 20);
 }

@@ -269,13 +269,23 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The lease holder asking for the person's other devices to be rung
         // (R-IOS-12).
         ("POST", ["v1", "sessions", id, "notification"]) => sync::signed(a, req, |a, req, by| sync::notify(a, req, id, by)),
+        (_, ["_settings" | "_notifications" | "_push_tokens", ..]) => stand_in_route(a, req, &m, &segs),
+        (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
+        _ => no_such_endpoint(),
+    }
+}
+
+/// What the stand-in serves in place of a person at the dashboard, and the
+/// reads only it has.
+fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
+    let get = m == "GET" || m == "HEAD";
+    match (m, segs) {
         ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
         // Stand-in only, never in the real registry: what was asked of the
         // pushes, for tests in other crates, which reach the stand-in only
         // over HTTP, to assert on. Neither ever shows a token.
         (_, ["_notifications"]) if get => sync::notifications_seen(a),
         (_, ["_push_tokens"]) if get => devices::push_tokens_seen(a),
-        (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }
 }

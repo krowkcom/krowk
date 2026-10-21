@@ -633,11 +633,18 @@ impl Client {
     /// e.g. `approval:<request id>`): a retry or a repeat collapses at the
     /// registry, which is why this is retried without an Idempotency-Key.
     /// Ok(true) when it was new, Ok(false) when it was a duplicate — which a
-    /// retry after a lost answer also reads as, having rung the first time.
-    /// A registry without its APNs key refuses `push_unconfigured`, at once.
+    /// retry after an answer that stalled or failed also reads as, when the
+    /// first attempt had rung. A registry without its APNs key refuses
+    /// `push_unconfigured`, tried once.
     pub fn notify_session(&self, session: &str, kind: NotifyKind, dedup: &str, lease_token: &str) -> Result<bool, Error> {
         let body = json!({ "notification": { "kind": kind.as_str(), "dedup": dedup, "lease_token": lease_token } });
-        let (answer, status): (NotifiedAnswer, u16) = self.call_as_device("POST", &format!("/sessions/{}/notification", slug_path(session)), Some(body), ATTEMPTS, None)?;
+        let path = format!("/sessions/{}/notification", slug_path(session));
+        let (answer, status): (NotifiedAnswer, u16) = self.call_as_device("POST", &path, Some(body), ATTEMPTS, None).map_err(|mut e| {
+            if e.code() == "not_found" {
+                e.body.insert("fix".into(), json!(format!("the registry has no synced session {session} in this workspace — check the session's id, and that it was synced from here")));
+            }
+            e
+        })?;
         // 202 is a new event and 200 a repeat; the body says so too.
         Ok(!answer.notification.duplicate.unwrap_or(status != 202))
     }
