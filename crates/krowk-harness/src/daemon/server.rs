@@ -892,16 +892,20 @@ impl State {
 
     /// A streaming command in `session` is over. With none left its
     /// followers are told it settled; and a turn that started and never
-    /// logged its end — its log write failed — is over all the same: the
-    /// hub and the turn hook are told so, rather than left running.
-    fn unregister(&mut self, session: &str, turn: bool) {
+    /// logged its end — its log write failed — is over all the same, since
+    /// every turn is a streaming command: the hub, its replay and the turn
+    /// hook are told so, rather than left running.
+    fn unregister(&mut self, session: &str) {
         let Some(h) = self.hubs.get_mut(session) else { return };
         h.in_flight = h.in_flight.saturating_sub(1);
         if h.in_flight > 0 {
             return;
         }
-        let stuck = turn && h.running;
-        h.running &= !stuck;
+        let stuck = h.running;
+        if stuck {
+            h.running = false;
+            h.turn.logged(true);
+        }
         let followers = h.followers.clone();
         for f in followers {
             self.send(f, session, control(&ServerFrame::Settled { session: session.to_string() }));
@@ -1025,8 +1029,12 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // Working from here: a `stop` while a new directory's configuration is
     // read, or the log is counted below, must not end the daemon under a
     // prompt it accepted.
+    // And the idle window looks again: a background client's turn holds
+    // the daemon up from here, however long the setup below takes.
     if turn {
-        state.borrow_mut().working += 1;
+        let mut s = state.borrow_mut();
+        s.working += 1;
+        s.wake.notify_one();
     }
     let host = match known {
         Some(h) => Ok(h),
@@ -1097,7 +1105,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     }
     if registers {
         if let Some(r) = &root {
-            s.unregister(r, turn);
+            s.unregister(r);
         }
         s.wake.notify_one();
     }
