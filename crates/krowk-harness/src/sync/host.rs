@@ -626,6 +626,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         dretry: Instant::now(),
         daemon_gone: false,
         others_asked: None,
+        nobody_since: None,
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
@@ -751,6 +752,10 @@ struct Hosting {
     /// When `deny_late` last heard another client answers the session's
     /// approvals: asked again only a while later, not every second.
     others_asked: Option<Instant>,
+    /// Since when every answer the daemon gave said no other client
+    /// answers: one is not enough, since a terminal that fell behind is
+    /// left out while it follows again.
+    nobody_since: Option<Instant>,
 }
 
 impl Hosting {
@@ -919,18 +924,23 @@ impl Hosting {
         // The daemon is asked only when there is something to deny, never
         // on every sweep.
         if !alone || !self.approvals.values().any(|(_, t)| t.elapsed() > wait) {
+            self.nobody_since = None;
             return;
         }
         // Another answering client was there a moment ago: it is taken
         // to be there still, and asked after again only once that moment
-        // has passed. A viewer's turn's request is denied meanwhile all
-        // the same.
-        let others = if self.others_asked.is_some_and(|at| at.elapsed() < wait.min(OTHERS_AGAIN)) {
+        // has passed. Nobody else is believed only once the daemon has
+        // said so for as long. A viewer's turn's request is denied
+        // meanwhile all the same.
+        let again = wait.min(OTHERS_AGAIN);
+        let others = if self.others_asked.is_some_and(|at| at.elapsed() < again) {
+            true
+        } else if self.others().await {
+            (self.others_asked, self.nobody_since) = (Some(Instant::now()), None);
             true
         } else {
-            let others = self.others().await;
-            self.others_asked = others.then(Instant::now);
-            others
+            self.others_asked = None;
+            self.nobody_since.get_or_insert_with(Instant::now).elapsed() < again
         };
         let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, others, |t| t.elapsed() > wait).into_iter().cloned().collect();

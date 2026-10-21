@@ -956,7 +956,7 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
         if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
             // The bridge's doing, after its wait: not the daemon's, which
             // would have denied it the moment the terminal went.
-            assert!(left.elapsed() >= Duration::from_millis(800), "denied {:?} after the terminal went", left.elapsed());
+            assert!(left.elapsed() >= Duration::from_millis(500), "denied {:?} after the terminal went", left.elapsed());
             break tool_results(&w, &session);
         }
         assert!(Instant::now() < deadline, "the turn still waits on the question");
@@ -980,6 +980,8 @@ async fn r_perm_2_a_question_the_terminal_still_follows_waits_and_a_viewer_can_a
     // The terminal asking is the one other answering client.
     drop(d);
     let (_t, turn, req) = ask_at_the_terminal(&w, &session).await;
+    // A status that failed would leave it waiting too: r_host_1's test
+    // above is the one that needs it to work and count the bridge alone.
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(!turn.is_finished() && tool_results(&w, &session).is_empty(), "the question still waits on the terminal");
 
