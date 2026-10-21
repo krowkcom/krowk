@@ -299,9 +299,12 @@ struct AutoSync {
     bridged_note: Option<String>,
 }
 
-/// The policy as the host daemon reads it — config.json and this process's
-/// environment — and this directory against its opt-outs. File reads, and
-/// one question to a daemon that runs (never one started for it).
+/// The policy from config.json and this command's environment — the
+/// daemon's own unless it was started with another, which `lines` points
+/// out when it shows — and this directory against its opt-outs. File
+/// reads, and one question to a daemon that runs (never one started for
+/// it).
+#[cfg(unix)]
 fn auto_sync(ctx: &Ctx) -> AutoSync {
     use krowk_harness::sync::auto::{self, OptOut};
     let policy = super::prompt::config_json().map_err(|e| e.fix()).and_then(|config| auto::policy(ctx.io.env, Some(&config)));
@@ -334,14 +337,16 @@ fn bridged(ctx: &Ctx) -> (Option<usize>, Option<String>) {
             // A daemon from before automatic sync, or one without it.
             None => (Some(0), Some(format!("the host daemon runs krowk {}, which does not sync by itself", s.krowk_version))),
         },
-        Err(e) => (None, Some(format!("the host daemon did not answer: {}", e.message))),
+        Err(e) => (None, Some(format!("the host daemon could not be asked: {}", e.message))),
     }
 }
 
-/// No host daemon runs off unix.
+/// Off unix there is no host daemon, so nothing syncs by itself: the same
+/// keys, saying so.
 #[cfg(not(unix))]
-fn bridged(_: &Ctx) -> (Option<usize>, Option<String>) {
-    (Some(0), Some("no host daemon running".into()))
+fn auto_sync(_: &Ctx) -> AutoSync {
+    let none = "there is no host daemon on this platform";
+    AutoSync { on: Err(none.into()), directory: Err(None), bridged: Some(0), bridged_note: Some(none.into()) }
 }
 
 impl AutoSync {
@@ -358,9 +363,16 @@ impl AutoSync {
         let bridged = match (self.bridged, &self.bridged_note) {
             (Some(n), None) => format!("bridged: {n}"),
             (Some(n), Some(note)) => format!("bridged: {n} ({note})"),
-            (None, note) => format!("bridged: unknown ({})", note.as_deref().unwrap_or("the host daemon did not answer")),
+            (None, note) => format!("bridged: unknown ({})", note.as_deref().unwrap_or("the host daemon could not be asked")),
         };
-        [on, directory, bridged].join("\n")
+        let mut lines = vec![on, directory, bridged];
+        // Off as read here, yet the daemon bridges: it reads the
+        // environment it was started with, and keeps a bridge it started
+        // until it exits.
+        if let (Err(_), Some(n @ 1..)) = (&self.on, self.bridged) {
+            lines.push(format!("! the running host daemon still syncs {n} session(s): it reads the environment it was started with, and keeps what it started until it exits — `krowk host stop` ends them"));
+        }
+        lines.join("\n")
     }
 
     /// `autoSync: {on, why}`, `directory: {synced, optedOutBy}` and

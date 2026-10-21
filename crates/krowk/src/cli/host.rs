@@ -131,7 +131,17 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         // A config that does not read is an Err, which is off.
         policy: Box::new(move || auto::policy(&env, Some(&prompt::config_json().map_err(|e| e.fix())?))),
         ready: Box::new(move || own_ctx(&f, |ctx| super::synced::ready(ctx)).map_err(|e| format!("{} ({})", e.fix(), e.code()))),
-        build: Box::new(move |session: &str, cwd: &std::path::Path| own_ctx(&f2, |ctx| super::synced::options(ctx, session, cwd, None)).map_err(|e| (e.code(), e.fix()))),
+        build: Box::new(move |session: &str, cwd: &std::path::Path| {
+            own_ctx(&f2, |ctx| {
+                // The workspace as `krowk sync host` run in the session's own
+                // directory would take it — its repository's config.json
+                // included — not as the daemon's `/` would.
+                let pinned = crate::config::load(&cwd.display().to_string(), ctx.io.env, &ctx.f.workspace).map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `krowk config show` names every layer")))?;
+                ctx.f.workspace = pinned.workspace;
+                super::synced::options(ctx, session, cwd, None)
+            })
+            .map_err(|e| (e.code(), e.fix()))
+        }),
         bridged,
     }
 }

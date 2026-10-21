@@ -886,6 +886,11 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     let data = sync_status(&a, &[]);
     assert!(data["bridged"].as_u64().is_some_and(|n| n >= 1), "A's daemon bridges it: {data}");
     assert_eq!((data["autoSync"]["on"].as_bool(), data["directory"]["synced"].as_bool()), (Some(true), Some(true)), "{data}");
+    // Off as this shell reads it, while the daemon — started with another
+    // environment — syncs: said, rather than left as a plain "off".
+    let human = a.command(&["sync", "status", "--format", "human"]).env("KROWK_SYNC_AUTO", "0").stdin(Stdio::null()).output().unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    assert!(human.contains("auto-sync: off (KROWK_SYNC_AUTO)") && human.contains("the running host daemon still syncs 1 session(s)"), "{human}");
 
     let again = a.command(&["sync", "host", &session]).stdin(Stdio::null()).output().unwrap();
     let said = String::from_utf8_lossy(&again.stdout);
@@ -968,11 +973,47 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
     assert!(String::from_utf8_lossy(&made.stdout).contains(ANSWER));
     std::thread::sleep(Duration::from_secs(3));
     let seen = (api_seen.load(std::sync::atomic::Ordering::SeqCst), relay_seen.load(std::sync::atomic::Ordering::SeqCst));
+    // The supervisor was told of the turn, and its check stopped at the set-up.
+    let log = std::fs::read_to_string(repo.parent().unwrap().join(".krowk/host.log")).unwrap_or_default();
 
     let status = command(&["sync", "status"]).output().unwrap();
     let _ = command(&["host", "stop", "--force"]).output();
     let _ = std::fs::remove_dir_all(&run);
     assert_eq!(seen, (0, 0), "no connection to the registry or the relay");
+    assert!(log.contains("automatic sync is not set up here"), "the daemon's check ran: {log}");
     let err = String::from_utf8_lossy(&status.stderr);
     assert!(!status.status.success() && err.contains("not_set_up") && err.contains("automatic sync is off until sync is set up here"), "{err}");
+}
+
+/// R-SYNC-3 (ticket 95), failing closed in the daemon itself: on a machine
+/// with sync set up, a turn in the host daemon syncs nothing when
+/// config.json turns automatic sync off, or when the session's directory
+/// opts out with `.krowk/no-sync` — the registry never hears of the
+/// session, and host.log says why.
+#[test]
+fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
+    let w = World::new("autooff");
+    let off = w.machine("a");
+    std::fs::write(off.home.join(".krowk/config.json"), r#"{"sync": {"auto": false}}"#).unwrap();
+    let marked = w.machine("b");
+    std::fs::create_dir_all(marked.repo.join(".krowk")).unwrap();
+    std::fs::write(marked.repo.join(".krowk/no-sync"), "").unwrap();
+    for (m, why) in [(&off, "automatic sync is off (sync.auto in config.json)"), (&marked, "opts")] {
+        let made = m.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+        assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+        let session = m.session();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let log = loop {
+            let log = std::fs::read_to_string(m.home.join(".krowk/host.log")).unwrap_or_default();
+            if log.contains(why) {
+                break log;
+            }
+            assert!(Instant::now() < deadline, "host.log never said {why:?}: {log}");
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        if why == "opts" {
+            assert!(log.contains(&format!("session {session} is not synced automatically")) && log.contains(".krowk/no-sync"), "{log}");
+        }
+        assert_eq!(m.api.show_sync_session(&session).unwrap_err().status, 404, "the registry never heard of {session}");
+    }
 }
