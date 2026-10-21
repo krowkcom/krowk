@@ -977,7 +977,8 @@ which keeps them in your shell history.
 
 Once sync is set up, every session that runs a turn in the host daemon is
 synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
-and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync.",
+and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync. A
+session idle for `sync.idleMinutes` (10) stops syncing until its next prompt.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
