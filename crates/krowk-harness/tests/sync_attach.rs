@@ -121,6 +121,14 @@ const GHOST: u8 = 5;
 /// Every other ticket passes: a viewer whose relay connection drops meanwhile
 /// joins again as it would, rather than hanging on a ticket.
 const HOLD_TICKETS: u8 = 3;
+/// A registry proxy's mode: a notification asked for is held, unanswered,
+/// until the mode changes — a registry that stalls on it — and every other
+/// request passes.
+const HOLD_NOTIFY: u8 = 6;
+/// A registry proxy's mode: a notification asked for is refused 503
+/// `push_unconfigured` — a registry without its APNs key — and every other
+/// request passes.
+const REFUSE_NOTIFY: u8 = 7;
 
 struct Device {
     key: DeviceKey,
@@ -613,6 +621,20 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog) -> SocketAdd
                     let one: Vec<u8> = req.drain(..total).collect();
                     let m = mode.load(Ordering::SeqCst);
                     if m == CUT {
+                        return;
+                    }
+                    let asked = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
+                    let notify = asked.starts_with("POST ") && asked.contains("/notification ");
+                    if notify && mode.load(Ordering::SeqCst) == HOLD_NOTIFY {
+                        log.lock().unwrap().push((format!("HELD {asked}"), None));
+                    }
+                    while notify && mode.load(Ordering::SeqCst) == HOLD_NOTIFY {
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    if notify && mode.load(Ordering::SeqCst) == REFUSE_NOTIFY {
+                        let body = r#"{"error":"push_unconfigured","message":"this registry cannot send pushes","fix":"nothing to do here; the registry's operator adds its APNs key"}"#;
+                        log.lock().unwrap().push((asked, None));
+                        let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
                     }
                     if m == FAIL_WRITES && (one.starts_with(b"POST ") || one.starts_with(b"PUT ")) {
@@ -2841,4 +2863,164 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     auto.stop(Duration::from_secs(10)).await;
+}
+
+/// What the stand-in registry recorded as notified about `session` (ticket
+/// 103's `GET /_notifications`, which only the stand-in has), oldest first:
+/// each one's kind and dedup. A repeat of a dedup is not recorded again.
+fn notifications(w: &World, session: &str) -> Vec<(String, String)> {
+    let mut c = TcpStream::connect(w.registry.addr()).unwrap();
+    c.write_all(b"GET /_notifications HTTP/1.1\r\nHost: registry\r\nConnection: close\r\n\r\n").unwrap();
+    let mut answer = Vec::new();
+    c.read_to_end(&mut answer).unwrap();
+    let body = &answer[answer.windows(4).position(|w| w == b"\r\n\r\n").unwrap() + 4..];
+    let seen: serde_json::Value = serde_json::from_slice(body).unwrap();
+    seen["notifications"].as_array().unwrap().iter().filter(|n| n["session"] == session).map(|n| (n["kind"].as_str().unwrap().to_string(), n["dedup"].as_str().unwrap().to_string())).collect()
+}
+
+/// The notifications A's bridge asked the registry for, through A's proxy,
+/// repeats and refusals and all; `held`, those the proxy began to hold.
+fn notify_calls(w: &World, session: &str) -> usize {
+    asked_to_notify(w, session, "POST ")
+}
+
+fn asked_to_notify(w: &World, session: &str, how: &str) -> usize {
+    w.reg_log.lock().unwrap().iter().filter(|(line, _)| line.starts_with(how) && line.contains(session) && line.contains("/notification ")).count()
+}
+
+/// Waits until the stand-in has recorded `n` notifications of `kind` about
+/// `session`, or panics after `wait`; what it holds then.
+async fn notified(w: &World, session: &str, kind: &str, n: usize, wait: Duration) -> Vec<(String, String)> {
+    let deadline = Instant::now() + wait;
+    loop {
+        let seen = notifications(w, session);
+        if seen.iter().filter(|(k, _)| k == kind).count() >= n {
+            return seen;
+        }
+        assert!(Instant::now() < deadline, "never {n} {kind}: {seen:?}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The SHA-256 of `key`, in hex: the dedup the registry is sent.
+fn digest(key: &str) -> String {
+    use sha2::Digest;
+    e2e::hex(&sha2::Sha256::digest(key.as_bytes()))
+}
+
+/// R-PERM-2, R-IOS-12, R-E2E-1: an approval on a synced session rings the
+/// person's devices once, as it starts waiting: the registry is told the
+/// kind and a digest of the request's id, and nothing of what it asks. A
+/// viewer that attaches again is welcomed with the request, and nothing
+/// rings again.
+#[tokio::test]
+async fn r_perm_2_an_approval_on_a_synced_session_rings_the_persons_devices_once() {
+    let w = World::new("ring-approval");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    v.commands.send(w.prompt(Some(&session), &format!("make the file {PROMPT_MARKER}"))).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))).await;
+    let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
+    let seen = notified(&w, &session, "approval", 1, Duration::from_secs(10)).await;
+    let approvals: Vec<_> = seen.iter().filter(|(k, _)| k == "approval").collect();
+    assert_eq!(approvals, [&("approval".to_string(), digest(&format!("approval:{}", req.request_id)))], "one, its dedup a digest of the request's id: {seen:?}");
+
+    // B goes and comes back: welcomed with the request still waiting, which
+    // rings nothing more.
+    drop(v);
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let calls = notify_calls(&w, &session);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(notify_calls(&w, &session), calls, "a viewer attaching again asks for nothing");
+    v.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    assert!(w.repo().join("approved.txt").exists(), "B's answer unblocked A's turn");
+    let seen = notified(&w, &session, "done", 2, Duration::from_secs(10)).await;
+    assert_eq!(seen.iter().filter(|(k, _)| k == "approval").count(), 1, "{seen:?}");
+    assert!(!bridge.is_finished());
+}
+
+/// R-IOS-12, R-SYNC-2: a finished turn rings once — the session's own,
+/// asked by the lease holder — and a bridge that takes the session up again
+/// after a restart, the daemon replaying the turns the registry already
+/// holds, asks for nothing more.
+#[tokio::test]
+async fn r_ios_12_a_finished_turn_rings_once_and_taking_the_session_up_again_after_a_restart_rings_nothing_more() {
+    let w = World::new("ring-done");
+    let a = w.device("machine-a");
+    let (d, session) = first_turn(&w).await;
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    // The first turn, ended moments before the bridge took the session up,
+    // is recent and the registry did not hold it: it rings.
+    notified(&w, &session, "done", 1, Duration::from_secs(10)).await;
+    turn(&d, &w, &session, "a second turn").await;
+    let seen = notified(&w, &session, "done", 2, Duration::from_secs(10)).await;
+    let turns: Vec<String> = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap().into_iter().filter_map(|e| if let LogBody::TurnCompleted { turn_id, .. } = e.body { Some(digest(&format!("turn:{turn_id}"))) } else { None }).collect();
+    assert_eq!(seen.iter().map(|(_, d)| d.clone()).collect::<Vec<_>>(), turns, "once per turn, in order");
+    stored_whole(&w, &session, Duration::from_secs(15)).await;
+    let calls = notify_calls(&w, &session);
+    assert_eq!(calls, 2, "each asked once");
+    stop.send(true).unwrap();
+    bridge.await.unwrap().unwrap();
+
+    let (stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert_eq!(notify_calls(&w, &session), calls, "the replayed turns ask for nothing");
+    assert_eq!(notifications(&w, &session).len(), 2);
+    stop.send(true).unwrap();
+    bridge.await.unwrap().unwrap();
+}
+
+/// R-IOS-12, R-OFF-2: a notification never holds up the bridge, and one the
+/// registry refuses leaves it running. With the registry refusing it
+/// (`push_unconfigured`), a turn's batches still reach B on time and the
+/// bridge streams on; with it stalling on the next, the same; once the
+/// registry answers again, what it stalled on rings, and so does the turn
+/// after. The refused one never does.
+#[tokio::test]
+async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
+    let w = World::new("ring-refused");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (_stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    notified(&w, &session, "done", 1, Duration::from_secs(10)).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TurnCompleted { .. }));
+
+    for mode in [REFUSE_NOTIFY, HOLD_NOTIFY] {
+        w.reg_mode.store(mode, Ordering::SeqCst);
+        let how = if mode == HOLD_NOTIFY { "HELD POST " } else { "POST " };
+        let calls = asked_to_notify(&w, &session, how);
+        turn(&d, &w, &session, "a turn the registry will not ring for").await;
+        let done = Instant::now();
+        until(&mut v, Duration::from_secs(5), &mut frames, ended).await;
+        assert!(done.elapsed() < Duration::from_secs(2), "mode {mode}: the turn's end reached B {:?} after it ended", done.elapsed());
+        assert!(!bridge.is_finished(), "mode {mode}: the bridge runs on");
+        {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while asked_to_notify(&w, &session, how) == calls {
+                assert!(Instant::now() < deadline, "mode {mode}: the bridge never asked");
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    // What was held goes on its way now, and rings.
+    notified(&w, &session, "done", 2, Duration::from_secs(10)).await;
+    turn(&d, &w, &session, "a turn once the registry rings again").await;
+    until(&mut v, Duration::from_secs(5), &mut frames, ended).await;
+    let seen = notified(&w, &session, "done", 3, Duration::from_secs(10)).await;
+    assert_eq!(seen.len(), 3, "the refused one never rang: {seen:?}");
+    assert!(!bridge.is_finished(), "the bridge runs on");
 }
