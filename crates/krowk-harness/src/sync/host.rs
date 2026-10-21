@@ -831,6 +831,12 @@ impl Hosting {
         if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
             return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
         }
+        // The daemon let this client go (it exited, or dropped a client
+        // that fell behind): nothing more of the session reaches the bridge,
+        // which ends rather than holding the lease over a frozen stream.
+        if self.daemon.closed() {
+            return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+        }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
             return Err(why);
         }

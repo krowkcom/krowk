@@ -2222,6 +2222,8 @@ struct Auto {
     built: Built,
     /// The daemon's turn hook, which a test may tell of a turn itself.
     turns: mpsc::UnboundedSender<server::TurnEvent>,
+    /// Sessions whose checks read the policy: each check starts with it.
+    checks: Arc<AtomicUsize>,
 }
 
 impl Auto {
@@ -2272,17 +2274,22 @@ impl World {
             })
         });
         let env = self.env();
+        let checks = Arc::new(AtomicUsize::new(0));
+        let counted = checks.clone();
         let c = auto::Config {
             socket: daemon::socket(&env).unwrap(),
             sessions: log::sessions_dir(&env).unwrap(),
             version: "test".into(),
             krowk_home: Some(self.root.join("home/.krowk")),
             build,
-            policy: Box::new(|| auto::policy(&|_| String::new(), None)),
+            policy: Box::new(move || {
+                counted.fetch_add(1, Ordering::SeqCst);
+                auto::policy(&|_| String::new(), None)
+            }),
             ready: Box::new(|| Ok(())),
             bridged: bridged.clone(),
         };
-        Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), bridged, built, turns }
+        Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), bridged, built, turns, checks }
     }
 
     /// Waits until B lists `session`, or panics at `by`.
@@ -2415,10 +2422,11 @@ async fn r_sync_3_a_child_session_and_an_opted_out_directory_are_never_built() {
     let d = w.daemon().await;
     let plain = prompted(&w, &d, None, "say hello").await;
     let deadline = Instant::now() + Duration::from_secs(10);
-    while auto.built(&plain).is_empty() {
-        assert!(Instant::now() < deadline, "the plain session was never built");
+    while auto.built(&plain).is_empty() || auto.checks.load(Ordering::SeqCst) < 3 {
+        assert!(Instant::now() < deadline, "the plain session was never built, or the others never checked");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Their checks have begun; what is left of them is a log line and a few stats.
     tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(auto.built(&out).is_empty(), "an opted-out directory's session is never built");
     assert!(auto.built(kid).is_empty(), "a child's session is never built");

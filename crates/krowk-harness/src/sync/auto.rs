@@ -439,6 +439,8 @@ struct Sup {
     /// is said once per change rather than once per turn.
     said: Option<String>,
     said_of: HashMap<String, String>,
+    /// The daemon's hook closed: it is gone, and nothing starts again.
+    gone: bool,
 }
 
 /// Sessions whose last reason is remembered, past which the oldest are
@@ -447,7 +449,7 @@ const SAID_MOST: usize = 4096;
 
 impl Sup {
     fn new(c: Config) -> Sup {
-        Sup { c: Arc::new(c), has: HashMap::new(), checks: JoinSet::new(), bridges: JoinSet::new(), of_task: HashMap::new(), backing: HashMap::new(), waits: HashMap::new(), said: None, said_of: HashMap::new() }
+        Sup { c: Arc::new(c), has: HashMap::new(), checks: JoinSet::new(), bridges: JoinSet::new(), of_task: HashMap::new(), backing: HashMap::new(), waits: HashMap::new(), said: None, said_of: HashMap::new(), gone: false }
     }
 
     async fn run(mut self, mut turns: mpsc::UnboundedReceiver<TurnEvent>, mut stop: oneshot::Receiver<Duration>) {
@@ -467,8 +469,14 @@ impl Sup {
                 t = turns.recv(), if hooked => match t {
                     Some(TurnEvent { session, running: true }) => self.start(session),
                     Some(_) => {}
-                    // The daemon is gone: the bridges end by themselves.
-                    None => hooked = false,
+                    // The daemon is gone: the bridges end by themselves
+                    // (`sweep` sees their connection closed), and nothing
+                    // is started again — there is no daemon to follow.
+                    None => {
+                        hooked = false;
+                        self.gone = true;
+                        self.backing.clear();
+                    }
                 },
                 Some(r) = self.checks.join_next(), if !self.checks.is_empty() => self.checked(r),
                 Some(r) = self.bridges.join_next_with_id(), if !self.bridges.is_empty() => self.ended(r),
@@ -495,7 +503,12 @@ impl Sup {
     }
 
     fn checked(&mut self, r: Result<(String, Result<PathBuf, No>), JoinError>) {
-        let Ok((session, r)) = r else { return };
+        // Only `abort_all` ends a check task without its answer, but a
+        // session must never be left checking for good.
+        let Ok((session, r)) = r else {
+            self.has.retain(|_, h| !matches!(h, Has::Checking));
+            return;
+        };
         match r {
             Ok(cwd) => {
                 self.said = None;
@@ -563,6 +576,10 @@ impl Sup {
                     Some(&w) if ran <= w => (w * 2).min(BACKOFF_MOST),
                     _ => BACKOFF_FIRST,
                 };
+                if self.gone {
+                    eprintln!("krowk: automatic sync of session {session} stopped: {why}");
+                    return;
+                }
                 eprintln!("krowk: automatic sync of session {session} stopped: {why}; trying again in {}", human(wait));
                 self.waits.insert(session.clone(), wait);
                 self.backing.insert(session, Instant::now() + wait);
