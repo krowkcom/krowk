@@ -252,7 +252,8 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
             }
             Err(e) if e.code() == "lease_held" => lost.store(true, Ordering::Relaxed),
             Err(e) if e.code() == "sync_requires_paid_plan" => {
-                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
+                // The first reason to stop stands (the list thread's too).
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
                 return;
             }
             Err(_) => next = Instant::now() + Duration::from_secs(2),
@@ -354,7 +355,7 @@ fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<Str
             Ok(Some(longer)) => chain = longer,
             Ok(None) => {}
             Err(why) => {
-                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(why);
                 return;
             }
         }
@@ -695,7 +696,8 @@ struct Hosting {
     link: HostLink,
     held: Arc<Mutex<Held>>,
     lost: Arc<AtomicBool>,
-    /// Set when the device list moved on under the host: why it stops.
+    /// Set when the device list moved on under the host, or the registry
+    /// refused the lease's renewal for want of a paid plan: why it stops.
     stale: Arc<Mutex<Option<String>>>,
     jobs: std::sync::mpsc::Sender<Write>,
     lines_tx: mpsc::Sender<StreamLine>,
@@ -1392,9 +1394,12 @@ impl Drop for Halting {
 /// another device's already.
 async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool>, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
     halt.store(true, Ordering::Relaxed);
-    let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
     let _ = tokio::task::spawn_blocking(move || {
         let _ = writing.join();
+        // Read once the writer is done, by when a renewal in flight as the
+        // halt came has answered: one that took the lease again holds a new
+        // token, and the old one would release nothing.
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
         if !lost.load(Ordering::Relaxed) {
             let _ = o.api.release_lease(&o.session, &token);
         }

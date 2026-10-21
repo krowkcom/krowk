@@ -529,6 +529,9 @@ enum Has {
         /// Told to stop by the supervisor (idle, opted out, off, the paid
         /// plan): its end is no failure.
         stopping: bool,
+        /// A turn started while it was stopping: taken up again once it
+        /// has stopped.
+        again: bool,
     },
 }
 
@@ -559,6 +562,9 @@ struct Sup {
     /// is said once per change rather than once per turn.
     said: Option<String>,
     said_of: HashMap<String, String>,
+    /// The same for a session left to another's lease, forgotten only once
+    /// its own bridge has held it (and been let go).
+    said_lease: HashMap<String, String>,
     /// The daemon's hook closed: it is gone, and nothing starts again.
     gone: bool,
 }
@@ -594,11 +600,11 @@ fn wanted_again(w: &Wait, running: bool, idle: Option<Duration>, now: Instant) -
 }
 
 /// Whether a bridge's error is the registry's refusal of a workspace
-/// without a paid plan: the code in brackets, as `take`'s and `build`'s
-/// errors name it, or alone, as a write's does. A handoff's end names a
-/// device, which could say anything, so it never is.
+/// without a paid plan: the code in brackets, as `take`'s, a refused
+/// renewal's and `build`'s errors name it. A handoff's end names a device,
+/// which could say anything, so it never is.
 fn unpaid(error: &str) -> bool {
-    !error.starts_with(host::HANDED_OVER) && (error.contains(PAID) || error.starts_with(&PAID[1..PAID.len() - 1]))
+    !error.starts_with(host::HANDED_OVER) && error.contains(PAID)
 }
 
 /// How a person reads a pause: an hour, or what `human` says.
@@ -624,6 +630,7 @@ impl Sup {
             paused: None,
             said: None,
             said_of: HashMap::new(),
+            said_lease: HashMap::new(),
             gone: false,
         }
     }
@@ -697,13 +704,17 @@ impl Sup {
             self.running.remove(&session);
         }
         match self.has.get_mut(&session) {
-            Some(Has::Bridging { quiet, stopping, .. }) => {
+            Some(Has::Bridging { quiet, stopping, again, .. }) => {
                 *quiet = Instant::now();
                 if !*stopping {
                     self.rescan();
+                } else if running {
+                    *again = true;
                 }
             }
-            Some(Has::Checking(_)) => {}
+            // Read again before it is bridged: an opt-out may have come
+            // since its check read the policy.
+            Some(Has::Checking(g)) => *g = u64::MAX,
             None => match self.backing.get_mut(&session) {
                 // Its wait runs: a turn meanwhile is why to start it again.
                 Some(w) if running => w.wanted = true,
@@ -750,13 +761,19 @@ impl Sup {
             self.has.retain(|_, h| !matches!(h, Has::Checking(_)));
             return;
         };
-        // A rescan answered while it was checked may have turned sync off,
-        // or opted its directory out: read again once it is bridged.
+        // A rescan that stopped something answered while it was checked —
+        // sync off, or a directory opted out — or a turn event came: its
+        // answer may be out of date, so it is checked again rather than
+        // bridged on it.
         let stale = matches!(self.has.get(&session), Some(Has::Checking(g)) if *g != self.generation);
         match r {
             // Paused since the check began: nothing is sent.
             Ok(_) if self.paused() => {
                 self.has.remove(&session);
+            }
+            Ok(_) if stale => {
+                self.has.remove(&session);
+                self.start(session);
             }
             Ok((cwd, idle)) => {
                 self.said = None;
@@ -766,10 +783,7 @@ impl Sup {
                 let task = self.bridges.spawn(bridge(self.c.clone(), session.clone(), cwd.clone(), stop_rx));
                 self.of_task.insert(task.id(), session.clone());
                 let now = Instant::now();
-                self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false });
-                if stale {
-                    self.rescan();
-                }
+                self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false, again: false });
             }
             Err(no) => {
                 self.has.remove(&session);
@@ -825,7 +839,10 @@ impl Sup {
 
     fn rescanned(&mut self, r: Result<Rescan, JoinError>) {
         let (policy, outs) = r.unwrap_or_else(|e| (Err(format!("its policy could not be read again: {e}")), Vec::new()));
-        self.generation += 1;
+        // Checks begun before it are out of date only when it stops something.
+        if !matches!(&policy, Ok(p) if p.on) || outs.iter().any(|(_, o)| o.is_some()) {
+            self.generation += 1;
+        }
         match policy {
             Ok(p) if p.on => {
                 self.idle = p.idle;
@@ -909,9 +926,9 @@ impl Sup {
             Err(e) => (e.id(), Err(panicked(e))),
         };
         let Some(session) = self.of_task.remove(&id) else { return };
-        let (since, quiet, stopping) = match self.has.remove(&session) {
-            Some(Has::Bridging { since, quiet, stopping, .. }) => (since, quiet, stopping),
-            _ => (Instant::now(), Instant::now(), false),
+        let (since, quiet, stopping, again) = match self.has.remove(&session) {
+            Some(Has::Bridging { since, quiet, stopping, again, .. }) => (since, quiet, stopping, again),
+            _ => (Instant::now(), Instant::now(), false, false),
         };
         lock(&self.c.bridged).remove(&session);
         if let Err(e) = &r
@@ -924,7 +941,8 @@ impl Sup {
             // A turn that started as it stopped takes it up again (unless
             // what stopped it still stands: `check` says).
             self.waits.remove(&session);
-            if self.running.contains(&session) && !self.gone {
+            self.said_lease.remove(&session);
+            if (again || self.running.contains(&session)) && !self.gone {
                 self.start(session);
             }
             return;
@@ -974,12 +992,12 @@ impl Sup {
         }
         // Said once while the reason stands, not at every try.
         let line = format!("{why}; it is left to it, and tried again at a turn after {}", human(wait));
-        if self.said_of.get(&session) != Some(&line) {
+        if self.said_lease.get(&session) != Some(&line) {
             eprintln!("krowk: automatic sync skips session {session}: {line}");
-            if self.said_of.len() >= SAID_MOST {
-                self.said_of.clear();
+            if self.said_lease.len() >= SAID_MOST {
+                self.said_lease.clear();
             }
-            self.said_of.insert(session.clone(), line);
+            self.said_lease.insert(session.clone(), line);
         }
         self.backing.insert(session, Wait { at: Instant::now() + wait, lazy: true, quiet, wanted: false });
     }
@@ -1360,7 +1378,6 @@ mod tests {
         }
         assert!(unpaid(shown));
         assert!(paid_fix(shown).contains("upgrade this workspace to Pro"), "{}", paid_fix(shown));
-        assert!(unpaid("sync_requires_paid_plan"), "a write's bare code");
         assert!(!unpaid(&format!("{} (lease_held): device x holds it", host::NOT_GRANTED)));
         assert!(!unpaid(&format!("{} session x to device (sync_requires_paid_plan)", host::HANDED_OVER)), "a device's name says nothing");
     }
