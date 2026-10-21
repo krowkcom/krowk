@@ -32,6 +32,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   behaves as before and makes no sync network call. `krowk sync host`
   still syncs one session by hand, including one in an opted-out
   directory.
+- **A synced session tells your iPhone when it needs your approval or
+  finishes a turn.** The machine hosting the session asks the registry to
+  send your other devices a generic alert, once per approval and once per
+  finished turn, with fixed text that carries nothing from the session. A
+  turn that ended more than two minutes before it was synced rings
+  nobody. If the registry can't send pushes, the host says so once and
+  the session syncs as before. For now a turn you run at the host's own
+  terminal rings your phone too.
 - **The iPhone app signs in through the browser.** Its first screen says
   "Sign in to krowk" with one button, which opens krowk's approval page in
   a browser sheet that uses your existing krowk login, naming the phone by
