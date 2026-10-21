@@ -24,7 +24,6 @@ pub struct Account {
     /// This device, which a session's relay ticket is asked for.
     pub(crate) device: DeviceId,
     storage: Arc<dyn KeyStorage>,
-    device_id: String,
     workspace: String,
     workspace_name: String,
 }
@@ -50,7 +49,6 @@ impl Account {
             keystore,
             device: device_id,
             storage,
-            device_id: device_id.to_string(),
             workspace: creds.workspace.clone(),
             workspace_name: creds.workspace_name.clone(),
         }))
@@ -59,7 +57,7 @@ impl Account {
     /// This device's id, hex: what the device list and the approval of a
     /// new device name it by.
     pub fn device_id(&self) -> String {
-        self.device_id.clone()
+        self.device.to_string()
     }
 
     /// The workspace the key belongs to; empty when the registry named none.

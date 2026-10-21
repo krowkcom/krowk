@@ -232,7 +232,7 @@ impl OpenedSession {
     /// that this build cannot decode — a newer host's — is a `Decode`
     /// error, not dropped. Never waits on the network.
     pub fn events(&self) -> Result<Vec<LogEvent>, KrowkError> {
-        decode(&self.attached().events)
+        decode(&self.attached().events, 0)
     }
 
     /// Reads what the host wrote since the last read and returns only those
@@ -245,13 +245,29 @@ impl OpenedSession {
         let _turn = self.reading.lock().unwrap_or_else(PoisonError::into_inner);
         // Where the reading stopped, without the events read so far: the
         // read runs on this copy, and only a read that decodes is kept.
-        let mut read = {
-            let a = self.attached();
-            Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads: a.heads.clone() }
+        // `heads` is lent, not copied: only a `catch_up` touches it, and this
+        // one holds the turn. It goes back however the read ends, cut to
+        // what it held when nothing read is kept.
+        let (mut read, before, lent) = {
+            let mut a = self.attached();
+            let heads = std::mem::take(&mut a.heads);
+            let lent = heads.len();
+            (Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads }, a.events.len(), lent)
         };
-        let fresh = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None).map_err(internal)?;
-        let decoded = decode(&fresh)?;
+        let decoded = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None)
+            .map_err(internal)
+            .and_then(|fresh| decode(&fresh, before).map(|d| (fresh, d)));
         let mut a = self.attached();
+        let (fresh, decoded) = match decoded {
+            Ok(got) => got,
+            Err(e) => {
+                // `store::catch_up` adds the chunks it opened to `heads` even
+                // when it fails; they are read again next time.
+                read.heads.truncate(lent);
+                a.heads = read.heads;
+                return Err(e);
+            }
+        };
         a.events.extend(fresh);
         a.head = read.head;
         a.next = read.next;
@@ -298,18 +314,25 @@ impl OpenedSession {
     }
 
     /// The session as read so far; held while the caller reads it, so a
-    /// `catch_up` waits to commit what it read.
+    /// `catch_up` waits to commit what it read. Only to read: a `catch_up`
+    /// commits over the fields it read from, so whatever changes `Attached`
+    /// takes the `reading` turn first, as `catch_up` does.
     pub(crate) fn attached(&self) -> MutexGuard<'_, Attached> {
         self.attached.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
-/// The log's events, each decoded; the first that does not decode fails
-/// the lot, naming its place.
-fn decode(events: &[Value]) -> Result<Vec<LogEvent>, KrowkError> {
+/// The log's events, the first of them the `from`th read since the
+/// checkpoint, each decoded; the first that does not decode fails the lot,
+/// naming its place.
+fn decode(events: &[Value], from: usize) -> Result<Vec<LogEvent>, KrowkError> {
     events
         .iter()
         .enumerate()
-        .map(|(i, v)| LogEvent::deserialize(v).map_err(|e| KrowkError::Decode { detail: format!("event {i} of the session's log is not a log event this build understands: {e}") }))
+        .map(|(i, v)| {
+            LogEvent::deserialize(v).map_err(|e| KrowkError::Decode {
+                detail: format!("event {} read since the session's checkpoint is not a log event this build understands — the app may need updating: {e}", from + i),
+            })
+        })
         .collect()
 }

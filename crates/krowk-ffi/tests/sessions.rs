@@ -258,6 +258,15 @@ fn r_ios_3_open_session_reads_from_the_checkpoint_and_catch_up_returns_only_what
     assert_eq!(opened.head().unwrap().index, 3);
     assert!(opened.catch_up().unwrap().is_empty());
 
+    // Two at once take turns: each new event comes back once, in order.
+    host.write(&[event(SESSION, 5, "one"), event(SESSION, 6, "two")]);
+    let both: Vec<_> = std::thread::scope(|t| {
+        let racing: Vec<_> = (0..2).map(|_| t.spawn(|| runs(&opened.catch_up().unwrap()))).collect();
+        racing.into_iter().flat_map(|r| r.join().unwrap()).collect()
+    });
+    assert_eq!(both, ["one", "two"], "read once, between the two");
+    assert_eq!(runs(&opened.events().unwrap()), ["before", "after", "later", "latest", "one", "two"]);
+
     // Opened again, knowing the head it saw: the same log reads.
     let again = w.phone.open_session(SESSION.into(), opened.head(), None).unwrap();
     assert_eq!(again.head(), opened.head());
