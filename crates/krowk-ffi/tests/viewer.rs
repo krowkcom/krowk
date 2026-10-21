@@ -385,7 +385,7 @@ fn r_client_1_a_closed_connection_or_a_failed_join_asks_for_a_ticket_again() {
 
 /// R-CLIENT-1: what the host wrote at rest since the phone opened the
 /// session comes, at the welcome, from `read_chunks` and `chunks_read` as
-/// `CaughtUp`; a read handed in twice is dropped.
+/// `CaughtUp`.
 #[test]
 fn r_client_1_read_chunks_brings_what_was_written_since() {
     let mut p = Phone::new();
@@ -399,7 +399,7 @@ fn r_client_1_read_chunks_brings_what_was_written_since() {
     p.welcome_with(Welcome::default());
     assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
     let read = p.viewer.read_chunks();
-    let e = p.viewer.chunks_read(read.clone(), p.now);
+    let e = p.viewer.chunks_read(read, p.now);
     p.take(e);
     let shown = p.frame();
     let caught: Vec<String> = shown
@@ -413,7 +413,6 @@ fn r_client_1_read_chunks_brings_what_was_written_since() {
         .collect();
     assert_eq!(caught, ["since", "and since"], "{shown:?}");
     assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })), "the welcome acted on after the read");
-    assert!(p.viewer.chunks_read(read, p.now).is_empty(), "handed in twice: dropped");
 }
 
 /// R-CLIENT-1: the phone is relay only. A welcome naming direct paths
@@ -513,19 +512,21 @@ fn r_client_1_inputs_from_a_dropped_connection_are_ignored() {
 }
 
 /// R-CLIENT-1: a `ChunksRead` is answered only by the viewer that read
-/// it: another viewer's, handed in by mistake, is dropped and its own
-/// read still awaited.
+/// it: another viewer's, at the same `ReadChunks` of its own, handed in by
+/// mistake, is dropped and this viewer's own read still awaited.
 #[test]
 fn r_client_1_a_chunks_read_from_another_viewer_is_dropped() {
-    let mut p = Phone::new();
-    p.start();
-    p.shown.clear();
-    p.join(true, 0);
-    p.welcome_with(Welcome::default());
-    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
-
-    let other = Viewer::open(p.opened.clone(), 0).unwrap();
-    let theirs = other.read_chunks();
+    let welcomed = || {
+        let mut p = Phone::new();
+        p.start();
+        p.shown.clear();
+        p.join(true, 0);
+        p.welcome_with(Welcome::default());
+        assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+        p
+    };
+    let (mut p, other) = (welcomed(), welcomed());
+    let theirs = other.viewer.read_chunks();
     assert!(p.viewer.chunks_read(theirs, p.now).is_empty(), "another viewer's read");
     assert!(!p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })), "still waiting for its own");
     let mine = p.viewer.read_chunks();

@@ -34,9 +34,10 @@ use serde_json::Value;
 use crate::KrowkError;
 use crate::sessions::{HeadRecord, OpenedSession};
 
-/// How long the relay has to open the connection and then to send each
-/// message of the join, as the terminal waits (the harness's `JOIN_WAIT`):
-/// past it the join failed, and is tried again.
+/// How long the relay has from the dial to its first message, and then to
+/// send each next message of the join (the terminal's `JOIN_WAIT`, which
+/// counts the connect on its own): past it the join failed, and is tried
+/// again.
 const JOIN_WAIT_MS: u64 = 10_000;
 
 /// What Swift does next, in the order given.
@@ -53,9 +54,11 @@ pub enum Effect {
     /// `closed`, each with `connection`. The join's waits are the viewer's:
     /// keep calling `tick` at `next_wake_ms`.
     Dial { url: String, ticket: String, connection: u64 },
-    /// One binary message on the current connection.
+    /// One binary message on the current connection; with none open
+    /// (it closed while a `ReadChunks` was out), drop it.
     Send { bytes: Vec<u8> },
-    /// The text message `ping` on the current connection.
+    /// The text message `ping` on the current connection; with none open,
+    /// drop it.
     Ping,
     /// Drop the current connection; anything more from it is ignored, its
     /// close included. A `NeedTicket` follows.
