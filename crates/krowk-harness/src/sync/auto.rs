@@ -426,6 +426,9 @@ fn check(c: &Config, session: &str) -> Result<(PathBuf, Option<Duration>), No> {
     }
 }
 
+/// A session's checks, answered: its directory and idle window, or why not.
+type Checked = (String, Result<(PathBuf, Option<Duration>), No>);
+
 /// What opted a directory out, for the line a stopped bridge leaves.
 fn source(o: &OptOut) -> String {
     match o {
@@ -529,7 +532,7 @@ enum Has {
 struct Sup {
     c: Arc<Config>,
     has: HashMap<String, Has>,
-    checks: JoinSet<(String, Result<(PathBuf, Option<Duration>), No>)>,
+    checks: JoinSet<Checked>,
     bridges: JoinSet<Result<(), String>>,
     of_task: HashMap<tokio::task::Id, String>,
     /// Sessions backing off, and when each starts again.
@@ -704,7 +707,7 @@ impl Sup {
         });
     }
 
-    fn checked(&mut self, r: Result<(String, Result<(PathBuf, Option<Duration>), No>), JoinError>) {
+    fn checked(&mut self, r: Result<Checked, JoinError>) {
         // Only `abort_all` ends a check task without its answer, but a
         // session must never be left checking for good.
         let Ok((session, r)) = r else {
