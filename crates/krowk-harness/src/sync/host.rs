@@ -12,7 +12,11 @@
 //! whichever answers first decides (R-PERM-2). A request of a turn a
 //! viewer started that no viewer is left to answer is denied after
 //! `APPROVAL_WAIT`, so such a turn never waits on a device that never
-//! comes; a turn started at the host's own terminal waits for its person.
+//! comes; so is one of a turn started at the host's own terminal once no
+//! other answering client follows the session either (R-HOST-1): the
+//! bridge is an answering client, so the daemon's own denial of a request
+//! nobody is left to see never fires while it follows, and a terminal that
+//! closed with a question on screen must not leave its turn waiting on it.
 //! A viewer may also interrupt one of the session's own subagents, or
 //! answer its approval, and only those its log's `subagent.started` named
 //! whose own log on this machine names the session its parent (R-SUB-12,
@@ -57,8 +61,10 @@ pub fn renew_every(ttl: u64) -> Duration {
 }
 
 /// How long an approval of a turn a viewer started waits, with no viewer
-/// connected, before the bridge denies it. A turn started at the host's own
-/// terminal is never denied by the bridge: its person answers it.
+/// connected, before the bridge denies it. One of a turn started at the
+/// host's own terminal is denied as late only once no other answering
+/// client (the terminal) follows the session either: while one does, its
+/// person answers it.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// Batches kept for the relay while its link is down: past this the oldest
@@ -103,6 +109,9 @@ pub struct Options {
     /// The lease another host handed this one with the session (R-HAND-1):
     /// taken up as it is rather than acquired. None for a plain take-up.
     pub handed: Option<super::Handed>,
+    /// How long a request waits, with no viewer here, before the bridge
+    /// denies it (`APPROVAL_WAIT`; a test makes it short).
+    pub approval_wait: Duration,
 }
 
 /// How a bridge that handed its session over ends: what `krowk sync host`
@@ -423,10 +432,13 @@ fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool)
 /// turn is still the session's `current` one — a background agent asking
 /// in a later turn, begun at the host's terminal, is that turn's to wait
 /// on — once nobody has been here to answer for `APPROVAL_WAIT` (`alone`),
-/// and the request has waited as long (`waited`).
-fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
+/// and the request has waited as long (`waited`). With no client but the
+/// bridge answering the session's approvals (`!others`) — the terminal
+/// that started a turn went away — every such request is denied, whoever
+/// started its turn: nobody is left to answer it.
+fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, others: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
     let remote = |r: &ApprovalRequest| turns.contains(&r.turn_id) || children.get(&r.session_id).is_some_and(|t| turns.contains(t) && current == Some(t.as_str()));
-    approvals.values().filter(|(r, t)| alone && remote(r) && waited(*t)).map(|(r, _)| r).collect()
+    approvals.values().filter(|(r, t)| alone && waited(*t) && (remote(r) || !others)).map(|(r, _)| r).collect()
 }
 
 /// The child an event names as `session`'s own: its `subagent.started`,
@@ -686,7 +698,8 @@ struct Hosting {
     moved: Arc<Mutex<Option<String>>>,
     mode: PermissionMode,
     /// Turns a viewer's prompt started: the only ones whose approvals the
-    /// bridge ever denies by itself.
+    /// bridge denies by itself while another answering client follows the
+    /// session.
     remote_turns: Arc<Mutex<HashSet<String>>>,
     done: HashMap<String, Answer>,
     done_order: VecDeque<String>,
@@ -874,18 +887,37 @@ impl Hosting {
         Ok(())
     }
 
-    /// Only a request of a turn a viewer started, or of a child it
-    /// started, and only once no viewer has been here to answer it for the
-    /// whole wait: the person at the host's own terminal is never overruled.
+    /// Only once no viewer has been here to answer for the whole wait, and
+    /// the request has waited as long: a request of a turn a viewer
+    /// started, or of a child it started; or any, once no client but the
+    /// bridge answers the session's approvals. The person at the host's own
+    /// terminal is never overruled while it follows the session.
     async fn deny_late(&mut self) {
+        let wait = self.o.approval_wait;
+        let alone = self.alone_since.is_some_and(|a| a.elapsed() > wait);
+        // The daemon is asked only when there is something to deny, never
+        // on every sweep.
+        if !alone || !self.approvals.values().any(|(_, t)| t.elapsed() > wait) {
+            return;
+        }
+        let others = self.others().await;
         let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let alone = self.alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT);
-        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, |t| t.elapsed() > APPROVAL_WAIT).into_iter().cloned().collect();
+        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, others, |t| t.elapsed() > wait).into_iter().cloned().collect();
         for r in late {
             self.approvals.remove(&r.request_id);
             let (tx, _) = mpsc::channel(1);
             let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
         }
+    }
+
+    /// Whether a client other than the bridge answers approvals on the
+    /// session, by the daemon's word (`HostSession::answering`, the bridge
+    /// one of them). A status that fails, a session not listed, or a count
+    /// that leaves out the bridge itself — a daemon that does not count —
+    /// is taken as yes: the bridge never denies on a guess.
+    async fn others(&self) -> bool {
+        let Ok(status) = self.daemon.status().await else { return true };
+        status.sessions.iter().find(|s| s.session_id == self.o.session).is_none_or(|s| s.answering != 1)
     }
 
     /// A beat far later than `PING`: this process did not run in
@@ -1389,7 +1421,8 @@ mod tests {
         let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("own", "s", "remote"), req("kid", "k1", "k1-turn"), req("local-kid", "k2", "k2-turn"), req("local", "s", "terminal")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
         let turns = HashSet::from(["remote".to_string()]);
         let children = HashMap::from([("k1".to_string(), "remote".to_string()), ("k2".to_string(), "terminal".to_string())]);
-        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        // The terminal still follows the session (`others`).
+        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, true, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(Some("remote"), true, true), ["kid", "own"], "the viewer's turn's, and its child's while that turn runs");
         assert!(ids(Some("remote"), false, true).is_empty() && ids(Some("remote"), true, false).is_empty());
         // A background agent of the viewer's turn asking in a later turn
@@ -1397,6 +1430,26 @@ mod tests {
         // is not overruled.
         assert_eq!(ids(Some("terminal"), true, true), ["own"]);
         assert_eq!(ids(None, true, true), ["own"]);
+    }
+
+    /// R-HOST-1: a terminal that closed with a question on screen leaves
+    /// the bridge the session's one answering client. With no other
+    /// (`!others`), a request of a turn begun at the terminal is denied
+    /// once nobody has been here for the wait and it has waited as long —
+    /// never while another answering client follows, nor while a viewer
+    /// is here, nor before it has waited.
+    #[test]
+    fn r_host_1_a_terminal_turns_request_is_denied_late_once_no_other_client_answers() {
+        let req = |id: &str, session: &str, turn: &str| ApprovalRequest { session_id: session.into(), turn_id: turn.into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
+        let at = Instant::now();
+        let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("local", "s", "terminal"), req("local-kid", "k2", "k2-turn"), req("own", "s", "remote")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
+        let turns = HashSet::from(["remote".to_string()]);
+        let children = HashMap::from([("k2".to_string(), "terminal".to_string())]);
+        let ids = |alone: bool, others: bool, waited: bool| late(&approvals, &turns, (&children, Some("terminal")), alone, others, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(true, false, true), ["local", "local-kid", "own"], "nobody but the bridge answers: every waiting request");
+        assert_eq!(ids(true, true, true), ["own"], "the terminal still follows: only the viewer's turn's");
+        assert!(ids(false, false, true).is_empty(), "a viewer is here to answer");
+        assert!(ids(true, false, false).is_empty(), "not waited yet");
     }
 
     /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
@@ -1505,7 +1558,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {
