@@ -110,6 +110,10 @@ bench: ## Hold the release builds to the performance and size budgets
 	# R-LAG-2/3/9's load with the flood unpaced, which only an optimized
 	# daemon is held to (tests/daemon_ws.rs says why).
 	cargo test --release --locked -p krowk-harness --test daemon_ws r_lag_2_r_lag_3
+	# R-LAG-9 with fifty sessions bridged by the automatic sync's supervisor:
+	# the daemon's thread on time and the lease calls under the registry's
+	# ceilings, over 75 seconds (tests/sync_attach.rs).
+	cargo test --release --locked -p krowk-harness --test sync_attach r_lag_9_fifty_auto_synced_sessions
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema
