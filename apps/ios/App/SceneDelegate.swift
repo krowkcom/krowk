@@ -79,8 +79,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// The screen the keys call for (R-IOS-9, R-E2E-3): onboarding with no
-    /// krowk key, pairing with a key but no user keys, and home once
-    /// paired, never onboarding.
+    /// krowk key, pairing with a key but no user keys, and the session list
+    /// once paired, never onboarding.
     private func screen() throws -> UIViewController {
         // protocolVersion() crosses into the Rust core (krowk-ffi).
         let home = { HomeViewController(protocolVersion: protocolVersion()) }
@@ -89,8 +89,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         switch try Launch.read(api: api, storage: keys) {
         case .signedOut: return signIn(api: api, keys: keys)
         case .signedIn(let workspace): return pairing(api: api, keys: keys, workspace: workspace)
-        case .paired: return home()
+        case .paired: return sessions(api: api, keys: keys)
         }
+    }
+
+    /// "Sessions" (R-IOS-3, R-IOS-7): the paired phone's first screen, the
+    /// person's synced sessions listed off the main thread.
+    private func sessions(api: String, keys: KeychainKeyStorage) -> UIViewController {
+        let log = Logger(subsystem: "com.krowk.app", category: "sessions")
+        let model = SessionListModel(
+            source: RegistrySessions(api: api, storage: keys),
+            // A failure's kind only: never a session's id, title or cwd.
+            log: { log.error("\($0, privacy: .public)") }
+        )
+        return SessionListViewController(model: model)
     }
 
     private func signIn(api: String, keys: KeychainKeyStorage) -> UIViewController {
@@ -111,8 +123,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// Pairing (R-E2E-3): join the person's devices with the code their
-    /// laptop's `krowk devices add` shows, scanned or typed. Home once
-    /// paired, the session list's place (ticket 87).
+    /// laptop's `krowk devices add` shows, scanned or typed. The session
+    /// list once paired.
     private func pairing(api: String, keys: KeychainKeyStorage, workspace: SignedInWorkspace) -> UIViewController {
         let log = Logger(subsystem: "com.krowk.app", category: "pairing")
         let name = SignInRules.deviceName(Self.deviceName)
@@ -124,7 +136,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // The core's words for a failure; never a code, which the
             // model never hands to the log.
             log: { log.error("\($0, privacy: .public)") },
-            onPaired: { [weak self] in self?.show(HomeViewController(protocolVersion: protocolVersion())) }
+            onPaired: { [weak self] in
+                guard let self else { return }
+                self.show(self.sessions(api: api, keys: keys))
+            }
         )
         return PairingScreens.pairing(model, workspace: workspace)
     }
