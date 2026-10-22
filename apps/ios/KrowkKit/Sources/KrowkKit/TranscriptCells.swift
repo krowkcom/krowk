@@ -90,8 +90,8 @@ final class TranscriptTextView: NSObject, UITextViewDelegate {
         view.setContentCompressionResistancePriority(.required, for: .vertical)
     }
 
-    /// The text storage, which ticket 89 appends a streaming item's text to
-    /// in place rather than rebuilding it.
+    /// The text storage, which a streaming item's new text is appended to
+    /// in place rather than rebuilt (`append`).
     var storage: NSTextStorage { view.textStorage }
 
     var attributedText: NSAttributedString? {
@@ -99,9 +99,13 @@ final class TranscriptTextView: NSObject, UITextViewDelegate {
         set { view.attributedText = newValue }
     }
 
-    /// `more`, drawn safe (`SafeText.attributed`), added at the end in place.
+    /// `more`, already cleaned, added at the end in place, in one editing
+    /// transaction: TextKit 2 lays out only what changed, and
+    /// `attributedText` is never set again.
     func append(_ more: NSAttributedString) {
+        storage.beginEditing()
         storage.append(more)
+        storage.endEditing()
     }
 
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
@@ -140,6 +144,11 @@ final class TranscriptTextCell: TranscriptCell {
     /// view's height follows the width it is given, never a stale one.
     private var textWidth: NSLayoutConstraint!
     private var user = false
+    /// While its item streams: which item's text is drawn, and how many of
+    /// its UTF-8 bytes. A frame's new text is the rest, appended.
+    private(set) var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)?
+    /// Appends made while streaming, for the tests: text grows in place.
+    private(set) var appends = 0
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -185,14 +194,58 @@ final class TranscriptTextCell: TranscriptCell {
         accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
         textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
         let font = TranscriptFonts.body
+        guard state.done else { return stream(state, font: font) }
         let text = state.drawing("text", source: state.text, font: font) {
             SafeText.capped(state.text, font: font)
         }
         // Unchanged text keeps its layout.
         guard shown !== text else { return }
+        // Whole: drawn once more, with its links (a URL may have been cut
+        // between two deltas, so none is tappable while it streams).
+        streamed = nil
         shown = text
         textView.attributedText = text
         sizeText(toFit: bounds.width)
+    }
+
+    /// An item under way (R-LAG-7): the text it gained since this cell
+    /// last drew it, cleaned (`SafeText.clean`, scalar by scalar, so a
+    /// control character is stripped wherever a delta boundary falls) and
+    /// appended to the text storage; the cell's height is invalidated, and
+    /// the list re-lays out this cell alone. The first sight of it draws
+    /// what it has whole, once. At most 64 KiB is laid out while it
+    /// streams; its completion draws the rest's count.
+    private func stream(_ state: ItemState, font: UIFont) {
+        let id = ObjectIdentifier(state)
+        let utf8 = state.text.utf8
+        let total = utf8.count
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: UIColor.label]
+        // The same item, in the same font (Dynamic Type redraws it whole).
+        if let streamed, streamed.item == id, streamed.font == font, streamed.bytes <= total {
+            let limit = min(total, SafeText.textLimit)
+            guard streamed.bytes < limit else { return }
+            let from = utf8.index(utf8.startIndex, offsetBy: streamed.bytes)
+            var end = utf8.index(utf8.startIndex, offsetBy: limit)
+            // Off a continuation byte, to the start of its scalar.
+            while end > from, end != utf8.endIndex, utf8[end] & 0xC0 == 0x80 {
+                end = utf8.index(before: end)
+            }
+            guard end > from else { return }
+            let more = SafeText.clean(String(decoding: utf8[from..<end], as: UTF8.self))
+            self.streamed = (id, utf8.distance(from: utf8.startIndex, to: end), font)
+            if !more.isEmpty {
+                textView.append(NSAttributedString(string: more, attributes: attributes))
+                appends += 1
+            }
+        } else {
+            let head = SafeText.truncated(state.text, limit: SafeText.textLimit).shown
+            textView.attributedText = NSAttributedString(string: SafeText.clean(head), attributes: attributes)
+            streamed = (id, head.utf8.count, font)
+        }
+        shown = nil
+        if user { sizeText(toFit: bounds.width) }
+        textView.view.invalidateIntrinsicContentSize()
+        invalidateIntrinsicContentSize()
     }
 
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
@@ -227,6 +280,7 @@ final class TranscriptTextCell: TranscriptCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         shown = nil
+        streamed = nil
     }
 }
 
@@ -316,6 +370,12 @@ final class TranscriptToolCell: TranscriptCell {
                 result.textColor = state.isError ? .systemRed : .secondaryLabel
                 result.isHidden = false
                 what = "\(state.toolLine). \(state.isError ? "Failed" : "Done"): \(first)"
+            } else if state.running {
+                // Started live, its result still to come.
+                result.text = "running…"
+                result.textColor = .secondaryLabel
+                result.isHidden = false
+                what = "\(state.toolLine). Running"
             } else {
                 result.text = nil
                 result.isHidden = true
@@ -431,7 +491,8 @@ final class TranscriptMarkCell: TranscriptCell {
     }
 
     override func render(_ state: ItemState) {
-        accessibilityIdentifier = state.id.hasPrefix("turn:") ? "transcript-turn-end" : "transcript-model-switch"
+        accessibilityIdentifier = state.id.hasPrefix("turn:") ? "transcript-turn-end"
+            : state.id.hasPrefix("notice:") ? "transcript-notice" : "transcript-model-switch"
         label.text = SafeText.line(state.text[...], limit: 500)
         label.textColor = state.alarming ? .systemOrange : .secondaryLabel
         label.accessibilityIdentifier = "transcript-mark"

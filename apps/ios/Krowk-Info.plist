@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keys Xcode has no INFOPLIST_KEY_* setting for, merged into the Info.plist
+  it generates from project.yml (INFOPLIST_FILE). xtool-Info.plist has them
+  too: keep the two in step.
+-->
+<plist version="1.0">
+<dict>
+	<!-- ProMotion: lets the transcript's display link run above 60 Hz on an
+	     iPhone (R-LAG-7, R-PERF-4; ticket 89). -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
+</dict>
+</plist>

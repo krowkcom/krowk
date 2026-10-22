@@ -2,9 +2,9 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <!--
   Only for xtool (xtool.yml), which merges these keys over its own defaults.
-  Xcode generates its Info.plist from project.yml's INFOPLIST_KEY_* settings;
-  keep the two in step. No ITSAppUsesNonExemptEncryption: that answer is the
-  person's (README.md → Export compliance).
+  Xcode generates its Info.plist from project.yml's INFOPLIST_KEY_* settings
+  and Krowk-Info.plist; keep them in step. No ITSAppUsesNonExemptEncryption:
+  that answer is the person's (README.md → Export compliance).
 -->
 <plist version="1.0">
 <dict>
@@ -32,6 +32,9 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<!-- ProMotion: the transcript's display link may run above 60 Hz. -->
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>krowk uses the camera to scan the pairing code another device shows.</string>
 </dict>

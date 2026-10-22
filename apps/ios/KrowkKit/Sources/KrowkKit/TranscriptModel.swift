@@ -37,8 +37,11 @@ public final class ItemState {
     /// A mark that says a turn ended other than completed.
     public var alarming = false
     /// The item is whole. Always so from the log at rest, which holds only
-    /// completed items; ticket 89's streaming items start not done.
+    /// completed items; an item started live is not done until its logged
+    /// completion (or its turn's end) comes, and its text grows meanwhile.
     public var done: Bool
+    /// A tool call started live whose result hasn't come: "running…".
+    public var running = false
     /// A reasoning or tool row, expanded by a tap.
     public var expanded = false
 
@@ -61,7 +64,7 @@ public final class ItemState {
 
     /// Reads every property a cell draws, so one observation covers them.
     func touch() {
-        _ = (text, toolName, toolInput, output, isError, alarming, done, expanded)
+        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded)
     }
 
     /// `source` drawn as `role` at `size`, from the last drawing if neither
@@ -175,12 +178,15 @@ public struct TranscriptEvent: Equatable, Sendable {
     public let parentID: String?
     public let sessionID: String
     public let change: TranscriptChange?
+    /// When the host logged it (its clock, ms since 1970), if known.
+    public let timeMs: Int64?
 
-    public init(id: String, parentID: String? = nil, sessionID: String, change: TranscriptChange?) {
+    public init(id: String, parentID: String? = nil, sessionID: String, change: TranscriptChange?, timeMs: Int64? = nil) {
         self.id = id
         self.parentID = parentID
         self.sessionID = sessionID
         self.change = change
+        self.timeMs = timeMs
     }
 }
 
@@ -192,6 +198,45 @@ public enum TranscriptPlacement: Sendable {
     /// applied: a catch-up, which brings events a gap left out after later
     /// ones were drawn. At the end when it wasn't.
     case afterParent
+}
+
+/// What an item started live is, before any of it came (the generated
+/// `ItemKind`, as KrowkAccount maps it).
+public enum LiveItemKind: Equatable, Sendable {
+    case user
+    case assistant
+    case reasoning
+    case toolCall(callID: String, name: String)
+    case toolResult(callID: String)
+}
+
+/// One of the session's updates as the transcript takes it (ticket 89):
+/// what KrowkAccount maps the viewer's `Update`s to, a display frame's worth
+/// at a time. Everything else the viewer says (the host, a gap, a note)
+/// is the status bar's, and approvals are ticket 91's.
+public enum TranscriptUpdate: Equatable, Sendable {
+    /// The session as read at rest.
+    case attached([TranscriptEvent])
+    /// Logged lines, in order: a run of them, applied at once.
+    case logged([TranscriptEvent])
+    /// What a gap left out, from the host: placed after its parents.
+    case caughtUp([TranscriptEvent])
+    /// `item.started`: an item under way.
+    case started(session: String, turn: String, item: String, kind: LiveItemKind)
+    /// `item.delta` with text: more of an answer's or reasoning's text.
+    case delta(session: String, item: String, text: String)
+    /// `notice`: a one-line note.
+    case notice(session: String, text: String)
+}
+
+/// What a frame's apply did that the screen draws at once, inside the
+/// frame, rather than on the observation's next turn.
+public struct FrameApplied {
+    /// Items whose text grew by deltas, each once, in the order they grew.
+    public var grown: [ItemState] = []
+    /// Turn ends a logged line brought (not the session read at rest, nor
+    /// a catch-up): what VoiceOver is told.
+    public var ended: [ItemState] = []
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -226,6 +271,42 @@ public final class TranscriptModel {
     @ObservationIgnored private var adopted: [(orphan: String, call: String)] = []
     /// How the events `apply` is taking are placed.
     @ObservationIgnored private var placing = TranscriptPlacement.end
+    /// The rows as the transaction under way leaves them: `ids` is set
+    /// once, at its end, and only if they changed.
+    @ObservationIgnored private var working: [String]?
+    /// How many transactions changed (or might have changed) the model:
+    /// one per display frame that brought anything.
+    @ObservationIgnored public private(set) var transactions = 0
+
+    /// Items started live and not yet whole, by row id, and the turn of
+    /// each: their text grows by deltas until their logged completion
+    /// replaces it (if it differs) or their turn ends.
+    @ObservationIgnored private var streaming: [String: (state: ItemState, turn: String)] = [:]
+    /// Of those, prompts, answers and reasoning with no visible text yet:
+    /// no row until some comes, so no empty row shows.
+    @ObservationIgnored private var unshown: Set<String> = []
+    /// Tool calls started live whose result hasn't come, and their turn.
+    @ObservationIgnored private var running: [String: (state: ItemState, turn: String)] = [:]
+    /// Notes drawn so far, for their row ids.
+    @ObservationIgnored private var notices = 0
+    /// Turn ends a logged line brought in the frame being applied.
+    @ObservationIgnored private var ended: [ItemState] = []
+    /// What placing is applying: the session read at rest, a catch-up, or
+    /// a live line.
+    @ObservationIgnored private var live = false
+    /// When the host logged the newest live line applied (its clock): how
+    /// far behind the host the screen is, as LiveFollowTests measure it.
+    @ObservationIgnored public private(set) var newestLiveMs: Int64?
+
+    /// At most this much of an item's streamed text is kept while it
+    /// streams: more than a cell lays out (64 KiB), and its logged
+    /// completion brings the whole text anyway. A host that never ends an
+    /// item can't grow the phone's memory without bound.
+    public nonisolated static let streamLimit = 4 * SafeText.textLimit
+
+    /// An item is under way: the display link keeps running a while longer
+    /// when nothing comes, rather than pause.
+    public var isStreaming: Bool { !streaming.isEmpty }
 
     public init(sessionID: String) {
         self.sessionID = sessionID
@@ -237,43 +318,196 @@ public final class TranscriptModel {
 
     /// The session as read at rest: its events applied, and `attached` set.
     public func attach(_ events: [TranscriptEvent]) {
-        apply(events)
-        // A result read at rest without its call: its call is before the
-        // checkpoint, and never comes. A later call reusing the id is
-        // another call.
-        orphans = [:]
+        transact {
+            place(events, placement: .end)
+            // A result read at rest without its call: its call is before the
+            // checkpoint, and never comes. A later call reusing the id is
+            // another call.
+            orphans = [:]
+        }
         if !attached { attached = true }
     }
 
     /// `events`, in order, each at most once, their rows placed by
     /// `placement`. `ids` changes once, however many rows they add.
     public func apply(_ events: [TranscriptEvent], placement: TranscriptPlacement = .end) {
+        transact { place(events, placement: placement) }
+    }
+
+    /// One display frame's updates, in order, as one transaction (R-LAG-7):
+    /// `ids` changes at most once, and only when a row is added (a new
+    /// id) or taken in; a delta only grows its item's text, which its cell
+    /// observes, so no snapshot is applied for it. Deltas in a row for the
+    /// same item are joined first, so 200 of them are one append.
+    @discardableResult
+    public func apply(frame updates: [TranscriptUpdate]) -> FrameApplied {
+        var applied = FrameApplied()
+        transact {
+            var deltas = Deltas()
+            for update in updates {
+                if case .delta(let session, let item, let text) = update {
+                    if session == sessionID { deltas.add(text, to: "item:\(item)") }
+                    continue
+                }
+                flush(&deltas, into: &applied)
+                switch update {
+                case .attached(let events):
+                    place(events, placement: .end)
+                    orphans = [:]
+                case .logged(let events):
+                    if let newest = events.compactMap(\.timeMs).max() { newestLiveMs = max(newestLiveMs ?? newest, newest) }
+                    live = true
+                    place(events, placement: .end)
+                    live = false
+                case .caughtUp(let events):
+                    place(events, placement: .afterParent)
+                case .started(let session, let turn, let item, let kind):
+                    if session == sessionID { start("item:\(item)", turn: turn, kind: kind) }
+                case .notice(let session, let text):
+                    guard session == sessionID else { continue }
+                    notices += 1
+                    let state = ItemState(id: "notice:\(notices)", kind: .mark, text: text)
+                    items[state.id] = state
+                    working!.append(state.id)
+                case .delta:
+                    break
+                }
+            }
+            flush(&deltas, into: &applied)
+        }
+        if updates.contains(where: { if case .attached = $0 { true } else { false } }), !attached { attached = true }
+        applied.ended = ended
+        ended = []
+        return applied
+    }
+
+    /// Text deltas waiting to be appended, joined per item, in order.
+    private struct Deltas {
+        var order: [String] = []
+        var text: [String: String] = [:]
+        mutating func add(_ more: String, to id: String) {
+            if text[id] == nil { order.append(id) }
+            text[id, default: ""] += more
+        }
+    }
+
+    private func flush(_ deltas: inout Deltas, into applied: inout FrameApplied) {
+        for id in deltas.order {
+            if let state = grow(id, by: deltas.text[id] ?? ""), !applied.grown.contains(where: { $0 === state }) {
+                applied.grown.append(state)
+            }
+        }
+        deltas = Deltas()
+    }
+
+    /// `item.started`: its state, under way. A tool call gets its row at
+    /// once ("running…"); a prompt, an answer or reasoning when it has
+    /// visible text. An item already here (its completion came first, by a
+    /// catch-up) is left as it is; a tool result waits for its logged line,
+    /// which goes under its call.
+    private func start(_ id: String, turn: String, kind: LiveItemKind) {
+        guard items[id] == nil, streaming[id] == nil else { return }
+        let state: ItemState
+        switch kind {
+        case .user: state = ItemState(id: id, kind: .user, done: false)
+        case .assistant: state = ItemState(id: id, kind: .assistant, done: false)
+        case .reasoning: state = ItemState(id: id, kind: .reasoning, done: false)
+        case .toolCall(let callID, let name):
+            state = ItemState(id: id, kind: .tool, toolName: name, done: false)
+            state.running = true
+            items[id] = state
+            working!.append(id)
+            calls[callID] = state
+            streaming[id] = (state, turn)
+            return
+        case .toolResult:
+            return
+        }
+        streaming[id] = (state, turn)
+        unshown.insert(id)
+    }
+
+    /// `text` appended to item `id`, if it is under way: the item, if its
+    /// text changed. Its row appears with its first visible text.
+    private func grow(_ id: String, by more: String) -> ItemState? {
+        guard let state = streaming[id]?.state, state.kind != .tool, !more.isEmpty else { return nil }
+        let room = Self.streamLimit - state.text.utf8.count
+        guard room > 0 else { return nil }
+        state.text += more.utf8.count <= room ? more : SafeText.truncated(more, limit: room).shown
+        if unshown.contains(id), state.text.contains(where: { !$0.isWhitespace }) {
+            unshown.remove(id)
+            items[id] = state
+            working!.append(id)
+        }
+        return state
+    }
+
+    /// An item's logged completion, if it was started live: `.notLive`
+    /// when it wasn't; else its text set (only if it differs from what
+    /// streamed), the item whole, and the row it adds if it had none.
+    private enum Settled { case notLive, settled(String?) }
+
+    private func settle(_ id: String, text: String) -> Settled {
+        guard let state = streaming.removeValue(forKey: id)?.state else { return .notLive }
+        if state.text != text { state.text = text }
+        state.done = true
+        guard unshown.remove(id) != nil else { return .settled(nil) }
+        // Never shown: a row now, unless there's nothing to show (an empty
+        // answer beside a tool call, withheld reasoning).
+        guard state.kind == .user || text.contains(where: { !$0.isWhitespace }) else { return .settled(nil) }
+        items[id] = state
+        return .settled(id)
+    }
+
+    /// Turn `turn` ended: whatever of it was still under way is whole as
+    /// it stands (a gap can leave an item without its completion).
+    private func endLive(turn: String) {
+        for (id, entry) in streaming where entry.turn == turn {
+            entry.state.done = true
+            entry.state.running = false
+            streaming[id] = nil
+            unshown.remove(id)
+        }
+        for (id, entry) in running where entry.turn == turn {
+            entry.state.running = false
+            running[id] = nil
+        }
+    }
+
+    /// Runs `body` as one transaction: the rows it leaves set once.
+    private func transact(_ body: () -> Void) {
+        guard working == nil else { return body() }
+        working = ids
+        body()
+        let rows = working ?? ids
+        working = nil
+        transactions += 1
+        // Unchanged rows share `ids`' storage: this is a pointer check.
+        guard rows != ids else { return }
+        assert(Set(rows).count == rows.count, "a transcript row twice")
+        ids = rows
+    }
+
+    private func place(_ events: [TranscriptEvent], placement: TranscriptPlacement) {
         placing = placement
-        var rows = ids
-        var changed = false
         for event in events where event.sessionID == sessionID {
             guard seen.insert(event.id).inserted else { continue }
-            var at = rows.endIndex
-            if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != rows.last {
-                at = above.isEmpty ? rows.startIndex : (rows.firstIndex(of: above).map { $0 + 1 } ?? rows.endIndex)
+            var at = working!.endIndex
+            if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != working!.last {
+                at = above.isEmpty ? working!.startIndex : (working!.firstIndex(of: above).map { $0 + 1 } ?? working!.endIndex)
             }
             if let change = event.change, let row = take(change, event: event.id) {
-                rows.insert(row, at: at)
+                working!.insert(row, at: at)
                 anchors[event.id] = row
-                changed = true
             } else {
-                anchors[event.id] = at == rows.startIndex ? "" : rows[at - 1]
+                anchors[event.id] = at == working!.startIndex ? "" : working![at - 1]
             }
             for (orphan, call) in adopted {
-                rows.removeAll { $0 == orphan }
+                working!.removeAll { $0 == orphan }
                 for (event, row) in anchors where row == orphan { anchors[event] = call }
-                changed = true
             }
             adopted = []
         }
-        guard changed else { return }
-        assert(Set(rows).count == rows.count, "a transcript row twice")
-        ids = rows
     }
 
     /// `change` applied: the id of the row it adds, if it adds one.
@@ -284,16 +518,30 @@ public final class TranscriptModel {
             // names it by; one the text doesn't name is added.
             let missing = images.filter { !text.contains("[Image #\($0)]") }.map { "[Image #\($0)]" }
             let shown = missing.isEmpty ? text : ([text] + missing).filter { !$0.isEmpty }.joined(separator: " ")
+            if case .settled(let row) = settle("item:\(item)", text: shown) { return row }
             return add(ItemState(id: "item:\(item)", kind: .user, text: shown))
         case .assistantText(let item, let text):
+            if case .settled(let row) = settle("item:\(item)", text: text) { return row }
             // An empty answer beside a tool call: no row.
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return add(ItemState(id: "item:\(item)", kind: .assistant, text: text))
         case .reasoning(let item, let text):
+            if case .settled(let row) = settle("item:\(item)", text: text) { return row }
             // Withheld by the provider: no row.
             guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return add(ItemState(id: "item:\(item)", kind: .reasoning, text: text))
         case .toolCall(let item, let callID, let name, let input):
+            // Started live: its row is there, running; now it has its
+            // input, and runs until its result.
+            if let entry = streaming.removeValue(forKey: "item:\(item)") {
+                let live = entry.state
+                live.toolName = name
+                live.toolInput = input
+                live.done = true
+                calls[callID] = live
+                if live.output == nil { running[live.id] = (live, entry.turn) } else { live.running = false }
+                return nil
+            }
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
             calls[callID] = state
@@ -310,6 +558,8 @@ public final class TranscriptModel {
             if let call = calls[callID], call.output == nil {
                 call.output = output
                 call.isError = isError
+                call.running = false
+                running[call.id] = nil
                 return nil
             }
             // Its call isn't here (yet), or has its result already: the
@@ -321,9 +571,12 @@ public final class TranscriptModel {
             if calls[callID] == nil { orphans[callID] = state }
             return row
         case .turnCompleted(let turn, let end):
+            endLive(turn: turn)
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)
             state.alarming = end != .completed
-            return add(state)
+            guard let row = add(state) else { return nil }
+            if live { ended.append(state) }
+            return row
         case .modelSwitched(let model):
             return add(ItemState(id: "switch:\(event)", kind: .mark, text: "Now on \(model)"))
         }

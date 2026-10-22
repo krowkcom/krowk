@@ -14,13 +14,18 @@ import UIKit
 /// opens only from a sheet naming its whole URL.
 ///
 /// The session is followed while the screen is in the navigation stack,
-/// and stopped as it leaves. What it brings is drained once per display
-/// frame into the model, on the main thread; the blocking reads behind it
-/// run on threads of their own (`LiveSession`).
+/// and stopped as it leaves. What it brings is applied once per display
+/// frame (`FrameDriver`, R-LAG-7): a `CADisplayLink` at up to 120 Hz,
+/// paused while the session is idle. A streaming answer grows in its own
+/// cell, which appends just the new text to its TextKit 2 storage and
+/// re-lays out alone; the snapshot changes only when a row is added. At
+/// the bottom, the list follows what comes; scrolled up, it stays put and
+/// a "↓ New" pill jumps back. The blocking reads behind it run on threads
+/// of their own (`LiveSession`).
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate {
     let row: SessionRow
     public let model: TranscriptModel
-    let statusBar = RelayStatusBar()
+    public let statusBar = RelayStatusBar()
     /// The session followed live, if the app gave one.
     let session: (any LiveSession)?
     /// Opens a URL the person confirmed: `UIApplication.shared.open`.
@@ -31,8 +36,19 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     let spinner = UIActivityIndicatorView(style: .medium)
     let emptyLabel = UILabel()
     private var frames: CADisplayLink?
-    /// Updates taken from the session, frame by frame.
-    private(set) var taken = 0
+    /// Applies what the session brings, one batch per display frame.
+    public let driver: FrameDriver?
+    /// Snapshots applied to the list: only when rows are added or go, or
+    /// rows are drawn again (Dynamic Type, an expanded row).
+    public private(set) var snapshotApplies = 0
+    /// The list follows what comes: it was at the bottom (within 8 pt)
+    /// and the person hasn't scrolled away since.
+    public private(set) var following = true
+    /// "↓ New": shown when something came while scrolled up; a tap jumps
+    /// back to the bottom, and following again.
+    public let newPill = UIButton(configuration: .filled())
+    /// The rows when the last frame applied: whether a frame added any.
+    private var rowsSeen = 0
     /// Rows have been drawn: no spinner shows again.
     public private(set) var drewRows = false
     /// The rows as last applied.
@@ -43,7 +59,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.row = row
         self.session = session
-        self.model = model ?? TranscriptModel(sessionID: row.id)
+        let model = model ?? TranscriptModel(sessionID: row.id)
+        self.model = model
+        self.driver = session.map { FrameDriver(session: $0, model: model) }
         self.opener = open ?? { UIApplication.shared.open($0) }
         super.init(nibName: nil, bundle: nil)
         title = row.title
@@ -69,7 +87,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             list.backgroundColor = .clear
             return NSCollectionLayoutSection.list(using: list, layoutEnvironment: environment)
         }
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        let list = TranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
+        list.afterLayout = { [weak self] in self?.pin() }
+        collectionView = list
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.selfSizingInvalidation = .enabledIncludingConstraints
         collectionView.accessibilityIdentifier = "transcript"
@@ -152,6 +172,23 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        var pill = UIButton.Configuration.filled()
+        pill.title = "↓ New"
+        pill.cornerStyle = .capsule
+        pill.buttonSize = .small
+        newPill.configuration = pill
+        newPill.accessibilityIdentifier = "transcript-new"
+        newPill.accessibilityLabel = "New below"
+        newPill.accessibilityHint = "Scrolls to the end, and follows it again"
+        newPill.isHidden = true
+        newPill.translatesAutoresizingMaskIntoConstraints = false
+        newPill.addAction(UIAction { [weak self] _ in self?.jumpToEnd() }, for: .primaryActionTriggered)
+        view.addSubview(newPill)
+        NSLayoutConstraint.activate([
+            newPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            newPill.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
+        ])
+
         // Dynamic Type: the drawn text's fonts are fixed in its attributes,
         // so every row is drawn again at the new size.
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitLegibilityWeight.self]) { (self: Self, _: UITraitCollection) in
@@ -160,18 +197,25 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             var snapshot = self.dataSource.snapshot()
             snapshot.reconfigureItems(snapshot.itemIdentifiers.filter { self.model.item($0) != nil })
             self.dataSource.apply(snapshot, animatingDifferences: false)
+            self.snapshotApplies += 1
         }
 
         observeModel()
+        driver?.applied = { [weak self] done in self?.drawFrame(done) }
         session?.follow { [weak self] status in self?.relay(status) }
+        session?.onUpdates { [weak self] in self?.driver?.wake() }
     }
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        guard session != nil, frames == nil else { return }
+        guard let driver, frames == nil else { return }
         let link = CADisplayLink(target: TranscriptFrameTarget(self), selector: #selector(TranscriptFrameTarget.frame(_:)))
+        // ProMotion: up to 120 Hz, never under 30 (R-PERF-4's 60 fps on
+        // other iPhones, which can't go above it).
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         frames = link
+        driver.ticker = DisplayLinkTicker(link)
     }
 
     /// Covered, the screen keeps draining what the session brings, so
@@ -181,14 +225,90 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
             frames?.invalidate()
             frames = nil
+            driver?.ticker = nil
             session?.stop()
         }
     }
 
     /// One display frame: what the session brought, into the model.
-    func frame() {
-        guard let session else { return }
-        taken += session.takeFrame(into: model)
+    func frame(at now: TimeInterval = CACurrentMediaTime()) {
+        driver?.tick(at: now)
+    }
+
+    /// Inside the frame, after its apply: the streaming cells on screen
+    /// append their new text now, so the frame's layout has it; the pill
+    /// shows if something came while scrolled up; VoiceOver hears a turn
+    /// end (never each word).
+    private func drawFrame(_ done: FrameApplied) {
+        for state in done.grown {
+            state.drawer?.render(state)
+        }
+        let rows = model.ids.count
+        if !following, !done.grown.isEmpty || rows != rowsSeen {
+            newPill.isHidden = false
+        }
+        rowsSeen = rows
+        if UIAccessibility.isVoiceOverRunning, let end = done.ended.last {
+            UIAccessibility.post(notification: .announcement, argument: SafeText.line(end.text[...], limit: 200))
+        }
+    }
+
+    // MARK: Following the end
+
+    /// The content offset that shows the end.
+    private var bottomOffset: CGFloat {
+        guard let collectionView else { return 0 }
+        let inset = collectionView.adjustedContentInset
+        return max(-inset.top, collectionView.contentSize.height + inset.bottom - collectionView.bounds.height)
+    }
+
+    /// The list shows its end, within 8 points.
+    public var isAtBottom: Bool {
+        guard let collectionView else { return true }
+        return collectionView.contentOffset.y >= bottomOffset - 8
+    }
+
+    /// After each layout pass (the frame's, which sized the streaming
+    /// cell): following, the end is shown, without animation. Not while
+    /// the person's finger is on the list.
+    private func pin() {
+        guard following, drewRows, let collectionView, !collectionView.isTracking, !collectionView.isDecelerating else { return }
+        let bottom = bottomOffset
+        if abs(collectionView.contentOffset.y - bottom) > 0.5 {
+            collectionView.contentOffset.y = bottom
+        }
+    }
+
+    /// The person scrolled: following if they left the list at its end,
+    /// not if they scrolled up from it.
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
+        follow(isAtBottom)
+    }
+
+    public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        follow(isAtBottom)
+    }
+
+    public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        if !decelerate { follow(isAtBottom) }
+    }
+
+    /// Scrolled to the top by a tap on the status bar: not following.
+    public func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        follow(isAtBottom)
+    }
+
+    private func follow(_ atBottom: Bool) {
+        following = atBottom
+        if atBottom { newPill.isHidden = true }
+    }
+
+    /// "↓ New" tapped: the end, and following again.
+    func jumpToEnd() {
+        follow(true)
+        scrollToEnd()
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
 
     // MARK: The model to the screen
@@ -215,6 +335,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             // live rows arrive) every one after. A row's own changes are its
             // cell's, which observes it: nothing is reloaded.
             dataSource.apply(snapshot, animatingDifferences: false)
+            snapshotApplies += 1
             applied = rows
             if first && !rows.isEmpty { scrollToEnd() }
         }
@@ -293,6 +414,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         guard snapshot.indexOfItem(id) != nil else { return }
         snapshot.reconfigureItems([id])
         dataSource.apply(snapshot, animatingDifferences: false)
+        snapshotApplies += 1
     }
 
     /// A link tapped: a sheet naming the whole URL, and only its "Open"
@@ -337,6 +459,17 @@ private final class TranscriptFrameTarget: NSObject {
 
     @objc func frame(_ link: CADisplayLink) {
         guard let screen else { return link.invalidate() }
-        screen.frame()
+        screen.frame(at: link.timestamp)
+    }
+}
+
+/// The transcript's list, which says when it has laid out: the screen
+/// keeps the end in view then, once the frame's cells have their sizes.
+final class TranscriptCollectionView: UICollectionView {
+    var afterLayout: (() -> Void)?
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        afterLayout?()
     }
 }

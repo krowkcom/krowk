@@ -22,8 +22,9 @@ import os
 /// back on the queue: a heartbeat is never queued behind them.
 ///
 /// Updates for the screen go to `mailbox`, which the main thread drains
-/// once per display frame. Nothing here logs: a relay ticket never leaves
-/// the call that dials with it.
+/// once per display frame (`takeFrame`), waking the screen's paused
+/// display link when they arrive with none waiting. Nothing here logs: a
+/// relay ticket never leaves the call that dials with it.
 public actor RelayConnection: LiveSession {
     /// The relay's largest message, its header and a 4 MiB batch
     /// (`krowk_harness::relay`'s `max_message`): anything larger fails the
@@ -56,12 +57,15 @@ public actor RelayConnection: LiveSession {
     private let shown = OSAllocatedUnfairLock<RelayStatus>(initialState: .connecting)
     private var onStatus: (@MainActor @Sendable (RelayStatus) -> Void)?
     private let counts = OSAllocatedUnfairLock<Int>(initialState: 0)
+    /// Where approvals asked and answered live go (ticket 91).
+    private nonisolated let approvals: any ApprovalSink
 
     /// `opening` opens the session to follow (`Account.openSession`), and
     /// blocks; it runs once, on a thread of its own, as `follow` starts.
-    public init(opening: @escaping @Sendable () throws -> OpenedSession) {
+    public init(opening: @escaping @Sendable () throws -> OpenedSession, approvals: any ApprovalSink = NoApprovals()) {
         self.queue = DispatchSerialQueue(label: "krowk.relay")
         self.opening = opening
+        self.approvals = approvals
     }
 
     /// One never stopped (its screen let go of it) still closes its socket.
@@ -87,20 +91,14 @@ public actor RelayConnection: LiveSession {
         queue.async { self.assumeIsolated { $0.halt() } }
     }
 
-    @MainActor public func takeFrame(into transcript: TranscriptModel) -> Int {
-        let updates = mailbox.drain()
-        // A run of logged lines is applied at once: one change to the rows.
-        var lines: [TranscriptEvent] = []
-        for update in updates {
-            if case .line(.log(let event)) = update {
-                lines.append(TranscriptEvent(event))
-                continue
-            }
-            if !lines.isEmpty { transcript.apply(lines); lines = [] }
-            transcript.apply(update)
+    public nonisolated func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {
+        mailbox.onPost {
+            DispatchQueue.main.async { MainActor.assumeIsolated { wake() } }
         }
-        if !lines.isEmpty { transcript.apply(lines) }
-        return updates.count
+    }
+
+    @MainActor public func takeFrame() -> [TranscriptUpdate] {
+        TranscriptUpdate.from(mailbox.drain(), approvals: approvals)
     }
 
     #if DEBUG
@@ -177,6 +175,8 @@ public actor RelayConnection: LiveSession {
                     switch update {
                     case .host(let present): tracker.host(present)
                     case .note(let text): tracker.note(text)
+                    case .gap: tracker.gap()
+                    case .caughtUp: tracker.caughtUp()
                     case .failed(let detail): failure = detail
                     default: break
                     }
@@ -430,22 +430,43 @@ public actor RelayConnection: LiveSession {
 
 /// The viewer's updates for the screen, in order, until the main thread
 /// takes them, once per display frame, into the transcript
-/// (`takeFrame(into:)`).
+/// (`takeFrame()`). The first post after a drain calls `onPost`'s wake.
 public final class UpdateMailbox: Sendable {
-    private let held = OSAllocatedUnfairLock<[ViewerUpdate]>(initialState: [])
+    private struct Held: Sendable {
+        var updates: [ViewerUpdate] = []
+        var wake: (@Sendable () -> Void)?
+    }
+
+    private let held = OSAllocatedUnfairLock<Held>(initialState: Held())
 
     public init() {}
 
     func post(_ updates: [ViewerUpdate]) {
         guard !updates.isEmpty else { return }
-        held.withLock { $0.append(contentsOf: updates) }
+        let wake = held.withLock { held -> (@Sendable () -> Void)? in
+            let waiting = !held.updates.isEmpty
+            held.updates.append(contentsOf: updates)
+            return waiting ? nil : held.wake
+        }
+        // Outside the lock: the wake hops to the main queue.
+        wake?()
+    }
+
+    /// `wake` is called (on the poster's queue) when updates arrive with
+    /// none waiting, and at once if some are.
+    public func onPost(_ wake: @escaping @Sendable () -> Void) {
+        let waiting = held.withLock { held in
+            held.wake = wake
+            return !held.updates.isEmpty
+        }
+        if waiting { wake() }
     }
 
     /// Everything posted since the last drain, oldest first.
     public func drain() -> [ViewerUpdate] {
         held.withLock { held in
-            defer { held = [] }
-            return held
+            defer { held.updates = [] }
+            return held.updates
         }
     }
 }

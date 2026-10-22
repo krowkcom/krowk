@@ -37,6 +37,7 @@ on:
       - ".github/actions/ios-project/**"
       - "apps/ios/ExportOptions.plist"
       - "apps/ios/project.yml"
+      - "apps/ios/Krowk-Info.plist"
       - "apps/ios/scripts/release-preflight.sh"
 
 permissions:
