@@ -165,14 +165,16 @@ jobs:
   # R-IOS-13, R-CLIENT-1, R-CLIENT-2, R-IOS-8, R-IOS-9, R-E2E-3, R-HAND-4:
   # the app's Xcode project generates from project.yml with the right
   # settings, builds for a device (unsigned) and for the simulator, and the
-  # scheme Krowk-iOS passes LaunchTests, SignInUITests and PairingUITests
-  # (XCUITest), KrowkKit's unit tests, the hosted KeychainKeyStorageTests,
-  # SignInTests, PairingTests, SessionListTests, RelayConnectionTests,
-  # TranscriptModelTests, TranscriptTests, LiveFollowTests and
-  # ComposerTests, and KrowkCore's BindingsTests
+  # scheme Krowk-iOS passes ApprovalUITests, LaunchTests, SignInUITests and
+  # PairingUITests (XCUITest), KrowkKit's unit tests, the hosted
+  # KeychainKeyStorageTests, SignInTests, PairingTests, SessionListTests,
+  # RelayConnectionTests, TranscriptModelTests, TranscriptTests,
+  # LiveFollowTests, ComposerTests and ApprovalMappingTests, and KrowkCore's
+  # BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). The app links no WebKit and its
-  # sources load no remote image (R-IOS-10). The UI tests' screenshots,
+  # sources load no remote image (R-IOS-10); a Release build's owner check
+  # is LAContext's alone, and nothing names allowProject (R-IOS-11). The UI tests' screenshots,
   # light and dark, and one of the running app are kept as artifacts.
   app:
     needs: [key, bindings]
@@ -260,6 +262,19 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/DeviceData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
           test "$(lipo -archs "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app/Krowk")" = arm64
 
+      # The owner check before an allow is LAContext's in every build a
+      # person runs: the UI tests' stub and the launch argument that picks
+      # it are under #if DEBUG, so a Release build has neither, and links
+      # LocalAuthentication. And no source names allowProject.
+      - name: "R-IOS-11: a Release build has only the LAContext owner check, and no allowProject"
+        run: |
+          xcodebuild build -quiet -skipPackagePluginValidation \
+            -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
+            -destination generic/platform=iOS \
+            -derivedDataPath "$RUNNER_TEMP/ReleaseData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
+          apps/ios/scripts/approvals.sh "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app" release
+          apps/ios/scripts/approvals.sh "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app" debug
+
       - name: Boot an iPhone simulator
         run: |
           # An iPhone on the newest iOS runtime installed: the app needs
@@ -290,7 +305,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4: the scheme's tests on the simulator, against the fake fleet"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11: the scheme's tests on the simulator, against the fake fleet"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do
@@ -323,8 +338,9 @@ jobs:
       # The UI tests' screenshots (XCTAttachment, kept always), light and
       # dark: onboarding, the approval page, waiting, signed in, pairing, a
       # wrong code, pairing with host A, paired, Sessions, a session's
-      # transcript and a tool call expanded in it, and a turn followed live
-      # (streaming with "↓ New", following again, ended).
+      # transcript and a tool call expanded in it, a turn followed live
+      # (streaming with "↓ New", following again, ended), and the approval
+      # sheet, a call allowed and one denied.
       - name: The UI tests' screenshots
         if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |
