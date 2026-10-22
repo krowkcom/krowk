@@ -78,9 +78,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         show(root)
     }
 
-    /// The screen the keys call for (R-IOS-9): onboarding with no krowk
-    /// key, "Signed in to <workspace>" with a key but no pairing (ticket 84
-    /// replaces it), and home once paired, never onboarding.
+    /// The screen the keys call for (R-IOS-9, R-E2E-3): onboarding with no
+    /// krowk key, pairing with a key but no user keys, and home once
+    /// paired, never onboarding.
     private func screen() throws -> UIViewController {
         // protocolVersion() crosses into the Rust core (krowk-ffi).
         let home = { HomeViewController(protocolVersion: protocolVersion()) }
@@ -88,7 +88,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let api = SignInRules.apiURL()
         switch try Launch.read(api: api, storage: keys) {
         case .signedOut: return signIn(api: api, keys: keys)
-        case .signedIn(let workspace): return SignInScreens.signedIn(workspace)
+        case .signedIn(let workspace): return pairing(api: api, keys: keys, workspace: workspace)
         case .paired: return home()
         }
     }
@@ -98,13 +98,46 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let model = SignInModel(
             service: RegistrySignIn(api: api, storage: keys),
             presenter: WebAuthSessionPresenter(window: { [weak self] in self?.window }),
-            deviceName: UIDevice.current.name,
+            deviceName: Self.deviceName,
             // A Keychain status or a network error; never the key, which
             // the model never holds (only the Keychain adapter, to seal it).
             log: { log.error("\($0, privacy: .public)") },
-            onSignedIn: { [weak self] workspace in self?.show(SignInScreens.signedIn(workspace)) }
+            onSignedIn: { [weak self] workspace in
+                guard let self else { return }
+                self.show(self.pairing(api: api, keys: keys, workspace: workspace))
+            }
         )
         return SignInScreens.signIn(model)
+    }
+
+    /// Pairing (R-E2E-3): join the person's devices with the code their
+    /// laptop's `krowk devices add` shows, scanned or typed. Home once
+    /// paired, the session list's place (ticket 87).
+    private func pairing(api: String, keys: KeychainKeyStorage, workspace: SignedInWorkspace) -> UIViewController {
+        let log = Logger(subsystem: "com.krowk.app", category: "pairing")
+        let name = SignInRules.deviceName(Self.deviceName)
+        let model = PairingModel(
+            service: RegistryPairing(api: api, storage: keys, name: name, os: "iOS \(UIDevice.current.systemVersion)"),
+            camera: SystemCameraAccess(),
+            scannerSupported: PairingScreens.scannerSupported,
+            deviceName: name,
+            // The core's words for a failure; never a code, which the
+            // model never hands to the log.
+            log: { log.error("\($0, privacy: .public)") },
+            onPaired: { [weak self] in self?.show(HomeViewController(protocolVersion: protocolVersion())) }
+        )
+        return PairingScreens.pairing(model, workspace: workspace)
+    }
+
+    /// What the phone calls itself: `UIDevice`'s name, the generic "iPhone"
+    /// without a special entitlement. A DEBUG build takes `KROWK_DEVICE_NAME`
+    /// from its launch environment, so each UI test's phone has a name of
+    /// its own: the other device refuses one that reads like a listed one.
+    private static var deviceName: String {
+        #if DEBUG
+        if let name = ProcessInfo.processInfo.environment["KROWK_DEVICE_NAME"], !name.isEmpty { return name }
+        #endif
+        return UIDevice.current.name
     }
 
     private func show(_ root: UIViewController) {

@@ -12,11 +12,12 @@ apps/ios/
   xtool-Info.plist   the Info.plist keys xtool needs as a file (Linux)
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
-                     storage (KrowkKeys), sign-in over the bindings
-                     (KrowkAccount), and KrowkKit's tests
+                     storage (KrowkKeys), sign-in and pairing over the
+                     bindings (KrowkAccount), and KrowkKit's tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
-  AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests
-  UITests/           XCUITest target: LaunchTests, SignInUITests
+  AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
+                     PairingTests, and the TestFleet fixture
+  UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet
 ```
 
@@ -43,9 +44,10 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 ```
 
 `xcrun simctl list devices available` lists the simulators and their udids.
-The scheme `Krowk-iOS` runs the UI tests `LaunchTests` and `SignInUITests`,
-the app-hosted `KeychainKeyStorageTests` and `SignInTests` (target
-`Krowk-iOSTests`), KrowkKit's unit tests and KrowkCore's `BindingsTests`.
+The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
+`PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests` and
+`PairingTests` (target `Krowk-iOSTests`), KrowkKit's unit tests and
+KrowkCore's `BindingsTests`.
 The hosted tests are hosted because the Keychain refuses a SwiftPM test
 bundle with no host app (`-34018`, a missing entitlement). They clear the
 app's Keychain items before and after each test, so run them on a
@@ -59,13 +61,19 @@ registry, the relay and a host daemon on 127.0.0.1, which the simulator
 shares with the Mac. `apps/ios/scripts/with-fleet.sh <command>` builds it
 with cargo (and the debug `krowk --features harness` it pairs with, unless
 `KROWK_BIN` names one), starts it, exports what it printed as
-`TEST_RUNNER_KROWK_API_URL`, `TEST_RUNNER_KROWK_RELAY_URL` and
-`TEST_RUNNER_KROWK_PAIRING_CODE`, runs the command, and stops the fleet.
+`TEST_RUNNER_KROWK_API_URL`, `TEST_RUNNER_KROWK_RELAY_URL`,
+`TEST_RUNNER_KROWK_PAIRING_CODE` and `TEST_RUNNER_KROWK_PAIR_URL`, runs the
+command, and stops the fleet. A code works once, so a test that joins
+POSTs to `KROWK_PAIR_URL` for a fresh one: the fleet ends its running
+`krowk devices add` (host A's, the real CLI, which says yes by itself) and
+answers the next one's code.
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build
 reads `KROWK_API_URL` (with `KROWK_FIRST_LAUNCH=1`, which makes the
-launch a fresh install's, and `KROWK_APPEARANCE=dark|light` for
+launch a fresh install's, `KROWK_DEVICE_NAME`, a name of the test's own,
+since host A refuses one that reads like a device already on its list, and
+`KROWK_APPEARANCE=dark|light` for
 screenshots, which CI's simulator won't take from its own setting); a
 release build ignores them all and talks to `https://api.krowk.com/v1`.
 
@@ -174,8 +182,57 @@ closed early leaves the poll running, with "Open the page again" and
 "Cancel". A denial, a lapse after 15 minutes, or a Keychain that won't
 keep the key ends in one sentence and "Start again". At launch,
 `KrowkAccount.Launch` reads the storage through `Account.open`: no key is
-onboarding, a key without pairing is "Signed in to <workspace>" (until
-ticket 84), a paired phone never sees onboarding.
+onboarding, a key without the user keys is pairing, a paired phone never
+sees onboarding.
+
+## Pairing
+
+A signed-in phone holds no user key, so it can't open a synced session
+until it joins the person's devices (R-E2E-3). The pairing screen,
+SwiftUI over `KrowkKit.PairingModel`, says: on your laptop run `krowk
+devices add`, then scan its QR code or type the code.
+
+- **Typed.** The field upper-cases as typed; krowk-ffi's
+  `parsePairingCode` (krowk-client's parser: case, spaces and dashes
+  ignored) decides whether it is a code, never Swift, and a field that
+  isn't one is refused before any network call.
+- **Scanned.** "Scan the QR code" opens VisionKit's
+  `DataScannerViewController`, QR codes only, after the camera permission
+  (a refusal says so and offers Settings). Each payload goes through
+  `parsePairingInvite`, krowk-client's strict parser: anything that isn't
+  krowk's invite is ignored and the scanner keeps looking. An invite shown
+  for another device's pairing is refused before its code is spent, and
+  `joinInvite` refuses one for another account (`invite_mismatch`) before
+  it is spent too. The button is absent where
+  `DataScannerViewController.isSupported` is false: the simulator, so the
+  tests drive the payload → join path through `PairingModel.scanned`.
+- **Joining.** Off the main actor: `Account.openPairing` names the device
+  showing the code ("Pairing with <name>"; nothing is sent to the pairing),
+  then `joinPairing`/`joinInvite` runs krowk-client's joining side, the
+  terminal's `krowk sync join`: SPAKE2, the payload check, the user keys and
+  the device list kept through `KeychainKeyStorage`, the ack, and the claim
+  polled every 500 ms for up to 60 s. The new device record carries the
+  phone's name and `iOS <version>`. The laptop asks whether to add the
+  phone; once it says yes, "This iPhone is on your devices", and Continue
+  goes home (the session list's place, ticket 87). From then on a launch
+  skips onboarding. The phone is a viewer: it takes no lease and never
+  hosts (R-HAND-4).
+- **A code works once.** Nothing retries a join: a wrong or spent code
+  ends the pairing on both sides, keeps nothing, clears the field and says
+  "The pairing failed, and a code works once — on '<laptop>' run `krowk
+  devices add` again for a new code. Nothing was kept." No open pairing
+  says to run `krowk devices add` first. No code is ever logged.
+- **Cancelling.** Cancel, or the screen going away, ends the join and the
+  pairing on the registry, so the laptop isn't left waiting. Once the
+  laptop's sealed reply is in, it lists the phone, so the join finishes
+  instead and the screen follows the keys. A phone the person removed
+  from their devices is told so; resetting it is not built yet.
+
+The hosted tests' `TestFleet` (an actor) signs a phone in through the
+fleet and joins it once per test process, over a `KeychainKeyStorage` of its
+own service (`com.krowk.keys.testfleet.…`, purged as the process exits):
+`try await TestFleet.shared.paired()` is a paired account for the tests
+that need one.
 
 ## Why the Xcode project is generated
 

@@ -70,8 +70,7 @@ public struct SignInView: View {
     }
 }
 
-/// Where a signed-in phone goes until pairing exists (ticket 84): "Signed
-/// in to <workspace name>".
+/// "Signed in to <workspace name>", above the pairing screen.
 public struct SignedInView: View {
     let workspace: SignedInWorkspace
 
@@ -86,32 +85,10 @@ public struct SignedInView: View {
     }
 }
 
-/// The two screens as UIKit view controllers, for the UIKit shell.
+/// The sign-in screen as a UIKit view controller, for the UIKit shell.
 public enum SignInScreens {
     @MainActor
     public static func signIn(_ model: SignInModel) -> UIViewController {
         UIHostingController(rootView: SignInView(model: model))
-    }
-
-    @MainActor
-    public static func signedIn(_ workspace: SignedInWorkspace) -> UIViewController {
-        UIHostingController(rootView: SignedInScreen(workspace: workspace))
-    }
-}
-
-/// The placeholder after sign-in, as a whole screen.
-struct SignedInScreen: View {
-    let workspace: SignedInWorkspace
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Text("krowk")
-                .font(.largeTitle.bold())
-                .accessibilityAddTraits(.isHeader)
-            SignedInView(workspace: workspace)
-            Spacer()
-        }
-        .padding(24)
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
