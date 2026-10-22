@@ -4,8 +4,10 @@
 // ("Pairing with host-a"), host A says yes by itself, and the app reaches
 // "This iPhone is on your devices". Continue opens Sessions (R-IOS-7,
 // R-IOS-3): the fleet's demo session, live on host-a; a tap opens its
-// place, joined live through the fleet's relay, the bar under the
-// navigation bar reading "live" (R-IOS-1, R-CLIENT-1). Relaunched, it opens on Sessions, skipping onboarding. The
+// transcript (ticket 88), prompts and answers drawn with no indicator over
+// them, joined live through the fleet's relay, the bar under the
+// navigation bar reading "live" (R-IOS-1, R-CLIENT-1). Relaunched, it
+// opens on Sessions, skipping onboarding. The
 // simulator has no camera, so the scan button is absent. Screenshots of
 // each screen, light and dark, are kept in the results.
 //
@@ -102,7 +104,15 @@ final class PairingUITests: XCTestCase {
         let demo = demoSession(in: app, after: "Continue")
         Screenshots.keep("sessions", in: app)
         demo.tap()
-        XCTAssertTrue(app.staticTexts["session-placeholder"].waitForExistence(timeout: 10), "a tap did not open the session")
+        // Its transcript, scrolled to the end: prompts and answers drawn,
+        // and once they are, no indicator (R-IOS-1).
+        let transcript = app.collectionViews["transcript"]
+        XCTAssertTrue(transcript.waitForExistence(timeout: 10), "a tap did not open the session's transcript")
+        let prompt = transcript.cells.matching(identifier: "transcript-user").firstMatch
+        if !prompt.waitForExistence(timeout: 20) { Screenshots.tree(of: app) }
+        XCTAssertTrue(prompt.exists, "no prompt drawn 20 s after opening the session")
+        XCTAssertTrue(transcript.cells.matching(identifier: "transcript-assistant").firstMatch.exists, "no answer drawn")
+        XCTAssertFalse(app.activityIndicators["transcript-loading"].exists, "an indicator over the drawn transcript")
         // R-IOS-1, R-CLIENT-1: joined through the relay, the bar says live.
         let status = app.descendants(matching: .any)["relay-status"]
         XCTAssertTrue(status.waitForExistence(timeout: 10), "no relay status bar")
@@ -113,6 +123,12 @@ final class PairingUITests: XCTestCase {
         if status.label != "live" { Screenshots.tree(of: app) }
         XCTAssertEqual(status.label, "live")
         Screenshots.keep("session", in: app)
+        // A tool call, expanded to its output by a tap.
+        let tool = transcript.cells.matching(identifier: "transcript-tool").firstMatch
+        if tool.exists {
+            tool.tap()
+            Screenshots.keep("session-tool", in: app)
+        }
         app.terminate()
 
         // Relaunched, the paired phone opens on Sessions, no onboarding.

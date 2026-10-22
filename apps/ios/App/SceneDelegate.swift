@@ -103,12 +103,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // A failure's kind only: never a session's id, title or cwd.
             log: { log.error("\($0, privacy: .public)") }
         )
-        // A tapped session is followed live through the relay while its
-        // screen is open, held to the head its listing named.
+        // A tapped session opens on its transcript, followed live through
+        // the relay while its screen is open, held to the head its listing
+        // named.
         return SessionListViewController(model: model) { [weak model] row in
             let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
             let live = RelayConnection { try source.openSession(id: row.id, known: known) }
-            return SessionPlaceholderViewController(row: row, session: live)
+            return TranscriptViewController(row: row, session: live)
         }
     }
 

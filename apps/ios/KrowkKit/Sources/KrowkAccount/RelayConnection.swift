@@ -87,8 +87,12 @@ public actor RelayConnection: LiveSession {
         queue.async { self.assumeIsolated { $0.halt() } }
     }
 
-    public nonisolated func takeFrame() -> Int {
-        mailbox.drain().count
+    @MainActor public func takeFrame(into transcript: TranscriptModel) -> Int {
+        let updates = mailbox.drain()
+        for update in updates {
+            transcript.apply(update)
+        }
+        return updates.count
     }
 
     #if DEBUG
@@ -417,7 +421,8 @@ public actor RelayConnection: LiveSession {
 }
 
 /// The viewer's updates for the screen, in order, until the main thread
-/// takes them, once per display frame (ticket 89 draws them).
+/// takes them, once per display frame, into the transcript
+/// (`takeFrame(into:)`).
 public final class UpdateMailbox: Sendable {
     private let held = OSAllocatedUnfairLock<[ViewerUpdate]>(initialState: [])
 

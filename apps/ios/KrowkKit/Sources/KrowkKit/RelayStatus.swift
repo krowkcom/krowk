@@ -76,7 +76,7 @@ public struct RelayStatusTracker: Equatable, Sendable {
 
 /// A session followed live, as a screen drives it. The bindings' side
 /// (KrowkAccount's `RelayConnection`) conforms; KrowkKit never sees the
-/// updates themselves, only how many a frame took.
+/// generated updates themselves, only what they do to a transcript.
 public protocol LiveSession: AnyObject, Sendable {
     /// Joins, and keeps the session followed until `stop`. `status` is
     /// called on the main actor with every change, the first at once
@@ -84,9 +84,11 @@ public protocol LiveSession: AnyObject, Sendable {
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void)
     /// Drops the connection and every timer; nothing more is called.
     func stop()
-    /// Once per display frame: takes what arrived since the last. Ticket
-    /// 89 draws it; until then the count is all a screen sees.
-    func takeFrame() -> Int
+    /// Once per display frame, on the main thread: takes what arrived
+    /// since the last and applies its logged events to `transcript` (the
+    /// session read at rest, a line, a catch-up), and says how many updates
+    /// it took. Live deltas are ticket 89's.
+    @MainActor func takeFrame(into transcript: TranscriptModel) -> Int
 }
 
 /// The bar under the navigation bar: the status in one line of footnote

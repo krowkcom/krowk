@@ -94,6 +94,14 @@ public struct SessionRow: Hashable, Sendable {
     /// What VoiceOver reads: the title, the place and the status in
     /// words ("live on host-a", "last seen 12 minutes ago").
     public let accessibilityLabel: String
+
+    public init(id: String, title: String, detail: String, live: Bool, accessibilityLabel: String) {
+        self.id = id
+        self.title = title
+        self.detail = detail
+        self.live = live
+        self.accessibilityLabel = accessibilityLabel
+    }
 }
 
 /// Makes rows (R-IOS-7): `live` only for a session whose lease a host
