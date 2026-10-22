@@ -230,6 +230,78 @@ struct FrameApplyTests {
         #expect(screen.model.ids.filter { $0 == "item:c9" || $0 == "item:c10" } == ["item:c9"], "the result is under its call")
     }
 
+    @Test("R-LAG-7: a completion a gap's catch-up brings after the turn's end came live still sets the item's text, and a call's input")
+    func lateCompletion() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.apply(frame: [
+            Self.started("a1", .assistant, turn: "t1"), Self.delta("a1", "Hel"),
+            Self.started("c1", .toolCall(callID: "k1", name: "bash"), turn: "t1"),
+            .logged([Self.event("e9", .turnCompleted(turn: "t1", end: .completed), parent: "e8")]),
+        ])
+        #expect(model.item("item:a1")?.done == true)
+        model.apply(frame: [.caughtUp([
+            Self.event("e7", .toolCall(item: "c1", callID: "k1", name: "bash", input: #"{"command":"ls"}"#), parent: "e6"),
+            Self.event("e8", .assistantText(item: "a1", text: "Hello, whole"), parent: "e7"),
+        ])])
+        #expect(model.item("item:a1")?.text == "Hello, whole")
+        #expect(model.item("item:c1")?.toolLine == "bash ls")
+        #expect(model.item("item:c1")?.running == false)
+        #expect(model.ids == ["item:a1", "item:c1", "turn:t1"])
+    }
+
+    @Test("A notice repeated straight after itself is drawn once")
+    func noticeOnce() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.apply(frame: [.notice(session: Self.session, text: "Retrying"), .notice(session: Self.session, text: "Retrying")])
+        model.apply(frame: [.notice(session: Self.session, text: "Retrying")])
+        #expect(model.ids == ["notice:1"])
+        model.apply(frame: [.notice(session: Self.session, text: "Rate limited"), .notice(session: Self.session, text: "Retrying")])
+        #expect(model.ids == ["notice:1", "notice:2", "notice:3"])
+    }
+
+    @Test("R-LAG-7: an expanded \"Thought\" that streams grows by appends too, and a collapsed one draws none of its text")
+    func streamingThought() async throws {
+        let (session, screen, window, _) = try await streaming()
+        defer { window.isHidden = true }
+        session.bring([Self.started("r2", .reasoning), Self.delta("r2", "Thinking")])
+        screen.frame()
+        try await waitFor { screen.dataSource.snapshot().itemIdentifiers.last == "item:r2" }
+        window.layoutIfNeeded()
+        let cell = try #require(visibleCell("item:r2", in: screen, window: window) as? TranscriptToolCell)
+        #expect(cell.body.view.isHidden)
+        #expect(cell.body.streamed == nil, "collapsed, its text isn't drawn")
+        screen.toggle("item:r2")
+        try await waitFor { !cell.body.view.isHidden }
+        #expect(cell.body.view.text == "Thinking")
+        let appends = cell.body.appends
+        session.bring((0..<50).map { Self.delta("r2", " step\($0)") })
+        screen.frame()
+        #expect(cell.body.appends == appends + 1)
+        #expect(cell.body.view.text == "Thinking" + (0..<50).map { " step\($0)" }.joined())
+        #expect(!screen.following, "opened to read: not following")
+    }
+
+    @Test("R-LAG-7: taken out of its navigation stack from beneath another screen, the screen lets its display link and session go")
+    func leavesFromBeneath() async throws {
+        let session = StubSession()
+        let screen = TranscriptViewController(row: row, session: session)
+        let nav = UINavigationController(rootViewController: UIViewController())
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = nav
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        nav.pushViewController(screen, animated: false)
+        window.layoutIfNeeded()
+        try await waitFor { screen.driver?.ticker != nil }
+        nav.pushViewController(UIViewController(), animated: false)
+        window.layoutIfNeeded()
+        #expect(screen.driver?.ticker != nil, "covered, it still drains")
+        nav.popToRootViewController(animated: false)
+        window.layoutIfNeeded()
+        try await waitFor { screen.driver?.ticker == nil }
+        #expect(session.stopped.withLock { $0 } == 1)
+    }
+
     @Test("R-LAG-7: a turn's end settles what of it was still under way: the streaming item is whole, a tool without its result no longer running")
     func turnEndSettles() {
         let model = TranscriptModel(sessionID: Self.session)
@@ -305,6 +377,37 @@ struct FrameApplyTests {
         screen.frame()
         window.layoutIfNeeded()
         #expect(screen.isAtBottom)
+
+        // A scroll no finger made (VoiceOver's, a key's) is the person's
+        // too: not snapped back.
+        let laidOut = list.contentSize
+        list.setContentOffset(CGPoint(x: 0, y: 40), animated: false)
+        window.layoutIfNeeded()
+        #expect(!screen.following, "a VoiceOver scroll up still followed")
+        #expect(abs(list.contentOffset.y - 40) < 1, "snapped back to the end: \(list.contentOffset.y)")
+        #expect(list.contentSize == laidOut)
+        screen.newPill.sendActions(for: .primaryActionTriggered)
+        try await waitFor {
+            window.layoutIfNeeded()
+            return screen.isAtBottom
+        }
+
+        // A finger on the list at the end: what streams doesn't move it
+        // under the finger; let go, the end is shown again.
+        let touching = try #require(list as? TranscriptCollectionView)
+        touching.touching = true
+        let held = list.contentOffset.y
+        session.bring([Self.delta("a2", "\nLine 23\nLine 24")])
+        screen.frame()
+        window.layoutIfNeeded()
+        window.layoutIfNeeded()
+        #expect(abs(list.contentOffset.y - held) < 1, "moved under the finger")
+        touching.touching = nil
+        session.bring([Self.delta("a2", "\nLine 25")])
+        screen.frame()
+        window.layoutIfNeeded()
+        window.layoutIfNeeded()
+        #expect(screen.isAtBottom, "not back at the end once let go")
 
         // Scrolled back down to the end by hand: following too.
         list.setContentOffset(.zero, animated: false)

@@ -18,19 +18,18 @@ final class FrameApplyBaselineTests: XCTestCase {
         let options = XCTMeasureOptions()
         options.iterationCount = 5
         var perFrame: [Duration] = []
+        var withLayout: [Duration] = []
         let signpost = XCTOSSignpostMetric(subsystem: "com.krowk.app", category: "transcript", name: "krowk.frame.apply")
         measure(metrics: [signpost, XCTClockMetric()], options: options) {
             MainActor.assumeIsolated {
-                perFrame += Self.oneSecondOfStream()
+                let (apply, laid) = Self.oneSecondOfStream()
+                perFrame += apply
+                withLayout += laid
             }
         }
-        let sorted = perFrame.sorted()
-        XCTAssertFalse(sorted.isEmpty)
-        let micros = { (d: Duration) in Double(d.components.attoseconds) / 1e12 + Double(d.components.seconds) * 1e6 }
-        let mean = sorted.map(micros).reduce(0, +) / Double(sorted.count)
-        let p95 = micros(sorted[min(sorted.count - 1, sorted.count * 95 / 100)])
-        let line = String(format: "krowk.frame.apply baseline: %d frames at %d tokens/s, %d Hz: mean %.0f µs, p50 %.0f µs, p95 %.0f µs, max %.0f µs",
-                          sorted.count, Self.rate, Self.hz, mean, micros(sorted[sorted.count / 2]), p95, micros(sorted[sorted.count - 1]))
+        XCTAssertFalse(perFrame.isEmpty)
+        let line = Self.summary("krowk.frame.apply baseline (the apply)", perFrame) + "\n"
+            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", withLayout)
         print(line)
         let attachment = XCTAttachment(string: line)
         attachment.name = "krowk.frame.apply baseline"
@@ -38,12 +37,21 @@ final class FrameApplyBaselineTests: XCTestCase {
         add(attachment)
     }
 
+    static func summary(_ what: String, _ times: [Duration]) -> String {
+        let sorted = times.sorted()
+        let micros = { (d: Duration) in Double(d.components.attoseconds) / 1e12 + Double(d.components.seconds) * 1e6 }
+        let mean = sorted.map(micros).reduce(0, +) / Double(sorted.count)
+        return String(format: "%@: %d frames at %d tokens/s, %d Hz: mean %.0f µs, p50 %.0f µs, p95 %.0f µs, max %.0f µs",
+                      what, sorted.count, rate, hz, mean, micros(sorted[sorted.count / 2]),
+                      micros(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]), micros(sorted[sorted.count - 1]))
+    }
+
     /// A screen with a turn drawn and an answer started, then a second of
     /// it streaming: `hz` frames, each bringing that frame's share of
     /// `rate` word-sized deltas and laid out as the display would. The
-    /// time each frame's apply took.
+    /// time each frame's apply took, and its apply and layout together.
     @MainActor
-    static func oneSecondOfStream() -> [Duration] {
+    static func oneSecondOfStream() -> (apply: [Duration], laid: [Duration]) {
         let session = StubSession()
         let row = SessionRow(id: TranscriptScreenTests.session, title: "t", detail: "", live: true, accessibilityLabel: "t")
         let screen = TranscriptViewController(row: row, session: session)
@@ -61,6 +69,7 @@ final class FrameApplyBaselineTests: XCTestCase {
 
         let clock = ContinuousClock()
         var times: [Duration] = []
+        var laid: [Duration] = []
         var sent = 0
         for frame in 1...hz {
             let due = rate * frame / hz
@@ -70,7 +79,8 @@ final class FrameApplyBaselineTests: XCTestCase {
             screen.frame()
             times.append(clock.now - start)
             window.layoutIfNeeded()
+            laid.append(clock.now - start)
         }
-        return times
+        return (times, laid)
     }
 }

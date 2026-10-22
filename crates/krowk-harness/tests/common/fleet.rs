@@ -373,9 +373,10 @@ impl Hosting {
     }
 
     /// A turn in `session`, a test's own, typed at host A: `text` sent to
-    /// the model on a thread of its own, its lines read and dropped. Returns
-    /// once the daemon took the prompt; the turn runs on, and the session's
-    /// bridge hands it to every viewer live.
+    /// the model on a thread of its own, its lines read and dropped.
+    /// Returns once the turn's first line came (the daemon took the prompt),
+    /// or with why it didn't within 10 s; the turn runs on, and the
+    /// session's bridge hands it to every viewer live.
     pub fn turn(&self, session: &str, text: &str) -> Result<(), String> {
         if !self.tests.lock().unwrap().bridges.contains_key(session) {
             return Err(format!("the fleet hosts no test session {session}"));
@@ -383,12 +384,24 @@ impl Hosting {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
         let d = rt.block_on(Client::connect(&self.socket, &self.repo, "test", true)).map_err(|e| format!("the host daemon does not answer: {}", connect_error(e)))?;
         let cmd = self.prompt(Some(session), text);
+        let (said, heard) = std::sync::mpsc::channel::<Result<(), String>>();
+        let (out, mut lines) = mpsc::channel(4096);
+        let first = said.clone();
         std::thread::spawn(move || {
-            if let Err(e) = rt.block_on(d.execute(cmd, drain())) {
-                eprintln!("fleet: a test's turn failed: {e:?}");
+            let mut first = Some(first);
+            while lines.blocking_recv().is_some() {
+                if let Some(f) = first.take() {
+                    let _ = f.send(Ok(()));
+                }
             }
         });
-        Ok(())
+        std::thread::spawn(move || {
+            if let Err(e) = rt.block_on(d.execute(cmd, out)) {
+                eprintln!("fleet: a test's turn failed: {e:?}");
+                let _ = said.send(Err(format!("the turn failed: {e:?}")));
+            }
+        });
+        heard.recv_timeout(Duration::from_secs(10)).map_err(|_| "the turn did not start within 10 s".to_string())?
     }
 
     /// Stops every test's session, and any that starts from now on.

@@ -117,11 +117,11 @@ extension HostedKeychain {
             let before = Set(model.ids)
             #expect(try await SessionListTests.control("/\(id)/turn", body: "Please stream a long answer") == "started")
             // Some of the answer drawn, then the host let go.
-            try await RelayConnectionTests.wait(until: {
+            try await Self.wait(until: {
                 model.ids.filter { !before.contains($0) }.compactMap(model.item).contains { $0.kind == .assistant && $0.text.count > 200 }
             }, within: .seconds(30), "no answer streaming")
             #expect(try await SessionListTests.control("/\(id)/release") == "released")
-            try await RelayConnectionTests.wait(until: { screen.statusBar.status == .hostOffline }, within: .seconds(15), "not host offline: \(screen.statusBar.status.text)")
+            try await Self.wait(until: { screen.statusBar.status == .hostOffline }, within: .seconds(15), "not host offline: \(screen.statusBar.status.text)")
             #expect(screen.statusBar.accessibilityLabel == "host offline")
             let rows = model.ids
             let answer = try #require(rows.compactMap(model.item).first { $0.kind == .assistant && !before.contains($0.id) })
@@ -132,6 +132,16 @@ extension HostedKeychain {
             #expect(answer.text.hasPrefix(text), "what was drawn went")
             window.layoutIfNeeded()
             #expect(screen.dataSource.snapshot().itemIdentifiers.count >= rows.count)
+        }
+
+        /// Polls `done` on the main actor every 20 ms until it holds, or
+        /// fails after `limit`, saying `why`.
+        static func wait(until done: () -> Bool, within limit: Duration, _ why: @autoclosure () -> String) async throws {
+            let deadline = ContinuousClock.now + limit
+            while !done() && ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try #require(done(), Comment(rawValue: why()))
         }
 
         /// The text a cell draws (its text view's).
@@ -155,7 +165,7 @@ extension HostedKeychain {
             let window = UIWindow(windowScene: scene)
             window.rootViewController = UINavigationController(rootViewController: screen)
             window.makeKeyAndVisible()
-            try await RelayConnectionTests.wait(until: {
+            try await Self.wait(until: {
                 screen.statusBar.status == .live && screen.model.ids.last?.hasPrefix("turn:") == true
             }, within: .seconds(20), "not live with the first turn drawn: \(screen.statusBar.status.text), \(TranscriptTests.rows(of: screen.model))")
             return (screen, window, id, live)

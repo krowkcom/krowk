@@ -287,8 +287,14 @@ public final class TranscriptModel {
     @ObservationIgnored private var unshown: Set<String> = []
     /// Tool calls started live whose result hasn't come, and their turn.
     @ObservationIgnored private var running: [String: (state: ItemState, turn: String)] = [:]
-    /// Notes drawn so far, for their row ids.
+    /// Rows started live whose logged completion hasn't come: one that
+    /// comes after its turn's end settled them (a gap's catch-up, after
+    /// the end came live) still sets their text, or a call's input.
+    @ObservationIgnored private var unsettled: Set<String> = []
+    /// Notes drawn so far, for their row ids, and the last one's text: the
+    /// same note again, straight after, isn't drawn twice.
     @ObservationIgnored private var notices = 0
+    @ObservationIgnored private var lastNotice: (row: String, text: String)?
     /// Turn ends a logged line brought in the frame being applied.
     @ObservationIgnored private var ended: [ItemState] = []
     /// What placing is applying: the session read at rest, a catch-up, or
@@ -365,10 +371,12 @@ public final class TranscriptModel {
                     if session == sessionID { start("item:\(item)", turn: turn, kind: kind) }
                 case .notice(let session, let text):
                     guard session == sessionID else { continue }
+                    if let lastNotice, lastNotice.text == text, working!.last == lastNotice.row { continue }
                     notices += 1
                     let state = ItemState(id: "notice:\(notices)", kind: .mark, text: text)
                     items[state.id] = state
                     working!.append(state.id)
+                    lastNotice = (state.id, text)
                 case .delta:
                     break
                 }
@@ -419,12 +427,14 @@ public final class TranscriptModel {
             working!.append(id)
             calls[callID] = state
             streaming[id] = (state, turn)
+            unsettled.insert(id)
             return
         case .toolResult:
             return
         }
         streaming[id] = (state, turn)
         unshown.insert(id)
+        unsettled.insert(id)
     }
 
     /// `text` appended to item `id`, if it is under way: the item, if its
@@ -448,7 +458,13 @@ public final class TranscriptModel {
     private enum Settled { case notLive, settled(String?) }
 
     private func settle(_ id: String, text: String) -> Settled {
-        guard let state = streaming.removeValue(forKey: id)?.state else { return .notLive }
+        guard unsettled.remove(id) != nil else { return .notLive }
+        guard let state = streaming.removeValue(forKey: id)?.state else {
+            // Its turn ended first: a row if it had one, its text now whole.
+            guard let state = items[id] else { return .notLive }
+            if state.text != text { state.text = text }
+            return .settled(nil)
+        }
         if state.text != text { state.text = text }
         state.done = true
         guard unshown.remove(id) != nil else { return .settled(nil) }
@@ -533,13 +549,14 @@ public final class TranscriptModel {
         case .toolCall(let item, let callID, let name, let input):
             // Started live: its row is there, running; now it has its
             // input, and runs until its result.
-            if let entry = streaming.removeValue(forKey: "item:\(item)") {
-                let live = entry.state
+            if unsettled.remove("item:\(item)") != nil, let live = items["item:\(item)"] {
+                let entry = streaming.removeValue(forKey: live.id)
                 live.toolName = name
                 live.toolInput = input
                 live.done = true
                 calls[callID] = live
-                if live.output == nil { running[live.id] = (live, entry.turn) } else { live.running = false }
+                // Its turn may have ended already (a catch-up): not running.
+                if live.output == nil, let entry { running[live.id] = (live, entry.turn) } else { live.running = false }
                 return nil
             }
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
