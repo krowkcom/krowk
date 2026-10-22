@@ -31,6 +31,9 @@ public enum SignInRules {
         var kept = String.UnicodeScalarView()
         var bytes = 0
         for scalar in raw.unicodeScalars {
+            // Leading space doesn't count against the 64 bytes, as in
+            // krowk-ffi, which trims before it cuts.
+            if kept.isEmpty && scalar.properties.isWhitespace { continue }
             switch scalar.properties.generalCategory {
             // Line and paragraph separators too, which the device list
             // refuses in a name (krowk-ffi drops them on pairing).

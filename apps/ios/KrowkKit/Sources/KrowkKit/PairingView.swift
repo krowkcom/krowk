@@ -184,7 +184,7 @@ struct ScannerSheet: View {
 
     var body: some View {
         NavigationStack {
-            QRScanner(onScanned: onScanned, onFailed: onFailed)
+            QRScanner(onScanned: onScanned, onFailed: onFailed, onLost: onClose)
                 .ignoresSafeArea()
                 .navigationTitle("Scan the QR code")
                 .navigationBarTitleDisplayMode(.inline)
@@ -203,6 +203,8 @@ struct QRScanner: UIViewControllerRepresentable {
     let onScanned: @MainActor (String) -> Void
     /// The camera would not start: the sheet closes and the screen says so.
     let onFailed: @MainActor () -> Void
+    /// The camera went away mid-scan: the sheet closes.
+    let onLost: @MainActor () -> Void
 
     /// Whether this phone can scan: false in the simulator and on phones
     /// without the hardware. The scan button is hidden then.
@@ -223,12 +225,17 @@ struct QRScanner: UIViewControllerRepresentable {
 
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
         context.coordinator.onScanned = onScanned
+        context.coordinator.onLost = onLost
         if !scanner.isScanning {
             // The model checked the permission before opening the sheet;
             // this fails when the camera can't be used anyway (another app
             // holds it, a restriction).
-            // Not during this view update: the model changes after it.
-            do { try scanner.startScanning() } catch { Task { @MainActor in onFailed() } }
+            // Only a camera that can't be used is a failure; anything else
+            // is tried again on the next update. Not during this view
+            // update: the model changes after it.
+            do { try scanner.startScanning() } catch {
+                if !DataScannerViewController.isAvailable { Task { @MainActor in onFailed() } }
+            }
         }
     }
 
@@ -237,22 +244,23 @@ struct QRScanner: UIViewControllerRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScanned: onScanned, onFailed: onFailed)
+        Coordinator(onScanned: onScanned, onLost: onLost)
     }
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         var onScanned: @MainActor (String) -> Void
-        let onFailed: @MainActor () -> Void
+        var onLost: @MainActor () -> Void
 
-        init(onScanned: @escaping @MainActor (String) -> Void, onFailed: @escaping @MainActor () -> Void) {
+        init(onScanned: @escaping @MainActor (String) -> Void, onLost: @escaping @MainActor () -> Void) {
             self.onScanned = onScanned
-            self.onFailed = onFailed
+            self.onLost = onLost
         }
 
-        /// The camera went away mid-scan (another app took it, a call).
+        /// The camera went away mid-scan (a call, another app): the sheet
+        /// closes, and Scan tries again.
         func dataScanner(_ dataScanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
-            onFailed()
+            onLost()
         }
 
         func dataScanner(

@@ -255,7 +255,9 @@ public final class PairingModel {
     /// case, spaces and dashes ignored) the pairing starts, and the field
     /// is cleared: a code is spent once.
     public func enter(_ text: String) {
-        guard case .entering = phase else { return }
+        guard case .entering(let failure) = phase else { return }
+        // The last attempt's sentence goes once a new code is being typed.
+        if failure != nil && !text.isEmpty { phase = .entering(nil) }
         codeText = text.uppercased()
         guard let code = service.parseCode(codeText) else { return }
         codeText = ""

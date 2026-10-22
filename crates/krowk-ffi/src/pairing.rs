@@ -10,8 +10,8 @@
 //! secrets, is handed to Swift.
 //!
 //! The rules are `pairing_join`'s: the code starts one pairing once,
-//! nothing is retried, and any failure ends the pairing and forgets what
-//! the join kept. A cancel is one more failure, up to the moment the other
+//! nothing is retried, and any failure once the hello is out ends the
+//! pairing and forgets what the join kept. A cancel is one more failure, up to the moment the other
 //! device's sealed reply is seen: it lists this one once its reply is out,
 //! acked or not, so from then on the join is seen through rather than
 //! leave the phone listed without the keys.
@@ -48,12 +48,14 @@ const OS: &str = "iOS";
 /// — never 0, which `join` counts as an ack that may have landed — and so
 /// does a read until the confirmation is out; after it, a read looks once
 /// more for the other device's sealed reply before it fails. `end` still
-/// ends the pairing. That device posts this one to the list once its
-/// reply is out, acked or not, so once a reply that can be checked has
-/// been seen after the confirmation, the check, the ack and the claims go
-/// ahead, cancel or no cancel; what the last look cannot see is a reply
+/// ends the pairing, once the hello is out. That device posts this one to
+/// the list once its reply is out, acked or not, so once a reply that can
+/// be checked has been seen after the confirmation, the check, the ack
+/// and the claims go ahead, cancel or no cancel; what the last look cannot see is a reply
 /// that lands between it and the `end`. Nothing the registry serves before
-/// the confirmation, or that is not hex, stops a cancel.
+/// the confirmation, or that is not hex, stops a cancel. `end` ends the
+/// pairing only once a step was sent: before the hello the pairing holds
+/// nothing of this device's, and the other device's code stays usable.
 pub struct RegistryMailbox {
     client: Arc<Client>,
     id: String,
