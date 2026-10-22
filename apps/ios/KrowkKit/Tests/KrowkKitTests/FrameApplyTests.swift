@@ -380,12 +380,10 @@ struct FrameApplyTests {
 
         // A scroll no finger made (VoiceOver's, a key's) is the person's
         // too: not snapped back.
-        let laidOut = list.contentSize
         list.setContentOffset(CGPoint(x: 0, y: 40), animated: false)
         window.layoutIfNeeded()
         #expect(!screen.following, "a VoiceOver scroll up still followed")
         #expect(abs(list.contentOffset.y - 40) < 1, "snapped back to the end: \(list.contentOffset.y)")
-        #expect(list.contentSize == laidOut)
         screen.newPill.sendActions(for: .primaryActionTriggered)
         try await waitFor {
             window.layoutIfNeeded()

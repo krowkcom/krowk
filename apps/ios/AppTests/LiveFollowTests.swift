@@ -76,12 +76,18 @@ extension HostedKeychain {
             try #require(state.done, "the answer never completed: \(drawn.last?.count ?? 0) characters drawn")
             #expect(sawRunning, "the read never showed running…")
 
+            // Followed to the end, the turn's separator in view.
+            window.layoutIfNeeded()
+            #expect(screen.following && screen.isAtBottom, "not at the end after the turn")
+
             // One cell, start to end, grown by appends: each text drawn
-            // begins with the one before it.
-            window.layoutIfNeeded()
+            // begins with the one before it. (Scrolled to only if it went
+            // out of view, which stops the following; checked above.)
             let path = try #require(screen.dataSource.indexPath(for: id))
-            screen.collectionView.scrollToItem(at: path, at: .bottom, animated: false)
-            window.layoutIfNeeded()
+            if screen.collectionView.cellForItem(at: path) == nil {
+                screen.collectionView.scrollToItem(at: path, at: .bottom, animated: false)
+                window.layoutIfNeeded()
+            }
             let cell = try #require(screen.collectionView.cellForItem(at: path))
             #expect(ObjectIdentifier(cell) == cellID)
             #expect(drawn.count >= 5, "\(drawn.count) texts drawn: not streamed")
@@ -101,7 +107,6 @@ extension HostedKeychain {
             // the prompt typed at the host): never one per delta.
             #expect(screen.snapshotApplies - snapshots <= 6, "\(screen.snapshotApplies - snapshots) snapshots for one turn")
             #expect(screen.driver?.transactions ?? 0 > 0)
-            #expect(screen.following && screen.isAtBottom, "not at the end after the turn")
 
             let sorted = latencies.sorted()
             if !sorted.isEmpty {
