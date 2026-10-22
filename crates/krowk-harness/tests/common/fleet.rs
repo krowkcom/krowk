@@ -259,8 +259,16 @@ pub struct Hosting {
     host: Device,
     chain: Chain,
     user: UserKey,
-    /// The sessions hosted for tests, by id.
-    tests: std::sync::Mutex<std::collections::HashMap<String, Bridge>>,
+    /// The sessions hosted for tests.
+    tests: std::sync::Mutex<Tests>,
+}
+
+/// The sessions hosted for tests, by id, and whether the fleet is
+/// stopping: then a session that finished starting is stopped at once.
+#[derive(Default)]
+struct Tests {
+    stopping: bool,
+    bridges: std::collections::HashMap<String, Bridge>,
 }
 
 impl Hosting {
@@ -269,14 +277,21 @@ impl Hosting {
     /// written.
     pub fn host(&self, title: &str) -> Result<String, String> {
         let (session, stop, bridge) = self.begin(title)?;
-        self.tests.lock().unwrap().insert(session.clone(), (stop, bridge));
+        let mut tests = self.tests.lock().unwrap();
+        if tests.stopping {
+            drop(tests);
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            return Err("the fleet is stopping".into());
+        }
+        tests.bridges.insert(session.clone(), (stop, bridge));
         Ok(session)
     }
 
     /// Stops the bridge of `session`, a test's own, which lets its lease
     /// go; returns once the registry shows no lease on it.
     pub fn release(&self, session: &str) -> Result<(), String> {
-        let (stop, bridge) = self.tests.lock().unwrap().remove(session).ok_or_else(|| format!("the fleet hosts no test session {session}"))?;
+        let (stop, bridge) = self.tests.lock().unwrap().bridges.remove(session).ok_or_else(|| format!("the fleet hosts no test session {session}"))?;
         let _ = stop.send(true);
         let _ = bridge.join();
         let api = self.host.client(&self.api);
@@ -291,9 +306,13 @@ impl Hosting {
         }
     }
 
-    /// Stops every test's session.
+    /// Stops every test's session, and any that starts from now on.
     fn release_all(&self) {
-        let all: Vec<Bridge> = self.tests.lock().unwrap().drain().map(|(_, b)| b).collect();
+        let all: Vec<Bridge> = {
+            let mut tests = self.tests.lock().unwrap();
+            tests.stopping = true;
+            tests.bridges.drain().map(|(_, b)| b).collect()
+        };
         for (stop, _) in &all {
             let _ = stop.send(true);
         }

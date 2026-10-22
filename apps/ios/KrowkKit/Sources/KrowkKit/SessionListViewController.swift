@@ -64,9 +64,12 @@ public final class SessionListViewController: UIViewController, UICollectionView
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
 
-        var list = UICollectionLayoutListConfiguration(appearance: .plain)
-        list.footerMode = .supplementary
-        let layout = UICollectionViewCompositionalLayout.list(using: list)
+        // A footer only while it has something to say.
+        let layout = UICollectionViewCompositionalLayout { [weak self] _, environment in
+            var list = UICollectionLayoutListConfiguration(appearance: .plain)
+            list.footerMode = (self?.footerLines.isEmpty ?? true) ? .none : .supplementary
+            return NSCollectionLayoutSection.list(using: list, layoutEnvironment: environment)
+        }
         collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
         collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
         collectionView.accessibilityIdentifier = "sessions-list"
@@ -188,6 +191,11 @@ public final class SessionListViewController: UIViewController, UICollectionView
     private func apply(_ screen: Screen, animated: Bool) {
         let previous = rows
         rows = Dictionary(screen.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Set before the layout reads it: whether there is a footer.
+        let lines = [screen.stale, screen.unreadable].compactMap { $0 }
+        let footerChanged = lines != footerLines
+        footerLines = lines
+
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
         snapshot.appendSections([0])
         snapshot.appendItems(screen.rows.map(\.id))
@@ -200,13 +208,15 @@ public final class SessionListViewController: UIViewController, UICollectionView
             dataSource.apply(snapshot, animatingDifferences: false)
         }
 
-        footerLines = [screen.stale, screen.unreadable].compactMap { $0 }
-        for kind in [UICollectionView.elementKindSectionFooter] {
+        if footerChanged {
+            let kind = UICollectionView.elementKindSectionFooter
             for path in collectionView.indexPathsForVisibleSupplementaryElements(ofKind: kind) {
                 if let footer = collectionView.supplementaryView(forElementKind: kind, at: path) as? UICollectionViewListCell {
-                    Self.configure(footer: footer, lines: footerLines)
+                    Self.configure(footer: footer, lines: lines)
                 }
             }
+            // Shown, gone or a line longer: the footer's height follows.
+            collectionView.collectionViewLayout.invalidateLayout()
         }
 
         switch screen.status {
@@ -228,8 +238,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
     }
 
     private func pulled() {
+        let model = model
         Task { [weak self] in
-            await self?.model.refresh()
+            await model.refresh()
             self?.collectionView.refreshControl?.endRefreshing()
         }
     }
@@ -238,15 +249,16 @@ public final class SessionListViewController: UIViewController, UICollectionView
         var content = UIListContentConfiguration.subtitleCell()
         content.text = row.title
         content.textProperties.numberOfLines = 1
-        let detail = NSMutableAttributedString(string: row.detail, attributes: [
-            .font: UIFont.preferredFont(forTextStyle: .subheadline),
-            .foregroundColor: UIColor.secondaryLabel,
-        ])
+        content.secondaryTextProperties.color = .secondaryLabel
         if row.live, let dot = row.detail.range(of: "●") {
+            // Only the dot's colour: the font and the rest's colour are the
+            // configuration's, so they follow Dynamic Type.
+            let detail = NSMutableAttributedString(string: row.detail)
             detail.addAttribute(.foregroundColor, value: UIColor.systemGreen, range: NSRange(dot, in: row.detail))
+            content.secondaryAttributedText = detail
+        } else {
+            content.secondaryText = row.detail
         }
-        content.secondaryAttributedText = detail
-        content.secondaryTextProperties.adjustsFontForContentSizeCategory = true
         cell.contentConfiguration = content
         cell.accessories = [.disclosureIndicator()]
         cell.accessibilityIdentifier = "session-\(row.id)"
@@ -262,7 +274,6 @@ public final class SessionListViewController: UIViewController, UICollectionView
         content.textProperties.numberOfLines = 0
         footer.contentConfiguration = content
         footer.accessibilityIdentifier = "sessions-footer"
-        footer.isHidden = lines.isEmpty
     }
 
     /// The footer's text, as applied.

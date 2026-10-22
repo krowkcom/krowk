@@ -15,7 +15,8 @@ import Observation
 public final class SessionListModel {
     /// The latest listing that succeeded; nil until one has.
     public private(set) var listing: SessionListing?
-    /// When it was read, by `clock`.
+    /// When the read that gave it started, by `clock`: a lease it shows
+    /// was unexpired no later than then.
     public private(set) var listedAt: Date?
     /// Why the last refresh failed; nil once one succeeds.
     public private(set) var failure: SessionListFailure?
@@ -39,6 +40,9 @@ public final class SessionListModel {
     private var done = 0
     private var reading: Task<Void, Never>?
     private var timers: [Task<Void, Never>] = []
+    /// Ticks the clock once the listing's live marks are a lease's TTL
+    /// old, so they go even when reads hang.
+    private var expiry: Task<Void, Never>?
 
     /// - Parameters:
     ///   - log: told the kind of a failure, never a session's id, title or
@@ -57,14 +61,17 @@ public final class SessionListModel {
         return now.timeIntervalSince(listedAt) < Self.leaseTTL
     }
 
-    /// On screen: read now, then every 20 s, and tick the clock each minute.
+    /// On screen, or back in the foreground: the clock ticked now (so a
+    /// listing older than a lease's TTL shows none live), a read now, then
+    /// every 20 s, and the clock ticked each minute.
     public func appeared() {
-        guard timers.isEmpty else { return }
         now = clock()
-        timers = [
-            repeating(every: Self.refreshPeriod) { await $0.refresh() },
-            repeating(every: .seconds(60)) { $0.now = $0.clock() },
-        ]
+        if timers.isEmpty {
+            timers = [
+                repeating(every: Self.refreshPeriod) { await $0.refresh() },
+                repeating(every: .seconds(60)) { $0.now = $0.clock() },
+            ]
+        }
         Task { await refresh() }
     }
 
@@ -72,6 +79,8 @@ public final class SessionListModel {
     public func disappeared() {
         timers.forEach { $0.cancel() }
         timers = []
+        expiry?.cancel()
+        expiry = nil
     }
 
     /// Reads the list again, off the main thread, and returns once a read
@@ -94,6 +103,7 @@ public final class SessionListModel {
         while done < asked {
             let target = asked
             let source = source
+            let started = clock()
             let result = await blocking { () -> Result<SessionListing, SessionListFailure> in
                 // The listing blocks for a round trip per session.
                 dispatchPrecondition(condition: .notOnQueue(.main))
@@ -107,15 +117,27 @@ public final class SessionListModel {
             switch result {
             case .success(let listing):
                 self.listing = listing.deduplicated()
-                listedAt = now
+                listedAt = started
                 failure = nil
+                expire(at: started.addingTimeInterval(Self.leaseTTL))
             case .failure(let error):
+                // Once per kind, not every 20 s while it lasts.
+                if failure?.kind != error.kind { log("listing sessions failed: \(error.kind)") }
                 failure = error
-                log("listing sessions failed: \(error.kind)")
             }
             done = target
         }
         reading = nil
+    }
+
+    private func expire(at deadline: Date) {
+        expiry?.cancel()
+        let wait = max(0, deadline.timeIntervalSince(now))
+        expiry = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(wait))
+            guard !Task.isCancelled, let self else { return }
+            now = clock()
+        }
     }
 
     private func repeating(every period: Duration, _ body: @escaping @MainActor (SessionListModel) async -> Void) -> Task<Void, Never> {

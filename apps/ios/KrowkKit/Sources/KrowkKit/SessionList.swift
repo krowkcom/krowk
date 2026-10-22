@@ -91,11 +91,9 @@ public struct SessionRow: Hashable, Sendable {
     /// 12m ago`.
     public let detail: String
     public let live: Bool
-
-    /// What VoiceOver reads: the dot as a word.
-    public var accessibilityLabel: String {
-        "\(title), \(detail.replacingOccurrences(of: "● ", with: ""))"
-    }
+    /// What VoiceOver reads: the title, the place and the status in
+    /// words ("live on host-a", "last seen 12 minutes ago").
+    public let accessibilityLabel: String
 }
 
 /// Makes rows (R-IOS-7): `live` only for a session whose lease a host
@@ -104,12 +102,18 @@ public struct SessionRow: Hashable, Sendable {
 @MainActor
 public final class SessionRowFormatter {
     private let relative: RelativeDateTimeFormatter
+    /// The same in whole words, for VoiceOver ("12m" may be read "metres").
+    private let spoken: RelativeDateTimeFormatter
 
     public init(locale: Locale = .autoupdatingCurrent) {
         relative = RelativeDateTimeFormatter()
         relative.locale = locale
         relative.unitsStyle = .abbreviated
         relative.dateTimeStyle = .numeric
+        spoken = RelativeDateTimeFormatter()
+        spoken.locale = locale
+        spoken.unitsStyle = .full
+        spoken.dateTimeStyle = .numeric
     }
 
     /// - Parameters:
@@ -124,20 +128,26 @@ public final class SessionRowFormatter {
             : session.title
         let live = liveTrusted && session.hostedBy != nil
         let status: String
+        let said: String
         if live {
-            status = holderName.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : "● live on \($0)" } ?? "● live"
+            let on = holderName.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.flatMap { $0.isEmpty ? nil : " on \($0)" } ?? ""
+            status = "● live\(on)"
+            said = "live\(on)"
         } else {
-            status = "last seen \(lastSeen(session.updatedMs, now: now))"
+            status = "last seen \(lastSeen(session.updatedMs, now: now, in: relative))"
+            said = "last seen \(lastSeen(session.updatedMs, now: now, in: spoken))"
         }
-        return SessionRow(id: session.id, title: title, detail: place.isEmpty ? status : "\(place) · \(status)", live: live)
+        return SessionRow(
+            id: session.id, title: title, detail: place.isEmpty ? status : "\(place) · \(status)", live: live,
+            accessibilityLabel: [title, place, said].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
     /// "12m ago", "3h ago"; "just now" under a minute, and for a time
     /// ahead of this phone's clock.
-    func lastSeen(_ updatedMs: UInt64, now: Date) -> String {
+    private func lastSeen(_ updatedMs: UInt64, now: Date, in formatter: RelativeDateTimeFormatter) -> String {
         let updated = Date(timeIntervalSince1970: TimeInterval(updatedMs) / 1000)
         guard now.timeIntervalSince(updated) >= 60 else { return "just now" }
-        return relative.localizedString(for: updated, relativeTo: now)
+        return formatter.localizedString(for: updated, relativeTo: now)
     }
 
     /// The last path component of `cwd`, or "" for none.
@@ -153,15 +163,33 @@ public final class SessionRowFormatter {
 /// the last applied. Unthrottled rebuilds keep the main thread busy.
 @MainActor
 final class SnapshotThrottle<State: Equatable> {
+    /// Runs the closure `delay` from now, on the main actor.
+    typealias Schedule = @MainActor (_ delay: Duration, _ fire: @escaping @MainActor () -> Void) -> Void
+
+    /// The real clock's.
+    static var afterSleeping: Schedule {
+        { delay, fire in
+            Task { @MainActor in
+                try? await Task.sleep(for: delay)
+                fire()
+            }
+        }
+    }
+
     private let delay: Duration
+    private let schedule: Schedule
     private let read: @MainActor () -> State
     private let apply: @MainActor (_ previous: State?, _ new: State) -> Void
     private var pending = false
     /// The state last applied.
     private(set) var current: State?
 
-    init(delay: Duration = .milliseconds(100), read: @escaping @MainActor () -> State, apply: @escaping @MainActor (State?, State) -> Void) {
+    init(
+        delay: Duration = .milliseconds(100), schedule: @escaping Schedule = SnapshotThrottle.afterSleeping,
+        read: @escaping @MainActor () -> State, apply: @escaping @MainActor (State?, State) -> Void
+    ) {
         self.delay = delay
+        self.schedule = schedule
         self.read = read
         self.apply = apply
     }
@@ -169,11 +197,7 @@ final class SnapshotThrottle<State: Equatable> {
     func trigger() {
         guard !pending else { return }
         pending = true
-        let delay = delay
-        Task { [weak self] in
-            try? await Task.sleep(for: delay)
-            self?.rebuild()
-        }
+        schedule(delay) { [weak self] in self?.rebuild() }
     }
 
     /// Reads and applies now, outside the throttle: the first paint.

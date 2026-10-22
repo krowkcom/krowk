@@ -74,6 +74,8 @@ struct SessionRowFormatterTests {
         let row = formatter.row(Stub(id: "a", updatedMs: nowMs - 12 * 60_000), holderName: nil, liveTrusted: true, now: now)
         #expect(row.detail == "krowk · last seen 12m ago")
         #expect(!row.live)
+        // VoiceOver hears whole words.
+        #expect(row.accessibilityLabel == "krowk, krowk, last seen 12 minutes ago")
         #expect(formatter.row(Stub(id: "a", updatedMs: nowMs - 20_000), holderName: nil, liveTrusted: true, now: now).detail == "krowk · last seen just now")
         // A host's clock ahead of this phone's is "just now", not "in 2m".
         #expect(formatter.row(Stub(id: "a", updatedMs: nowMs + 120_000), holderName: nil, liveTrusted: true, now: now).detail == "krowk · last seen just now")
@@ -86,7 +88,7 @@ struct SessionRowFormatterTests {
         let named = formatter.row(held, holderName: "host-a", liveTrusted: true, now: now)
         #expect(named.live)
         #expect(named.detail == "krowk · ● live on host-a")
-        #expect(named.accessibilityLabel == "krowk, krowk · live on host-a")
+        #expect(named.accessibilityLabel == "krowk, krowk, live on host-a")
         let unnamed = formatter.row(held, holderName: nil, liveTrusted: true, now: now)
         #expect(unnamed.detail == "krowk · ● live")
         #expect(!unnamed.detail.contains(id))
@@ -102,40 +104,82 @@ struct SessionRowFormatterTests {
     }
 }
 
+/// A clock the throttle's rebuilds are scheduled on, moved by the test:
+/// the throttle's timing without a slow simulator's.
+@MainActor
+final class VirtualTime {
+    private(set) var now: Duration = .zero
+    private var due: [(at: Duration, fire: @MainActor () -> Void)] = []
+
+    func schedule(_ delay: Duration, _ fire: @escaping @MainActor () -> Void) {
+        due.append((now + delay, fire))
+    }
+
+    /// Moves the clock on, running what falls due, earliest first.
+    func advance(by step: Duration) {
+        let end = now + step
+        while let next = due.indices.filter({ due[$0].at <= end }).min(by: { due[$0].at < due[$1].at }) {
+            let job = due.remove(at: next)
+            now = job.at
+            job.fire()
+        }
+        now = end
+    }
+}
+
 @MainActor
 @Suite("R-IOS-7: rebuilds are throttled to 10 a second")
 struct SnapshotThrottleTests {
     @Test("R-IOS-7: 50 triggers in 300 ms give at most 4 applies")
-    func fiftyTriggers() async throws {
+    func fiftyTriggers() {
+        let time = VirtualTime()
         var reads = 0
         var applies = 0
-        let throttle = SnapshotThrottle<Int>(read: {
+        let throttle = SnapshotThrottle<Int>(schedule: { time.schedule($0, $1) }, read: {
             reads += 1
             return reads
         }, apply: { _, _ in applies += 1 })
-        let start = ContinuousClock.now
         for _ in 0..<50 {
             throttle.trigger()
-            try await Task.sleep(for: .milliseconds(6))
+            time.advance(by: .milliseconds(6))
         }
-        #expect(ContinuousClock.now - start < .milliseconds(1000))
-        try await Task.sleep(for: .milliseconds(250))
+        #expect(time.now == .milliseconds(300))
+        time.advance(by: .milliseconds(200))
         #expect(applies >= 1)
         #expect(applies <= 4, "\(applies) applies")
+        #expect(reads == applies, "every rebuild read a changed list")
     }
 
     @Test("R-IOS-7: an unchanged list applies none")
-    func unchangedAppliesNone() async throws {
+    func unchangedAppliesNone() {
+        let time = VirtualTime()
         var applies = 0
-        let throttle = SnapshotThrottle<[String]>(read: { ["a", "b"] }, apply: { _, _ in applies += 1 })
+        let throttle = SnapshotThrottle<[String]>(schedule: { time.schedule($0, $1) }, read: { ["a", "b"] }, apply: { _, _ in applies += 1 })
         throttle.rebuild()
         #expect(applies == 1)
         for _ in 0..<50 {
             throttle.trigger()
-            try await Task.sleep(for: .milliseconds(6))
+            time.advance(by: .milliseconds(6))
         }
-        try await Task.sleep(for: .milliseconds(250))
+        time.advance(by: .milliseconds(200))
         #expect(applies == 1)
+    }
+
+    @Test("R-IOS-7: on the real clock, a trigger is applied about 100 ms later")
+    func realClock() async throws {
+        var applies = 0
+        var value = 0
+        let throttle = SnapshotThrottle<Int>(read: { value }, apply: { _, _ in applies += 1 })
+        throttle.rebuild()
+        value = 1
+        throttle.trigger()
+        throttle.trigger()
+        #expect(applies == 1)
+        let deadline = ContinuousClock.now + .seconds(5)
+        while applies < 2, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(applies == 2)
     }
 }
 
