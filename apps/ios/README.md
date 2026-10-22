@@ -235,20 +235,29 @@ only, never the CLI's `v*`, so the app and the CLI release independently
 - **Secrets.** `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY`
   (the `.p8` file's contents), in the GitHub environment `testflight`, which
   only the `upload` job names. Its first step fails, naming the missing ones,
-  until all four are there; the next checks their shapes. In Settings →
-  Environments → testflight, limit its deployment branches and tags to
-  `main` and `ios-v*`: then a workflow on any other branch can't read them.
-  That alone doesn't stop someone with write access, who can push an
-  `ios-v*` tag on a commit whose own workflow does what it likes with the
-  secrets. Required reviewers on the environment (each upload waits for a
-  person's approval), and a tag ruleset that lets only you create `ios-v*`
-  tags (Settings → Rules → Rulesets → New tag ruleset), close that.
+  until all four are there; the next checks their shapes. Protect the
+  environment before any secret goes in (Pending for the person, item 2,
+  has the commands):
+  - Deployment branches and tags: selected only, `main` as a **branch** rule
+    and `ios-v*` as a **tag** rule. Then no workflow run from any other
+    branch, a pull request's included, can read the secrets. (`ios-v*` as a
+    branch rule would admit a branch of that name instead.)
+  - Required reviewers: you. Each upload waits for your approval. This is
+    what stops someone with write access who pushes an `ios-v*` tag on a
+    commit whose own workflow does what it likes with the secrets.
+  - A tag ruleset on `ios-v*` (Settings → Rules → Rulesets → New tag
+    ruleset) with Restrict creations, Restrict updates and Restrict
+    deletions, only you on its bypass list, so nobody else can make or move
+    such a tag.
 - **Pull requests.** One that changes the workflow, `ExportOptions.plist`,
   `project.yml`, `scripts/release-preflight.sh` or
   `.github/actions/ios-project` runs the job `dry-run` instead: the preflight
   checks with stand-in values and the same Release archive, unsigned. It
-  names no secret and no environment; `upload` never runs for a pull
-  request, a fork's included.
+  names no secret and no environment, and `upload` is skipped for a pull
+  request. A fork's pull request gets no secrets at all. A pull request
+  from a branch of this repository runs its own copy of the workflow, so
+  there it is the environment's deployment rule above, not the workflow,
+  that keeps the secrets out of reach.
 - **The API key's role.** Ticket 110 says App Manager. Cloud-managed
   signing may need more: if the first run fails with "Cloud signing
   permission error", make the key Admin (or give it access to cloud-managed
@@ -284,10 +293,14 @@ ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8 ASC_ISSUER_ID=<issuer-uuid> ASC_KEY_
 ```
 
 The version is `CFBundleShortVersionString` in `xtool-Info.plist`; set it to
-the release's first. Always pass `BUILD_NUMBER`: `ship.sh`'s default, the
-UTC time as `yyyymmddHHMM`, is far above CI's run numbers, and App Store
-Connect refuses a build number lower than one it has for the same version,
-so CI's next upload of that version would fail. `ASC_ENTITLEMENTS_PATH` is
+the release's in your working copy only, not committed (`ios.yml` holds that
+file's keys equal to `project.yml`'s `0.1.0`). Always pass `BUILD_NUMBER`,
+and keep to one path per version: App Store Connect wants each build number
+of a version higher than the last. `ship.sh`'s default, the UTC time as
+`yyyymmddHHMM`, is far above CI's `<run number>.<attempt>`, so CI's next
+upload of that version would be refused. Above CI's last build for that
+version (the run summary names it), e.g. `<last run + 1>.1`, works until
+CI runs that number. `ASC_ENTITLEMENTS_PATH` is
 not needed yet; push (ticket 105) will request `aps-environment` through it.
 Like the workflow, it stops at the empty icon (actool: "AppIcon declares
 size 1024x1024 but no source file matched").
@@ -317,7 +330,8 @@ answers there, which is safe. Once decided:
 
 1. Set `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption` (`YES` or `NO`) on the
    `Krowk-iOS` target in `project.yml`, and `ITSAppUsesNonExemptEncryption`
-   in `xtool-Info.plist` (CI holds the two equal).
+   in `xtool-Info.plist`, with the same value (`ios.yml` checks every key
+   `xtool-Info.plist` sets against Xcode's, not the other way round).
 2. If Apple issues an export compliance code, set
    `INFOPLIST_KEY_ITSEncryptionExportComplianceCode` in `project.yml` and
    `ITSEncryptionExportComplianceCode` in `xtool-Info.plist` to it.
@@ -336,20 +350,23 @@ icon).
    and Access → Integrations → App Store Connect API → Team Keys → +, role
    App Manager (or Admin; see "The API key's role" above). Download the
    `.p8` (once only), note its Key ID and the Issuer ID, then, without
-   echoing them into shell history:
+   echoing them into shell history. Protect the environment first, then
+   add the secrets (Releasing to TestFlight → Secrets says why):
    ```
-   gh api -X PUT repos/krowkcom/krowk/environments/testflight >/dev/null   # if it isn't there yet
+   R=repos/krowkcom/krowk/environments/testflight
+   me=$(gh api user -q .id)
+   gh api -X PUT $R --input - <<< '{"deployment_branch_policy": {"protected_branches": false,
+     "custom_branch_policies": true}, "reviewers": [{"type": "User", "id": '"$me"'}]}'
+   gh api -X POST $R/deployment-branch-policies -f name=main -f type=branch
+   gh api -X POST $R/deployment-branch-policies -f name='ios-v*' -f type=tag
    gh secret set APPLE_TEAM_ID --env testflight -R krowkcom/krowk   # prompts for the value
    gh secret set ASC_KEY_ID    --env testflight -R krowkcom/krowk
    gh secret set ASC_ISSUER_ID --env testflight -R krowkcom/krowk
    gh secret set ASC_KEY       --env testflight -R krowkcom/krowk < AuthKey_XXXXXXXXXX.p8
    gh secret list --env testflight -R krowkcom/krowk                # the four names
    ```
-   In Settings → Environments → testflight, limit deployment branches and
-   tags to `main` and `ios-v*` and add yourself as a required reviewer; in
-   Settings → Rules → Rulesets, a tag ruleset on `ios-v*` that only you can
-   bypass (Secrets, above, says why). The team must also have a registered
-   device (Signing, above).
+   Then the tag ruleset on `ios-v*` (Releasing to TestFlight → Secrets).
+   The team must also have a registered device (Signing, above).
 3. **The export-compliance decision** (ticket 111): above.
 4. **An app icon.** A 1024×1024 PNG without alpha in
    `App/Assets.xcassets/AppIcon.appiconset`, named in its `Contents.json`.

@@ -78,7 +78,8 @@ case "${1:-}" in
     ;;
   signing-state)
     # Fails, printing nothing usable, when the keychain can't be listed.
-    ids=$(security find-identity -v -p codesigning)
+    # Not -v: an identity signing added that isn't valid is removed too.
+    ids=$(security find-identity -p codesigning)
     {
       awk '/^ *[0-9]+\) [0-9A-F]{40} / {print "identity\t" $2}' <<<"$ids"
       for dir in ~/Library/MobileDevice ~/Library/Developer/Xcode/UserData; do

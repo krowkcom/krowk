@@ -15,8 +15,11 @@ name: TestFlight
 # A pull request that changes this workflow, the export options, the
 # project spec or the action that builds it runs `dry-run` instead: the same
 # preflight checks with stand-in values and an unsigned Release archive. It
-# names no secret and no environment, so a fork's pull request reaches
-# nothing; `upload` never runs for a pull request.
+# names no secret and no environment, and `upload` is skipped for a pull
+# request. A fork's pull request gets no secrets at all; for a branch of this
+# repository, whose pull request runs its own copy of this file, what keeps
+# the secrets from it is the environment's deployment rule (main and ios-v*
+# tags) and its required reviewers, not this file.
 #
 # Actions pinned by commit; dist.yml says why.
 on:
@@ -39,8 +42,15 @@ on:
 permissions:
   contents: read
 
-# One run per ref. An upload is never cancelled halfway; a pull request's
-# dry run gives way to its next push.
+# bash -eo pipefail: GitHub's default for a step without `shell:` has no
+# pipefail, and a refused version piped into tee would carry on.
+defaults:
+  run:
+    shell: bash
+
+# One run per ref. A running upload is never cancelled (a third run queued
+# behind a waiting one replaces it, as GitHub does); a pull request's dry run
+# gives way to its next push.
 concurrency:
   group: testflight-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -89,7 +99,8 @@ jobs:
           INPUT_VERSION: ${{ inputs.version }}
         run: |
           apps/ios/scripts/release-preflight.sh secrets
-          apps/ios/scripts/release-preflight.sh version | tee -a "$GITHUB_ENV"
+          apps/ios/scripts/release-preflight.sh version > "$RUNNER_TEMP/version"
+          tee -a "$GITHUB_ENV" < "$RUNNER_TEMP/version"
 
       - name: Rust core and Xcode project
         uses: ./.github/actions/ios-project
@@ -128,6 +139,7 @@ jobs:
       - name: The archive's version, build number and icon
         run: |
           plist=$RUNNER_TEMP/Krowk.xcarchive/Products/Applications/Krowk.app/Info.plist
+          [ -n "$VERSION" ] && [ -n "$BUILD_NUMBER" ]
           test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$VERSION"
           test "$(plutil -extract CFBundleVersion raw "$plist")" = "$BUILD_NUMBER"
           plutil -extract CFBundleIconName raw "$plist" >/dev/null \
