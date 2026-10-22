@@ -118,6 +118,9 @@ pub(crate) struct Shared {
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
     running: Mutex<HashMap<String, Running>>,
+    /// Each subagent whose worktree is being readied, shown started but
+    /// with no turn yet: the switch that stops it (`subagent::worktree`).
+    pub(crate) readying: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     /// Each session's backend engine, with the instance it runs on: its
     /// process outlives a turn and serves the session's next one.
     backends: Mutex<HashMap<String, Backend>>,
@@ -416,6 +419,7 @@ impl Host {
                 instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
                 cfg,
                 running: Mutex::new(HashMap::new()),
+                readying: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
                 #[cfg(feature = "test-hooks")]
@@ -592,6 +596,12 @@ impl Host {
                         Some(Running { backend_child: Some(t), .. }) => t.clone(),
                         Some(r) => {
                             let _ = r.cancel.send(true);
+                            return Ok(None);
+                        }
+                        // A subagent shown started while its worktree is
+                        // readied: stopped there, and not run.
+                        None if let Some(stop) = shared.readying.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id) => {
+                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             return Ok(None);
                         }
                         None => return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),

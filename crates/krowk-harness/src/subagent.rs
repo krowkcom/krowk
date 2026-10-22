@@ -720,6 +720,11 @@ impl Subagents {
         // made and readied: its setup command stops, and it is discarded.
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
+        // Shown started from once it is made, so interrupted alone as any
+        // child is: by its own id, until it is readied.
+        let readying = &self.0.host.readying;
+        let id = child.clone();
+        readying.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), stop.clone());
         let (events, started) = (events.clone(), std::cell::Cell::new(Some(started)));
         let mut made = tokio::task::spawn_blocking(move || {
             let tell = || {
@@ -738,6 +743,7 @@ impl Subagents {
                 made.await
             }
         };
+        readying.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         match made {
             Ok(Ok(made)) => Ok(made),
             Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
