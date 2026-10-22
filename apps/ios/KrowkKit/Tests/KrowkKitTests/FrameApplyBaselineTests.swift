@@ -44,12 +44,17 @@ final class FrameApplyBaselineTests: XCTestCase {
             late.apply += run.apply
             late.laid += run.laid
         }
+        // The frame a 3,000-word answer completes in: drawn whole once, in
+        // one view, with its links.
+        var completing: [Duration] = []
+        for _ in 0..<3 { completing.append(Self.completion(after: 3_000)) }
         let line = Self.summary("krowk.frame.apply baseline (the apply)", perFrame, hz: Self.hz) + "\n"
             + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", withLayout, hz: Self.hz) + "\n"
             + Self.summary("krowk.frame.apply baseline (the apply)", fast.apply, hz: 120) + "\n"
             + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", fast.laid, hz: 120) + "\n"
             + Self.summary("krowk.frame.apply baseline after 3,000 words (the apply)", late.apply, hz: 120) + "\n"
-            + Self.summary("krowk.frame.apply baseline after 3,000 words (the apply and the frame's layout)", late.laid, hz: 120)
+            + Self.summary("krowk.frame.apply baseline after 3,000 words (the apply and the frame's layout)", late.laid, hz: 120) + "\n"
+            + Self.summary("krowk.frame.apply baseline, the frame a 3,000-word answer completes in (the apply and the frame's layout)", completing, hz: 120)
         print(line)
         let attachment = XCTAttachment(string: line)
         attachment.name = "krowk.frame.apply baseline"
@@ -64,6 +69,34 @@ final class FrameApplyBaselineTests: XCTestCase {
         return String(format: "%@: %d frames at %d tokens/s, %d Hz: mean %.0f µs, p50 %.0f µs, p95 %.0f µs, max %.0f µs",
                       what, sorted.count, rate, hz, mean, micros(sorted[sorted.count / 2]),
                       micros(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]), micros(sorted[sorted.count - 1]))
+    }
+
+    /// A screen with an answer of `words` words streamed, then its logged
+    /// completion: that frame's apply and layout.
+    @MainActor
+    static func completion(after words: Int) -> Duration {
+        let session = StubSession()
+        let row = SessionRow(id: TranscriptScreenTests.session, title: "t", detail: "", live: true, accessibilityLabel: "t")
+        let screen = TranscriptViewController(row: row, session: session)
+        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
+        window.rootViewController = UINavigationController(rootViewController: screen)
+        window.makeKeyAndVisible()
+        defer { window.isHidden = true }
+        let text = (0..<words).map { $0 % 12 == 11 ? "w\($0)\n" : "w\($0) " }.joined()
+        session.bring(TranscriptScreenTests.turn, attach: true)
+        session.bring([.started(session: TranscriptScreenTests.session, turn: "t2", item: "a2", kind: .assistant)])
+        session.bring([.delta(session: TranscriptScreenTests.session, item: "a2", text: text)])
+        screen.frame()
+        RunLoop.main.run(until: Date.now.addingTimeInterval(0.05))
+        window.layoutIfNeeded()
+        session.bring([.logged([TranscriptEvent(id: "e99", sessionID: TranscriptScreenTests.session, change: .assistantText(item: "a2", text: text))])])
+        let clock = ContinuousClock()
+        let start = clock.now
+        screen.frame()
+        // The completion is drawn by the item's observation, a turn later.
+        RunLoop.main.run(until: Date.now.addingTimeInterval(0.001))
+        window.layoutIfNeeded()
+        return clock.now - start
     }
 
     /// A screen with a turn drawn and an answer started, then a second of

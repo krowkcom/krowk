@@ -143,6 +143,18 @@ struct FrameApplyTests {
         #expect(cell.textView.view.text == whole)
     }
 
+    @Test("R-LAG-7: an unbroken run (no space, no line break) is cut into blocks too, between two characters, nothing lost")
+    func unbrokenRun() async throws {
+        let (session, screen, window, cell) = try await streaming("x")
+        defer { window.isHidden = true }
+        let run = String(repeating: "数据", count: 400) + "👍🏽" + String(repeating: "y", count: 1_500)
+        session.bring([Self.delta("a2", run)])
+        screen.frame()
+        #expect(cell.text.blocks.count >= 2)
+        #expect(cell.text.live.storage.length <= TranscriptStreamingText.blockLimit)
+        #expect(cell.text.drawnText == "x" + run)
+    }
+
     @Test("R-LAG-7: a completion that differs from what streamed (deltas a gap lost) replaces the text; one that's equal leaves it be")
     func completionReplaces() {
         let model = TranscriptModel(sessionID: Self.session)

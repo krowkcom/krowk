@@ -223,12 +223,18 @@ final class TranscriptStreamingText {
             if cut.location == NSNotFound || cut.location == 0 {
                 cut = text.rangeOfCharacter(from: .whitespaces, options: .backwards, range: within)
             }
-            // One unbroken run: left whole in the live view.
-            guard cut.location != NSNotFound, cut.location > 0 else { return }
+            if cut.location == NSNotFound || cut.location == 0 {
+                // One unbroken run (CJK prose, a blob): cut between two
+                // characters, nothing left out; it wraps there anyway.
+                let at = text.rangeOfComposedCharacterSequence(at: limit).location
+                guard at > 0 else { return }
+                cut = NSRange(location: at, length: 0)
+            }
             let block = TranscriptTextView()
             block.attributedText = live.storage.attributedSubstring(from: NSRange(location: 0, length: cut.location))
             block.openLink = openLink
             block.view.accessibilityLabel = live.view.accessibilityLabel
+            block.view.accessibilityIdentifier = "transcript-text-block"
             view.insertArrangedSubview(block.view, at: blocks.count)
             blocks.append(block)
             cuts.append(text.substring(with: cut))

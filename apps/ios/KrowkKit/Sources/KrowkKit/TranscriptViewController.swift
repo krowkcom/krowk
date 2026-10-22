@@ -60,6 +60,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var dragFrom: CGFloat?
     /// An assistive scroll down, animated: decided once it lands.
     private var assistiveDown = false
+    /// VoiceOver's focus observer, removed as the screen goes.
+    private var focusObserver: (any NSObjectProtocol)?
     /// Rows have been drawn: no spinner shows again.
     public private(set) var drewRows = false
     /// The rows as last applied.
@@ -88,6 +90,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// fires to find its screen gone): invalidated here.
     isolated deinit {
         frames?.invalidate()
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         session?.stop()
     }
 
@@ -217,7 +220,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
         // VoiceOver moving to a row above the last is reading back: not
         // following, or the end would pull the row away every frame.
-        NotificationCenter.default.addObserver(forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main) { [weak self] note in
+        focusObserver = NotificationCenter.default.addObserver(forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main) { [weak self] note in
             // Delivered on the main queue, where it was posted: the element
             // never leaves it.
             nonisolated(unsafe) let element = note.userInfo?[UIAccessibility.focusedElementUserInfoKey] as AnyObject?
@@ -260,6 +263,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     }
 
     private func leave() {
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        focusObserver = nil
         frames?.invalidate()
         frames = nil
         driver?.ticker = nil
@@ -346,13 +351,17 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         return collectionView.contentOffset.y >= bottomOffset - 8 - grown
     }
 
-    /// VoiceOver focused `element`: in a row above the last, it's reading
-    /// back, and the list stops following.
+    /// VoiceOver focused `element`: in a row above the last, or in the
+    /// last above what's at the bottom of the screen (an early block of a
+    /// streaming answer), it's reading back, and the list stops following.
     func focused(_ element: AnyObject?) {
-        guard let collectionView, var view = element as? UIView, view.isDescendant(of: collectionView) else { return }
+        guard let collectionView, let focused = element as? UIView, focused.isDescendant(of: collectionView) else { return }
+        var view = focused
         while !(view is UICollectionViewCell), let up = view.superview { view = up }
         guard let cell = view as? UICollectionViewCell, let path = collectionView.indexPath(for: cell) else { return }
-        if path.item < collectionView.numberOfItems(inSection: 0) - 1 { follow(false) }
+        let bottom = collectionView.contentOffset.y + collectionView.bounds.height - collectionView.adjustedContentInset.bottom
+        let reachesBottom = focused.convert(focused.bounds, to: collectionView).maxY >= bottom - 44
+        if path.item < collectionView.numberOfItems(inSection: 0) - 1 || !reachesBottom { follow(false) }
     }
 
     /// VoiceOver's three-finger scroll (or another assistive one) moved the

@@ -50,6 +50,10 @@ public actor RelayConnection: LiveSession {
     /// fetched for an earlier one is dropped.
     private var ticketAsk: UInt64 = 0
     private var started = false
+    /// Gaps seen: a later one restarts the wait for its catch-up.
+    private var gaps = 0
+    /// How long `catching up…` waits for a catch-up that may bring nothing.
+    static let gapWait: DispatchTimeInterval = .seconds(5)
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
 
@@ -175,7 +179,9 @@ public actor RelayConnection: LiveSession {
                     switch update {
                     case .host(let present): tracker.host(present)
                     case .note(let text): tracker.note(text)
-                    case .gap: tracker.gap()
+                    case .gap:
+                        tracker.gap()
+                        settleGap()
                     case .caughtUp: tracker.caughtUp()
                     case .failed(let detail): failure = detail
                     default: break
@@ -194,6 +200,21 @@ public actor RelayConnection: LiveSession {
         }
         publishIfChanged()
         armWake()
+    }
+
+    /// A gap's catch-up that brings nothing new (the batch the relay
+    /// dropped held only typing) is never announced by the core: after
+    /// `gapWait` with no `caughtUp`, the bar reads live again.
+    private func settleGap() {
+        gaps += 1
+        let gap = gaps
+        queue.asyncAfter(deadline: .now() + Self.gapWait) { [weak self] in
+            self?.assumeIsolated { me in
+                guard !me.done, gap == me.gaps else { return }
+                me.tracker.caughtUp()
+                me.publishIfChanged()
+            }
+        }
     }
 
     private func armWake() {

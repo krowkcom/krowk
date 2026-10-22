@@ -87,9 +87,8 @@ fleet's own session hosted for every other test. A POST to
 `<url>/<id>/turn` types a prompt (its body) at host A in that session and
 answers `started`: "Please stream a long answer" has the model make a
 `read` call, then stream 120 numbered lines at 200 tokens a second, the
-turn `LiveFollowTests` and the UI test follow live; "Please stream a very
-long answer" streams 300 lines, which `LiveFollowTests` holds to keeping
-up.
+turn `LiveFollowTests` and the UI test follow live ("Please stream a very
+long answer" streams 300 lines, for a longer run by hand).
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build

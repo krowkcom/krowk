@@ -51,8 +51,8 @@ pub const READ: &str = "toolu_01Read";
 pub const STREAM: &str = "toolu_01Stream";
 /// The long answer's lines, about eleven tokens each: about 6.6 s.
 pub const LONG_LINES: usize = 120;
-/// The very long answer's, for a UI test that scrolls mid-stream: about
-/// 16.5 s, as the model makes a second `read` call first.
+/// The very long answer's, about 16.5 s, for a longer run by hand (and
+/// `fake_fleet.rs`, which holds it to reaching a viewer whole).
 pub const VERY_LONG_LINES: usize = 300;
 /// The `read` before the very long answer.
 pub const STREAM_LONGER: &str = "toolu_01StreamLonger";
