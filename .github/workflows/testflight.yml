@@ -1,0 +1,250 @@
+name: TestFlight
+
+# R-IOS-16: the iPhone app to TestFlight, from a tag. `git tag -a ios-v0.1.0
+# -m "iOS 0.1.0" && git push origin ios-v0.1.0` builds the Rust core,
+# archives the app in Release with cloud-managed automatic signing and
+# uploads it to App Store Connect, with the person's App Store Connect API
+# key from the `testflight` environment. No certificate, profile or
+# keychain is kept in the repo or its secrets: Xcode fetches what it needs
+# with the key, for this job only. apps/ios/README.md → Releasing to
+# TestFlight has the person's side.
+#
+# Its own tags, ios-v<major>.<minor>.<patch>, never the CLI's v*: release.yml
+# answers those, and the two release independently (R-REPO-1).
+#
+# A pull request that changes this workflow, the export options, the
+# project spec or the action that builds it runs `dry-run` instead: the same
+# preflight checks with stand-in values and an unsigned Release archive. It
+# names no secret and no environment, so a fork's pull request reaches
+# nothing; `upload` never runs for a pull request.
+#
+# Actions pinned by commit; dist.yml says why.
+on:
+  push:
+    tags: ["ios-v[0-9]*.[0-9]*.[0-9]*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "The app's version, <major>.<minor>.<patch> (e.g. 0.1.0). Run from main or an ios-v* tag."
+        required: true
+        type: string
+  pull_request:
+    paths:
+      - ".github/workflows/testflight.yml"
+      - ".github/actions/ios-project/**"
+      - "apps/ios/ExportOptions.plist"
+      - "apps/ios/project.yml"
+      - "apps/ios/scripts/release-preflight.sh"
+
+permissions:
+  contents: read
+
+# One run per ref. An upload is never cancelled halfway; a pull request's
+# dry run gives way to its next push.
+concurrency:
+  group: testflight-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  upload:
+    if: github.event_name != 'pull_request'
+    # ios.yml's runner: Xcode 26 with the iOS 26 SDK.
+    runs-on: macos-26
+    # The four secrets live here, so only a job that names it can read
+    # them. The person can add required reviewers and limit it to ios-v*
+    # tags and main (Settings → Environments → testflight).
+    environment: testflight
+    timeout-minutes: 60
+    steps:
+      - name: "R-IOS-16: the four testflight secrets are set"
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+        # Read from the workflow itself, not the checkout: it runs before
+        # anything is checked out.
+        run: |
+          missing=()
+          for name in APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ "${#missing[@]}" != 0 ]; then
+            echo "::error::the testflight environment is missing ${missing[*]}; apps/ios/README.md → Releasing to TestFlight says how to add them"
+            exit 1
+          fi
+
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "R-IOS-16: the secrets' shapes, the version and the build number"
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          apps/ios/scripts/release-preflight.sh secrets
+          apps/ios/scripts/release-preflight.sh version | tee -a "$GITHUB_ENV"
+
+      - name: Rust core and Xcode project
+        uses: ./.github/actions/ios-project
+
+      # Written for this job only, owner-readable, and removed by the last
+      # step whatever happens. What signing adds to the runner's keychain
+      # and profile folders is noted first, so that step removes it too.
+      - name: The App Store Connect key, for this job only
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY: ${{ secrets.ASC_KEY }}
+        run: |
+          umask 077
+          printf '%s' "$ASC_KEY" > "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+          security find-identity -v -p codesigning | awk '/\)/ {print $2}' | sort > "$RUNNER_TEMP/identities-before" || true
+          find ~/Library/MobileDevice ~/Library/Developer/Xcode/UserData -name '*.mobileprovision' 2>/dev/null | sort > "$RUNNER_TEMP/profiles-before" || true
+
+      - name: Archive, signed by Xcode with the key
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          auth=(-allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          xcodebuild archive -quiet -skipPackagePluginValidation \
+            -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
+            -destination "generic/platform=iOS" -archivePath "$RUNNER_TEMP/Krowk.xcarchive" \
+            COMPILER_INDEX_STORE_ENABLE=NO MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID" "${auth[@]}"
+
+      # App Store Connect refuses a build without an app icon (ITMS-90713),
+      # so stop before uploading one.
+      - name: The archive's version, build number and icon
+        run: |
+          plist=$RUNNER_TEMP/Krowk.xcarchive/Products/Applications/Krowk.app/Info.plist
+          test "$(plutil -extract CFBundleShortVersionString raw "$plist")" = "$VERSION"
+          test "$(plutil -extract CFBundleVersion raw "$plist")" = "$BUILD_NUMBER"
+          plutil -extract CFBundleIconName raw "$plist" >/dev/null \
+            || { echo "::error::the app has no icon (apps/ios/App/Assets.xcassets/AppIcon.appiconset is empty); App Store Connect refuses it" >&2; exit 1; }
+
+      # destination=upload: exporting is uploading, re-signed with Apple's
+      # cloud-managed distribution certificate.
+      - name: Export and upload to App Store Connect
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+        run: |
+          auth=(-allowProvisioningUpdates -authenticationKeyPath "$RUNNER_TEMP/AuthKey_$ASC_KEY_ID.p8"
+            -authenticationKeyID "$ASC_KEY_ID" -authenticationKeyIssuerID "$ASC_ISSUER_ID")
+          cp apps/ios/ExportOptions.plist "$RUNNER_TEMP/ExportOptions.plist"
+          plutil -replace teamID -string "$APPLE_TEAM_ID" "$RUNNER_TEMP/ExportOptions.plist"
+          xcodebuild -exportArchive -archivePath "$RUNNER_TEMP/Krowk.xcarchive" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" -exportPath "$RUNNER_TEMP/export" "${auth[@]}"
+
+      - name: Remove the key, and what signing left on the runner
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP"/AuthKey_*.p8 "$RUNNER_TEMP/ExportOptions.plist"
+          rm -rf "$RUNNER_TEMP/export"
+          if [ -f "$RUNNER_TEMP/identities-before" ]; then
+            security find-identity -v -p codesigning | awk '/\)/ {print $2}' | sort \
+              | comm -13 "$RUNNER_TEMP/identities-before" - \
+              | while read -r id; do security delete-identity -Z "$id" >/dev/null || true; done
+          fi
+          if [ -f "$RUNNER_TEMP/profiles-before" ]; then
+            find ~/Library/MobileDevice ~/Library/Developer/Xcode/UserData -name '*.mobileprovision' 2>/dev/null | sort \
+              | comm -13 "$RUNNER_TEMP/profiles-before" - \
+              | while IFS= read -r p; do rm -f "$p"; done
+          fi
+
+      - name: Summary
+        if: ${{ always() && env.VERSION != '' }}
+        run: |
+          {
+            echo "### krowk for iPhone $VERSION ($BUILD_NUMBER)"
+            echo
+            echo "- Version (CFBundleShortVersionString): \`$VERSION\`"
+            echo "- Build (CFBundleVersion): \`$BUILD_NUMBER\`"
+            echo "- Commit: \`$GITHUB_SHA\`"
+            echo "- Uploaded: ${{ job.status == 'success' && 'yes; App Store Connect processes it before TestFlight lists it' || 'no, the job failed' }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # What a pull request can check without the person's key: the preflight
+  # with stand-in values, and the same archive unsigned.
+  dry-run:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: "R-IOS-16: the preflight refuses what it should"
+        run: |
+          pf=apps/ios/scripts/release-preflight.sh
+          ok() { "$@" >/dev/null || { echo "refused: $*" >&2; exit 1; }; }
+          no() { if "$@" >/dev/null 2>&1; then echo "accepted: $*" >&2; exit 1; fi; }
+          # Secrets: none, then one wrong, then all four stand-ins.
+          out=$(env -u APPLE_TEAM_ID -u ASC_KEY_ID -u ASC_ISSUER_ID -u ASC_KEY $pf secrets 2>&1) && exit 1
+          echo "expected: ${out#::error::}"
+          grep -q "missing APPLE_TEAM_ID ASC_KEY_ID ASC_ISSUER_ID ASC_KEY;" <<<"$out"
+          key=$'-----BEGIN PRIVATE KEY-----\nstand-in\n-----END PRIVATE KEY-----'
+          stand_in=(APPLE_TEAM_ID=ABCDE12345 ASC_KEY_ID=KEY1234567 ASC_ISSUER_ID=69a6de70-0000-47e3-e053-5b8c7c11a4d1 "ASC_KEY=$key")
+          ok env "${stand_in[@]}" $pf secrets
+          no env "${stand_in[@]}" APPLE_TEAM_ID="ABCDE12345 -x" $pf secrets
+          no env "${stand_in[@]}" ASC_KEY=AuthKey_KEY1234567.p8 $pf secrets
+          # Versions: a tag, a dispatch from main, and what is refused.
+          run=(GITHUB_RUN_NUMBER=12 GITHUB_RUN_ATTEMPT=2)
+          test "$(env "${run[@]}" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/ios-v1.2.3 GITHUB_REF_NAME=ios-v1.2.3 $pf version)" \
+            = $'VERSION=1.2.3\nBUILD_NUMBER=12.2'
+          ok env "${run[@]}" GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_VERSION=0.1.0 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/v1.2.3 GITHUB_REF_NAME=v1.2.3 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/ios-v1.2.3-rc1 GITHUB_REF_NAME=ios-v1.2.3-rc1 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_VERSION=1.2 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/main GITHUB_REF_NAME=main INPUT_VERSION=01.2.3 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/topic GITHUB_REF_NAME=topic INPUT_VERSION=0.1.0 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/tags/ios-v0.1.0 GITHUB_REF_NAME=ios-v0.1.0 INPUT_VERSION=0.2.0 $pf version
+          no env "${run[@]}" GITHUB_EVENT_NAME=pull_request GITHUB_REF=refs/pull/1/merge GITHUB_REF_NAME=1/merge $pf version
+          echo "VERSION=0.1.0" >> "$GITHUB_ENV"
+          echo "BUILD_NUMBER=$GITHUB_RUN_NUMBER.$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
+
+      - name: The export options, as the upload sets them
+        run: |
+          cp apps/ios/ExportOptions.plist "$RUNNER_TEMP/ExportOptions.plist"
+          plutil -replace teamID -string ABCDE12345 "$RUNNER_TEMP/ExportOptions.plist"
+          plutil -lint "$RUNNER_TEMP/ExportOptions.plist"
+          plutil -convert json -o - "$RUNNER_TEMP/ExportOptions.plist" | jq -e '
+            . == {method: "app-store-connect", destination: "upload", teamID: "ABCDE12345",
+                  signingStyle: "automatic", manageAppVersionAndBuildNumber: false}'
+
+      - name: Rust core and Xcode project
+        uses: ./.github/actions/ios-project
+
+      - name: Archive, unsigned
+        run: |
+          xcodebuild archive -quiet -skipPackagePluginValidation \
+            -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
+            -destination "generic/platform=iOS" -archivePath "$RUNNER_TEMP/Krowk.xcarchive" \
+            COMPILER_INDEX_STORE_ENABLE=NO MARKETING_VERSION="$VERSION" CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: The archive's version, build number and icon
+        run: |
+          app=$RUNNER_TEMP/Krowk.xcarchive/Products/Applications/Krowk.app
+          plutil -p "$app/Info.plist"
+          test "$(plutil -extract CFBundleShortVersionString raw "$app/Info.plist")" = "$VERSION"
+          test "$(plutil -extract CFBundleVersion raw "$app/Info.plist")" = "$BUILD_NUMBER"
+          test "$(lipo -archs "$app/Krowk")" = arm64
+          # The person's answer (apps/ios/README.md → Export compliance).
+          if plutil -extract ITSAppUsesNonExemptEncryption raw "$app/Info.plist" >/dev/null 2>&1; then
+            echo "::error::ITSAppUsesNonExemptEncryption is set; it is the person's to set (apps/ios/README.md)" >&2
+            exit 1
+          fi
+          plutil -extract CFBundleIconName raw "$app/Info.plist" >/dev/null \
+            || echo "::warning::the app has no icon yet; the upload job stops here until AppIcon.appiconset has one"
