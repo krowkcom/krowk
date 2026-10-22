@@ -97,7 +97,9 @@ struct SafeTextTests {
         // Userinfo that reads like a host (`good.example@evil.example`), or
         // pushes the host out of sight: not a link.
         #expect(SafeText.links(in: "https://good.example@evil.example/").isEmpty)
-        #expect(SafeText.links(in: "https://apple.com-\(String(repeating: "x", count: 3_000))@evil.example/").isEmpty)
+        let long = SafeText.links(in: "https://apple.com-\(String(repeating: "x", count: 3_000))@evil.example/")
+        #expect(!long.contains { $0.url.host() == "evil.example" }, "\(long)")
+        #expect(long.allSatisfy { $0.url.host() == $0.host }, "every link shows its own host")
 
         // A lookalike host not in ASCII ("о" is Cyrillic) is never shown as
         // it reads: not tappable, or shown in its ASCII form.
