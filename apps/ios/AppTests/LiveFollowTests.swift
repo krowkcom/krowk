@@ -260,11 +260,13 @@ extension HostedKeychain {
     }
 }
 
-/// Counts what it is handed: ticket 91's sink stands in here.
+/// Counts what it is handed, in place of the screen's ApprovalQueue.
 @MainActor
 final class CountingApprovals: ApprovalSink {
     var requested = 0
     var resolved = 0
+    var ended = 0
     func requested(_ request: ApprovalRequest) { requested += 1 }
     func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) { resolved += 1 }
+    func turnEnded(sessionId: String, turnId: String) { ended += 1 }
 }
