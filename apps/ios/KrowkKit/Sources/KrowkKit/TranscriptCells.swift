@@ -244,6 +244,27 @@ final class TranscriptStreamingText {
         }
     }
 
+    /// `whole`, the item's completed text, kept in the blocks it streamed
+    /// into, if that's what they hold: it's what streamed (nothing a gap
+    /// lost), under the 64 KiB cap, and every cut was at a line break (a
+    /// space cut would leave a paragraph broken, a character cut could
+    /// split a link). Only the views holding a link are drawn again, with
+    /// it; the rest keep their layout, so an answer's last frame lays out
+    /// no more than its others. Whether it did.
+    func finish(_ whole: String, font: UIFont, color: UIColor = .label) -> Bool {
+        guard streamed != nil, !blocks.isEmpty, whole.utf8.count <= SafeText.textLimit,
+              cuts.allSatisfy({ $0.count == 1 && $0.first?.isNewline == true }),
+              SafeText.clean(whole) == drawnText else { return false }
+        for view in blocks + [live] {
+            let text = view.view.text ?? ""
+            if !SafeText.links(in: text).isEmpty {
+                view.attributedText = SafeText.attributed(text, font: font, color: color)
+            }
+        }
+        streamed = nil
+        return true
+    }
+
     /// Done streaming, or showing something else: the blocks go, and the
     /// next stream draws whole.
     func end() {
@@ -281,6 +302,8 @@ final class TranscriptTextCell: TranscriptCell {
     private var user = false
     /// The layout last configured: a prompt's, an answer's, or none yet.
     private var configuredUser: Bool?
+    /// The item whose completion was kept in the blocks it streamed into.
+    private var finished: (item: ObjectIdentifier, font: UIFont)?
     /// The streaming state (for the tests).
     var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)? { text.streamed }
     var appends: Int { text.appends }
@@ -340,6 +363,14 @@ final class TranscriptTextCell: TranscriptCell {
         }
         if text.openLink == nil { text.openLink = { [weak self] in self?.openLink?($0) } }
         guard state.done else { return stream(state, font: font) }
+        if let finished, finished.item == ObjectIdentifier(state), finished.font == font { return }
+        if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,
+           text.finish(state.text, font: font) {
+            finished = (ObjectIdentifier(state), font)
+            shown = nil
+            return
+        }
+        finished = nil
         let drawn = state.drawing("text", source: state.text, font: font) {
             SafeText.capped(state.text, font: font)
         }
@@ -396,6 +427,7 @@ final class TranscriptTextCell: TranscriptCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         shown = nil
+        finished = nil
         text.end()
     }
 }

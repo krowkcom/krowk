@@ -359,7 +359,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         var view = focused
         while !(view is UICollectionViewCell), let up = view.superview { view = up }
         guard let cell = view as? UICollectionViewCell, let path = collectionView.indexPath(for: cell) else { return }
-        let bottom = collectionView.contentOffset.y + collectionView.bounds.height - collectionView.adjustedContentInset.bottom
+        // The bottom of what's on screen, or of the content if it's shorter.
+        let bottom = min(collectionView.contentOffset.y + collectionView.bounds.height - collectionView.adjustedContentInset.bottom,
+                         collectionView.contentSize.height)
         let reachesBottom = focused.convert(focused.bounds, to: collectionView).maxY >= bottom - 44
         if path.item < collectionView.numberOfItems(inSection: 0) - 1 || !reachesBottom { follow(false) }
     }

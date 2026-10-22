@@ -115,7 +115,7 @@ struct FrameApplyTests {
         #expect(!screen.model.isStreaming)
     }
 
-    @Test("R-LAG-7: a long answer streams into blocks, and a frame edits only the last: the blocks above keep their views and text; once whole it's one view again")
+    @Test("R-LAG-7: a long answer streams into blocks, and a frame edits only the last: the blocks above keep their views and text; once whole it stays in them unless its text changed")
     func onlyTheLastBlock() async throws {
         let (session, screen, window, cell) = try await streaming("Start\n")
         defer { window.isHidden = true }
@@ -139,8 +139,25 @@ struct FrameApplyTests {
         session.bring([.logged([Self.event("e10", .assistantText(item: "a2", text: whole), parent: "e6")])])
         screen.frame()
         try await waitFor { cell.streamed == nil }
-        #expect(cell.text.blocks.isEmpty)
-        #expect(cell.textView.view.text == whole)
+        // Whole, as it streamed, cut only at line breaks: kept in its
+        // blocks, none laid out again.
+        #expect(cell.text.blocks.map(\.view) == blocks.map(\.view))
+        #expect(cell.text.drawnText == whole)
+
+        // A completion that differs (a gap lost some): one view, whole.
+        let (session2, screen2, window2, cell2) = try await streaming("Start\n")
+        defer { window2.isHidden = true }
+        for _ in 0..<40 {
+            session2.bring([Self.delta("a2", line)])
+            screen2.frame()
+        }
+        #expect(!cell2.text.blocks.isEmpty)
+        let other = whole + " and an end the stream lost"
+        session2.bring([.logged([Self.event("e10", .assistantText(item: "a2", text: other), parent: "e6")])])
+        screen2.frame()
+        try await waitFor { cell2.streamed == nil }
+        #expect(cell2.text.blocks.isEmpty)
+        #expect(cell2.textView.view.text == other)
     }
 
     @Test("R-LAG-7: an unbroken run (no space, no line break) is cut into blocks too, between two characters, nothing lost")
