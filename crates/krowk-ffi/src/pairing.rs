@@ -218,7 +218,8 @@ impl Account {
     /// As [`Account::join_pairing`], with a scanned invite: before the code
     /// is spent, the phone checks that it is signed in as the invite's
     /// person and that the open pairing is the one on the screen it was
-    /// scanned from; refused with `invite_mismatch` otherwise, nothing
+    /// scanned from; refused with `invite_other_account` or, the account
+    /// checked first, `invite_other_pairing` otherwise, nothing
     /// sent. A mismatch costs no guess.
     pub fn join_invite(&self, invite: PairingInvite, name: String, os: String) -> Result<Joined, KrowkError> {
         let PairingInvite { code, user_id, device } = invite;
@@ -321,16 +322,21 @@ impl Account {
             }
             _ => {}
         }
+        // The account first: another person's invite names another device
+        // too, and whether or not a pairing is open, it is the account the
+        // person must be told about.
+        let user_id = self.client.verify_key().map_err(KrowkError::from).map_err(before)?.user_id;
+        if let Some(expected) = &expected
+            && expected.user_id != user_id
+        {
+            return Err(refused("invite_other_account", "that code is for another person's devices — sign in as the person it was shown to; nothing was sent"));
+        }
         let open = self.client.find_open_pairing().map_err(no_pairing).map_err(before)?;
         let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again")).map_err(before)?;
-        let user_id = self.client.verify_key().map_err(KrowkError::from).map_err(before)?.user_id;
-        if let Some(expected) = expected {
-            if expected.user_id != user_id {
-                return Err(refused("invite_mismatch", "that code is for another person's devices — sign in as the person it was shown to; nothing was sent"));
-            }
-            if expected.device != a_device.to_string() {
-                return Err(refused("invite_mismatch", "the pairing open now is not the one that code was shown for — scan the code on the screen again; nothing was sent"));
-            }
+        if let Some(expected) = expected
+            && expected.device != a_device.to_string()
+        {
+            return Err(refused("invite_other_pairing", "the pairing open now is not the one that code was shown for — scan the code on the screen again; nothing was sent"));
         }
         if cancel.load(Ordering::SeqCst) {
             return Err(cancelled());

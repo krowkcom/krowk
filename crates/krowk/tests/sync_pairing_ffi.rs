@@ -310,6 +310,9 @@ fn r_e2e_3_a_malformed_code_sends_nothing_and_no_open_pairing_says_where_to_open
     let (code, detail) = refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into(), "iOS 26.1".into()));
     assert_eq!(code, "no_pairing");
     assert!(matches!(account.open_pairing(), Err(KrowkError::Refused { code, .. }) if code == "no_pairing"));
+    // Another person's invite says so, pairing open or not.
+    let foreign = krowk_ffi::PairingInvite { code: "K7QF-9M3X".into(), user_id: "someone-else".into(), device: "0123456789abcdef0123456789abcdef".into() };
+    assert_eq!(refusal(account.join_invite(foreign, "Test iPhone".into(), "iOS 26.1".into())).0, "invite_other_account");
     assert!(detail.contains("krowk devices add"), "{detail}");
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -374,8 +377,14 @@ fn r_e2e_3_a_scanned_invite_for_another_pairing_spends_nothing_and_the_right_one
     let (a, _reaped, a_err, code) = add(&laptop, &api);
     let invite = |code: &str, user: &str, device: &str| krowk_ffi::PairingInvite { code: code.into(), user_id: user.into(), device: device.into() };
     let other_device = "0123456789abcdef0123456789abcdef";
-    for wrong in [invite(&code, &user_id, other_device), invite(&code, "someone-else", &laptop_device)] {
-        assert_eq!(refusal(account.join_invite(wrong, "Test iPhone".into(), "iOS 26.1".into())).0, "invite_mismatch");
+    // The account is checked first: another person's code names another
+    // device too, and it is the account the phone must be told about.
+    for (wrong, code) in [
+        (invite(&code, &user_id, other_device), "invite_other_pairing"),
+        (invite(&code, "someone-else", &laptop_device), "invite_other_account"),
+        (invite(&code, "someone-else", other_device), "invite_other_account"),
+    ] {
+        assert_eq!(refusal(account.join_invite(wrong, "Test iPhone".into(), "iOS 26.1".into())).0, code);
     }
     let open = krowk_api::Client::new(&api, PHONE).find_open_pairing().unwrap();
     assert!(open.state == "open" && open.joiner_message.is_empty(), "nothing was sent: {open:?}");

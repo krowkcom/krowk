@@ -147,7 +147,9 @@ use krowk_client::pairing::PairingCode;
 /// export returns for a case counts too, though the file can't show it:
 /// Swift that matches on the old variant would misread it (4: `SignIn.wait`
 /// refuses a key the storage won't keep as `credentials_unwritable`; 5:
-/// `join_pairing` and `join_invite` take the os the phone runs).
+/// `join_pairing` and `join_invite` take the os the phone runs, and
+/// `join_invite`'s `invite_mismatch` is `invite_other_account` or
+/// `invite_other_pairing`).
 pub const FFI_API_VERSION: u32 = 5;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
