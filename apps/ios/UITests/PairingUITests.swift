@@ -4,12 +4,14 @@
 // ("Pairing with host-a"), host A says yes by itself, and the app reaches
 // "This iPhone is on your devices". Continue opens Sessions (R-IOS-7,
 // R-IOS-3): the fleet's demo session, live on host-a; a tap opens its
-// place. Relaunched, it opens on Sessions, skipping onboarding. The
+// place, joined live through the fleet's relay, the bar under the
+// navigation bar reading "live" (R-IOS-1, R-CLIENT-1). Relaunched, it opens on Sessions, skipping onboarding. The
 // simulator has no camera, so the scan button is absent. Screenshots of
 // each screen, light and dark, are kept in the results.
 //
-// Needs the fleet: apps/ios/scripts/with-fleet.sh hands its API URL and
-// its fresh-code URL to this runner as KROWK_API_URL and KROWK_PAIR_URL.
+// Needs the fleet: apps/ios/scripts/with-fleet.sh hands its API URL, its
+// relay and its fresh-code URL to this runner as KROWK_API_URL,
+// KROWK_RELAY_URL and KROWK_PAIR_URL.
 import XCTest
 
 final class PairingUITests: XCTestCase {
@@ -44,9 +46,11 @@ final class PairingUITests: XCTestCase {
     @MainActor
     private func pair(_ appearance: XCUIDevice.Appearance) async throws {
         let api = try Self.env("KROWK_API_URL")
+        let relay = try Self.env("KROWK_RELAY_URL")
         let app = XCUIApplication()
         app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
         app.launchEnvironment["KROWK_API_URL"] = api
+        app.launchEnvironment["KROWK_RELAY_URL"] = relay
         app.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
         // Host A refuses a name that reads like one already on its list.
         app.launchEnvironment["KROWK_DEVICE_NAME"] = "UI iPhone \(UUID().uuidString.prefix(8))"
@@ -99,12 +103,22 @@ final class PairingUITests: XCTestCase {
         Screenshots.keep("sessions", in: app)
         demo.tap()
         XCTAssertTrue(app.staticTexts["session-placeholder"].waitForExistence(timeout: 10), "a tap did not open the session")
+        // R-IOS-1, R-CLIENT-1: joined through the relay, the bar says live.
+        let status = app.descendants(matching: .any)["relay-status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 10), "no relay status bar")
+        let deadline = Date.now.addingTimeInterval(20)
+        while status.label != "live" && Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        if status.label != "live" { Screenshots.tree(of: app) }
+        XCTAssertEqual(status.label, "live")
         Screenshots.keep("session", in: app)
         app.terminate()
 
         // Relaunched, the paired phone opens on Sessions, no onboarding.
         let again = XCUIApplication()
         again.launchEnvironment["KROWK_API_URL"] = api
+        again.launchEnvironment["KROWK_RELAY_URL"] = relay
         again.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
         again.launch()
         _ = demoSession(in: again, after: "a relaunch")

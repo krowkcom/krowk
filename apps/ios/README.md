@@ -12,11 +12,13 @@ apps/ios/
   xtool-Info.plist   the Info.plist keys xtool needs as a file (Linux)
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
-                     storage (KrowkKeys), sign-in, pairing and the session
-                     list over the bindings (KrowkAccount), and KrowkKit's tests
+                     storage (KrowkKeys), sign-in, pairing, the session
+                     list and the relay connection over the bindings
+                     (KrowkAccount), and KrowkKit's tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
-                     PairingTests, SessionListTests, and the TestFleet fixture
+                     PairingTests, SessionListTests, RelayConnectionTests, and
+                     the TestFleet fixture
   UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet
 ```
@@ -282,8 +284,56 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
   second, and one that changes nothing is not applied. The first listing
   is applied without animation, later ones in 150 ms that never hold up a
   touch.
-- A tap opens the session's place (the transcript is ticket 88). The list
-  never offers to take or host a session (R-HAND-4).
+- A tap opens the session's place (the transcript is ticket 88), followed
+  live through the relay while it's open. The list never offers to take or
+  host a session (R-HAND-4).
+
+## Following a session live
+
+`KrowkAccount.RelayConnection` keeps one WebSocket to the relay open for a
+session and feeds every message through krowk-ffi's `Viewer` (R-CLIENT-1).
+Swift owns the socket and the timers, Rust decides everything else: the
+join and its signature (`X-Krowk-Ticket` header, the relay's challenge,
+the signed `join`), the 10 s heartbeat (`Ping`, a text `ping`), a link
+silent for 30 s being dead, the acks inside the relay's window, and when
+to join again and from which cursor (1 s after a drop or a refusal; on a
+host's presence notice). Swift never builds or parses those messages.
+
+- **The socket** is Network.framework only: an `NWConnection` to the join
+  URL with `NWProtocolWebSocket` (pings auto-answered, messages up to the
+  relay's 4 MiB batch and its header) over `NWParameters.tls` for `wss`,
+  the system's trust and nothing weakened, or `.tcp` for the fake fleet's
+  `ws://` on 127.0.0.1. Network.framework isn't subject to App Transport
+  Security, and loopback needs no local network permission, so the
+  Info.plist gains nothing. Each binary message goes to `received`, a
+  text or pong one only says the link lives, and the next is read once
+  the last was fed: one at a time, so a fast relay waits in the socket,
+  not in memory. A `waiting`, failed or cancelled connection is a close.
+- **Threading.** `RelayConnection` is an actor whose executor is its own
+  serial queue (`krowk.relay`), the one each `NWConnection` starts on and
+  the timers fire on; callbacks step in with `assumeIsolated`, and the
+  receive path holds `dispatchPrecondition(condition: .notOnQueue(.main))`.
+  The calls that block (`Account.openSession` and `Viewer.open`, the
+  relay ticket, `readChunks`) run on a thread of their own, never on the
+  queue or the concurrency runtime's threads, and are fed back on the
+  queue, so a heartbeat never waits behind them (R-LAG-9).
+- **Updates** for the screen go into a lock-protected mailbox
+  (`OSAllocatedUnfairLock<[ViewerUpdate]>`), which the session screen
+  drains once per display frame (`CADisplayLink`); ticket 89 draws them.
+- **The status** is a bar under the navigation bar, never a spinner over
+  what's on screen (R-IOS-1): `connecting`; `live` once a host welcomed
+  the phone; `host offline` when joined with no host, read-only, and the
+  viewer waits for the relay's presence notice rather than redialing
+  (R-HAND-4); `reconnecting` after a drop; `can't reach the relay: <the
+  viewer's note>`; `stopped: <why>` if the viewer ends.
+- **The relay.** Rust picks it from the registry (`wss://relay.krowk.com`
+  for krowk's, env `production` only in a release build). A DEBUG build
+  takes `KROWK_RELAY_URL` from its launch environment, the fake fleet's,
+  passed to `Account.openSession` as its override.
+- Nothing is logged: the relay ticket goes from the registry call straight
+  to the `Viewer`, which puts it in the `Dial` it returns.
+- Backoff, wake and suspend, network changes and connecting on return to
+  the foreground are ticket 86's.
 
 ## Why the Xcode project is generated
 
