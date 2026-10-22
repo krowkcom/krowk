@@ -10,6 +10,7 @@ apps/ios/
   Package.swift      xtool manifest over the same sources (Linux)
   xtool.yml          xtool's app settings (Linux)
   xtool-Info.plist   the Info.plist keys xtool needs as a file (Linux)
+  Krowk-Info.plist   keys Xcode has no INFOPLIST_KEY_* setting for, merged into its Info.plist
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
                      storage (KrowkKeys), sign-in, pairing, the session
@@ -19,8 +20,8 @@ apps/ios/
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
                      PairingTests, SessionListTests, RelayConnectionTests,
-                     TranscriptModelTests, TranscriptTests, and the TestFleet
-                     fixture
+                     TranscriptModelTests, TranscriptTests, LiveFollowTests,
+                     and the TestFleet fixture
   UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
                      no-web.sh: no web view, no remote image (R-IOS-10)
@@ -28,9 +29,11 @@ apps/ios/
 
 Both manifests are thin and point at the same sources. Add a file to `App/`
 or a package and both pick it up. A new Info.plist key goes in both
-`project.yml` (as `INFOPLIST_KEY_*`) and `xtool-Info.plist`; CI checks that
-every key `xtool-Info.plist` sets is in Xcode's Info.plist, with the same
-value.
+`project.yml` (as `INFOPLIST_KEY_*`) and `xtool-Info.plist` (a key with no `INFOPLIST_KEY_*` setting, such as
+`CADisableMinimumFrameDurationOnPhone`, which lets the transcript draw at
+120 Hz on ProMotion, goes in `Krowk-Info.plist`, which Xcode merges); CI
+checks that every key `xtool-Info.plist` sets is in Xcode's Info.plist,
+with the same value.
 
 ## On a Mac: Xcode, the simulator and UI tests
 
@@ -52,9 +55,10 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
 `PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests`,
 `PairingTests`, `SessionListTests`, `RelayConnectionTests`,
-`TranscriptModelTests` and `TranscriptTests` (target `Krowk-iOSTests`),
-KrowkKit's unit tests and
-KrowkCore's `BindingsTests`.
+`TranscriptModelTests`, `TranscriptTests` and `LiveFollowTests` (target
+`Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
+prints the per-frame apply baseline, which CI writes to its run's
+summary) and KrowkCore's `BindingsTests`.
 The hosted tests are hosted because the Keychain refuses a SwiftPM test
 bundle with no host app (`-34018`, a missing entitlement). They clear the
 app's Keychain items before and after each test, so run them on a
@@ -79,7 +83,11 @@ answers the next one's code. A test that needs a lease to lapse POSTs to
 `KROWK_SESSIONS_URL` (its body the title): host A hosts a new session of
 the test's own and answers with its id; a POST to `<url>/<id>/release`
 stops that session's host and answers once its lease is gone, leaving the
-fleet's own session hosted for every other test.
+fleet's own session hosted for every other test. A POST to
+`<url>/<id>/turn` types a prompt (its body) at host A in that session and
+answers `started`: "Please stream a long answer" has the model make a
+`read` call, then stream 120 numbered lines at 200 tokens a second, the
+turn `LiveFollowTests` and the UI test follow live.
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build

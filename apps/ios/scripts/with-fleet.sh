@@ -14,7 +14,9 @@
 # pair URL gives a fresh code (the old one's pairing ended), since a code
 # works once and the simulator can't write to the fleet's stdin; one to the
 # sessions URL hosts a session of the test's own, which a POST to
-# <url>/<id>/release lets go (its lease lapses). The fleet runs with
+# <url>/<id>/release lets go (its lease lapses), and a POST to
+# <url>/<id>/turn runs a turn in (its body the prompt; "Please stream a
+# long answer" streams one at 200 tokens a second). The fleet runs with
 # --demo: its session is titled "A demo session", has a turn with a tool
 # call and its result, and holds an approval. The fleet binds 127.0.0.1
 # only; the simulator shares
