@@ -309,6 +309,9 @@ pub struct Readying<'a> {
     pub cancel: Option<&'a std::sync::atomic::AtomicBool>,
     /// `crate::slots::runtime_dir`.
     pub runtime: PathBuf,
+    /// Called once it is made, before the prepare steps, which can take
+    /// minutes: a subagent is shown started from then.
+    pub made: Option<&'a dyn Fn()>,
 }
 
 /// A new worktree of the repository `cwd` is in, for `owner`, made the
@@ -317,6 +320,9 @@ pub struct Readying<'a> {
 /// agent's first prompt (`first_prompt`). Blocking: off the async runtime.
 pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
     let (w, held, made) = create_fastest(cwd, root, owner, r.config)?;
+    if let Some(f) = r.made {
+        f();
+    }
     let (in_use, missing) = InUse::new(w, held, r.runtime.clone());
     let sandbox = setup::sandbox(r.policy, &in_use.worktree.path);
     let prepare = Prepare {

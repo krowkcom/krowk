@@ -118,6 +118,9 @@ pub(crate) struct Shared {
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
     running: Mutex<HashMap<String, Running>>,
+    /// Each subagent whose worktree is being readied, shown started but
+    /// with no turn yet: the switch that stops it (`subagent::worktree`).
+    pub(crate) readying: Mutex<HashMap<String, Arc<std::sync::atomic::AtomicBool>>>,
     /// Each session's backend engine, with the instance it runs on: its
     /// process outlives a turn and serves the session's next one.
     backends: Mutex<HashMap<String, Backend>>,
@@ -416,6 +419,7 @@ impl Host {
                 instances: std::sync::RwLock::new(Instances { registry, changed: HashMap::new() }),
                 cfg,
                 running: Mutex::new(HashMap::new()),
+                readying: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
                 #[cfg(feature = "test-hooks")]
@@ -592,6 +596,12 @@ impl Host {
                         Some(Running { backend_child: Some(t), .. }) => t.clone(),
                         Some(r) => {
                             let _ = r.cancel.send(true);
+                            return Ok(None);
+                        }
+                        // A subagent shown started while its worktree is
+                        // readied: stopped there, and not run.
+                        None if let Some(stop) = shared.readying.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id) => {
+                            stop.store(true, std::sync::atomic::Ordering::Relaxed);
                             return Ok(None);
                         }
                         None => return Err(EngineError::new("no_running_turn", format!("session {session_id} has no turn running, so there is nothing to interrupt"))),
@@ -1266,12 +1276,11 @@ impl Shared {
     }
 
     /// A subagent (R-SUB-1): a child session of the parent turn `spawn`
-    /// describes, answering its tool call `call_id` with one turn on
-    /// `model`, as the session `child` in the directory `cwd` — the
+    /// describes, answering its tool call with one turn on `model`, as the session `child` in the directory `cwd` — the
     /// parent's, or a worktree of its own (WT3). Its lines go to the
-    /// parent's client; its result comes back here, for the tool call.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, call_id: &str, description: &str, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd, env): (&str, &std::path::Path, Vec<(String, String)>), events: &Events) -> Result<RunResult, EngineError> {
+    /// parent's client; its result comes back here, for the tool call. Its
+    /// `subagent.started` the caller has sent (`subagent::run_child`).
+    pub(crate) async fn subagent(self: &Arc<Self>, spawn: &Spawn, prompt: &str, model: ModelRef, run: AgentRun, (child, cwd, env): (&str, &std::path::Path, Vec<(String, String)>), events: &Events) -> Result<RunResult, EngineError> {
         let instance = self.registry().get(&model.instance).map_err(|e| EngineError::new("no_instance", e))?.clone();
         // A vendor runs its own agents, with its own tools: it could not be
         // held to the allowlist, so a subagent is always krowk's own loop.
@@ -1291,7 +1300,6 @@ impl Shared {
         let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, child, cwd, &self.cfg.krowk_version, Some(&p.session_id), run.name.as_deref()).await.map_err(log_failure)?;
         let _ = spawn.out.send(StreamLine::Log(root.clone())).await;
         let child = log.session_id.clone();
-        let _ = events.send(EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: description.into(), agent: run.name.clone(), model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }).await;
         let budget = Budget::for_subagent(&p.budget, &child, &instance.provider, &model.model, std::slice::from_ref(&root));
         let producer = crate::evidence::Producer::new(&instance, &model.model);
         let plan = TurnPlan {

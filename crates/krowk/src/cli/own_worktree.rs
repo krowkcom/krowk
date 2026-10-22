@@ -114,7 +114,7 @@ pub(super) fn open(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config,
     let agent = agent_slot(ctx, registry);
     let policy = permissions::Policy::load(permissions, cwd).map_err(prompt::bad_settings)?;
     let runtime = krowk_harness::slots::runtime_dir(ctx.io.env);
-    let readying = worktree::Readying { policy: &policy, config: &registry.worktrees, builds: Some(&registry.builds), cancel: None, runtime };
+    let readying = worktree::Readying { policy: &policy, config: &registry.worktrees, builds: Some(&registry.builds), cancel: None, runtime, made: None };
     let (mut in_use, notes) = worktree::open(cwd, &root, session, &readying).map_err(|e| match e {
         worktree::Error::NotARepository => fail("not_a_repository", NEEDS_A_REPOSITORY),
         e => fail("worktree_failed", format!("the session's worktree could not be made: {e}")),

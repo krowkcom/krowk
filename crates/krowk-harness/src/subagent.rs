@@ -662,19 +662,25 @@ impl Subagents {
             },
             _ => None,
         };
+        // Started as far as the parent is told: its call shows the child,
+        // and the status bar counts it, from then.
+        let started = crate::engine::EngineEvent::SubagentStarted { call_id: call_id.into(), session_id: child.clone(), description: input.description.clone(), agent: run.name.clone(), model: model.clone(), ran_by: crate::protocol::RanBy::Krowk, backend_id: None };
         // Its session id is chosen now: a worktree is locked in its name
         // before the session exists, and the session records it as its
         // directory.
         let (worktree, prompt) = match input.isolation.or(def.and_then(|d| d.isolation)).unwrap_or_default() {
-            Isolation::None => (None, input.prompt.clone()),
-            Isolation::Worktree => match self.worktree(&child).await {
+            Isolation::None => {
+                let _ = events.send(started).await;
+                (None, input.prompt.clone())
+            }
+            Isolation::Worktree => match self.worktree(&child, events, started).await {
                 Ok((w, notes)) => (Some(w), crate::worktree::first_prompt(&notes, &input.prompt)),
-                Err(why) => return (why, true, None),
+                Err((why, status)) => return (why, true, status),
             },
         };
         let cwd = worktree.as_ref().map_or_else(|| p.cwd.clone(), |w| w.worktree.path.clone());
         let env = worktree.as_ref().map(|w| w.env()).unwrap_or_default();
-        let result = host.subagent(&self.0, call_id, &input.description, &prompt, model, run, (&child, &cwd, env), events).await;
+        let result = host.subagent(&self.0, &prompt, model, run, (&child, &cwd, env), events).await;
         // In the background from the start, or moved there by a steer: no
         // call waits on it any more.
         // Chosen under the slot's lock, and binding: a call still waiting
@@ -696,10 +702,14 @@ impl Subagents {
 
     /// A worktree of the parent's repository for the child `child`, readied
     /// by the prepare steps, with their notes for its first prompt; why
-    /// not, for the model, when there is none.
-    async fn worktree(&self, child: &str) -> Result<(InUse, Vec<String>), String> {
+    /// not, for the model, when there is none. The child's `started` is
+    /// sent once the worktree is made, before the prepare steps, which can
+    /// take minutes; a repository refused, or a worktree not made, starts
+    /// no child.
+    async fn worktree(&self, child: &str, events: &Events, started: crate::engine::EngineEvent) -> Result<(InUse, Vec<String>), (String, Option<&'static str>)> {
+        let failed = |why: String| (why, None);
         let Some(root) = self.0.host.cfg.agents.worktrees.clone() else {
-            return Err("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into());
+            return Err(failed("isolation: worktree has nowhere to make worktrees: krowk found no home directory (set HOME or XDG_DATA_HOME)".into()));
         };
         let registry = self.0.host.registry();
         let (cwd, child, config, builds) = (self.0.parent.cwd.clone(), child.to_string(), registry.worktrees.clone(), registry.builds.clone());
@@ -711,8 +721,19 @@ impl Subagents {
         // made and readied: its setup command stops, and it is discarded.
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let stopping = stop.clone();
+        // Shown started from once it is made, so interrupted alone as any
+        // child is: by its own id, until it is readied.
+        let readying = &self.0.host.readying;
+        let id = child.clone();
+        readying.lock().unwrap_or_else(|e| e.into_inner()).insert(id.clone(), stop.clone());
+        let (events, started) = (events.clone(), std::cell::Cell::new(Some(started)));
         let mut made = tokio::task::spawn_blocking(move || {
-            let readying = crate::worktree::Readying { policy: &policy, config: &config, builds: Some(&builds), cancel: Some(&stopping), runtime };
+            let tell = || {
+                if let Some(e) = started.take() {
+                    let _ = events.blocking_send(e);
+                }
+            };
+            let readying = crate::worktree::Readying { policy: &policy, config: &config, builds: Some(&builds), cancel: Some(&stopping), runtime, made: Some(&tell) };
             crate::worktree::open(&cwd, &root, &child, &readying)
         });
         let mut cancel = self.0.parent.cancel.clone();
@@ -723,12 +744,20 @@ impl Subagents {
                 made.await
             }
         };
+        readying.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        let interrupted = || ("not run: the turn was interrupted".to_string(), Some("interrupted"));
         match made {
+            // Stopped once the prepare steps were past looking: let go of
+            // unused, as one stopped during them is.
+            Ok(Ok((i, _))) if stop.load(std::sync::atomic::Ordering::Relaxed) => {
+                let _ = tokio::task::spawn_blocking(move || i.finish()).await;
+                Err(interrupted())
+            }
             Ok(Ok(made)) => Ok(made),
-            Ok(Err(crate::worktree::Error::NotARepository)) => Err(NEEDS_A_REPOSITORY.into()),
-            Ok(Err(crate::worktree::Error::Interrupted)) => Err("not run: the turn was interrupted".into()),
-            Ok(Err(e)) => Err(format!("the subagent's worktree could not be made: {e}")),
-            Err(e) => Err(format!("the subagent's worktree could not be made: {e}")),
+            Ok(Err(crate::worktree::Error::NotARepository)) => Err(failed(NEEDS_A_REPOSITORY.into())),
+            Ok(Err(crate::worktree::Error::Interrupted)) => Err(interrupted()),
+            Ok(Err(e)) => Err(failed(format!("the subagent's worktree could not be made: {e}"))),
+            Err(e) => Err(failed(format!("the subagent's worktree could not be made: {e}"))),
         }
     }
 }

@@ -1059,10 +1059,13 @@ async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> O
 /// The session's state for the title and the root record, and its topic:
 /// the provider signed in to while `/connect`'s overlay is up and waits on
 /// the person (hidden, or closed, it no longer does), else the prompt.
-/// At rest, how the last turn `ended`, until the next key (R-PRES-3).
+/// At rest, how the last turn `ended`, until the next key (R-PRES-3). An
+/// agent at work for the session past its turn — a backend's, run in the
+/// background — keeps it working, as the status bar counts it.
 fn root_state<'a>(app: &'a App, last_prompt: &'a str, ended: Option<&'a (presence::State, String)>) -> (presence::State, &'a str) {
     let sign_in = app.flow.as_ref().filter(|_| app.overlay == Overlay::Connect).and_then(|f| f.sign_in.as_deref());
-    match presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), app.running()) {
+    let working = app.running() || app.agents_at_work().0 > 0;
+    match presence::State::of(app.approvals.first().map(|req| !req.questions.is_empty()), sign_in.is_some(), working) {
         presence::State::SigningIn => (presence::State::SigningIn, sign_in.unwrap_or_default()),
         presence::State::Idle => ended.map_or((presence::State::Idle, last_prompt), |(s, msg)| (*s, msg)),
         state => (state, last_prompt),
@@ -4097,6 +4100,29 @@ mod tests {
         assert_eq!(tell(&app), Some(auth));
         app.flow = Some(connect::Flow::new("Disconnect", Vec::new(), None));
         assert_eq!(tell(&app), Some(root(Rec::Idle, "")), "a /disconnect waits on no sign-in");
+    }
+
+    /// R-PRES-1: a backend's agent run in the background works on past the
+    /// turn that started it, and the session is working to the title and
+    /// herdr until it ends, as the status bar counts it.
+    #[test]
+    fn r_pres_1_an_agent_at_work_past_its_turn_keeps_the_session_working() {
+        use super::*;
+        use krowk_harness::protocol::{BackendAgent, LiveEvent};
+        let mut app = App::new(Editor::new(None), 40, Settings::default(), None, None);
+        app.session_id = Some("s".into());
+        let agents = |agents: Vec<BackendAgent>| StreamLine::Live(LiveEvent::BackendAgents { session_id: "s".into(), agents });
+        assert_eq!(root_state(&app, "fix it", None).0, presence::State::Idle);
+        app.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey".into(), agent: None }]));
+        assert!(!app.running(), "no turn");
+        assert_eq!(root_state(&app, "fix it", None), (presence::State::Working, "fix it"));
+        // A turn that failed while the agent works on is told once that is
+        // done too: herdr hears idle once, when everything is.
+        let failed = (presence::State::Error, "it broke".to_string());
+        assert_eq!(root_state(&app, "fix it", Some(&failed)).0, presence::State::Working, "still at work");
+        app.on_line(&agents(Vec::new()));
+        assert_eq!(root_state(&app, "fix it", None).0, presence::State::Idle, "ended");
+        assert_eq!(root_state(&app, "fix it", Some(&failed)), (presence::State::Error, "it broke"), "then how the turn ended");
     }
 
     #[test]

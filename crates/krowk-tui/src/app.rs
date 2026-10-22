@@ -2166,6 +2166,18 @@ impl App {
         self.backend_agents.iter().filter(|a| !self.subs.iter().chain(&self.past).any(|s| s.status.is_none() && s.backend_id.as_deref() == Some(a.task_id.as_str())))
     }
 
+    /// How many agents are at work for the session — every child running,
+    /// and the backend's agents that are no child of it, each once — and
+    /// how many of those an approval or a question of theirs waits on the
+    /// person for (R-SUB-11). A backend's agent its call ran in the
+    /// background runs on past it, and past the turn, until its own end
+    /// (R-SUB-7). What the status bar counts, and what keeps the session
+    /// working to the title and herdr.
+    pub fn agents_at_work(&self) -> (usize, usize) {
+        let at_work = || self.subs.iter().chain(self.past.iter().filter(|s| s.ran_by != RanBy::Krowk)).filter(|s| s.status.is_none());
+        (at_work().count() + self.backend_only().count(), at_work().filter(|s| s.waiting.is_some()).count())
+    }
+
     /// When the oldest running child started, while one runs: its row's
     /// facts are redrawn each second, counted from then (R-SUB-11).
     pub fn child_running_since(&self) -> Option<Instant> {
@@ -3282,19 +3294,11 @@ impl App {
                         parts.push(part(Rank::Tasks, format!("[{}]", plural(open, "task"))));
                     }
                 }
-                // Every child running, and the backend's agents that are no
-                // child of it: each agent at work for the session, once.
                 StatusItem::Subagents => {
-                    // A backend's agent its call ran in the background runs
-                    // on past it, until its own end (R-SUB-7).
-                    let at_work = || self.subs.iter().chain(self.past.iter().filter(|s| s.ran_by != RanBy::Krowk)).filter(|s| s.status.is_none());
-                    let running = (at_work().count() + self.backend_only().count()) as u32;
-                    // Of those, the ones an approval or a question of theirs
-                    // waits on the person for (R-SUB-11).
-                    let waiting = at_work().filter(|s| s.waiting.is_some()).count();
+                    let (running, waiting) = self.agents_at_work();
                     if running > 0 {
                         let waiting = if waiting > 0 { format!(" · {waiting} waiting") } else { String::new() };
-                        parts.push(part(Rank::Subagents, format!("[{}{waiting}]", plural(running, "subagent"))));
+                        parts.push(part(Rank::Subagents, format!("[{}{waiting}]", plural(running as u32, "subagent"))));
                     }
                 }
                 StatusItem::Background => {
