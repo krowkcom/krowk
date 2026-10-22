@@ -27,7 +27,7 @@ let package = Package(
                 .product(name: "KrowkAccount", package: "KrowkKit"),
             ],
             path: "App",
-            // ship.sh compiles the app icon from here with actool (ticket 74).
+            // ship.sh compiles the app icon from here with actool (README.md → Releasing to TestFlight).
             exclude: ["Assets.xcassets"],
             // xtool's darwin toolset links with -all_load (for dynamic
             // products), which pulls every member of libkrowk_ffi.a in,

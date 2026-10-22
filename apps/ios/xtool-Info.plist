@@ -4,7 +4,7 @@
   Only for xtool (xtool.yml), which merges these keys over its own defaults.
   Xcode generates its Info.plist from project.yml's INFOPLIST_KEY_* settings;
   keep the two in step. No ITSAppUsesNonExemptEncryption: that answer is the
-  person's, in ticket 74.
+  person's (README.md → Export compliance).
 -->
 <plist version="1.0">
 <dict>

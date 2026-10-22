@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  R-IOS-16: `xcodebuild -exportArchive` options for .github/workflows/testflight.yml.
+  destination=upload sends the export to App Store Connect, signed by Apple's
+  cloud-managed distribution certificate. The workflow sets teamID on a copy
+  (plutil -replace teamID); the team id is never committed. The version and
+  build number are the archive's, set by the workflow, not by Xcode.
+-->
+<plist version="1.0">
+<dict>
+	<key>method</key>
+	<string>app-store-connect</string>
+	<key>destination</key>
+	<string>upload</string>
+	<key>teamID</key>
+	<string>TEAM_ID_SET_BY_CI</string>
+	<key>signingStyle</key>
+	<string>automatic</string>
+	<key>manageAppVersionAndBuildNumber</key>
+	<false/>
+</dict>
+</plist>

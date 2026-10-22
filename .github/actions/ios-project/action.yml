@@ -1,0 +1,42 @@
+name: The iPhone app's project
+description: Rust, the app's core (make ios-core) and the Xcode project from apps/ios/project.yml, for testflight.yml's jobs
+
+# The same lines as ios.yml's bindings and app jobs: the pinned Rust, then
+# XcodeGen from its release zip checked against its sha256. A release is
+# rare, so the core is built here rather than taken from ios.yml's cache.
+
+runs:
+  using: composite
+  steps:
+    - name: Xcode
+      shell: bash
+      run: xcodebuild -version
+
+    - name: Set up Rust
+      shell: bash
+      run: |
+        rustup toolchain install 1.97.1 --profile minimal --target aarch64-apple-ios,aarch64-apple-ios-sim
+        rustup default 1.97.1
+
+    - name: make ios-core
+      shell: bash
+      run: make ios-core
+
+    # The version and sha256 are ios.yml's; both must agree with it and
+    # with the version apps/ios/README.md names.
+    - name: XcodeGen
+      shell: bash
+      env:
+        XCODEGEN_VERSION: 2.46.0
+        XCODEGEN_SHA256: 4d9e34b62172d645eed6457cac13fc222569974098ef4ee9c3368bedf0196806
+      run: |
+        grep -q "XcodeGen $XCODEGEN_VERSION" apps/ios/README.md \
+          || { echo "apps/ios/README.md does not name XcodeGen $XCODEGEN_VERSION" >&2; exit 1; }
+        grep -q "XCODEGEN_VERSION: $XCODEGEN_VERSION\$" .github/workflows/ios.yml \
+          && grep -q "XCODEGEN_SHA256: $XCODEGEN_SHA256\$" .github/workflows/ios.yml \
+          || { echo "ios.yml pins another XcodeGen; move both together" >&2; exit 1; }
+        curl -fsSL --retry 3 -o "$RUNNER_TEMP/xcodegen.zip" \
+          "https://github.com/yonaskolb/XcodeGen/releases/download/$XCODEGEN_VERSION/xcodegen.zip"
+        echo "$XCODEGEN_SHA256  $RUNNER_TEMP/xcodegen.zip" | shasum -a 256 -c
+        unzip -q "$RUNNER_TEMP/xcodegen.zip" -d "$RUNNER_TEMP"
+        "$RUNNER_TEMP/xcodegen/bin/xcodegen" generate --spec apps/ios/project.yml
