@@ -52,7 +52,11 @@ public final class KeychainKeyStorage: KeyStorage {
     /// AES-GCM's nonce and tag.
     private static let boxOverhead = 12 + 16
 
+    /// The service the app keeps its keys under.
+    public static let appService = Keychain.appService
+
     private let wrappingKey: any WrappingKey
+    private let items: Keychain
 
     /// Opens the install's keys, making its wrapping key on first use. On
     /// the first launch after an install it first deletes every item an
@@ -62,12 +66,17 @@ public final class KeychainKeyStorage: KeyStorage {
     /// krowk keeps no keys there. Anything else (the phone locked, a
     /// Keychain error) is `Internal`, and may pass.
     ///
-    /// `installMarker` is for tests; the app keeps the default.
-    public init(installMarker: URL = KeychainKeyStorage.installMarker) throws(KrowkError) {
+    /// `service` and `installMarker` are for tests, which keep a fixture's
+    /// keys under a service of their own; the app keeps the defaults.
+    public init(
+        service: String = KeychainKeyStorage.appService, installMarker: URL = KeychainKeyStorage.installMarker
+    ) throws(KrowkError) {
+        let keychain = Keychain(service: service)
+        items = keychain
         wrappingKey = try opening.withLock { _ throws(KrowkError) -> any WrappingKey in
-            try Self.purgeIfFirstLaunch(installMarker)
+            try Self.purgeIfFirstLaunch(installMarker, keychain)
             do throws(WrappingKeyFailure) {
-                return try WrappingKeys.loadOrCreate()
+                return try WrappingKeys.loadOrCreate(keychain)
             } catch .noSecureEnclave {
                 log.error("no Secure Enclave")
                 throw .Refused(code: Self.noSecureEnclave, detail: WrappingKeyFailure.noSecureEnclave.description)
@@ -78,13 +87,13 @@ public final class KeychainKeyStorage: KeyStorage {
         }
     }
 
-    /// Deletes every item under `com.krowk.keys` unless the marker says this
-    /// install already did, then writes the marker. The purge comes first:
+    /// Deletes every item under the service (`com.krowk.keys`) unless the
+    /// marker says this install already did, then writes the marker. The purge comes first:
     /// a launch that dies between the two purges again, which loses
     /// nothing, since no key was made in between.
-    private static func purgeIfFirstLaunch(_ marker: URL) throws(KrowkError) {
+    private static func purgeIfFirstLaunch(_ marker: URL, _ keychain: Keychain) throws(KrowkError) {
         guard !FileManager.default.fileExists(atPath: marker.path(percentEncoded: false)) else { return }
-        do throws(KeychainFailure) { try Keychain.removeAll() } catch {
+        do throws(KeychainFailure) { try keychain.removeAll() } catch {
             log.error("first-launch purge failed: OSStatus \(error.status, privacy: .public)")
             throw .Internal(detail: error.description)
         }
@@ -106,19 +115,19 @@ public final class KeychainKeyStorage: KeyStorage {
 
     public func read(slot: String) throws(KrowkError) -> Data? {
         try Self.check(slot)
-        guard let sealed = try keychain({ () throws(KeychainFailure) in try Keychain.read(slot) }) else { return nil }
+        guard let sealed = try keychain({ () throws(KeychainFailure) in try self.items.read(slot) }) else { return nil }
         return try open(sealed, slot: slot)
     }
 
     public func write(slot: String, bytes: Data) throws(KrowkError) {
         try Self.check(slot)
         let sealed = try seal(bytes, slot: slot)
-        try keychain { () throws(KeychainFailure) in try Keychain.write(slot, sealed, replace: true) }
+        try keychain { () throws(KeychainFailure) in try self.items.write(slot, sealed, replace: true) }
     }
 
     public func remove(slot: String) throws(KrowkError) {
         try Self.check(slot)
-        try keychain { () throws(KeychainFailure) in try Keychain.remove(slot) }
+        try keychain { () throws(KeychainFailure) in try self.items.remove(slot) }
     }
 
     // MARK: Sealing

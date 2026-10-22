@@ -56,28 +56,28 @@ enum WrappingKeys {
     /// ever. The caller holds `opening`, so no other opener in this process
     /// is between its purge and its key; two processes (none in M1) racing
     /// to store one agree on whichever was stored first.
-    static func loadOrCreate() throws(WrappingKeyFailure) -> any WrappingKey {
-        if let key = try load() { return key }
+    static func loadOrCreate(_ keychain: Keychain) throws(WrappingKeyFailure) -> any WrappingKey {
+        if let key = try load(keychain) { return key }
         do throws(KeychainFailure) {
-            try Keychain.checkReadable()
-            try Keychain.removeAll()
+            try keychain.checkReadable()
+            try keychain.removeAll()
         } catch { throw .keychain(error) }
         let made = try make()
         do throws(KeychainFailure) {
-            try Keychain.write(wrappingKeyAccount, made.stored, replace: false)
+            try keychain.write(wrappingKeyAccount, made.stored, replace: false)
             return made.key
         } catch where error.status == errSecDuplicateItem {
             // Another caller stored one first: use that one.
-            if let key = try load() { return key }
+            if let key = try load(keychain) { return key }
             throw .keychain(error)
         } catch {
             throw .keychain(error)
         }
     }
 
-    private static func load() throws(WrappingKeyFailure) -> (any WrappingKey)? {
+    private static func load(_ keychain: Keychain) throws(WrappingKeyFailure) -> (any WrappingKey)? {
         let stored: Data?
-        do throws(KeychainFailure) { stored = try Keychain.read(wrappingKeyAccount) } catch { throw .keychain(error) }
+        do throws(KeychainFailure) { stored = try keychain.read(wrappingKeyAccount) } catch { throw .keychain(error) }
         guard let stored else { return nil }
         return try restore(stored)
     }
