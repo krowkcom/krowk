@@ -15,6 +15,7 @@
 //! request=0199c0de-…
 //! pair=7KQ2-M9XD
 //! pair_url=http://127.0.0.1:53013/pair
+//! sessions_url=http://127.0.0.1:53013/sessions
 //! ready
 //! ```
 //!
@@ -36,6 +37,13 @@
 //! shares the Mac's loopback) POSTs to `pair_url` instead: the same fresh
 //! `devices add`, its code the reply's body, text. Without `KROWK_BIN` the
 //! fleet exits 1 saying how to build one.
+//!
+//! A test that wants a session's lease to lapse (R-IOS-7) without taking
+//! the fleet's host from every other test POSTs to `sessions_url`: host A
+//! hosts a new session (titled by the request's body, if any) and replies
+//! with its id once the registry shows it leased; a POST to
+//! `sessions_url/<id>/release` stops that session's bridge and replies once
+//! its lease is gone.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title and a second
@@ -100,23 +108,14 @@ fn main() {
             Ok(code) => writeln!(out, "pair={code}").unwrap(),
             Err(e) => fail(Some(&pairer), fleet, &e),
         }
-        // Loopback only, like the rest of the fleet.
-        let asked = std::sync::Arc::clone(&pairer);
-        let control = mock::serve_seen(move |seen, _| {
-            if (seen.method.as_str(), seen.path.as_str()) != ("POST", "/pair") {
-                return mock::Reply::status(404, "only POST /pair");
-            }
-            let code = asked.lock().unwrap().pair();
-            match code {
-                Ok(code) => mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(200, &code) },
-                Err(e) => {
-                    eprintln!("fake_fleet: POST /pair: {e}");
-                    mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(500, &e) }
-                }
-            }
-        });
+    }
+    // Loopback only, like the rest of the fleet.
+    let (asked, hosting) = (std::sync::Arc::clone(&pairer), std::sync::Arc::clone(&fleet.hosting));
+    let control = mock::serve_seen(move |seen, _| control(seen, pair, &asked, &hosting));
+    if pair {
         writeln!(out, "pair_url={}/pair", control.url).unwrap();
     }
+    writeln!(out, "sessions_url={}/sessions", control.url).unwrap();
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
     drop(out);
@@ -139,6 +138,32 @@ fn main() {
     }
     pairer.lock().unwrap().end();
     fleet.stop();
+}
+
+/// The fleet's control, for a test that cannot write to its stdin:
+/// `POST /pair` a fresh code (with `--pair`), `POST /sessions` a session of
+/// the test's own, hosted, its id the reply's body (the request's body, if
+/// any, its title), and `POST /sessions/<id>/release` its lease let go.
+#[cfg(unix)]
+fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
+    let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
+    let answered = |what: &str, r: Result<String, String>| match r {
+        Ok(body) => text(200, &body),
+        Err(e) => {
+            eprintln!("fake_fleet: {what}: {e}");
+            text(500, &e)
+        }
+    };
+    let release = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/release"));
+    match (seen.method.as_str(), seen.path.as_str(), release) {
+        ("POST", "/pair", _) if pair => answered("POST /pair", pairer.lock().unwrap().pair()),
+        ("POST", "/sessions", _) => {
+            let title = seen.raw.trim();
+            answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
+        }
+        ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
+        _ => text(404, "only POST /pair, POST /sessions and POST /sessions/<id>/release"),
+    }
 }
 
 /// Stops everything and exits 1, saying why: no `pair=` line can follow.
