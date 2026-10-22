@@ -42,6 +42,15 @@ public final class ItemState {
     public var expanded = false
 
     @ObservationIgnored private var summarized: (input: String, summary: String)?
+    /// The cell drawing it now, if one is: redrawn on each change (the
+    /// one observation an item has, `TranscriptCell.follow`).
+    @ObservationIgnored weak var drawer: TranscriptCell?
+    /// Followed already: at most one observation per item, however often
+    /// cells show it.
+    @ObservationIgnored var followed = false
+    /// Text as last drawn, by what it is ("text", "output"): a cell shown
+    /// again draws it without laying it out or finding its links again.
+    @ObservationIgnored private var drawn: [String: (source: String, size: CGFloat, text: NSAttributedString)] = [:]
 
     public init(id: String, kind: Kind, text: String = "", toolName: String = "", toolInput: String = "", done: Bool = true) {
         self.id = id
@@ -50,6 +59,25 @@ public final class ItemState {
         self.toolName = toolName
         self.toolInput = toolInput
         self.done = done
+    }
+
+    /// Reads every property a cell draws, so one observation covers them.
+    func touch() {
+        _ = (text, toolName, toolInput, output, isError, alarming, done, expanded)
+    }
+
+    /// `source` drawn as `role` at `size`, from the last drawing if neither
+    /// changed.
+    func drawing(_ role: String, source: String, size: CGFloat, _ make: () -> NSAttributedString) -> NSAttributedString {
+        if let last = drawn[role], last.size == size, last.source == source { return last.text }
+        let text = make()
+        drawn[role] = (source, size, text)
+        return text
+    }
+
+    /// Forgets a drawing (a collapsed output isn't kept).
+    func forget(_ role: String) {
+        drawn[role] = nil
     }
 
     /// A tool call's one line: `<name> <summary of its input>`.
@@ -117,18 +145,31 @@ public enum TranscriptChange: Equatable, Sendable {
     case modelSwitched(model: String)
 }
 
-/// One logged event as the transcript takes it: its id, its session, and
-/// what it changes (nil: nothing to draw).
+/// One logged event as the transcript takes it: its id, the event before
+/// it on its branch, its session, and what it changes (nil: nothing to
+/// draw).
 public struct TranscriptEvent: Equatable, Sendable {
     public let id: String
+    public let parentID: String?
     public let sessionID: String
     public let change: TranscriptChange?
 
-    public init(id: String, sessionID: String, change: TranscriptChange?) {
+    public init(id: String, parentID: String? = nil, sessionID: String, change: TranscriptChange?) {
         self.id = id
+        self.parentID = parentID
         self.sessionID = sessionID
         self.change = change
     }
+}
+
+/// Where the rows of applied events go.
+public enum TranscriptPlacement: Sendable {
+    /// At the end: the session read at rest, a live line.
+    case end
+    /// After the row of the event before them (`parentID`), when that was
+    /// applied: a catch-up, which brings events a gap left out after later
+    /// ones were drawn. At the end when it wasn't.
+    case afterParent
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -149,8 +190,12 @@ public final class TranscriptModel {
     @ObservationIgnored private var items: [String: ItemState] = [:]
     /// Every event applied, by id.
     @ObservationIgnored private var seen: Set<String> = []
-    /// A tool call's row, by its `callId`.
+    /// A tool call's row, by its `callId`: the latest call with that id,
+    /// which a result follows (a provider may reuse an id).
     @ObservationIgnored private var calls: [String: ItemState] = [:]
+    /// Per event applied, the row at or above it ("" for the top): where an
+    /// event that follows it goes, placed `afterParent`.
+    @ObservationIgnored private var anchors: [String: String] = [:]
 
     public init(sessionID: String) {
         self.sessionID = sessionID
@@ -166,17 +211,28 @@ public final class TranscriptModel {
         if !attached { attached = true }
     }
 
-    /// `events`, in order, each at most once. `ids` changes once, however
-    /// many rows they add.
-    public func apply(_ events: [TranscriptEvent]) {
-        var added: [String] = []
+    /// `events`, in order, each at most once, their rows placed by
+    /// `placement`. `ids` changes once, however many rows they add.
+    public func apply(_ events: [TranscriptEvent], placement: TranscriptPlacement = .end) {
+        var rows = ids
+        var changed = false
         for event in events where event.sessionID == sessionID {
-            guard seen.insert(event.id).inserted, let change = event.change else { continue }
-            if let row = take(change, event: event.id) { added.append(row) }
+            guard seen.insert(event.id).inserted else { continue }
+            var at = rows.endIndex
+            if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != rows.last {
+                at = above.isEmpty ? rows.startIndex : (rows.firstIndex(of: above).map { $0 + 1 } ?? rows.endIndex)
+            }
+            if let change = event.change, let row = take(change, event: event.id) {
+                rows.insert(row, at: at)
+                anchors[event.id] = row
+                changed = true
+            } else {
+                anchors[event.id] = at == rows.startIndex ? "" : rows[at - 1]
+            }
         }
-        guard !added.isEmpty else { return }
-        ids.append(contentsOf: added)
-        assert(Set(ids).count == ids.count, "a transcript row twice")
+        guard changed else { return }
+        assert(Set(rows).count == rows.count, "a transcript row twice")
+        ids = rows
     }
 
     /// `change` applied: the id of the row it adds, if it adds one.
@@ -189,6 +245,8 @@ public final class TranscriptModel {
             let shown = missing.isEmpty ? text : ([text] + missing).filter { !$0.isEmpty }.joined(separator: " ")
             return add(ItemState(id: "item:\(item)", kind: .user, text: shown))
         case .assistantText(let item, let text):
+            // An empty answer beside a tool call: no row.
+            guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
             return add(ItemState(id: "item:\(item)", kind: .assistant, text: text))
         case .reasoning(let item, let text):
             // Withheld by the provider: no row.
@@ -197,8 +255,7 @@ public final class TranscriptModel {
         case .toolCall(let item, let callID, let name, let input):
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
-            // A first call keeps its id.
-            if calls[callID] == nil { calls[callID] = state }
+            calls[callID] = state
             return row
         case .toolResult(let item, let callID, let output, let isError):
             if let call = calls[callID] {

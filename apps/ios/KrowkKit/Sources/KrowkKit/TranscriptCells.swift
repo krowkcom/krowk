@@ -1,16 +1,16 @@
 import Observation
 import UIKit
 
-/// A transcript row's cell: configured from its `ItemState`, which it
-/// observes (`withObservationTracking`, registered again on each change)
-/// and nothing else, so a change to one item redraws that cell only. The
-/// collection view's self-sizing invalidation follows its height.
+/// A transcript row's cell: configured from its `ItemState`, which is
+/// observed with `withObservationTracking`, registered again on each
+/// change, and nothing else, so a change to one item redraws its own cell
+/// only. The observation is the item's, one however often it is shown
+/// (`follow`): it redraws whichever cell shows the item now, so cells
+/// shown and reused while scrolling never pile observations up. The
+/// collection view's self-sizing invalidation follows the cell's height.
 @MainActor
 class TranscriptCell: UICollectionViewListCell {
     private(set) var state: ItemState?
-    /// Which `show` the cell is on: an observation from an earlier one
-    /// (the same item configured again, or another before reuse) ends.
-    private var generation = 0
     /// A link tapped: the screen asks before anything opens.
     var openLink: (@MainActor (URL) -> Void)?
 
@@ -18,6 +18,8 @@ class TranscriptCell: UICollectionViewListCell {
         super.init(frame: frame)
         automaticallyUpdatesBackgroundConfiguration = false
         backgroundConfiguration = .clear()
+        // Hostile text (a pile of combining marks) draws inside its row.
+        contentView.clipsToBounds = true
     }
 
     @available(*, unavailable)
@@ -25,34 +27,41 @@ class TranscriptCell: UICollectionViewListCell {
         fatalError("transcript cells are built in code")
     }
 
-    /// Shows `state` and follows it.
+    /// Shows `state`, and redraws it on each change while it shows it.
     func show(_ state: ItemState) {
+        if let old = self.state, old !== state, old.drawer === self { old.drawer = nil }
         self.state = state
-        generation += 1
-        observe(state, generation)
+        state.drawer = self
+        if state.followed {
+            render(state)
+        } else {
+            state.followed = true
+            Self.follow(state)
+        }
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
+        if state?.drawer === self { state?.drawer = nil }
         state = nil
-        generation += 1
     }
 
-    private func observe(_ state: ItemState, _ generation: Int) {
+    /// The item's one observation: every property a cell draws read, the
+    /// cell showing it (if any) redrawn, and the same again after the next
+    /// change, for as long as the item lives.
+    static func follow(_ state: ItemState) {
         withObservationTracking {
-            render(state)
-        } onChange: { [weak self] in
-            Task { @MainActor [weak self] in
-                // Only while it still shows that item, as last configured:
-                // one observation per cell, and a reused cell follows its
-                // new item only.
-                guard let self, self.state === state, self.generation == generation else { return }
-                self.observe(state, generation)
+            state.touch()
+            state.drawer?.render(state)
+        } onChange: { [weak state] in
+            Task { @MainActor [weak state] in
+                guard let state else { return }
+                follow(state)
             }
         }
     }
 
-    /// Draws `state`; every property it reads is observed.
+    /// Draws `state`.
     func render(_ state: ItemState) {}
 }
 
@@ -124,9 +133,13 @@ enum TranscriptFonts {
 final class TranscriptTextCell: TranscriptCell {
     let textView = TranscriptTextView()
     private let bubble = UIView()
-    private var shown: (id: String, text: String)?
+    private var shown: NSAttributedString?
     private var userLayout: [NSLayoutConstraint] = []
     private var answerLayout: [NSLayoutConstraint] = []
+    /// The text's width, set as the cell is sized: a non-scrolling text
+    /// view's height follows the width it is given, never a stale one.
+    private var textWidth: NSLayoutConstraint!
+    private var user = false
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -144,12 +157,11 @@ final class TranscriptTextCell: TranscriptCell {
             bubble.bottomAnchor.constraint(equalTo: margins.bottomAnchor),
             bubble.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
         ])
-        // As wide as the prompt needs, up to the margin less 48 points.
-        let wide = bubble.widthAnchor.constraint(equalTo: margins.widthAnchor, constant: -48)
-        wide.priority = .defaultLow - 1
+        textWidth = textView.view.widthAnchor.constraint(equalToConstant: 200)
+        textWidth.priority = .required - 1
+        textWidth.isActive = true
         userLayout = [
             bubble.leadingAnchor.constraint(greaterThanOrEqualTo: margins.leadingAnchor, constant: 48),
-            wide,
             textView.view.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8),
             textView.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
             textView.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
@@ -165,18 +177,45 @@ final class TranscriptTextCell: TranscriptCell {
     }
 
     override func render(_ state: ItemState) {
-        let user = state.kind == .user
-        let text = state.text
+        user = state.kind == .user
         textView.openLink = { [weak self] in self?.openLink?($0) }
         NSLayoutConstraint.deactivate(user ? answerLayout : userLayout)
         NSLayoutConstraint.activate(user ? userLayout : answerLayout)
         bubble.backgroundColor = user ? .secondarySystemBackground : .clear
         accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
-        textView.view.accessibilityHint = user ? "Your prompt" : nil
+        textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
+        let font = TranscriptFonts.body
+        let text = state.drawing("text", source: state.text, size: font.pointSize) {
+            SafeText.capped(state.text, font: font)
+        }
         // Unchanged text keeps its layout.
-        guard shown?.id != state.id || shown?.text != text else { return }
-        shown = (state.id, text)
-        textView.attributedText = SafeText.attributed(text, font: TranscriptFonts.body)
+        guard shown !== text else { return }
+        shown = text
+        textView.attributedText = text
+        sizeText(toFit: bounds.width)
+    }
+
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        sizeText(toFit: attributes.size.width)
+        return super.preferredLayoutAttributesFitting(attributes)
+    }
+
+    /// The text view's width in a cell `width` wide: the margins' width for
+    /// an answer; for a prompt, what its text needs, up to that less 48
+    /// points and the bubble's padding.
+    private func sizeText(toFit width: CGFloat) {
+        guard width > 0 else { return }
+        let margins = contentView.directionalLayoutMargins
+        let room = max(0, width - margins.leading - margins.trailing)
+        var target = room
+        if user {
+            let most = max(0, room - 48 - 24)
+            let needed = textView.view.attributedText.boundingRect(
+                with: CGSize(width: most, height: .greatestFiniteMagnitude),
+                options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).width
+            target = min(most, ceil(needed) + 1)
+        }
+        if abs(textWidth.constant - target) > 0.5 { textWidth.constant = target }
     }
 
     override func prepareForReuse() {
@@ -196,7 +235,8 @@ final class TranscriptToolCell: TranscriptCell {
     let result = UILabel()
     let body = TranscriptTextView()
     private let stack = UIStackView()
-    private var shownBody: (id: String, source: String)?
+    private var shownBody: NSAttributedString?
+    private var shownExpanded: (id: String, expanded: Bool)?
     /// Tapped on the header (VoiceOver's activate too): expand or collapse.
     var toggle: (@MainActor () -> Void)?
 
@@ -281,9 +321,14 @@ final class TranscriptToolCell: TranscriptCell {
         header.accessibilityHint = expanded ? "Hides the full text" : "Shows the full text"
         header.accessibilityIdentifier = "transcript-row-header"
 
+        // VoiceOver moves to the output a tap just showed.
+        let opened = expanded && shownExpanded?.id == state.id && shownExpanded?.expanded == false
+        shownExpanded = (state.id, expanded)
+
         guard expanded else {
             // Collapsed: the full text isn't laid out, or kept.
             body.view.isHidden = true
+            state.forget("output")
             if shownBody != nil {
                 body.attributedText = nil
                 shownBody = nil
@@ -291,26 +336,31 @@ final class TranscriptToolCell: TranscriptCell {
             return
         }
         body.view.isHidden = false
-        let source = state.kind == .reasoning ? state.text : (state.output ?? "")
-        guard shownBody?.id != state.id || shownBody?.source != source else { return }
-        shownBody = (state.id, source)
+        let text: NSAttributedString
         if state.kind == .reasoning {
-            body.attributedText = SafeText.attributed(source, font: TranscriptFonts.body, color: .secondaryLabel)
-        } else if state.output == nil {
-            body.attributedText = NSAttributedString(string: "No result yet.", attributes: [.font: TranscriptFonts.mono, .foregroundColor: UIColor.secondaryLabel])
-        } else {
-            let (shown, more) = SafeText.truncated(source)
-            let text = NSMutableAttributedString(attributedString: SafeText.attributed(shown, font: TranscriptFonts.mono))
-            if more > 0 {
-                text.append(NSAttributedString(string: "\n" + SafeText.more(more), attributes: [.font: TranscriptFonts.mono, .foregroundColor: UIColor.secondaryLabel]))
+            let font = TranscriptFonts.body
+            text = state.drawing("output", source: state.text, size: font.pointSize) {
+                SafeText.capped(state.text, font: font, color: .secondaryLabel)
             }
+        } else if let output = state.output {
+            let font = TranscriptFonts.mono
+            text = state.drawing("output", source: output, size: font.pointSize) {
+                SafeText.capped(output, font: font, limit: SafeText.outputLimit)
+            }
+        } else {
+            text = NSAttributedString(string: "No result yet.", attributes: [.font: TranscriptFonts.mono, .foregroundColor: UIColor.secondaryLabel])
+        }
+        if shownBody !== text {
+            shownBody = text
             body.attributedText = text
         }
+        if opened { UIAccessibility.post(notification: .layoutChanged, argument: body.view) }
     }
 
     override func prepareForReuse() {
         super.prepareForReuse()
         shownBody = nil
+        shownExpanded = nil
         body.attributedText = nil
     }
 }

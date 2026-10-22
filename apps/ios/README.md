@@ -397,7 +397,8 @@ scrolled to the end (ticket 88).
   `UIApplication.shared.open`; a long press shows no preview. There is no
   web view in the app: `scripts/no-web.sh` fails on WebKit, a web view,
   Safari's view, `AsyncImage` or an image read from a URL in the sources,
-  and on WebKit in the built app's libraries (ios.yml runs it).
+  and on WebKit, SafariServices or LinkPresentation linked by any Mach-O
+  file in the built app (ios.yml runs it).
 - **No spinner over content** (R-IOS-1): an activity indicator shows only
   in the empty body while the session is read; once a row is drawn it
   never shows again. A session read with nothing to draw says so, and one

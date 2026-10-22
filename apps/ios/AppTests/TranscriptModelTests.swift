@@ -110,6 +110,47 @@ struct TranscriptModelTests {
         #expect(model.ids == before + ["item:i10"])
     }
 
+    @Test("R-PROTO-2: what a gap left out, caught up after later lines were drawn, lands where its parent chain puts it, not at the end")
+    func catchUpAfterAGap() throws {
+        func event(_ id: String, parent: String?, _ body: String) throws -> LogEvent {
+            let parentJSON = parent.map { #","parentId":"0192f0a0-0000-7000-8000-0000000\#($0)""# } ?? ""
+            return try decodeLogEvent(json: #"{"id":"0192f0a0-0000-7000-8000-0000000\#(id)"\#(parentJSON),"sessionId":"\#(Self.session)","timeMs":5,\#(body)}"#)
+        }
+        let a1 = try event("a01", parent: nil, #""type":"item.completed","turnId":"t1","itemId":"i1","item":{"kind":"userText","text":"one"}"#)
+        let a2 = try event("a02", parent: "a01", #""type":"item.completed","turnId":"t1","itemId":"i2","item":{"kind":"assistantText","text":"two"}"#)
+        let a3 = try event("a03", parent: "a02", #""type":"item.completed","turnId":"t1","itemId":"i3","item":{"kind":"toolCall","callId":"c","name":"bash","input":{"command":"ls"}}"#)
+        let a4 = try event("a04", parent: "a03", #""type":"item.completed","turnId":"t1","itemId":"i4","item":{"kind":"toolResult","callId":"c","output":"x","isError":false}"#)
+        let a5 = try event("a05", parent: "a04", #""type":"item.completed","turnId":"t1","itemId":"i5","item":{"kind":"assistantText","text":"five"}"#)
+        let a6 = try event("a06", parent: "a05", #""type":"turn.completed","turnId":"t1","status":"completed","usage":\#(Self.usage),"durationMs":1"#)
+        let model = TranscriptModel(sessionID: Self.session)
+        model.apply(.attached(events: [a1, a2], head: nil))
+        // The relay dropped a3…a5; a6 came live, then the catch-up.
+        model.apply(.line(line: .log(a6)))
+        model.apply(.caughtUp(events: [a3, a4, a5]))
+        #expect(model.ids == ["item:i1", "item:i2", "item:i3", "item:i5", "turn:t1"])
+        #expect(model.item("item:i3")?.output == "x")
+        // A line after that still goes at the end.
+        let a7 = try event("a07", parent: "a06", #""type":"item.completed","turnId":"t2","itemId":"i7","item":{"kind":"userText","text":"seven"}"#)
+        model.apply(.line(line: .log(a7)))
+        #expect(model.ids.last == "item:i7")
+    }
+
+    @Test("R-PROTO-2: a call id used twice pairs each result with the call before it; an empty answer has no row")
+    func reusedCallID() throws {
+        let lines = [
+            Self.line("b01", #""type":"item.completed","turnId":"t1","itemId":"i1","item":{"kind":"toolCall","callId":"call_0","name":"bash","input":{"command":"one"}}"#),
+            Self.line("b02", #""type":"item.completed","turnId":"t1","itemId":"i2","item":{"kind":"toolResult","callId":"call_0","output":"first","isError":false}"#),
+            Self.line("b03", #""type":"item.completed","turnId":"t2","itemId":"i3","item":{"kind":"assistantText","text":"  "}"#),
+            Self.line("b04", #""type":"item.completed","turnId":"t2","itemId":"i4","item":{"kind":"toolCall","callId":"call_0","name":"bash","input":{"command":"two"}}"#),
+            Self.line("b05", #""type":"item.completed","turnId":"t2","itemId":"i5","item":{"kind":"toolResult","callId":"call_0","output":"second","isError":true}"#),
+        ]
+        let model = Self.model(try lines.map { try decodeLogEvent(json: $0) })
+        #expect(model.ids == ["item:i1", "item:i4"])
+        #expect(model.item("item:i1")?.output == "first")
+        #expect(model.item("item:i4")?.output == "second")
+        #expect(model.item("item:i4")?.isError == true)
+    }
+
     @Test("R-PROTO-2: another session's events on the same log (a subagent's) are skipped")
     func otherSession() throws {
         let model = Self.model(try Self.events())

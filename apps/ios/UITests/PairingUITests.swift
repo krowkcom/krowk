@@ -123,12 +123,17 @@ final class PairingUITests: XCTestCase {
         if status.label != "live" { Screenshots.tree(of: app) }
         XCTAssertEqual(status.label, "live")
         Screenshots.keep("session", in: app)
-        // A tool call, expanded to its output by a tap.
+        // A tool call, expanded by a tap: scrolled up to, if it's above.
         let tool = transcript.cells.matching(identifier: "transcript-tool").firstMatch
-        if tool.exists {
-            tool.tap()
-            Screenshots.keep("session-tool", in: app)
+        for _ in 0..<6 where !tool.waitForExistence(timeout: 2) || !tool.isHittable {
+            transcript.swipeDown()
         }
+        if !tool.exists { Screenshots.tree(of: app) }
+        XCTAssertTrue(tool.exists, "no tool call drawn")
+        tool.tap()
+        let output = tool.descendants(matching: .any)["transcript-tool-output"]
+        XCTAssertTrue(output.waitForExistence(timeout: 5), "a tap did not expand the tool call")
+        Screenshots.keep("session-tool", in: app)
         app.terminate()
 
         // Relaunched, the paired phone opens on Sessions, no onboarding.

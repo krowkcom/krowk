@@ -382,8 +382,8 @@ jobs:
           print("xtool-Info.plist agrees with Xcode's on", len(xtool), "keys")
           PY
 
-      - name: "R-IOS-10: no web view, no remote image: the sources, and the app's linked libraries"
-        run: apps/ios/scripts/no-web.sh "$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app/Krowk"
+      - name: "R-IOS-10: no web view, no remote image: the sources, and every Mach-O file in the app"
+        run: apps/ios/scripts/no-web.sh "$DERIVED/Build/Products/Debug-iphonesimulator/Krowk.app"
 
       - name: Screenshot of the running app
         id: shot

@@ -9,13 +9,15 @@ import KrowkKit
 extension TranscriptModel {
     /// One of the viewer's updates: the session read at rest (`attached`),
     /// a logged line, a catch-up. The rest — live frames (ticket 89), the
-    /// host, commands, the path — draw nothing here.
+    /// host, commands, the path — draw nothing here. A catch-up brings what
+    /// a gap left out, after later lines were drawn: its rows go after the
+    /// event before them, not at the end.
     public func apply(_ update: ViewerUpdate) {
         switch update {
         case .attached(let events, _):
             attach(events.map(TranscriptEvent.init))
         case .caughtUp(let events):
-            apply(events.map(TranscriptEvent.init))
+            apply(events.map(TranscriptEvent.init), placement: .afterParent)
         case .line(.log(let event)):
             apply([TranscriptEvent(event)])
         case .line(.live), .host, .sent, .acked, .path, .gap, .failed, .note, .handoffTaken, .handoffRefused:
@@ -27,7 +29,7 @@ extension TranscriptModel {
 extension TranscriptEvent {
     /// `event` as the transcript takes it.
     public init(_ event: LogEvent) {
-        self.init(id: event.id, sessionID: event.sessionId, change: Self.change(event))
+        self.init(id: event.id, parentID: event.parentId, sessionID: event.sessionId, change: Self.change(event))
     }
 
     static func change(_ event: LogEvent) -> TranscriptChange? {

@@ -59,7 +59,8 @@ extension HostedKeychain {
             }
             let tool = try #require(Self.tool(in: model))
             #expect(tool.isError == false)
-            #expect(tool.output?.hasPrefix("# The demo project") == true)
+            // `read` numbers its lines.
+            #expect(tool.output?.contains("# The demo project") == true, "\(tool.output ?? "")")
             #expect(rows.contains("mark: Turn completed"), "\(rows)")
 
             // As drawn: the snapshot is the model's rows, and the tool's
@@ -72,7 +73,7 @@ extension HostedKeychain {
             #expect(cell.accessibilityIdentifier == "transcript-tool")
             let labels = Self.labels(in: cell)
             #expect(labels.contains("read README.md"), "\(labels)")
-            #expect(labels.contains("✓ # The demo project"), "\(labels)")
+            #expect(labels.contains { $0.hasPrefix("✓ ") && $0.contains("# The demo project") }, "\(labels)")
 
             // R-IOS-1: rows drawn, no indicator anywhere on the screen.
             #expect(screen.drewRows)

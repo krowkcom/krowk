@@ -155,8 +155,10 @@ struct TranscriptScreenTests {
         #expect(shown.hasPrefix("first line\nxxx"))
         #expect(shown.hasSuffix("\n" + SafeText.more(output.utf8.count - SafeText.outputLimit)))
         #expect(cell.header.accessibilityValue == "expanded")
-        window.layoutIfNeeded()
-        #expect(cell.frame.height > collapsed, "the list follows the expanded height")
+        try await waitFor {
+            window.layoutIfNeeded()
+            return cell.frame.height > collapsed
+        }
 
         screen.collectionView(screen.collectionView, didSelectItemAt: path)
         try await waitFor { cell.body.view.isHidden }
@@ -183,6 +185,56 @@ struct TranscriptScreenTests {
         #expect(text.contains("![p](https://evil.example/p.png"))
         let mark = try #require(screen.collectionView.cellForItem(at: IndexPath(item: 1, section: 0)) as? TranscriptMarkCell)
         #expect(mark.label.text == "Turn failed: bad gateway")
+    }
+
+    @Test("A long prompt's bubble wraps inside the screen, its text not clipped; a short one hugs its text")
+    func bubbles() async throws {
+        let session = StubSession()
+        let screen = TranscriptViewController(row: row, session: session)
+        let window = shown(screen)
+        defer { window.isHidden = true }
+        let long = String(repeating: "A prompt that goes on. ", count: 25)
+        session.bring([
+            Self.event("e1", .userText(item: "u1", text: "Hi", images: [])),
+            Self.event("e2", .userText(item: "u2", text: long, images: [])),
+        ], attach: true)
+        screen.frame()
+        try await waitFor { screen.drewRows }
+        window.layoutIfNeeded()
+        let width = screen.collectionView.bounds.width
+        let short = try #require(screen.collectionView.cellForItem(at: IndexPath(item: 0, section: 0)) as? TranscriptTextCell)
+        let shortFrame = short.textView.view.convert(short.textView.view.bounds, to: screen.collectionView)
+        #expect(shortFrame.width < width / 3, "a short prompt's bubble hugs it: \(shortFrame)")
+        let longCell = try #require(screen.collectionView.cellForItem(at: IndexPath(item: 1, section: 0)) as? TranscriptTextCell)
+        let view = longCell.textView.view
+        let frame = view.convert(view.bounds, to: screen.collectionView)
+        #expect(frame.minX >= 48 && frame.maxX <= width, "\(frame) in \(width)")
+        let needed = view.sizeThatFits(CGSize(width: view.bounds.width, height: .greatestFiniteMagnitude)).height
+        #expect(view.bounds.height >= needed - 1, "clipped: \(view.bounds.height) of \(needed)")
+        #expect(longCell.bounds.height >= view.bounds.height)
+    }
+
+    @Test("A row's change redraws its cell, shown again or not: one observation per item")
+    func redrawAfterReshow() async throws {
+        let session = StubSession()
+        let screen = TranscriptViewController(row: row, session: session)
+        let window = shown(screen)
+        defer { window.isHidden = true }
+        session.bring(Self.turn, attach: true)
+        screen.frame()
+        try await waitFor { screen.drewRows }
+        window.layoutIfNeeded()
+        // Configured again (as scrolling back would), then changed.
+        var snapshot = screen.dataSource.snapshot()
+        snapshot.reconfigureItems(["item:t1"])
+        await screen.dataSource.apply(snapshot, animatingDifferences: false)
+        window.layoutIfNeeded()
+        let path = try #require(screen.dataSource.indexPath(for: "item:t1"))
+        let cell = try #require(screen.collectionView.cellForItem(at: path) as? TranscriptToolCell)
+        screen.model.item("item:t1")?.expanded = true
+        try await waitFor { !cell.body.view.isHidden }
+        #expect(cell.body.view.text.hasPrefix("# The demo project"))
+        #expect(cell.header.accessibilityValue == "expanded")
     }
 
     /// Whether any activity indicator in `view` is animating and visible.

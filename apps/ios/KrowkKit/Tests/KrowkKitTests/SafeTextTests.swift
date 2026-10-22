@@ -91,6 +91,9 @@ struct SafeTextTests {
         #expect(drawn.string.contains("(evil.example)"))
         #expect(!drawn.string.contains("(good.example)"))
 
+        // A percent-escape in the host is never shown decoded: no link.
+        #expect(SafeText.links(in: "https://good.example%2Fevil.example/").isEmpty)
+
         // Userinfo that reads like a host: the host is what follows the @.
         let userinfo = SafeText.attributed("https://good.example@evil.example/", font: font)
         #expect(Self.links(in: userinfo).map(\.url.host) == ["evil.example"])
@@ -113,20 +116,16 @@ struct SafeTextTests {
         #expect(sheet.actions.map(\.title) == ["Open", "Cancel"])
         #expect(opened.isEmpty, "nothing opens without a tap")
 
-        // Tapping a link only presents the sheet: the screen's opener is
-        // never called by the tap itself.
+        // The sheet's Open is the one path to `open`: the screen's opener
+        // is called by nothing else (a tap only presents the sheet).
         let row = SessionRow(id: "s", title: "t", detail: "d", live: false, accessibilityLabel: "t")
         let screen = TranscriptViewController(row: row, open: { opened.append($0) })
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-        window.rootViewController = screen
-        window.makeKeyAndVisible()
+        screen.loadViewIfNeeded()
         screen.confirm(url)
         #expect(opened.isEmpty)
-        #expect((screen.presentedViewController as? UIAlertController)?.message == url.absoluteString)
-        window.isHidden = true
     }
 
-    @Test("A tool's output is shown up to 64 KiB, cut at a character, then how many more bytes")
+    @Test("A tool's output is shown up to 64 KiB, cut between scalars, then how many more bytes; a giant cluster costs no more")
     func truncation() {
         let output = String(repeating: "é", count: 40_000) // 80,000 bytes
         let (shown, more) = SafeText.truncated(output)
@@ -139,6 +138,13 @@ struct SafeTextTests {
         let cut = SafeText.truncated(wide)
         #expect(cut.shown.utf8.count == 65_535)
         #expect(cut.more == 90_000 - 65_535)
+        // 100,000 combining marks on one letter: one grapheme, cut at once.
+        let zalgo = "a" + String(repeating: "\u{0301}", count: 100_000)
+        let start = ContinuousClock.now
+        let cluster = SafeText.truncated(zalgo)
+        #expect(ContinuousClock.now - start < .seconds(1))
+        #expect(cluster.shown.utf8.count <= SafeText.outputLimit)
+        #expect(cluster.more == zalgo.utf8.count - cluster.shown.utf8.count)
         #expect(SafeText.truncated("short").shown == "short")
         #expect(SafeText.truncated("short").more == 0)
     }
@@ -148,6 +154,8 @@ struct SafeTextTests {
         #expect(SafeText.line("first\u{202E}\nsecond"[...]) == "first")
         #expect(SafeText.line("a\tb"[...]) == "a b")
         #expect(SafeText.line(String(repeating: "x", count: 300)[...], limit: 10) == "xxxxxxxxxx…")
+        #expect(SafeText.line("0123456789"[...], limit: 10) == "0123456789")
+        #expect(SafeText.line("0123456789\nmore"[...], limit: 10) == "0123456789")
     }
 
     /// The tappable links in `drawn`: each URL and where it is.

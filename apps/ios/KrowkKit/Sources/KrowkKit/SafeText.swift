@@ -41,11 +41,14 @@ public enum SafeText {
     }
 
     /// One line of `text`, cleaned, for a row that has one: its first
-    /// line, tabs as spaces, at most `limit` characters.
+    /// line, tabs as spaces, trimmed, at most `limit` characters.
+    /// Reads at most `limit` + 1 characters of `text`, however long its
+    /// first line.
     public static func line(_ text: Substring, limit: Int = 200) -> String {
-        let first = text.prefix { $0 != "\n" && $0 != "\r\n" }
+        let head = text.prefix(limit + 1)
+        let first = head.prefix { $0 != "\n" && $0 != "\r\n" }
         let cut = first.prefix(limit)
-        let line = clean(String(cut)).replacingOccurrences(of: "\t", with: " ")
+        let line = clean(String(cut)).replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces)
         return cut.count < first.count ? line + "…" : line
     }
 
@@ -77,8 +80,10 @@ public enum SafeText {
         let lower = written.lowercased()
         guard lower.hasPrefix("https://") || lower.hasPrefix("http://"),
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
-              let host = url.host(percentEncoded: false), !host.isEmpty,
-              host.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 0x20 && $0.value < 0x7F })
+              let host = url.host(percentEncoded: true), !host.isEmpty,
+              // Shown as it is: no percent-escape that decodes into a slash
+              // or another host.
+              host.unicodeScalars.allSatisfy({ $0.isASCII && $0.value > 0x20 && $0.value < 0x7F && $0 != "%" })
         else { return nil }
         return Link(range: range, url: url, host: host)
     }
@@ -99,19 +104,35 @@ public enum SafeText {
         return out
     }
 
-    /// At most `limit` bytes of `output` (UTF-8), cut at a character, and
-    /// how many bytes were left out.
+    /// At most `limit` bytes of `output` (UTF-8), cut between two Unicode
+    /// scalars, and how many bytes were left out. At most three steps back
+    /// from the limit, whatever the text: a cut may split a cluster of
+    /// combining marks, never a scalar.
     public static func truncated(_ output: String, limit: Int = outputLimit) -> (shown: String, more: Int) {
         let utf8 = output.utf8
         guard utf8.count > limit else { return (output, 0) }
         var end = utf8.index(utf8.startIndex, offsetBy: limit)
-        // Back to the start of the character it falls in.
-        while end > utf8.startIndex, end.samePosition(in: output) == nil {
+        // Off a continuation byte (10xxxxxx), to the start of its scalar.
+        while end > utf8.startIndex, utf8[end] & 0xC0 == 0x80 {
             end = utf8.index(before: end)
         }
-        let shown = String(output[..<end])
-        return (shown, utf8.count - shown.utf8.count)
+        let shown = String(decoding: utf8[..<end], as: UTF8.self)
+        return (shown, utf8.count - utf8.distance(from: utf8.startIndex, to: end))
     }
+
+    /// `text` as a cell draws it: at most `limit` bytes, then a line saying
+    /// how many more (a pasted log in a prompt is not laid out whole).
+    public static func capped(_ text: String, font: UIFont, color: UIColor = .label, limit: Int = textLimit) -> NSAttributedString {
+        let (shown, more) = truncated(text, limit: limit)
+        let drawn = NSMutableAttributedString(attributedString: attributed(shown, font: font, color: color))
+        if more > 0 {
+            drawn.append(NSAttributedString(string: "\n" + Self.more(more), attributes: [.font: font, .foregroundColor: UIColor.secondaryLabel]))
+        }
+        return drawn
+    }
+
+    /// At most this much of a prompt, an answer or reasoning is laid out.
+    public static let textLimit = 256 * 1024
 
     /// What follows a truncated output: "… 1,234 more bytes".
     public static func more(_ bytes: Int) -> String {

@@ -87,7 +87,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let tool = UICollectionView.CellRegistration<TranscriptToolCell, String> { [weak self] cell, _, id in
             guard let state = self?.model.item(id) else { return }
             cell.openLink = open
-            cell.toggle = { [weak state] in state?.expanded.toggle() }
+            cell.toggle = { [weak self] in self?.toggle(id) }
             cell.show(state)
         }
         let mark = UICollectionView.CellRegistration<TranscriptMarkCell, String> { [weak self] cell, _, id in
@@ -241,12 +241,21 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
     }
 
-    /// The last row at the bottom of the screen.
+    /// The last row at the bottom of the screen. The rows' heights are
+    /// estimates until they are laid out, so it scrolls, lays out what it
+    /// scrolled to, and scrolls again; and once more on the next turn of
+    /// the run loop, after the cells sized themselves.
     private func scrollToEnd() {
-        let count = collectionView.numberOfItems(inSection: 0)
-        guard count > 0 else { return }
-        collectionView.layoutIfNeeded()
-        collectionView.scrollToItem(at: IndexPath(item: count - 1, section: 0), at: .bottom, animated: false)
+        let end = { [weak self] in
+            guard let self, let collectionView else { return }
+            let count = collectionView.numberOfItems(inSection: 0)
+            guard count > 0 else { return }
+            collectionView.layoutIfNeeded()
+            collectionView.scrollToItem(at: IndexPath(item: count - 1, section: 0), at: .bottom, animated: false)
+        }
+        end()
+        end()
+        DispatchQueue.main.async { MainActor.assumeIsolated { end() } }
     }
 
     // MARK: Taps
@@ -260,9 +269,20 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// itself, and the list follows its height.
     public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: false)
-        guard let id = dataSource.itemIdentifier(for: indexPath), let state = model.item(id) else { return }
-        guard state.kind == .tool || state.kind == .reasoning else { return }
+        guard let id = dataSource.itemIdentifier(for: indexPath) else { return }
+        toggle(id)
+    }
+
+    /// Row `id` expanded or collapsed, if it's a tool or reasoning row: its
+    /// state changes (its cell redraws itself), and the item is
+    /// reconfigured, never reloaded, so the list sizes it again at once.
+    func toggle(_ id: String) {
+        guard let state = model.item(id), state.kind == .tool || state.kind == .reasoning else { return }
         state.expanded.toggle()
+        var snapshot = dataSource.snapshot()
+        guard snapshot.indexOfItem(id) != nil else { return }
+        snapshot.reconfigureItems([id])
+        dataSource.apply(snapshot, animatingDifferences: false)
     }
 
     /// A link tapped: a sheet naming the whole URL, and only its "Open"
