@@ -38,6 +38,15 @@ public final class RegistrySessions: SessionSource {
         }
     }
 
+    /// Session `id`, opened to follow live (`RelayConnection`), held to at
+    /// least `known`, the head its listing named. On the relay
+    /// `RelayConnection.relayOverride` names, else the one Rust picks for
+    /// the registry. Blocking: registry calls.
+    public func openSession(id: String, known: HeadRecord?) throws -> OpenedSession {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        return try opened().openSession(id: id, known: known, relayOverride: RelayConnection.relayOverride())
+    }
+
     private func opened() throws -> Account {
         if let account = account.withLock({ $0 }) { return account }
         let opened = try Account.open(api: api, storage: storage)

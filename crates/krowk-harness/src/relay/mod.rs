@@ -1027,7 +1027,9 @@ fn admit(relay: &Relay, key: Key, nonce: &[u8; 32], origin: &str, mut j: Join, t
         return Err(bad("hosting, and this join is a viewer's"));
     }
     if e2e::SigningPublic(t.signing_key).verify_relay_join(&j.signature, j.role, &session, nonce, &j.device, origin).is_err() {
-        return Err(refuse("bad_signature", "the join's signature does not verify under the signing key the ticket names", "sign this challenge's nonce with the device's own signing key, for the role, session and relay origin you dialed"));
+        // The origin checked is said: a client whose Host header differs
+        // from the address it signs (a port left out) is told which.
+        return Err(refuse("bad_signature", format!("the join's signature does not verify under the signing key the ticket names, for the relay origin {origin}"), "sign this challenge's nonce with the device's own signing key, for the role, session and relay origin you dialed"));
     }
     // A channel holds to the workspace it was first joined under, so no
     // other workspace's session of the same id ever shares it; the ticket
