@@ -98,18 +98,17 @@ fn r_e2e_3_a_cancel_after_the_confirmation_looks_once_more_for_the_reply() {
 }
 
 #[test]
-fn r_e2e_3_from_the_ack_on_a_cancel_is_too_late() {
+fn r_e2e_3_before_the_confirmation_a_cancelled_read_fails_without_looking() {
+    // Only a reply seen after this device confirmed makes a cancel too
+    // late (the stand-in refuses a reply out of turn, so a registry that
+    // serves one early is the mailbox's rule, not shown here).
     let w = World::new();
     let (mailbox, cancel, _) = opened(&w);
-    // The ack is out of turn here, which the registry refuses: what counts
-    // is that it went to the registry, cancel or no cancel.
+    mailbox.step(PairingStep::Join, &[7; 32]).unwrap();
+    w.host.pairing_step(PairingStep::Answer, &[8; 32]).unwrap();
+    assert!(!mailbox.read().unwrap().initiator_message.is_empty());
     cancel.store(true, Ordering::SeqCst);
-    let e = mailbox.step(PairingStep::Acknowledgement, &[7; 32]).unwrap_err();
-    assert_ne!(e.code(), "cancelled", "{e:?}");
-    assert!(!mailbox.cancelled());
-    let e = mailbox.claim_device().unwrap_err();
-    assert_ne!(e.code(), "cancelled", "the claim reaches the registry: {e:?}");
-    let started = Instant::now();
-    mailbox.pause(Duration::from_millis(400));
-    assert!(started.elapsed() >= Duration::from_millis(400), "the pause is not cut short");
+    let e = mailbox.read().unwrap_err();
+    assert_eq!((e.status, e.code().as_str()), (499, "cancelled"), "{e:?}");
+    assert!(mailbox.cancelled());
 }

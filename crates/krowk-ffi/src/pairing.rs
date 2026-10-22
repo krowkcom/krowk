@@ -27,7 +27,7 @@ use krowk_client::Zeroizing;
 use krowk_client::device_chain::{self, Action, Entry};
 use krowk_client::e2e::{self, DeviceId};
 use krowk_client::pairing::{self, Binding, NewDevice, PairingCode, PeerKind, invite};
-use krowk_client::pairing_join::{self, JoinFailed, Mailbox, Timing};
+use krowk_client::pairing_join::{self, Field, JoinFailed, Mailbox, Timing};
 
 use crate::KrowkError;
 use crate::account::{Account, internal};
@@ -43,15 +43,17 @@ const OS: &str = "iOS";
 /// account's (keyed, signed by this device for the claim; the joining
 /// side's steps go with the key alone), `id` the pairing it is in.
 ///
-/// Once `cancel` is set, a pause returns within a quarter of a second, and
-/// the calls fail at once with status 499 and code `cancelled` — never 0,
-/// which `join` counts as an ack that may have landed; `end` still ends
-/// the pairing. Not once the other device's sealed reply is seen: it
-/// posts this device to the list once its reply is out, acked or not, so
-/// from then on the check, the ack and the claims go ahead, cancel or no
-/// cancel. A cancel after the confirmation went out reads the pairing
-/// once more to see whether the reply has come; what it cannot see is a
-/// reply that lands between that read and the `end`.
+/// Once `cancel` is set, a pause returns within a quarter of a second, the
+/// steps and the claim fail at once with status 499 and code `cancelled`
+/// — never 0, which `join` counts as an ack that may have landed — and so
+/// does a read until the confirmation is out; after it, a read looks once
+/// more for the other device's sealed reply before it fails. `end` still
+/// ends the pairing. That device posts this one to the list once its
+/// reply is out, acked or not, so once a reply that can be checked has
+/// been seen after the confirmation, the check, the ack and the claims go
+/// ahead, cancel or no cancel; what the last look cannot see is a reply
+/// that lands between it and the `end`. Nothing the registry serves before
+/// the confirmation, or that is not hex, stops a cancel.
 pub struct RegistryMailbox {
     client: Arc<Client>,
     id: String,
@@ -107,7 +109,7 @@ impl Mailbox for RegistryMailbox {
             return Err(cancelled_error());
         }
         let p = self.client.show_pairing(&self.id)?;
-        if !p.sealed_reply.is_empty() {
+        if self.confirmed.load(Ordering::SeqCst) && Field::SealedReply.blob(&p).is_some() {
             self.committed.store(true, Ordering::SeqCst);
         }
         // Cancelled with no reply yet: the one last look is over.
