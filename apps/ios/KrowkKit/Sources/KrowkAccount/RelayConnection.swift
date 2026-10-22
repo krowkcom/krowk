@@ -124,7 +124,7 @@ public actor RelayConnection: LiveSession {
         case .failure(let error):
             done = true
             tracker.ended(Self.detail(error))
-            publish()
+            publishIfChanged()
         }
     }
 
@@ -136,7 +136,6 @@ public actor RelayConnection: LiveSession {
     /// Carries out the viewer's effects in order, then sets the timer for
     /// when it next wants `tick`.
     private func run(_ effects: [Effect]) {
-        let before = tracker.status
         for effect in effects {
             guard !done, let viewer else { break }
             switch effect {
@@ -171,7 +170,7 @@ public actor RelayConnection: LiveSession {
                 halt()
             }
         }
-        if tracker.status != before { publish() }
+        publishIfChanged()
         armWake()
     }
 
@@ -181,7 +180,8 @@ public actor RelayConnection: LiveSession {
         // At least once a minute, whatever it asked: a clock read late
         // never leaves the viewer asleep.
         let wait = Int(min(at > now ? at - now : 0, 60_000))
-        wake.schedule(deadline: .now() + .milliseconds(wait), leeway: .milliseconds(4))
+        // Wall time, which runs on while the phone sleeps, as `now` does.
+        wake.schedule(wallDeadline: .now() + .milliseconds(wait), leeway: .milliseconds(4))
     }
 
     /// `NeedTicket`: at `atMs`, the ticket from the registry, off the
@@ -192,7 +192,7 @@ public actor RelayConnection: LiveSession {
         let ask = ticketAsk
         let now = Self.now()
         let wait = Int(min(atMs > now ? atMs - now : 0, 60_000))
-        queue.asyncAfter(deadline: .now() + .milliseconds(wait)) { [weak self] in
+        queue.asyncAfter(wallDeadline: .now() + .milliseconds(wait)) { [weak self] in
             self?.assumeIsolated { me in
                 guard !me.done, ask == me.ticketAsk, let session = me.session else { return }
                 me.offQueue(me.queue) { Result { try session.relayTicket() } } then: { me, fetched in
@@ -213,13 +213,15 @@ public actor RelayConnection: LiveSession {
         counts.withLock { $0 += 1 }
         current = number
         // TLS for wss (the system's trust, no exception); plain TCP only
-        // for a ws:// relay, the fake fleet's on 127.0.0.1. The viewer
-        // took no other scheme when it opened.
-        guard let to = URL(string: url), let scheme = to.scheme?.lowercased(), scheme == "wss" || scheme == "ws" else {
-            queue.async { [weak self] in self?.assumeIsolated { $0.ended(number) } }
+        // for a DEBUG build's ws:// relay on this machine, the fake
+        // fleet's. Anything else would send the ticket in the clear, and
+        // never will work: the viewer stops, saying why.
+        guard let to = URL(string: url), let secure = Self.secure(to) else {
+            tracker.ended("the relay must be a wss:// address, not \(URL(string: url)?.scheme ?? "this one")")
+            halt()
             return
         }
-        let parameters: NWParameters = scheme == "wss" ? .tls : .tcp
+        let parameters: NWParameters = secure ? .tls : .tcp
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
         websocket.maximumMessageSize = Self.maxMessage
@@ -271,8 +273,9 @@ public actor RelayConnection: LiveSession {
         case .close?:
             ended(number)
             return
+        // Nothing a WebSocket message carries: the stream ended under it.
         default:
-            if content == nil && isComplete && context?.isFinal == true {
+            if content == nil {
                 ended(number)
                 return
             }
@@ -295,7 +298,7 @@ public actor RelayConnection: LiveSession {
         let metadata = NWProtocolWebSocket.Metadata(opcode: opcode)
         let context = NWConnection.ContentContext(identifier: opcode == .binary ? "bin" : "text", metadata: [metadata])
         // A failed send fails the connection, which its state says.
-        connection.send(content: content, contentContext: context, isComplete: true, completion: .idempotent)
+        connection.send(content: content, contentContext: context, isComplete: true, completion: .contentProcessed { _ in })
     }
 
     /// Drops the current connection: anything more from it is ignored.
@@ -315,6 +318,11 @@ public actor RelayConnection: LiveSession {
         wake = nil
         viewer = nil
         session = nil
+    }
+
+    /// The tracker's status, if it differs from what was last published.
+    private func publishIfChanged() {
+        if tracker.status != status { publish() }
     }
 
     private func publish() {
@@ -340,8 +348,24 @@ public actor RelayConnection: LiveSession {
             let result = work()
             queue.async { self.assumeIsolated { then($0, result) } }
         }
-        thread.stackSize = 1 << 20
+        // Rust's decoding and decompression of a 4 MiB batch, with room.
+        thread.stackSize = 8 << 20
         thread.start()
+    }
+
+    /// Whether `url` may carry a ticket: `wss` (TLS) always, and plain
+    /// `ws` only in a DEBUG build to this machine (true for TLS, false for
+    /// plain TCP, nil when refused).
+    public static func secure(_ url: URL) -> Bool? {
+        switch url.scheme?.lowercased() {
+        case "wss": return true
+        case "ws":
+            #if DEBUG
+            if let host = url.host(percentEncoded: false)?.lowercased(), ["127.0.0.1", "::1", "[::1]", "localhost"].contains(host) { return false }
+            #endif
+            return nil
+        default: return nil
+        }
     }
 
     /// A monotonic clock in milliseconds, counting while the phone sleeps:

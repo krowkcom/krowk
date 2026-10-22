@@ -303,7 +303,8 @@ host's presence notice). Swift never builds or parses those messages.
   URL with `NWProtocolWebSocket` (pings auto-answered, messages up to the
   relay's 4 MiB batch and its header) over `NWParameters.tls` for `wss`,
   the system's trust and nothing weakened, or `.tcp` for the fake fleet's
-  `ws://` on 127.0.0.1. Network.framework isn't subject to App Transport
+  `ws://` on 127.0.0.1 (DEBUG only, and only to this machine: any other
+  `ws://` stops the viewer rather than send a ticket in the clear). Network.framework isn't subject to App Transport
   Security, and loopback needs no local network permission, so the
   Info.plist gains nothing. Each binary message goes to `received`, a
   text or pong one only says the link lives, and the next is read once

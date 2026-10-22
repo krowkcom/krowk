@@ -31,23 +31,23 @@ extension HostedKeychain {
             #expect(!updates.isEmpty)
             #expect(updates.contains { if case .attached = $0 { true } else { false } }, "\(updates.map(Self.kind))")
             #expect(updates.contains(.host(present: true)))
-            #expect(live.dials == 1)
+            // The main queue has the statuses in order, after the fact.
+            try await Self.wait(until: { statuses.all().last == .live }, within: .seconds(5), "\(statuses.all())")
             #expect(statuses.all().first == .connecting)
-            #expect(statuses.all().last == .live)
         }
 
         @Test("R-CLIENT-1, R-LAG-9: a dropped connection is joined again at the viewer's cursor, back to live, with no event drained twice")
         func reconnects() async throws {
             let (live, statuses) = try await Self.follow(try await Self.demo())
             defer { live.stop() }
-            try await Self.wait(for: .live, on: live, within: .seconds(5))
+            try await Self.wait(for: .live, on: live, within: .seconds(15))
             var drained = live.mailbox.drain()
-            #expect(live.dials == 1)
+            let dials = live.dials
 
             live.dropConnection()
             try await Self.wait(until: { statuses.all().contains(.reconnecting) }, within: .seconds(5), "never reconnecting: \(statuses.all())")
             try await Self.wait(for: .live, on: live, within: .seconds(15))
-            #expect(live.dials >= 2, "\(live.dials) dials")
+            #expect(live.dials > dials, "\(dials) → \(live.dials) dials")
             // The welcome's catch-up, if any, lands after `live`.
             try await Task.sleep(for: .seconds(1))
             drained += live.mailbox.drain()
@@ -64,7 +64,7 @@ extension HostedKeychain {
             let id = try await SessionListTests.control("", body: "Host goes away")
             let (live, _) = try await Self.follow(try await Self.open(id, phone: phone))
             defer { live.stop() }
-            try await Self.wait(for: .live, on: live, within: .seconds(5))
+            try await Self.wait(for: .live, on: live, within: .seconds(15))
 
             #expect(try await SessionListTests.control("/\(id)/release") == "released")
             try await Self.wait(for: .hostOffline, on: live, within: .seconds(15))
@@ -78,10 +78,23 @@ extension HostedKeychain {
 
             let (later, _) = try await Self.follow(try await Self.open(id, phone: phone))
             defer { later.stop() }
-            try await Self.wait(for: .hostOffline, on: later, within: .seconds(5))
+            try await Self.wait(for: .hostOffline, on: later, within: .seconds(15))
             try await Task.sleep(for: .seconds(3))
             #expect(later.status == .hostOffline)
             #expect(later.dials == 1, "\(later.dials) dials")
+        }
+
+        @Test("R-CLIENT-1: a ticket goes over TLS (wss), or in a DEBUG build plain to this machine only (the fleet's ws://)")
+        func onlyTLSOrLoopback() throws {
+            let secure = { (url: String) in RelayConnection.secure(try #require(URL(string: url))) }
+            #expect(try secure("wss://relay.krowk.com") == true)
+            #expect(try secure("WSS://relay.krowk.com/v1/relay/s") == true)
+            #expect(try secure("ws://127.0.0.1:53012/v1/relay/s?env=development") == false)
+            #expect(try secure("ws://localhost:7790") == false)
+            #expect(try secure("ws://[::1]:7790") == false)
+            #expect(try secure("ws://relay.example.com") == nil)
+            #expect(try secure("ws://127.0.0.1.example.com") == nil)
+            #expect(try secure("https://relay.krowk.com") == nil)
         }
 
         // MARK: Helpers

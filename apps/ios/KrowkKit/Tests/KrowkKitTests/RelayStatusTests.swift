@@ -87,7 +87,7 @@ struct RelayStatusTests {
         // Gone (popped and released): the session stops.
         let other = StubSession()
         weak var gone: SessionPlaceholderViewController?
-        do {
+        autoreleasepool {
             let leaving = SessionPlaceholderViewController(row: row, session: other)
             leaving.loadViewIfNeeded()
             gone = leaving

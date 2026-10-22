@@ -345,16 +345,18 @@ public final class SessionPlaceholderViewController: UIViewController {
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
         guard session != nil, frames == nil else { return }
-        let link = CADisplayLink(target: FrameTarget(self), selector: #selector(FrameTarget.frame))
+        let link = CADisplayLink(target: FrameTarget(self), selector: #selector(FrameTarget.frame(_:)))
         link.add(to: .main, forMode: .common)
         frames = link
     }
 
+    /// Covered, the screen keeps draining what the session brings, so
+    /// nothing piles up; leaving, it stops the session and the drain.
     override public func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
-        frames?.invalidate()
-        frames = nil
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
+            frames?.invalidate()
+            frames = nil
             session?.stop()
         }
     }
@@ -367,7 +369,8 @@ public final class SessionPlaceholderViewController: UIViewController {
 }
 
 /// The display link's target, holding the screen weakly: a link retains
-/// its target until invalidated. It runs on the main run loop.
+/// its target until invalidated, which it does itself once the screen is
+/// gone. It runs on the main run loop.
 @MainActor
 private final class FrameTarget: NSObject {
     weak var screen: SessionPlaceholderViewController?
@@ -376,7 +379,8 @@ private final class FrameTarget: NSObject {
         self.screen = screen
     }
 
-    @objc func frame() {
-        screen?.frame()
+    @objc func frame(_ link: CADisplayLink) {
+        guard let screen else { return link.invalidate() }
+        screen.frame()
     }
 }
