@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app follows a session live.** Opening a session now joins
+  it through krowk's relay, and a bar under its title says how that
+  stands: `connecting`, `live` once your laptop has welcomed the phone,
+  `host offline` when no laptop is hosting it (the phone is read-only
+  then, and waits for one to come back), `reconnecting` after the
+  connection drops, which it rejoins a second later where it left off,
+  or `can't reach the relay:` and why. Its transcript comes in a later
+  version. Nothing changes for CLI users.
 - **The iPhone app lists your sessions.** Once paired, the app opens on
   "Sessions": every synced session the phone can open, most recently
   written first, each with its title (or its directory's name when it has
