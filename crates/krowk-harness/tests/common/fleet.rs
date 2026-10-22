@@ -50,7 +50,7 @@ pub const READ: &str = "toolu_01Read";
 /// `LONG_LINES` lines at 200 tokens a second: a turn a phone follows live.
 pub const STREAM: &str = "toolu_01Stream";
 /// The long answer's lines, about eleven tokens each.
-pub const LONG_LINES: usize = 60;
+pub const LONG_LINES: usize = 120;
 /// What a test types to have the model stream its long answer.
 pub const LONG: &str = "Please stream a long answer";
 /// The session's title: a readable one for the demo.

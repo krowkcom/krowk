@@ -46,7 +46,7 @@
 //! its lease is gone. A POST to `sessions_url/<id>/turn` types a prompt (the
 //! request's body, else "Please stream a long answer") at host A in that
 //! session and replies `started`: on "stream a long answer" the model makes
-//! a `read` call, then streams 60 numbered lines at 200 tokens a second, a
+//! a `read` call, then streams 120 numbered lines at 200 tokens a second, a
 //! turn a phone's tests follow live (ticket 89).
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,

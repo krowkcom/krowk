@@ -212,15 +212,15 @@ fn r_lag_7_a_turn_typed_for_a_test_streams_to_a_viewer_live() {
         _ => None,
     }).collect();
     let whole = mock::numbered_lines(fleet::LONG_LINES);
-    assert!(streamed.len() >= 600, "{} deltas", streamed.len());
+    assert!(streamed.len() >= 1200, "{} deltas", streamed.len());
     let completed = lines.iter().find_map(|l| match l {
         StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item_id, item: Item::AssistantText { text }, .. }, .. }) if *item_id == answer => Some(text.clone()),
         _ => None,
     }).expect("the answer is logged complete");
     assert_eq!(completed, whole);
     assert_eq!(streamed.concat(), whole, "with no gap, what streamed is what completed");
-    // About 200 tokens a second: 660 deltas take a few seconds, not one.
-    assert!(took >= Duration::from_secs(2), "the turn took {took:?}");
+    // About 200 tokens a second: 1,320 deltas take seconds, not one.
+    assert!(took >= Duration::from_secs(5), "the turn took {took:?}");
     f.stop();
 }
 
