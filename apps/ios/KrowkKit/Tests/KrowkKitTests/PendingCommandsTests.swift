@@ -93,7 +93,10 @@ struct PendingCommandsTests {
         #expect(book.turnEnded() == [steer])
         #expect(book.entry(steer)?.state == .refused(PendingCommands.unread))
         #expect(book.entry(prompt)?.state == .settled)
-        // A gap's catch-up brings its logged item after all: it's taken.
+        // A prompt retyped from it is what a logged item with its text takes
+        // first; a gap's catch-up bringing the steer's own takes the steer.
+        let retyped = book.add(.prompt, text: "too late")
+        #expect(book.logged("too late") == retyped)
         #expect(book.logged("too late") == steer)
 
         // One acked after its turn ended is refused as unread too.
@@ -262,6 +265,25 @@ struct PendingBubbleModelTests {
         model.apply(frame: [.commandMinted(token: steer, id: "d-1"), .commandAcked(id: "d-1", error: "session s1 has no turn running to steer — send it as a prompt instead")])
         #expect(!model.isTurnRunning)
         #expect(model.item(TranscriptModel.bubbleID(steer))?.refused == true)
+        // A later item of that turn sets it running again; another refusal
+        // (a session moving) leaves a running turn running.
+        model.apply(frame: [.started(session: Self.session, turn: "t1", item: "a9", kind: .assistant)])
+        #expect(model.isTurnRunning)
+        let other = model.issue(.steer("again"))
+        model.apply(frame: [.commandMinted(token: other, id: "d-2"), .commandAcked(id: "d-2", error: "session s1 is moving to another machine; send it there once it has moved")])
+        #expect(model.isTurnRunning)
+    }
+
+    @Test("R-LAG-8: an older turn's end a catch-up brings late refuses no steer of the turn running now")
+    func lateOldTurnEnd() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.apply(frame: [.logged([Self.event("e1", .turnStarted(turn: "t2"))])])
+        let steer = model.issue(.steer("for t2"))
+        model.apply(frame: [.commandMinted(token: steer, id: "d-1"), .commandAcked(id: "d-1", error: nil)])
+        let applied = model.apply(frame: [.caughtUp([Self.event("e0", .turnCompleted(turn: "t1", end: .completed))])])
+        #expect(applied.refused.isEmpty)
+        #expect(model.item(TranscriptModel.bubbleID(steer))?.refused == false)
+        #expect(model.isTurnRunning)
     }
 
     @Test("R-LAG-8: a stop the host refuses while the turn runs is reported; one refused after the turn ended is not")

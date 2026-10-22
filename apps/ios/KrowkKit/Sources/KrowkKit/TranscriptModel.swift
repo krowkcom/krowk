@@ -465,6 +465,12 @@ public final class TranscriptModel {
         return changed.compactMap { bubbles[$0] }
     }
 
+    /// A steer's refusal that says no turn is running to take it (the host
+    /// daemon's `no_running_turn` or `turn_ending` sentence).
+    nonisolated static func saysNoTurn(_ error: String) -> Bool {
+        error.contains("no turn running") || error.contains("is finishing and reads no more input")
+    }
+
     /// Bubble `token`'s caption as its entry stands.
     private func refresh(_ token: UInt64) {
         guard let state = bubbles[token], let entry = commands.entry(token) else { return }
@@ -502,11 +508,11 @@ public final class TranscriptModel {
                 refresh(token)
                 if let state = bubbles[token], state.refused {
                     applied.refused.append(state)
-                    // A steer refused while a turn looks running: the host
-                    // says none runs (its end never reached the log, a host
-                    // that died mid-turn) — the composer sends prompts again.
-                    if commands.entry(token)?.kind == .steer, error != nil, let turn = runningTurn {
-                        endedTurns.insert(turn)
+                    // A steer refused because no turn runs, while one looks
+                    // running (its end never reached the log: a host that
+                    // died mid-turn): the composer sends prompts again. A
+                    // later item of that turn sets it running again.
+                    if commands.entry(token)?.kind == .steer, let error, Self.saysNoTurn(error) {
                         runningTurn = nil
                     }
                 }
@@ -818,12 +824,17 @@ public final class TranscriptModel {
             return nil
         case .turnCompleted(let turn, let end):
             endedTurns.insert(turn)
+            // The running turn's end (or one's while none was known to
+            // run), not an older turn's a catch-up brings late.
+            let current = runningTurn == nil || runningTurn == turn
             if runningTurn == turn { runningTurn = nil }
             // "stopping…" ends with the turn, if its ack hasn't come; a steer
             // it never read is refused.
-            for token in commands.turnEnded() {
-                refresh(token)
-                if let state = bubbles[token] { refusedNow.append(state) }
+            if current {
+                for token in commands.turnEnded() {
+                    refresh(token)
+                    if let state = bubbles[token] { refusedNow.append(state) }
+                }
             }
             endLive(turn: turn)
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)

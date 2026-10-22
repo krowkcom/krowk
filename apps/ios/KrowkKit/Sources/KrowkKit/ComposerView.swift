@@ -179,6 +179,7 @@ public final class ComposerView: UIView, UITextViewDelegate {
         get { textView.text ?? "" }
         set {
             textView.text = newValue
+            measured = nil
             textChanged()
         }
     }
@@ -197,6 +198,13 @@ public final class ComposerView: UIView, UITextViewDelegate {
         stopButton.isEnabled = state.canStop
         noteLabel.text = state.note
         noteLabel.isHidden = state.note.isEmpty
+    }
+
+    /// Text replaced (a selection typed or pasted over) may be shorter in
+    /// lines though longer in characters: measured again.
+    public func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+        if range.length > 0 { measured = nil }
+        return true
     }
 
     public func textViewDidChange(_ textView: UITextView) {

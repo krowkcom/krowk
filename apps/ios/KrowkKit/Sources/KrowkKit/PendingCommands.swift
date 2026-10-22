@@ -159,12 +159,16 @@ public struct PendingCommands: Equatable, Sendable {
     /// counts too: after a welcome its send and its logged item can come
     /// before the ack.
     public mutating func logged(_ text: String) -> UInt64? {
-        // A steer refused as unread at its turn's end may yet be logged (a
-        // gap's catch-up brings it after the end): it's taken too.
-        let live = { (entry: Entry) in entry.kind != .interrupt && (!entry.isRefused || entry.state == .refused(Self.unread)) }
+        // The live bubbles first; then a steer refused as unread at its
+        // turn's end, which may yet be logged (a gap's catch-up brings it
+        // after the end) — only once no live bubble has the text, so a
+        // prompt retyped from it is the one its logged item takes.
+        let live = { (entry: Entry) in entry.kind != .interrupt && !entry.isRefused }
+        let unread = { (entry: Entry) in entry.state == .refused(Self.unread) }
         let match = entries.firstIndex { live($0) && $0.text == text }
             // A host that trimmed what it logged still matches.
             ?? entries.firstIndex { live($0) && Self.trimmed($0.text) == Self.trimmed(text) }
+            ?? entries.firstIndex { unread($0) && Self.trimmed($0.text) == Self.trimmed(text) }
         guard let at = match else { return nil }
         return entries.remove(at: at).token
     }
