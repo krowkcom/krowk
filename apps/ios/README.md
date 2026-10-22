@@ -242,7 +242,8 @@ only, never the CLI's `v*`, so the app and the CLI release independently
     and `ios-v*` as a **tag** rule. Then no workflow run from any other
     branch, a pull request's included, can read the secrets. (`ios-v*` as a
     branch rule would admit a branch of that name instead.)
-  - Required reviewers: you. Each upload waits for your approval. This is
+  - Required reviewers: you. Each upload waits for your approval; look at
+    the tagged commit's `testflight.yml` before approving. This is
     what stops someone with write access who pushes an `ios-v*` tag on a
     commit whose own workflow does what it likes with the secrets.
   - A tag ruleset on `ios-v*` (Settings → Rules → Rulesets → New tag
@@ -349,9 +350,10 @@ icon).
 2. **The API key and the secrets** (ticket 110). App Store Connect → Users
    and Access → Integrations → App Store Connect API → Team Keys → +, role
    App Manager (or Admin; see "The API key's role" above). Download the
-   `.p8` (once only), note its Key ID and the Issuer ID, then, without
-   echoing them into shell history. Protect the environment first, then
-   add the secrets (Releasing to TestFlight → Secrets says why):
+   `.p8` (once only), note its Key ID and the
+   Issuer ID. Protect the environment first, then add the secrets without
+   echoing them into shell history (`gh secret set` prompts for each value;
+   Releasing to TestFlight → Secrets says why):
    ```
    R=repos/krowkcom/krowk/environments/testflight
    me=$(gh api user -q .id)
