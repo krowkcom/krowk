@@ -100,10 +100,10 @@ cd apps/ios && xtool dev build
 
 That writes `apps/ios/xtool/KrowkApp.app`, an arm64 iPhone build. From the
 same directory, omarchy-apple-dev's `device-run.sh` installs it on a paired
-iPhone, also over a tailnet, and `ship.sh` is how ticket 74 will sign and
-upload TestFlight builds (the app icon is still empty). Neither has been run
-for this app yet. There is no simulator, XcodeGen or XCUITest on
-Linux. KrowkKit's tests run on the Mac path.
+iPhone, also over a tailnet (not run for this app yet), and `ship.sh` signs
+and uploads a TestFlight build (Releasing to TestFlight, below). There is no
+simulator, XcodeGen or XCUITest on Linux. KrowkKit's tests run on the Mac
+path.
 
 xtool's executable and module are both `KrowkApp`; Xcode's executable is
 `Krowk`, with the module `KrowkApp`. `Package.swift` turns off the
@@ -192,8 +192,149 @@ module of either name clashes with it. `project.yml` sets
 
 ## The bundle id
 
-`com.krowk.app` is a proposal. The person confirms it in ticket 109, before
-ticket 74 registers it in App Store Connect. It is in `project.yml` and
-`xtool.yml`. Neither sets `ITSAppUsesNonExemptEncryption`: krowk does its
-own end-to-end encryption, and the export compliance answer is the person's,
-in ticket 74.
+`com.krowk.app` is a proposal. The person confirms it in ticket 109 and
+registers it in App Store Connect (Pending for the person, below). It is in
+`project.yml` and `xtool.yml`. Neither sets `ITSAppUsesNonExemptEncryption`:
+krowk does its own end-to-end encryption, and the export compliance answer is
+the person's (Export compliance, below).
+
+## Releasing to TestFlight
+
+A tag is the whole trigger (R-IOS-16):
+
+```
+git tag -a ios-v0.1.0 -m "iOS 0.1.0" && git push origin ios-v0.1.0
+gh run watch "$(gh run list --workflow testflight.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+```
+
+`.github/workflows/testflight.yml` answers tags `ios-v<major>.<minor>.<patch>`
+only, never the CLI's `v*`, so the app and the CLI release independently
+(R-REPO-1). It can also be run by hand, from main or an `ios-v*` tag:
+`gh workflow run testflight.yml --ref main -f version=0.1.0`.
+
+- **Versions.** The version (`MARKETING_VERSION`, `CFBundleShortVersionString`)
+  is the tag minus `ios-v`, or the dispatch's `version`; anything but
+  `N.N.N` fails before building. The build number (`CURRENT_PROJECT_VERSION`,
+  `CFBundleVersion`) is `<run number>.<attempt>`, so every run and every
+  re-run uploads a new, higher build. `project.yml`'s `0.1.0` and `1` are
+  placeholders for local builds. The cargo workspace's `0.0.0` plays no part.
+- **Signing.** Cloud-managed and automatic: `xcodebuild archive` and
+  `-exportArchive` sign with `-allowProvisioningUpdates` and the person's
+  App Store Connect API key, and Apple's cloud-managed distribution
+  certificate signs the upload. No certificate, provisioning profile or
+  keychain is in the repo or its secrets. The `.p8` is written to the
+  runner's temp folder for the job only and removed in a step that always
+  runs, together with any signing identity and profile the job added to the
+  runner (a hosted runner is thrown away after the job anyway). Each run may
+  leave an "Apple Development … Created via API" certificate in the
+  developer account; revoke old ones there if they pile up.
+- **Secrets.** `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY`
+  (the `.p8` file's contents), in the GitHub environment `testflight`, which
+  only the `upload` job names. Its first step fails, naming the missing ones,
+  until all four are there; the next checks their shapes. Add required
+  reviewers to the environment (Settings → Environments → testflight) to
+  approve each upload by hand, and limit its deployment branches and tags to
+  `main` and `ios-v*`, so a workflow on another branch can't read them.
+- **Pull requests.** One that changes the workflow, `ExportOptions.plist`,
+  `project.yml`, `scripts/release-preflight.sh` or
+  `.github/actions/ios-project` runs the job `dry-run` instead: the preflight
+  checks with stand-in values and the same Release archive, unsigned. It
+  names no secret and no environment; `upload` never runs for a pull
+  request, a fork's included.
+- **The icon.** App Store Connect refuses a build with no app icon, and
+  `App/Assets.xcassets/AppIcon.appiconset` is still empty, so `upload` stops
+  after archiving, saying so, until it has a 1024×1024 PNG without alpha.
+- **Not reproducible.** The CLI's releases are rebuilt on a second runner
+  and their checksums and SBOMs signed with cosign (`release.yml`). None of
+  that applies to the app in M1: a TestFlight build is neither reproducible
+  nor carries signed provenance, beyond the commit the run's summary names.
+- `ExportOptions.plist` is checked in with `teamID` as a placeholder; the
+  workflow sets it on a copy. `destination` `upload` makes the export the
+  upload.
+
+### On Linux, with omarchy-apple-dev's ship.sh
+
+The alternative, by hand on this Linux box: omarchy-apple-dev's `ship.sh`
+builds the xtool project in Release, compiles the icon, stamps the `DT*`
+keys, signs with rcodesign and uploads with the same kind of API key. Its
+distribution certificate's private key stays in
+`~/.config/omarchy-apple-dev/distribution/`, on this machine only. Without
+`ASC_KEY_ID` it signs with a local TEST identity and validates offline,
+which needs no Apple account:
+
+```
+. ~/.config/omarchy-apple-dev/env.sh
+make ios-core
+cd apps/ios
+BUILD_NUMBER=1 ~/src/omarchy-apple-dev/ship.sh </dev/null          # offline check
+ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8 ASC_ISSUER_ID=<issuer-uuid> ASC_KEY_ID=XXXXXXXXXX \
+  BUILD_NUMBER=<n> ~/src/omarchy-apple-dev/ship.sh --upload </dev/null
+```
+
+The version is `CFBundleShortVersionString` in `xtool-Info.plist`; set it to
+the release's first. Always pass `BUILD_NUMBER`: `ship.sh`'s default, the
+UTC time as `yyyymmddHHMM`, is far above CI's run numbers, and App Store
+Connect refuses a build number lower than one it has for the same version,
+so CI's next upload of that version would fail. `ASC_ENTITLEMENTS_PATH` is
+not needed yet; push (ticket 105) will request `aps-environment` through it.
+Like the workflow, it stops at the empty icon (actool: "AppIcon declares
+size 1024x1024 but no source file matched").
+
+## Export compliance (pending — the person decides)
+
+App Store Connect asks every build whether it uses non-exempt encryption
+(`ITSAppUsesNonExemptEncryption`). krowk's app does more than call HTTPS:
+its Rust core, krowk-client, encrypts the person's own sessions end to end
+(HPKE, XChaCha20-Poly1305, Ed25519 signatures, SPAKE2 pairing), so that the
+relay and the registry only ever carry ciphertext between the person's own
+devices. "Uses only exempt encryption (HTTPS)" therefore can't be assumed.
+
+The likely answer is "yes, non-exempt encryption, qualifying for the
+mass-market exemption under category 5A992 / an encryption registration
+self-classification", which may need an annual self-classification report
+to the US Bureau of Industry and Security. That is the person's call (or
+their counsel's), not the build's, and nothing here states it as a
+conclusion.
+
+Until it is decided, `project.yml` and `xtool-Info.plist` leave the key
+unset (the `dry-run` job checks the archive has none), and each uploaded
+build waits in App Store Connect as "Missing Compliance" until someone
+answers there, which is safe. Once decided:
+
+1. Set `INFOPLIST_KEY_ITSAppUsesNonExemptEncryption` (`YES` or `NO`) on the
+   `Krowk-iOS` target in `project.yml`, and `ITSAppUsesNonExemptEncryption`
+   in `xtool-Info.plist` (CI holds the two equal).
+2. If Apple issues an export compliance code, set
+   `INFOPLIST_KEY_ITSEncryptionExportComplianceCode` in `project.yml` and
+   `ITSEncryptionExportComplianceCode` in `xtool-Info.plist` to it.
+
+## Pending for the person
+
+Nothing here uploads until these are done (tickets 109, 110, 111, and the
+icon).
+
+1. **The bundle id and the app record** (ticket 109). Confirm `com.krowk.app`,
+   register it in the Apple Developer portal (Certificates, Identifiers &
+   Profiles → Identifiers → +, App IDs, with Push Notifications), and create
+   the app in App Store Connect: Apps → + → New App, platform iOS, name
+   "krowk", that bundle id, SKU `krowk-ios`.
+2. **The API key and the secrets** (ticket 110). App Store Connect → Users
+   and Access → Integrations → App Store Connect API → Team Keys → +, role
+   App Manager. Download the `.p8` (once only), note its Key ID and the
+   Issuer ID, then, without echoing them into shell history:
+   ```
+   gh secret set APPLE_TEAM_ID --env testflight -R krowkcom/krowk   # prompts for the value
+   gh secret set ASC_KEY_ID    --env testflight -R krowkcom/krowk
+   gh secret set ASC_ISSUER_ID --env testflight -R krowkcom/krowk
+   gh secret set ASC_KEY       --env testflight -R krowkcom/krowk < AuthKey_XXXXXXXXXX.p8
+   gh secret list --env testflight -R krowkcom/krowk                # the four names
+   ```
+   In Settings → Environments → testflight, limit deployment branches and
+   tags to `main` and `ios-v*`, and add yourself as a required reviewer if
+   you want to approve each upload.
+3. **The export-compliance decision** (ticket 111): above.
+4. **An app icon.** A 1024×1024 PNG without alpha in
+   `App/Assets.xcassets/AppIcon.appiconset`, named in its `Contents.json`.
+5. **The first real run:** `git tag -a ios-v0.1.0 -m "iOS 0.1.0" && git push
+   origin ios-v0.1.0`, then `gh run watch`. Ticket 107 verifies the build on
+   a phone.

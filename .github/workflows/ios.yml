@@ -243,7 +243,7 @@ jobs:
 
       # The Secure Enclave wrapping key is the only one a device build has:
       # the software fallback is under #if targetEnvironment(simulator).
-      # Unsigned, since signing is the person's (xtool or ticket 74).
+      # Unsigned: testflight.yml signs, with the person's key.
       - name: "R-IOS-8: build for a device (generic/platform=iOS)"
         run: |
           xcodebuild build -quiet -skipPackagePluginValidation \
