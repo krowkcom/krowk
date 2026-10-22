@@ -419,14 +419,18 @@ fn drain() -> mpsc::Sender<StreamLine> {
     tx
 }
 
-/// The reference relay, trusting the stand-in registry's ticket key.
+/// The reference relay, trusting the stand-in registry's ticket key, at
+/// the origin it prints, as the hosted relay is: not the request's `Host`,
+/// which Network.framework's WebSocket sends without the port, so a phone
+/// signing the address it dialed would never verify.
 fn relay() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let addr = listener.local_addr().unwrap();
+    let origin = format!("ws://{}", listener.local_addr().unwrap());
     let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
     let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-    std::thread::spawn(move || krowk_harness::relay::run(listener, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
-    format!("ws://{addr}")
+    let config = krowk_harness::relay::Config { roster, origin: Some(origin.clone()), limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None };
+    std::thread::spawn(move || krowk_harness::relay::run(listener, config));
+    origin
 }
 
 /// The environment host A's daemon reads: its home and runtime directory

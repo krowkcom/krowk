@@ -304,7 +304,13 @@ host's presence notice). Swift never builds or parses those messages.
   relay's 4 MiB batch and its header) over `NWParameters.tls` for `wss`,
   the system's trust and nothing weakened, or `.tcp` for the fake fleet's
   `ws://` on 127.0.0.1 (DEBUG only, and only to this machine: any other
-  `ws://` stops the viewer rather than send a ticket in the clear). Network.framework isn't subject to App Transport
+  `ws://` stops the viewer rather than send a ticket in the clear).
+  Network.framework's WebSocket sends a `Host` header without the port,
+  so a relay must know its origin rather than read it from `Host`: the
+  hosted one does, `krowk relay serve` does with `--origin` (which it
+  requires off loopback), and the fake fleet's relay is started with the
+  origin it prints. Without that a join on a non-default port fails
+  `bad_signature`, the refusal naming the origin the relay checked. Network.framework isn't subject to App Transport
   Security, and loopback needs no local network permission, so the
   Info.plist gains nothing. Each binary message goes to `received`, a
   text or pong one only says the link lives, a ping is answered by
