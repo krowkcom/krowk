@@ -71,7 +71,7 @@ struct FrameApplyTests {
         defer { window.isHidden = true }
         let driver = try #require(screen.driver)
         let identity = ObjectIdentifier(cell)
-        #expect(cell.textView.view.text == "Hello")
+        #expect(cell.text.drawnText == "Hello")
         #expect(cell.accessibilityIdentifier == "transcript-assistant")
         let (snapshots, transactions, modelTransactions, appends) = (screen.snapshotApplies, driver.transactions, screen.model.transactions, cell.appends)
 
@@ -83,7 +83,7 @@ struct FrameApplyTests {
         #expect(screen.model.transactions == modelTransactions + 1)
         #expect(cell.appends == appends + 1)
         let whole = "Hello" + words.joined()
-        #expect(cell.textView.view.text == whole)
+        #expect(cell.text.drawnText == whole)
         #expect(cell.streamed?.bytes == whole.utf8.count)
         // And after: the observation's own redraw adds nothing, and no
         // snapshot was applied for text.
@@ -91,7 +91,7 @@ struct FrameApplyTests {
         window.layoutIfNeeded()
         #expect(screen.snapshotApplies == snapshots, "a snapshot applied for deltas")
         #expect(cell.appends == appends + 1)
-        #expect(cell.textView.view.text == whole)
+        #expect(cell.text.drawnText == whole)
 
         // Its logged completion, then the turn's end: the separator is a
         // new row (one snapshot), the answer's cell the same object.
@@ -107,12 +107,40 @@ struct FrameApplyTests {
         #expect(state.text == whole)
         let after = try #require(visibleCell("item:a2", in: screen, window: window))
         #expect(ObjectIdentifier(after) == identity, "the answer moved to another cell")
-        #expect(cell.textView.view.text == whole)
+        #expect(cell.text.drawnText == whole)
         #expect(cell.streamed == nil, "drawn whole once complete")
         #expect(screen.snapshotApplies == snapshots + 1)
         let end = try #require(visibleCell("turn:t2", in: screen, window: window) as? TranscriptMarkCell)
         #expect(end.label.text == "Turn completed")
         #expect(!screen.model.isStreaming)
+    }
+
+    @Test("R-LAG-7: a long answer streams into blocks, and a frame edits only the last: the blocks above keep their views and text; once whole it's one view again")
+    func onlyTheLastBlock() async throws {
+        let (session, screen, window, cell) = try await streaming("Start\n")
+        defer { window.isHidden = true }
+        let line = String(repeating: "word ", count: 20) + "\n"
+        for _ in 0..<20 {
+            session.bring([Self.delta("a2", line)])
+            screen.frame()
+        }
+        let blocks = cell.text.blocks
+        #expect(blocks.count >= 2, "\(blocks.count) blocks for \(cell.text.drawnText.count) characters")
+        #expect(cell.text.live.storage.length <= TranscriptStreamingText.blockLimit)
+        let frozen = blocks.map { ($0.view, $0.view.text ?? "") }
+        session.bring([Self.delta("a2", "and more")])
+        screen.frame()
+        for (block, (view, text)) in zip(cell.text.blocks, frozen) {
+            #expect(block.view === view)
+            #expect(block.view.text == text, "a block above was edited")
+        }
+        let whole = "Start\n" + String(repeating: line, count: 20) + "and more"
+        #expect(cell.text.drawnText == whole)
+        session.bring([.logged([Self.event("e10", .assistantText(item: "a2", text: whole), parent: "e6")])])
+        screen.frame()
+        try await waitFor { cell.streamed == nil }
+        #expect(cell.text.blocks.isEmpty)
+        #expect(cell.textView.view.text == whole)
     }
 
     @Test("R-LAG-7: a completion that differs from what streamed (deltas a gap lost) replaces the text; one that's equal leaves it be")
@@ -142,7 +170,7 @@ struct FrameApplyTests {
             screen.frame()
         }
         let whole = "See https://exa" + pieces.joined()
-        let drawn = cell.textView.view.text ?? ""
+        let drawn = cell.text.drawnText
         #expect(!drawn.unicodeScalars.contains { SafeText.stripped($0) }, "\(drawn.unicodeScalars.map { String($0.value, radix: 16) })")
         #expect(drawn == SafeText.clean(whole))
         #expect(cell.appends >= pieces.count)
@@ -156,7 +184,7 @@ struct FrameApplyTests {
             if let url = value as? URL { links.append(url) }
         }
         #expect(links.map(\.absoluteString) == ["https://example.com/x"])
-        #expect(!(cell.textView.view.text ?? "").unicodeScalars.contains { SafeText.stripped($0) })
+        #expect(!cell.text.drawnText.unicodeScalars.contains { SafeText.stripped($0) })
     }
 
     @Test("R-LAG-7: live lines, then a catch-up bringing the same events, draw each event once")
@@ -316,16 +344,16 @@ struct FrameApplyTests {
         try await waitFor { screen.dataSource.snapshot().itemIdentifiers.last == "item:r2" }
         window.layoutIfNeeded()
         let cell = try #require(visibleCell("item:r2", in: screen, window: window) as? TranscriptToolCell)
-        #expect(cell.body.view.isHidden)
-        #expect(cell.body.streamed == nil, "collapsed, its text isn't drawn")
+        #expect(cell.output.view.isHidden)
+        #expect(cell.output.streamed == nil, "collapsed, its text isn't drawn")
         screen.toggle("item:r2")
-        try await waitFor { !cell.body.view.isHidden }
-        #expect(cell.body.view.text == "Thinking")
-        let appends = cell.body.appends
+        try await waitFor { !cell.output.view.isHidden }
+        #expect(cell.output.drawnText == "Thinking")
+        let appends = cell.output.appends
         session.bring((0..<50).map { Self.delta("r2", " step\($0)") })
         screen.frame()
-        #expect(cell.body.appends == appends + 1)
-        #expect(cell.body.view.text == "Thinking" + (0..<50).map { " step\($0)" }.joined())
+        #expect(cell.output.appends == appends + 1)
+        #expect(cell.output.drawnText == "Thinking" + (0..<50).map { " step\($0)" }.joined())
         #expect(!screen.following, "opened to read: not following")
     }
 

@@ -498,6 +498,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         DispatchQueue.main.async { MainActor.assumeIsolated { end() } }
     }
 
+    /// The text row `id`'s cell draws now, if it's on screen: every block
+    /// of a streaming answer, in order (for the tests outside KrowkKit).
+    public func drawnText(of id: String) -> String? {
+        guard let path = dataSource.indexPath(for: id), let cell = collectionView.cellForItem(at: path) else { return nil }
+        return (cell as? TranscriptTextCell)?.text.drawnText ?? (cell as? TranscriptToolCell)?.output.drawnText
+    }
+
     // MARK: Taps
 
     public func collectionView(_ collectionView: UICollectionView, shouldHighlightItemAt indexPath: IndexPath) -> Bool {

@@ -108,55 +108,6 @@ final class TranscriptTextView: NSObject, UITextViewDelegate {
         storage.endEditing()
     }
 
-    /// While an item streams: which item's text is drawn here, in which
-    /// font, and how many of its UTF-8 bytes. A frame's new text is the
-    /// rest, appended.
-    private(set) var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)?
-    /// Appends made while streaming, for the tests: text grows in place.
-    private(set) var appends = 0
-
-    /// `state`'s text while it streams (R-LAG-7): what it gained since this
-    /// view last drew it, cleaned (`SafeText.clean`, scalar by scalar, so a
-    /// control character is stripped wherever a delta boundary falls) and
-    /// appended to the storage. The first sight of it (or a new font)
-    /// draws what it has whole, once. At most 64 KiB is laid out while it
-    /// streams; its completion draws it whole, with its links and the
-    /// rest's count. Whether anything changed.
-    @discardableResult
-    func stream(_ state: ItemState, font: UIFont, color: UIColor = .label) -> Bool {
-        let id = ObjectIdentifier(state)
-        let utf8 = state.text.utf8
-        let total = utf8.count
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
-        if let streamed, streamed.item == id, streamed.font == font, streamed.bytes <= total {
-            let limit = min(total, SafeText.textLimit)
-            guard streamed.bytes < limit else { return false }
-            let from = utf8.index(utf8.startIndex, offsetBy: streamed.bytes)
-            var end = utf8.index(utf8.startIndex, offsetBy: limit)
-            // Off a continuation byte, to the start of its scalar.
-            while end > from, end != utf8.endIndex, utf8[end] & 0xC0 == 0x80 {
-                end = utf8.index(before: end)
-            }
-            guard end > from else { return false }
-            let more = SafeText.clean(String(decoding: utf8[from..<end], as: UTF8.self))
-            self.streamed = (id, utf8.distance(from: utf8.startIndex, to: end), font)
-            guard !more.isEmpty else { return false }
-            append(NSAttributedString(string: more, attributes: attributes))
-            appends += 1
-        } else {
-            let head = SafeText.truncated(state.text, limit: SafeText.textLimit).shown
-            view.attributedText = NSAttributedString(string: SafeText.clean(head), attributes: attributes)
-            streamed = (id, head.utf8.count, font)
-        }
-        view.invalidateIntrinsicContentSize()
-        return true
-    }
-
-    /// Done streaming, or shown something else: the next stream draws whole.
-    func endStream() {
-        streamed = nil
-    }
-
     func textView(_ textView: UITextView, primaryActionFor textItem: UITextItem, defaultAction: UIAction) -> UIAction? {
         guard case .link(let url) = textItem.content else { return nil }
         let open = openLink
@@ -167,6 +118,133 @@ final class TranscriptTextView: NSObject, UITextViewDelegate {
         guard case .link = textItem.content else { return UITextItem.MenuConfiguration(menu: defaultMenu) }
         // No menu and no preview: a preview would fetch the page.
         return nil
+    }
+}
+
+/// Text that streams (R-LAG-7): TranscriptTextViews stacked top to bottom,
+/// of which only the last, the live one, is ever edited. New text is
+/// appended to its storage in place; once it holds more than `blockLimit`
+/// characters, what's before its last line break (or, in one long
+/// paragraph, its last space) is moved into a block of its own above it,
+/// which is never touched again. So a frame lays out at most one block's
+/// text however long the answer has grown, and the list re-lays out the
+/// one cell. A cut is always at whitespace, which no link holds. Once the
+/// item is whole, `end` takes the blocks away and the live view is drawn
+/// whole, with its links.
+@MainActor
+final class TranscriptStreamingText {
+    /// The blocks and the live view, top to bottom.
+    let view = UIStackView()
+    /// The last block, the one edited; the whole text when not streaming.
+    let live = TranscriptTextView()
+    private(set) var blocks: [TranscriptTextView] = []
+    /// What each block's cut left out between it and the next: a line
+    /// break or a space.
+    private var cuts: [String] = []
+    /// While an item streams: which item's text is drawn here, in which
+    /// font, and how many of its UTF-8 bytes. A frame's new text is the
+    /// rest, appended.
+    private(set) var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)?
+    /// Appends made while streaming, for the tests: text grows in place.
+    private(set) var appends = 0
+    var openLink: (@MainActor (URL) -> Void)? {
+        didSet {
+            live.openLink = openLink
+            for block in blocks { block.openLink = openLink }
+        }
+    }
+    /// Characters the live view holds before what's above its last line
+    /// break becomes a block.
+    static let blockLimit = 1_024
+
+    init() {
+        view.axis = .vertical
+        view.alignment = .fill
+        view.spacing = 0
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.addArrangedSubview(live.view)
+    }
+
+    /// The text as drawn, blocks and all.
+    var drawnText: String {
+        var out = ""
+        for (block, cut) in zip(blocks, cuts) { out += (block.view.text ?? "") + cut }
+        return out + (live.view.text ?? "")
+    }
+
+    /// `state`'s text while it streams: what it gained since this was last
+    /// drawn, cleaned (`SafeText.clean`, scalar by scalar, so a control
+    /// character is stripped wherever a delta boundary falls), appended to
+    /// the live view in one editing transaction. The first sight of it (or
+    /// a new font) draws what it has, once. At most 64 KiB while it
+    /// streams. Whether anything changed.
+    @discardableResult
+    func stream(_ state: ItemState, font: UIFont, color: UIColor = .label) -> Bool {
+        let id = ObjectIdentifier(state)
+        let utf8 = state.text.utf8
+        let total = utf8.count
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: color]
+        let more: String
+        if let streamed, streamed.item == id, streamed.font == font, streamed.bytes <= total {
+            let limit = min(total, SafeText.textLimit)
+            guard streamed.bytes < limit else { return false }
+            let from = utf8.index(utf8.startIndex, offsetBy: streamed.bytes)
+            var end = utf8.index(utf8.startIndex, offsetBy: limit)
+            // Off a continuation byte, to the start of its scalar.
+            while end > from, end != utf8.endIndex, utf8[end] & 0xC0 == 0x80 {
+                end = utf8.index(before: end)
+            }
+            guard end > from else { return false }
+            more = SafeText.clean(String(decoding: utf8[from..<end], as: UTF8.self))
+            self.streamed = (id, utf8.distance(from: utf8.startIndex, to: end), font)
+            guard !more.isEmpty else { return false }
+            appends += 1
+        } else {
+            end()
+            live.attributedText = nil
+            let head = SafeText.truncated(state.text, limit: SafeText.textLimit).shown
+            more = SafeText.clean(head)
+            streamed = (id, head.utf8.count, font)
+        }
+        live.append(NSAttributedString(string: more, attributes: attributes))
+        split()
+        live.view.invalidateIntrinsicContentSize()
+        return true
+    }
+
+    /// While the live view holds more than `blockLimit`: what's before its
+    /// last line break (else its last space) within that becomes a block.
+    private func split() {
+        let limit = Self.blockLimit
+        while live.storage.length > limit {
+            let text = live.storage.string as NSString
+            let within = NSRange(location: 0, length: limit)
+            var cut = text.rangeOfCharacter(from: .newlines, options: .backwards, range: within)
+            if cut.location == NSNotFound || cut.location == 0 {
+                cut = text.rangeOfCharacter(from: .whitespaces, options: .backwards, range: within)
+            }
+            // One unbroken run: left whole in the live view.
+            guard cut.location != NSNotFound, cut.location > 0 else { return }
+            let block = TranscriptTextView()
+            block.attributedText = live.storage.attributedSubstring(from: NSRange(location: 0, length: cut.location))
+            block.openLink = openLink
+            block.view.accessibilityLabel = live.view.accessibilityLabel
+            view.insertArrangedSubview(block.view, at: blocks.count)
+            blocks.append(block)
+            cuts.append(text.substring(with: cut))
+            live.storage.beginEditing()
+            live.storage.deleteCharacters(in: NSRange(location: 0, length: cut.location + cut.length))
+            live.storage.endEditing()
+        }
+    }
+
+    /// Done streaming, or showing something else: the blocks go, and the
+    /// next stream draws whole.
+    func end() {
+        for block in blocks { block.view.removeFromSuperview() }
+        blocks = []
+        cuts = []
+        streamed = nil
     }
 }
 
@@ -184,7 +262,9 @@ enum TranscriptFonts {
 
 /// Your prompt, in a right-aligned bubble, or an answer, full width.
 final class TranscriptTextCell: TranscriptCell {
-    let textView = TranscriptTextView()
+    let text = TranscriptStreamingText()
+    /// The live text view: the whole text once the item is whole.
+    var textView: TranscriptTextView { text.live }
     private let bubble = UIView()
     private var shown: NSAttributedString?
     private var userLayout: [NSLayoutConstraint] = []
@@ -195,9 +275,9 @@ final class TranscriptTextCell: TranscriptCell {
     private var user = false
     /// The layout last configured: a prompt's, an answer's, or none yet.
     private var configuredUser: Bool?
-    /// The streaming state, as its text view keeps it (for the tests).
-    var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)? { textView.streamed }
-    var appends: Int { textView.appends }
+    /// The streaming state (for the tests).
+    var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)? { text.streamed }
+    var appends: Int { text.appends }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -206,31 +286,31 @@ final class TranscriptTextCell: TranscriptCell {
         bubble.translatesAutoresizingMaskIntoConstraints = false
         textView.view.accessibilityIdentifier = "transcript-text"
         // A short prompt's bubble hugs it.
-        textView.view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        text.view.setContentHuggingPriority(.defaultHigh, for: .horizontal)
         contentView.addSubview(bubble)
-        bubble.addSubview(textView.view)
+        bubble.addSubview(text.view)
         let margins = contentView.layoutMarginsGuide
         NSLayoutConstraint.activate([
             bubble.topAnchor.constraint(equalTo: margins.topAnchor),
             bubble.bottomAnchor.constraint(equalTo: margins.bottomAnchor),
             bubble.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
         ])
-        textWidth = textView.view.widthAnchor.constraint(equalToConstant: 200)
+        textWidth = text.view.widthAnchor.constraint(equalToConstant: 200)
         textWidth.priority = .required - 1
         textWidth.isActive = true
         userLayout = [
             bubble.leadingAnchor.constraint(greaterThanOrEqualTo: margins.leadingAnchor, constant: 48),
-            textView.view.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8),
-            textView.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
-            textView.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
-            textView.view.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -12),
+            text.view.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8),
+            text.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
+            text.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
+            text.view.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -12),
         ]
         answerLayout = [
             bubble.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
-            textView.view.topAnchor.constraint(equalTo: bubble.topAnchor),
-            textView.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor),
-            textView.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor),
-            textView.view.trailingAnchor.constraint(equalTo: bubble.trailingAnchor),
+            text.view.topAnchor.constraint(equalTo: bubble.topAnchor),
+            text.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor),
+            text.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor),
+            text.view.trailingAnchor.constraint(equalTo: bubble.trailingAnchor),
         ]
     }
 
@@ -252,26 +332,27 @@ final class TranscriptTextCell: TranscriptCell {
             accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
             textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
         }
-        textView.openLink = { [weak self] in self?.openLink?($0) }
+        if text.openLink == nil { text.openLink = { [weak self] in self?.openLink?($0) } }
         guard state.done else { return stream(state, font: font) }
-        let text = state.drawing("text", source: state.text, font: font) {
+        let drawn = state.drawing("text", source: state.text, font: font) {
             SafeText.capped(state.text, font: font)
         }
         // Unchanged text keeps its layout.
-        guard shown !== text else { return }
-        // Whole: drawn once more, with its links (a URL may have been cut
-        // between two deltas, so none is tappable while it streams).
-        textView.endStream()
-        shown = text
-        textView.attributedText = text
+        guard shown !== drawn else { return }
+        // Whole: drawn once more, in one view, with its links (a URL may
+        // have been cut between two deltas, so none is tappable while it
+        // streams).
+        text.end()
+        shown = drawn
+        textView.attributedText = drawn
         sizeText(toFit: bounds.width)
     }
 
-    /// An item under way (R-LAG-7): its new text appended in place
-    /// (`TranscriptTextView.stream`), and this cell's height invalidated,
-    /// so the list re-lays out this cell alone.
+    /// An item under way (R-LAG-7): its new text appended in place, only
+    /// its last block laid out (`TranscriptStreamingText`), and this
+    /// cell's height invalidated, so the list re-lays out this cell alone.
     private func stream(_ state: ItemState, font: UIFont) {
-        guard textView.stream(state, font: font) else { return }
+        guard text.stream(state, font: font) else { return }
         shown = nil
         if user { sizeText(toFit: bounds.width) }
         invalidateIntrinsicContentSize()
@@ -309,7 +390,7 @@ final class TranscriptTextCell: TranscriptCell {
     override func prepareForReuse() {
         super.prepareForReuse()
         shown = nil
-        textView.endStream()
+        text.end()
     }
 }
 
@@ -322,7 +403,9 @@ final class TranscriptToolCell: TranscriptCell {
     let title = UILabel()
     let chevron = UIImageView()
     let result = UILabel()
-    let body = TranscriptTextView()
+    /// The full text, expanded: a reasoning's streams as an answer's does.
+    let output = TranscriptStreamingText()
+    var body: TranscriptTextView { output.live }
     private let stack = UIStackView()
     private var shownBody: NSAttributedString?
     private var shownExpanded: (id: String, expanded: Bool)?
@@ -368,7 +451,7 @@ final class TranscriptToolCell: TranscriptCell {
         stack.axis = .vertical
         stack.spacing = 6
         stack.addArrangedSubview(header)
-        stack.addArrangedSubview(body.view)
+        stack.addArrangedSubview(output.view)
         stack.translatesAutoresizingMaskIntoConstraints = false
         contentView.addSubview(stack)
         let margins = contentView.layoutMarginsGuide
@@ -382,7 +465,7 @@ final class TranscriptToolCell: TranscriptCell {
 
     override func render(_ state: ItemState) {
         let expanded = state.expanded
-        body.openLink = { [weak self] in self?.openLink?($0) }
+        if output.openLink == nil { output.openLink = { [weak self] in self?.openLink?($0) } }
         chevron.image = expanded ? Self.down : Self.right
         let what: String
         if state.kind == .reasoning {
@@ -424,24 +507,24 @@ final class TranscriptToolCell: TranscriptCell {
 
         guard expanded else {
             // Collapsed: the full text isn't laid out, or kept.
-            body.view.isHidden = true
+            output.view.isHidden = true
             state.forget("output")
-            body.endStream()
+            output.end()
             if shownBody != nil {
                 body.attributedText = nil
                 shownBody = nil
             }
             return
         }
-        body.view.isHidden = false
+        output.view.isHidden = false
         if state.kind == .reasoning, !state.done {
             // Expanded while it streams: appended in place, as an answer.
             shownBody = nil
-            if body.stream(state, font: TranscriptFonts.body, color: .secondaryLabel) { invalidateIntrinsicContentSize() }
+            if output.stream(state, font: TranscriptFonts.body, color: .secondaryLabel) { invalidateIntrinsicContentSize() }
             if opened { UIAccessibility.post(notification: .layoutChanged, argument: body.view) }
             return
         }
-        body.endStream()
+        output.end()
         let text: NSAttributedString
         if state.kind == .reasoning {
             let font = TranscriptFonts.body
@@ -467,7 +550,7 @@ final class TranscriptToolCell: TranscriptCell {
         super.prepareForReuse()
         shownBody = nil
         shownExpanded = nil
-        body.endStream()
+        output.end()
         body.attributedText = nil
     }
 }

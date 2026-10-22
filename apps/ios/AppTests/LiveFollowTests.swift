@@ -68,7 +68,7 @@ extension HostedKeychain {
                 } else {
                     cellID = ObjectIdentifier(cell)
                 }
-                let text = Self.text(in: cell) ?? ""
+                let text = screen.drawnText(of: answer.id) ?? ""
                 if drawn.last != text { drawn.append(text) }
             }
             let id = try #require(answerID, "no answer streamed: \(TranscriptTests.rows(of: model))")
@@ -99,7 +99,7 @@ extension HostedKeychain {
                 #expect(b.hasPrefix(a), "text replaced, not appended: \(a.suffix(40)) → \(b.suffix(40))")
             }
             #expect(state.text == Self.answer)
-            #expect(Self.text(in: cell) == Self.answer)
+            #expect(screen.drawnText(of: id) == Self.answer)
 
             // The read settled with its result; the turn's separator is last.
             let tool = try #require(model.ids.filter { !before.contains($0) }.compactMap(model.item).first { $0.kind == .tool })
