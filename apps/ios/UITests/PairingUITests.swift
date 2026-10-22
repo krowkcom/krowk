@@ -190,10 +190,19 @@ final class PairingUITests: XCTestCase {
             try await Task.sleep(for: .milliseconds(100))
         }
         XCTAssertGreaterThanOrEqual(answers.count, 2, "no answer streaming")
+        // Taller than the screen, so there's somewhere to scroll up to.
+        let streamed = answers.element(boundBy: answers.count - 1)
+        let tall = Date.now.addingTimeInterval(20)
+        while streamed.exists, streamed.frame.height < transcript.frame.height * 1.5, Date.now < tall {
+            try await Task.sleep(for: .milliseconds(250))
+        }
         // Scrolled up while it streams: "↓ New".
-        transcript.swipeDown()
         let pill = app.buttons["transcript-new"]
-        if !pill.waitForExistence(timeout: 5) { Screenshots.tree(of: app) }
+        for _ in 0..<3 where !pill.exists {
+            transcript.swipeDown()
+            _ = pill.waitForExistence(timeout: 3)
+        }
+        if !pill.exists { Screenshots.tree(of: app) }
         XCTAssertTrue(pill.exists, "no ↓ New after scrolling up mid-stream")
         Screenshots.keep("live-new", in: app)
         pill.tap()
