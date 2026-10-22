@@ -171,6 +171,59 @@ fn r_ios_7_a_session_the_fleet_hosts_for_a_test_is_listed_held_then_unheld_once_
     f.stop();
 }
 
+/// R-LAG-7, R-PERF-4, R-IOS-15: a turn a test types at host A in its own
+/// session (`Hosting::turn`, the control's `POST /sessions/<id>/turn`)
+/// reaches a second device live: the `read` call starts, then the answer
+/// starts and streams as word-sized deltas at about 200 a second, its
+/// logged completion equal to what streamed, and the turn ends. What the
+/// phone's `LiveFollowTests` follow.
+#[test]
+fn r_lag_7_a_turn_typed_for_a_test_streams_to_a_viewer_live() {
+    use krowk_harness::protocol::{Delta, ItemKind};
+    let f = fleet::start(false);
+    let id = f.hosting.host("streams").unwrap();
+    let b = fleet::Device::new("machine-b");
+    let (chain, batch) = f.chain.clone().batch(&f.user, vec![Change::Add(b.subject("machine-b"))], f.host.key.id(), &f.host.signing, fleet::T0 + 1).unwrap();
+    f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
+    b.client(&f.api).claim_key_device().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let mut v = rt.block_on(viewer::attach(o)).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(true)))));
+
+    assert!(f.hosting.turn("no-such-session", fleet::LONG).is_err(), "only a test's own session");
+    let started = Instant::now();
+    f.hosting.turn(&id, fleet::LONG).unwrap();
+    let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
+    let got = rt.block_on(until(&mut v, Duration::from_secs(30), |all| all.iter().filter(|u| ended(u)).count() >= 1));
+    let took = started.elapsed();
+    let lines: Vec<&StreamLine> = got.iter().filter_map(|u| if let viewer::Update::Line(l) = u { Some(l) } else { None }).collect();
+    let call = lines.iter().find_map(|l| match l {
+        StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::ToolCall { call_id, name }, .. }) if call_id == fleet::STREAM => Some(name.clone()),
+        _ => None,
+    });
+    assert_eq!(call.as_deref(), Some("read"), "the call starts live");
+    let answer = lines.iter().find_map(|l| match l {
+        StreamLine::Live(LiveEvent::ItemStarted { item_id, item: ItemKind::AssistantText, .. }) => Some(item_id.clone()),
+        _ => None,
+    }).expect("the answer starts live");
+    let streamed: Vec<&str> = lines.iter().filter_map(|l| match l {
+        StreamLine::Live(LiveEvent::ItemDelta { item_id, delta: Delta::Text { text }, .. }) if *item_id == answer => Some(text.as_str()),
+        _ => None,
+    }).collect();
+    let whole = mock::numbered_lines(fleet::LONG_LINES);
+    assert!(streamed.len() >= 600, "{} deltas", streamed.len());
+    let completed = lines.iter().find_map(|l| match l {
+        StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item_id, item: Item::AssistantText { text }, .. }, .. }) if *item_id == answer => Some(text.clone()),
+        _ => None,
+    }).expect("the answer is logged complete");
+    assert_eq!(completed, whole);
+    assert_eq!(streamed.concat(), whole, "with no gap, what streamed is what completed");
+    // About 200 tokens a second: 660 deltas take a few seconds, not one.
+    assert!(took >= Duration::from_secs(2), "the turn took {took:?}");
+    f.stop();
+}
+
 // ------------------------------------------------- the process, pairing (ticket 76)
 
 /// A binary cargo built beside this test's, `target/<profile>/<rel>`: the

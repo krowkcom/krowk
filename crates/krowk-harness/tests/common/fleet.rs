@@ -46,6 +46,13 @@ pub const APPROVAL: &str = "toolu_01Touch";
 /// The demo's tool call that runs with no approval, a `read` of the
 /// project's README, which the model makes on "read the README".
 pub const READ: &str = "toolu_01Read";
+/// The `read` the model makes on "stream a long answer" before it streams
+/// `LONG_LINES` lines at 200 tokens a second: a turn a phone follows live.
+pub const STREAM: &str = "toolu_01Stream";
+/// The long answer's lines, about eleven tokens each.
+pub const LONG_LINES: usize = 60;
+/// What a test types to have the model stream its long answer.
+pub const LONG: &str = "Please stream a long answer";
 /// The session's title: a readable one for the demo.
 const TITLE: &str = "fake fleet";
 const DEMO_TITLE: &str = "A demo session";
@@ -104,20 +111,26 @@ pub fn post(b: &Batch) -> krowk_api::sync::ListPost {
 }
 
 /// The model: a short answer to anything, except "make the file", which it
-/// answers with a `bash` call — an approval — and then says how it went,
-/// and "read the README", which it answers with a `read` call that runs
-/// at once, and then says what it read.
+/// answers with a `bash` call — an approval — and then says how it went;
+/// "read the README", which it answers with a `read` call that runs at
+/// once, and then says what it read; and "stream a long answer", a `read`
+/// call and then `LONG_LINES` numbered lines, one word-sized delta every
+/// 5 ms (200 tokens a second, as R-LAG-7's phone budget assumes).
 fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
     let result = last["content"].as_array().and_then(|c| c.iter().find(|b| b["type"] == "tool_result").cloned());
     let text = if let Some(r) = result {
-        if r["tool_use_id"] == READ {
+        if r["tool_use_id"] == STREAM {
+            return mock::Reply::paced(mock::text_stream(&mock::numbered_lines(LONG_LINES)), Duration::from_millis(5));
+        } else if r["tool_use_id"] == READ {
             LOOKED
         } else if r["is_error"] == true {
             DENIED
         } else {
             MADE
         }
+    } else if last.to_string().contains("stream a long answer") {
+        return mock::Reply::paced(mock::tool_use(STREAM, "read", &serde_json::json!({"path": "README.md"})), Duration::from_millis(20));
     } else if last.to_string().contains("read the README") {
         return mock::Reply::sse(&mock::tool_use(READ, "read", &serde_json::json!({"path": "README.md"})));
     } else if last.to_string().contains("make the file") {
@@ -357,6 +370,25 @@ impl Hosting {
                 _ => std::thread::sleep(Duration::from_millis(50)),
             }
         }
+    }
+
+    /// A turn in `session`, a test's own, typed at host A: `text` sent to
+    /// the model on a thread of its own, its lines read and dropped. Returns
+    /// once the daemon took the prompt; the turn runs on, and the session's
+    /// bridge hands it to every viewer live.
+    pub fn turn(&self, session: &str, text: &str) -> Result<(), String> {
+        if !self.tests.lock().unwrap().bridges.contains_key(session) {
+            return Err(format!("the fleet hosts no test session {session}"));
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let d = rt.block_on(Client::connect(&self.socket, &self.repo, "test", true)).map_err(|e| format!("the host daemon does not answer: {}", connect_error(e)))?;
+        let cmd = self.prompt(Some(session), text);
+        std::thread::spawn(move || {
+            if let Err(e) = rt.block_on(d.execute(cmd, drain())) {
+                eprintln!("fleet: a test's turn failed: {e:?}");
+            }
+        });
+        Ok(())
     }
 
     /// Stops every test's session, and any that starts from now on.
