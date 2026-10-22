@@ -1,4 +1,4 @@
-FFI_API_VERSION = 4
+FFI_API_VERSION = 5
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -36,7 +36,20 @@ impl Account {
 
 #[uniffi::export]
 impl Account {
+    pub fn devices(&self) -> Result<Vec<ListedDevice>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
     pub fn sign_out(&self) -> Result<(), KrowkError> {}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ListedDevice {
+    pub id: String,
+    pub name: String,
+    pub os: String,
+    pub this_device: bool,
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -77,6 +90,12 @@ pub struct PairingInvite {
     pub device: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OpenPairing {
+    pub device: String,
+    pub device_name: String,
+}
+
 #[uniffi::export]
 pub fn parse_pairing_invite(uri: String) -> Option<PairingInvite> {}
 
@@ -86,6 +105,7 @@ impl Account {
         &self,
         code: String,
         name: String,
+        os: String,
     ) -> Result<Joined, KrowkError> {}
 }
 
@@ -95,7 +115,13 @@ impl Account {
         &self,
         invite: PairingInvite,
         name: String,
+        os: String,
     ) -> Result<Joined, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn open_pairing(&self) -> Result<OpenPairing, KrowkError> {}
 }
 
 #[uniffi::export]
@@ -779,11 +805,13 @@ impl Viewer {
     pub fn chunks_read(&self, read: Arc<ChunksRead>, now_ms: u64) -> Vec<Effect> {}
 }
 
-pub use account::Account;
+pub use account::{Account, ListedDevice};
 
 pub use error::KrowkError;
 
-pub use pairing::{Joined, PairingInvite, RegistryMailbox, parse_pairing_invite};
+pub use pairing::{
+    Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite,
+};
 
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 
