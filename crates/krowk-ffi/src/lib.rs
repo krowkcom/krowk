@@ -59,7 +59,9 @@
 //! [`RegistryMailbox`]; the user keys and the device list land in the
 //! app's storage. Blocking, for up to the ten minutes the other device's
 //! person has to approve (rule 2); [`Account::cancel_pairing`] ends it
-//! from any thread, until the keys are kept.
+//! from any thread, until the keys are kept. [`Account::open_pairing`]
+//! names the device showing the code before any is spent, and
+//! [`Account::devices`] reads the device list the join kept.
 //!
 //! # Sessions
 //!
@@ -128,9 +130,9 @@ mod sign_in;
 mod storage;
 mod viewer;
 
-pub use account::Account;
+pub use account::{Account, ListedDevice};
 pub use error::KrowkError;
-pub use pairing::{Joined, PairingInvite, RegistryMailbox, parse_pairing_invite};
+pub use pairing::{Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite};
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
@@ -144,8 +146,11 @@ use krowk_client::pairing::PairingCode;
 /// changed (rule 8), never for an addition. A change to the error an
 /// export returns for a case counts too, though the file can't show it:
 /// Swift that matches on the old variant would misread it (4: `SignIn.wait`
-/// refuses a key the storage won't keep as `credentials_unwritable`).
-pub const FFI_API_VERSION: u32 = 4;
+/// refuses a key the storage won't keep as `credentials_unwritable`; 5:
+/// `join_pairing` and `join_invite` take the os the phone runs, and
+/// `join_invite`'s `invite_mismatch` is `invite_other_account` or
+/// `invite_other_pairing`).
+pub const FFI_API_VERSION: u32 = 5;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

@@ -9,8 +9,10 @@
 #     -scheme Krowk-iOS -destination 'platform=iOS Simulator,id=<udid>'
 #
 # xcodebuild hands every TEST_RUNNER_<NAME> variable to the test process as
-# <NAME>, so the tests read KROWK_API_URL, KROWK_RELAY_URL and
-# KROWK_PAIRING_CODE. The fleet binds 127.0.0.1 only; the simulator shares
+# <NAME>, so the tests read KROWK_API_URL, KROWK_RELAY_URL,
+# KROWK_PAIRING_CODE and KROWK_PAIR_URL: a POST there gives a fresh code
+# (the old one's pairing ended), since a code works once and the simulator
+# can't write to the fleet's stdin. The fleet binds 127.0.0.1 only; the simulator shares
 # the Mac's loopback. Its log is appended to $KROWK_FLEET_LOG (default
 # target/fake-fleet.log), and its last lines are shown if it fails to start.
 #
@@ -66,13 +68,14 @@ set +m
 exec 3>"$fifo/stdin"
 exec 4<"$fifo/stdout"
 
-api='' relay='' pair='' ready=''
+api='' relay='' pair='' pair_url='' ready=''
 # Five minutes: the first start builds and seeds the stand-in registry.
 while IFS= read -r -t 300 line <&4; do
   case $line in
     api=*) api=${line#api=} ;;
     relay=*) relay=${line#relay=} ;;
     pair=*) pair=${line#pair=} ;;
+    pair_url=*) pair_url=${line#pair_url=} ;;
     ready) ready=1; break ;;
   esac
 done
@@ -81,11 +84,12 @@ if [ -z "$ready" ] || [ -z "$api" ]; then
   tail -n 40 "$log" >&2 || true
   exit 1
 fi
-echo "with-fleet: api=$api relay=$relay pair=$pair" >&2
+echo "with-fleet: api=$api relay=$relay pair=$pair pair_url=$pair_url" >&2
 
 export TEST_RUNNER_KROWK_API_URL=$api
 export TEST_RUNNER_KROWK_RELAY_URL=$relay
 export TEST_RUNNER_KROWK_PAIRING_CODE=$pair
+export TEST_RUNNER_KROWK_PAIR_URL=$pair_url
 
 status=0
 # Without the fleet's pipes: a helper the command leaves running must not

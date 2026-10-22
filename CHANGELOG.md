@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app pairs with your laptop.** After signing in, the app
+  says to run `krowk devices add` on your laptop, then scan its QR code
+  with the phone's camera or type its code. It names the laptop it is
+  pairing with, and your laptop asks whether to add the phone, now shown
+  with its iOS version (for example `iOS 26.1`); answer Y there and the
+  phone says "This iPhone is on your devices". From then on it opens
+  without asking you to sign in or pair again. A wrong or used code ends that pairing on
+  both sides and keeps nothing: run `krowk devices add` again for a new
+  code. A QR code from another krowk account, or from a pairing that is no
+  longer open, is refused before its code is used. Nothing changes for
+  CLI users.
 - **`krowk devices add` shows a QR code of the pairing code, for the
   iPhone app to scan.** It's drawn under the code, black on white so it
   reads on a dark or a light theme, and only on a terminal wide enough

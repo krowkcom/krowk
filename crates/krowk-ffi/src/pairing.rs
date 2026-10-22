@@ -10,8 +10,8 @@
 //! secrets, is handed to Swift.
 //!
 //! The rules are `pairing_join`'s: the code starts one pairing once,
-//! nothing is retried, and any failure ends the pairing and forgets what
-//! the join kept. A cancel is one more failure, up to the moment the other
+//! nothing is retried, and any failure once the hello is out ends the
+//! pairing and forgets what the join kept. A cancel is one more failure, up to the moment the other
 //! device's sealed reply is seen: it lists this one once its reply is out,
 //! acked or not, so from then on the join is seen through rather than
 //! leave the phone listed without the keys.
@@ -35,8 +35,8 @@ use crate::account::{Account, internal};
 /// The longest a pause goes without looking at the cancel flag.
 const SLICE: Duration = Duration::from_millis(250);
 
-/// What the phone calls its OS on the other device's prompt. M1's phone is
-/// the iPhone; Android names its own when it comes.
+/// What the phone calls its OS on the other device's prompt when the app
+/// names none: M1's phone is the iPhone; Android names its own.
 const OS: &str = "iOS";
 
 /// The registry's pairing mailbox as the phone reaches it: `client` the
@@ -48,16 +48,22 @@ const OS: &str = "iOS";
 /// — never 0, which `join` counts as an ack that may have landed — and so
 /// does a read until the confirmation is out; after it, a read looks once
 /// more for the other device's sealed reply before it fails. `end` still
-/// ends the pairing. That device posts this one to the list once its
-/// reply is out, acked or not, so once a reply that can be checked has
-/// been seen after the confirmation, the check, the ack and the claims go
-/// ahead, cancel or no cancel; what the last look cannot see is a reply
+/// ends the pairing, once the hello is out. That device posts this one to
+/// the list once its reply is out, acked or not, so once a reply that can
+/// be checked has been seen after the confirmation, the check, the ack
+/// and the claims go ahead, cancel or no cancel; what the last look cannot see is a reply
 /// that lands between it and the `end`. Nothing the registry serves before
-/// the confirmation, or that is not hex, stops a cancel.
+/// the confirmation, or that is not hex, stops a cancel. `end` ends the
+/// pairing only once a step was sent: before the hello the pairing holds
+/// nothing of this device's, and the other device's code stays usable.
 pub struct RegistryMailbox {
     client: Arc<Client>,
     id: String,
     cancel: Arc<AtomicBool>,
+    /// A step was sent, or tried: the pairing holds something of this
+    /// device's, so a failure ends it. Before that, nothing of this
+    /// device's is in it, and the other device's code stays usable.
+    sent: AtomicBool,
     /// The confirmation step was sent: a reply may come.
     confirmed: AtomicBool,
     /// The sealed reply was seen, or the ack reached: too late to cancel.
@@ -66,7 +72,7 @@ pub struct RegistryMailbox {
 
 impl RegistryMailbox {
     pub fn new(client: Arc<Client>, id: String, cancel: Arc<AtomicBool>) -> RegistryMailbox {
-        RegistryMailbox { client, id, cancel, confirmed: AtomicBool::new(false), committed: AtomicBool::new(false) }
+        RegistryMailbox { client, id, cancel, sent: AtomicBool::new(false), confirmed: AtomicBool::new(false), committed: AtomicBool::new(false) }
     }
 
     /// Whether a cancel stopped this mailbox: one set before the other
@@ -98,6 +104,7 @@ impl Mailbox for RegistryMailbox {
             self.committed.store(true, Ordering::SeqCst);
         }
         self.check()?;
+        self.sent.store(true, Ordering::SeqCst);
         if step == PairingStep::Confirmation {
             self.confirmed.store(true, Ordering::SeqCst);
         }
@@ -117,10 +124,13 @@ impl Mailbox for RegistryMailbox {
         Ok(p)
     }
 
-    /// Ends the pairing whether or not the join was cancelled: a cancel is
-    /// what asks for it.
+    /// Ends the pairing whether or not the join was cancelled (a cancel
+    /// is what asks for it), once a step of this device's was sent: a
+    /// cancel before the hello leaves the other device's code usable.
     fn end(&self) {
-        let _ = self.client.end_pairing();
+        if self.sent.load(Ordering::SeqCst) {
+            let _ = self.client.end_pairing();
+        }
     }
 
     fn claim_device(&self) -> Result<(), krowk_api::Error> {
@@ -167,6 +177,18 @@ impl std::fmt::Debug for PairingInvite {
     }
 }
 
+/// The pairing open now on the person's account: the device showing the
+/// code, by id (32 lowercase hex) and by the name it is listed under, for
+/// the phone to say "Pairing with <name>" before it spends the code.
+/// `device_name` is the registry's word, cleaned as a device name is
+/// (the characters a device list refuses dropped, cut to 64 bytes); empty
+/// when nothing is left.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct OpenPairing {
+    pub device: String,
+    pub device_name: String,
+}
+
 /// The invite in a scanned QR code, read strictly by krowk-client's
 /// `pairing::invite`; None for anything that is not one, so the scanner
 /// keeps looking.
@@ -195,18 +217,35 @@ impl Account {
     /// `InvalidInput` for a code or a name that cannot be sent, before
     /// anything is; `Network` when the registry could not be reached
     /// before the code was spent.
-    pub fn join_pairing(&self, code: String, name: String) -> Result<Joined, KrowkError> {
-        self.join(code_of(code)?, &name, None)
+    ///
+    /// `os` is what the other device's prompt and the device list say this
+    /// one runs, like `iOS 26.1`: cleaned as the name is, cut to 32 bytes,
+    /// and `iOS` when nothing is left.
+    pub fn join_pairing(&self, code: String, name: String, os: String) -> Result<Joined, KrowkError> {
+        self.join(code_of(code)?, &name, &os, None)
     }
 
     /// As [`Account::join_pairing`], with a scanned invite: before the code
     /// is spent, the phone checks that it is signed in as the invite's
     /// person and that the open pairing is the one on the screen it was
-    /// scanned from; refused with `invite_mismatch` otherwise, nothing
+    /// scanned from; refused with `invite_other_account` or, the account
+    /// checked first, `invite_other_pairing` otherwise, nothing
     /// sent. A mismatch costs no guess.
-    pub fn join_invite(&self, invite: PairingInvite, name: String) -> Result<Joined, KrowkError> {
+    pub fn join_invite(&self, invite: PairingInvite, name: String, os: String) -> Result<Joined, KrowkError> {
         let PairingInvite { code, user_id, device } = invite;
-        self.join(code_of(code)?, &name, Some(Expected { user_id, device }))
+        self.join(code_of(code)?, &name, &os, Some(Expected { user_id, device }))
+    }
+
+    /// The pairing open now, without joining it: which device shows the
+    /// code. Nothing is sent to the pairing, so asking costs no code.
+    /// Refused with `no_pairing` when no device has one open; `Network`
+    /// when the registry could not be reached. The join looks again
+    /// itself: this is for the screen, and a scanned invite's device is
+    /// checked by [`Account::join_invite`] all the same.
+    pub fn open_pairing(&self) -> Result<OpenPairing, KrowkError> {
+        let open = self.client.find_open_pairing().map_err(no_pairing)?;
+        let device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again"))?;
+        Ok(OpenPairing { device: device.to_string(), device_name: cleaned(&open.initiator_device.name, pairing::MAX_NAME) })
     }
 
     /// Ends the join under way, from any thread: within a second, unless a
@@ -270,8 +309,12 @@ impl Account {
         Ok(Running { account: self, cancel })
     }
 
-    fn join(&self, code: PairingCode, name: &str, expected: Option<Expected>) -> Result<Joined, KrowkError> {
+    fn join(&self, code: PairingCode, name: &str, os: &str, expected: Option<Expected>) -> Result<Joined, KrowkError> {
         let name = device_name(name)?;
+        let os = match cleaned(os, pairing::MAX_OS) {
+            os if os.is_empty() => OS.to_string(),
+            os => os,
+        };
         let run = self.begin_pairing()?;
         let cancel = &run.cancel;
         // Before the code is spent, a cancel wins over whatever a call
@@ -289,26 +332,27 @@ impl Account {
             }
             _ => {}
         }
-        let open = self
-            .client
-            .find_open_pairing()
-            .map_err(|e| if e.code() == "no_pairing" { refused("no_pairing", "none of your devices has a pairing open — run `krowk devices add` on a device already set up") } else { e.into() })
-            .map_err(before)?;
-        let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again")).map_err(before)?;
+        // The account first: another person's invite names another device
+        // too, and whether or not a pairing is open, it is the account the
+        // person must be told about.
         let user_id = self.client.verify_key().map_err(KrowkError::from).map_err(before)?.user_id;
-        if let Some(expected) = expected {
-            if expected.user_id != user_id {
-                return Err(refused("invite_mismatch", "that code is for another person's devices — sign in as the person it was shown to; nothing was sent"));
-            }
-            if expected.device != a_device.to_string() {
-                return Err(refused("invite_mismatch", "the pairing open now is not the one that code was shown for — scan the code on the screen again; nothing was sent"));
-            }
+        if let Some(expected) = &expected
+            && expected.user_id != user_id
+        {
+            return Err(refused("invite_other_account", "that code is for another person's devices — sign in as the person it was shown to; nothing was sent"));
+        }
+        let open = self.client.find_open_pairing().map_err(no_pairing).map_err(before)?;
+        let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again")).map_err(before)?;
+        if let Some(expected) = expected
+            && expected.device != a_device.to_string()
+        {
+            return Err(refused("invite_other_pairing", "the pairing open now is not the one that code was shown for — scan the code on the screen again; nothing was sent"));
         }
         if cancel.load(Ordering::SeqCst) {
             return Err(cancelled());
         }
 
-        let me = NewDevice { device: device.public(), signing: signing.public(), name, os: OS.into() };
+        let me = NewDevice { device: device.public(), signing: signing.public(), name, os };
         drop(signing);
         let binding = Binding { kind: PeerKind::SamePersonDevice, user_id, a_device, b_device: device.id() };
         let mailbox = RegistryMailbox::new(Arc::clone(&self.client), open.id, Arc::clone(cancel));
@@ -332,6 +376,15 @@ fn refused(code: &str, detail: &str) -> KrowkError {
     KrowkError::Refused { code: code.into(), detail: detail.into() }
 }
 
+/// The registry's `no_pairing`, in the phone's words; anything else as it came.
+fn no_pairing(e: krowk_api::Error) -> KrowkError {
+    if e.code() == "no_pairing" {
+        refused("no_pairing", "none of your devices has a pairing open — run `krowk devices add` on a device already set up")
+    } else {
+        e.into()
+    }
+}
+
 fn cancelled() -> KrowkError {
     refused("cancelled", "the pairing was cancelled on this device")
 }
@@ -341,17 +394,24 @@ fn cancelled() -> KrowkError {
 /// and separator characters), trimmed, then cut to its 64 bytes on a
 /// character boundary.
 fn device_name(name: &str) -> Result<String, KrowkError> {
-    let cleaned: String = name.chars().filter(|&c| !device_chain::refused_in_name(c)).collect();
-    let cleaned = cleaned.trim();
-    let mut end = cleaned.len().min(pairing::MAX_NAME);
-    while !cleaned.is_char_boundary(end) {
-        end -= 1;
-    }
-    let name = cleaned[..end].trim_end().to_string();
+    let name = cleaned(name, pairing::MAX_NAME);
     if name.is_empty() {
         return Err(KrowkError::InvalidInput { detail: "the device needs a name for your other device to show — nothing was sent".into() });
     }
     Ok(name)
+}
+
+/// `text` without the characters the device list refuses in a name or an
+/// os, trimmed, then cut to `max` bytes on a character boundary; empty
+/// when nothing is left.
+fn cleaned(text: &str, max: usize) -> String {
+    let kept: String = text.chars().filter(|&c| !device_chain::refused_in_name(c)).collect();
+    let kept = kept.trim();
+    let mut end = kept.len().min(max);
+    while !kept.is_char_boundary(end) {
+        end -= 1;
+    }
+    kept[..end].trim_end().to_string()
 }
 
 #[derive(PartialEq, Eq)]
@@ -396,6 +456,13 @@ mod tests {
         let padded = format!("{}{}", " ".repeat(10), "a".repeat(64));
         assert_eq!(device_name(&padded).unwrap(), "a".repeat(64));
         assert!(matches!(device_name(" \u{200B}\t"), Err(KrowkError::InvalidInput { .. })));
+    }
+
+    #[test]
+    fn r_e2e_3_an_os_is_cleaned_and_cut_to_32_bytes() {
+        assert_eq!(cleaned("iOS 26.1\u{202E}", pairing::MAX_OS), "iOS 26.1");
+        assert!(cleaned(&"9".repeat(40), pairing::MAX_OS).len() == pairing::MAX_OS);
+        assert_eq!(cleaned(" \u{200B} ", pairing::MAX_OS), "");
     }
 
     #[test]

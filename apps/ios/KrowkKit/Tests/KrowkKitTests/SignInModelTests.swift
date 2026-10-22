@@ -57,6 +57,8 @@ struct SignInModelTests {
         #expect(SignInRules.deviceName(String(repeating: "a", count: 63) + "é") == String(repeating: "a", count: 63))
         // A right-to-left override would make the page read the name otherwise.
         #expect(SignInRules.deviceName("Bob\u{202E}enohPi") == "BobenohPi")
+        // Line and paragraph separators, which the device list refuses.
+        #expect(SignInRules.deviceName("Bob\u{2028}s\u{2029} iPhone") == "Bobs iPhone")
         #expect(SignInRules.deviceName("\u{1}\u{2}") == "iPhone")
         #expect(SignInRules.deviceName("iPhone") == "iPhone")
     }

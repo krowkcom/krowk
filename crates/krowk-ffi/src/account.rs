@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 
 use krowk_api::Client;
+use krowk_client::device_chain::Kind;
 use krowk_client::e2e::{DeviceId, DeviceSigner};
 use krowk_client::keystore::Keystore;
 
@@ -82,11 +83,34 @@ impl Account {
         Ok(self.keystore.user_keys().map_err(internal)?.is_some())
     }
 
+    /// The person's devices as the device list this phone holds says (its
+    /// pin, kept by the join): no registry call. Empty until it is paired.
+    /// Recovery kits are not devices and are left out.
+    pub fn devices(&self) -> Result<Vec<ListedDevice>, KrowkError> {
+        let Some(chain) = self.keystore.device_list().map_err(internal)? else { return Ok(Vec::new()) };
+        Ok(chain
+            .devices()
+            .iter()
+            .filter(|d| d.kind == Kind::Device)
+            .map(|d| ListedDevice { id: d.id().to_string(), name: d.name.clone(), os: d.os.clone(), this_device: d.id() == self.device })
+            .collect())
+    }
+
     /// Forgets the krowk API key. The device keys stay, so signing in again
     /// is the same device.
     pub fn sign_out(&self) -> Result<(), KrowkError> {
         self.storage.remove(CREDENTIALS.into())
     }
+}
+
+/// A device on the person's device list: its id (32 lowercase hex), the
+/// name and os it was added with, and whether it is this phone.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ListedDevice {
+    pub id: String,
+    pub name: String,
+    pub os: String,
+    pub this_device: bool,
 }
 
 /// The key kept in `storage`; `signed_out` when there is none, or none

@@ -235,13 +235,19 @@ fn r_e2e_3_the_phone_joins_with_the_terminals_code_and_holds_the_user_key_and_th
     let (account, storage) = phone(&api);
     assert!(!account.has_user_keys().unwrap());
 
+    assert!(account.devices().unwrap().is_empty(), "no device list before the join");
+
     let (a, _reaped, a_err, code) = add(&laptop, &api);
-    let joined = account.join_pairing(code, "Test iPhone".into()).unwrap();
+    // The screen names the laptop before the code is spent.
+    let laptop_device = Keystore::new(&laptop.join(".krowk")).device_key().unwrap().id().to_string();
+    let open = account.open_pairing().unwrap();
+    assert_eq!((open.device.as_str(), open.device_name.as_str()), (laptop_device.as_str(), "laptop"));
+    let joined = account.join_pairing(code, "Test iPhone".into(), "iOS 26.1\u{202E}".into()).unwrap();
     assert_eq!(joined.device_name, "Test iPhone");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(a.status.success(), "{}\n{said}", String::from_utf8_lossy(&a.stdout));
-    assert!(said.contains("Add 'Test iPhone' (iOS) to your devices? [Y/n]"), "{said}");
+    assert!(said.contains("Add 'Test iPhone' (iOS 26.1) to your devices? [Y/n]"), "{said}");
 
     let store = Keystore::with(Arc::new(Bridge(storage)));
     assert!(account.has_user_keys().unwrap());
@@ -250,14 +256,19 @@ fn r_e2e_3_the_phone_joins_with_the_terminals_code_and_holds_the_user_key_and_th
     assert_eq!(pinned.head(), served(&api).head(), "pinned at the head that adds it");
     assert_eq!(joined.seq, pinned.head().seq);
     let added = pinned.devices().iter().find(|d| d.added == joined.seq).expect("the last entry adds a device");
-    assert_eq!((added.id().to_string(), added.name.as_str(), added.os.as_str()), (account.device_id(), "Test iPhone", "iOS"));
+    assert_eq!((added.id().to_string(), added.name.as_str(), added.os.as_str()), (account.device_id(), "Test iPhone", "iOS 26.1"));
+    let listed = account.devices().unwrap();
+    let me = listed.iter().find(|d| d.this_device).expect("the phone lists itself");
+    assert_eq!((me.id.as_str(), me.name.as_str(), me.os.as_str()), (account.device_id().as_str(), "Test iPhone", "iOS 26.1"));
+    assert!(listed.iter().any(|d| d.id == laptop_device && !d.this_device), "{listed:?}");
+    assert!(listed.iter().all(|d| d.name != "recovery kit"), "a recovery kit is no device: {listed:?}");
 
     let list = krowk(&laptop, &api, LAPTOP, &["devices"]).output().unwrap();
     let out = String::from_utf8_lossy(&list.stdout);
     assert!(list.status.success() && out.contains("Test iPhone"), "{out}{}", String::from_utf8_lossy(&list.stderr));
 
     // Once joined, a second join is refused before anything is sent.
-    assert_eq!(refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into())).0, "already_joined");
+    assert_eq!(refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into(), "iOS 26.1".into())).0, "already_joined");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -273,7 +284,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_phone_keeps_no_user_key() {
 
     let (a, _reaped, a_err, code) = add(&laptop, &api);
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
-    let (code, detail) = refusal(account.join_pairing(wrong, "Test iPhone".into()));
+    let (code, detail) = refusal(account.join_pairing(wrong, "Test iPhone".into(), "iOS 26.1".into()));
     assert_eq!(code, "pairing_failed");
     assert!(detail.contains("a code works once") && detail.contains("krowk devices add"), "{detail}");
     let a = wait(a, Duration::from_secs(30));
@@ -295,9 +306,13 @@ fn r_e2e_3_a_malformed_code_sends_nothing_and_no_open_pairing_says_where_to_open
     let r = root("none");
     set_up(&r.join("laptop"), &api);
     let (account, _) = phone(&api);
-    assert!(matches!(account.join_pairing("K7QF-9M3".into(), "Test iPhone".into()), Err(KrowkError::InvalidInput { .. })));
-    let (code, detail) = refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into()));
+    assert!(matches!(account.join_pairing("K7QF-9M3".into(), "Test iPhone".into(), "iOS 26.1".into()), Err(KrowkError::InvalidInput { .. })));
+    let (code, detail) = refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into(), "iOS 26.1".into()));
     assert_eq!(code, "no_pairing");
+    assert!(matches!(account.open_pairing(), Err(KrowkError::Refused { code, .. }) if code == "no_pairing"));
+    // Another person's invite says so, pairing open or not.
+    let foreign = krowk_ffi::PairingInvite { code: "K7QF-9M3X".into(), user_id: "someone-else".into(), device: "0123456789abcdef0123456789abcdef".into() };
+    assert_eq!(refusal(account.join_invite(foreign, "Test iPhone".into(), "iOS 26.1".into())).0, "invite_other_account");
     assert!(detail.contains("krowk devices add"), "{detail}");
     let _ = std::fs::remove_dir_all(&r);
 }
@@ -319,7 +334,7 @@ fn r_e2e_3_a_join_cancelled_while_the_other_device_waits_ends_within_a_second() 
     signal("-STOP");
 
     let joining = account.clone();
-    let join = std::thread::spawn(move || joining.join_pairing(code, "Test iPhone".into()));
+    let join = std::thread::spawn(move || joining.join_pairing(code, "Test iPhone".into(), "iOS 26.1".into()));
     // The phone's hello is out, and it waits for an answer that won't come.
     let looked = krowk_api::Client::new(&api, PHONE);
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -328,7 +343,7 @@ fn r_e2e_3_a_join_cancelled_while_the_other_device_waits_ends_within_a_second() 
         std::thread::sleep(Duration::from_millis(50));
     }
     // A second join on the same account meanwhile is refused, not sent.
-    assert_eq!(refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into())).0, "pairing_busy");
+    assert_eq!(refusal(account.join_pairing("K7QF-9M3X".into(), "Test iPhone".into(), "iOS 26.1".into())).0, "pairing_busy");
 
     let asked = Instant::now();
     account.cancel_pairing();
@@ -362,13 +377,19 @@ fn r_e2e_3_a_scanned_invite_for_another_pairing_spends_nothing_and_the_right_one
     let (a, _reaped, a_err, code) = add(&laptop, &api);
     let invite = |code: &str, user: &str, device: &str| krowk_ffi::PairingInvite { code: code.into(), user_id: user.into(), device: device.into() };
     let other_device = "0123456789abcdef0123456789abcdef";
-    for wrong in [invite(&code, &user_id, other_device), invite(&code, "someone-else", &laptop_device)] {
-        assert_eq!(refusal(account.join_invite(wrong, "Test iPhone".into())).0, "invite_mismatch");
+    // The account is checked first: another person's code names another
+    // device too, and it is the account the phone must be told about.
+    for (wrong, code) in [
+        (invite(&code, &user_id, other_device), "invite_other_pairing"),
+        (invite(&code, "someone-else", &laptop_device), "invite_other_account"),
+        (invite(&code, "someone-else", other_device), "invite_other_account"),
+    ] {
+        assert_eq!(refusal(account.join_invite(wrong, "Test iPhone".into(), "iOS 26.1".into())).0, code);
     }
     let open = krowk_api::Client::new(&api, PHONE).find_open_pairing().unwrap();
     assert!(open.state == "open" && open.joiner_message.is_empty(), "nothing was sent: {open:?}");
 
-    let joined = account.join_invite(invite(&code, &user_id, &laptop_device), "Test iPhone".into()).unwrap();
+    let joined = account.join_invite(invite(&code, &user_id, &laptop_device), "Test iPhone".into(), "iOS 26.1".into()).unwrap();
     assert_eq!(joined.device_name, "Test iPhone");
     let a = wait(a, Duration::from_secs(30));
     assert!(a.status.success(), "{}", rest(&a_err));

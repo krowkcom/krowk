@@ -8,13 +8,17 @@ import Security
 /// item is in the app's own default group (its application identifier),
 /// which is the same however the app is signed: Xcode, or xtool with a
 /// free Apple ID. A Notification Service Extension sharing them is M2.
-enum Keychain {
-    /// Every item krowk keeps: the slots and the wrapping key.
-    static let service = "com.krowk.keys"
+struct Keychain: Sendable {
+    /// Every item the app keeps: the slots and the wrapping key.
+    static let appService = "com.krowk.keys"
+
+    /// The service every item of this keychain is under: the app's, or a
+    /// test fixture's own beside it.
+    let service: String
 
     /// One item: its class, service and account. Synchronizable false
     /// matches only items that are not synced (none ever is).
-    static func query(_ account: String) -> [String: Any] {
+    func query(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -25,7 +29,7 @@ enum Keychain {
     }
 
     /// The item's bytes; nil when there is no such item.
-    static func read(_ account: String) throws(KeychainFailure) -> Data? {
+    func read(_ account: String) throws(KeychainFailure) -> Data? {
         var q = query(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -46,7 +50,7 @@ enum Keychain {
     /// replaced (and its accessibility set again), else adding one that
     /// exists is `errSecDuplicateItem`. Either way the item is written
     /// whole: a reader sees the old bytes or the new.
-    static func write(_ account: String, _ data: Data, replace: Bool) throws(KeychainFailure) {
+    func write(_ account: String, _ data: Data, replace: Bool) throws(KeychainFailure) {
         var add = query(account)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         add[kSecValueData as String] = data
@@ -62,7 +66,7 @@ enum Keychain {
     }
 
     /// Removes the item; none there counts as removed.
-    static func remove(_ account: String) throws(KeychainFailure) {
+    func remove(_ account: String) throws(KeychainFailure) {
         let status = SecItemDelete(query(account) as CFDictionary)
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw KeychainFailure(op: "remove", account: account, status: status)
@@ -74,7 +78,7 @@ enum Keychain {
     /// anything else (`errSecInteractionNotAllowed` while locked). Asked
     /// before a purge that rests on an item reading as absent, so a Keychain
     /// that can't be read now is never taken for one that is empty.
-    static func checkReadable() throws(KeychainFailure) {
+    func checkReadable() throws(KeychainFailure) {
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -92,7 +96,7 @@ enum Keychain {
 
     /// Removes every item under the service, synced or not: what a first
     /// launch does with what an earlier install left behind.
-    static func removeAll() throws(KeychainFailure) {
+    func removeAll() throws(KeychainFailure) {
         let q: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

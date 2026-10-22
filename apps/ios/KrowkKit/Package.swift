@@ -13,9 +13,10 @@
 // Keychain refuses an unhosted test bundle (errSecMissingEntitlement), as
 // it has no application identifier.
 //
-// KrowkAccount is KrowkKit's sign-in over the bindings (R-IOS-9): the
-// registry's browser sign-in, its key kept through a KeyStorage, and which
-// screen a launch opens. Its tests are in ../AppTests too, for the same
+// KrowkAccount is KrowkKit's sign-in and pairing over the bindings
+// (R-IOS-9, R-E2E-3): the registry's browser sign-in, its key kept through
+// a KeyStorage, joining the person's devices, and which screen a launch
+// opens. Its tests are in ../AppTests too, for the same
 // reason.
 import PackageDescription
 

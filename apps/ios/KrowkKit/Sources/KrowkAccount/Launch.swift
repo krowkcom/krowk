@@ -2,9 +2,8 @@ import Krowk
 import KrowkKit
 
 /// Which screen a launch opens, from what the key storage holds: no key is
-/// onboarding; a key without the person's user keys is pairing (ticket 84;
-/// until then "Signed in to <workspace>"); a paired phone never sees
-/// onboarding.
+/// onboarding; a key without the person's user keys is pairing; a paired
+/// phone never sees onboarding.
 public enum Launch: Equatable, Sendable {
     case signedOut
     case signedIn(SignedInWorkspace)
