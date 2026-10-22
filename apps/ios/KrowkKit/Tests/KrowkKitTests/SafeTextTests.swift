@@ -94,10 +94,10 @@ struct SafeTextTests {
         // A percent-escape in the host is never shown decoded: no link.
         #expect(SafeText.links(in: "https://good.example%2Fevil.example/").isEmpty)
 
-        // Userinfo that reads like a host: the host is what follows the @.
-        let userinfo = SafeText.attributed("https://good.example@evil.example/", font: font)
-        #expect(Self.links(in: userinfo).map(\.url.host) == ["evil.example"])
-        #expect(userinfo.string.contains("(evil.example)"))
+        // Userinfo that reads like a host (`good.example@evil.example`), or
+        // pushes the host out of sight: not a link.
+        #expect(SafeText.links(in: "https://good.example@evil.example/").isEmpty)
+        #expect(SafeText.links(in: "https://apple.com-\(String(repeating: "x", count: 3_000))@evil.example/").isEmpty)
 
         // A lookalike host not in ASCII ("о" is Cyrillic) is never shown as
         // it reads: not tappable, or shown in its ASCII form.
@@ -112,6 +112,7 @@ struct SafeTextTests {
         var opened: [URL] = []
         let sheet = TranscriptViewController.confirmation(for: url) { opened.append($0) }
         #expect(sheet.preferredStyle == .actionSheet)
+        #expect(sheet.title == "Open a link to evil.example?")
         #expect(sheet.message == "https://evil.example/a?b=c#d")
         #expect(sheet.actions.map(\.title) == ["Open", "Cancel"])
         #expect(opened.isEmpty, "nothing opens without a tap")

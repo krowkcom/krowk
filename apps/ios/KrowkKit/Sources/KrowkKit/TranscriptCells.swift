@@ -185,7 +185,7 @@ final class TranscriptTextCell: TranscriptCell {
         accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
         textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
         let font = TranscriptFonts.body
-        let text = state.drawing("text", source: state.text, size: font.pointSize) {
+        let text = state.drawing("text", source: state.text, font: font) {
             SafeText.capped(state.text, font: font)
         }
         // Unchanged text keeps its layout.
@@ -345,12 +345,12 @@ final class TranscriptToolCell: TranscriptCell {
         let text: NSAttributedString
         if state.kind == .reasoning {
             let font = TranscriptFonts.body
-            text = state.drawing("output", source: state.text, size: font.pointSize) {
+            text = state.drawing("output", source: state.text, font: font) {
                 SafeText.capped(state.text, font: font, color: .secondaryLabel)
             }
         } else if let output = state.output {
             let font = TranscriptFonts.mono
-            text = state.drawing("output", source: output, size: font.pointSize) {
+            text = state.drawing("output", source: output, font: font) {
                 SafeText.capped(output, font: font, limit: SafeText.outputLimit)
             }
         } else {

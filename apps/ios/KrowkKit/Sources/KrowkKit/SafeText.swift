@@ -82,6 +82,9 @@ public enum SafeText {
         let lower = written.lowercased()
         guard lower.hasPrefix("https://") || lower.hasPrefix("http://"),
               let scheme = url.scheme?.lowercased(), scheme == "https" || scheme == "http",
+              // No user or password before the host: it would push the
+              // host out of sight (`https://apple.com-…@evil.example`).
+              url.user == nil, url.password == nil,
               let host = url.host(percentEncoded: true), !host.isEmpty,
               // Shown as it is: no percent-escape that decodes into a slash
               // or another host.

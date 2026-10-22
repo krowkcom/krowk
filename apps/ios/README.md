@@ -392,8 +392,9 @@ scrolled to the end (ticket 88).
   and isolates (U+202A–U+202E, U+2066–U+2069) are stripped; markdown is
   not rendered (M1), so an image's markdown is text and nothing is
   fetched; a link is only an `http(s)://` URL written with its scheme to
-  an ASCII host (`NSDataDetector`), its host shown after it, and a tap
-  opens a sheet naming the whole URL whose "Open" alone calls
+  an ASCII host with no user or password before it (`NSDataDetector`),
+  its host shown after it, and a tap opens a sheet naming the host and
+  the whole URL whose "Open" alone calls
   `UIApplication.shared.open`; a long press shows no preview. There is no
   web view in the app: `scripts/no-web.sh` fails on WebKit, a web view,
   Safari's view, `AsyncImage` or an image read from a URL in the sources,

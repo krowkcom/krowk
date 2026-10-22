@@ -160,6 +160,16 @@ struct TranscriptModelTests {
         #expect(model.item("item:i1")?.output == "first")
         #expect(model.item("item:i4")?.output == "second")
         #expect(model.item("item:i4")?.isError == true)
+
+        // A result read at rest without its call (before the checkpoint)
+        // is never taken in by a later call reusing the id.
+        let orphaned = TranscriptModel(sessionID: Self.session)
+        orphaned.apply(.attached(events: [try decodeLogEvent(json: lines[1])], head: nil))
+        orphaned.apply(.line(line: .log(try decodeLogEvent(json: lines[3]))))
+        orphaned.apply(.line(line: .log(try decodeLogEvent(json: lines[4]))))
+        #expect(orphaned.ids == ["item:i2", "item:i4"])
+        #expect(orphaned.item("item:i2")?.output == "first")
+        #expect(orphaned.item("item:i4")?.output == "second")
     }
 
     @Test("R-PROTO-2: another session's events on the same log (a subagent's) are skipped")

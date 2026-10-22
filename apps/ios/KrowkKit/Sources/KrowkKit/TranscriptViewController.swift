@@ -154,9 +154,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
         // Dynamic Type: the drawn text's fonts are fixed in its attributes,
         // so every row is drawn again at the new size.
-        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _: UITraitCollection) in
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitLegibilityWeight.self]) { (self: Self, _: UITraitCollection) in
+            // The model's rows first: none that's gone is drawn again.
+            self.apply(rows: self.model.ids, attached: self.model.attached)
             var snapshot = self.dataSource.snapshot()
-            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+            snapshot.reconfigureItems(snapshot.itemIdentifiers.filter { self.model.item($0) != nil })
             self.dataSource.apply(snapshot, animatingDifferences: false)
         }
 
@@ -308,10 +310,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// whole URL, and "Open" calls `open` with it; "Cancel" does nothing.
     static func confirmation(for url: URL, open: @escaping @MainActor (URL) -> Void) -> UIAlertController {
         let whole = SafeText.clean(url.absoluteString)
-        // A URL long enough to fill the screen is cut after 2,000 characters;
-        // its host, at the start, is always shown.
+        // A URL long enough to fill the screen is cut after 2,000
+        // characters; its host is named in the title.
         let message = whole.count > 2_000 ? String(whole.prefix(2_000)) + "…" : whole
-        let sheet = UIAlertController(title: "Open this link?", message: message, preferredStyle: .actionSheet)
+        let title = url.host(percentEncoded: true).map { "Open a link to \(SafeText.line($0[...], limit: 253))?" } ?? "Open this link?"
+        let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
         sheet.view.accessibilityIdentifier = "link-confirmation"
         sheet.addAction(UIAlertAction(title: "Open", style: .default) { _ in
             MainActor.assumeIsolated { open(url) }

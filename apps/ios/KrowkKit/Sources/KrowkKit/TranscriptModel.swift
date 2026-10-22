@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Observation
 
 /// What a transcript row shows, one per item id (ticket 88): a thin
@@ -48,9 +49,6 @@ public final class ItemState {
     /// Followed already: at most one observation per item, however often
     /// cells show it.
     @ObservationIgnored var followed = false
-    /// Text as last drawn (`TranscriptDrawings`), by what it is ("text",
-    /// "output"): a cell shown
-    /// again draws it without laying it out or finding its links again.
 
     public init(id: String, kind: Kind, text: String = "", toolName: String = "", toolInput: String = "", done: Bool = true) {
         self.id = id
@@ -68,17 +66,17 @@ public final class ItemState {
 
     /// `source` drawn as `role` at `size`, from the last drawing if neither
     /// changed.
-    func drawing(_ role: String, source: String, size: CGFloat, _ make: () -> NSAttributedString) -> NSAttributedString {
-        let key = "\(role) \(id)" as NSString
-        if let last = TranscriptDrawings.cache.object(forKey: key), last.size == size, last.source == source { return last.text }
+    func drawing(_ role: String, source: String, font: UIFont, _ make: () -> NSAttributedString) -> NSAttributedString {
+        let key = "\(role) \(kind) \(id) \(ObjectIdentifier(self).hashValue)" as NSString
+        if let last = TranscriptDrawings.cache.object(forKey: key), last.font == font, last.source == source { return last.text }
         let text = make()
-        TranscriptDrawings.cache.setObject(TranscriptDrawings.Drawing(source: source, size: size, text: text), forKey: key, cost: source.utf8.count)
+        TranscriptDrawings.cache.setObject(TranscriptDrawings.Drawing(source: source, font: font, text: text), forKey: key, cost: text.length * 2)
         return text
     }
 
     /// Forgets a drawing (a collapsed output isn't kept).
     func forget(_ role: String) {
-        TranscriptDrawings.cache.removeObject(forKey: "\(role) \(id)" as NSString)
+        TranscriptDrawings.cache.removeObject(forKey: "\(role) \(kind) \(id) \(ObjectIdentifier(self).hashValue)" as NSString)
     }
 
     /// A tool call's one line: `<name> <summary of its input>`.
@@ -122,11 +120,11 @@ public final class ItemState {
 enum TranscriptDrawings {
     final class Drawing {
         let source: String
-        let size: CGFloat
+        let font: UIFont
         let text: NSAttributedString
-        init(source: String, size: CGFloat, text: NSAttributedString) {
+        init(source: String, font: UIFont, text: NSAttributedString) {
             self.source = source
-            self.size = size
+            self.font = font
             self.text = text
         }
     }
@@ -226,6 +224,8 @@ public final class TranscriptModel {
     @ObservationIgnored private var orphans: [String: ItemState] = [:]
     /// Rows a call took in while `apply` runs, to drop.
     @ObservationIgnored private var adopted: [(orphan: String, call: String)] = []
+    /// How the events `apply` is taking are placed.
+    @ObservationIgnored private var placing = TranscriptPlacement.end
 
     public init(sessionID: String) {
         self.sessionID = sessionID
@@ -238,12 +238,17 @@ public final class TranscriptModel {
     /// The session as read at rest: its events applied, and `attached` set.
     public func attach(_ events: [TranscriptEvent]) {
         apply(events)
+        // A result read at rest without its call: its call is before the
+        // checkpoint, and never comes. A later call reusing the id is
+        // another call.
+        orphans = [:]
         if !attached { attached = true }
     }
 
     /// `events`, in order, each at most once, their rows placed by
     /// `placement`. `ids` changes once, however many rows they add.
     public func apply(_ events: [TranscriptEvent], placement: TranscriptPlacement = .end) {
+        placing = placement
         var rows = ids
         var changed = false
         for event in events where event.sessionID == sessionID {
@@ -292,9 +297,11 @@ public final class TranscriptModel {
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
             calls[callID] = state
-            if let orphan = orphans.removeValue(forKey: callID) {
+            // Only a catch-up brings a call after its result (a gap).
+            if placing == .afterParent, let orphan = orphans.removeValue(forKey: callID) {
                 state.output = orphan.output
                 state.isError = orphan.isError
+                state.expanded = orphan.expanded
                 items[orphan.id] = nil
                 adopted.append((orphan.id, row))
             }
