@@ -120,15 +120,26 @@ extension HostedKeychain {
 
         @Test("R-LAG-7, R-PERF-4: a very long answer (300 lines, about 16 s at 200 tokens a second) keeps up: its turn's separator is drawn within seconds of the host's end, and the display link then pauses")
         func longAnswerKeepsUp() async throws {
-            let (screen, window, session, _) = try await Self.open("A very long answer")
+            let (screen, window, session, live) = try await Self.open("A very long answer")
             defer { window.isHidden = true }
             let model = screen.model
             let started = ContinuousClock.now
             #expect(try await SessionListTests.control("/\(session)/turn", body: "Please stream a very long answer") == "started")
             let frames = screen.driver?.frames ?? 0
-            try await Self.wait(until: {
+            let ended = {
                 model.ids.last.flatMap(model.item).map { $0.kind == .mark && $0.id.hasPrefix("turn:") && model.ids.count > 4 } ?? false
-            }, within: .seconds(60), "the turn never ended on screen: \(TranscriptTests.rows(of: model).suffix(3))")
+            }
+            // How it goes, every 2 s, until the turn ends: what's drawn, the
+            // frames and transactions, the link, the mailbox, the bar.
+            let state = {
+                let answer = model.ids.compactMap(model.item).last { $0.kind == .assistant }
+                return "\(ContinuousClock.now - started): \(answer?.text.utf8.count ?? 0) bytes, done \(answer?.done ?? false), \(screen.driver?.frames ?? 0) frames, \(screen.driver?.transactions ?? 0) transactions, paused \(screen.driver?.ticker?.isPaused ?? false), \(live.mailbox.waiting) waiting, \(live.status.text), \(live.dials) dials"
+            }
+            for _ in 0..<30 where !ended() {
+                try await Task.sleep(for: .seconds(2))
+                print("krowk long answer: \(state())")
+            }
+            try #require(ended(), "the turn never ended on screen: \(state()); \(TranscriptTests.rows(of: model).suffix(2).map { String($0.suffix(80)) })")
             let took = ContinuousClock.now - started
             let behind = Int64(Date.now.timeIntervalSince1970 * 1000) - (model.newestLiveMs ?? 0)
             window.layoutIfNeeded()

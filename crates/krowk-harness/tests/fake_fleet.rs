@@ -179,6 +179,17 @@ fn r_ios_7_a_session_the_fleet_hosts_for_a_test_is_listed_held_then_unheld_once_
 /// phone's `LiveFollowTests` follow.
 #[test]
 fn r_lag_7_a_turn_typed_for_a_test_streams_to_a_viewer_live() {
+    streams(fleet::LONG, fleet::LONG_LINES);
+}
+
+/// R-LAG-7: the very long answer (300 lines, about 16 s) reaches a viewer
+/// whole too.
+#[test]
+fn r_lag_7_a_very_long_turn_streams_to_a_viewer_whole() {
+    streams("Please stream a very long answer", fleet::VERY_LONG_LINES);
+}
+
+fn streams(prompt: &str, lines_streamed: usize) {
     use krowk_harness::protocol::{Delta, ItemKind};
     let f = fleet::start(false);
     let id = f.hosting.host("streams").unwrap();
@@ -191,15 +202,15 @@ fn r_lag_7_a_turn_typed_for_a_test_streams_to_a_viewer_live() {
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(true)))));
 
-    assert!(f.hosting.turn("no-such-session", fleet::LONG).is_err(), "only a test's own session");
+    assert!(f.hosting.turn("no-such-session", prompt).is_err(), "only a test's own session");
     let started = Instant::now();
-    f.hosting.turn(&id, fleet::LONG).unwrap();
+    f.hosting.turn(&id, prompt).unwrap();
     let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
-    let got = rt.block_on(until(&mut v, Duration::from_secs(30), |all| all.iter().filter(|u| ended(u)).count() >= 1));
+    let got = rt.block_on(until(&mut v, Duration::from_secs(60), |all| all.iter().filter(|u| ended(u)).count() >= 1));
     let took = started.elapsed();
     let lines: Vec<&StreamLine> = got.iter().filter_map(|u| if let viewer::Update::Line(l) = u { Some(l) } else { None }).collect();
     let call = lines.iter().find_map(|l| match l {
-        StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::ToolCall { call_id, name }, .. }) if call_id == fleet::STREAM => Some(name.clone()),
+        StreamLine::Live(LiveEvent::ItemStarted { item: ItemKind::ToolCall { call_id, name }, .. }) if call_id == fleet::STREAM || call_id == fleet::STREAM_LONGER => Some(name.clone()),
         _ => None,
     });
     assert_eq!(call.as_deref(), Some("read"), "the call starts live");
@@ -211,8 +222,8 @@ fn r_lag_7_a_turn_typed_for_a_test_streams_to_a_viewer_live() {
         StreamLine::Live(LiveEvent::ItemDelta { item_id, delta: Delta::Text { text }, .. }) if *item_id == answer => Some(text.as_str()),
         _ => None,
     }).collect();
-    let whole = mock::numbered_lines(fleet::LONG_LINES);
-    assert!(streamed.len() >= 1200, "{} deltas", streamed.len());
+    let whole = mock::numbered_lines(lines_streamed);
+    assert!(streamed.len() >= lines_streamed * 10, "{} deltas", streamed.len());
     let completed = lines.iter().find_map(|l| match l {
         StreamLine::Log(LogEvent { body: LogBody::ItemCompleted { item_id, item: Item::AssistantText { text }, .. }, .. }) if *item_id == answer => Some(text.clone()),
         _ => None,

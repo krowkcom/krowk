@@ -120,7 +120,7 @@ struct FrameApplyTests {
         let (session, screen, window, cell) = try await streaming("Start\n")
         defer { window.isHidden = true }
         let line = String(repeating: "word ", count: 20) + "\n"
-        for _ in 0..<20 {
+        for _ in 0..<40 {
             session.bring([Self.delta("a2", line)])
             screen.frame()
         }
@@ -134,7 +134,7 @@ struct FrameApplyTests {
             #expect(block.view === view)
             #expect(block.view.text == text, "a block above was edited")
         }
-        let whole = "Start\n" + String(repeating: line, count: 20) + "and more"
+        let whole = "Start\n" + String(repeating: line, count: 40) + "and more"
         #expect(cell.text.drawnText == whole)
         session.bring([.logged([Self.event("e10", .assistantText(item: "a2", text: whole), parent: "e6")])])
         screen.frame()

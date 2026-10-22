@@ -462,6 +462,9 @@ public final class UpdateMailbox: Sendable {
         if waiting { wake() }
     }
 
+    /// How many updates wait to be drained.
+    public var waiting: Int { held.withLock { $0.updates.count } }
+
     /// Everything posted since the last drain, oldest first.
     public func drain() -> [ViewerUpdate] {
         held.withLock { held in
