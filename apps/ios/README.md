@@ -12,11 +12,11 @@ apps/ios/
   xtool-Info.plist   the Info.plist keys xtool needs as a file (Linux)
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
-                     storage (KrowkKeys), sign-in and pairing over the
-                     bindings (KrowkAccount), and KrowkKit's tests
+                     storage (KrowkKeys), sign-in, pairing and the session
+                     list over the bindings (KrowkAccount), and KrowkKit's tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
-                     PairingTests, and the TestFleet fixture
+                     PairingTests, SessionListTests, and the TestFleet fixture
   UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet
 ```
@@ -45,8 +45,8 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 
 `xcrun simctl list devices available` lists the simulators and their udids.
 The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
-`PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests` and
-`PairingTests` (target `Krowk-iOSTests`), KrowkKit's unit tests and
+`PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests`,
+`PairingTests` and `SessionListTests` (target `Krowk-iOSTests`), KrowkKit's unit tests and
 KrowkCore's `BindingsTests`.
 The hosted tests are hosted because the Keychain refuses a SwiftPM test
 bundle with no host app (`-34018`, a missing entitlement). They clear the
@@ -62,11 +62,17 @@ shares with the Mac. `apps/ios/scripts/with-fleet.sh <command>` builds it
 with cargo (and the debug `krowk --features harness` it pairs with, unless
 `KROWK_BIN` names one), starts it, exports what it printed as
 `TEST_RUNNER_KROWK_API_URL`, `TEST_RUNNER_KROWK_RELAY_URL`,
-`TEST_RUNNER_KROWK_PAIRING_CODE` and `TEST_RUNNER_KROWK_PAIR_URL`, runs the
-command, and stops the fleet. A code works once, so a test that joins
+`TEST_RUNNER_KROWK_PAIRING_CODE`, `TEST_RUNNER_KROWK_PAIR_URL` and
+`TEST_RUNNER_KROWK_SESSIONS_URL`, runs the command, and stops the fleet. It
+runs with `--demo`, so its session is titled "A demo session" and holds an
+approval. A code works once, so a test that joins
 POSTs to `KROWK_PAIR_URL` for a fresh one: the fleet ends its running
 `krowk devices add` (host A's, the real CLI, which says yes by itself) and
-answers the next one's code.
+answers the next one's code. A test that needs a lease to lapse POSTs to
+`KROWK_SESSIONS_URL` (its body the title): host A hosts a new session of
+the test's own and answers with its id; a POST to `<url>/<id>/release`
+stops that session's host and answers once its lease is gone, leaving the
+fleet's own session hosted for every other test.
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build
@@ -218,7 +224,7 @@ devices add`, then scan its QR code or type the code.
   polled every 500 ms for up to 60 s. The new device record carries the
   phone's name and `iOS <version>`. The laptop asks whether to add the
   phone; once it says yes, "This iPhone is on your devices", and Continue
-  goes home (the session list's place, ticket 87). From then on a launch
+  opens Sessions. From then on a launch
   skips onboarding. The phone is a viewer: it takes no lease and never
   hosts (R-HAND-4).
 - **A code works once.** Nothing retries a join: a wrong or spent code
@@ -242,6 +248,42 @@ own service (`com.krowk.keys.testfleet.…`, purged as the process exits,
 and what a killed process left, as the next one starts):
 `try await TestFleet.shared.paired()` is a paired account for the tests
 that need one.
+
+## Sessions
+
+A paired phone opens on "Sessions" (R-IOS-3, R-IOS-7), a UIKit
+`UICollectionView` with a plain list layout and a diffable data source
+keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
+`@Observable`):
+
+- **The listing.** `KrowkAccount.RegistrySessions` calls krowk-ffi's
+  `Account.listSessions` on a thread of its own (it holds
+  `dispatchPrecondition(condition: .notOnQueue(.main))`): one registry call
+  per page of 100 and one per session, each record checked against the
+  pinned device list and its sealed index unsealed. No transcript is read.
+  Rows read the generated `SessionSummary` through the `SessionRecord`
+  protocol, with no Swift copy of the index (R-PROTO-2).
+- **A row.** The title, or the cwd's last component when it has none;
+  then the cwd's last component and `● live on <name>` (the holder's name
+  from the verified device list, `Account.devices`; nothing more without
+  one, never a raw id) or `last seen 12m ago` from the index's `updatedMs`
+  (`RelativeDateTimeFormatter`, `.abbreviated`, ticked each minute while
+  on screen). Most recently written first; a duplicate id is dropped.
+- **Live is the lease.** The registry names a holder only while its lease
+  is unexpired, which a host renews every 20 s on a 60 s TTL. So the list
+  is read every 20 s while on screen, on every return to the foreground,
+  and on pull-to-refresh. A refresh that fails keeps the rows but shows
+  none live, and says so; a listing older than 60 s (the app was away)
+  shows none live until the next read lands.
+- **Unreadable sessions** (sealed under a user key the phone doesn't hold,
+  or signed by a device not on its list) are counted in the footer, "2
+  sessions can't be opened on this iPhone.", never shown.
+- **Throttled.** Rebuilds of the screen are coalesced to at most 10 a
+  second, and one that changes nothing is not applied. The first listing
+  is applied without animation, later ones in 150 ms that never hold up a
+  touch.
+- A tap opens the session's place (the transcript is ticket 88). The list
+  never offers to take or host a session (R-HAND-4).
 
 ## Why the Xcode project is generated
 

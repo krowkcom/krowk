@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app lists your sessions.** Once paired, the app opens on
+  "Sessions": every synced session the phone can open, most recently
+  written first, each with its title (or its directory's name when it has
+  none) and either `● live on <laptop>`, while a host holds it, or `last
+  seen 12m ago`. The list reads itself again every 20 seconds while it's
+  on screen, whenever the app comes back to the front, and when you pull
+  down. When it can't reach krowk, it keeps the last list and shows no
+  session as live. Sessions the phone can't open are counted at the
+  bottom ("2 sessions can't be opened on this iPhone.") and not shown.
+  Tapping a session opens its page, where its transcript will appear.
+  Nothing changes for CLI users.
 - **The iPhone app pairs with your laptop.** After signing in, the app
   says to run `krowk devices add` on your laptop, then scan its QR code
   with the phone's camera or type its code. It names the laptop it is
