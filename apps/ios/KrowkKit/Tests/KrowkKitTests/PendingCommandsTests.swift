@@ -93,6 +93,14 @@ struct PendingCommandsTests {
         #expect(book.turnEnded() == [steer])
         #expect(book.entry(steer)?.state == .refused(PendingCommands.unread))
         #expect(book.entry(prompt)?.state == .settled)
+        // A gap's catch-up brings its logged item after all: it's taken.
+        #expect(book.logged("too late") == steer)
+
+        // One acked after its turn ended is refused as unread too.
+        let late = book.add(.steer, text: "later still")
+        book.minted(late, id: "d-u-3")
+        #expect(book.acked("d-u-3", error: nil, turnRunning: false) == .bubble(token: late))
+        #expect(book.entry(late)?.state == .refused(PendingCommands.unread))
     }
 
     @Test("R-HAND-4, R-LAG-8: a queued bubble the host logs after a welcome is taken by its logged item even before its ack; the late ack changes nothing")
@@ -118,7 +126,9 @@ struct PendingCommandsTests {
         book.minted(settled, id: "d-e-3")
         _ = book.acked("d-e-3", error: nil)
         book.add(.interrupt)
-        #expect(Set(book.connectionEnded()) == [queued, sending])
+        let never = book.add(.prompt, text: "d")
+        #expect(Set(book.connectionEnded()) == [queued, sending, never])
+        #expect(book.entry(never)?.state == .refused("Not sent: the connection to this session stopped. Open the session again to send it."), "the core never gave it an id")
         guard case .refused(let notSent)? = book.entry(queued)?.state, case .refused(let mayHave)? = book.entry(sending)?.state else {
             Issue.record("not refused: \(book.entries)")
             return
@@ -241,6 +251,17 @@ struct PendingBubbleModelTests {
         model.apply(frame: [.logged([Self.event("e3", .turnCompleted(turn: "t2", end: .completed), parent: "e2")])])
         model.apply(frame: [.caughtUp([Self.event("e1b", .turnStarted(turn: "t2"), parent: "e2")])])
         #expect(!model.isTurnRunning)
+    }
+
+    @Test("R-LAG-8: a steer the host refuses while the log shows a turn running (one whose end never reached it) lets the composer send prompts again")
+    func staleTurn() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.attach([Self.event("e0", nil), Self.event("e1", .turnStarted(turn: "t1"), parent: "e0")])
+        #expect(model.isTurnRunning)
+        let steer = model.issue(.steer("go on"))
+        model.apply(frame: [.commandMinted(token: steer, id: "d-1"), .commandAcked(id: "d-1", error: "session s1 has no turn running to steer — send it as a prompt instead")])
+        #expect(!model.isTurnRunning)
+        #expect(model.item(TranscriptModel.bubbleID(steer))?.refused == true)
     }
 
     @Test("R-LAG-8: a stop the host refuses while the turn runs is reported; one refused after the turn ended is not")

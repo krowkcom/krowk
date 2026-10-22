@@ -104,8 +104,10 @@ public struct PendingCommands: Equatable, Sendable {
     }
 
     /// `Update.acked`. An id with no entry here (its bubble already gave
-    /// way to its logged item, or another viewer run's) changes nothing.
-    public mutating func acked(_ id: String, error: String?) -> Answered? {
+    /// way to its logged item, or another viewer run's) changes nothing. A
+    /// steer taken after the turn it was meant for ended (`turnRunning`
+    /// false) won't be read: refused, as `turnEnded` refuses one.
+    public mutating func acked(_ id: String, error: String?, turnRunning: Bool = true) -> Answered? {
         guard let at = entries.firstIndex(where: { $0.id == id }) else { return nil }
         let entry = entries[at]
         if entry.kind == .interrupt {
@@ -113,7 +115,13 @@ public struct PendingCommands: Equatable, Sendable {
             return .interrupt(token: entry.token, error: error)
         }
         guard entry.isOut else { return nil }
-        entries[at].state = error.map { .refused(Self.refusal($0)) } ?? .settled
+        if let error {
+            entries[at].state = .refused(Self.refusal(error))
+        } else if entry.kind == .steer && !turnRunning {
+            entries[at].state = .refused(Self.unread)
+        } else {
+            entries[at].state = .settled
+        }
         return .bubble(token: entry.token)
     }
 
@@ -136,7 +144,8 @@ public struct PendingCommands: Equatable, Sendable {
         var changed: [UInt64] = []
         entries.removeAll { $0.kind == .interrupt }
         for at in entries.indices where entries[at].isOut {
-            entries[at].state = .refused(entries[at].state == .queued
+            // Queued, or never given an id by the core: it never went.
+            entries[at].state = .refused(entries[at].state == .queued || entries[at].id == nil
                 ? "Not sent: the connection to this session stopped. Open the session again to send it."
                 : "No answer from the host before the connection stopped: it may have run. Open the session again to see.")
             changed.append(entries[at].token)
@@ -150,9 +159,12 @@ public struct PendingCommands: Equatable, Sendable {
     /// counts too: after a welcome its send and its logged item can come
     /// before the ack.
     public mutating func logged(_ text: String) -> UInt64? {
-        let match = entries.firstIndex { $0.kind != .interrupt && !$0.isRefused && $0.text == text }
+        // A steer refused as unread at its turn's end may yet be logged (a
+        // gap's catch-up brings it after the end): it's taken too.
+        let live = { (entry: Entry) in entry.kind != .interrupt && (!entry.isRefused || entry.state == .refused(Self.unread)) }
+        let match = entries.firstIndex { live($0) && $0.text == text }
             // A host that trimmed what it logged still matches.
-            ?? entries.firstIndex { $0.kind != .interrupt && !$0.isRefused && Self.trimmed($0.text) == Self.trimmed(text) }
+            ?? entries.firstIndex { live($0) && Self.trimmed($0.text) == Self.trimmed(text) }
         guard let at = match else { return nil }
         return entries.remove(at: at).token
     }

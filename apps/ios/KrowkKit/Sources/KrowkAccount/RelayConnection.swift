@@ -168,9 +168,11 @@ public actor RelayConnection: LiveSession {
             for (command, token) in waiting { issue(command, token: token) }
         case .failure(let error):
             done = true
+            // Before the status: the screen applies what the mailbox holds
+            // as it hears the end, and these never reached the core.
+            unsendEarly()
             tracker.ended(Self.detail(error))
             publishIfChanged()
-            unsendEarly()
         }
     }
 

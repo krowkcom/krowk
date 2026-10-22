@@ -163,6 +163,8 @@ struct ComposerScreenTests {
         window.layoutIfNeeded()
         let path = try #require(screen.dataSource.indexPath(for: id))
         let cell = try #require(screen.collectionView.cellForItem(at: path) as? TranscriptPendingCell)
+        // The cell redraws on its item's observation, the next main-actor turn.
+        try await waitFor { cell.caption.text == sentence }
         #expect(cell.caption.text == sentence)
         #expect(!cell.resend.isHidden)
 
@@ -243,6 +245,14 @@ struct ComposerScreenTests {
         // Stop needs a host that welcomed the phone, not a link joining again.
         #expect(ComposerState(text: "", running: true, stopping: false, status: .reconnecting).canStop == false)
         #expect(ComposerState(text: "", running: true, stopping: false, status: .live).canStop)
+        // A steer waits for the link too; with no host a prompt still goes.
+        let joining = ComposerState(text: "x", running: true, stopping: false, status: .reconnecting)
+        #expect(joining.steers && !joining.canSend)
+        #expect(joining.note == "Steer and Stop wait for the link to the host")
+        let away = ComposerState(text: "x", running: true, stopping: false, status: .hostOffline)
+        #expect(!away.steers && away.canSend)
+        // Too long says so, host or no host.
+        #expect(ComposerState(text: String(repeating: "z", count: ComposerRules.maxBytes + 1), running: false, stopping: false, status: .hostOffline).note.hasPrefix("Too long to send"))
 
         // Answered, and its logged item here: let go, and stopped.
         session.bring([.commandAcked(id: "d-1", error: nil)])
@@ -273,6 +283,7 @@ struct ComposerScreenTests {
         #expect(!screen.parked)
         let next = TranscriptViewController(row: row, session: StubSession())
         next.restore(parking.takeRefusals(row.id))
+        #expect(next.model.ids.count == 1, "handed on once, not once per way UIKit said it left")
         let id = try #require(next.model.ids.last)
         #expect(next.model.item(id)?.text == "Refuse me")
         #expect(next.model.item(id)?.caption == "busy")

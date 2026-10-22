@@ -345,6 +345,8 @@ public final class TranscriptModel {
     @ObservationIgnored private var lastNotice: (row: String, text: String)?
     /// Turn ends a logged line brought in the frame being applied.
     @ObservationIgnored private var ended: [ItemState] = []
+    /// Bubbles refused by a turn's end in the frame being applied.
+    @ObservationIgnored private var refusedNow: [ItemState] = []
     /// What placing is applying: the session read at rest, a catch-up, or
     /// a live line.
     @ObservationIgnored private var live = false
@@ -495,10 +497,19 @@ public final class TranscriptModel {
         case .commandSent(let id, let queued):
             if let token = commands.sent(id, queued: queued) { refresh(token) }
         case .commandAcked(let id, let error):
-            switch commands.acked(id, error: error) {
+            switch commands.acked(id, error: error, turnRunning: runningTurn != nil) {
             case .bubble(let token)?:
                 refresh(token)
-                if let state = bubbles[token], state.refused { applied.refused.append(state) }
+                if let state = bubbles[token], state.refused {
+                    applied.refused.append(state)
+                    // A steer refused while a turn looks running: the host
+                    // says none runs (its end never reached the log, a host
+                    // that died mid-turn) — the composer sends prompts again.
+                    if commands.entry(token)?.kind == .steer, error != nil, let turn = runningTurn {
+                        endedTurns.insert(turn)
+                        runningTurn = nil
+                    }
+                }
             case .interrupt(_, let error?)? where runningTurn != nil:
                 applied.stopRefused = error
             case .interrupt?, nil:
@@ -575,6 +586,8 @@ public final class TranscriptModel {
         if updates.contains(where: { if case .attached = $0 { true } else { false } }), !attached { attached = true }
         applied.ended = ended
         ended = []
+        applied.refused += refusedNow
+        refusedNow = []
         return applied
     }
 
@@ -808,7 +821,10 @@ public final class TranscriptModel {
             if runningTurn == turn { runningTurn = nil }
             // "stopping…" ends with the turn, if its ack hasn't come; a steer
             // it never read is refused.
-            for token in commands.turnEnded() { refresh(token) }
+            for token in commands.turnEnded() {
+                refresh(token)
+                if let state = bubbles[token] { refusedNow.append(state) }
+            }
             endLive(turn: turn)
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)
             state.alarming = end != .completed

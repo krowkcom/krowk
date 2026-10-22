@@ -42,19 +42,18 @@ extension HostedKeychain {
             #expect(screen.dataSource.snapshot().itemIdentifiers.last == bubble)
             Self.keep("composer-sending", window)
 
-            let token = try #require(model.token(ofBubble: bubble))
             var settled = false
-            var minted = false
             var both = false
             try await LiveFollowTests.wait(until: {
-                if model.commands.entry(token)?.id != nil { minted = true }
                 if model.item(bubble)?.caption == "" { settled = true }
                 let logged = model.ids.compactMap(model.item).contains { $0.kind == .user && $0.text == text }
                 if logged && model.item(bubble) != nil { both = true }
                 return model.item(bubble) == nil && logged && Self.lastTurnEnded(model, after: before)
             }, within: .seconds(30), "not reconciled: \(TranscriptTests.rows(of: model))")
             #expect(!both, "the bubble and its logged item showed together")
-            #expect(minted, "the core's id never reached the bubble")
+            // The ack and the logged item can share a display frame on the
+            // fleet's loopback: settled, or nothing left out. That the core's
+            // id reaches each bubble is `twoInOneFrame`'s.
             #expect(settled || model.commandsOut == 0, "never acked")
             let fresh = model.ids.filter { !before.contains($0) }.compactMap(model.item)
             #expect(fresh.filter { $0.kind == .user && $0.text == text }.count == 1)
@@ -157,6 +156,31 @@ extension HostedKeychain {
             #expect(fresh.filter { $0.kind == .user && $0.text == text }.count == 1, "\(TranscriptTests.rows(of: model))")
             #expect(fresh.filter { $0.id.hasPrefix("turn:") }.count == 1, "one turn: \(TranscriptTests.rows(of: model))")
             #expect(model.commandsOut == 0)
+        }
+
+        @Test("R-IOS-5, R-HAND-4: two prompts typed in one display frame with no host each get their own id from the core, in order, and both show queued")
+        func twoInOneFrame() async throws {
+            let (screen, window, session, _) = try await LiveFollowTests.open("Composer two at once")
+            defer { window.isHidden = true }
+            let model = screen.model
+            #expect(try await SessionListTests.control("/\(session)/release") == "released")
+            try await LiveFollowTests.wait(until: { screen.statusBar.status == .hostOffline }, within: .seconds(15), "not host offline")
+            screen.composer.text = "first of two"
+            screen.sendTyped()
+            screen.composer.text = "second of two"
+            screen.sendTyped()
+            let bubbles = model.ids.filter { $0.hasPrefix("pending:") }
+            #expect(bubbles.count == 2)
+            let tokens = bubbles.compactMap(model.token(ofBubble:))
+            try await LiveFollowTests.wait(until: {
+                bubbles.allSatisfy { model.item($0)?.caption == "queued — sends when your laptop is back" }
+            }, within: .seconds(5), "not both queued: \(TranscriptTests.rows(of: model))")
+            let ids = tokens.compactMap { model.commands.entry($0)?.id }
+            #expect(ids.count == 2 && Set(ids).count == 2, "\(ids)")
+            // The core's counter, in the order typed.
+            let counters = ids.compactMap { $0.split(separator: "-").last.flatMap { Int($0) } }
+            #expect(counters.count == 2 && counters[0] < counters[1], "\(ids)")
+            #expect(model.commands.entry(tokens[0])?.text == "first of two")
         }
 
         @Test("R-IOS-5, R-LAG-8: the socket dropped between the send and its ack, the prompt still runs exactly once after the reconnect and welcome")

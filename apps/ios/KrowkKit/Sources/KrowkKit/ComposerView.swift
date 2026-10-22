@@ -28,20 +28,24 @@ public struct ComposerState: Equatable, Sendable {
         let problem = ComposerRules.problem(text)
         // With no host a prompt still goes (queued for the next welcome,
         // R-HAND-4), even past a turn the log shows unfinished (a host that
-        // went mid-turn); a steer has no turn to reach, nor a stop.
+        // went mid-turn); a steer has no turn to reach, nor a stop. While
+        // the link joins again a steer waits too: held for a later welcome
+        // it could reach a turn started meanwhile.
         steers = running && !offline
-        canSend = problem == nil && !ended
+        canSend = problem == nil && !ended && (!steers || connected)
         showsStop = running || stopping
         self.stopping = stopping
         canStop = running && !stopping && connected
         if ended {
             note = "stopped: open the session again to send"
+        } else if let problem, !problem.isEmpty {
+            note = problem
+        } else if running && !offline && !connected {
+            note = "Steer and Stop wait for the link to the host"
         } else if offline && running {
             note = "host offline: Steer and Stop wait for it; a prompt is queued until your laptop is back"
         } else if offline {
             note = "host offline: a prompt is queued until your laptop is back"
-        } else if let problem, !problem.isEmpty {
-            note = problem
         } else if let stopRefused, !stopRefused.isEmpty {
             note = "Couldn't stop: \(SafeText.line(stopRefused[...], limit: 200))"
         } else {
@@ -65,6 +69,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
     private let row = UIStackView()
     private let buttons = UIStackView()
     private var height: NSLayoutConstraint!
+    /// The text's length and width when last measured.
+    private var measured: (length: Int, width: CGFloat)?
     /// Typed, or the text set: the screen works the buttons out again.
     var changed: (@MainActor () -> Void)?
     var send: (@MainActor () -> Void)?
@@ -158,6 +164,7 @@ public final class ComposerView: UIView, UITextViewDelegate {
         arrange()
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _: UITraitCollection) in
             self.arrange()
+            self.measured = nil
             self.fit()
         }
     }
@@ -211,6 +218,14 @@ public final class ComposerView: UIView, UITextViewDelegate {
         let inset = textView.textContainerInset
         let most = ceil(font.lineHeight * Self.maxLines + inset.top + inset.bottom)
         let width = textView.bounds.width > 0 ? textView.bounds.width : 280
+        // Already at six lines and scrolling, and the text only grew at the
+        // same width: no need to measure it all again (a long paste would
+        // make every keystroke lay out the whole draft).
+        let length = (textView.text ?? "").utf16.count
+        defer { measured = (length, width) }
+        if textView.isScrollEnabled, let measured, length >= measured.length, measured.width == width, abs(height.constant - most) < 0.5 {
+            return
+        }
         let fits = ceil(textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
         let target = min(max(fits, ceil(font.lineHeight + inset.top + inset.bottom)), most)
         let scrolls = fits > most

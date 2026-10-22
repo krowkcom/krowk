@@ -300,6 +300,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        left = false
         unpark()
         observeFocus()
         guard let driver, frames == nil else { return }
@@ -330,6 +331,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     }
 
     private func leave() {
+        // Once per time on screen: UIKit may say it left more than one way.
+        guard !left else { return }
+        left = true
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         focusObserver = nil
         frames?.invalidate()
@@ -354,6 +358,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     func unpark() {
         guard parked else { return }
         parked = false
+        grace?.cancel()
+        grace = nil
         parking?.release(self)
     }
 
@@ -369,25 +375,33 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             return letGo()
         }
         if model.commandsOut == 0 && !model.awaitingLog { return letGo() }
-        guard model.commandsOut == 0, !graceArmed else { return }
-        graceArmed = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.parkedGrace) { MainActor.assumeIsolated { [weak self] in
-            guard let self else { return }
-            graceArmed = false
-            if parked, model.commandsOut == 0 { letGo() }
-        } }
+        guard model.commandsOut == 0, grace == nil else { return }
+        let grace = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.grace = nil
+                if self.parked, self.model.commandsOut == 0 { self.letGo() }
+            }
+        }
+        self.grace = grace
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.parkedGrace, execute: grace)
     }
 
     /// How long a parked screen waits for the logged items of commands the
     /// host took.
     static let parkedGrace: TimeInterval = 30
-    private var graceArmed = false
+    /// The wait for them, while parked.
+    private var grace: DispatchWorkItem?
+    /// Left (stopped or parked) since it last appeared.
+    private var left = false
 
     /// Stopped and forgotten by its parking; its refused bubbles kept for
     /// the session's next screen.
     func letGo() {
         guard parked else { return }
         parked = false
+        grace?.cancel()
+        grace = nil
         parking?.release(self)
         parking?.keep(model.refusals, of: row.id)
         session?.stop()
