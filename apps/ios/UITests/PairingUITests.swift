@@ -161,8 +161,13 @@ final class PairingUITests: XCTestCase {
         let title = "A live turn \(UUID().uuidString.prefix(4))"
         let (status, id) = try await Self.request(sessions, body: title)
         XCTAssertEqual(status, 200, id)
-        app.navigationBars.buttons["Sessions"].tap()
         let list = app.collectionViews["sessions-list"]
+        // A tap while the screen settles can go unheeded: tried again.
+        for _ in 0..<3 where !list.exists {
+            app.navigationBars.buttons["Sessions"].tap()
+            _ = list.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(list.exists, "back did not return to Sessions")
         let row = list.cells.matching(NSPredicate(format: "label BEGINSWITH %@", title + ", ")).firstMatch
         // Pulled to refresh until it's listed.
         for _ in 0..<10 where !row.waitForExistence(timeout: 3) {
