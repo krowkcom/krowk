@@ -24,8 +24,9 @@ public final class SessionListModel {
     /// refresh and each minute's tick.
     public private(set) var now: Date
 
-    /// How often the list is read again while on screen: the lease's
-    /// renewal period.
+    /// How long after a timed read the next starts while on screen: the
+    /// lease's renewal period (so reads come every 20 s plus a read's own
+    /// time, well inside the lease's 60 s TTL).
     public static let refreshPeriod: Duration = .seconds(20)
     /// A lease's TTL: no listing older than this shows a session live.
     public static let leaseTTL: TimeInterval = 60

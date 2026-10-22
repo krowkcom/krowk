@@ -316,6 +316,8 @@ struct SessionListModelTests {
         source.set(.success(SessionListing(sessions: [Stub(id: "a", updatedMs: clock.ms - 61_000)], unreadable: 0)))
         model.appeared()
         #expect(!model.liveTrusted)
+        // The read appearing started, awaited so it doesn't outlive the test.
+        await model.refresh()
         model.disappeared()
     }
 

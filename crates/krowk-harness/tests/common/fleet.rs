@@ -242,6 +242,17 @@ pub fn start(demo: bool) -> Fleet {
     Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, hosting, stop, bridge, _registry: registry, _mock: m }
 }
 
+/// A session of a test's still starting: counted down when dropped.
+struct Starting<'a>(&'a Hosting);
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        let mut tests = self.0.tests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        tests.starting -= 1;
+        self.0.started.notify_all();
+    }
+}
+
 /// A bridge the fleet runs: what stops it, and its thread.
 type Bridge = (watch::Sender<bool>, std::thread::JoinHandle<()>);
 
@@ -288,17 +299,21 @@ impl Hosting {
             }
             tests.starting += 1;
         }
-        let begun = self.begin(title);
+        // Counted down however `begin` ends, a panic included.
+        let starting = Starting(self);
+        let (session, stop, bridge) = self.begin(title)?;
         let mut tests = self.tests.lock().unwrap();
-        tests.starting -= 1;
-        self.started.notify_all();
-        let (session, stop, bridge) = begun?;
-        // Kept even as the fleet stops: `release_all` waited for it, and
-        // stops it with the rest.
-        tests.bridges.insert(session.clone(), (stop, bridge));
         if tests.stopping {
+            // `release_all` may have stopped waiting: stopped here, then.
+            drop(tests);
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            drop(starting);
             return Err("the fleet is stopping".into());
         }
+        tests.bridges.insert(session.clone(), (stop, bridge));
+        drop(tests);
+        drop(starting);
         Ok(session)
     }
 
