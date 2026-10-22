@@ -307,9 +307,13 @@ host's presence notice). Swift never builds or parses those messages.
   `ws://` stops the viewer rather than send a ticket in the clear). Network.framework isn't subject to App Transport
   Security, and loopback needs no local network permission, so the
   Info.plist gains nothing. Each binary message goes to `received`, a
-  text or pong one only says the link lives, and the next is read once
-  the last was fed: one at a time, so a fast relay waits in the socket,
-  not in memory. A `waiting`, failed or cancelled connection is a close.
+  text or pong one only says the link lives, a ping is answered by
+  Network.framework and not fed in, and the next is read once the last
+  was fed: one at a time, so a fast relay waits in the socket, not in
+  memory. A close frame, a receive with nothing in it, and a `waiting`,
+  failed or cancelled connection are a close. Opening the session is
+  tried once: if it fails the bar says `stopped: <why>` until the screen
+  is opened again (ticket 86's lifecycle retries).
 - **Threading.** `RelayConnection` is an actor whose executor is its own
   serial queue (`krowk.relay`), the one each `NWConnection` starts on and
   the timers fire on; callbacks step in with `assumeIsolated`, and the

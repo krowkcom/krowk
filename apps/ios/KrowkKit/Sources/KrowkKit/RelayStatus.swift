@@ -79,7 +79,8 @@ public struct RelayStatusTracker: Equatable, Sendable {
 /// updates themselves, only how many a frame took.
 public protocol LiveSession: AnyObject, Sendable {
     /// Joins, and keeps the session followed until `stop`. `status` is
-    /// called on the main actor with every change, the first at once.
+    /// called on the main actor with every change, the first at once
+    /// (nothing, once stopped). Once only: a later call does nothing.
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void)
     /// Drops the connection and every timer; nothing more is called.
     func stop()

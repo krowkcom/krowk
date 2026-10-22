@@ -35,10 +35,11 @@ extension HostedKeychain {
             try await Self.wait(until: { statuses.all().last == .live }, within: .seconds(5), "\(statuses.all())")
             #expect(statuses.all().first == .connecting)
 
-            // R-LAG-9: held past the relay's 10 s ping and the viewer's own
-            // heartbeat, the link stays up: no drop, no second dial.
+            // R-LAG-9: held past the relay's pings, the viewer's own
+            // heartbeats and the 30 s a silent link has before it's dead,
+            // the link stays up: no drop, no second dial.
             let dials = live.dials
-            try await Task.sleep(for: .seconds(13))
+            try await Task.sleep(for: .seconds(35))
             #expect(live.status == .live)
             #expect(live.dials == dials, "redialed while live: \(dials) → \(live.dials)")
             #expect(!statuses.all().contains(.reconnecting), "\(statuses.all())")
@@ -97,11 +98,16 @@ extension HostedKeychain {
             let secure = { (url: String) in RelayConnection.secure(try #require(URL(string: url))) }
             #expect(try secure("wss://relay.krowk.com") == true)
             #expect(try secure("WSS://relay.krowk.com/v1/relay/s") == true)
+            #if DEBUG
             #expect(try secure("ws://127.0.0.1:53012/v1/relay/s?env=development") == false)
             #expect(try secure("ws://localhost:7790") == false)
             #expect(try secure("ws://[::1]:7790") == false)
+            #else
+            #expect(try secure("ws://127.0.0.1:53012/v1/relay/s?env=development") == nil)
+            #endif
             #expect(try secure("ws://relay.example.com") == nil)
             #expect(try secure("ws://127.0.0.1.example.com") == nil)
+            #expect(try secure("ws://127.0.0.1@relay.example.com") == nil)
             #expect(try secure("https://relay.krowk.com") == nil)
         }
 

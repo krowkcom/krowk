@@ -64,6 +64,13 @@ public actor RelayConnection: LiveSession {
         self.opening = opening
     }
 
+    /// One never stopped (its screen let go of it) still closes its socket.
+    deinit {
+        connection?.stateUpdateHandler = nil
+        connection?.cancel()
+        wake?.cancel()
+    }
+
     /// The status as last published.
     public nonisolated var status: RelayStatus { shown.withLock { $0 } }
 
@@ -218,7 +225,7 @@ public actor RelayConnection: LiveSession {
         // fleet's. Anything else would send the ticket in the clear, and
         // never will work: the viewer stops, saying why.
         guard let to = URL(string: url), let secure = Self.secure(to) else {
-            tracker.ended("the relay must be a wss:// address, not \(URL(string: url)?.scheme ?? "this one")")
+            tracker.ended("the relay must be a wss:// address (ws:// only to this machine, in a DEBUG build)")
             halt()
             return
         }
@@ -270,10 +277,14 @@ public actor RelayConnection: LiveSession {
         switch metadata?.opcode {
         case .binary?:
             run(viewer.received(connection: number, frame: .binary(bytes: content ?? Data()), nowMs: Self.now()))
-        // Text (the relay's `pong`), a ping (answered by Network.framework)
-        // and a pong only say the link lives.
-        case .text?, .pong?, .ping?:
+        // Text (the relay's `pong` to the viewer's `ping`) and a pong only
+        // say the link lives.
+        case .text?, .pong?:
             run(viewer.received(connection: number, frame: .text(text: ""), nowMs: Self.now()))
+        // A ping Network.framework answered: not fed in, so a peer that
+        // only pings never keeps a join that's going nowhere waiting.
+        case .ping?:
+            break
         case .close?:
             ended(number)
             return
