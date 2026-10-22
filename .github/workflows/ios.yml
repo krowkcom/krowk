@@ -33,9 +33,11 @@ on:
       - ".cargo/**"
       - "scripts/ios_core.sh"
       # The fake fleet the app's tests run against (R-IOS-15): the
-      # stand-in registry and the harness that runs it. Not crates/krowk:
-      # the fleet runs the CLI only to answer pairings, which no test here
-      # does yet, and a CLI-only change stays off macOS runners.
+      # stand-in registry and the harness that runs it. Not crates/krowk,
+      # though the fleet runs the CLI's `devices add` to answer the
+      # phone's pairing: a CLI-only change stays off macOS runners, and
+      # krowk/tests/sync_pairing_ffi.rs pairs that CLI with krowk-ffi on
+      # every make check.
       - "crates/krowk-devregistry/**"
       - "crates/krowk-harness/**"
       - ".github/actions/setup/**"
@@ -53,9 +55,11 @@ on:
       - ".cargo/**"
       - "scripts/ios_core.sh"
       # The fake fleet the app's tests run against (R-IOS-15): the
-      # stand-in registry and the harness that runs it. Not crates/krowk:
-      # the fleet runs the CLI only to answer pairings, which no test here
-      # does yet, and a CLI-only change stays off macOS runners.
+      # stand-in registry and the harness that runs it. Not crates/krowk,
+      # though the fleet runs the CLI's `devices add` to answer the
+      # phone's pairing: a CLI-only change stays off macOS runners, and
+      # krowk/tests/sync_pairing_ffi.rs pairs that CLI with krowk-ffi on
+      # every make check.
       - "crates/krowk-devregistry/**"
       - "crates/krowk-harness/**"
       - ".github/actions/setup/**"

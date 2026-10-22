@@ -14,6 +14,7 @@
 //! approval=toolu_01Touch
 //! request=0199c0de-…
 //! pair=7KQ2-M9XD
+//! pair_url=http://127.0.0.1:53013/pair
 //! ready
 //! ```
 //!
@@ -30,8 +31,11 @@
 //! as host A — the real CLI, from a debug build at `KROWK_BIN`, its keys in
 //! the fleet's home, saying yes to the device that joins — and prints its
 //! code before `ready`. A code works once: a line `pair` on stdin ends the
-//! running `devices add` and prints a fresh `pair=` line. Without
-//! `KROWK_BIN` the fleet exits 1 saying how to build one.
+//! running `devices add` and prints a fresh `pair=` line. A test that
+//! cannot write to the fleet's stdin (an iPhone simulator's, which only
+//! shares the Mac's loopback) POSTs to `pair_url` instead: the same fresh
+//! `devices add`, its code the reply's body, text. Without `KROWK_BIN` the
+//! fleet exits 1 saying how to build one.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title and a second
@@ -82,8 +86,8 @@ fn main() {
         std::process::exit(1);
     });
     let fleet = fleet::start(demo);
-    let mut pairer = match fleet::Pairer::new(&fleet, &bin) {
-        Ok(p) => p,
+    let pairer = match fleet::Pairer::new(&fleet, &bin) {
+        Ok(p) => std::sync::Arc::new(std::sync::Mutex::new(p)),
         Err(e) => fail(None, fleet, &e),
     };
     let mut out = std::io::stdout().lock();
@@ -91,10 +95,27 @@ fn main() {
         writeln!(out, "{l}").unwrap();
     }
     if pair {
-        match pairer.pair() {
+        let code = pairer.lock().unwrap().pair();
+        match code {
             Ok(code) => writeln!(out, "pair={code}").unwrap(),
-            Err(e) => fail(Some(pairer), fleet, &e),
+            Err(e) => fail(Some(&pairer), fleet, &e),
         }
+        // Loopback only, like the rest of the fleet.
+        let asked = std::sync::Arc::clone(&pairer);
+        let control = mock::serve_seen(move |seen, _| {
+            if (seen.method.as_str(), seen.path.as_str()) != ("POST", "/pair") {
+                return mock::Reply::status(404, "only POST /pair");
+            }
+            let code = asked.lock().unwrap().pair();
+            match code {
+                Ok(code) => mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(200, &code) },
+                Err(e) => {
+                    eprintln!("fake_fleet: POST /pair: {e}");
+                    mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(500, &e) }
+                }
+            }
+        });
+        writeln!(out, "pair_url={}/pair", control.url).unwrap();
     }
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
@@ -103,9 +124,10 @@ fn main() {
         match line.as_deref().map(str::trim) {
             Ok("stop-host") => fleet.stop_host(),
             Ok("pair") => {
-                let code = match pairer.pair() {
+                let code = pairer.lock().unwrap().pair();
+                let code = match code {
                     Ok(code) => code,
-                    Err(e) => fail(Some(pairer), fleet, &e),
+                    Err(e) => fail(Some(&pairer), fleet, &e),
                 };
                 let mut out = std::io::stdout().lock();
                 writeln!(out, "pair={code}").unwrap();
@@ -115,15 +137,17 @@ fn main() {
             Err(_) => break,
         }
     }
-    pairer.end();
+    pairer.lock().unwrap().end();
     fleet.stop();
 }
 
 /// Stops everything and exits 1, saying why: no `pair=` line can follow.
 #[cfg(unix)]
-fn fail(pairer: Option<fleet::Pairer>, fleet: fleet::Fleet, why: &str) -> ! {
+fn fail(pairer: Option<&std::sync::Mutex<fleet::Pairer>>, fleet: fleet::Fleet, why: &str) -> ! {
     eprintln!("fake_fleet: {why}");
-    drop(pairer);
+    if let Some(p) = pairer {
+        p.lock().unwrap_or_else(std::sync::PoisonError::into_inner).end();
+    }
     fleet.stop();
     std::process::exit(1);
 }

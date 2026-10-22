@@ -46,13 +46,19 @@ async fn until(v: &mut viewer::Viewer, wait: Duration, mut done: impl FnMut(&[vi
 
 /// POSTs to `url`, `http://host:port/path`, with no body; the status line.
 fn post(url: &str) -> String {
+    request("POST", url).0
+}
+
+/// `method url` with no body: the reply's status line and its body.
+fn request(method: &str, url: &str) -> (String, String) {
     let rest = url.strip_prefix("http://").unwrap();
     let (host, path) = rest.split_at(rest.find('/').unwrap());
     let mut s = std::net::TcpStream::connect(host).unwrap();
-    write!(s, "POST {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
-    out.lines().next().unwrap_or_default().to_string()
+    let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
+    (head.lines().next().unwrap_or_default().to_string(), body.to_string())
 }
 
 /// R-IOS-15, R-RELAY-1, R-HAND-4: an app's tests run against the fake
@@ -335,6 +341,30 @@ fn r_e2e_3_after_a_wrong_code_a_pair_line_gives_the_fake_fleet_a_fresh_code_that
     let second = f.line();
     let second = second.strip_prefix("pair=").unwrap_or_else(|| panic!("not a pair= line: {second}")).to_string();
     assert_ne!(second, first, "a fresh code");
+    let out = phone.join(&f, &second);
+    assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
+    f.ended(true);
+    assert_eq!(phone.devices(&f), ["host-a", "phone"]);
+    f.stop();
+}
+
+/// R-E2E-3, R-IOS-15: a test that can't reach the fleet's stdin (the
+/// iPhone simulator's) asks `pair_url` for a fresh code instead: a POST
+/// ends the running `devices add` and answers the new one's code, which
+/// joins; anything but a POST to it is refused.
+#[test]
+fn r_e2e_3_r_ios_15_a_post_to_pair_url_gives_the_fake_fleet_a_fresh_code_that_joins() {
+    let f = Proc::start(&["--pair"]);
+    let first = f.get("pair").to_string();
+    let url = f.get("pair_url").to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with("/pair"), "{url}");
+    assert_eq!(request("GET", &url).0, "HTTP/1.1 404 X");
+    let (status, second) = request("POST", &url);
+    assert_eq!(status, "HTTP/1.1 200 X", "{second}");
+    assert!(second.len() == 9 && second.as_bytes()[4] == b'-' && second != first, "{first} then {second}");
+    // The first code's `devices add` was ended for it.
+    f.ended(false);
+    let phone = Phone::sign_in(&f, "phone-posted");
     let out = phone.join(&f, &second);
     assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
     f.ended(true);
