@@ -85,12 +85,14 @@ extension HostedKeychain {
                 #expect(try storage.read(slot: slot) == nil, "\(slot) was kept")
             }
             #expect(try Launch.read(api: api, storage: storage) != .paired)
-            // The fleet's pairing is dead: nothing is open to pair with.
+            // The fleet's pairing is dead: to this phone, a party to it, the
+            // registry says it has ended (`pairing_gone`); nothing else is
+            // open to pair with.
             let account = try Account.open(api: api, storage: storage)
             do {
                 let open = try account.openPairing()
                 Issue.record("a pairing is still open: \(open)")
-            } catch KrowkError.Refused(code: "no_pairing", _) {}
+            } catch KrowkError.Refused(code: let code, _) where code == "pairing_gone" || code == "no_pairing" {}
             #expect(!lines.all().joined().contains(code), "the code was logged")
 
             // A fresh code joins, through the same screen.

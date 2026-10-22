@@ -132,9 +132,9 @@ public enum PairingFailure: Error, Sendable, Equatable {
         case .alreadyJoined:
             "This iPhone is on your devices."
         case .network:
-            "krowk's registry couldn't be reached, so the code wasn't used. Check the connection and enter it again."
+            "krowk's registry couldn't be reached, so the code wasn't used. Check the connection, then scan or type the code again."
         case .other:
-            "Pairing didn't start, so the code wasn't used. Enter it again."
+            "Pairing didn't start, so the code wasn't used. Scan or type the code again."
         case .cancelled:
             "Pairing was cancelled."
         }
@@ -255,8 +255,9 @@ public final class PairingModel {
     /// case, spaces and dashes ignored) the pairing starts, and the field
     /// is cleared: a code is spent once.
     public func enter(_ text: String) {
+        guard case .entering = phase else { return }
         codeText = text.uppercased()
-        guard case .entering = phase, let code = service.parseCode(codeText) else { return }
+        guard let code = service.parseCode(codeText) else { return }
         codeText = ""
         start(.code(code))
     }

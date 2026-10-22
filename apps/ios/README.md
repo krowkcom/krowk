@@ -206,9 +206,8 @@ devices add`, then scan its QR code or type the code.
   `invite_other_account` says "This code is for another krowk account.",
   whatever pairing is open; `invite_other_pairing`, "This code is from a
   different device's pairing". The screen names the laptop only when the
-  invite's device is the open pairing's. A camera that is refused says so
-  and offers Settings; one that is restricted, or won't start, says to
-  type the code. The button is absent where
+  invite's device is the open pairing's. A camera that is restricted, or
+  won't start, says to type the code. The button is absent where
   `DataScannerViewController.isSupported` is false: the simulator, so the
   tests drive the payload → join path through `PairingModel.scanned`.
 - **Joining.** Off the main actor: `Account.openPairing` names the device
@@ -239,7 +238,8 @@ devices add`, then scan its QR code or type the code.
 
 The hosted tests' `TestFleet` (an actor) signs a phone in through the
 fleet and joins it once per test process, over a `KeychainKeyStorage` of its
-own service (`com.krowk.keys.testfleet.…`, purged as the process exits):
+own service (`com.krowk.keys.testfleet.…`, purged as the process exits,
+and what a killed process left, as the next one starts):
 `try await TestFleet.shared.paired()` is a paired account for the tests
 that need one.
 

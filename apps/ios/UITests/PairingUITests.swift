@@ -106,13 +106,16 @@ final class PairingUITests: XCTestCase {
         again.terminate()
     }
 
-    /// Types `code` into the field: a whole code starts at once.
+    /// Types `code` into the field: a whole code starts at once. The last
+    /// symbol is typed into the app, not the field, which goes away as
+    /// the pairing starts: XCUITest would fail looking for its focus.
     @MainActor
     private func type(_ code: String, in app: XCUIApplication) {
         let field = app.textFields["pairing-code"]
         XCTAssertTrue(field.waitForExistence(timeout: 10), "no code field")
         field.tap()
-        field.typeText(code)
+        field.typeText(String(code.dropLast()))
+        app.typeText(String(code.suffix(1)))
     }
 
     /// The code the sign-in shows, from "Check the page shows the code K7QF-9M3X."

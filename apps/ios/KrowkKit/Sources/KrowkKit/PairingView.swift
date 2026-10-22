@@ -40,7 +40,9 @@ public struct PairingView: View {
     }
 
     private var scannerOpen: Binding<Bool> {
-        Binding(get: { model.scanner == .open }, set: { if !$0 { model.closeScanner() } })
+        // Closing the sheet closes the scanner, but never wipes a notice set
+        // as it closed (a camera that wouldn't start).
+        Binding(get: { model.scanner == .open }, set: { if !$0, model.scanner == .open { model.closeScanner() } })
     }
 
     @ViewBuilder
@@ -225,7 +227,8 @@ struct QRScanner: UIViewControllerRepresentable {
             // The model checked the permission before opening the sheet;
             // this fails when the camera can't be used anyway (another app
             // holds it, a restriction).
-            do { try scanner.startScanning() } catch { onFailed() }
+            // Not during this view update: the model changes after it.
+            do { try scanner.startScanning() } catch { Task { @MainActor in onFailed() } }
         }
     }
 
@@ -234,15 +237,22 @@ struct QRScanner: UIViewControllerRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onScanned: onScanned)
+        Coordinator(onScanned: onScanned, onFailed: onFailed)
     }
 
     @MainActor
     final class Coordinator: NSObject, DataScannerViewControllerDelegate {
         var onScanned: @MainActor (String) -> Void
+        let onFailed: @MainActor () -> Void
 
-        init(onScanned: @escaping @MainActor (String) -> Void) {
+        init(onScanned: @escaping @MainActor (String) -> Void, onFailed: @escaping @MainActor () -> Void) {
             self.onScanned = onScanned
+            self.onFailed = onFailed
+        }
+
+        /// The camera went away mid-scan (another app took it, a call).
+        func dataScanner(_ dataScanner: DataScannerViewController, becameUnavailableWithError error: DataScannerViewController.ScanningUnavailable) {
+            onFailed()
         }
 
         func dataScanner(

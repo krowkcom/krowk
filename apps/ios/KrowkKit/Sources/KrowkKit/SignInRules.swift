@@ -32,7 +32,9 @@ public enum SignInRules {
         var bytes = 0
         for scalar in raw.unicodeScalars {
             switch scalar.properties.generalCategory {
-            case .control, .format: continue
+            // Line and paragraph separators too, which the device list
+            // refuses in a name (krowk-ffi drops them on pairing).
+            case .control, .format, .lineSeparator, .paragraphSeparator: continue
             default: break
             }
             let width = String(scalar).utf8.count

@@ -26,7 +26,10 @@ struct PairingModelTests {
         model.enter("k7qf 9m3x")
         #expect(model.phase == .finding, "a whole code starts at once")
         #expect(model.codeText.isEmpty, "a spent code is cleared")
+        // Another whole code while one is under way starts nothing.
+        model.enter("ABCD-EFGH")
         model.submitCode()
+        #expect(model.phase == .finding && model.codeText.isEmpty)
         try await until { model.phase == .pairing(with: "Elvinas's MacBook") }
         registry.finish(.success(()))
         try await until { model.phase == .paired }
@@ -246,10 +249,15 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
     private let open: Result<OpenedPairing, PairingFailure>
     private let gate: Box<Bool>?
     private var result: Result<Void, PairingFailure>?
-    private(set) var opened = 0
-    private(set) var joined: [PairingTicket] = []
-    private(set) var cancelled = 0
-    private(set) var parsedCodes: [String] = []
+    private var _opened = 0
+    private var _joined: [PairingTicket] = []
+    private var _cancelled = 0
+    private var _parsedCodes: [String] = []
+
+    var opened: Int { locked { _opened } }
+    var joined: [PairingTicket] { locked { _joined } }
+    var cancelled: Int { locked { _cancelled } }
+    var parsedCodes: [String] { locked { _parsedCodes } }
 
     init(open: Result<OpenedPairing, PairingFailure>, gate: Box<Bool>? = nil) {
         self.open = open
@@ -263,7 +271,7 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
     }
 
     func parseCode(_ text: String) -> String? {
-        locked { parsedCodes.append(text) }
+        locked { _parsedCodes.append(text) }
         let symbols = text.uppercased().filter { $0 != " " && $0 != "-" }
         guard symbols.count == 8, symbols.allSatisfy({ "23456789ABCDEFGHJKMNPQRSTVWXYZ".contains($0) }) else { return nil }
         return "\(symbols.prefix(4))-\(symbols.suffix(4))"
@@ -277,12 +285,12 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
 
     func openPairing() throws(PairingFailure) -> OpenedPairing {
         while let gate, !gate.value { Thread.sleep(forTimeInterval: 0.01) }
-        locked { opened += 1 }
+        locked { _opened += 1 }
         return try open.get()
     }
 
     func join(_ ticket: PairingTicket) throws(PairingFailure) {
-        locked { joined.append(ticket) }
+        locked { _joined.append(ticket) }
         while true {
             if let result = locked({ result }) { return try result.get() }
             Thread.sleep(forTimeInterval: 0.01)
@@ -290,7 +298,7 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
     }
 
     func cancel() {
-        locked { cancelled += 1 }
+        locked { _cancelled += 1 }
     }
 
     func finish(_ result: Result<Void, PairingFailure>) {
