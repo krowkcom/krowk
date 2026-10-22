@@ -28,11 +28,14 @@ public protocol PairingAttempt: Sendable {
     /// Joins with `ticket`: blocks until the other device has added this
     /// one (the user keys and the device list kept, the claim made), or
     /// the join failed and kept nothing. A scanned invite is checked
-    /// against the account and the open pairing before its code is spent.
+    /// against the account, then the open pairing, before its code is
+    /// spent.
     func join(_ ticket: PairingTicket) throws(PairingFailure)
-    /// Ends the join within a moment, and ends the pairing on the registry
-    /// so the other device isn't left waiting; a join already past the
-    /// other device's reply finishes as it would have.
+    /// Ends the join within a moment. Once its first message is out, it
+    /// also ends the pairing on the registry, so the other device isn't
+    /// left waiting; before that the code is unspent and the other
+    /// device's pairing stays open. A join already past the other
+    /// device's reply finishes as it would have.
     func cancel()
 }
 
@@ -86,11 +89,12 @@ public enum PairingFailure: Error, Sendable, Equatable {
     /// `no_pairing`: no device has a pairing open.
     case noPairing
     /// The pairing ended and its code is spent (`pairing_failed`,
-    /// `not_added`, or anything else that ends one).
+    /// `not_added`, `pairing_gone`).
     case codeUsedUp
-    /// `invite_mismatch` for the account: the QR code is another person's.
+    /// `invite_other_account`: the QR code is another person's.
     case otherAccount
-    /// The QR code was shown for a pairing other than the one open now.
+    /// `invite_other_pairing`: the QR code was shown for a pairing other
+    /// than the one open now.
     case otherDevice
     /// `device_removed`: this phone's keys were removed from the list.
     case removed
@@ -100,7 +104,9 @@ public enum PairingFailure: Error, Sendable, Equatable {
     case network(detail: String)
     /// This app ended it; never shown.
     case cancelled
-    /// Anything else. The core's words go to the log, not the screen.
+    /// Anything else, which ends a join before its code is sent (a Keychain
+    /// that won't open, a reply the phone can't read): the code is unspent.
+    /// The core's words go to the log, not the screen.
     case other(detail: String)
 
     /// One sentence for the screen, naming the device that showed the code
@@ -111,7 +117,7 @@ public enum PairingFailure: Error, Sendable, Equatable {
             "That isn't a pairing code: it's the 8 characters `krowk devices add` shows, like K7QF-9M3X. Nothing was sent."
         case .noPairing:
             "Nothing to pair with yet: run `krowk devices add` on your laptop first."
-        case .codeUsedUp, .other:
+        case .codeUsedUp:
             if let laptop, !laptop.isEmpty {
                 "The pairing failed, and a code works once — on '\(laptop)' run `krowk devices add` again for a new code. Nothing was kept."
             } else {
@@ -127,6 +133,8 @@ public enum PairingFailure: Error, Sendable, Equatable {
             "This iPhone is on your devices."
         case .network:
             "krowk's registry couldn't be reached, so the code wasn't used. Check the connection and enter it again."
+        case .other:
+            "Pairing didn't start, so the code wasn't used. Enter it again."
         case .cancelled:
             "Pairing was cancelled."
         }
@@ -144,6 +152,8 @@ public protocol CameraAccess: AnyObject {
 
 public enum CameraStatus: Sendable {
     case allowed, notAsked, refused
+    /// Turned off for this app by Screen Time or a profile: Settings can't help.
+    case restricted
 }
 
 /// The pairing screen's state (R-E2E-3): take a code, typed or scanned,
@@ -171,18 +181,16 @@ public final class PairingModel {
         case open
         /// The camera may not be used: say so, with the way to Settings.
         case refused
+        /// The camera is restricted, or the scanner couldn't start: type
+        /// the code.
+        case unavailable
     }
 
     public private(set) var phase: Phase = .entering(nil)
     public private(set) var scanner: Scanner = .closed
-    /// The code field, upper-cased as typed. Only Rust decides whether it
-    /// is a code.
-    public var codeText = "" {
-        didSet {
-            let upper = codeText.uppercased()
-            if upper != codeText { codeText = upper }
-        }
-    }
+    /// The code field, upper-cased as typed (`enter`). Only Rust decides
+    /// whether it is a code.
+    public private(set) var codeText = ""
 
     /// Whether this phone can scan at all (VisionKit's
     /// `DataScannerViewController.isSupported`): false in the simulator,
@@ -238,8 +246,23 @@ public final class PairingModel {
         failure.map { $0.sentence(laptop: laptop) }
     }
 
-    /// "Pair": the typed code, checked by Rust's parser before anything is
-    /// sent. Not a code: say so, send nothing.
+    /// The name of the device the last attempt found, if it named one.
+    public var laptopName: String? {
+        laptop.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
+    /// The field changed. As soon as it holds a whole code (Rust's parser:
+    /// case, spaces and dashes ignored) the pairing starts, and the field
+    /// is cleared: a code is spent once.
+    public func enter(_ text: String) {
+        codeText = text.uppercased()
+        guard case .entering = phase, let code = service.parseCode(codeText) else { return }
+        codeText = ""
+        start(.code(code))
+    }
+
+    /// "Pair": what the field holds, checked by Rust's parser before
+    /// anything is sent. Not a code: say so, send nothing.
     public func submitCode() {
         guard case .entering = phase else { return }
         guard let code = service.parseCode(codeText) else {
@@ -258,6 +281,8 @@ public final class PairingModel {
             scanner = .open
         case .refused:
             scanner = .refused
+        case .restricted:
+            scanner = .unavailable
         case .notAsked:
             let run = run
             Task { [weak self] in
@@ -274,6 +299,12 @@ public final class PairingModel {
         scanner = .closed
     }
 
+    /// The scanner could not start the camera.
+    public func scannerFailed() {
+        guard scanner == .open else { return }
+        scanner = .unavailable
+    }
+
     /// What the scanner read: krowk's invite starts the join; anything
     /// else is ignored and the scanner keeps looking.
     public func scanned(_ payload: String) {
@@ -282,8 +313,9 @@ public final class PairingModel {
         start(.invite(invite))
     }
 
-    /// "Cancel": ends the join and the pairing on the registry, and goes
-    /// back to the code. The screen going away does too, through `deinit`.
+    /// "Cancel": ends the join, and the pairing on the registry once the
+    /// code has been sent, and goes back to the code. The screen going
+    /// away does too, through `deinit`.
     public func cancel() {
         run &+= 1
         current.take()?.cancel()
@@ -313,20 +345,20 @@ public final class PairingModel {
             let found = await blocking { () -> Result<OpenedPairing, PairingFailure> in
                 do throws(PairingFailure) { return .success(try attempt.openPairing()) } catch { return .failure(error) }
             }
-            let open: OpenedPairing
-            switch found {
-            case .success(let opened): open = opened
-            case .failure(let failure):
+            // The device to name: none for a scanned code whose pairing
+            // isn't the open one, or with none open. Rust's join refuses
+            // those before the code is spent, the account checked first,
+            // so another person's code says so whatever is open.
+            let named: OpenedPairing?
+            switch (found, ticket) {
+            case (.success(let open), .code): named = open
+            case (.success(let open), .invite(let invite)): named = invite.device == open.device ? open : nil
+            case (.failure(.noPairing), .invite): named = nil
+            case (.failure(let failure), _):
                 await MainActor.run { self?.end(run, failure) }
                 return
             }
-            // A scanned code shown for another pairing is refused before it
-            // is spent (Rust checks it again as it joins).
-            if case .invite(let invite) = ticket, invite.device != open.device {
-                await MainActor.run { self?.end(run, .otherDevice) }
-                return
-            }
-            let go = await MainActor.run { self?.found(open, run) ?? false }
+            let go = await MainActor.run { self?.found(named, run) ?? false }
             guard go else { return }
             let joined = await blocking { () -> Result<Void, PairingFailure> in
                 do throws(PairingFailure) { return .success(try attempt.join(ticket)) } catch { return .failure(error) }
@@ -338,13 +370,14 @@ public final class PairingModel {
         }
     }
 
-    /// The open pairing was found: name its device, unless this run was
-    /// cancelled meanwhile, which then never joins.
-    private func found(_ open: OpenedPairing, _ run: Int) -> Bool {
+    /// The open pairing was found: name its device, if it is the one,
+    /// unless this run was cancelled meanwhile, which then never joins.
+    private func found(_ open: OpenedPairing?, _ run: Int) -> Bool {
         guard run == self.run, phase == .finding else { return false }
-        let name = open.deviceName.isEmpty ? "your laptop" : open.deviceName
-        laptop = open.deviceName
-        phase = .pairing(with: name)
+        if let open {
+            laptop = open.deviceName
+            phase = .pairing(with: open.deviceName.isEmpty ? "your laptop" : open.deviceName)
+        }
         return true
     }
 

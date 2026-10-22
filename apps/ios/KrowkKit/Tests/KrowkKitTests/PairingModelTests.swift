@@ -15,20 +15,23 @@ struct PairingModelTests {
     nonisolated static let invite = PairingInvitation(code: "K7QF-9M3X", userId: "u_1", device: laptop.device)
     nonisolated static let qr = "krowk://pair?v=1&code=K7QF-9M3X&user=u_1&device=0123456789abcdef0123456789abcdef"
 
-    @Test("R-E2E-3: a typed code is upper-cased as typed, checked by the parser, then names the laptop and joins with that code once")
+    @Test("R-E2E-3: a typed code is upper-cased as typed, starts as soon as the parser takes it, names the laptop and joins with that code once")
     func typedCodeJoins() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let paired = Box(false)
         let model = Self.model(registry, onPaired: { paired.value = true })
-        model.codeText = "k7qf 9m3x"
-        #expect(model.codeText == "K7QF 9M3X")
-        model.submitCode()
+        model.enter("k7qf 9m3")
+        #expect(model.codeText == "K7QF 9M3")
+        #expect(model.phase == .entering(nil))
+        model.enter("k7qf 9m3x")
+        #expect(model.phase == .finding, "a whole code starts at once")
         #expect(model.codeText.isEmpty, "a spent code is cleared")
+        model.submitCode()
         try await until { model.phase == .pairing(with: "Elvinas's MacBook") }
         registry.finish(.success(()))
         try await until { model.phase == .paired }
         #expect(registry.joined == [.code("K7QF-9M3X")])
-        #expect(registry.parsedCodes == ["K7QF 9M3X"])
+        #expect(registry.parsedCodes == ["K7QF 9M3", "K7QF 9M3X"])
         model.finish()
         #expect(paired.value)
     }
@@ -37,7 +40,8 @@ struct PairingModelTests {
     func notACode() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let model = Self.model(registry)
-        model.codeText = "K7QF-9M3I"
+        model.enter("K7QF-9M3I")
+        #expect(model.phase == .entering(nil))
         model.submitCode()
         #expect(model.phase == .entering(.notACode))
         #expect(registry.opened == 0 && registry.joined.isEmpty)
@@ -69,27 +73,43 @@ struct PairingModelTests {
         #expect(registry.opened == 0 && registry.joined.isEmpty)
     }
 
-    @Test("R-E2E-3: a QR code shown for another device's pairing is refused before any join call")
+    @Test("R-E2E-3: a QR code shown for another device's pairing never names the open one, and the join's refusal (before the code is spent) says so")
     func otherDeviceRefused() async throws {
         let registry = StubPairing(open: .success(OpenedPairing(device: "fedcba9876543210fedcba9876543210", deviceName: "Other")))
         let model = Self.model(registry, scanner: true)
         model.scan()
         model.scanned(Self.qr)
+        try await until { registry.joined.count == 1 }
+        #expect(model.phase == .finding, "not \"Pairing with Other\": the code wasn't shown there")
+        registry.finish(.failure(.otherDevice))
         try await until { model.phase == .entering(.otherDevice) }
-        #expect(registry.joined.isEmpty)
         #expect(model.failureSentence == "This code is from a different device's pairing — run `krowk devices add` again.")
     }
 
-    @Test("R-E2E-3: another account's QR code is refused by the join before its code is spent, and says so")
+    @Test("R-E2E-3: another account's QR code says so, whichever pairing is open, or none")
     func otherAccountRefused() async throws {
-        let registry = StubPairing(open: .success(Self.laptop))
-        let model = Self.model(registry, scanner: true)
-        model.scan()
-        model.scanned(Self.qr)
-        try await until { model.phase == .pairing(with: "Elvinas's MacBook") }
-        registry.finish(.failure(.otherAccount))
-        try await until { model.phase == .entering(.otherAccount) }
-        #expect(model.failureSentence == "This code is for another krowk account.")
+        for open: Result<OpenedPairing, PairingFailure> in [
+            .success(Self.laptop), .success(OpenedPairing(device: "fedcba9876543210fedcba9876543210", deviceName: "Other")),
+            .failure(.noPairing),
+        ] {
+            let registry = StubPairing(open: open)
+            let model = Self.model(registry, scanner: true)
+            model.scan()
+            model.scanned(Self.qr)
+            try await until { registry.joined.count == 1 }
+            registry.finish(.failure(.otherAccount))
+            try await until { model.phase == .entering(.otherAccount) }
+            #expect(model.failureSentence == "This code is for another krowk account.")
+        }
+    }
+
+    @Test("R-E2E-3: a typed code with no pairing open says to run krowk devices add first, and never joins")
+    func noPairing() async throws {
+        let registry = StubPairing(open: .failure(.noPairing))
+        let model = Self.model(registry)
+        model.enter("K7QF-9M3X")
+        try await until { model.phase == .entering(.noPairing) }
+        #expect(registry.joined.isEmpty)
     }
 
     @Test("R-E2E-3: the scan button is absent where the scanner is unsupported, and scan does nothing there")
@@ -100,12 +120,21 @@ struct PairingModelTests {
         #expect(model.scanner == .closed)
     }
 
-    @Test("R-E2E-3: a camera refused says so; one not asked yet is asked once, and opens the scanner when allowed")
+    @Test("R-E2E-3: a camera refused says so, a restricted one or one that won't start says to type; one not asked yet is asked once, and opens the scanner when allowed")
     func cameraPermission() async throws {
         let camera = StubCamera(.refused)
         let model = Self.model(StubPairing(open: .success(Self.laptop)), scanner: true, camera: camera)
         model.scan()
         #expect(model.scanner == .refused)
+        model.closeScanner()
+        camera.status = .restricted
+        model.scan()
+        #expect(model.scanner == .unavailable)
+        camera.status = .allowed
+        model.scan()
+        #expect(model.scanner == .open)
+        model.scannerFailed()
+        #expect(model.scanner == .unavailable)
         model.closeScanner()
         camera.status = .notAsked
         camera.answer = false
@@ -122,8 +151,7 @@ struct PairingModelTests {
     func wrongCode() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let model = Self.model(registry)
-        model.codeText = "K7QF-9M3X"
-        model.submitCode()
+        model.enter("K7QF-9M3X")
         try await until { if case .pairing = model.phase { true } else { false } }
         registry.finish(.failure(.codeUsedUp))
         try await until { model.phase == .entering(.codeUsedUp) }
@@ -137,11 +165,12 @@ struct PairingModelTests {
     func sentences() async throws {
         #expect(PairingFailure.noPairing.sentence(laptop: nil) == "Nothing to pair with yet: run `krowk devices add` on your laptop first.")
         #expect(PairingFailure.codeUsedUp.sentence(laptop: nil).contains("on your laptop run `krowk devices add` again"))
+        // Before the code was sent: it wasn't used.
+        #expect(PairingFailure.other(detail: "x").sentence(laptop: "host").contains("the code wasn't used"))
         let logged = Box<[String]>([])
         let registry = StubPairing(open: .failure(.other(detail: "<the registry's words>")))
         let model = Self.model(registry, log: { logged.value.append($0) })
-        model.codeText = "K7QF-9M3X"
-        model.submitCode()
+        model.enter("K7QF-9M3X")
         try await until { model.phase == .entering(.other(detail: "<the registry's words>")) }
         #expect(!(model.failureSentence ?? "").contains("registry's words"))
         #expect(logged.value == ["pairing: <the registry's words>"])
@@ -152,8 +181,7 @@ struct PairingModelTests {
     func cancel() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let model = Self.model(registry)
-        model.codeText = "K7QF-9M3X"
-        model.submitCode()
+        model.enter("K7QF-9M3X")
         try await until { if case .pairing = model.phase { true } else { false } }
         model.cancel()
         #expect(model.phase == .entering(nil))
@@ -167,8 +195,7 @@ struct PairingModelTests {
     func lateCancel() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let model = Self.model(registry)
-        model.codeText = "K7QF-9M3X"
-        model.submitCode()
+        model.enter("K7QF-9M3X")
         try await until { if case .pairing = model.phase { true } else { false } }
         model.cancel()
         registry.finish(.success(()))
@@ -180,8 +207,7 @@ struct PairingModelTests {
         let gate = Box(false)
         let registry = StubPairing(open: .success(Self.laptop), gate: gate)
         let model = Self.model(registry)
-        model.codeText = "K7QF-9M3X"
-        model.submitCode()
+        model.enter("K7QF-9M3X")
         #expect(model.phase == .finding)
         model.cancel()
         gate.value = true
@@ -194,8 +220,7 @@ struct PairingModelTests {
     func leavingCancels() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         var model: PairingModel? = Self.model(registry)
-        model?.codeText = "K7QF-9M3X"
-        model?.submitCode()
+        model?.enter("K7QF-9M3X")
         try await until { if case .pairing = model?.phase { true } else { false } }
         model = nil
         try await until { registry.cancelled == 1 }

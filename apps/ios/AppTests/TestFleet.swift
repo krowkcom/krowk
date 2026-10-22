@@ -28,17 +28,32 @@ struct PairedAccount: Sendable {
 actor TestFleet {
     static let shared = TestFleet()
 
-    /// The fixture's own Keychain service, beside the app's `com.krowk.keys`
-    /// that the hosted tests clear after each test: this phone outlives
-    /// them. Purged as the test process exits.
-    static let service = "com.krowk.keys.testfleet.\(ProcessInfo.processInfo.processIdentifier).\(UUID().uuidString)"
+    /// Every fixture's Keychain service starts so: beside the app's
+    /// `com.krowk.keys`, which the hosted tests clear after each test, so
+    /// this phone outlives them.
+    static let servicePrefix = "com.krowk.keys.testfleet."
+    /// This test process's own.
+    static let service = "\(servicePrefix)\(UUID().uuidString)"
 
-    private var cached: PairedAccount?
+    /// The phone, once asked for: one join per process, however many
+    /// tests ask at once.
+    private var making: Task<PairedAccount, any Error>?
 
     /// The paired phone, made on first use: signed in through the fleet's
-    /// approval, joined with a fresh code from its `devices add`.
+    /// approval, joined with a fresh code from its `devices add`. A first
+    /// attempt that failed is not tried again: every later caller gets its
+    /// error.
     func paired() async throws -> PairedAccount {
-        if let cached { return cached }
+        if let making { return try await making.value }
+        let task = Task { try await Self.make() }
+        making = task
+        return try await task.value
+    }
+
+    private static func make() async throws -> PairedAccount {
+        // A test process is often killed rather than let exit, so what an
+        // earlier one left is purged here, and this one's at exit too.
+        purgeLeftovers()
         atexit { TestFleet.purge() }
         let api = try Self.api()
         let storage = try KeychainKeyStorage(
@@ -49,17 +64,31 @@ actor TestFleet {
         let (code, os) = (try await Self.freshCode(), await Self.os)
         let account = try await blockingCall { try Account.open(api: api, storage: storage) }
         _ = try await blockingCall { try account.joinPairing(code: code, name: name, os: os) }
-        let paired = PairedAccount(api: api, storage: storage, account: account, deviceName: name)
-        cached = paired
-        return paired
+        return PairedAccount(api: api, storage: storage, account: account, deviceName: name)
     }
 
-    /// Deletes every item under the fixture's service.
+    /// Deletes every item under this process's service.
     nonisolated static func purge() {
         SecItemDelete([
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
         ] as CFDictionary)
+    }
+
+    /// Deletes every item of any fixture's service: what an earlier test
+    /// process left.
+    nonisolated static func purgeLeftovers() {
+        var found: CFTypeRef?
+        let status = SecItemCopyMatching([
+            kSecClass as String: kSecClassGenericPassword,
+            kSecMatchLimit as String: kSecMatchLimitAll,
+            kSecReturnAttributes as String: true,
+        ] as CFDictionary, &found)
+        guard status == errSecSuccess, let items = found as? [[String: Any]] else { return }
+        let services = Set(items.compactMap { $0[kSecAttrService as String] as? String }.filter { $0.hasPrefix(servicePrefix) })
+        for service in services {
+            SecItemDelete([kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service] as CFDictionary)
+        }
     }
 
     // MARK: The fleet

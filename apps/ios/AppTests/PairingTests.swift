@@ -73,8 +73,8 @@ extension HostedKeychain {
                 camera: AllowedCamera(), scannerSupported: false, deviceName: name, log: { lines.append($0) })
 
             let code = try await TestFleet.freshCode()
-            model.codeText = (code.first == "2" ? "3" : "2") + code.dropFirst()
-            model.submitCode()
+            // A whole code starts at once, as typed.
+            model.enter((code.first == "2" ? "3" : "2") + code.dropFirst())
             try await eventually(seconds: 60) { model.failure != nil }
             #expect(model.phase == .entering(.codeUsedUp), "\(model.phase)")
             #expect(
@@ -94,10 +94,15 @@ extension HostedKeychain {
             #expect(!lines.all().joined().contains(code), "the code was logged")
 
             // A fresh code joins, through the same screen.
-            model.codeText = try await TestFleet.freshCode()
-            model.submitCode()
-            try await eventually(seconds: 60) { model.phase == .pairing(with: "host-a") }
-            try await eventually(seconds: 90) { model.phase == .paired || model.failure != nil }
+            model.enter(try await TestFleet.freshCode())
+            // Named before the join; host A answers by itself, so the name
+            // may be on screen only briefly.
+            var named = false
+            try await eventually(seconds: 90) {
+                if model.phase == .pairing(with: "host-a") { named = true }
+                return model.phase == .paired || model.failure != nil
+            }
+            #expect(named || model.laptopName == "host-a", "the laptop was never named")
             #expect(model.phase == .paired, "\(model.phase)")
             #expect(try Launch.read(api: api, storage: storage) == .paired)
             #expect(try account.devices().contains { $0.thisDevice && $0.name == name })
@@ -122,12 +127,14 @@ extension HostedKeychain {
             model.scanned("https://example.com/menu")
             #expect(model.scanner == .open && model.phase == .entering(nil))
 
-            // Another account's.
-            model.scanned(qr("0192f5a0-7e1c-7cc3-9d1a-5b6f00000001", laptop.device))
-            try await eventually(seconds: 30) { model.failure != nil }
-            #expect(model.phase == .entering(.otherAccount))
-            #expect(model.failureSentence == "This code is for another krowk account.")
-            #expect(try account.openPairing() == laptop, "the pairing is still open: nothing was spent")
+            // Another account's: naming this pairing's device, or another.
+            for device in [laptop.device, "0123456789abcdef0123456789abcdef"] {
+                model.scanned(qr("0192f5a0-7e1c-7cc3-9d1a-5b6f00000001", device))
+                try await eventually(seconds: 30) { model.failure != nil }
+                #expect(model.phase == .entering(.otherAccount))
+                #expect(model.failureSentence == "This code is for another krowk account.")
+                #expect(try account.openPairing() == laptop, "the pairing is still open: nothing was spent")
+            }
 
             // Shown for a pairing that isn't the open one.
             model.scanned(qr(user, "0123456789abcdef0123456789abcdef"))
@@ -155,7 +162,7 @@ struct PairingParseTests {
     func notACode(text: String) async throws {
         let registry = Counting()
         let model = PairingModel(service: registry, camera: AllowedCamera(), scannerSupported: false, deviceName: "iPhone")
-        model.codeText = text
+        model.enter(text)
         model.submitCode()
         #expect(model.phase == .entering(.notACode))
         try await Task.sleep(for: .milliseconds(100))

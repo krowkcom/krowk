@@ -34,7 +34,8 @@ public struct PairingView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .sheet(isPresented: scannerOpen) {
-            ScannerSheet(onScanned: { model.scanned($0) }, onClose: { model.closeScanner() })
+            ScannerSheet(
+                onScanned: { model.scanned($0) }, onFailed: { model.scannerFailed() }, onClose: { model.closeScanner() })
         }
     }
 
@@ -90,9 +91,9 @@ public struct PairingView: View {
         }
         .foregroundStyle(.secondary)
         .accessibilityIdentifier("pairing-intro")
-        if let sentence = model.failureSentence {
+        if let failure = model.failure {
             // Never read as markdown: it can carry the other device's name.
-            Text(Self.commandsStyled(sentence))
+            Text(Self.styled(failure, laptop: model.laptopName))
                 .accessibilityIdentifier("pairing-failed")
         }
         if model.scannerSupported {
@@ -104,7 +105,8 @@ public struct PairingView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .accessibilityIdentifier("pairing-scan")
-            if model.scanner == .refused {
+            switch model.scanner {
+            case .refused:
                 Text("krowk can't use the camera. Allow it in Settings, or type the code.")
                     .foregroundStyle(.secondary)
                     .accessibilityIdentifier("pairing-camera-refused")
@@ -115,9 +117,15 @@ public struct PairingView: View {
                     model.closeScanner()
                 }
                 .accessibilityIdentifier("pairing-open-settings")
+            case .unavailable:
+                Text("The camera isn't available to krowk on this iPhone. Type the code instead.")
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("pairing-camera-unavailable")
+            case .closed, .open:
+                EmptyView()
             }
         }
-        TextField("Code, like K7QF-9M3X", text: $model.codeText)
+        TextField("Code, like K7QF-9M3X", text: Binding(get: { model.codeText }, set: { model.enter($0) }))
             .font(.title3.monospaced())
             .textInputAutocapitalization(.characters)
             .autocorrectionDisabled()
@@ -139,15 +147,21 @@ public struct PairingView: View {
         .accessibilityIdentifier("pairing-submit")
     }
 
-    /// `sentence` as plain text, its back-quoted commands in monospace.
-    /// Nothing in it is parsed as markdown, so a device's name can't
-    /// become a link.
-    static func commandsStyled(_ sentence: String) -> AttributedString {
+    /// The failure's sentence as plain text, its back-quoted commands in
+    /// monospace. The device's name goes in after the styling, as it is:
+    /// nothing in it is read as markdown or as a back quote, so a name
+    /// can't become a link or restyle the sentence.
+    static func styled(_ failure: PairingFailure, laptop: String?) -> AttributedString {
+        let slot = "\u{FFFC}"
+        let template = failure.sentence(laptop: laptop.map { _ in slot })
         var out = AttributedString()
-        for (i, part) in sentence.split(separator: "`", omittingEmptySubsequences: false).enumerated() {
+        for (i, part) in template.split(separator: "`", omittingEmptySubsequences: false).enumerated() {
             var piece = AttributedString(String(part))
             if i % 2 == 1 { piece.inlinePresentationIntent = .code }
             out += piece
+        }
+        if let laptop, let at = out.range(of: slot) {
+            out.replaceSubrange(at, with: AttributedString(laptop))
         }
         return out
     }
@@ -163,11 +177,12 @@ public struct PairingView: View {
 /// `onScanned`, which keeps what is krowk's and ignores the rest.
 struct ScannerSheet: View {
     let onScanned: @MainActor (String) -> Void
+    let onFailed: @MainActor () -> Void
     let onClose: @MainActor () -> Void
 
     var body: some View {
         NavigationStack {
-            QRScanner(onScanned: onScanned)
+            QRScanner(onScanned: onScanned, onFailed: onFailed)
                 .ignoresSafeArea()
                 .navigationTitle("Scan the QR code")
                 .navigationBarTitleDisplayMode(.inline)
@@ -184,6 +199,8 @@ struct ScannerSheet: View {
 /// `DataScannerViewController` recognising QR codes, nothing else.
 struct QRScanner: UIViewControllerRepresentable {
     let onScanned: @MainActor (String) -> Void
+    /// The camera would not start: the sheet closes and the screen says so.
+    let onFailed: @MainActor () -> Void
 
     /// Whether this phone can scan: false in the simulator and on phones
     /// without the hardware. The scan button is hidden then.
@@ -205,9 +222,10 @@ struct QRScanner: UIViewControllerRepresentable {
     func updateUIViewController(_ scanner: DataScannerViewController, context: Context) {
         context.coordinator.onScanned = onScanned
         if !scanner.isScanning {
-            // Fails only when the camera can't be used, which the model
-            // checked before opening the sheet.
-            try? scanner.startScanning()
+            // The model checked the permission before opening the sheet;
+            // this fails when the camera can't be used anyway (another app
+            // holds it, a restriction).
+            do { try scanner.startScanning() } catch { onFailed() }
         }
     }
 
@@ -248,6 +266,7 @@ public final class SystemCameraAccess: CameraAccess {
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized: .allowed
         case .notDetermined: .notAsked
+        case .restricted: .restricted
         default: .refused
         }
     }

@@ -102,17 +102,8 @@ public final class RegistryPairing: PairingService {
                     _ = try account.joinPairing(code: code, name: service.name, os: service.os)
                 case .invite(let invite):
                     let scanned = PairingInvite(code: invite.code, userId: invite.userId, device: invite.device)
-                    do {
-                        _ = try account.joinInvite(invite: scanned, name: service.name, os: service.os)
-                    } catch KrowkError.Refused(code: "invite_mismatch", _) {
-                        // The device was checked against the open pairing
-                        // before this call, so it is the account that
-                        // differs (or the pairing changed since).
-                        throw PairingFailure.otherAccount
-                    }
+                    _ = try account.joinInvite(invite: scanned, name: service.name, os: service.os)
                 }
-            } catch let failure as PairingFailure {
-                throw failure
             } catch {
                 throw PairingFailure(error)
             }
@@ -133,8 +124,10 @@ public final class RegistryPairing: PairingService {
 }
 
 extension PairingFailure {
-    /// The core's refusal codes, as krowk-ffi's join names them. Whatever
-    /// ends a pairing and isn't named here is a spent code.
+    /// The core's refusal codes, as krowk-ffi's join names them. Once the
+    /// code is sent only `pairing_failed`, `not_added` and `cancelled`
+    /// come back, so whatever isn't named here ended the join before the
+    /// code was spent.
     init(_ error: any Error) {
         guard let error = error as? KrowkError else {
             self = .other(detail: String(describing: error))
@@ -144,7 +137,8 @@ extension PairingFailure {
         case .Refused(code: "no_pairing", _): self = .noPairing
         case .Refused(code: "pairing_failed", _), .Refused(code: "not_added", _), .Refused(code: "pairing_gone", _):
             self = .codeUsedUp
-        case .Refused(code: "invite_mismatch", _): self = .otherAccount
+        case .Refused(code: "invite_other_account", _): self = .otherAccount
+        case .Refused(code: "invite_other_pairing", _): self = .otherDevice
         case .Refused(code: "device_removed", _): self = .removed
         case .Refused(code: "already_joined", _): self = .alreadyJoined
         case .Refused(code: "cancelled", _): self = .cancelled

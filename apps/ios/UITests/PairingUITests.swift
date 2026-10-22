@@ -41,7 +41,7 @@ final class PairingUITests: XCTestCase {
 
     @MainActor
     private func pair(_ appearance: XCUIDevice.Appearance) async throws {
-        let api = try env("KROWK_API_URL")
+        let api = try Self.env("KROWK_API_URL")
         let app = XCUIApplication()
         app.launchEnvironment["KROWK_FIRST_LAUNCH"] = "1"
         app.launchEnvironment["KROWK_API_URL"] = api
@@ -57,7 +57,7 @@ final class PairingUITests: XCTestCase {
         allowTheSignInPage()
         let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
         let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
-        try await post("\(site)/_approve/cli/authorizations/\(code)/approval")
+        try await Self.post("\(site)/_approve/cli/authorizations/\(code)/approval")
 
         // The pairing screen, under "Signed in to <workspace>".
         let title = app.staticTexts["pairing-title"]
@@ -70,7 +70,7 @@ final class PairingUITests: XCTestCase {
         Screenshots.keep("pairing", in: app)
 
         // A wrong code: the pairing ends, a code works once.
-        let first = try await freshCode()
+        let first = try await Self.freshCode()
         type((first.first == "2" ? "3" : "2") + first.dropFirst(), in: app)
         let failed = app.staticTexts["pairing-failed"]
         if !failed.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
@@ -80,7 +80,7 @@ final class PairingUITests: XCTestCase {
         Screenshots.keep("pairing-failed", in: app)
 
         // A fresh code: "Pairing with host-a", then on the devices.
-        type(try await freshCode(), in: app)
+        type(try await Self.freshCode(), in: app)
         let with = app.staticTexts["pairing-with"]
         let done = app.staticTexts["pairing-done"]
         // Host A answers by itself, so this screen may be brief.
@@ -106,14 +106,13 @@ final class PairingUITests: XCTestCase {
         again.terminate()
     }
 
-    /// Types `code` into the field and taps Pair.
+    /// Types `code` into the field: a whole code starts at once.
     @MainActor
     private func type(_ code: String, in app: XCUIApplication) {
         let field = app.textFields["pairing-code"]
         XCTAssertTrue(field.waitForExistence(timeout: 10), "no code field")
         field.tap()
         field.typeText(code)
-        app.buttons["pairing-submit"].tap()
     }
 
     /// The code the sign-in shows, from "Check the page shows the code K7QF-9M3X."
@@ -133,25 +132,25 @@ final class PairingUITests: XCTestCase {
         if proceed.waitForExistence(timeout: 10) { proceed.tap() }
     }
 
-    private func env(_ name: String) throws -> String {
+    private static func env(_ name: String) throws -> String {
         try XCTUnwrap(
             ProcessInfo.processInfo.environment[name].flatMap { $0.isEmpty ? nil : $0 },
             "\(name) is unset: run the tests through apps/ios/scripts/with-fleet.sh")
     }
 
     /// A fresh code from the fleet's `devices add`: a code works once.
-    private func freshCode() async throws -> String {
+    private static func freshCode() async throws -> String {
         let (status, body) = try await request(try env("KROWK_PAIR_URL"))
         XCTAssertEqual(status, 200, body)
         return body
     }
 
-    private func post(_ url: String) async throws {
+    private static func post(_ url: String) async throws {
         let (status, body) = try await request(url)
         XCTAssertEqual(status, 200, "POST \(url): \(body)")
     }
 
-    private func request(_ url: String) async throws -> (Int, String) {
+    private static func request(_ url: String) async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
         request.timeoutInterval = 60

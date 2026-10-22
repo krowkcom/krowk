@@ -194,16 +194,21 @@ devices add`, then scan its QR code or type the code.
 
 - **Typed.** The field upper-cases as typed; krowk-ffi's
   `parsePairingCode` (krowk-client's parser: case, spaces and dashes
-  ignored) decides whether it is a code, never Swift, and a field that
-  isn't one is refused before any network call.
+  ignored) decides whether it is a code, never Swift. As soon as the field
+  holds a whole code the pairing starts and the field is cleared; "Pair"
+  on anything else says it isn't a code, before any network call.
 - **Scanned.** "Scan the QR code" opens VisionKit's
   `DataScannerViewController`, QR codes only, after the camera permission
   (a refusal says so and offers Settings). Each payload goes through
   `parsePairingInvite`, krowk-client's strict parser: anything that isn't
-  krowk's invite is ignored and the scanner keeps looking. An invite shown
-  for another device's pairing is refused before its code is spent, and
-  `joinInvite` refuses one for another account (`invite_mismatch`) before
-  it is spent too. The button is absent where
+  krowk's invite is ignored and the scanner keeps looking. `joinInvite`
+  checks the account, then the open pairing, before the code is spent:
+  `invite_other_account` says "This code is for another krowk account.",
+  whatever pairing is open; `invite_other_pairing`, "This code is from a
+  different device's pairing". The screen names the laptop only when the
+  invite's device is the open pairing's. A camera that is refused says so
+  and offers Settings; one that is restricted, or won't start, says to
+  type the code. The button is absent where
   `DataScannerViewController.isSupported` is false: the simulator, so the
   tests drive the payload → join path through `PairingModel.scanned`.
 - **Joining.** Off the main actor: `Account.openPairing` names the device
@@ -218,15 +223,19 @@ devices add`, then scan its QR code or type the code.
   skips onboarding. The phone is a viewer: it takes no lease and never
   hosts (R-HAND-4).
 - **A code works once.** Nothing retries a join: a wrong or spent code
-  ends the pairing on both sides, keeps nothing, clears the field and says
-  "The pairing failed, and a code works once — on '<laptop>' run `krowk
-  devices add` again for a new code. Nothing was kept." No open pairing
-  says to run `krowk devices add` first. No code is ever logged.
-- **Cancelling.** Cancel, or the screen going away, ends the join and the
-  pairing on the registry, so the laptop isn't left waiting. Once the
-  laptop's sealed reply is in, it lists the phone, so the join finishes
-  instead and the screen follows the keys. A phone the person removed
-  from their devices is told so; resetting it is not built yet.
+  ends the pairing on both sides, keeps nothing, and says "The pairing
+  failed, and a code works once — on '<laptop>' run `krowk devices add`
+  again for a new code. Nothing was kept." No open pairing says to run
+  `krowk devices add` first. A failure before the code was sent (the
+  registry unreachable, a Keychain that won't open) says the code wasn't
+  used. No code is ever logged.
+- **Cancelling.** Cancel, or the screen going away, ends the join. Once its
+  first message is out it ends the pairing on the registry too, so the
+  laptop isn't left waiting; before that the code is unspent and the
+  laptop's pairing stays open for it. Once the laptop's sealed reply is
+  in, it lists the phone, so the join finishes instead and the screen
+  follows the keys. A phone the person removed from their devices is told
+  so; resetting it is not built yet.
 
 The hosted tests' `TestFleet` (an actor) signs a phone in through the
 fleet and joins it once per test process, over a `KeychainKeyStorage` of its
