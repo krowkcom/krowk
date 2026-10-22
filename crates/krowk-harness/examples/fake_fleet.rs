@@ -46,10 +46,11 @@
 //! its lease is gone.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
-//! for screenshots and App Review, gives it a readable title and a second
-//! turn, typed at the host and held on an approval for the model's `bash`
-//! call `approval=`; `request=` is the request id a viewer's `approve`
-//! command names to answer it.
+//! for screenshots and App Review, gives it a readable title, a second turn
+//! with a tool call that runs at once (a `read` of the project's README),
+//! its result and an answer, and a third turn, typed at the host and held
+//! on an approval for the model's `bash` call `approval=`; `request=` is
+//! the request id a viewer's `approve` command names to answer it.
 //! Everything binds 127.0.0.1 and lives under `/tmp/krowk-fleet-<pid>`,
 //! removed when stdin closes but not if the fleet is killed. Logs go to
 //! stderr: read or discard it, so a full pipe never blocks the fleet.

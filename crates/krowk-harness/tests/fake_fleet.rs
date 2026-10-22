@@ -16,7 +16,7 @@ use krowk_api::types::LoginAction;
 use krowk_client::device_chain::{Chain, Change, Kind, SignedEntry};
 use krowk_client::e2e;
 use krowk_client::user_key::UserKeys;
-use krowk_harness::protocol::{ApprovalDecision, Command as Cmd, LiveEvent, StreamLine};
+use krowk_harness::protocol::{ApprovalDecision, Command as Cmd, Item, LiveEvent, LogBody, LogEvent, StreamLine};
 use krowk_harness::sync::viewer;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -27,7 +27,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-/// The demo's second prompt.
+/// The demo's third prompt, held on its approval.
 const MAKE: &str = "Please make the file approved.txt";
 
 /// Reads updates until `done` says so, or panics after `wait`.
@@ -111,9 +111,22 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     // the viewer up past it.
     assert!(matches!(got[0], viewer::Update::Attached { .. }), "{got:?}");
     let transcript = format!("{got:?}");
-    for said in ["Say hello", "Hello! I can read this project", MAKE] {
+    for said in ["Say hello", "Hello! I can read this project", "Please read the README", "The README says this is the demo project.", MAKE] {
         assert!(transcript.contains(said), "the demo's transcript holds {said:?}: {transcript}");
     }
+    // The second turn's tool call ran with no approval, and its result
+    // pairs with it: what a phone's transcript draws as one row.
+    let events = got.iter().flat_map(|u| match u {
+        viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => events.iter().filter_map(|e| serde_json::from_value::<LogEvent>(e.clone()).ok()).collect(),
+        viewer::Update::Line(StreamLine::Log(e)) => vec![e.clone()],
+        _ => Vec::new(),
+    });
+    let items: Vec<Item> = events.filter_map(|e| if let LogBody::ItemCompleted { item, .. } = e.body { Some(item) } else { None }).collect();
+    let call = items.iter().find_map(|i| if let Item::ToolCall { call_id, name, input } = i { (call_id == fleet::READ).then_some((name.as_str(), input)) } else { None });
+    assert_eq!(call, Some(("read", &serde_json::json!({"path": "README.md"}))), "{transcript}");
+    let result = items.iter().find_map(|i| if let Item::ToolResult { call_id, output, is_error } = i { (call_id == fleet::READ).then_some((output, *is_error)) } else { None });
+    let (output, is_error) = result.unwrap_or_else(|| panic!("no result for the read: {transcript}"));
+    assert!(!is_error && output.contains("The demo project"), "{output}");
     let held = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
     assert_eq!((held.tool.as_str(), &held.input), ("bash", &serde_json::json!({"command": "touch approved.txt"})));
     assert!(!f.root.join("repo/approved.txt").exists(), "the approval is held");

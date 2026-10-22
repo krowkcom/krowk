@@ -15,7 +15,9 @@
 # works once and the simulator can't write to the fleet's stdin; one to the
 # sessions URL hosts a session of the test's own, which a POST to
 # <url>/<id>/release lets go (its lease lapses). The fleet runs with
-# --demo: its session is titled "A demo session" and holds an approval. The fleet binds 127.0.0.1 only; the simulator shares
+# --demo: its session is titled "A demo session", has a turn with a tool
+# call and its result, and holds an approval. The fleet binds 127.0.0.1
+# only; the simulator shares
 # the Mac's loopback. Its log is appended to $KROWK_FLEET_LOG (default
 # target/fake-fleet.log), and its last lines are shown if it fails to start.
 #
