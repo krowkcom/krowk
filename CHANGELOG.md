@@ -226,6 +226,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A subagent with a worktree shows up as soon as it starts.** A
+  subagent run with `isolation: worktree` used to appear in the status
+  bar and the Agents overlay only once its worktree was fully prepared,
+  which can take minutes when it is seeded or runs a setup command. It
+  now appears as soon as the worktree is made.
+- **herdr shows krowk working while its agents are.** An agent still at
+  work after its turn ended, such as a Claude Code agent run in the
+  background, left herdr and the window title saying idle. They now say
+  working until every agent the status bar counts has finished.
 - **A device that fails to move onto a direct path picks up where it
   was.** When a device following a synced session tried a direct path
   and the host never welcomed it there, it went back to the relay at
