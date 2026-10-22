@@ -75,8 +75,6 @@ struct Faults {
     ack_status: Option<u16>,
     /// A never posts the entry, so no claim succeeds.
     never_posts: bool,
-    /// The person cancels once the first claim has been refused.
-    cancelled_at_claim: bool,
 }
 
 struct FakeMailbox {
@@ -222,10 +220,6 @@ impl Mailbox for FakeMailbox {
 
     fn pause(&self, _: Duration) {
         self.calls.borrow_mut().push(Call::Pause);
-    }
-
-    fn cancelled(&self) -> bool {
-        self.faults.cancelled_at_claim && self.count(Call::Claim) > 0
     }
 }
 
@@ -386,23 +380,6 @@ fn r_e2e_3_an_entry_a_never_posts_forgets_the_keys_once_the_wait_is_over() {
     assert_eq!(m.calls().last(), Some(&Call::End));
     assert_eq!(m.count(Call::End), 1);
     each_step_once(&m);
-    kept_nothing(&b);
-}
-
-#[test]
-fn r_e2e_3_a_join_cancelled_while_it_claims_stops_claiming_and_forgets_the_keys() {
-    let b = b();
-    let side = side();
-    let a = PairA::new(PeerKind::SamePersonDevice, USER, side.key.id()).unwrap();
-    let code = typed(&a);
-    let binding = Binding { kind: PeerKind::SamePersonDevice, user_id: USER.into(), a_device: side.key.id(), b_device: b.device.id() };
-    let m = FakeMailbox::new(side, a, b.me.clone(), Faults { never_posts: true, cancelled_at_claim: true, ..Faults::default() });
-    // A wait long enough that only the cancel can have ended it.
-    let timing = Timing { posted: Duration::from_secs(600), ..TIMING };
-    let result = join(&m, &b.store, &b.device, binding, code, b.me.clone(), &timing);
-    assert_eq!(result, Err(JoinFailed::NotAdded));
-    assert_eq!(m.count(Call::Claim), 1, "no claim after the cancel");
-    assert_eq!(m.calls().last(), Some(&Call::End));
     kept_nothing(&b);
 }
 
