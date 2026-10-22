@@ -56,6 +56,15 @@ public actor RelayConnection: LiveSession {
     static let gapWait: DispatchTimeInterval = .seconds(5)
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
+    /// Commands sent before the viewer was open, in order: they go to it
+    /// as it opens.
+    private var early: [(command: LiveCommand, token: UInt64)] = []
+    /// Commands handed to the viewer whose `sent` it hasn't shown yet, in
+    /// the order handed: the core shows them on a later `tick`, one `sent`
+    /// per command in that order, so the oldest token is the next `sent`'s.
+    private var unminted: [UInt64] = []
+    /// The session's id, once open: what its commands name.
+    private var sessionID: String?
 
     private var tracker = RelayStatusTracker()
     private let shown = OSAllocatedUnfairLock<RelayStatus>(initialState: .connecting)
@@ -102,7 +111,17 @@ public actor RelayConnection: LiveSession {
     }
 
     @MainActor public func takeFrame() -> [TranscriptUpdate] {
-        TranscriptUpdate.from(mailbox.drain(), approvals: approvals)
+        TranscriptUpdate.from(posted: mailbox.drainAll(), approvals: approvals)
+    }
+
+    /// The composer's command, for the viewer (ticket 90): on the queue, as
+    /// every other input; never on the main thread. The core mints its id,
+    /// shows it sent or queued, resends it after a reconnect until acked,
+    /// and the host runs it once; nothing here keeps or resends it. Before
+    /// the session is open it waits for the viewer, in order; once stopped,
+    /// it never goes, and the screen hears why.
+    public nonisolated func send(_ command: LiveCommand, token: UInt64) {
+        queue.async { self.assumeIsolated { $0.issue(command, token: token) } }
     }
 
     #if DEBUG
@@ -138,17 +157,68 @@ public actor RelayConnection: LiveSession {
         case .success(let (session, viewer)):
             self.session = session
             self.viewer = viewer
+            sessionID = session.id()
             let wake = DispatchSource.makeTimerSource(queue: queue)
             wake.setEventHandler { [weak self] in self?.assumeIsolated { $0.tick() } }
             wake.resume()
             self.wake = wake
             run(viewer.start(nowMs: Self.now()))
+            let waiting = early
+            early = []
+            for (command, token) in waiting { issue(command, token: token) }
         case .failure(let error):
             done = true
+            // Before the status: the screen applies what the mailbox holds
+            // as it hears the end, and these never reached the core.
+            unsendEarly()
             tracker.ended(Self.detail(error))
             publishIfChanged()
         }
     }
+
+    /// A command of the person's into the viewer: sent now, or queued in
+    /// the core. The core shows it `sent` (with its id) on a later frame;
+    /// `posting` ties that `sent` to this token.
+    private func issue(_ command: LiveCommand, token: UInt64) {
+        guard !done else {
+            mailbox.post([.unsent(token: token, why: Self.stoppedWhy)])
+            return
+        }
+        guard let viewer, let sessionID else {
+            early.append((command, token))
+            return
+        }
+        unminted.append(token)
+        run(viewer.command(command: command.command(session: sessionID), nowMs: Self.now()))
+    }
+
+    /// A `Show`'s updates for the mailbox: each `sent` preceded by the id
+    /// it gives the oldest command still waiting for one, so the screen
+    /// knows which bubble the `sent` and its later `acked` are.
+    private func posting(_ updates: [ViewerUpdate]) -> [MailboxItem] {
+        var items: [MailboxItem] = []
+        items.reserveCapacity(updates.count)
+        for update in updates {
+            if case .sent(let id, _) = update, !unminted.isEmpty {
+                items.append(.minted(token: unminted.removeFirst(), id: id))
+            }
+            items.append(.viewer(update))
+        }
+        return items
+    }
+
+    /// Commands that will never reach the core, or never be shown by it
+    /// (the viewer ended): said, so their bubbles don't wait forever.
+    private func unsendEarly() {
+        let waiting = early.map(\.token) + unminted
+        early = []
+        unminted = []
+        if !waiting.isEmpty { mailbox.post(waiting.map { .unsent(token: $0, why: Self.stoppedWhy) }) }
+    }
+
+    /// Why a command never went.
+    static let stoppedWhy = "Not sent: the connection to this session stopped. Open the session again to send it."
+
 
     private func tick() {
         guard !done, let viewer else { return }
@@ -187,7 +257,7 @@ public actor RelayConnection: LiveSession {
                     default: break
                     }
                 }
-                mailbox.post(updates)
+                mailbox.post(posting(updates))
             case .readChunks:
                 offQueue(queue) { viewer.readChunks() } then: { me, read in
                     guard !me.done, let viewer = me.viewer else { return }
@@ -371,6 +441,7 @@ public actor RelayConnection: LiveSession {
         wake = nil
         viewer = nil
         session = nil
+        unsendEarly()
     }
 
     /// The tracker's status, if it differs from what was last published.
@@ -454,7 +525,7 @@ public actor RelayConnection: LiveSession {
 /// (`takeFrame()`). The first post after a drain calls `onPost`'s wake.
 public final class UpdateMailbox: Sendable {
     private struct Held: Sendable {
-        var updates: [ViewerUpdate] = []
+        var updates: [MailboxItem] = []
         var wake: (@Sendable () -> Void)?
     }
 
@@ -462,7 +533,7 @@ public final class UpdateMailbox: Sendable {
 
     public init() {}
 
-    func post(_ updates: [ViewerUpdate]) {
+    func post(_ updates: [MailboxItem]) {
         guard !updates.isEmpty else { return }
         let wake = held.withLock { held -> (@Sendable () -> Void)? in
             let waiting = !held.updates.isEmpty
@@ -487,10 +558,16 @@ public final class UpdateMailbox: Sendable {
     public var waiting: Int { held.withLock { $0.updates.count } }
 
     /// Everything posted since the last drain, oldest first.
-    public func drain() -> [ViewerUpdate] {
+    public func drainAll() -> [MailboxItem] {
         held.withLock { held in
             defer { held.updates = [] }
             return held.updates
         }
+    }
+
+    /// The viewer's updates posted since the last drain, oldest first (the
+    /// commands' ids dropped): for the tests.
+    public func drain() -> [ViewerUpdate] {
+        drainAll().compactMap { if case .viewer(let update) = $0 { update } else { nil } }
     }
 }

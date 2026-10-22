@@ -23,21 +23,40 @@ public final class NoApprovals: ApprovalSink {
 /// `TranscriptModel`; the switches are exhaustive, so a new event, line or
 /// item kind fails this build until it is placed.
 extension TranscriptUpdate {
-    /// The viewer's updates, in order, as the transcript takes them: a run
-    /// of logged lines as one `logged`, the live lines a transcript draws
-    /// (an item started, its text deltas, a notice), approvals handed to
-    /// `approvals`. The rest — the host, a gap, a note, a failure — are
-    /// the status bar's (`RelayConnection`), and commands, the path and
-    /// handoffs draw nothing here.
+    /// The viewer's updates, in order, as the transcript takes them.
     @MainActor
     public static func from(_ updates: [ViewerUpdate], approvals: any ApprovalSink) -> [TranscriptUpdate] {
+        from(posted: updates.map(MailboxItem.viewer), approvals: approvals)
+    }
+
+    /// What the mailbox held, in order, as the transcript takes it: a run
+    /// of logged lines as one `logged`, the live lines a transcript draws
+    /// (an item started, its text deltas, a notice), approvals handed to
+    /// `approvals`, and the composer's commands as the core reports them
+    /// (their ids, sent or queued, acked). The rest — the host, a gap, a
+    /// note, a failure — are the status bar's (`RelayConnection`), and the
+    /// path and handoffs draw nothing here.
+    @MainActor
+    public static func from(posted: [MailboxItem], approvals: any ApprovalSink) -> [TranscriptUpdate] {
         var out: [TranscriptUpdate] = []
         var logged: [TranscriptEvent] = []
         func flush() {
             if !logged.isEmpty { out.append(.logged(logged)) }
             logged = []
         }
-        for update in updates {
+        for item in posted {
+            let update: ViewerUpdate
+            switch item {
+            case .viewer(let viewer): update = viewer
+            case .minted(let token, let id):
+                flush()
+                out.append(.commandMinted(token: token, id: id))
+                continue
+            case .unsent(let token, let why):
+                flush()
+                out.append(.commandUnsent(token: token, why: why))
+                continue
+            }
             if case .line(.log(let event)) = update {
                 logged.append(TranscriptEvent(event))
                 continue
@@ -50,7 +69,11 @@ extension TranscriptUpdate {
                 out.append(.caughtUp(events.map(TranscriptEvent.init)))
             case .line(.live(let line)):
                 if let mapped = live(line, approvals: approvals) { out.append(mapped) }
-            case .line(.log), .host, .sent, .acked, .path, .gap, .failed, .note, .handoffTaken, .handoffRefused:
+            case .sent(let id, let queued):
+                out.append(.commandSent(id: id, queued: queued))
+            case .acked(let id, let error):
+                out.append(.commandAcked(id: id, error: error))
+            case .line(.log), .host, .path, .gap, .failed, .note, .handoffTaken, .handoffRefused:
                 break
             }
         }
@@ -93,6 +116,32 @@ extension TranscriptUpdate {
     }
 }
 
+/// What the connection hands the screen, in order: the viewer's updates,
+/// and for each command the composer sent, the id the core gave it (posted
+/// before its `sent`) or why it never reached the core.
+public enum MailboxItem: Sendable {
+    case viewer(ViewerUpdate)
+    case minted(token: UInt64, id: String)
+    case unsent(token: UInt64, why: String)
+}
+
+extension LiveCommand {
+    /// The generated `Command` for session `session` (R-CLIENT-1: never
+    /// its JSON): a prompt with no images, model, toolset, effort or
+    /// budget and the default permission mode, which the host's bridge
+    /// sets from the session anyway.
+    func command(session: String) -> Command {
+        switch self {
+        case .prompt(let text):
+            .prompt(sessionId: session, text: text, images: [], model: nil, permissionMode: .default, toolset: nil, effort: nil, budget: nil)
+        case .steer(let text):
+            .steer(sessionId: session, text: text, images: [])
+        case .interrupt:
+            .interrupt(sessionId: session)
+        }
+    }
+}
+
 extension TranscriptModel {
     /// One of the viewer's updates applied: as a frame of one.
     public func apply(_ update: ViewerUpdate) {
@@ -130,7 +179,9 @@ extension TranscriptEvent {
             return .turnCompleted(turn: turnId, end: end)
         case .modelSwitched(_, _, let to, _, _):
             return .modelSwitched(model: to.model)
-        case .sessionStarted, .turnStarted, .responseCompleted, .backendSession, .subagentResponse, .subagentStarted,
+        case .turnStarted(let turnId, _, _, _, _, _):
+            return .turnStarted(turn: turnId)
+        case .sessionStarted, .responseCompleted, .backendSession, .subagentResponse, .subagentStarted,
              .todosUpdated, .runOpened, .backendHandoff, .sessionMoved:
             return nil
         }

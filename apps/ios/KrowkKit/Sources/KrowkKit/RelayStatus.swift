@@ -112,6 +112,11 @@ public protocol LiveSession: AnyObject, Sendable {
     /// lock and maps what it holds: never blocks on the network or calls
     /// into Rust.
     @MainActor func takeFrame() -> [TranscriptUpdate]
+    /// The composer's command (ticket 90), which the model shows already
+    /// as `token` (`TranscriptModel.issue`): handed to the core off the
+    /// main thread, which mints its id (a `commandMinted` frame update),
+    /// then reports it sent or queued and acked. Never kept or resent here.
+    func send(_ command: LiveCommand, token: UInt64)
 }
 
 /// The bar under the navigation bar: the status in one line of footnote

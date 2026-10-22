@@ -11,6 +11,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Prompt, steer and stop from the iPhone.** An open session now has a
+  message box under the transcript. When the session is idle, Send starts
+  a turn; while a turn runs the button reads Steer and adds your message
+  to it without stopping it, and Stop interrupts it, keeping what it
+  wrote (the button reads `stopping…` at once, and the turn's line then
+  says it was interrupted). What you send appears straight away as a
+  bubble saying `sending…`, and is replaced by your prompt as your laptop
+  logs it. If your laptop is offline, Send still works: the bubble reads
+  `queued — sends when your laptop is back`, and the prompt is sent, in
+  order and once, when it returns (Steer and Stop wait for it). A queued
+  prompt survives leaving the session's screen, but not quitting the
+  app. A prompt the laptop refuses shows why, with "Edit and resend". A
+  dropped connection never runs a prompt twice. With a hardware keyboard,
+  ⌘↵ sends and ⌘. stops; Return is a new line. The phone sends no model
+  or mode: a prompt runs under the session's own settings. Nothing
+  changes for CLI users.
 - **The iPhone app follows a running turn live.** An open session now
   moves as your laptop works: a new prompt appears, the answer streams
   into its row word by word, a tool call shows `running…` as it starts
