@@ -92,6 +92,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The iPhone app can join a pairing that `krowk devices add` shows.**
+  The phone runs the same joining steps as `krowk sync join`, by the code
+  typed or scanned from the QR code, and the new device appears on the
+  computer's prompt as an iOS device. Nothing changes for the CLI.
 - **A closed terminal no longer leaves a synced session waiting on a
   question.** If you close krowk while it asks to approve a tool call, and
   nobody is attached from another device, the question is declined once

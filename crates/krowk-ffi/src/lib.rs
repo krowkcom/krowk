@@ -48,6 +48,19 @@
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
 //!
+//! # Joining a pairing
+//!
+//! A signed-in phone holds no user key until it is paired (R-E2E-3).
+//! [`Account::join_pairing`] takes the code another of the person's
+//! devices shows (`krowk devices add`), typed — or [`Account::join_invite`]
+//! an invite read from its QR code by [`parse_pairing_invite`], checked
+//! against the account and the open pairing first — and runs
+//! krowk-client's joining side, `pairing_join::join`, over
+//! [`RegistryMailbox`]; the user keys and the device list land in the
+//! app's storage. Blocking, for up to the ten minutes the other device's
+//! person has to approve (rule 2); [`Account::cancel_pairing`] ends it
+//! from any thread, until the keys are kept.
+//!
 //! # Sessions
 //!
 //! [`Account::list_sessions`] lists the person's synced sessions from their
@@ -108,6 +121,7 @@ uniffi::setup_scaffolding!();
 
 mod account;
 mod error;
+mod pairing;
 mod protocol;
 mod sessions;
 mod sign_in;
@@ -116,6 +130,7 @@ mod viewer;
 
 pub use account::Account;
 pub use error::KrowkError;
+pub use pairing::{Joined, PairingInvite, RegistryMailbox, parse_pairing_invite};
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};

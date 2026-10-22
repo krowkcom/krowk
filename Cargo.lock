@@ -1815,6 +1815,7 @@ dependencies = [
  "krowk-api",
  "krowk-client",
  "krowk-devregistry",
+ "krowk-ffi",
  "krowk-harness",
  "krowk-import",
  "krowk-store",

@@ -3,7 +3,8 @@
 //! as this device. Pairing and the session list make their calls through
 //! it. No export here returns a private key.
 
-use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, Mutex};
 
 use krowk_api::Client;
 use krowk_client::e2e::{DeviceId, DeviceSigner};
@@ -24,6 +25,9 @@ pub struct Account {
     /// This device, which a session's relay ticket is asked for.
     pub(crate) device: DeviceId,
     storage: Arc<dyn KeyStorage>,
+    /// The join under way, by its cancel flag (`join_pairing`): one at a
+    /// time.
+    pub(crate) pairing: Mutex<Option<Arc<AtomicBool>>>,
     workspace: String,
     workspace_name: String,
 }
@@ -49,6 +53,7 @@ impl Account {
             keystore,
             device: device_id,
             storage,
+            pairing: Mutex::new(None),
             workspace: creds.workspace.clone(),
             workspace_name: creds.workspace_name.clone(),
         }))

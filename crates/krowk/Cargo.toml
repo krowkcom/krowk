@@ -67,6 +67,10 @@ libc = "0.2"
 [dev-dependencies]
 # The stand-in registry, served in-process for the wire-shape pin.
 krowk-devregistry = { path = "../krowk-devregistry" }
+# tests/sync_pairing_ffi.rs: the phone's binding crate joins a pairing the
+# real `krowk devices add` shows. Test-only: no build of krowk links it, so
+# lean-deps.txt (`cargo tree -e normal`) does not move.
+krowk-ffi = { path = "../krowk-ffi" }
 # The subagent tests drive the host in-process, to interrupt one child
 # while its siblings run; the harness already links tokio, so no crate is
 # added.
