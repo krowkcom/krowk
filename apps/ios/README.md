@@ -21,7 +21,7 @@ apps/ios/
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
-                     and the TestFleet fixture
+                     ComposerTests, and the TestFleet fixture
   UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
                      no-web.sh: no web view, no remote image (R-IOS-10)
@@ -55,7 +55,8 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
 `PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests`,
 `PairingTests`, `SessionListTests`, `RelayConnectionTests`,
-`TranscriptModelTests`, `TranscriptTests` and `LiveFollowTests` (target
+`TranscriptModelTests`, `TranscriptTests`, `LiveFollowTests` and
+`ComposerTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -83,7 +84,9 @@ answers the next one's code. A test that needs a lease to lapse POSTs to
 `KROWK_SESSIONS_URL` (its body the title): host A hosts a new session of
 the test's own and answers with its id; a POST to `<url>/<id>/release`
 stops that session's host and answers once its lease is gone, leaving the
-fleet's own session hosted for every other test. A POST to
+fleet's own session hosted for every other test; a POST to `<url>/<id>/host`
+hosts it again (a host coming back: ComposerTests' queued prompt runs) and
+answers `hosted`. A POST to
 `<url>/<id>/turn` types a prompt (its body) at host A in that session and
 answers `started`: "Please stream a long answer" has the model make a
 `read` call, then stream 120 numbered lines at 200 tokens a second, the

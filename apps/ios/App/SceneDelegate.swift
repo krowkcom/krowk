@@ -20,6 +20,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// Whether the window shows a screen of the app's, not why it can't.
     private var opened = false
 
+    /// Session screens left with commands still out (ticket 90): kept
+    /// until the host answers them, for as long as the app runs.
+    private let parkedScreens = ParkedScreens()
+
     private static let log = Logger(subsystem: "com.krowk.app", category: "sign-in")
 
     func scene(
@@ -105,11 +109,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         )
         // A tapped session opens on its transcript, followed live through
         // the relay while its screen is open, held to the head its listing
-        // named.
+        // named. One left with commands still out (a prompt queued for a
+        // sleeping laptop) is kept, still followed, and opens as it was.
+        let parked = parkedScreens
         return SessionListViewController(model: model) { [weak model] row in
+            if let kept = parked.take(row.id) { return kept }
             let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
             let live = RelayConnection { try source.openSession(id: row.id, known: known) }
-            return TranscriptViewController(row: row, session: live)
+            let screen = TranscriptViewController(row: row, session: live)
+            screen.parking = parked
+            return screen
         }
     }
 

@@ -19,6 +19,9 @@ public final class ItemState {
         case tool
         /// A thin separator: a turn's end, or "Now on <model>".
         case mark
+        /// A prompt or steer typed here, shown at once until the host logs
+        /// it (ticket 90): a bubble with how its send stands beneath.
+        case pending
     }
 
     /// The row's id in the transcript: `item:<itemId>`, `turn:<turnId>` or
@@ -44,6 +47,12 @@ public final class ItemState {
     public var running = false
     /// A reasoning or tool row, expanded by a tap.
     public var expanded = false
+    /// A pending bubble's line beneath it: "sending…", "queued…", or why
+    /// the host refused it; empty once the host took it.
+    public var caption = ""
+    /// A pending bubble the host refused (or that was never sent): its
+    /// caption is the reason, and it offers "Edit and resend".
+    public var refused = false
 
     @ObservationIgnored private var summarized: (input: String, summary: String)?
     /// The cell drawing it now, if one is: redrawn on each change (the
@@ -64,7 +73,7 @@ public final class ItemState {
 
     /// Reads every property a cell draws, so one observation covers them.
     func touch() {
-        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded)
+        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded, caption, refused)
     }
 
     /// `source` drawn as `role` at `size`, from the last drawing if neither
@@ -166,6 +175,9 @@ public enum TranscriptChange: Equatable, Sendable {
     case reasoning(item: String, text: String)
     case toolCall(item: String, callID: String, name: String, input: String)
     case toolResult(item: String, callID: String, output: String, isError: Bool)
+    /// `turn.started`: a turn runs until its `turn.completed` (the
+    /// composer's Steer and Stop, ticket 90). Draws nothing.
+    case turnStarted(turn: String)
     case turnCompleted(turn: String, end: TurnEnd)
     case modelSwitched(model: String)
 }
@@ -227,6 +239,15 @@ public enum TranscriptUpdate: Equatable, Sendable {
     case delta(session: String, item: String, text: String)
     /// `notice`: a one-line note.
     case notice(session: String, text: String)
+    /// The core gave the command typed as `token` its id (ticket 90): what
+    /// its `commandSent` and `commandAcked` name.
+    case commandMinted(token: UInt64, id: String)
+    /// The command typed as `token` never reached the core: why.
+    case commandUnsent(token: UInt64, why: String)
+    /// `Update.sent`: shown sent, or queued with no host (R-LAG-8).
+    case commandSent(id: String, queued: Bool)
+    /// `Update.acked`: the host took it, or refused it saying why.
+    case commandAcked(id: String, error: String?)
 }
 
 /// What a frame's apply did that the screen draws at once, inside the
@@ -237,6 +258,10 @@ public struct FrameApplied {
     /// Turn ends a logged line brought (not the session read at rest, nor
     /// a catch-up): what VoiceOver is told.
     public var ended: [ItemState] = []
+    /// Bubbles the host refused in this frame: VoiceOver is told why.
+    public var refused: [ItemState] = []
+    /// The host refused an interrupt while the turn still runs: why.
+    public var stopRefused: String?
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -248,9 +273,29 @@ public struct FrameApplied {
 @Observable
 public final class TranscriptModel {
     public nonisolated let sessionID: String
-    /// The rows, top to bottom. Never holds an id twice: the diffable data
-    /// source traps on one.
+    /// The rows, top to bottom: the session's, then the bubbles of what
+    /// was typed here and not yet logged. Never holds an id twice: the
+    /// diffable data source traps on one.
     public private(set) var ids: [String] = []
+    /// The session's own rows, top to bottom (`ids` without the bubbles).
+    @ObservationIgnored private var rows: [String] = []
+
+    /// What the composer sent and the host hasn't logged yet (ticket 90).
+    @ObservationIgnored public private(set) var commands = PendingCommands()
+    /// Each bubble's state, by token.
+    @ObservationIgnored private var bubbles: [UInt64: ItemState] = [:]
+    /// The bubbles' rows, in the order typed, and whether they changed in
+    /// the transaction under way.
+    @ObservationIgnored private var bubbleRows: [String] = []
+    @ObservationIgnored private var bubblesChanged = false
+    /// No host on the session: a queued bubble says it waits for one.
+    @ObservationIgnored private var hostOffline = false
+    /// The turn running, from its `turn.started` (or an item started live
+    /// in it) to its `turn.completed`: the composer offers Steer and Stop.
+    @ObservationIgnored public private(set) var runningTurn: String?
+    /// Turns whose end was applied: a start that comes after it (a
+    /// catch-up's) doesn't set one running again.
+    @ObservationIgnored private var endedTurns: Set<String> = []
     /// The session as read at rest was applied (empty or not).
     public private(set) var attached = false
 
@@ -322,7 +367,123 @@ public final class TranscriptModel {
     }
 
     public func item(_ id: String) -> ItemState? {
-        items[id]
+        items[id] ?? token(ofBubble: id).flatMap { bubbles[$0] }
+    }
+
+    // MARK: Commands (ticket 90)
+
+    /// A turn runs: the composer's button reads Steer, and Stop shows.
+    public var isTurnRunning: Bool { runningTurn != nil }
+    /// An interrupt is out: Stop reads "stopping…" until its ack or the
+    /// turn's end.
+    public var stopping: Bool { commands.stopping }
+    /// Commands the core holds unanswered.
+    public var commandsOut: Int { commands.out }
+    /// A bubble the host took whose logged item hasn't come yet.
+    public var awaitingLog: Bool { commands.bubbles.contains { $0.state == .settled } }
+
+    /// A pending bubble's row id.
+    public nonisolated static func bubbleID(_ token: UInt64) -> String { "pending:\(token)" }
+
+    /// The token of the bubble whose row is `id`.
+    public func token(ofBubble id: String) -> UInt64? {
+        guard id.hasPrefix("pending:") else { return nil }
+        return UInt64(id.dropFirst("pending:".count))
+    }
+
+    /// A command typed (R-LAG-8): shown now, in this run-loop turn, before
+    /// anything is sent — a prompt or steer as a bubble at the end, an
+    /// interrupt as "stopping…". Its token, which the session's updates
+    /// name it by until the core mints its id.
+    @discardableResult
+    public func issue(_ command: LiveCommand) -> UInt64 {
+        let token: UInt64
+        switch command {
+        case .prompt(let text): token = commands.add(.prompt, text: text)
+        case .steer(let text): token = commands.add(.steer, text: text)
+        case .interrupt: return commands.add(.interrupt)
+        }
+        let state = ItemState(id: Self.bubbleID(token), kind: .pending, text: commands.entry(token)?.text ?? "")
+        bubbles[token] = state
+        refresh(token)
+        transact {
+            bubbleRows.append(state.id)
+            bubblesChanged = true
+        }
+        return token
+    }
+
+    /// A refused bubble taken back (edit and resend) or dismissed: its
+    /// text, for the composer.
+    @discardableResult
+    public func takeBack(_ token: UInt64) -> String? {
+        guard let entry = commands.entry(token), entry.isRefused else { return nil }
+        commands.remove(token)
+        transact { dropBubble(token) }
+        return entry.text
+    }
+
+    /// Whether the session has a host: a queued bubble says what it waits
+    /// for.
+    public func setHostOffline(_ offline: Bool) {
+        guard offline != hostOffline else { return }
+        hostOffline = offline
+        for entry in commands.bubbles where entry.state == .queued { refresh(entry.token) }
+    }
+
+    /// The connection stopped for good: what's still out is refused,
+    /// saying so. The bubbles refused.
+    @discardableResult
+    public func connectionEnded() -> [ItemState] {
+        let changed = commands.connectionEnded()
+        for token in changed { refresh(token) }
+        return changed.compactMap { bubbles[$0] }
+    }
+
+    /// Bubble `token`'s caption as its entry stands.
+    private func refresh(_ token: UInt64) {
+        guard let state = bubbles[token], let entry = commands.entry(token) else { return }
+        let caption: String
+        switch entry.state {
+        case .sending: caption = "sending…"
+        case .queued: caption = hostOffline ? "queued — sends when your laptop is back" : "queued…"
+        case .settled: caption = ""
+        case .refused(let why): caption = why
+        }
+        if state.caption != caption { state.caption = caption }
+        if state.refused != entry.isRefused { state.refused = entry.isRefused }
+    }
+
+    private func dropBubble(_ token: UInt64) {
+        guard let state = bubbles.removeValue(forKey: token) else { return }
+        bubbleRows.removeAll { $0 == state.id }
+        bubblesChanged = true
+    }
+
+    /// One of the session's updates about a command, applied.
+    private func command(_ update: TranscriptUpdate, into applied: inout FrameApplied) {
+        switch update {
+        case .commandMinted(let token, let id):
+            commands.minted(token, id: id)
+        case .commandUnsent(let token, let why):
+            commands.unsent(token, why: why)
+            refresh(token)
+            if let state = bubbles[token], state.refused { applied.refused.append(state) }
+        case .commandSent(let id, let queued):
+            if let token = commands.sent(id, queued: queued) { refresh(token) }
+        case .commandAcked(let id, let error):
+            switch commands.acked(id, error: error) {
+            case .bubble(let token)?:
+                refresh(token)
+                if let state = bubbles[token], state.refused { applied.refused.append(state) }
+            case .interrupt(_, let error?)? where runningTurn != nil:
+                applied.stopRefused = error
+            case .interrupt?, nil:
+                break
+            }
+        default:
+            break
+        }
     }
 
     /// The session as read at rest: its events applied, and `attached` set.
@@ -382,6 +543,8 @@ public final class TranscriptModel {
                     lastNotice = (state.id, text)
                 case .delta:
                     break
+                case .commandMinted, .commandUnsent, .commandSent, .commandAcked:
+                    command(update, into: &applied)
                 }
             }
             flush(&deltas, into: &applied)
@@ -417,6 +580,7 @@ public final class TranscriptModel {
     /// catch-up) is left as it is; a tool result waits for its logged line,
     /// which goes under its call.
     private func start(_ id: String, turn: String, kind: LiveItemKind) {
+        if !endedTurns.contains(turn) { runningTurn = turn }
         guard items[id] == nil, streaming[id] == nil else { return }
         let state: ItemState
         switch kind {
@@ -504,15 +668,21 @@ public final class TranscriptModel {
     /// Runs `body` as one transaction: the rows it leaves set once.
     private func transact(_ body: () -> Void) {
         guard working == nil else { return body() }
-        working = ids
+        working = rows
         body()
-        let rows = working ?? ids
+        let transcript = working ?? rows
         working = nil
         transactions += 1
-        // Unchanged rows share `ids`' storage: this is a pointer check.
-        guard rows != ids else { return }
-        assert(Set(rows).count == rows.count, "a transcript row twice")
-        ids = rows
+        // Unchanged rows share `rows`' storage: this is a pointer check.
+        let changed = transcript != rows
+        rows = transcript
+        guard changed || bubblesChanged else { return }
+        bubblesChanged = false
+        // The bubbles always below the session's rows.
+        let all = bubbleRows.isEmpty ? rows : rows + bubbleRows
+        guard all != ids else { return }
+        assert(Set(all).count == all.count, "a transcript row twice")
+        ids = all
     }
 
     private func place(_ events: [TranscriptEvent], placement: TranscriptPlacement) {
@@ -546,6 +716,9 @@ public final class TranscriptModel {
     private func take(_ change: TranscriptChange, event: String) -> String? {
         switch change {
         case .userText(let item, let text, let images):
+            // Logged live or caught up (never read at rest): the oldest
+            // bubble typed with this text gives way to it (ticket 90).
+            if live || placing == .afterParent, let token = commands.logged(text) { dropBubble(token) }
             // An image's bytes are never drawn: "[Image #N]", which the text
             // names it by; one the text doesn't name is added.
             let missing = images.filter { !text.contains("[Image #\($0)]") }.map { "[Image #\($0)]" }
@@ -604,7 +777,14 @@ public final class TranscriptModel {
             guard let row = add(state) else { return nil }
             if calls[callID] == nil { orphans[callID] = state }
             return row
+        case .turnStarted(let turn):
+            if !endedTurns.contains(turn) { runningTurn = turn }
+            return nil
         case .turnCompleted(let turn, let end):
+            endedTurns.insert(turn)
+            if runningTurn == turn { runningTurn = nil }
+            // "stopping…" ends with the turn, if its ack hasn't come.
+            commands.turnEnded()
             endLive(turn: turn)
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)
             state.alarming = end != .completed

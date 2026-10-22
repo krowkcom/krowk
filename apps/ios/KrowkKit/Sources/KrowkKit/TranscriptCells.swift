@@ -660,3 +660,81 @@ final class TranscriptMarkCell: TranscriptCell {
         label.accessibilityIdentifier = "transcript-mark"
     }
 }
+
+/// A prompt or steer typed here and not yet logged (ticket 90): your text
+/// in a right-aligned bubble, at once, with how its send stands beneath
+/// ("sending…", "queued — sends when your laptop is back"), nothing once
+/// the host took it, or the host's reason when it refused, with "Edit and
+/// resend", which puts the text back in the composer.
+final class TranscriptPendingCell: TranscriptCell {
+    private let bubble = UIView()
+    let label = UILabel()
+    let caption = UILabel()
+    let resend = UIButton(configuration: .plain())
+    /// "Edit and resend" tapped.
+    var takeBack: (@MainActor () -> Void)?
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        accessibilityIdentifier = "transcript-pending"
+        bubble.layer.cornerRadius = 16
+        bubble.layer.cornerCurve = .continuous
+        bubble.backgroundColor = .secondarySystemBackground
+        bubble.translatesAutoresizingMaskIntoConstraints = false
+        label.numberOfLines = 0
+        label.adjustsFontForContentSizeCategory = true
+        label.accessibilityIdentifier = "transcript-pending-text"
+        label.translatesAutoresizingMaskIntoConstraints = false
+        caption.font = .preferredFont(forTextStyle: .caption1)
+        caption.adjustsFontForContentSizeCategory = true
+        caption.numberOfLines = 0
+        caption.textAlignment = .right
+        caption.accessibilityIdentifier = "transcript-pending-caption"
+        caption.isAccessibilityElement = false
+        var again = UIButton.Configuration.plain()
+        again.title = "Edit and resend"
+        again.buttonSize = .small
+        again.contentInsets = NSDirectionalEdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0)
+        resend.configuration = again
+        resend.accessibilityIdentifier = "transcript-pending-resend"
+        resend.accessibilityHint = "Puts the text back in the composer to send again"
+        resend.addAction(UIAction { [weak self] _ in self?.takeBack?() }, for: .primaryActionTriggered)
+        let under = UIStackView(arrangedSubviews: [caption, resend])
+        under.axis = .vertical
+        under.alignment = .trailing
+        under.spacing = 0
+        under.translatesAutoresizingMaskIntoConstraints = false
+        contentView.addSubview(bubble)
+        bubble.addSubview(label)
+        contentView.addSubview(under)
+        let margins = contentView.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            bubble.topAnchor.constraint(equalTo: margins.topAnchor),
+            bubble.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            bubble.leadingAnchor.constraint(greaterThanOrEqualTo: margins.leadingAnchor, constant: 48),
+            label.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8),
+            label.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
+            label.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -12),
+            under.topAnchor.constraint(equalTo: bubble.bottomAnchor, constant: 2),
+            under.leadingAnchor.constraint(greaterThanOrEqualTo: margins.leadingAnchor, constant: 48),
+            under.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            under.bottomAnchor.constraint(equalTo: margins.bottomAnchor),
+        ])
+    }
+
+    override func render(_ state: ItemState) {
+        let font = TranscriptFonts.body
+        label.attributedText = state.drawing("pending", source: state.text, font: font) {
+            SafeText.capped(state.text, font: font)
+        }
+        // A refusal's reason is the host's words: one line of them, cleaned.
+        caption.text = state.caption.isEmpty ? nil : SafeText.line(state.caption[...], limit: 500)
+        caption.isHidden = state.caption.isEmpty
+        caption.textColor = state.refused ? .systemRed : .secondaryLabel
+        resend.isHidden = !state.refused
+        bubble.alpha = state.refused ? 0.6 : 1
+        // VoiceOver reads the text, then how its send stands.
+        label.accessibilityValue = caption.text
+    }
+}

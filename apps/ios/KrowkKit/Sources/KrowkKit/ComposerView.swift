@@ -1,0 +1,214 @@
+import UIKit
+
+/// How the composer stands, from the session's state: what its buttons
+/// read and whether they work. Worked out in one place so the screen and
+/// its tests agree.
+public struct ComposerState: Equatable, Sendable {
+    /// The primary button: "Send" (a new turn) or "Steer" (into the
+    /// running one).
+    public var steers: Bool
+    public var canSend: Bool
+    /// Stop shows while a turn runs; it reads "stopping…" while an
+    /// interrupt is out.
+    public var showsStop: Bool
+    public var canStop: Bool
+    public var stopping: Bool
+    /// The line under the text: "host offline", why a text can't go, or
+    /// why a stop was refused. Empty for none.
+    public var note: String
+
+    /// `text` typed; a turn `running`; `stopping`; the bar's `status`;
+    /// `stopRefused`, the host's last word on a stop.
+    public init(text: String, running: Bool, stopping: Bool, status: RelayStatus, stopRefused: String? = nil) {
+        let offline = status == .hostOffline
+        let ended: Bool = if case .ended = status { true } else { false }
+        let problem = ComposerRules.problem(text)
+        steers = running
+        // With no host a prompt still goes (queued for the next welcome,
+        // R-HAND-4); a steer has no turn to reach, nor a stop.
+        canSend = problem == nil && !ended && !(running && offline)
+        showsStop = running || stopping
+        self.stopping = stopping
+        canStop = running && !stopping && !offline && !ended
+        if ended {
+            note = "stopped: open the session again to send"
+        } else if offline && running {
+            note = "host offline: Steer and Stop wait for it"
+        } else if offline {
+            note = "host offline: a prompt is queued until your laptop is back"
+        } else if let problem, !problem.isEmpty {
+            note = problem
+        } else if let stopRefused, !stopRefused.isEmpty {
+            note = "Couldn't stop: \(SafeText.line(stopRefused[...], limit: 200))"
+        } else {
+            note = ""
+        }
+    }
+}
+
+/// The composer under the transcript (ticket 90): a UIKit `UITextView`
+/// that grows to six lines and then scrolls, Send (or Steer while a turn
+/// runs) and Stop beside it, and a line beneath for what stops them. Return
+/// inserts a newline; ⌘↵ sends and ⌘. stops (the screen's key commands).
+/// Typing is never held up: the text view stays editable whatever is in
+/// flight (R-LAG-8).
+public final class ComposerView: UIView, UITextViewDelegate {
+    public let textView = UITextView(usingTextLayoutManager: true)
+    public let sendButton = UIButton(configuration: .filled())
+    public let stopButton = UIButton(configuration: .tinted())
+    public let noteLabel = UILabel()
+    private let placeholder = UILabel()
+    private var height: NSLayoutConstraint!
+    /// Typed, or the text set: the screen works the buttons out again.
+    var changed: (@MainActor () -> Void)?
+    var send: (@MainActor () -> Void)?
+    var stop: (@MainActor () -> Void)?
+
+    /// How many lines it grows to before it scrolls.
+    static let maxLines: CGFloat = 6
+
+    override public init(frame: CGRect) {
+        super.init(frame: frame)
+        backgroundColor = .secondarySystemBackground
+        accessibilityIdentifier = "composer"
+
+        textView.font = .preferredFont(forTextStyle: .body)
+        textView.adjustsFontForContentSizeCategory = true
+        textView.backgroundColor = .systemBackground
+        textView.layer.cornerRadius = 18
+        textView.layer.cornerCurve = .continuous
+        textView.textContainerInset = UIEdgeInsets(top: 8, left: 8, bottom: 8, right: 8)
+        textView.isScrollEnabled = false
+        textView.delegate = self
+        textView.accessibilityIdentifier = "composer-text"
+        textView.accessibilityLabel = "Message"
+        // No smart quotes or dashes: a prompt names code and paths.
+        textView.smartQuotesType = .no
+        textView.smartDashesType = .no
+        textView.translatesAutoresizingMaskIntoConstraints = false
+
+        placeholder.text = "Message"
+        placeholder.font = .preferredFont(forTextStyle: .body)
+        placeholder.adjustsFontForContentSizeCategory = true
+        placeholder.textColor = .placeholderText
+        placeholder.isAccessibilityElement = false
+        placeholder.translatesAutoresizingMaskIntoConstraints = false
+        textView.addSubview(placeholder)
+
+        var send = UIButton.Configuration.filled()
+        send.title = "Send"
+        send.cornerStyle = .capsule
+        sendButton.configuration = send
+        sendButton.accessibilityIdentifier = "composer-send"
+        sendButton.addAction(UIAction { [weak self] _ in self?.send?() }, for: .primaryActionTriggered)
+
+        var stop = UIButton.Configuration.tinted()
+        stop.title = "Stop"
+        stop.baseForegroundColor = .systemRed
+        stop.baseBackgroundColor = .systemRed
+        stop.cornerStyle = .capsule
+        stopButton.configuration = stop
+        stopButton.accessibilityIdentifier = "composer-stop"
+        stopButton.accessibilityHint = "Stops the running turn, keeping what it wrote"
+        stopButton.isHidden = true
+        stopButton.addAction(UIAction { [weak self] _ in self?.stop?() }, for: .primaryActionTriggered)
+
+        for button in [sendButton, stopButton] {
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
+        let buttons = UIStackView(arrangedSubviews: [stopButton, sendButton])
+        buttons.spacing = 8
+        buttons.alignment = .center
+
+        noteLabel.font = .preferredFont(forTextStyle: .footnote)
+        noteLabel.adjustsFontForContentSizeCategory = true
+        noteLabel.textColor = .secondaryLabel
+        noteLabel.numberOfLines = 0
+        noteLabel.accessibilityIdentifier = "composer-note"
+        noteLabel.isHidden = true
+
+        let row = UIStackView(arrangedSubviews: [textView, buttons])
+        row.spacing = 8
+        row.alignment = .bottom
+        let column = UIStackView(arrangedSubviews: [row, noteLabel])
+        column.axis = .vertical
+        column.spacing = 4
+        column.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(column)
+
+        height = textView.heightAnchor.constraint(equalToConstant: 36)
+        let margins = layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            column.topAnchor.constraint(equalTo: topAnchor, constant: 8),
+            column.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            column.leadingAnchor.constraint(equalTo: margins.leadingAnchor),
+            column.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
+            height,
+            placeholder.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 12),
+            placeholder.topAnchor.constraint(equalTo: textView.topAnchor, constant: 8),
+        ])
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _: UITraitCollection) in
+            self.fit()
+        }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("ComposerView is built in code")
+    }
+
+    /// The text typed.
+    public var text: String {
+        get { textView.text ?? "" }
+        set {
+            textView.text = newValue
+            textChanged()
+        }
+    }
+
+    /// Shows `state`: the buttons' titles, whether they work, and the note.
+    public func show(_ state: ComposerState) {
+        let title = state.steers ? "Steer" : "Send"
+        if sendButton.configuration?.title != title { sendButton.configuration?.title = title }
+        sendButton.isEnabled = state.canSend
+        sendButton.accessibilityHint = state.steers
+            ? "Adds your message to the running turn, which goes on"
+            : "Starts a turn with your message"
+        stopButton.isHidden = !state.showsStop
+        let stopTitle = state.stopping ? "stopping…" : "Stop"
+        if stopButton.configuration?.title != stopTitle { stopButton.configuration?.title = stopTitle }
+        stopButton.isEnabled = state.canStop
+        noteLabel.text = state.note
+        noteLabel.isHidden = state.note.isEmpty
+    }
+
+    public func textViewDidChange(_ textView: UITextView) {
+        textChanged()
+    }
+
+    private func textChanged() {
+        placeholder.isHidden = !(textView.text ?? "").isEmpty
+        fit()
+        changed?()
+    }
+
+    /// Grows with the text up to six lines, then scrolls inside them.
+    private func fit() {
+        let font = textView.font ?? .preferredFont(forTextStyle: .body)
+        let inset = textView.textContainerInset
+        let most = ceil(font.lineHeight * Self.maxLines + inset.top + inset.bottom)
+        let width = textView.bounds.width > 0 ? textView.bounds.width : 280
+        let fits = ceil(textView.sizeThatFits(CGSize(width: width, height: .greatestFiniteMagnitude)).height)
+        let target = min(max(fits, ceil(font.lineHeight + inset.top + inset.bottom)), most)
+        let scrolls = fits > most
+        if textView.isScrollEnabled != scrolls { textView.isScrollEnabled = scrolls }
+        if abs(height.constant - target) > 0.5 { height.constant = target }
+        if scrolls { textView.scrollRangeToVisible(textView.selectedRange) }
+    }
+
+    override public func layoutSubviews() {
+        super.layoutSubviews()
+        fit()
+    }
+}

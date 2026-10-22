@@ -168,7 +168,8 @@ jobs:
   # scheme Krowk-iOS passes LaunchTests, SignInUITests and PairingUITests
   # (XCUITest), KrowkKit's unit tests, the hosted KeychainKeyStorageTests,
   # SignInTests, PairingTests, SessionListTests, RelayConnectionTests,
-  # TranscriptModelTests and TranscriptTests, and KrowkCore's BindingsTests
+  # TranscriptModelTests, TranscriptTests, LiveFollowTests and
+  # ComposerTests, and KrowkCore's BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). The app links no WebKit and its
   # sources load no remote image (R-IOS-10). The UI tests' screenshots,

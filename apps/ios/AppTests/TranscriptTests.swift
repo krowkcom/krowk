@@ -91,6 +91,7 @@ extension HostedKeychain {
                 case .reasoning: "reasoning: \(item.text)"
                 case .tool: "tool: \(item.toolLine)"
                 case .mark: "mark: \(item.text)"
+                case .pending: "pending: \(item.text) (\(item.caption))"
                 }
             }
         }

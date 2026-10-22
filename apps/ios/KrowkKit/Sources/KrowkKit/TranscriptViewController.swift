@@ -22,6 +22,13 @@ import UIKit
 /// the bottom, the list follows what comes; scrolled up, it stays put and
 /// a "↓ New" pill jumps back. The blocking reads behind it run on threads
 /// of their own (`LiveSession`).
+///
+/// Under the transcript sits the composer (ticket 90): Send starts a turn,
+/// Steer adds to the running one, Stop interrupts it. What's typed shows
+/// at once as a bubble at the end (R-LAG-8), settled by the host's ack and
+/// replaced by the item the host logs; with no host it's queued in the
+/// core for the next one (R-HAND-4). The core owns the ids, the queue and
+/// the resending; this screen only shows what it reports.
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate {
     let row: SessionRow
     public let model: TranscriptModel
@@ -68,6 +75,18 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var applied: [String] = []
     /// The session stopped before it was read: why, as the bar says it.
     private var stoppedEarly = false
+
+    /// The composer, when the screen follows a session live.
+    public let composer = ComposerView()
+    /// What the buttons last showed.
+    public private(set) var composerState = ComposerState(text: "", running: false, stopping: false, status: .connecting)
+    /// The host's last refusal of a stop, until the next stop or turn.
+    private var stopRefused: String?
+    /// Where the screen goes when it's left with commands still out.
+    public weak var parking: ParkedScreens?
+    /// Left with commands out: kept by `parking`, its session still
+    /// followed, what comes applied as it comes (no display link).
+    public private(set) var parked = false
 
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.row = row
@@ -132,10 +151,16 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             guard let state = self?.model.item(id) else { return }
             cell.show(state)
         }
+        let pending = UICollectionView.CellRegistration<TranscriptPendingCell, String> { [weak self] cell, _, id in
+            guard let self, let state = model.item(id) else { return }
+            cell.takeBack = { [weak self] in self?.takeBack(id) }
+            cell.show(state)
+        }
         dataSource = UICollectionViewDiffableDataSource<Int, String>(collectionView: collectionView) { [weak self] view, path, id in
             switch self?.model.item(id)?.kind {
             case .user?, .assistant?: view.dequeueConfiguredReusableCell(using: text, for: path, item: id)
             case .reasoning?, .tool?: view.dequeueConfiguredReusableCell(using: tool, for: path, item: id)
+            case .pending?: view.dequeueConfiguredReusableCell(using: pending, for: path, item: id)
             case .mark?, nil: view.dequeueConfiguredReusableCell(using: mark, for: path, item: id)
             }
         }
@@ -183,11 +208,36 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         } else {
             top = safe.topAnchor
         }
+        // The composer under the list, on the keyboard when it's up.
+        let bottom: NSLayoutYAxisAnchor
+        if session != nil {
+            composer.translatesAutoresizingMaskIntoConstraints = false
+            let under = UIView()
+            under.backgroundColor = composer.backgroundColor
+            under.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(under)
+            view.addSubview(composer)
+            NSLayoutConstraint.activate([
+                composer.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                composer.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                composer.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+                under.topAnchor.constraint(equalTo: composer.bottomAnchor),
+                under.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                under.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+                under.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            ])
+            bottom = composer.topAnchor
+            composer.changed = { [weak self] in self?.updateComposer() }
+            composer.send = { [weak self] in self?.sendTyped() }
+            composer.stop = { [weak self] in self?.stopTurn() }
+        } else {
+            bottom = view.bottomAnchor
+        }
         NSLayoutConstraint.activate([
             collectionView.topAnchor.constraint(equalTo: top),
             collectionView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             collectionView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            collectionView.bottomAnchor.constraint(equalTo: bottom),
         ])
 
         var pill = UIButton.Configuration.filled()
@@ -204,7 +254,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         view.addSubview(newPill)
         NSLayoutConstraint.activate([
             newPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            newPill.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
+            newPill.bottomAnchor.constraint(equalTo: session != nil ? composer.topAnchor : safe.bottomAnchor, constant: -12),
         ])
 
         // Dynamic Type: the drawn text's fonts are fixed in its attributes,
@@ -218,23 +268,40 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             self.snapshotApplies += 1
         }
 
-        // VoiceOver moving to a row above the last is reading back: not
-        // following, or the end would pull the row away every frame.
+        observeFocus()
+        observeModel()
+        driver?.applied = { [weak self] done in self?.drawFrame(done) }
+        session?.follow { [weak self] status in self?.relay(status) }
+        session?.onUpdates { [weak self] in self?.woken() }
+        updateComposer()
+    }
+
+    /// VoiceOver moving to a row above the last is reading back: not
+    /// following, or the end would pull the row away every frame.
+    private func observeFocus() {
+        guard focusObserver == nil else { return }
         focusObserver = NotificationCenter.default.addObserver(forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main) { [weak self] note in
             // Delivered on the main queue, where it was posted: the element
             // never leaves it.
             nonisolated(unsafe) let element = note.userInfo?[UIAccessibility.focusedElementUserInfoKey] as AnyObject?
             MainActor.assumeIsolated { self?.focused(element) }
         }
+    }
 
-        observeModel()
-        driver?.applied = { [weak self] done in self?.drawFrame(done) }
-        session?.follow { [weak self] status in self?.relay(status) }
-        session?.onUpdates { [weak self] in self?.driver?.wake() }
+    /// Updates came with none waiting: the display link runs again, or,
+    /// parked, they're applied now.
+    private func woken() {
+        if parked {
+            frame()
+        } else {
+            driver?.wake()
+        }
     }
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        unpark()
+        observeFocus()
         guard let driver, frames == nil else { return }
         let link = CADisplayLink(target: TranscriptFrameTarget(self), selector: #selector(TranscriptFrameTarget.frame(_:)))
         // ProMotion: up to 120 Hz, never under 30 (R-PERF-4's 60 fps on
@@ -268,7 +335,54 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames?.invalidate()
         frames = nil
         driver?.ticker = nil
+        // Commands the core still holds go on: a queued prompt survives
+        // leaving the screen (R-HAND-4), until the host answers it.
+        if model.commandsOut > 0, let parking, !isEnded {
+            parked = true
+            parking.park(self)
+            return
+        }
         session?.stop()
+    }
+
+    /// Shown again (`ParkedScreens.take`, or pushed back): followed by its
+    /// display link from here, not let go.
+    func unpark() {
+        guard parked else { return }
+        parked = false
+        parking?.release(self)
+    }
+
+    /// Parked, and nothing it holds needs the connection any more: every
+    /// command answered and its logged item here (or the connection
+    /// stopped): let go. One whose logged item never comes (the host logged
+    /// other text) is let go `parkedGrace` after the last answer.
+    private func settleParked() {
+        guard parked else { return }
+        if isEnded || (model.commandsOut == 0 && !model.awaitingLog) { return letGo() }
+        guard model.commandsOut == 0, !graceArmed else { return }
+        graceArmed = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.parkedGrace) { MainActor.assumeIsolated { [weak self] in
+            guard let self else { return }
+            graceArmed = false
+            if parked, model.commandsOut == 0 { letGo() }
+        } }
+    }
+
+    /// How long a parked screen waits for the logged items of commands the
+    /// host took.
+    static let parkedGrace: TimeInterval = 30
+    private var graceArmed = false
+
+    /// Stopped and forgotten by its parking.
+    func letGo() {
+        parked = false
+        parking?.release(self)
+        session?.stop()
+    }
+
+    private var isEnded: Bool {
+        if case .ended = statusBar.status { true } else { false }
     }
 
     /// One display frame: what the session brought, into the model.
@@ -294,7 +408,84 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if UIAccessibility.isVoiceOverRunning, let end = done.ended.last {
             UIAccessibility.post(notification: .announcement, argument: SafeText.line(end.text[...], limit: 200))
         }
+        if UIAccessibility.isVoiceOverRunning, let refused = done.refused.last {
+            UIAccessibility.post(notification: .announcement, argument: "Not sent: \(SafeText.line(refused.caption[...], limit: 200))")
+        }
+        if let why = done.stopRefused { stopRefused = why }
+        if !done.ended.isEmpty { stopRefused = nil }
+        updateComposer()
+        settleParked()
     }
+
+    // MARK: The composer (ticket 90)
+
+    /// The composer's buttons and note, from the text, the turn, the stop
+    /// and the bar.
+    func updateComposer() {
+        guard session != nil else { return }
+        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused)
+        composerState = state
+        composer.show(state)
+    }
+
+    /// Send (or Steer, while a turn runs), the button or ⌘↵: the bubble
+    /// shows now, in this run-loop turn, before the command crosses into
+    /// the core off the main thread (R-LAG-8). The text field empties and
+    /// keeps its focus; nothing waits on the send.
+    public func sendTyped() {
+        updateComposer()
+        guard let session, composerState.canSend else { return }
+        let text = composer.text
+        let command: LiveCommand = model.isTurnRunning ? .steer(text) : .prompt(text)
+        let token = model.issue(command)
+        composer.text = ""
+        // The bubble's row now, not on the observation's next turn.
+        apply(rows: model.ids, attached: model.attached)
+        follow(true)
+        pinnedFor = nil
+        scrollToEnd()
+        session.send(command, token: token)
+        updateComposer()
+    }
+
+    /// Stop, the button or ⌘.: "stopping…" now, the interrupt to the core;
+    /// it stays until the interrupt's ack or the turn's end.
+    public func stopTurn() {
+        updateComposer()
+        guard let session, composerState.canStop else { return }
+        stopRefused = nil
+        let token = model.issue(.interrupt)
+        session.send(.interrupt, token: token)
+        updateComposer()
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: "stopping")
+        }
+    }
+
+    /// "Edit and resend" on a refused bubble: it goes, and its text is back
+    /// in the composer (after what's there), to send as a new command.
+    func takeBack(_ id: String) {
+        guard let token = model.token(ofBubble: id), let text = model.takeBack(token) else { return }
+        let typed = composer.text
+        composer.text = typed.isEmpty ? text : typed + "\n" + text
+        apply(rows: model.ids, attached: model.attached)
+        composer.textView.becomeFirstResponder()
+        updateComposer()
+    }
+
+    /// ⌘↵ sends, ⌘. stops: a hardware keyboard's (Return alone is a new
+    /// line).
+    override public var keyCommands: [UIKeyCommand]? {
+        guard session != nil else { return super.keyCommands }
+        let send = UIKeyCommand(title: "Send", action: #selector(keySend), input: "\r", modifierFlags: .command)
+        send.wantsPriorityOverSystemBehavior = true
+        let stop = UIKeyCommand(title: "Stop", action: #selector(keyStop), input: ".", modifierFlags: .command)
+        stop.wantsPriorityOverSystemBehavior = true
+        return [send, stop]
+    }
+
+    @objc private func keySend() { sendTyped() }
+    @objc private func keyStop() { stopTurn() }
 
     // MARK: Following the end
 
@@ -484,10 +675,20 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     private func relay(_ status: RelayStatus) {
         statusBar.show(status)
-        if case .ended = status, !model.attached {
-            stoppedEarly = true
-            updateBody(attached: false)
+        model.setHostOffline(status == .hostOffline)
+        if case .ended = status {
+            if !model.attached {
+                stoppedEarly = true
+                updateBody(attached: false)
+            }
+            // Nothing still out will be answered: said on its bubble.
+            let refused = model.connectionEnded()
+            if UIAccessibility.isVoiceOverRunning, !refused.isEmpty {
+                UIAccessibility.post(notification: .announcement, argument: "The connection stopped: what you sent may not have gone")
+            }
+            settleParked()
         }
+        updateComposer()
     }
 
     /// The last row at the bottom of the screen. The rows' heights are

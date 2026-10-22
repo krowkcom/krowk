@@ -192,6 +192,17 @@ final class StubSession: LiveSession {
         Task { @MainActor in wake() }
     }
 
+    /// The composer's commands, in the order sent, with their tokens.
+    let commands = Mutex<[Sent]>([])
+    struct Sent: Equatable, Sendable {
+        let command: LiveCommand
+        let token: UInt64
+    }
+
+    func send(_ command: LiveCommand, token: UInt64) {
+        commands.withLock { $0.append(Sent(command: command, token: token)) }
+    }
+
     func say(_ status: RelayStatus) {
         guard let told = told.withLock({ $0 }) else { return }
         Task { @MainActor in told(status) }
