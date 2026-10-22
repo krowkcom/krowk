@@ -158,13 +158,30 @@ public struct PendingCommands: Equatable, Sendable {
     }
 
     /// A turn ended: no interrupt is waiting any more ("stopping…" stays
-    /// until the interrupt's ack or the turn's end, whichever first). The
-    /// interrupts' tokens.
+    /// until the interrupt's ack or the turn's end, whichever first). A
+    /// steer the host took and the turn never logged won't be read now: it
+    /// is refused, saying so, to be sent again as a prompt. The steers'
+    /// tokens.
     @discardableResult
     public mutating func turnEnded() -> [UInt64] {
-        let gone = entries.filter { $0.kind == .interrupt }.map(\.token)
         entries.removeAll { $0.kind == .interrupt }
-        return gone
+        var unread: [UInt64] = []
+        for at in entries.indices where entries[at].kind == .steer && entries[at].state == .settled {
+            entries[at].state = .refused(Self.unread)
+            unread.append(entries[at].token)
+        }
+        return unread
+    }
+
+    static let unread = "The turn ended before it read this: send it again as a prompt."
+
+    /// A refused bubble kept from an earlier screen of the session (its
+    /// connection let go): shown again, refused, with "Edit and resend".
+    @discardableResult
+    public mutating func addRefused(_ kind: Kind, text: String, why: String) -> UInt64 {
+        next += 1
+        entries.append(Entry(token: next, kind: kind, text: text, id: nil, state: .refused(why)))
+        return next
     }
 
     /// A bubble the person took back (edit and resend) or dismissed.

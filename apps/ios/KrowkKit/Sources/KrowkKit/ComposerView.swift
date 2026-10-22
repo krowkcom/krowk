@@ -22,18 +22,22 @@ public struct ComposerState: Equatable, Sendable {
     public init(text: String, running: Bool, stopping: Bool, status: RelayStatus, stopRefused: String? = nil) {
         let offline = status == .hostOffline
         let ended: Bool = if case .ended = status { true } else { false }
+        // Joined and welcomed by a host: a stop goes now, not at some later
+        // welcome where it could reach a turn started meanwhile.
+        let connected = status == .live || status == .catchingUp
         let problem = ComposerRules.problem(text)
-        steers = running
         // With no host a prompt still goes (queued for the next welcome,
-        // R-HAND-4); a steer has no turn to reach, nor a stop.
-        canSend = problem == nil && !ended && !(running && offline)
+        // R-HAND-4), even past a turn the log shows unfinished (a host that
+        // went mid-turn); a steer has no turn to reach, nor a stop.
+        steers = running && !offline
+        canSend = problem == nil && !ended
         showsStop = running || stopping
         self.stopping = stopping
-        canStop = running && !stopping && !offline && !ended
+        canStop = running && !stopping && connected
         if ended {
             note = "stopped: open the session again to send"
         } else if offline && running {
-            note = "host offline: Steer and Stop wait for it"
+            note = "host offline: Steer and Stop wait for it; a prompt is queued until your laptop is back"
         } else if offline {
             note = "host offline: a prompt is queued until your laptop is back"
         } else if let problem, !problem.isEmpty {
@@ -58,6 +62,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
     public let stopButton = UIButton(configuration: .tinted())
     public let noteLabel = UILabel()
     private let placeholder = UILabel()
+    private let row = UIStackView()
+    private let buttons = UIStackView()
     private var height: NSLayoutConstraint!
     /// Typed, or the text set: the screen works the buttons out again.
     var changed: (@MainActor () -> Void)?
@@ -117,7 +123,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
-        let buttons = UIStackView(arrangedSubviews: [stopButton, sendButton])
+        buttons.addArrangedSubview(stopButton)
+        buttons.addArrangedSubview(sendButton)
         buttons.spacing = 8
         buttons.alignment = .center
 
@@ -128,9 +135,9 @@ public final class ComposerView: UIView, UITextViewDelegate {
         noteLabel.accessibilityIdentifier = "composer-note"
         noteLabel.isHidden = true
 
-        let row = UIStackView(arrangedSubviews: [textView, buttons])
+        row.addArrangedSubview(textView)
+        row.addArrangedSubview(buttons)
         row.spacing = 8
-        row.alignment = .bottom
         let column = UIStackView(arrangedSubviews: [row, noteLabel])
         column.axis = .vertical
         column.spacing = 4
@@ -148,7 +155,9 @@ public final class ComposerView: UIView, UITextViewDelegate {
             placeholder.leadingAnchor.constraint(equalTo: textView.leadingAnchor, constant: 12),
             placeholder.topAnchor.constraint(equalTo: textView.topAnchor, constant: 8),
         ])
+        arrange()
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _: UITraitCollection) in
+            self.arrange()
             self.fit()
         }
     }
@@ -190,6 +199,9 @@ public final class ComposerView: UIView, UITextViewDelegate {
     private func textChanged() {
         placeholder.isHidden = !(textView.text ?? "").isEmpty
         fit()
+        // Keeps the caret in view as it types; a layout alone never moves
+        // a long draft the person scrolled.
+        if textView.isScrollEnabled { textView.scrollRangeToVisible(textView.selectedRange) }
         changed?()
     }
 
@@ -204,7 +216,15 @@ public final class ComposerView: UIView, UITextViewDelegate {
         let scrolls = fits > most
         if textView.isScrollEnabled != scrolls { textView.isScrollEnabled = scrolls }
         if abs(height.constant - target) > 0.5 { height.constant = target }
-        if scrolls { textView.scrollRangeToVisible(textView.selectedRange) }
+    }
+
+    /// At accessibility text sizes the buttons go under the text, side by
+    /// side, rather than squeeze it.
+    private func arrange() {
+        let large = traitCollection.preferredContentSizeCategory.isAccessibilityCategory
+        row.axis = large ? .vertical : .horizontal
+        row.alignment = large ? .fill : .bottom
+        buttons.distribution = large ? .fillEqually : .fill
     }
 
     override public func layoutSubviews() {

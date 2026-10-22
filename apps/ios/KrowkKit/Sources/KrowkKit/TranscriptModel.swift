@@ -423,6 +423,29 @@ public final class TranscriptModel {
         return entry.text
     }
 
+    /// The refused bubbles, in the order typed: what a screen let go keeps
+    /// for the next screen of the session (`restore`).
+    public var refusals: [PendingCommands.Entry] {
+        commands.bubbles.filter(\.isRefused)
+    }
+
+    /// Refused bubbles of an earlier screen of this session, shown again
+    /// below the rows, each with "Edit and resend".
+    public func restore(_ refusals: [PendingCommands.Entry]) {
+        guard !refusals.isEmpty else { return }
+        transact {
+            for entry in refusals {
+                guard case .refused(let why) = entry.state else { continue }
+                let token = commands.addRefused(entry.kind, text: entry.text, why: why)
+                let state = ItemState(id: Self.bubbleID(token), kind: .pending, text: entry.text)
+                bubbles[token] = state
+                refresh(token)
+                bubbleRows.append(state.id)
+                bubblesChanged = true
+            }
+        }
+    }
+
     /// Whether the session has a host: a queued bubble says what it waits
     /// for.
     public func setHostOffline(_ offline: Bool) {
@@ -783,8 +806,9 @@ public final class TranscriptModel {
         case .turnCompleted(let turn, let end):
             endedTurns.insert(turn)
             if runningTurn == turn { runningTurn = nil }
-            // "stopping…" ends with the turn, if its ack hasn't come.
-            commands.turnEnded()
+            // "stopping…" ends with the turn, if its ack hasn't come; a steer
+            // it never read is refused.
+            for token in commands.turnEnded() { refresh(token) }
             endLive(turn: turn)
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)
             state.alarming = end != .completed

@@ -42,15 +42,19 @@ extension HostedKeychain {
             #expect(screen.dataSource.snapshot().itemIdentifiers.last == bubble)
             Self.keep("composer-sending", window)
 
+            let token = try #require(model.token(ofBubble: bubble))
             var settled = false
+            var minted = false
             var both = false
             try await LiveFollowTests.wait(until: {
+                if model.commands.entry(token)?.id != nil { minted = true }
                 if model.item(bubble)?.caption == "" { settled = true }
                 let logged = model.ids.compactMap(model.item).contains { $0.kind == .user && $0.text == text }
                 if logged && model.item(bubble) != nil { both = true }
                 return model.item(bubble) == nil && logged && Self.lastTurnEnded(model, after: before)
             }, within: .seconds(30), "not reconciled: \(TranscriptTests.rows(of: model))")
             #expect(!both, "the bubble and its logged item showed together")
+            #expect(minted, "the core's id never reached the bubble")
             #expect(settled || model.commandsOut == 0, "never acked")
             let fresh = model.ids.filter { !before.contains($0) }.compactMap(model.item)
             #expect(fresh.filter { $0.kind == .user && $0.text == text }.count == 1)

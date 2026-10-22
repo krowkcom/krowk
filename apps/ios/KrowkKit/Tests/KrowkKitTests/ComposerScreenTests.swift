@@ -106,7 +106,7 @@ struct ComposerScreenTests {
         #expect(screen.composer.sendButton.configuration?.title == "Send")
     }
 
-    @Test("R-HAND-4: with no host Send still queues a prompt, its bubble saying it waits for the laptop; Steer and Stop are disabled, saying host offline")
+    @Test("R-HAND-4: with no host Send still queues a prompt, its bubble saying it waits for the laptop; Steer and Stop are disabled, saying host offline; Stop needs a live link")
     func hostOffline() async throws {
         let (session, screen, window) = try await opened()
         defer { window.isHidden = true }
@@ -122,23 +122,30 @@ struct ComposerScreenTests {
         let id = TranscriptModel.bubbleID(sent.token)
         #expect(screen.model.item(id)?.caption == "queued — sends when your laptop is back")
 
-        // A turn the host left running: Steer and Stop wait for it.
+        // A turn the host left running: Stop waits for it, and the button
+        // still queues a prompt, not a steer.
         session.bring([.logged([Self.event("e7", .turnStarted(turn: "t2"), parent: "e6")])])
         screen.frame()
-        screen.composer.text = "steer"
-        #expect(screen.composer.sendButton.configuration?.title == "Steer")
-        #expect(!screen.composer.sendButton.isEnabled)
+        #expect(!screen.composer.stopButton.isHidden)
         #expect(!screen.composer.stopButton.isEnabled)
         #expect(screen.composer.noteLabel.text?.hasPrefix("host offline") == true)
         let before = session.commands.withLock { $0.count }
         screen.stopTurn()
+        #expect(session.commands.withLock { $0.count } == before, "no stop with no host")
+        screen.composer.text = "and then this"
+        #expect(screen.composer.sendButton.configuration?.title == "Send")
+        #expect(screen.composer.sendButton.isEnabled)
         screen.sendTyped()
-        #expect(session.commands.withLock { $0.count } == before, "nothing sent while Steer and Stop are disabled")
+        #expect(session.commands.withLock { $0 }.last?.command == .prompt("and then this"))
 
-        // The host back: a queued bubble no longer says it waits for it.
+        // The host back: a queued bubble no longer says it waits for it;
+        // Steer and Stop work again.
         session.say(.live)
         try await waitFor { screen.statusBar.status == .live }
         #expect(screen.model.item(id)?.caption == "queued…")
+        #expect(screen.composer.stopButton.isEnabled)
+        screen.composer.text = "steer"
+        #expect(screen.composer.sendButton.configuration?.title == "Steer")
         #expect(screen.composer.sendButton.isEnabled)
     }
 
@@ -233,6 +240,10 @@ struct ComposerScreenTests {
         window.layoutIfNeeded()
         try await waitFor { screen.parked }
 
+        // Stop needs a host that welcomed the phone, not a link joining again.
+        #expect(ComposerState(text: "", running: true, stopping: false, status: .reconnecting).canStop == false)
+        #expect(ComposerState(text: "", running: true, stopping: false, status: .live).canStop)
+
         // Answered, and its logged item here: let go, and stopped.
         session.bring([.commandAcked(id: "d-1", error: nil)])
         try await Task.sleep(for: .milliseconds(100))
@@ -241,6 +252,31 @@ struct ComposerScreenTests {
         try await waitFor { !screen.parked }
         #expect(parking.count == 0)
         #expect(session.stopped.withLock { $0 } == 1)
+        #expect(parking.takeRefusals(row.id).isEmpty)
+    }
+
+    @Test("R-LAG-8: a screen left with a refused bubble leaves it to the session's next screen, which shows it with Edit and resend")
+    func refusalsOutliveTheScreen() async throws {
+        let parking = ParkedScreens()
+        let (session, screen, window) = try await opened()
+        defer { window.isHidden = true }
+        screen.parking = parking
+        screen.composer.text = "Refuse me"
+        screen.sendTyped()
+        let sent = try #require(session.commands.withLock { $0 }.last)
+        session.bring([.commandMinted(token: sent.token, id: "d-1"), .commandAcked(id: "d-1", error: "busy")])
+        screen.frame()
+        let navigation = try #require(screen.navigationController)
+        navigation.setViewControllers([UIViewController()], animated: false)
+        window.layoutIfNeeded()
+        try await waitFor { session.stopped.withLock { $0 } == 1 }
+        #expect(!screen.parked)
+        let next = TranscriptViewController(row: row, session: StubSession())
+        next.restore(parking.takeRefusals(row.id))
+        let id = try #require(next.model.ids.last)
+        #expect(next.model.item(id)?.text == "Refuse me")
+        #expect(next.model.item(id)?.caption == "busy")
+        #expect(parking.takeRefusals(row.id).isEmpty, "handed on once")
     }
 
     private func waitFor(_ done: () -> Bool) async throws {

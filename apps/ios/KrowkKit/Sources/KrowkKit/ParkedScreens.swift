@@ -9,6 +9,9 @@ import UIKit
 @MainActor
 public final class ParkedScreens {
     private var screens: [String: TranscriptViewController] = [:]
+    /// Refused bubbles of screens let go, by session: shown again on the
+    /// session's next screen, so a refused prompt's text isn't lost.
+    private var refusals: [String: [PendingCommands.Entry]] = [:]
 
     public init() {}
 
@@ -18,6 +21,17 @@ public final class ParkedScreens {
         guard let screen = screens.removeValue(forKey: id) else { return nil }
         screen.unpark()
         return screen
+    }
+
+    /// The refused bubbles a screen of session `id` left, once.
+    public func takeRefusals(_ id: String) -> [PendingCommands.Entry] {
+        refusals.removeValue(forKey: id) ?? []
+    }
+
+    /// A screen let go with refused bubbles: kept for the next.
+    func keep(_ refused: [PendingCommands.Entry], of id: String) {
+        guard !refused.isEmpty else { return }
+        refusals[id, default: []].append(contentsOf: refused)
     }
 
     /// How many screens are kept.

@@ -734,7 +734,8 @@ final class TranscriptPendingCell: TranscriptCell {
         caption.textColor = state.refused ? .systemRed : .secondaryLabel
         resend.isHidden = !state.refused
         bubble.alpha = state.refused ? 0.6 : 1
-        // VoiceOver reads the text, then how its send stands.
-        label.accessibilityValue = caption.text
+        // VoiceOver: what it is, its text, then how its send stands.
+        label.accessibilityLabel = "Your message"
+        label.accessibilityValue = [SafeText.line(state.text[...], limit: 2_000), caption.text].compactMap { $0 }.joined(separator: ", ")
     }
 }

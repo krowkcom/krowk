@@ -71,7 +71,7 @@ struct PendingCommandsTests {
         #expect(book.stopping)
         #expect(book.bubbles.isEmpty, "an interrupt draws no bubble")
         book.minted(stop, id: "d-s-1")
-        #expect(book.turnEnded() == [stop])
+        #expect(book.turnEnded().isEmpty, "no steer went unread")
         #expect(!book.stopping)
         #expect(book.acked("d-s-1", error: nil) == nil, "its ack after the turn's end changes nothing")
 
@@ -79,6 +79,20 @@ struct PendingCommandsTests {
         book.minted(again, id: "d-s-2")
         #expect(book.acked("d-s-2", error: "no turn running") == .interrupt(token: again, error: "no turn running"))
         #expect(!book.stopping)
+    }
+
+    @Test("R-LAG-8: a steer the host took that its turn ended without reading is refused, to be sent again as a prompt; a prompt isn't")
+    func unreadSteer() {
+        var book = PendingCommands()
+        let steer = book.add(.steer, text: "too late")
+        book.minted(steer, id: "d-u-1")
+        _ = book.acked("d-u-1", error: nil)
+        let prompt = book.add(.prompt, text: "next")
+        book.minted(prompt, id: "d-u-2")
+        _ = book.acked("d-u-2", error: nil)
+        #expect(book.turnEnded() == [steer])
+        #expect(book.entry(steer)?.state == .refused(PendingCommands.unread))
+        #expect(book.entry(prompt)?.state == .settled)
     }
 
     @Test("R-HAND-4, R-LAG-8: a queued bubble the host logs after a welcome is taken by its logged item even before its ack; the late ack changes nothing")
@@ -241,6 +255,21 @@ struct PendingBubbleModelTests {
         model.apply(frame: [.logged([Self.event("e2", .turnCompleted(turn: "t1", end: .completed), parent: "e1")])])
         let after = model.apply(frame: [.commandMinted(token: late, id: "d-2"), .commandAcked(id: "d-2", error: "no turn running")])
         #expect(after.stopRefused == nil)
+    }
+
+    @Test("R-LAG-8: refused bubbles a screen let go are restored on the session's next, refused, below its rows")
+    func restored() throws {
+        let old = TranscriptModel(sessionID: Self.session)
+        let token = old.issue(.prompt("keep me"))
+        old.apply(frame: [.commandUnsent(token: token, why: "Not sent: the connection to this session stopped.")])
+        let fresh = TranscriptModel(sessionID: Self.session)
+        fresh.attach([Self.user("e1", item: "u1", "earlier")])
+        fresh.restore(old.refusals)
+        let id = try #require(fresh.ids.last)
+        #expect(fresh.ids.count == 2)
+        #expect(fresh.item(id)?.refused == true)
+        #expect(fresh.item(id)?.text == "keep me")
+        #expect(fresh.commandsOut == 0)
     }
 
     @Test("R-LAG-8: a command that never reached the core, or a connection that stopped, refuses the bubble saying so")

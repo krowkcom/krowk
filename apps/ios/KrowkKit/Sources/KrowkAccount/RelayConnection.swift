@@ -59,6 +59,10 @@ public actor RelayConnection: LiveSession {
     /// Commands sent before the viewer was open, in order: they go to it
     /// as it opens.
     private var early: [(command: LiveCommand, token: UInt64)] = []
+    /// Commands handed to the viewer whose `sent` it hasn't shown yet, in
+    /// the order handed: the core shows them on a later `tick`, one `sent`
+    /// per command in that order, so the oldest token is the next `sent`'s.
+    private var unminted: [UInt64] = []
     /// The session's id, once open: what its commands name.
     private var sessionID: String?
 
@@ -170,9 +174,9 @@ public actor RelayConnection: LiveSession {
         }
     }
 
-    /// A command of the person's into the viewer: its id posted first (so
-    /// the screen ties the `sent` that follows to the bubble it typed),
-    /// then its effects run — sent now, or queued in the core.
+    /// A command of the person's into the viewer: sent now, or queued in
+    /// the core. The core shows it `sent` (with its id) on a later frame;
+    /// `posting` ties that `sent` to this token.
     private func issue(_ command: LiveCommand, token: UInt64) {
         guard !done else {
             mailbox.post([.unsent(token: token, why: Self.stoppedWhy)])
@@ -182,21 +186,32 @@ public actor RelayConnection: LiveSession {
             early.append((command, token))
             return
         }
-        let effects = viewer.command(command: command.command(session: sessionID), nowMs: Self.now())
-        // The one `sent` the core shows for it, at once.
-        for case .show(let updates) in effects {
-            for case .sent(let id, _) in updates {
-                mailbox.post([.minted(token: token, id: id)])
-            }
-        }
-        run(effects)
+        unminted.append(token)
+        run(viewer.command(command: command.command(session: sessionID), nowMs: Self.now()))
     }
 
-    /// Commands that waited for a viewer that will never open.
+    /// A `Show`'s updates for the mailbox: each `sent` preceded by the id
+    /// it gives the oldest command still waiting for one, so the screen
+    /// knows which bubble the `sent` and its later `acked` are.
+    private func posting(_ updates: [ViewerUpdate]) -> [MailboxItem] {
+        var items: [MailboxItem] = []
+        items.reserveCapacity(updates.count)
+        for update in updates {
+            if case .sent(let id, _) = update, !unminted.isEmpty {
+                items.append(.minted(token: unminted.removeFirst(), id: id))
+            }
+            items.append(.viewer(update))
+        }
+        return items
+    }
+
+    /// Commands that will never reach the core, or never be shown by it
+    /// (the viewer ended): said, so their bubbles don't wait forever.
     private func unsendEarly() {
-        let waiting = early
+        let waiting = early.map(\.token) + unminted
         early = []
-        if !waiting.isEmpty { mailbox.post(waiting.map { .unsent(token: $0.token, why: Self.stoppedWhy) }) }
+        unminted = []
+        if !waiting.isEmpty { mailbox.post(waiting.map { .unsent(token: $0, why: Self.stoppedWhy) }) }
     }
 
     /// Why a command never went.
@@ -240,7 +255,7 @@ public actor RelayConnection: LiveSession {
                     default: break
                     }
                 }
-                mailbox.post(updates.map(MailboxItem.viewer))
+                mailbox.post(posting(updates))
             case .readChunks:
                 offQueue(queue) { viewer.readChunks() } then: { me, read in
                     guard !me.done, let viewer = me.viewer else { return }

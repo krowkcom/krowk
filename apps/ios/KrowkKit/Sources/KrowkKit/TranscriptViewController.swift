@@ -340,8 +340,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if model.commandsOut > 0, let parking, !isEnded {
             parked = true
             parking.park(self)
+            // What waits in the mailbox now: a later post wakes this only
+            // once it has been drained.
+            frame()
             return
         }
+        parking?.keep(model.refusals, of: row.id)
         session?.stop()
     }
 
@@ -359,7 +363,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// other text) is let go `parkedGrace` after the last answer.
     private func settleParked() {
         guard parked else { return }
-        if isEnded || (model.commandsOut == 0 && !model.awaitingLog) { return letGo() }
+        if isEnded {
+            // What's still out is refused (kept for the next screen).
+            model.connectionEnded()
+            return letGo()
+        }
+        if model.commandsOut == 0 && !model.awaitingLog { return letGo() }
         guard model.commandsOut == 0, !graceArmed else { return }
         graceArmed = true
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.parkedGrace) { MainActor.assumeIsolated { [weak self] in
@@ -374,11 +383,20 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     static let parkedGrace: TimeInterval = 30
     private var graceArmed = false
 
-    /// Stopped and forgotten by its parking.
+    /// Stopped and forgotten by its parking; its refused bubbles kept for
+    /// the session's next screen.
     func letGo() {
+        guard parked else { return }
         parked = false
         parking?.release(self)
+        parking?.keep(model.refusals, of: row.id)
         session?.stop()
+    }
+
+    /// Refused bubbles an earlier screen of this session left
+    /// (`ParkedScreens.takeRefusals`): shown again, with "Edit and resend".
+    public func restore(_ refusals: [PendingCommands.Entry]) {
+        model.restore(refusals)
     }
 
     private var isEnded: Bool {
@@ -409,7 +427,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             UIAccessibility.post(notification: .announcement, argument: SafeText.line(end.text[...], limit: 200))
         }
         if UIAccessibility.isVoiceOverRunning, let refused = done.refused.last {
-            UIAccessibility.post(notification: .announcement, argument: "Not sent: \(SafeText.line(refused.caption[...], limit: 200))")
+            UIAccessibility.post(notification: .announcement, argument: "Your message wasn't taken: \(SafeText.line(refused.caption[...], limit: 200))")
         }
         if let why = done.stopRefused { stopRefused = why }
         if !done.ended.isEmpty { stopRefused = nil }
@@ -436,7 +454,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         updateComposer()
         guard let session, composerState.canSend else { return }
         let text = composer.text
-        let command: LiveCommand = model.isTurnRunning ? .steer(text) : .prompt(text)
+        let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
         let token = model.issue(command)
         composer.text = ""
         // The bubble's row now, not on the observation's next turn.
@@ -446,6 +464,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         scrollToEnd()
         session.send(command, token: token)
         updateComposer()
+        if UIAccessibility.isVoiceOverRunning, statusBar.status == .hostOffline {
+            UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
+        }
     }
 
     /// Stop, the button or ⌘.: "stopping…" now, the interrupt to the core;
@@ -681,7 +702,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
                 stoppedEarly = true
                 updateBody(attached: false)
             }
-            // Nothing still out will be answered: said on its bubble.
+            // The last acks before the end are in the mailbox already (the
+            // status is published after them): applied first. Then nothing
+            // still out will be answered: said on its bubble.
+            frame()
             let refused = model.connectionEnded()
             if UIAccessibility.isVoiceOverRunning, !refused.isEmpty {
                 UIAccessibility.post(notification: .announcement, argument: "The connection stopped: what you sent may not have gone")

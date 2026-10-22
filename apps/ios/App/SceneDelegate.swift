@@ -118,6 +118,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let live = RelayConnection { try source.openSession(id: row.id, known: known) }
             let screen = TranscriptViewController(row: row, session: live)
             screen.parking = parked
+            // What an earlier screen of it had refused, with "Edit and resend".
+            screen.restore(parked.takeRefusals(row.id))
             return screen
         }
     }
