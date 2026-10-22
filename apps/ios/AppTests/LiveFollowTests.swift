@@ -118,6 +118,26 @@ extension HostedKeychain {
             }
         }
 
+        @Test("R-LAG-7, R-PERF-4: a very long answer (300 lines, about 16 s at 200 tokens a second) keeps up: its turn's separator is drawn within seconds of the host's end, and the display link then pauses")
+        func longAnswerKeepsUp() async throws {
+            let (screen, window, session, _) = try await Self.open("A very long answer")
+            defer { window.isHidden = true }
+            let model = screen.model
+            let started = ContinuousClock.now
+            #expect(try await SessionListTests.control("/\(session)/turn", body: "Please stream a very long answer") == "started")
+            let frames = screen.driver?.frames ?? 0
+            try await Self.wait(until: {
+                model.ids.last.flatMap(model.item).map { $0.kind == .mark && $0.id.hasPrefix("turn:") && model.ids.count > 4 } ?? false
+            }, within: .seconds(60), "the turn never ended on screen: \(TranscriptTests.rows(of: model).suffix(3))")
+            let took = ContinuousClock.now - started
+            let behind = Int64(Date.now.timeIntervalSince1970 * 1000) - (model.newestLiveMs ?? 0)
+            window.layoutIfNeeded()
+            print("krowk host→screen latency (a 300-line answer): ended on screen \(took) after the prompt, \(behind) ms after the host logged its end; \((screen.driver?.frames ?? 0) - frames) frames, \(screen.driver?.transactions ?? 0) transactions")
+            #expect(took < .seconds(40), "\(took) for a 16 s answer")
+            #expect(screen.following && screen.isAtBottom)
+            try await Self.wait(until: { screen.driver?.ticker?.isPaused == true }, within: .seconds(4), "the display link still runs after the turn")
+        }
+
         @Test("R-LAG-7, R-HAND-4: when the host goes away mid-turn, the bar says host offline and what was drawn stays")
         func hostGoesMidTurn() async throws {
             let (screen, window, id, _) = try await Self.open("Host goes mid-turn")

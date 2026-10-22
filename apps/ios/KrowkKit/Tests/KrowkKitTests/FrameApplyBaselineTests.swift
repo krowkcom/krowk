@@ -36,10 +36,20 @@ final class FrameApplyBaselineTests: XCTestCase {
             fast.apply += run.apply
             fast.laid += run.laid
         }
+        // Late in a long answer: 3,000 words (about 20 KB) already drawn.
+        // What a frame costs should not grow with what's above it.
+        var late: (apply: [Duration], laid: [Duration]) = ([], [])
+        for _ in 0..<3 {
+            let run = Self.oneSecondOfStream(hz: 120, after: 3_000)
+            late.apply += run.apply
+            late.laid += run.laid
+        }
         let line = Self.summary("krowk.frame.apply baseline (the apply)", perFrame, hz: Self.hz) + "\n"
             + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", withLayout, hz: Self.hz) + "\n"
             + Self.summary("krowk.frame.apply baseline (the apply)", fast.apply, hz: 120) + "\n"
-            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", fast.laid, hz: 120)
+            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", fast.laid, hz: 120) + "\n"
+            + Self.summary("krowk.frame.apply baseline after 3,000 words (the apply)", late.apply, hz: 120) + "\n"
+            + Self.summary("krowk.frame.apply baseline after 3,000 words (the apply and the frame's layout)", late.laid, hz: 120)
         print(line)
         let attachment = XCTAttachment(string: line)
         attachment.name = "krowk.frame.apply baseline"
@@ -61,7 +71,7 @@ final class FrameApplyBaselineTests: XCTestCase {
     /// `rate` word-sized deltas and laid out as the display would. The
     /// time each frame's apply took, and its apply and layout together.
     @MainActor
-    static func oneSecondOfStream(hz: Int = FrameApplyBaselineTests.hz) -> (apply: [Duration], laid: [Duration]) {
+    static func oneSecondOfStream(hz: Int = FrameApplyBaselineTests.hz, after words: Int = 0) -> (apply: [Duration], laid: [Duration]) {
         let session = StubSession()
         let row = SessionRow(id: TranscriptScreenTests.session, title: "t", detail: "", live: true, accessibilityLabel: "t")
         let screen = TranscriptViewController(row: row, session: session)
@@ -71,7 +81,8 @@ final class FrameApplyBaselineTests: XCTestCase {
         defer { window.isHidden = true }
         session.bring(TranscriptScreenTests.turn, attach: true)
         session.bring([.started(session: TranscriptScreenTests.session, turn: "t2", item: "a2", kind: .assistant)])
-        session.bring([.delta(session: TranscriptScreenTests.session, item: "a2", text: "Streaming")])
+        let prefix = (0..<words).map { $0 % 12 == 11 ? "w\($0)\n" : "w\($0) " }.joined()
+        session.bring([.delta(session: TranscriptScreenTests.session, item: "a2", text: "Streaming " + prefix)])
         screen.frame()
         // The rows' snapshot and the cell, as the run loop would make them.
         RunLoop.main.run(until: Date.now.addingTimeInterval(0.05))
