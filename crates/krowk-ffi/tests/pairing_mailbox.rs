@@ -61,6 +61,20 @@ fn r_e2e_3_a_cancel_cuts_a_pause_short_and_refuses_the_next_calls() {
     assert!(p.joiner_message.is_empty(), "{p:?}");
 }
 
+/// A cancel before the hello leaves the other device's pairing as it was:
+/// nothing of the phone's is in it, and its code still works for a join.
+#[test]
+fn r_e2e_3_end_before_any_step_leaves_the_pairing_open() {
+    let w = World::new();
+    let (mailbox, cancel, id) = opened(&w);
+    cancel.store(true, Ordering::SeqCst);
+    assert!(mailbox.step(PairingStep::Join, &[7; 32]).is_err(), "a cancelled hello is never sent");
+    mailbox.end();
+    let p = w.host.find_open_pairing().unwrap();
+    assert_eq!(p.id, id, "the same pairing is open");
+    assert!(p.joiner_message.is_empty(), "{p:?}");
+}
+
 #[test]
 fn r_e2e_3_end_ends_the_pairing_even_once_cancelled() {
     let w = World::new();

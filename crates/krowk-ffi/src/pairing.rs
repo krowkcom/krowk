@@ -58,6 +58,10 @@ pub struct RegistryMailbox {
     client: Arc<Client>,
     id: String,
     cancel: Arc<AtomicBool>,
+    /// A step was sent, or tried: the pairing holds something of this
+    /// device's, so a failure ends it. Before that, nothing of this
+    /// device's is in it, and the other device's code stays usable.
+    sent: AtomicBool,
     /// The confirmation step was sent: a reply may come.
     confirmed: AtomicBool,
     /// The sealed reply was seen, or the ack reached: too late to cancel.
@@ -66,7 +70,7 @@ pub struct RegistryMailbox {
 
 impl RegistryMailbox {
     pub fn new(client: Arc<Client>, id: String, cancel: Arc<AtomicBool>) -> RegistryMailbox {
-        RegistryMailbox { client, id, cancel, confirmed: AtomicBool::new(false), committed: AtomicBool::new(false) }
+        RegistryMailbox { client, id, cancel, sent: AtomicBool::new(false), confirmed: AtomicBool::new(false), committed: AtomicBool::new(false) }
     }
 
     /// Whether a cancel stopped this mailbox: one set before the other
@@ -98,6 +102,7 @@ impl Mailbox for RegistryMailbox {
             self.committed.store(true, Ordering::SeqCst);
         }
         self.check()?;
+        self.sent.store(true, Ordering::SeqCst);
         if step == PairingStep::Confirmation {
             self.confirmed.store(true, Ordering::SeqCst);
         }
@@ -117,10 +122,13 @@ impl Mailbox for RegistryMailbox {
         Ok(p)
     }
 
-    /// Ends the pairing whether or not the join was cancelled: a cancel is
-    /// what asks for it.
+    /// Ends the pairing whether or not the join was cancelled (a cancel
+    /// is what asks for it), once a step of this device's was sent: a
+    /// cancel before the hello leaves the other device's code usable.
     fn end(&self) {
-        let _ = self.client.end_pairing();
+        if self.sent.load(Ordering::SeqCst) {
+            let _ = self.client.end_pairing();
+        }
     }
 
     fn claim_device(&self) -> Result<(), krowk_api::Error> {
