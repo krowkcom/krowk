@@ -13,14 +13,17 @@ apps/ios/
   App/               the app target: AppDelegate, SceneDelegate, Assets.xcassets
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
                      storage (KrowkKeys), sign-in, pairing, the session
-                     list and the relay connection over the bindings
-                     (KrowkAccount), and KrowkKit's tests
+                     list, the relay connection and the transcript's
+                     events over the bindings (KrowkAccount), and
+                     KrowkKit's tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
-                     PairingTests, SessionListTests, RelayConnectionTests, and
-                     the TestFleet fixture
+                     PairingTests, SessionListTests, RelayConnectionTests,
+                     TranscriptModelTests, TranscriptTests, and the TestFleet
+                     fixture
   UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
-  scripts/           with-fleet.sh: runs a command against the fake fleet
+  scripts/           with-fleet.sh: runs a command against the fake fleet;
+                     no-web.sh: no web view, no remote image (R-IOS-10)
 ```
 
 Both manifests are thin and point at the same sources. Add a file to `App/`
@@ -48,7 +51,9 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 `xcrun simctl list devices available` lists the simulators and their udids.
 The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
 `PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests`,
-`PairingTests` and `SessionListTests` (target `Krowk-iOSTests`), KrowkKit's unit tests and
+`PairingTests`, `SessionListTests`, `RelayConnectionTests`,
+`TranscriptModelTests` and `TranscriptTests` (target `Krowk-iOSTests`),
+KrowkKit's unit tests and
 KrowkCore's `BindingsTests`.
 The hosted tests are hosted because the Keychain refuses a SwiftPM test
 bundle with no host app (`-34018`, a missing entitlement). They clear the
@@ -284,8 +289,8 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
   second, and one that changes nothing is not applied. The first listing
   is applied without animation, later ones in 150 ms that never hold up a
   touch.
-- A tap opens the session's place (the transcript is ticket 88), followed
-  live through the relay while it's open. The list never offers to take or
+- A tap opens the session's transcript (below), followed live through the
+  relay while it's open. The list never offers to take or
   host a session (R-HAND-4).
 
 ## Following a session live
@@ -330,7 +335,8 @@ host's presence notice). Swift never builds or parses those messages.
   queue, so a heartbeat never waits behind them (R-LAG-9).
 - **Updates** for the screen go into a lock-protected mailbox
   (`OSAllocatedUnfairLock<[ViewerUpdate]>`), which the session screen
-  drains once per display frame (`CADisplayLink`); ticket 89 draws them.
+  drains once per display frame (`CADisplayLink`) into its transcript
+  (`takeFrame(into:)`); live deltas are ticket 89's.
 - **The status** is a bar under the navigation bar, never a spinner over
   what's on screen (R-IOS-1): `connecting`; `live` once a host welcomed
   the phone; `host offline` when joined with no host, read-only, and the
@@ -345,6 +351,59 @@ host's presence notice). Swift never builds or parses those messages.
   to the `Viewer`, which puts it in the `Dial` it returns.
 - Backoff, wake and suspend, network changes and connecting on return to
   the foreground are ticket 86's.
+
+## A session's transcript
+
+Tapping a session pushes `KrowkKit.TranscriptViewController`: its title
+(the index's), the relay bar, and the session's turns top to bottom,
+scrolled to the end (ticket 88).
+
+- **What's drawn.** Your prompts (`userText`) as right-aligned bubbles,
+  an image as its `[Image #N]` text only; answers (`assistantText`) full
+  width; reasoning as one "Thought" line a tap expands, and no row when
+  the provider withheld it (empty); a tool call as `<name> <summary>`
+  (its input's `command`, `file_path`/`path`, `pattern` or `url`, else
+  the JSON's first 80 characters) with `✓` or `✗` and its result's first
+  line beneath, a tap expanding the output, monospaced, at most 64 KiB
+  and then "… N more bytes"; a turn's end as a thin separator with its
+  status (a failure with its error's message); `model.switched` as "Now
+  on <model>". Everything else draws nothing, and so does an event of
+  another session on the same log (a subagent's).
+- **The data** is the viewer's: `Attached` (the session read at rest,
+  from its checkpoint, by `Viewer.open` off the main thread), and the
+  logged events of `Line` and `CaughtUp`, all generated `LogEvent`s that
+  `KrowkAccount` places with an exhaustive switch over `LogBody` and
+  `Item` (R-PROTO-2). The log at rest holds only completed items.
+- **The model.** `TranscriptModel` (`@MainActor`, `@Observable`) holds
+  the row ids in order and one `@Observable ItemState` per row, keyed by
+  `itemId` (`turnId` for a turn's end). An event applied twice (same id)
+  is a no-op, and a result pairs with its call by `callId`, so the
+  diffable data source never sees an id twice (asserted in DEBUG).
+- **The view.** A compositional list (estimated heights) with a diffable
+  data source, `selfSizingInvalidation = .enabledIncludingConstraints`,
+  and cells that observe their own `ItemState` with
+  `withObservationTracking`, so one item's change redraws one cell; a
+  snapshot only orders rows, applied without animation. Text is TextKit 2
+  (`UITextView(usingTextLayoutManager: true)`, non-editable,
+  non-scrolling), its `textStorage` kept for ticket 89 to append to. A
+  tool's output is laid out only when expanded.
+- **Hostile output** (R-IOS-10), in `SafeText`, which every cell draws
+  through: C0 controls but `\n` and `\t`, DEL, C1 and the bidi overrides
+  and isolates (U+202A–U+202E, U+2066–U+2069) are stripped; markdown is
+  not rendered (M1), so an image's markdown is text and nothing is
+  fetched; a link is only an `http(s)://` URL written with its scheme to
+  an ASCII host with no user or password before it (`NSDataDetector`),
+  its host shown after it, and a tap opens a sheet naming the host and
+  the whole URL whose "Open" alone calls
+  `UIApplication.shared.open`; a long press shows no preview. There is no
+  web view in the app: `scripts/no-web.sh` fails on WebKit, a web view,
+  Safari's view, `AsyncImage` or an image read from a URL in the sources,
+  and on WebKit, SafariServices or LinkPresentation linked by any Mach-O
+  file in the built app (ios.yml runs it).
+- **No spinner over content** (R-IOS-1): an activity indicator shows only
+  in the empty body while the session is read; once a row is drawn it
+  never shows again. A session read with nothing to draw says so, and one
+  that stopped before it was read points at the bar.
 
 ## Why the Xcode project is generated
 

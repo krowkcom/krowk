@@ -43,12 +43,19 @@ pub const T0: u64 = 1_790_000_000;
 pub const TOKEN: &str = "krowk_sk_fake_fleet_0000000000000000";
 /// The demo's held tool call, which the model makes on "make the file".
 pub const APPROVAL: &str = "toolu_01Touch";
+/// The demo's tool call that runs with no approval, a `read` of the
+/// project's README, which the model makes on "read the README".
+pub const READ: &str = "toolu_01Read";
 /// The session's title: a readable one for the demo.
 const TITLE: &str = "fake fleet";
 const DEMO_TITLE: &str = "A demo session";
 const HELLO: &str = "Say hello";
 const ANSWER: &str = "Hello! I can read this project, change files in it and run commands, asking you first.";
 const MAKE: &str = "Please make the file approved.txt";
+/// The demo's second turn: a tool call with its result, and an answer.
+const LOOK: &str = "Please read the README";
+const README: &str = "# The demo project\nA project the fake fleet made, for the phone to read.\n";
+const LOOKED: &str = "The README says this is the demo project.";
 const MADE: &str = "Done: approved.txt is in the project.";
 const DENIED: &str = "All right, I left the project as it was.";
 
@@ -97,12 +104,22 @@ pub fn post(b: &Batch) -> krowk_api::sync::ListPost {
 }
 
 /// The model: a short answer to anything, except "make the file", which it
-/// answers with a `bash` call — an approval — and then says how it went.
+/// answers with a `bash` call — an approval — and then says how it went,
+/// and "read the README", which it answers with a `read` call that runs
+/// at once, and then says what it read.
 fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
     let result = last["content"].as_array().and_then(|c| c.iter().find(|b| b["type"] == "tool_result").cloned());
     let text = if let Some(r) = result {
-        if r["is_error"] == true { DENIED } else { MADE }
+        if r["tool_use_id"] == READ {
+            LOOKED
+        } else if r["is_error"] == true {
+            DENIED
+        } else {
+            MADE
+        }
+    } else if last.to_string().contains("read the README") {
+        return mock::Reply::sse(&mock::tool_use(READ, "read", &serde_json::json!({"path": "README.md"})));
     } else if last.to_string().contains("make the file") {
         return mock::Reply::sse(&mock::tool_use(APPROVAL, "bash", &serde_json::json!({"command": "touch approved.txt"})));
     } else {
@@ -169,13 +186,15 @@ impl Fleet {
 }
 
 /// Starts every piece, runs the first turn, syncs it and, with `demo`,
-/// leaves a second turn waiting on an approval. Panics, saying what, if a
+/// runs a second turn with a tool call and its result and leaves a third
+/// waiting on an approval. Panics, saying what, if a
 /// piece does not come up.
 pub fn start(demo: bool) -> Fleet {
     let root = scratch::root("fleet");
     for d in ["home", "run", "repo/.git"] {
         std::fs::create_dir_all(root.join(d)).unwrap();
     }
+    std::fs::write(root.join("repo/README.md"), README).unwrap();
     let config = krowk_devregistry::Config { login_person: Some(TOKEN.into()), ..Default::default() };
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).expect("the stand-in registry starts");
     let api = format!("{}/v1", registry.url());
@@ -212,10 +231,15 @@ pub fn start(demo: bool) -> Fleet {
     // The first turn, then the bridge, on a runtime of their own thread.
     let (session, stop, bridge) = hosting.begin(if demo { DEMO_TITLE } else { TITLE }).unwrap_or_else(|e| panic!("{e}"));
 
-    // With `demo`, a second turn, typed at the host, held on its approval.
+    // With `demo`, a second turn, typed at the host: a tool call that runs
+    // at once, its result and an answer (a transcript draws all three).
+    // Then a third, held on its approval.
     let request = demo.then(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer: {}", connect_error(e)));
+        let look = hosting.prompt(Some(&session), LOOK);
+        let ended = rt.block_on(d.execute(look, drain())).unwrap_or_else(|e| panic!("the demo's second turn failed: {e:?}"));
+        assert!(ended.is_some(), "the demo's second turn did not end");
         let (tx, rx) = std::sync::mpsc::channel();
         let cmd = hosting.prompt(Some(&session), MAKE);
         std::thread::spawn(move || {

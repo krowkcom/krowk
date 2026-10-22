@@ -1,7 +1,7 @@
 // R-IOS-1, R-HAND-4: how a session's live connection stands, as the bar
 // under the navigation bar says it, from what the viewer showed and did;
-// and the session screen follows its session under that bar, a strip over
-// nothing, never a spinner over what's on screen.
+// and the session screen (its transcript) follows its session under that
+// bar, a strip above the transcript, never a spinner over what's on screen.
 import Synchronization
 import Testing
 import UIKit
@@ -65,14 +65,14 @@ struct RelayStatusTests {
     }
 
     @MainActor
-    @Test("R-IOS-1: the session screen shows the bar under the navigation bar, over nothing, follows its session, and stops it once gone")
+    @Test("R-IOS-1: the session screen shows the bar under the navigation bar, above its transcript, follows its session, and stops it once gone")
     func screen() async throws {
         let session = StubSession()
         let row = SessionRow(id: "s", title: "A demo session", detail: "app · ● live on host-a", live: true, accessibilityLabel: "A demo session")
-        let screen = SessionPlaceholderViewController(row: row, session: session)
+        let screen = TranscriptViewController(row: row, session: session)
         screen.loadViewIfNeeded()
         #expect(screen.statusBar.superview === screen.view)
-        #expect(screen.label.superview === screen.view)
+        #expect(screen.collectionView.superview === screen.view)
         #expect(screen.statusBar.label.text == "connecting")
         #expect(!screen.view.subviews.contains { $0 is UIActivityIndicatorView }, "no spinner over the content")
         #expect(session.followed.withLock { $0 } == 1)
@@ -86,9 +86,9 @@ struct RelayStatusTests {
 
         // Gone (popped and released): the session stops.
         let other = StubSession()
-        weak var gone: SessionPlaceholderViewController?
+        weak var gone: TranscriptViewController?
         autoreleasepool {
-            let leaving = SessionPlaceholderViewController(row: row, session: other)
+            let leaving = TranscriptViewController(row: row, session: other)
             leaving.loadViewIfNeeded()
             gone = leaving
         }
@@ -100,7 +100,7 @@ struct RelayStatusTests {
     @Test("R-IOS-1: with no session given, the screen is as before: no bar")
     func noSession() {
         let row = SessionRow(id: "s", title: "t", detail: "d", live: false, accessibilityLabel: "t")
-        let screen = SessionPlaceholderViewController(row: row)
+        let screen = TranscriptViewController(row: row)
         screen.loadViewIfNeeded()
         #expect(screen.statusBar.superview == nil)
     }
@@ -114,11 +114,14 @@ struct RelayStatusTests {
     }
 }
 
-/// A session that says what the test tells it to.
+/// A session that says what the test tells it to, and brings the events
+/// it is given at the next frame.
 final class StubSession: LiveSession {
     let followed = Mutex(0)
     let stopped = Mutex(0)
     private let told = Mutex<(@MainActor @Sendable (RelayStatus) -> Void)?>(nil)
+    /// What the next frame brings: the session read at rest, or more.
+    private let pending = Mutex<[(attach: Bool, events: [TranscriptEvent])]>([])
 
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void) {
         followed.withLock { $0 += 1 }
@@ -129,7 +132,22 @@ final class StubSession: LiveSession {
         stopped.withLock { $0 += 1 }
     }
 
-    func takeFrame() -> Int { 0 }
+    @MainActor func takeFrame(into transcript: TranscriptModel) -> Int {
+        let taken = pending.withLock { pending in
+            defer { pending = [] }
+            return pending
+        }
+        for batch in taken {
+            if batch.attach { transcript.attach(batch.events) } else { transcript.apply(batch.events) }
+        }
+        return taken.count
+    }
+
+    /// `events` at the next frame, as the session read at rest when
+    /// `attach`.
+    func bring(_ events: [TranscriptEvent], attach: Bool = false) {
+        pending.withLock { $0.append((attach, events)) }
+    }
 
     func say(_ status: RelayStatus) {
         guard let told = told.withLock({ $0 }) else { return }

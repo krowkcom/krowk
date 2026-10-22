@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app shows a session's transcript.** Tapping a session
+  opens its turns, top to bottom and scrolled to the end: your prompts in
+  bubbles on the right (an attached image shows as `[Image #1]`), the
+  agent's answers in full, its reasoning as a "Thought" line you tap to
+  read, each tool call on one line (`bash ls -la`, `read README.md`) with
+  `✓` or `✗` and the first line of its result beneath, which a tap
+  expands to the whole output (up to 64 KiB, then how many more bytes),
+  and a thin line where each turn ended, saying so if it was interrupted
+  or failed, and why. Whatever an agent wrote is treated as hostile:
+  invisible control and text-direction characters are removed, no image
+  is ever fetched, the app has no web view, and a link shows its real
+  host beside it (`(example.com)`) and opens only after you tap it and
+  confirm the whole address. Markdown isn't formatted yet. Nothing
+  changes for CLI users.
 - **The iPhone app follows a session live.** Opening a session now joins
   it through krowk's relay, and a bar under its title says how that
   stands: `connecting`, `live` once your laptop has welcomed the phone,
@@ -18,7 +32,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   then, and waits for one to come back), `reconnecting` after the
   connection drops, which it rejoins a second later where it left off,
   or `can't reach the relay:` and why (`stopped:` and why, if it can't go
-  on). Its transcript comes in a later version. Nothing changes for CLI users.
+  on). Nothing changes for CLI users.
 - **The iPhone app lists your sessions.** Once paired, the app opens on
   "Sessions": every synced session the phone can open, most recently
   written first, each with its title (or its directory's name when it has
@@ -28,7 +42,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   down. When it can't reach krowk, it keeps the last list and shows no
   session as live. Sessions the phone can't open are counted at the
   bottom ("2 sessions can't be opened on this iPhone.") and not shown.
-  Tapping a session opens its page, where its transcript will appear.
+  Tapping a session opens its transcript.
   Nothing changes for CLI users.
 - **The iPhone app pairs with your laptop.** After signing in, the app
   says to run `krowk devices add` on your laptop, then scan its QR code

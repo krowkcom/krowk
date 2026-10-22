@@ -33,7 +33,7 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     let model: SessionListModel
     private let formatter = SessionRowFormatter()
-    /// What tapping a row pushes: the transcript's place (ticket 88).
+    /// What tapping a row pushes: its transcript.
     private let open: @MainActor (SessionRow) -> UIViewController
 
     private(set) var collectionView: UICollectionView!
@@ -49,7 +49,7 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     public init(model: SessionListModel, open: (@MainActor (SessionRow) -> UIViewController)? = nil) {
         self.model = model
-        self.open = open ?? { SessionPlaceholderViewController(row: $0) }
+        self.open = open ?? { TranscriptViewController(row: $0) }
         super.init(nibName: nil, bundle: nil)
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
@@ -278,109 +278,4 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     /// The footer's text, as applied.
     var footerText: String { footerLines.joined(separator: "\n") }
-}
-
-/// Where a session's transcript opens (ticket 88): its title for now, under
-/// the bar that says how its live connection stands (R-IOS-1). The session
-/// is followed while the screen is in the navigation stack, and stopped as
-/// it leaves.
-public final class SessionPlaceholderViewController: UIViewController {
-    let row: SessionRow
-    let label = UILabel()
-    let statusBar = RelayStatusBar()
-    /// The session followed live, if the app gave one.
-    let session: (any LiveSession)?
-    private var frames: CADisplayLink?
-    /// Updates taken from the session's mailbox, frame by frame.
-    private(set) var taken = 0
-
-    public init(row: SessionRow, session: (any LiveSession)? = nil) {
-        self.row = row
-        self.session = session
-        super.init(nibName: nil, bundle: nil)
-        title = row.title
-        navigationItem.largeTitleDisplayMode = .never
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("SessionPlaceholderViewController is built in code")
-    }
-
-    deinit {
-        session?.stop()
-    }
-
-    override public func viewDidLoad() {
-        super.viewDidLoad()
-        view.backgroundColor = .systemBackground
-        label.text = "\(row.title)\n\nIts transcript opens here in a coming version."
-        label.font = .preferredFont(forTextStyle: .body)
-        label.adjustsFontForContentSizeCategory = true
-        label.numberOfLines = 0
-        label.textAlignment = .center
-        label.accessibilityIdentifier = "session-placeholder"
-        label.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(label)
-        let guide = view.layoutMarginsGuide
-        NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
-            label.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
-            label.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
-        ])
-        guard let session else { return }
-        // A strip under the navigation bar, over nothing: what's on screen
-        // stays as it was whatever the connection does.
-        statusBar.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(statusBar)
-        let safe = view.safeAreaLayoutGuide
-        NSLayoutConstraint.activate([
-            statusBar.topAnchor.constraint(equalTo: safe.topAnchor),
-            statusBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            statusBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-        ])
-        session.follow { [weak self] status in self?.statusBar.show(status) }
-    }
-
-    override public func viewWillAppear(_ animated: Bool) {
-        super.viewWillAppear(animated)
-        guard session != nil, frames == nil else { return }
-        let link = CADisplayLink(target: FrameTarget(self), selector: #selector(FrameTarget.frame(_:)))
-        link.add(to: .main, forMode: .common)
-        frames = link
-    }
-
-    /// Covered, the screen keeps draining what the session brings, so
-    /// nothing piles up; leaving, it stops the session and the drain.
-    override public func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
-            frames?.invalidate()
-            frames = nil
-            session?.stop()
-        }
-    }
-
-    /// One display frame: the mailbox drained, as ticket 89's transcript
-    /// will draw it.
-    fileprivate func frame() {
-        taken += session?.takeFrame() ?? 0
-    }
-}
-
-/// The display link's target, holding the screen weakly: a link retains
-/// its target until invalidated, which it does itself once the screen is
-/// gone. It runs on the main run loop.
-@MainActor
-private final class FrameTarget: NSObject {
-    weak var screen: SessionPlaceholderViewController?
-
-    init(_ screen: SessionPlaceholderViewController) {
-        self.screen = screen
-    }
-
-    @objc func frame(_ link: CADisplayLink) {
-        guard let screen else { return link.invalidate() }
-        screen.frame()
-    }
 }
