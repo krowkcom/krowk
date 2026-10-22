@@ -37,5 +37,8 @@
 	<true/>
 	<key>NSCameraUsageDescription</key>
 	<string>krowk uses the camera to scan the pairing code another device shows.</string>
+	<!-- Face ID before an allow from the phone runs a command (R-IOS-11). -->
+	<key>NSFaceIDUsageDescription</key>
+	<string>Confirm it's you before krowk runs a command on your computer.</string>
 </dict>
 </plist>

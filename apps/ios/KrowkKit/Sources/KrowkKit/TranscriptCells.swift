@@ -522,6 +522,13 @@ final class TranscriptToolCell: TranscriptCell {
                 result.textColor = state.isError ? .systemRed : .secondaryLabel
                 result.isHidden = false
                 what = "\(state.toolLine). \(state.isError ? "Failed" : "Done"): \(first)"
+            } else if !state.verdict.isEmpty {
+                // Waiting on an approval, or answered and not yet run
+                // (ticket 91): the line says which.
+                result.text = state.verdict
+                result.textColor = state.verdict.hasPrefix("denied") || state.verdict.hasPrefix("declined") ? .systemRed : .secondaryLabel
+                result.isHidden = false
+                what = "\(state.toolLine). \(state.verdict)"
             } else if state.running {
                 // Started live, its result still to come.
                 result.text = "running…"

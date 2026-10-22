@@ -1,11 +1,12 @@
 import Foundation
 
-/// What the phone says to a session it follows (ticket 90): the three
-/// commands M1's composer sends. KrowkAccount builds the generated
-/// `Command` from it (R-CLIENT-1: never the wire JSON here), for this
-/// session, with no model, toolset, effort or budget and the default
-/// permission mode; the host's bridge runs a remote prompt under the
-/// session's own settings anyway.
+/// What the phone says to a session it follows: the three commands M1's
+/// composer sends (ticket 90), and the answer to an approval (ticket 91).
+/// KrowkAccount builds the generated `Command` from it (R-CLIENT-1: never
+/// the wire JSON here), for this session, with no model, toolset, effort
+/// or budget and the default permission mode; the host's bridge runs a
+/// remote prompt under the session's own settings anyway. An answer names
+/// its request's own session.
 public enum LiveCommand: Equatable, Sendable {
     /// A new turn, with this text.
     case prompt(String)
@@ -13,6 +14,9 @@ public enum LiveCommand: Equatable, Sendable {
     case steer(String)
     /// The running turn stopped, keeping what it produced.
     case interrupt
+    /// An approval answered: allowed once or for the session, or denied
+    /// (with the answers to its questions).
+    case approve(ApprovalReply)
 }
 
 /// The composer's commands as the screen shows them until the session's
@@ -35,6 +39,9 @@ public struct PendingCommands: Equatable, Sendable {
         case prompt
         case steer
         case interrupt
+        /// An approval's answer: no bubble; its ack goes to the approval
+        /// queue (`Answered.approval`).
+        case approve
     }
 
     public enum State: Equatable, Sendable {
@@ -59,6 +66,9 @@ public struct PendingCommands: Equatable, Sendable {
 
         /// Sent or queued, and not answered: the core still holds it.
         public var isOut: Bool { state == .sending || state == .queued }
+
+        /// A prompt or steer: shown as a bubble.
+        public var isBubble: Bool { kind == .prompt || kind == .steer }
     }
 
     /// In the order typed.
@@ -101,6 +111,9 @@ public struct PendingCommands: Equatable, Sendable {
         case bubble(token: UInt64)
         /// An interrupt answered and gone: `error` when the host refused it.
         case interrupt(token: UInt64, error: String?)
+        /// An approval's answer acked and gone: `error` when the host
+        /// refused it.
+        case approval(token: UInt64, error: String?)
     }
 
     /// `Update.acked`. An id with no entry here (its bubble already gave
@@ -114,6 +127,10 @@ public struct PendingCommands: Equatable, Sendable {
             entries.remove(at: at)
             return .interrupt(token: entry.token, error: error)
         }
+        if entry.kind == .approve {
+            entries.remove(at: at)
+            return .approval(token: entry.token, error: error)
+        }
         guard entry.isOut else { return nil }
         if let error {
             entries[at].state = .refused(Self.refusal(error))
@@ -126,10 +143,10 @@ public struct PendingCommands: Equatable, Sendable {
     }
 
     /// Command `token` never reached the core (its connection had
-    /// stopped): refused, saying `why`. An interrupt just goes.
+    /// stopped): refused, saying `why`. An interrupt or an answer just goes.
     public mutating func unsent(_ token: UInt64, why: String) {
         guard let at = entries.firstIndex(where: { $0.token == token }) else { return }
-        if entries[at].kind == .interrupt {
+        if !entries[at].isBubble {
             entries.remove(at: at)
         } else if entries[at].isOut {
             entries[at].state = .refused(why)
@@ -138,11 +155,12 @@ public struct PendingCommands: Equatable, Sendable {
 
     /// The connection stopped for good: nothing still out will be
     /// answered. Its bubbles are refused, saying so (a sent one may have
-    /// run; a queued one did not), and interrupts go. The tokens changed.
+    /// run; a queued one did not), and interrupts and answers go (the
+    /// approval queue says what became of those). The tokens changed.
     @discardableResult
     public mutating func connectionEnded() -> [UInt64] {
         var changed: [UInt64] = []
-        entries.removeAll { $0.kind == .interrupt }
+        entries.removeAll { !$0.isBubble }
         for at in entries.indices where entries[at].isOut {
             // Queued, or never given an id by the core: it never went.
             entries[at].state = .refused(entries[at].state == .queued || entries[at].id == nil
@@ -163,7 +181,7 @@ public struct PendingCommands: Equatable, Sendable {
         // turn's end, which may yet be logged (a gap's catch-up brings it
         // after the end) — only once no live bubble has the text, so a
         // prompt retyped from it is the one its logged item takes.
-        let live = { (entry: Entry) in entry.kind != .interrupt && !entry.isRefused }
+        let live = { (entry: Entry) in entry.isBubble && !entry.isRefused }
         let unread = { (entry: Entry) in entry.state == .refused(Self.unread) }
         let match = entries.firstIndex { live($0) && $0.text == text }
             // A host that trimmed what it logged still matches.
@@ -213,7 +231,7 @@ public struct PendingCommands: Equatable, Sendable {
     public var out: Int { entries.filter(\.isOut).count }
 
     /// The bubbles, in the order typed.
-    public var bubbles: [Entry] { entries.filter { $0.kind != .interrupt } }
+    public var bubbles: [Entry] { entries.filter(\.isBubble) }
 
     /// The host's ack error as the bubble says it: its sentence, or a
     /// plain one when it gave none.
