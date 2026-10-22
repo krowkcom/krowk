@@ -60,13 +60,17 @@ impl RegistryMailbox {
     ) -> RegistryMailbox {}
 }
 
+impl RegistryMailbox {
+    pub fn cancelled(&self) -> bool {}
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct Joined {
     pub seq: u64,
     pub device_name: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+#[derive(Clone, PartialEq, Eq, uniffi::Record)]
 pub struct PairingInvite {
     pub code: String,
     pub user_id: String,
@@ -81,6 +85,15 @@ impl Account {
     pub fn join_pairing(
         &self,
         code: String,
+        name: String,
+    ) -> Result<Joined, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn join_invite(
+        &self,
+        invite: PairingInvite,
         name: String,
     ) -> Result<Joined, KrowkError> {}
 }

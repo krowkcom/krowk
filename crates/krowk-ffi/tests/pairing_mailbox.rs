@@ -2,7 +2,8 @@
 //! side, against the stand-in registry. It reads the person's one open
 //! pairing, ends it, and once the join is cancelled stops waiting within a
 //! second and refuses every call but `end` — as `cancelled`, never as the
-//! status 0 the join would count as an ack that may have landed.
+//! status 0 the join would count as an ack that may have landed — until
+//! the keys are kept: from the ack on, a cancel is too late.
 
 mod common;
 
@@ -74,4 +75,21 @@ fn r_e2e_3_end_ends_the_pairing_even_once_cancelled() {
     let e = w.host.find_open_pairing().unwrap_err();
     assert!(matches!(e.code().as_str(), "pairing_gone" | "no_pairing"), "{e:?}");
     assert!(w.host.open_pairing().is_ok(), "a new pairing can open: the old one is over");
+}
+
+#[test]
+fn r_e2e_3_from_the_ack_on_a_cancel_is_too_late() {
+    let w = World::new();
+    let (mailbox, cancel, _) = opened(&w);
+    // The ack is out of turn here, which the registry refuses: what counts
+    // is that it went to the registry, cancel or no cancel.
+    cancel.store(true, Ordering::SeqCst);
+    let e = mailbox.step(PairingStep::Acknowledgement, &[7; 32]).unwrap_err();
+    assert_ne!(e.code(), "cancelled", "{e:?}");
+    assert!(!mailbox.cancelled());
+    let e = mailbox.claim_device().unwrap_err();
+    assert_ne!(e.code(), "cancelled", "the claim reaches the registry: {e:?}");
+    let started = Instant::now();
+    mailbox.pause(Duration::from_millis(400));
+    assert!(started.elapsed() >= Duration::from_millis(400), "the pause is not cut short");
 }

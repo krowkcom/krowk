@@ -91,6 +91,7 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         // R-E2E-3: joining a pairing, and the scanned invite's code.
         "func joinPairing(code: String, name: String) throws -> Joined",
         "func cancelPairing()",
+        "func joinInvite(invite: PairingInvite, name: String) throws -> Joined",
         "struct Joined",
         "var deviceName: String",
         "func parsePairingInvite(uri: String) -> PairingInvite?",

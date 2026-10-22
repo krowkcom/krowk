@@ -124,6 +124,30 @@ fn rest(rx: &std::sync::mpsc::Receiver<String>) -> String {
     rx.try_iter().collect::<Vec<_>>().join("\n")
 }
 
+/// A `krowk devices add` that a failing test leaves neither stopped nor
+/// running: on a panic its process is continued and killed.
+struct Reaped(u32);
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            let pid = self.0.to_string();
+            for sig in ["-CONT", "-KILL"] {
+                let _ = Command::new("kill").args([sig, &pid]).status();
+            }
+        }
+    }
+}
+
+/// The laptop's `krowk devices add`, its stderr lines, and the code it shows.
+fn add(laptop: &Path, api: &str) -> (Child, Reaped, std::sync::mpsc::Receiver<String>, String) {
+    let mut a = krowk(laptop, api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let reaped = Reaped(a.id());
+    let a_err = lines(&mut a);
+    let code = code_shown(&a_err);
+    (a, reaped, a_err, code)
+}
+
 fn wait(mut child: Child, within: Duration) -> std::process::Output {
     let deadline = Instant::now() + within;
     while child.try_wait().unwrap().is_none() {
@@ -211,9 +235,7 @@ fn r_e2e_3_the_phone_joins_with_the_terminals_code_and_holds_the_user_key_and_th
     let (account, storage) = phone(&api);
     assert!(!account.has_user_keys().unwrap());
 
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
-    let a_err = lines(&mut a);
-    let code = code_shown(&a_err);
+    let (a, _reaped, a_err, code) = add(&laptop, &api);
     let joined = account.join_pairing(code, "Test iPhone".into()).unwrap();
     assert_eq!(joined.device_name, "Test iPhone");
     let a = wait(a, Duration::from_secs(30));
@@ -249,9 +271,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_phone_keeps_no_user_key() {
     set_up(&laptop, &api);
     let (account, storage) = phone(&api);
 
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
-    let a_err = lines(&mut a);
-    let code = code_shown(&a_err);
+    let (a, _reaped, a_err, code) = add(&laptop, &api);
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let (code, detail) = refusal(account.join_pairing(wrong, "Test iPhone".into()));
     assert_eq!(code, "pairing_failed");
@@ -293,9 +313,7 @@ fn r_e2e_3_a_join_cancelled_while_the_other_device_waits_ends_within_a_second() 
     set_up(&laptop, &api);
     let (account, _) = phone(&api);
 
-    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
-    let a_err = lines(&mut a);
-    let code = code_shown(&a_err);
+    let (a, _reaped, a_err, code) = add(&laptop, &api);
     let pid = a.id().to_string();
     let signal = |sig: &str| assert!(Command::new("kill").args([sig, &pid]).status().unwrap().success());
     signal("-STOP");
@@ -325,5 +343,35 @@ fn r_e2e_3_a_join_cancelled_while_the_other_device_waits_ends_within_a_second() 
     let a = wait(a, Duration::from_secs(30));
     assert!(!a.status.success(), "the laptop's pairing is over: {}", rest(&a_err));
     assert_eq!(served(&api).head().seq, 0, "nothing reached the chain");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-E2E-3: a scanned invite is checked before its code is spent. One for
+/// another pairing is refused with nothing sent, and the pairing it
+/// names stays open for the right one, which joins.
+#[test]
+fn r_e2e_3_a_scanned_invite_for_another_pairing_spends_nothing_and_the_right_one_joins() {
+    let (_registry, api) = registry();
+    let r = root("invite");
+    let laptop = r.join("laptop");
+    set_up(&laptop, &api);
+    let (account, _) = phone(&api);
+    let user_id = krowk_api::Client::new(&api, PHONE).verify_key().unwrap().user_id;
+    let laptop_device = Keystore::new(&laptop.join(".krowk")).device_key().unwrap().id().to_string();
+
+    let (a, _reaped, a_err, code) = add(&laptop, &api);
+    let invite = |code: &str, user: &str, device: &str| krowk_ffi::PairingInvite { code: code.into(), user_id: user.into(), device: device.into() };
+    let other_device = "0123456789abcdef0123456789abcdef";
+    for wrong in [invite(&code, &user_id, other_device), invite(&code, "someone-else", &laptop_device)] {
+        assert_eq!(refusal(account.join_invite(wrong, "Test iPhone".into())).0, "invite_mismatch");
+    }
+    let open = krowk_api::Client::new(&api, PHONE).find_open_pairing().unwrap();
+    assert!(open.state == "open" && open.joiner_message.is_empty(), "nothing was sent: {open:?}");
+
+    let joined = account.join_invite(invite(&code, &user_id, &laptop_device), "Test iPhone".into()).unwrap();
+    assert_eq!(joined.device_name, "Test iPhone");
+    let a = wait(a, Duration::from_secs(30));
+    assert!(a.status.success(), "{}", rest(&a_err));
+    assert!(account.has_user_keys().unwrap());
     let _ = std::fs::remove_dir_all(&r);
 }
