@@ -4116,8 +4116,13 @@ mod tests {
         app.on_line(&agents(vec![BackendAgent { task_id: "a1".into(), description: "survey".into(), agent: None }]));
         assert!(!app.running(), "no turn");
         assert_eq!(root_state(&app, "fix it", None), (presence::State::Working, "fix it"));
+        // A turn that failed while the agent works on is told once that is
+        // done too: herdr hears idle once, when everything is.
+        let failed = (presence::State::Error, "it broke".to_string());
+        assert_eq!(root_state(&app, "fix it", Some(&failed)).0, presence::State::Working, "still at work");
         app.on_line(&agents(Vec::new()));
         assert_eq!(root_state(&app, "fix it", None).0, presence::State::Idle, "ended");
+        assert_eq!(root_state(&app, "fix it", Some(&failed)), (presence::State::Error, "it broke"), "then how the turn ended");
     }
 
     #[test]
