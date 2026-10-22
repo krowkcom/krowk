@@ -90,7 +90,102 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             session: Default::default(),
         })
     });
-    server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, ..Default::default() }, factory).map_err(|e| fail("host_failed", e))
+    // Automatic sync (R-SYNC-3): every session a turn starts in, bridged
+    // as `krowk sync host` would, by a supervisor on a thread of its own —
+    // never this one, nor the daemon's. Its checks run per turn, so a
+    // machine that does not sync (or has turned it off) builds nothing and
+    // asks the network nothing (R-SYNC-1).
+    // Each synced session holds descriptors of its own — its daemon
+    // connection's two ends, its relay link, a direct listener, the
+    // registry's connections — beside its own host's, and launchd starts a
+    // daemon with a soft limit of 256 open files: fifty sessions need more
+    // (ticket 98).
+    raise_open_files(OPEN_FILES);
+    let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
+    let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone()), turns_rx);
+    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // However the daemon ended — idle, `krowk host stop`, a signal — each
+    // bridge ends its stream and gives its lease back before the process
+    // exits, rather than leaving it to lapse. The daemon's runtime is gone,
+    // and its signal handlers with nothing reading them: SIGTERM and SIGINT
+    // go back to their defaults, so a signal during the grace ends the
+    // process at once — as a second one does while the daemon winds down —
+    // the leases then left to lapse.
+    // SAFETY: setting a disposition to SIG_DFL has no preconditions.
+    unsafe {
+        libc::signal(libc::SIGTERM, libc::SIG_DFL);
+        libc::signal(libc::SIGINT, libc::SIG_DFL);
+    }
+    auto.stop(krowk_harness::host::SHUTDOWN_GRACE);
+    served
+}
+
+/// The open files the daemon asks for: room for well over fifty synced
+/// sessions, and under macOS's own ceiling for a process (`OPEN_MAX`, 10240).
+const OPEN_FILES: libc::rlim_t = 4096;
+
+/// The soft limit on open files raised to `want`, or the hard limit when
+/// that is lower; never lowered. One that cannot be raised is left: the
+/// daemon runs as before.
+fn raise_open_files(want: libc::rlim_t) {
+    let mut l = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `l` is a valid rlimit for getrlimit to fill and setrlimit to read.
+    unsafe {
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut l) != 0 || l.rlim_cur >= want {
+            return;
+        }
+        l.rlim_cur = want.min(l.rlim_max);
+        libc::setrlimit(libc::RLIMIT_NOFILE, &l);
+    }
+}
+
+/// The supervisor's config: the policy and whether sync is set up, read
+/// again for every session (an edit of config.json, a `krowk sync init`
+/// since the daemon started, holds at the next turn), and each bridge's
+/// options built as `krowk sync host` builds them.
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) -> krowk_harness::sync::auto::Config {
+    use krowk_harness::sync::auto;
+    let (f, f2) = (ctx.f.clone(), ctx.f.clone());
+    let env = krowk_api::home::process_env;
+    auto::Config {
+        socket: socket.to_path_buf(),
+        sessions,
+        version: super::VERSION.into(),
+        krowk_home: krowk_api::home::dir(ctx.io.env).ok(),
+        // A config that does not read is an Err, which is off.
+        policy: Box::new(move || auto::policy(&env, Some(&prompt::config_json().map_err(|e| e.fix())?))),
+        ready: Box::new(move || own_ctx(&f, |ctx| super::synced::ready(ctx)).map_err(|e| format!("{} ({})", e.fix(), e.code()))),
+        build: Box::new(move |session: &str, cwd: &std::path::Path| {
+            own_ctx(&f2, |ctx| {
+                // The workspace as `krowk sync host` run in the session's own
+                // directory would take it — its repository's config.json
+                // included — not as the daemon's `/` would. `KROWK_TOKEN`
+                // names the key outright, and no config is read for it.
+                if ctx.env("KROWK_TOKEN").is_empty() {
+                    let pinned = crate::config::load(&cwd.display().to_string(), ctx.io.env, &ctx.f.workspace).map_err(|e| fail("bad_config", format!("{e} — fix the file or remove it; `krowk config show` names every layer")))?;
+                    ctx.f.workspace = pinned.workspace;
+                }
+                super::synced::options(ctx, session, cwd, None)
+            })
+            .map_err(|e| (e.code(), e.fix()))
+        }),
+        bridged,
+        paid_pause: auto::PAID_PAUSE,
+    }
+}
+
+/// `body` run with a context of its own, for a call off the command's own
+/// (the supervisor's, on its thread): the process's environment, no
+/// stdout, and stderr the daemon's — `host.log` — so a line a bridge's
+/// setup says (`no direct path …`) is kept there.
+fn own_ctx<R>(f: &super::flags::Flags, body: impl FnOnce(&mut Ctx) -> R) -> R {
+    use super::Io;
+    let (mut out, mut err) = (std::io::sink(), std::io::stderr());
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: false, err_tty: false, stdin_tty: false };
+    let mut ctx = Ctx { io: &mut io, f: f.clone(), format: Format::Json, colour: false, filter: None };
+    body(&mut ctx)
 }
 
 pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {

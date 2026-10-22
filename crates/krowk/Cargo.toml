@@ -29,10 +29,10 @@ krowk-tui = { path = "../krowk-tui", optional = true }
 krowk-client = { path = "../krowk-client", optional = true }
 # `krowk devices add` draws the pairing invite as a QR code for the iPhone
 # app to scan (full build only, under `harness`). Project Nayuki's QR Code
-# generator: MIT, no dependencies, the encoder alone. The full build
-# measured 8,768 bytes smaller with it than without on x86_64 Linux (LTO's
-# layout moves more than it weighs); `qrcode` with default-features off
-# measured 9,856 bytes larger than main, 18,624 more than this. RSS: one
+# generator: MIT, no dependencies, the encoder alone. With the invite URI
+# it adds 15,840 bytes to the full build on x86_64 Linux (budgets.toml,
+# full.size); `qrcode` with default-features off measured 18,624 bytes
+# more than it. RSS: one
 # code's buffers, a few KB by its size (not measured), only while `devices
 # add` draws it. Not in the agent build (lean-deps.txt).
 qrcodegen = { version = "1.8", optional = true }

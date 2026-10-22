@@ -29,6 +29,11 @@ targets:
     sources: [App]
     dependencies:
       - package: KrowkKit
+        product: KrowkKit
+      - package: KrowkKit
+        product: KrowkKeys
+      - package: KrowkKit
+        product: KrowkAccount
       - package: KrowkCore
         product: Krowk
     settings:
@@ -48,6 +53,32 @@ targets:
         INFOPLIST_KEY_NSCameraUsageDescription: "krowk uses the camera to scan the pairing code another device shows."
         # ITSAppUsesNonExemptEncryption is deliberately absent: the export
         # compliance answer is the person's, in ticket 74.
+  # Unit tests hosted in the app, for what needs its entitlements: the
+  # Keychain refuses an unhosted SwiftPM test bundle (-34018). Package
+  # tests that don't touch the Keychain stay in their packages.
+  Krowk-iOSTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [AppTests]
+    dependencies:
+      - target: Krowk-iOS
+      - package: KrowkKit
+        product: KrowkKeys
+      - package: KrowkKit
+        product: KrowkKit
+      - package: KrowkKit
+        product: KrowkAccount
+      - package: KrowkCore
+        product: Krowk
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app.tests
+        TARGETED_DEVICE_FAMILY: "1"
+        GENERATE_INFOPLIST_FILE: YES
+        # XcodeGen derives the host from the target's name; the app's
+        # product is Krowk.
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Krowk.app/Krowk"
+        BUNDLE_LOADER: "$(TEST_HOST)"
   Krowk-iOSUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -64,9 +95,11 @@ schemes:
     build:
       targets:
         Krowk-iOS: all
+        Krowk-iOSTests: [test]
         Krowk-iOSUITests: [test]
     test:
       targets:
         - Krowk-iOSUITests
+        - Krowk-iOSTests
         - package: KrowkKit/KrowkKitTests
         - package: KrowkCore/KrowkCoreTests

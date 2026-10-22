@@ -69,6 +69,12 @@ impl Home {
 
     /// `serve_with`, the daemon of krowk `version`.
     fn serve_as(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>) -> std::thread::JoinHandle<Result<(), String>> {
+        self.serve_hooked(version, idle, kick, Hooks::default())
+    }
+
+    /// `serve_as`, with the in-process hooks an automatic sync's supervisor
+    /// would hand it: where turns are told, and the sessions it bridges.
+    fn serve_hooked(&self, version: &str, idle: Option<Duration>, kick: Option<Arc<tokio::sync::Notify>>, hooks: Hooks) -> std::thread::JoinHandle<Result<(), String>> {
         let (env, socket, version) = (self.env(), self.socket(), version.to_string());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let made = self.made.clone();
@@ -90,7 +96,7 @@ impl Home {
                     session: Default::default(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: version, kick, ..Default::default() }, factory)
+            server::run(server::Options { socket, idle, krowk_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
@@ -111,10 +117,25 @@ impl Home {
         }
     }
 
+    /// A background client, as an automatic sync bridge connects.
+    async fn background(&self, answers: bool) -> Client {
+        match Client::connect_as(&self.socket(), &self.repo(), "test", answers, true).await {
+            Ok(c) => c,
+            Err(_) => panic!("no daemon answered"),
+        }
+    }
+
     fn prompt(&self, text: &str) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
         Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
     }
+}
+
+/// The in-process hooks of `server::Options`.
+#[derive(Default)]
+struct Hooks {
+    turns: Option<tokio::sync::mpsc::UnboundedSender<server::TurnEvent>>,
+    bridged: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
 }
 
 impl Drop for Home {
@@ -908,5 +929,155 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
         assert_eq!(finished, 1, "the finished item once");
     });
     drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: a background client — an automatic sync bridge, always on —
+/// never holds the daemon up: with only it connected the daemon exits after
+/// its window and takes its socket, as with nobody connected. (An ordinary
+/// client connected as long holds it up: the idle test above.)
+#[test]
+fn r_host_1_a_background_client_does_not_hold_the_daemon_up() {
+    let home = Home::new("bg-idle", "http://127.0.0.1:9");
+    let daemon = home.serve(Some(Duration::from_millis(400)));
+    let started = std::time::Instant::now();
+    let rt = rt();
+    let bridge = rt.block_on(async {
+        let b = home.background(true).await;
+        // Served like any other client while it is on.
+        assert_eq!(b.status().await.unwrap().clients, 0, "and not counted as one");
+        b
+    });
+    // It stays connected, its runtime alive, while the daemon goes.
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(daemon.join()));
+    let joined = rx.recv_timeout(Duration::from_secs(3)).expect("the daemon exited within 3 s of a background client connecting");
+    joined.unwrap().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(3));
+    assert!(!home.socket().exists(), "and took its socket with it");
+    drop(bridge);
+    drop(rt);
+}
+
+/// R-HOST-1: `krowk host stop` is not refused for a background client, and
+/// `status` counts only the ordinary ones.
+#[test]
+fn r_host_1_stop_and_status_do_not_count_a_background_client() {
+    let home = Home::new("bg-stop", "http://127.0.0.1:9");
+    let daemon = home.serve(None);
+    let rt = rt();
+    rt.block_on(async {
+        let _bridge = home.background(true).await;
+        let a = home.client().await;
+        assert_eq!(a.status().await.unwrap().clients, 1, "the ordinary client alone");
+        a.stop(false).await.expect("no host_in_use for a background client");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+    assert!(!home.socket().exists());
+}
+
+/// R-HOST-1: `status` says how many clients following a session answer its
+/// approvals — a background one that answers counts like any other.
+#[test]
+fn r_host_1_status_counts_a_sessions_answering_followers() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("answering", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client_answering(true).await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let session = a.execute(home.prompt("hi"), tx).await.unwrap().unwrap().session_id;
+        // `a` ran it, so follows it; a `-p` client attaches too.
+        let p = home.client().await;
+        let (tx, _prx) = mpsc::channel(1024);
+        p.attach(&session, None, tx).await.unwrap();
+        let of = |s: krowk_harness::protocol::HostStatus| s.sessions.into_iter().find(|x| x.session_id == session).map(|x| (x.clients, x.answering));
+        assert_eq!(of(a.status().await.unwrap()), Some((2, 1)), "one answering follower and one not");
+        let bridge = home.background(true).await;
+        let (tx, _brx) = mpsc::channel(1024);
+        bridge.attach(&session, None, tx).await.unwrap();
+        assert_eq!(of(a.status().await.unwrap()), Some((3, 2)), "a second answering follower");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// A turn hook's events until `n` have come.
+async fn turn_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<server::TurnEvent>, n: usize) -> Vec<server::TurnEvent> {
+    let mut got = Vec::new();
+    while got.len() < n {
+        got.push(tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("a turn event came").expect("the hook is open"));
+    }
+    got
+}
+
+/// R-HOST-1, R-LAG-9: the daemon tells an in-process hook — the automatic
+/// sync's supervisor — when a session's own turn starts and ends, without
+/// waiting on it: a turn too short for any poll is not missed, and a
+/// subagent's turn is not told.
+#[test]
+fn r_lag_9_the_turn_hook_is_told_each_sessions_own_turns_and_never_a_subagents() {
+    let parent = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let p = parent.clone();
+    let m = mock::serve(move |body, _| {
+        if body["system"].to_string().contains("You are a subagent") {
+            return mock::Reply::sse(&mock::text_stream("The repo has one README."));
+        }
+        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
+        let text = last["content"].to_string();
+        if text.contains("survey") && p.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            return mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "survey", "prompt": "survey the repo"})));
+        }
+        mock::Reply::sse(&mock::text_stream("hi"))
+    });
+    let home = Home::new("turns", &m.url);
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(300)), None, Hooks { turns: Some(tx), bridged: None });
+    let rt = rt();
+    rt.block_on(async {
+        let c = home.client().await;
+        // A short turn, in a new session.
+        let (ltx, _lrx) = mpsc::channel(1024);
+        let session = c.execute(home.prompt("hi"), ltx).await.unwrap().unwrap().session_id;
+        let start = |running| server::TurnEvent { session: session.clone(), running };
+        assert_eq!(turn_events(&mut rx, 2).await, [start(true), start(false)]);
+        // A turn that runs a subagent: the child's own turn is in the
+        // stream, and only the parent's is told.
+        let (ltx, mut lrx) = mpsc::channel(1024);
+        let r = c.execute(home.prompt("survey the repo"), ltx).await.unwrap().unwrap();
+        let mut lines = Vec::new();
+        while let Ok(l) = lrx.try_recv() {
+            lines.push(l);
+        }
+        let child = lines.iter().find_map(|l| if let StreamLine::Log(LogEvent { body: LogBody::SubagentStarted { subagent_session_id, .. }, .. }) = l { Some(subagent_session_id.clone()) } else { None }).expect("a subagent ran");
+        assert!(lines.iter().any(|l| matches!(l, StreamLine::Log(LogEvent { session_id, body: LogBody::TurnStarted { .. }, .. }) if *session_id == child)), "the child's turn was streamed");
+        let parent = |running| server::TurnEvent { session: r.session_id.clone(), running };
+        assert_eq!(turn_events(&mut rx, 2).await, [parent(true), parent(false)]);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(rx.try_recv().is_err(), "nothing of the child's");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-HOST-1: `status` reports the sessions the process's sync bridges, from
+/// the set its owner keeps — and nothing from a daemon without one.
+#[test]
+fn r_host_1_status_reports_the_bridged_sessions_only_with_a_supervisor() {
+    let home = Home::new("bridged", "http://127.0.0.1:9");
+    let daemon = home.serve(Some(Duration::from_millis(200)));
+    rt().block_on(async { assert_eq!(home.client().await.status().await.unwrap().bridged, None) });
+    daemon.join().unwrap().unwrap();
+
+    let set = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(200)), None, Hooks { turns: None, bridged: Some(set.clone()) });
+    rt().block_on(async {
+        let c = home.client().await;
+        assert_eq!(c.status().await.unwrap().bridged, Some(Vec::new()));
+        set.lock().unwrap().extend(["b".to_string(), "a".to_string()]);
+        assert_eq!(c.status().await.unwrap().bridged, Some(vec!["a".to_string(), "b".to_string()]));
+    });
     daemon.join().unwrap().unwrap();
 }

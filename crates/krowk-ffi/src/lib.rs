@@ -12,7 +12,8 @@
 //!    plain sync methods; Swift calls them off the main thread.
 //! 3. Objects are `#[derive(uniffi::Object)]` held in `Arc`, constructed
 //!    with `#[uniffi::constructor] fn open(...) -> Result<Arc<Self>,
-//!    KrowkError>`.
+//!    KrowkError>`, or returned so by another object's method
+//!    (`Account::open_session`).
 //! 4. Every exported object is `Send + Sync + 'static`, checked at compile
 //!    time by `tests/send_sync.rs`.
 //! 5. Protocol and core types are re-declared with
@@ -47,6 +48,44 @@
 //! device's keys on first use, and holds the client that signs registry
 //! calls as this device. Nothing exported returns a private key.
 //!
+//! # Sessions
+//!
+//! [`Account::list_sessions`] lists the person's synced sessions from their
+//! sealed indexes, each record checked against the device list the phone
+//! holds; [`Account::open_session`] opens one from its latest checkpoint
+//! into an [`OpenedSession`], which reads on with `catch_up` and gets a
+//! relay ticket for the live viewer. Listing, opening, `catch_up` and the
+//! ticket are blocking registry calls (rule 2); the getters never wait on
+//! the network. The session's keys, the device's signing key and the read
+//! position stay inside `OpenedSession`; Swift gets events, titles and
+//! heads. A head crosses as [`HeadRecord`], a record of its own rather than
+//! the remote type rule 5 asks for: `Head`'s digest is a `[u8; 32]`, which
+//! UniFFI has no word for, so the record carries it as bytes, checked to be
+//! 32 on the way back in.
+//!
+//! # Following a session live
+//!
+//! [`Viewer`] opens on an `OpenedSession` and wraps krowk-client's
+//! `ViewerCore` and the relay's join handshake behind a mutex. Swift owns
+//! the WebSocket and the timers (rule 1): it passes in `start`, the relay
+//! ticket (`ticket`, `ticket_failed`), each message received (a
+//! [`WsFrame`]), `closed`, `tick` at `next_wake_ms`, the person's
+//! `command`s and the chunks `read_chunks` read (`chunks_read`), each with
+//! its own clock's `now_ms`, and carries out the [`Effect`]s each returns:
+//! dial, send, ping, close, show the [`ViewerUpdate`]s, read the chunks,
+//! end. Each dial is numbered and what comes from a connection names it,
+//! so a dropped one's late messages are ignored; the join's ten-second
+//! waits are `tick`'s too. Every rule of the viewer is Rust's; the
+//! session's keys and the signing key stay inside. Relay only: a race for
+//! a direct path the core asks for is lost at once, here.
+//!
+//! # The protocol
+//!
+//! Every type reachable from `StreamLine` and `Command` is
+//! `krowk_client::protocol`'s own, re-declared remote in `src/protocol.rs`;
+//! JSON crosses only at the edges, through [`decode_stream_line`],
+//! [`decode_log_event`] and [`encode_command`].
+//!
 //! # Generating the Swift bindings
 //!
 //! Library mode reads the interface out of the host build's cdylib (on
@@ -69,20 +108,29 @@ uniffi::setup_scaffolding!();
 
 mod account;
 mod error;
+mod protocol;
+mod sessions;
 mod sign_in;
 mod storage;
+mod viewer;
 
 pub use account::Account;
 pub use error::KrowkError;
+pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
+pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
 
 use krowk_client::pairing::PairingCode;
 
 /// The version of this crate's exported API, the first line of
 /// `public-api.txt`: bumped whenever an existing export is removed or
-/// changed (rule 8), never for an addition.
-pub const FFI_API_VERSION: u32 = 2;
+/// changed (rule 8), never for an addition. A change to the error an
+/// export returns for a case counts too, though the file can't show it:
+/// Swift that matches on the old variant would misread it (4: `SignIn.wait`
+/// refuses a key the storage won't keep as `credentials_unwritable`).
+pub const FFI_API_VERSION: u32 = 4;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

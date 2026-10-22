@@ -55,6 +55,8 @@ pub use store::{
 /// How a registry is started: the `--limit-bytes` and `--site` flags, and the
 /// clock — Go's `HandlerWithClock`. `limit_bytes <= 0` is the default limit;
 /// an empty `site` means links name whatever host a request arrived on.
+/// `max_sessions` and `login_person` are for tests and the fake fleet; no
+/// flag sets them.
 #[derive(Default, Clone)]
 pub struct Config {
     pub limit_bytes: i64,
@@ -63,6 +65,14 @@ pub struct Config {
     /// The most synced sessions a workspace holds; 0 is the registry's
     /// 10,000.
     pub max_sessions: usize,
+    /// The token base (a token up to its first `#`) a browser-approved
+    /// authorization — a login, or any other action — mints its key under,
+    /// `{base}#{random}`, so it lands in that person and workspace rather
+    /// than a new one: the fake fleet's phone signs in as its host's
+    /// person. `None` mints a person of its own, as ever. It changes which
+    /// person a login lands in and nothing about what is refused; no flag
+    /// of `devregistry`'s sets it.
+    pub login_person: Option<String>,
 }
 
 /// A registry serving on its own thread, stopped when dropped.
@@ -101,7 +111,8 @@ impl Drop for Running {
 
 fn app(config: Config) -> Arc<App> {
     let clock = config.clock.unwrap_or_else(|| Arc::new(jiff::Timestamp::now));
-    let app = App::new(config.limit_bytes, &config.site, clock);
+    let mut app = App::new(config.limit_bytes, &config.site, clock);
+    app.login_person = config.login_person;
     app.lock().sync.max_sessions = config.max_sessions;
     Arc::new(app)
 }
@@ -199,6 +210,8 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         }
         (_, ["v1", "key"]) if get => auth::show_key(req),
         ("PUT" | "PATCH", ["v1", "key", "device"]) => devices::claim(a, req),
+        // The device's own APNs token (R-IOS-12), signed by it.
+        ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "push_token"]) => devices::push_token(a, req),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
         ("POST", ["v1", "cli", "authorizations"]) => {
@@ -253,8 +266,26 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             sync::signed(a, req, |a, req, by| sync::show_transport(a, req, slug, &site, by))
         }
         ("DELETE", ["v1", "transports", slug]) => sync::signed(a, req, |a, req, by| sync::spend_transport(a, req, slug, by)),
-        ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
+        // The lease holder asking for the person's other devices to be rung
+        // (R-IOS-12).
+        ("POST", ["v1", "sessions", id, "notification"]) => sync::signed(a, req, |a, req, by| sync::notify(a, req, id, by)),
+        (_, ["_settings" | "_notifications" | "_push_tokens", ..]) => stand_in_route(a, req, &m, &segs),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
+        _ => no_such_endpoint(),
+    }
+}
+
+/// What the stand-in serves in place of a person at the dashboard, and the
+/// reads only it has.
+fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
+    let get = m == "GET" || m == "HEAD";
+    match (m, segs) {
+        ("POST", ["_settings", "devices", id, "revocation"]) => sync::revoke(a, req, id),
+        // Stand-in only, never in the real registry: what was asked of the
+        // pushes, for tests in other crates, which reach the stand-in only
+        // over HTTP, to assert on. Neither ever shows a token.
+        (_, ["_notifications"]) if get => sync::notifications_seen(a),
+        (_, ["_push_tokens"]) if get => devices::push_tokens_seen(a),
         _ => no_such_endpoint(),
     }
 }
@@ -374,6 +405,69 @@ mod tests {
         assert!(field(&again, "token").starts_with("krowk_sk_"), "{again}");
         let spent = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
         assert!(spent.starts_with("HTTP/1.1 410") && spent.contains("\"spent\""), "{spent}");
+    }
+
+    /// `login_person` lands a browser login in the configured person and
+    /// workspace, and nothing else about it changes: the code is still one
+    /// to approve, and the key still collected once.
+    #[test]
+    fn a_browser_login_lands_in_the_login_person_when_one_is_set() {
+        let base = "krowk_sk_fake_fleet_person";
+        let running = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config { login_person: Some(base.into()), ..Config::default() }).unwrap();
+        let opened = call(running.addr(), "POST", "/v1/cli/authorizations?action=login");
+        let (slug, code) = (field(&opened, "slug"), field(&opened, "code"));
+        assert!(call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}")).contains("\"pending\""));
+        assert!(call(running.addr(), "POST", &format!("/_approve/cli/authorizations/{code}/approval")).starts_with("HTTP/1.1 200"));
+        let collected = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
+        let token = field(&collected, "token");
+        assert!(token.starts_with(&format!("{base}#")), "{collected}");
+        assert_eq!(store::person_for(&token), store::person_for(base));
+        assert_eq!(store::workspace_for(&token), store::workspace_for(base));
+        let spent = call(running.addr(), "GET", &format!("/v1/cli/authorizations/{slug}"));
+        assert!(spent.starts_with("HTTP/1.1 410"), "{spent}");
+
+        // Unset, a login is a person of its own, as ever.
+        let plain = start(TcpListener::bind("127.0.0.1:0").unwrap(), Config::default()).unwrap();
+        let opened = call(plain.addr(), "POST", "/v1/cli/authorizations?action=login");
+        let (slug, code) = (field(&opened, "slug"), field(&opened, "code"));
+        call(plain.addr(), "POST", &format!("/_approve/cli/authorizations/{code}/approval"));
+        let token = field(&call(plain.addr(), "GET", &format!("/v1/cli/authorizations/{slug}")), "token");
+        assert!(token.starts_with("krowk_sk_") && !token.contains('#') && token.len() == "krowk_sk_".len() + 32, "{token}");
+        assert_ne!(store::person_for(&token), store::person_for(base));
+    }
+
+    /// R-IOS-12: the stand-in-only reads answer what was recorded — every
+    /// notification in order, and which devices hold a push token for which
+    /// environment, never the token itself — so a test in another crate can
+    /// assert over HTTP. Empty, they answer empty lists.
+    #[test]
+    fn r_ios_12_the_stand_in_shows_the_notifications_and_push_tokens_recorded() {
+        let app = app(Config::default());
+        let running = spawn(TcpListener::bind("127.0.0.1:0").unwrap(), Arc::clone(&app)).unwrap();
+        let body = |path: &str| {
+            let answer = call(running.addr(), "GET", path);
+            assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+            answer[answer.find("\r\n\r\n").unwrap() + 4..].split_whitespace().collect::<String>()
+        };
+        assert_eq!(body("/_notifications"), r#"{"notifications":[]}"#);
+        assert_eq!(body("/_push_tokens"), r#"{"push_tokens":[]}"#);
+        {
+            let mut s = app.lock();
+            let at = s.now();
+            for (dedup, kind) in [("aa", "approval"), ("bb", "done")] {
+                s.sync.notifications.push(sync::Notified { session: "s1".into(), kind: kind.into(), dedup: dedup.repeat(32), from_device: "d1".into(), at });
+            }
+            s.sync.push_tokens.insert("d2".into(), ("cd".repeat(32), "sandbox".into()));
+            s.sync.push_tokens.insert("d1".into(), ("ef".repeat(32), "production".into()));
+        }
+        let (aa, bb) = ("aa".repeat(32), "bb".repeat(32));
+        assert_eq!(
+            body("/_notifications"),
+            format!(r#"{{"notifications":[{{"dedup":"{aa}","device":"d1","kind":"approval","session":"s1"}},{{"dedup":"{bb}","device":"d1","kind":"done","session":"s1"}}]}}"#)
+        );
+        let tokens = body("/_push_tokens");
+        assert_eq!(tokens, r#"{"push_tokens":[{"device":"d1","environment":"production"},{"device":"d2","environment":"sandbox"}]}"#);
+        assert!(!tokens.contains(&"cd".repeat(32)) && !tokens.contains(&"ef".repeat(32)));
     }
 
     /// One GET on a connection kept open, its response read whole.

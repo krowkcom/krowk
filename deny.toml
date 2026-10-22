@@ -33,6 +33,11 @@ ignore = [
   # grammars with it, and those grammars are krowk's own bytes, built in at
   # compile time, never read from anything a session or a server supplies.
   { id = "RUSTSEC-2025-0141", reason = "unmaintained, not vulnerable; syntect decodes only the grammars compiled into krowk" },
+  # basic-toml 0.1.10 is archived, not vulnerable. It reaches the tree only
+  # through uniffi's bindgen (askama's derive macro reading its own config
+  # at compile time); no krowk binary links it or parses TOML with it.
+  # Drop this once uniffi moves askama to a release without it.
+  { id = "RUSTSEC-2026-0374", reason = "unmaintained, not vulnerable; build-time only, via uniffi_bindgen's askama derive" },
 ]
 
 [licenses]

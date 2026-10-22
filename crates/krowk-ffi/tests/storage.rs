@@ -87,6 +87,7 @@ fn r_ffi_3_r_client_1_r_cred_1_the_device_keys_are_made_once_under_krowks_file_n
     storage.write("credentials.json".into(), signed_in()).unwrap();
     let first = Account::open(API.into(), storage.clone()).unwrap();
     assert_eq!(first.workspace(), "ws_1");
+    assert_eq!(first.workspace_name(), "Test");
     assert_eq!(first.device_id().len(), 32, "{}", first.device_id());
     // Its own keys and its krowk API key, and no slot for a provider's
     // credential (R-CRED-1).

@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use krowk_api::Client;
-use krowk_client::e2e::DeviceSigner;
+use krowk_client::e2e::{DeviceId, DeviceSigner};
 use krowk_client::keystore::Keystore;
 
 use crate::KrowkError;
@@ -16,13 +16,16 @@ use crate::storage::{CREDENTIALS, Foreign, KeyStorage};
 /// The signed-in phone, opened from the app's storage.
 #[derive(uniffi::Object)]
 pub struct Account {
-    // Held for the pairing and session exports, which call through them.
-    #[allow(dead_code)]
-    client: Arc<Client>,
-    keystore: Keystore,
+    /// The registry's `/v1` URL, which the relay and its env are picked by.
+    pub(crate) api: String,
+    /// Signs every call as this device; the session exports call through it.
+    pub(crate) client: Arc<Client>,
+    pub(crate) keystore: Keystore,
+    /// This device, which a session's relay ticket is asked for.
+    pub(crate) device: DeviceId,
     storage: Arc<dyn KeyStorage>,
-    device_id: String,
     workspace: String,
+    workspace_name: String,
 }
 
 #[uniffi::export]
@@ -41,23 +44,31 @@ impl Account {
         drop(device);
         let client = Client::new(&api, &creds.token).signed_by(DeviceSigner::new(device_id, signing).shared());
         Ok(Arc::new(Account {
+            api,
             client: Arc::new(client),
             keystore,
+            device: device_id,
             storage,
-            device_id: device_id.to_string(),
             workspace: creds.workspace.clone(),
+            workspace_name: creds.workspace_name.clone(),
         }))
     }
 
     /// This device's id, hex: what the device list and the approval of a
     /// new device name it by.
     pub fn device_id(&self) -> String {
-        self.device_id.clone()
+        self.device.to_string()
     }
 
     /// The workspace the key belongs to; empty when the registry named none.
     pub fn workspace(&self) -> String {
         self.workspace.clone()
+    }
+
+    /// The workspace's name, as the registry's approval named it: what the
+    /// phone says it is signed in to. Empty when the registry named none.
+    pub fn workspace_name(&self) -> String {
+        self.workspace_name.clone()
     }
 
     /// Whether this device holds the person's user keys yet: false until
@@ -89,6 +100,6 @@ fn credentials(storage: &dyn KeyStorage) -> Result<Credentials, KrowkError> {
     }
 }
 
-fn internal(detail: String) -> KrowkError {
+pub(crate) fn internal(detail: String) -> KrowkError {
     KrowkError::Internal { detail }
 }

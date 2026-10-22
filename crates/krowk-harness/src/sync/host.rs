@@ -12,7 +12,11 @@
 //! whichever answers first decides (R-PERM-2). A request of a turn a
 //! viewer started that no viewer is left to answer is denied after
 //! `APPROVAL_WAIT`, so such a turn never waits on a device that never
-//! comes; a turn started at the host's own terminal waits for its person.
+//! comes; so is one of a turn started at the host's own terminal once no
+//! other answering client follows the session either (R-HOST-1): the
+//! bridge is an answering client, so the daemon's own denial of a request
+//! nobody is left to see never fires while it follows, and a terminal that
+//! closed with a question on screen must not leave its turn waiting on it.
 //! A viewer may also interrupt one of the session's own subagents, or
 //! answer its approval, and only those its log's `subagent.started` named
 //! whose own log on this machine names the session its parent (R-SUB-12,
@@ -35,6 +39,7 @@ use super::store::{self, Index, Writer};
 use super::{Answer, Batch, In, Join, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::daemon::client::Client as Daemon;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
+use krowk_api::sync::NotifyKind;
 use krowk_api::Client;
 use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
 use krowk_client::device_chain::{Chain, SignedEntry};
@@ -43,6 +48,7 @@ use krowk_client::user_key::UserKeys;
 use krowk_client::protocol::frame::{KIND_ACK, KIND_ROUTED, HEADER};
 use krowk_client::relay_link::{HostLink, Inbound};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -57,8 +63,10 @@ pub fn renew_every(ttl: u64) -> Duration {
 }
 
 /// How long an approval of a turn a viewer started waits, with no viewer
-/// connected, before the bridge denies it. A turn started at the host's own
-/// terminal is never denied by the bridge: its person answers it.
+/// connected, before the bridge denies it. One of a turn started at the
+/// host's own terminal is denied as late only once no other answering
+/// client (the terminal) follows the session either: while one does, its
+/// person answers it.
 pub const APPROVAL_WAIT: Duration = Duration::from_secs(300);
 
 /// Batches kept for the relay while its link is down: past this the oldest
@@ -103,6 +111,16 @@ pub struct Options {
     /// The lease another host handed this one with the session (R-HAND-1):
     /// taken up as it is rather than acquired. None for a plain take-up.
     pub handed: Option<super::Handed>,
+    /// How long a request waits, with no viewer here, before the bridge
+    /// denies it (`APPROVAL_WAIT`; a test makes it short).
+    pub approval_wait: Duration,
+    /// Where an owner that reads the device list for many bridges writes
+    /// why this one must stop (the automatic sync's supervisor, which runs
+    /// one reader for all of them): `run` then starts no list reader of its
+    /// own, and ends with the reason at its next sweep, as with its own.
+    /// `None` — `krowk sync host` — reads the list itself every
+    /// `LIST_EVERY`.
+    pub stale: Option<Arc<Mutex<Option<String>>>>,
 }
 
 /// How a bridge that handed its session over ends: what `krowk sync host`
@@ -121,6 +139,15 @@ struct Held {
     fence: u64,
     ticket: String,
 }
+
+/// How a bridge that could not take the lease up ends, the registry's code
+/// after it in brackets: `(lease_held)` when another bridge holds it — a
+/// `krowk sync host`, or a host that crashed and whose lease has not
+/// lapsed yet (the automatic sync's supervisor waits, and never takes it).
+pub const NOT_GRANTED: &str = "the registry did not grant the lease";
+
+/// How a bridge whose lease another device took ends (R-SYNC-2).
+pub const LEASE_LOST: &str = "another device holds session";
 
 /// Opens (or creates) the synced session and takes its lease: the session
 /// keys, the writer at the log's end, and the lease.
@@ -147,7 +174,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
             let wrapped = e2e::hex(&sealed_key);
             let index = Index { title: o.title.clone(), cwd: o.cwd.clone(), host: Some(hosted_on(o)), ..Index::default() };
             let sealed = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).expect("json")));
-            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| e.to_string())?;
+            o.api.put_sync_session(id, &wrapped, Some((&e2e::hex(&signature), &o.device.to_string())), Some(&sealed), None).map_err(|e| format!("the registry did not publish session {id} ({}): {}", e.code(), e.fix()))?;
             (keys, wrapped, index)
         }
         Err(e) => return Err(format!("the registry did not say whether it holds session {id} ({e}) — nothing was published; try again")),
@@ -157,7 +184,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         // The fix said, not only the code: a lease that stalled must say the
         // registry stopped answering (R-REG-1), and a held one that another
         // device holds it.
-        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("the registry did not grant the lease ({}): {}", e.code(), e.fix()))?,
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()))?,
     };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
@@ -203,8 +230,10 @@ fn rotate_if_behind(o: &Options, keys: SessionKeys, wrapped: String, index: &Ind
 /// that fails is tried again every two seconds; one refused because the
 /// lease lapsed takes it again when nobody else has. One that finds another
 /// device holding it sets `lost`: the bridge then writes nothing more and
-/// ends (R-SYNC-2's one writer).
-fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>) {
+/// ends (R-SYNC-2's one writer). One refused because the workspace has no
+/// paid plan (any more) is not tried again: it says so in `stale`, and the
+/// bridge ends with it at its next sweep.
+fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lost: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
     let every = renew_every(o.ttl);
     let mut next = Instant::now() + every;
     while !stop.load(Ordering::Relaxed) && !lost.load(Ordering::Relaxed) {
@@ -215,6 +244,9 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let device = o.device.to_string();
         let answer = match o.api.renew_lease(&o.session, &device, &h.token, o.ttl, &o.env) {
+            // Never once halted: the halt comes before the lease is given
+            // back, so a renewal refused because it was is not taken again.
+            Err(_) if stop.load(Ordering::Relaxed) => return,
             Err(e) if e.code().contains("lease") => o.api.acquire_lease(&o.session, &device, o.ttl, &o.env),
             other => other,
         };
@@ -231,6 +263,11 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
                 next = Instant::now() + every;
             }
             Err(e) if e.code() == "lease_held" => lost.store(true, Ordering::Relaxed),
+            Err(e) if e.code() == "sync_requires_paid_plan" => {
+                // The first reason to stop stands (the list thread's too).
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
+                return;
+            }
             Err(_) => next = Instant::now() + Duration::from_secs(2),
         }
     }
@@ -257,31 +294,62 @@ fn link_dead(gap: Duration, heard: Duration, unacked: usize, waited: Option<Dura
 /// How often a running host reads the device list again: the list it
 /// verified when it started is not the list for good, and a device removed
 /// while it runs must not go on reading what it seals.
-const LIST_EVERY: Duration = Duration::from_secs(60);
+pub const LIST_EVERY: Duration = Duration::from_secs(60);
 
 /// What a running host ends with when the list moved on under it and a
 /// device was removed: `krowk sync host` takes the session up again, under
 /// the new list and the user key it leaves current.
 pub const LIST_MOVED: &str = "a device was removed from your device list while this host ran";
 
-/// The list read again past the head `chain` holds and verified onto it:
-/// `None` when nothing came, or the registry could not be reached (asked
-/// again later), the longer chain when it only added devices, and why the
-/// host must stop otherwise — a removal, this device's own, or entries that
-/// do not verify.
-fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
-    let session = &o.session;
-    let removed = || format!("this device was removed from your device list; it stopped hosting session {session}");
-    let refused = |e: String| format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again");
+/// Why the device list, read again, says a host must stop: what `ListEnd::why`
+/// says of each session it stops.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ListEnd {
+    /// This device is no longer on the list (or the registry says it was
+    /// revoked).
+    Removed,
+    /// The registry refused this machine's key.
+    KeyRefused,
+    /// The list ends before the head held, or holds another entry there.
+    StartedOver,
+    /// Entries that do not verify onto the list held, and why.
+    Refused(String),
+    /// Another device was removed: the user key moved on (`LIST_MOVED`).
+    Moved,
+}
+
+impl ListEnd {
+    /// What a host of `session` ends with. A move starts with `LIST_MOVED`,
+    /// which is how `krowk sync host` and the automatic sync's supervisor
+    /// know to take the session up again under the new list.
+    pub fn why(&self, session: &str) -> String {
+        match self {
+            ListEnd::Removed => format!("this device was removed from your device list; it stopped hosting session {session}"),
+            // A removal revokes the device's keys, so this may be one; the
+            // key refused is all that is known, and all that is said.
+            ListEnd::KeyRefused => format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}"),
+            ListEnd::StartedOver => format!("your device list was started over; it stopped hosting session {session}"),
+            ListEnd::Refused(e) => format!("your device list changed in a way this host does not follow ({e}); it stopped hosting session {session} — host it again"),
+            ListEnd::Moved => format!("{LIST_MOVED}; session {session} is hosted again under the new list"),
+        }
+    }
+}
+
+/// The list read again, by `api` as `device`, past the head `chain` holds
+/// and verified onto it: `None` when nothing came, or the registry could
+/// not be reached (asked again later), the longer chain when it only added
+/// devices, and why a host must stop otherwise — a removal, this device's
+/// own, or entries that do not verify. One read answers for every session
+/// the device hosts: blocking, on a thread of the caller's.
+pub fn list_news(api: &Client, device: DeviceId, chain: &Chain) -> Result<Option<Chain>, ListEnd> {
+    let refused = |e: String| ListEnd::Refused(e);
     let mut next = chain.clone();
     let mut after = chain.head().seq;
     loop {
-        let served = match o.api.device_list(Some(after)) {
+        let served = match api.device_list(Some(after)) {
             Ok(s) => s,
-            Err(e) if e.code() == "device_revoked" => return Err(removed()),
-            // A removal revokes the device's keys, so this may be one; the
-            // key refused is all that is known, and all that is said.
-            Err(e) if e.status == 401 => return Err(format!("the registry refused this machine's key — it may have been removed from your devices, or signed out; it stopped hosting session {session}")),
+            Err(e) if e.code() == "device_revoked" => return Err(ListEnd::Removed),
+            Err(e) if e.status == 401 => return Err(ListEnd::KeyRefused),
             Err(_) => return Ok(None),
         };
         // A list that ends before the head held, or holds another entry
@@ -289,7 +357,7 @@ fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
         if let Some(h) = &served.head
             && (h.seq < chain.head().seq || (h.seq == chain.head().seq && e2e::unhex(&h.hash).as_deref() != Some(&chain.head().hash[..])))
         {
-            return Err(format!("your device list was started over; it stopped hosting session {session}"));
+            return Err(ListEnd::StartedOver);
         }
         let from = next.head().seq;
         for e in served.entries.iter().filter(|e| e.seq > from) {
@@ -305,18 +373,19 @@ fn list_news(o: &Options, chain: &Chain) -> Result<Option<Chain>, String> {
     if next.head() == chain.head() {
         return Ok(None);
     }
-    if !next.devices().iter().any(|d| d.id() == o.device) {
-        return Err(removed());
+    if !next.devices().iter().any(|d| d.id() == device) {
+        return Err(ListEnd::Removed);
     }
     if next.generation() > chain.generation() {
-        return Err(format!("{LIST_MOVED}; session {session} is hosted again under the new list"));
+        return Err(ListEnd::Moved);
     }
     Ok(Some(next))
 }
 
 /// Reads the device list again every `LIST_EVERY`, on a thread of its own
 /// so a slow read never holds up the lease's renewal, until the bridge
-/// stops or the list says it must (`stale`).
+/// stops or the list says it must (`stale`). A bridge whose owner reads
+/// the list for it (`Options::stale`) runs none.
 fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<String>>>) {
     let mut chain = o.chain.clone();
     let mut next = Instant::now() + LIST_EVERY;
@@ -326,11 +395,11 @@ fn list_loop(o: Arc<Options>, stop: Arc<AtomicBool>, stale: Arc<Mutex<Option<Str
             continue;
         }
         next = Instant::now() + LIST_EVERY;
-        match list_news(&o, &chain) {
+        match list_news(&o.api, o.device, &chain) {
             Ok(Some(longer)) => chain = longer,
             Ok(None) => {}
-            Err(why) => {
-                *stale.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            Err(end) => {
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(end.why(&o.session));
                 return;
             }
         }
@@ -349,7 +418,39 @@ enum Write {
 /// How often a write the registry refused is tried again.
 const RETRY: Duration = Duration::from_secs(2);
 
+/// How long the writer leaves the registry alone once it refuses a write as
+/// one too many (`too_many_requests`, its per-key ceiling on creates): the
+/// minute its Retry-After asks for. Fifty sessions taken up together and
+/// ending their turns in the same minute pass the ceiling (ticket 98), and
+/// fifty writers each trying again every `RETRY` would ask it some thirty
+/// times more than it said to. What is owed is kept, and put after.
+const LIMITED: Duration = Duration::from_secs(60);
+
+/// Whether a write's error is the registry's ceiling on creates.
+fn limited(e: &str) -> bool {
+    e.contains("too_many_requests")
+}
+
+/// When this process last said the registry is limiting its writes: one
+/// key, so fifty writers refused together say it once a wait, not fifty
+/// times.
+static LIMITED_SAID: Mutex<Option<Instant>> = Mutex::new(None);
+
+fn say_limited(e: &str) {
+    let mut said = LIMITED_SAID.lock().unwrap_or_else(|e| e.into_inner());
+    if said.is_none_or(|at| at.elapsed() >= LIMITED) {
+        *said = Some(Instant::now());
+        eprintln!("krowk: the registry is limiting this machine's writes for a moment ({e}); the sessions' chunks are kept and put again in {} s", LIMITED.as_secs());
+    }
+}
+
 fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Receiver<Write>, heads: mpsc::UnboundedSender<store::Head>, lost: Arc<AtomicBool>) {
+    // Until when the registry asked to be left alone (`LIMITED`), and
+    // whether a flush was put off meanwhile: owed as a staged chunk is.
+    let mut quiet: Option<Instant> = None;
+    let mut put_off = false;
+    // When a write last went to the registry.
+    let mut tried = Instant::now();
     loop {
         let job = match rx.recv_timeout(RETRY) {
             Ok(j) => Some(j),
@@ -361,37 +462,84 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
             continue;
         }
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let done = w.refence(h.fence).and_then(|()| match job {
-            Some(Write::Event(e)) => {
+        let waiting = quiet.is_some_and(|until| Instant::now() < until);
+        // What was owed, or put off, is put again every `RETRY` however busy
+        // the session is — not only once it falls quiet — unless the
+        // registry asked to be left alone.
+        let due = !waiting && (w.owes() || put_off) && tried.elapsed() >= RETRY;
+        let done = match job {
+            // Kept in order, whatever the registry says: the fence is looked
+            // at when something is written.
+            Some(Write::Event(e)) if !due => {
                 w.push(e);
                 Ok(())
             }
-            Some(Write::Flush) => w.flush(&h.token),
-            Some(Write::Checkpoint(tree)) => w.checkpoint(tree, &h.token),
-            Some(Write::Handoff(tree, done)) => {
-                let r = w.checkpoint(tree, &h.token);
-                let _ = done.send(r.clone());
-                r
+            // Kept, and put once the registry takes writes again: a
+            // checkpoint and a handoff's are still asked for, being rare
+            // and, the second, waited on.
+            Some(Write::Flush) if waiting => {
+                put_off = true;
+                Ok(())
             }
-            // What was owed is put again, the same chunk under the same index.
-            None if w.owes() => w.flush(&h.token),
-            None => Ok(()),
-        });
-        if let Err(e) = done {
-            eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again");
+            None if !due => Ok(()),
+            job => {
+                tried = Instant::now();
+                if let Some(Write::Event(e)) = &job {
+                    w.push(e.clone());
+                }
+                match (w.refence(h.fence), job) {
+                    // The lease's new fence could not be taken up: the events
+                    // are kept and a flush is owed still, and a handoff hears
+                    // why. A checkpoint asked for then is not cut (the next
+                    // take-up cuts one).
+                    (Err(e), Some(Write::Handoff(_, done))) => {
+                        let _ = done.send(Err(e.clone()));
+                        Err(e)
+                    }
+                    (Err(e), _) => {
+                        put_off = true;
+                        Err(e)
+                    }
+                    // Each of these flushes first: through, nothing put off
+                    // is left. What was owed is put again, the same chunk
+                    // under the same index.
+                    (Ok(()), Some(Write::Checkpoint(tree))) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
+                    (Ok(()), Some(Write::Handoff(tree, done))) => {
+                        let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), _) => w.flush(&h.token).inspect(|()| put_off = false),
+                }
+            }
+        };
+        match done {
+            Err(e) if limited(&e) => {
+                say_limited(&e);
+                quiet = Some(Instant::now() + LIMITED);
+            }
+            Err(e) => eprintln!("krowk: a chunk of the session could not be written yet ({e}); it is kept and put again"),
+            Ok(()) => {}
         }
         if let Some(head) = w.head() {
             let _ = heads.send(head);
         }
     }
-    // Stopping: what is owed gets a last few tries.
-    for _ in 0..3 {
-        if !w.owes() || lost.load(Ordering::Relaxed) {
+    // Stopping: what is owed gets a last few tries — one, while the
+    // registry asks to be left alone, so a stop is not held up waiting on
+    // it. What is still not stored the next bridge of the session writes,
+    // from the daemon's log, when its next turn takes it up.
+    let tries = if quiet.is_some_and(|until| Instant::now() < until) { 1 } else { 3 };
+    for _ in 0..tries {
+        if !(w.owes() || put_off) || lost.load(Ordering::Relaxed) {
             break;
         }
+        put_off = false;
         let h = held.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if w.flush(&h.token).is_err() {
-            std::thread::sleep(RETRY);
+        match w.flush(&h.token) {
+            Ok(()) => {}
+            Err(e) if limited(&e) => break,
+            Err(_) => std::thread::sleep(RETRY),
         }
     }
 }
@@ -417,16 +565,36 @@ fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool)
     }
 }
 
+/// How long `deny_late` waits on the daemon's status before taking it
+/// that another client answers.
+const STATUS_WAIT: Duration = Duration::from_secs(2);
+
+/// How soon `deny_late` asks the daemon again after it said another
+/// client answers the session's approvals.
+const OTHERS_AGAIN: Duration = Duration::from_secs(10);
+
+/// Whether, by the daemon's `status`, a client other than the bridge
+/// answers approvals on `session` (`HostSession::answering`, the bridge one
+/// of them). No status, a session not listed, or a count that leaves out
+/// the bridge itself — a daemon that does not count — is taken as yes: the
+/// bridge never denies on a guess.
+fn others_in(status: Option<&crate::protocol::HostStatus>, session: &str) -> bool {
+    status.and_then(|s| s.sessions.iter().find(|s| s.session_id == session)).is_none_or(|s| s.answering != 1)
+}
+
 /// The requests the bridge denies by itself (`deny_late`): of a turn a
 /// viewer started (`turns`), or of a child that turn started (`children`,
 /// each child by the turn its `subagent.started` was logged in) while that
 /// turn is still the session's `current` one — a background agent asking
 /// in a later turn, begun at the host's terminal, is that turn's to wait
-/// on — once nobody has been here to answer for `APPROVAL_WAIT` (`alone`),
-/// and the request has waited as long (`waited`).
-fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
+/// on — once nobody has been here to answer for `approval_wait` (`alone`),
+/// and the request has waited as long (`waited`). With no client but the
+/// bridge answering the session's approvals (`!others`) — the terminal
+/// that started a turn went away — every such request is denied, whoever
+/// started its turn: nobody is left to answer it.
+fn late<'a>(approvals: &'a BTreeMap<String, (ApprovalRequest, Instant)>, turns: &HashSet<String>, (children, current): (&HashMap<String, String>, Option<&str>), alone: bool, others: bool, waited: impl Fn(Instant) -> bool) -> Vec<&'a ApprovalRequest> {
     let remote = |r: &ApprovalRequest| turns.contains(&r.turn_id) || children.get(&r.session_id).is_some_and(|t| turns.contains(t) && current == Some(t.as_str()));
-    approvals.values().filter(|(r, t)| alone && remote(r) && waited(*t)).map(|(r, _)| r).collect()
+    approvals.values().filter(|(r, t)| alone && waited(*t) && (remote(r) || !others)).map(|(r, _)| r).collect()
 }
 
 /// The child an event names as `session`'s own: its `subagent.started`,
@@ -495,29 +663,139 @@ const REMEMBERED: usize = 4096;
 /// Logged events a catch-up page holds.
 const PAGE: usize = 256;
 
+/// How recently a turn must have finished for its end to ring the person's
+/// devices: a host that comes back and republishes an old turn rings nobody.
+const RECENT_TURN_MS: i64 = 120_000;
+
+/// Notifications on their way to the registry at once, across every bridge
+/// in the process: past this a new one is let go, said once, rather than
+/// piling up threads that each wait out a registry that stalls or
+/// rate-limits (krowk-api retries each, and waits a 429 out).
+const NOTIFYING_AT_MOST: usize = 16;
+
+/// The notifications on their way now (`NOTIFYING_AT_MOST`).
+static NOTIFYING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// One of `NOTIFYING`, given back however its call ends.
+struct Notifying;
+
+impl Notifying {
+    /// A place among the notifications on their way, if there is one.
+    fn take() -> Option<Notifying> {
+        NOTIFYING.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| (n < NOTIFYING_AT_MOST).then_some(n + 1)).ok().map(|_| Notifying)
+    }
+}
+
+impl Drop for Notifying {
+    fn drop(&mut self) {
+        NOTIFYING.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// What a line rings the person's devices about (R-IOS-12), if anything:
+/// the kind and the text its dedup key is the SHA-256 of. An approval asked
+/// — the session's, or one of its children's, which blocks the session's
+/// turn just the same — only on the transition into waiting
+/// (`newly_waiting`): one this bridge holds already, sent again, is not. A
+/// bridge started afresh holds none, so one still waiting from before rings
+/// again under the same key, which the registry's dedup collapses. A turn finished only when it is the session's own (a
+/// child ending is no end of the session's turn), not one the registry held
+/// already when the bridge took the session up (the daemon replays those),
+/// and only within `RECENT_TURN_MS` of `now_ms`; whatever its status, since
+/// the person wants to know it stopped. Nothing of the session's content is
+/// in either: the registry is told the kind, and a digest of the key.
+fn alert_for(line: &StreamLine, session: &str, stored: &HashSet<String>, newly_waiting: bool, now_ms: i64) -> Option<(NotifyKind, String)> {
+    match line {
+        StreamLine::Live(LiveEvent::ApprovalRequested(r)) if newly_waiting => Some((NotifyKind::Approval, format!("approval:{}", r.request_id))),
+        StreamLine::Log(e) => match &e.body {
+            LogBody::TurnCompleted { turn_id, .. } if e.session_id == session && !stored.contains(&e.id) && now_ms.saturating_sub(e.time_ms) <= RECENT_TURN_MS => Some((NotifyKind::Done, format!("turn:{turn_id}"))),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The events already notified, by their key: bounded as the commands
+/// remembered are, the oldest let go past `REMEMBERED`. Within it, an
+/// event rings once however often its line comes; past it, and across a
+/// restart, the registry's dedup on the same key still collapses it.
+#[derive(Default)]
+struct Notified {
+    seen: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl Notified {
+    /// Whether `key` is new, remembering it.
+    fn first(&mut self, key: &str) -> bool {
+        if !self.seen.insert(key.to_string()) {
+            return false;
+        }
+        self.order.push_back(key.to_string());
+        if self.order.len() > REMEMBERED
+            && let Some(old) = self.order.pop_front()
+        {
+            self.seen.remove(&old);
+        }
+        true
+    }
+}
+
+/// Says why the registry could not notify, once per code for as long as
+/// the process runs — the automatic sync's supervisor starts a bridge again
+/// and again: a registry without push (`push_unconfigured`), a lease that
+/// moved, a network gone would otherwise say it at every turn.
+fn notify_failed(code: String, fix: &str) {
+    static SAID: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+    if SAID.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashSet::new).insert(code.clone()) {
+        eprintln!("krowk: the registry could not notify your other devices ({code}): {fix}");
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64)
+}
+
 /// Runs the bridge until `stop`. `daemon` is a client of the daemon that
 /// says it answers approvals.
-pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool>, mut on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
+pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, on_demand: mpsc::UnboundedReceiver<()>) -> Result<(), String> {
     let o = Arc::new(o);
+    // Stopped before it began (the automatic sync's supervisor lets a
+    // starting bridge go when its directory opts out): nothing is sent.
+    if *stop.borrow() {
+        return Ok(());
+    }
+    // The take-up's checkpoint names the worktree's commit, read here too:
+    // `git rev-parse` is a process, and the runtime may be one many bridges
+    // share (the automatic sync's), where one slow repository would hold up
+    // every other session's stream.
     let taken = {
         let o = o.clone();
-        tokio::task::spawn_blocking(move || take(&o)).await.map_err(|e| e.to_string())??
+        tokio::task::spawn_blocking(move || take(&o).map(|t| (t, worktree(&o.cwd)))).await.map_err(|e| e.to_string())??
     };
-    let (key, writer, held) = taken;
+    let ((key, writer, held), commit) = taken;
     let held = Arc::new(Mutex::new(held));
     let halt = Arc::new(AtomicBool::new(false));
+    // However `run` ends — an error before its loop, a panic, its future
+    // dropped with its runtime — the lease and list threads end with it,
+    // rather than renewing a lease nothing uses for as long as the process
+    // lives (the automatic sync's supervisor runs in the daemon's).
+    let _halting = Halting(halt.clone());
     let lost = Arc::new(AtomicBool::new(false));
-    // Set when the device list moved on under the host: why it stops.
-    let stale = Arc::new(Mutex::new(None));
+    // Set when the device list moved on under the host, or the registry
+    // refused the lease for want of a paid plan: why it stops.
+    // An owner that reads the list for it writes there; otherwise the
+    // bridge reads it itself.
+    let stale = o.stale.clone().unwrap_or_default();
     {
-        let (o, held, halt, lost) = (o.clone(), held.clone(), halt.clone(), lost.clone());
-        std::thread::spawn(move || renew_loop(o, held, halt, lost));
+        let (o, held, halt, lost, stale) = (o.clone(), held.clone(), halt.clone(), lost.clone(), stale.clone());
+        std::thread::spawn(move || renew_loop(o, held, halt, lost, stale));
     }
-    {
+    if o.stale.is_none() {
         let (o, halt, stale) = (o.clone(), halt.clone(), stale.clone());
         std::thread::spawn(move || list_loop(o, halt, stale));
     }
-    let (heads_tx, mut heads) = mpsc::unbounded_channel();
+    let (heads_tx, heads) = mpsc::unbounded_channel();
     let head = writer.head();
     let stored = writer.stored_ids();
     let (jobs, jobs_rx) = std::sync::mpsc::channel();
@@ -525,17 +803,34 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         let (held, lost) = (held.clone(), lost.clone());
         std::thread::spawn(move || writer_loop(writer, held, jobs_rx, heads_tx, lost))
     };
+    // Stopped while it took the lease up: nothing is written, and the
+    // lease goes back at once.
+    if *stop.borrow() {
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Ok(());
+    }
     // A checkpoint as the bridge takes the session up, so a device
     // attaching reads one chunk and the tail, not the whole log.
-    let _ = jobs.send(Write::Checkpoint(worktree(&o.cwd)));
+    let _ = jobs.send(Write::Checkpoint(commit));
 
-    let (lines_tx, mut lines) = mpsc::channel(4096);
-    daemon.attach(&o.session, None, lines_tx.clone()).await.map_err(|e| e.to_string())?;
+    let (lines_tx, lines) = mpsc::channel(4096);
+    if let Err(e) = daemon.attach(&o.session, None, lines_tx.clone()).await {
+        // Nothing follows: the writer puts the checkpoint, and the lease goes
+        // back, as a stopped bridge's does.
+        drop(jobs);
+        give_back(o.clone(), held, lost, &halt, writing).await;
+        return Err(e.to_string());
+    }
     let raw = crate::daemon::ws::uuid(&o.session);
     let link = HostLink::new(key.current(), raw);
-    let listening = listen_direct(&o);
+    // Off the runtime too: it asks tailscaled and binds listeners.
+    let listening = {
+        let o = o.clone();
+        tokio::task::spawn_blocking(move || listen_direct(&o)).await.ok().flatten()
+    };
     let candidates = listening.as_ref().map(|l| l.candidates.clone()).unwrap_or_default();
-    let (answers_tx, mut answers) = mpsc::unbounded_channel::<(u64, Answer)>();
+    let (answers_tx, answers) = mpsc::unbounded_channel::<(u64, Answer)>();
     let mut h = Hosting {
         o: o.clone(),
         daemon,
@@ -584,35 +879,14 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, mut stop: watch::Receiver<bool
         dws: None,
         dheard: Instant::now(),
         dretry: Instant::now(),
+        daemon_gone: false,
+        others_asked: None,
+        nobody_since: None,
+        notified: Notified::default(),
+        halt: halt.clone(),
     };
-    let mut tick = tokio::time::interval(FRAME);
-    let mut beat = tokio::time::interval(PING);
-    let mut beaten = Instant::now();
-    let mut sweep = tokio::time::interval(Duration::from_secs(1));
-    let mut ended = Ok(());
-    loop {
-        tokio::select! {
-            line = lines.recv() => {
-                let Some(line) = line else { break };
-                h.line(line);
-            }
-            _ = tick.tick(), if !h.waiting.is_empty() => h.send_batch().await?,
-            Some(head) = heads.recv() => h.head = Some(head),
-            Some((to, a)) = answers.recv() => h.answer(to, a).await,
-            _ = on_demand.recv() => { let _ = h.jobs.send(Write::Checkpoint(worktree(&h.o.cwd))); }
-            _ = sweep.tick() => {
-                if let Err(e) = h.sweep().await {
-                    ended = Err(e);
-                    break;
-                }
-            }
-            _ = beat.tick() => h.beat(&mut beaten).await,
-            _ = tokio::time::sleep_until(h.dretry.into()), if h.dws.is_none() && h.listening.is_some() => h.join_direct().await,
-            _ = tokio::time::sleep_until(h.retry.into()), if h.ws.is_none() => h.join_relay().await,
-            (direct, m) = recv_either(&mut h.ws, &mut h.dws) => h.inbound(direct, m).await,
-            _ = stop.changed() => break,
-        }
-    }
+    // The loop's end, however it comes, stops the bridge the one way.
+    let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
     h.stop(&halt, writing).await;
     ended
 }
@@ -650,7 +924,8 @@ struct Hosting {
     link: HostLink,
     held: Arc<Mutex<Held>>,
     lost: Arc<AtomicBool>,
-    /// Set when the device list moved on under the host: why it stops.
+    /// Set when the device list moved on under the host, or the registry
+    /// refused the lease's renewal for want of a paid plan: why it stops.
     stale: Arc<Mutex<Option<String>>>,
     jobs: std::sync::mpsc::Sender<Write>,
     lines_tx: mpsc::Sender<StreamLine>,
@@ -700,7 +975,8 @@ struct Hosting {
     moved: Arc<Mutex<Option<String>>>,
     mode: PermissionMode,
     /// Turns a viewer's prompt started: the only ones whose approvals the
-    /// bridge ever denies by itself.
+    /// bridge denies by itself while another answering client follows the
+    /// session.
     remote_turns: Arc<Mutex<HashSet<String>>>,
     done: HashMap<String, Answer>,
     done_order: VecDeque<String>,
@@ -729,6 +1005,20 @@ struct Hosting {
     dws: Option<super::Ws>,
     dheard: Instant,
     dretry: Instant,
+    /// A sweep saw the daemon's connection closed: the next one ends it.
+    daemon_gone: bool,
+    /// When `deny_late` last heard another client answers the session's
+    /// approvals: asked again only a while later, not every second.
+    others_asked: Option<Instant>,
+    /// Since when every answer the daemon gave said no other client
+    /// answers: one is not enough, since a terminal reconnecting is left
+    /// out until it follows again.
+    nobody_since: Option<Instant>,
+    /// The events the person's devices were rung about (`alert_for`).
+    notified: Notified,
+    /// Set as the bridge stops, before its lease is given back: a
+    /// notification still to go then asks for nothing.
+    halt: Arc<AtomicBool>,
 }
 
 impl Hosting {
@@ -773,12 +1063,52 @@ impl Hosting {
             }
             self.log.push(e.clone());
         }
-        match &line {
-            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => { self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())); }
-            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { self.approvals.remove(request_id); }
-            _ => {}
+        let newly_waiting = match &line {
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => self.approvals.insert(r.request_id.clone(), (r.clone(), Instant::now())).is_none(),
+            StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => { self.approvals.remove(request_id); false }
+            _ => false,
+        };
+        if let Some((kind, key)) = alert_for(&line, &self.o.session, &self.stored, newly_waiting, now_ms()) {
+            self.notify(kind, &key);
         }
         self.waiting.push(line);
+    }
+
+    /// Asks the registry to ring the person's other devices, once per event
+    /// (`notified`, then the registry's dedup on the key's digest), and never
+    /// on the bridge's loop: the call blocks for as long as the registry
+    /// takes, so it runs on a blocking thread, fire and forget. A failure
+    /// never stops or slows the bridge, and is said once per code. Only the
+    /// lease holder notifies (R-SYNC-2): once the lease is another device's,
+    /// nothing is sent; the token is read as the call goes, a renewal may
+    /// have replaced it.
+    fn notify(&mut self, kind: NotifyKind, key: &str) {
+        // A handoff under way hands the lease over before `lost` is set:
+        // the session is the other device's to ring for from there.
+        if self.lost.load(Ordering::Relaxed) || self.handing || self.handed_at.is_some() || self.notified.seen.contains(key) {
+            return;
+        }
+        let Some(place) = Notifying::take() else {
+            notify_failed("notifications_backed_up".into(), &format!("{NOTIFYING_AT_MOST} notifications are still on their way to the registry, so this one was let go"));
+            return;
+        };
+        self.notified.first(key);
+        let dedup = e2e::hex(&Sha256::digest(key.as_bytes()));
+        let (o, held, lost, halt) = (self.o.clone(), self.held.clone(), self.lost.clone(), self.halt.clone());
+        tokio::task::spawn_blocking(move || {
+            let _place = place;
+            if lost.load(Ordering::Relaxed) || halt.load(Ordering::Relaxed) {
+                return;
+            }
+            let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+            // A refusal that comes once the bridge has stopped is of a lease
+            // it gave back meanwhile: nothing to say.
+            if let Err(e) = o.api.notify_session(&o.session, kind, &dedup, &token)
+                && !halt.load(Ordering::Relaxed)
+            {
+                notify_failed(e.code(), &e.fix());
+            }
+        });
     }
 
     /// The lines waiting, sealed as one batch and sent up both uplinks.
@@ -844,7 +1174,18 @@ impl Hosting {
             return Err(self.moved.lock().unwrap_or_else(|e| e.into_inner()).take().unwrap_or_else(|| format!("{HANDED_OVER} session {}", self.o.session)));
         }
         if self.lost.load(Ordering::Relaxed) && !self.handing && self.handed_at.is_none() {
-            return Err(format!("another device holds session {}'s lease now; this machine stopped syncing it", self.o.session));
+            return Err(format!("{LEASE_LOST} {}'s lease now; this machine stopped syncing it", self.o.session));
+        }
+        // The daemon let this client go (it exited, or dropped a client
+        // that read nothing): nothing more of the session reaches the bridge,
+        // which ends rather than holding the lease over a frozen stream —
+        // a sweep later, so the lines it had already read go out first, and
+        // never across a handoff, which needs no daemon and ends its own way.
+        if self.daemon.closed() && !self.handing && self.handed_at.is_none() {
+            if self.daemon_gone {
+                return Err(format!("the host daemon closed its connection; this machine stopped syncing session {}", self.o.session));
+            }
+            self.daemon_gone = true;
         }
         if let Some(why) = self.stale.lock().unwrap_or_else(|e| e.into_inner()).take() {
             return Err(why);
@@ -875,18 +1216,50 @@ impl Hosting {
         Ok(())
     }
 
-    /// Only a request of a turn a viewer started, or of a child it
-    /// started, and only once no viewer has been here to answer it for the
-    /// whole wait: the person at the host's own terminal is never overruled.
+    /// Only once no viewer has been here to answer for the whole wait, and
+    /// the request has waited as long: a request of a turn a viewer
+    /// started, or of a child it started; or any, once no client but the
+    /// bridge answers the session's approvals. The person at the host's own
+    /// terminal is never overruled while it follows the session.
     async fn deny_late(&mut self) {
+        let wait = self.o.approval_wait;
+        let alone = self.alone_since.is_some_and(|a| a.elapsed() > wait);
+        // The daemon is asked only when there is something to deny, never
+        // on every sweep.
+        if !alone || !self.approvals.values().any(|(_, t)| t.elapsed() > wait) {
+            self.nobody_since = None;
+            return;
+        }
+        // Another answering client was there a moment ago: it is taken
+        // to be there still, and asked after again only once that moment
+        // has passed. Nobody else is believed only once the daemon has
+        // said so for as long. A viewer's turn's request is denied
+        // meanwhile all the same.
+        let again = wait.min(OTHERS_AGAIN);
+        let others = if self.others_asked.is_some_and(|at| at.elapsed() < again) {
+            true
+        } else if self.others().await {
+            (self.others_asked, self.nobody_since) = (Some(Instant::now()), None);
+            true
+        } else {
+            self.others_asked = None;
+            self.nobody_since.get_or_insert_with(Instant::now).elapsed() < again
+        };
         let turns = self.remote_turns.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        let alone = self.alone_since.is_some_and(|a| a.elapsed() > APPROVAL_WAIT);
-        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, |t| t.elapsed() > APPROVAL_WAIT).into_iter().cloned().collect();
+        let late: Vec<ApprovalRequest> = late(&self.approvals, &turns, (&self.child_turns, self.current_turn.as_deref()), alone, others, |t| t.elapsed() > wait).into_iter().cloned().collect();
         for r in late {
             self.approvals.remove(&r.request_id);
             let (tx, _) = mpsc::channel(1);
             let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
         }
+    }
+
+    /// Whether a client other than the bridge answers approvals on the
+    /// session (`others_in`). A failed status, or one that does not come
+    /// in `STATUS_WAIT`, counts as yes, rather than holding up the bridge.
+    async fn others(&self) -> bool {
+        let status = tokio::time::timeout(STATUS_WAIT, self.daemon.status()).await;
+        others_in(status.ok().and_then(Result::ok).as_ref(), &self.o.session)
     }
 
     /// A beat far later than `PING`: this process did not run in
@@ -1218,6 +1591,33 @@ impl Hosting {
         });
     }
 
+    /// Bridges until stopped, the daemon's lines end, or a batch or a
+    /// sweep fails: the error `run` ends with.
+    async fn serve(&mut self, mut i: Inbox) -> Result<(), String> {
+        let mut tick = tokio::time::interval(FRAME);
+        let mut beat = tokio::time::interval(PING);
+        let mut beaten = Instant::now();
+        let mut sweep = tokio::time::interval(Duration::from_secs(1));
+        loop {
+            tokio::select! {
+                line = i.lines.recv() => {
+                    let Some(line) = line else { return Ok(()) };
+                    self.line(line);
+                }
+                _ = tick.tick(), if !self.waiting.is_empty() => self.send_batch().await?,
+                Some(head) = i.heads.recv() => self.head = Some(head),
+                Some((to, a)) = i.answers.recv() => self.answer(to, a).await,
+                _ = i.on_demand.recv() => { let _ = self.jobs.send(Write::Checkpoint(worktree(&self.o.cwd))); }
+                _ = sweep.tick() => self.sweep().await?,
+                _ = beat.tick() => self.beat(&mut beaten).await,
+                _ = tokio::time::sleep_until(self.dretry.into()), if self.dws.is_none() && self.listening.is_some() => self.join_direct().await,
+                _ = tokio::time::sleep_until(self.retry.into()), if self.ws.is_none() => self.join_relay().await,
+                (direct, m) = recv_either(&mut self.ws, &mut self.dws) => self.inbound(direct, m).await,
+                _ = i.stop.changed() => return Ok(()),
+            }
+        }
+    }
+
     /// Stops the bridge: the stream ended, the listener closed, and the
     /// lease given back once the writer is done.
     async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
@@ -1225,19 +1625,7 @@ impl Hosting {
         drop(self.listening.take());
         let _ = self.jobs.send(Write::Flush);
         drop(self.jobs);
-        halt.store(true, Ordering::Relaxed);
-        // The lease goes back, so the next host takes it at once rather than
-        // after its TTL, once the writer has put its last chunk — unless it is
-        // another device's already.
-        let token = self.held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
-        let (o2, lost2) = (self.o.clone(), self.lost.clone());
-        let _ = tokio::task::spawn_blocking(move || {
-            let _ = writing.join();
-            if !lost2.load(Ordering::Relaxed) {
-                let _ = o2.api.release_lease(&o2.session, &token);
-            }
-        })
-        .await;
+        give_back(self.o, self.held, self.lost, halt, writing).await;
     }
 
     /// The stream's end, sealed: a viewer that sees the link stop without
@@ -1252,6 +1640,45 @@ impl Hosting {
             }
         }
     }
+}
+
+/// What a running bridge is told: the daemon's lines, the writer's heads,
+/// the answers to viewers its tasks give, checkpoints asked for, and stop.
+struct Inbox {
+    lines: mpsc::Receiver<StreamLine>,
+    heads: mpsc::UnboundedReceiver<store::Head>,
+    answers: mpsc::UnboundedReceiver<(u64, Answer)>,
+    on_demand: mpsc::UnboundedReceiver<()>,
+    stop: watch::Receiver<bool>,
+}
+
+/// Sets its flag when dropped: `run`'s threads' halt, however it ends.
+struct Halting(Arc<AtomicBool>);
+
+impl Drop for Halting {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The lease and list threads halted, and the lease given back so the next
+/// host takes it at once rather than after its TTL — once the writer, its
+/// jobs' sender dropped, has put its last chunk, and unless the lease is
+/// another device's already.
+async fn give_back(o: Arc<Options>, held: Arc<Mutex<Held>>, lost: Arc<AtomicBool>, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
+    halt.store(true, Ordering::Relaxed);
+    let _ = tokio::task::spawn_blocking(move || {
+        let _ = writing.join();
+        // Read once the writer is done rather than at the halt: a renewal
+        // that took a lapsed lease again just before it holds a new token,
+        // and the old one would release nothing. (One refused after the
+        // halt takes nothing again: `renew_loop`.)
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        if !lost.load(Ordering::Relaxed) {
+            let _ = o.api.release_lease(&o.session, &token);
+        }
+    })
+    .await;
 }
 
 /// Waits for Ctrl-C or SIGTERM: `krowk sync host` then ends the stream with
@@ -1290,6 +1717,88 @@ mod tests {
         }
         let Command::Prompt { permission_mode, .. } = under_session_settings(prompt(PermissionMode::Unhinged), PermissionMode::Plan) else { unreachable!() };
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
+    }
+
+    fn asked(id: &str, session: &str) -> StreamLine {
+        StreamLine::Live(LiveEvent::ApprovalRequested(ApprovalRequest { session_id: session.into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({"command": "rm -rf secret"}), summary: "Bash `rm -rf secret`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() }))
+    }
+
+    fn ended(id: &str, session: &str, turn: &str, time_ms: i64) -> StreamLine {
+        StreamLine::Log(crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: session.into(), time_ms, body: LogBody::TurnCompleted { turn_id: turn.into(), status: crate::protocol::TurnStatus::Completed, usage: Default::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None } })
+    }
+
+    const NOW: i64 = 1_790_000_000_000;
+
+    /// R-IOS-12, R-PERM-2: an approval rings on the transition into
+    /// waiting only, under a key that names the request and nothing of what
+    /// it asks.
+    #[test]
+    fn r_ios_12_an_approval_newly_waiting_notifies_one_already_held_does_not() {
+        let none = HashSet::new();
+        assert_eq!(alert_for(&asked("r1", "s"), "s", &none, true, NOW), Some((NotifyKind::Approval, "approval:r1".into())));
+        assert_eq!(alert_for(&asked("r1", "s"), "s", &none, false, NOW), None, "a request already held is a replay");
+    }
+
+    /// R-IOS-12, R-PERM-2: a child's request blocks the session's turn just
+    /// the same, and rings for the session.
+    #[test]
+    fn r_ios_12_a_childs_approval_notifies_for_the_session() {
+        assert_eq!(alert_for(&asked("r2", "kid"), "s", &HashSet::new(), true, NOW), Some((NotifyKind::Approval, "approval:r2".into())));
+    }
+
+    /// R-IOS-12: the session's own turn ending rings, whatever its status;
+    /// a child's ending is no end of the session's turn.
+    #[test]
+    fn r_ios_12_the_sessions_own_turn_completed_notifies_a_childs_does_not() {
+        let none = HashSet::new();
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW), "s", &none, false, NOW), Some((NotifyKind::Done, "turn:t1".into())));
+        let StreamLine::Log(mut e) = ended("e1", "s", "t1", NOW) else { unreachable!() };
+        if let LogBody::TurnCompleted { status, .. } = &mut e.body {
+            *status = crate::protocol::TurnStatus::Failed;
+        }
+        assert_eq!(alert_for(&StreamLine::Log(e), "s", &none, false, NOW), Some((NotifyKind::Done, "turn:t1".into())), "a failed turn stopped too");
+        assert_eq!(alert_for(&ended("e2", "kid", "t2", NOW), "s", &none, false, NOW), None);
+    }
+
+    /// R-IOS-12: a turn's end the registry already held is the daemon's
+    /// replay as the bridge takes the session up again: it rang once.
+    #[test]
+    fn r_ios_12_a_stored_turn_completed_a_replay_does_not_notify() {
+        let stored = HashSet::from(["e1".to_string()]);
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW), "s", &stored, false, NOW), None);
+    }
+
+    /// R-IOS-12: a host that comes back and republishes an old turn rings
+    /// nobody: two minutes, and not a millisecond more.
+    #[test]
+    fn r_ios_12_a_turn_completed_more_than_2_minutes_ago_does_not_notify() {
+        let none = HashSet::new();
+        assert!(alert_for(&ended("e1", "s", "t1", NOW - 120_000), "s", &none, false, NOW).is_some());
+        assert_eq!(alert_for(&ended("e1", "s", "t1", NOW - 120_001), "s", &none, false, NOW), None);
+    }
+
+    /// R-IOS-12: nothing else rings — a resolution, a turn starting.
+    #[test]
+    fn r_ios_12_nothing_else_notifies() {
+        let resolved = StreamLine::Live(LiveEvent::ApprovalResolved { session_id: "s".into(), turn_id: "t".into(), request_id: "r1".into(), decision: ApprovalDecision::Allow });
+        assert_eq!(alert_for(&resolved, "s", &HashSet::new(), true, NOW), None);
+    }
+
+    /// R-IOS-12: the set of events rung about is bounded: each rings once
+    /// while remembered, and past `REMEMBERED` the oldest is let go.
+    #[test]
+    fn r_ios_12_the_notified_set_lets_the_oldest_go_past_4096() {
+        let mut n = Notified::default();
+        assert!(n.first("turn:0"));
+        assert!(!n.first("turn:0"), "once");
+        for i in 1..REMEMBERED {
+            assert!(n.first(&format!("turn:{i}")));
+        }
+        assert!(!n.first("turn:0"), "still remembered at {REMEMBERED}");
+        assert!(n.first(&format!("turn:{REMEMBERED}")));
+        assert_eq!((n.seen.len(), n.order.len()), (REMEMBERED, REMEMBERED));
+        assert!(n.first("turn:0"), "the oldest let go");
+        assert!(!n.first(&format!("turn:{REMEMBERED}")));
     }
 
     /// R-SUB-12: the children a viewer may interrupt are the ones the
@@ -1340,7 +1849,8 @@ mod tests {
         let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("own", "s", "remote"), req("kid", "k1", "k1-turn"), req("local-kid", "k2", "k2-turn"), req("local", "s", "terminal")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
         let turns = HashSet::from(["remote".to_string()]);
         let children = HashMap::from([("k1".to_string(), "remote".to_string()), ("k2".to_string(), "terminal".to_string())]);
-        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        // The terminal still follows the session (`others`).
+        let ids = |current: Option<&str>, alone: bool, waited: bool| late(&approvals, &turns, (&children, current), alone, true, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
         assert_eq!(ids(Some("remote"), true, true), ["kid", "own"], "the viewer's turn's, and its child's while that turn runs");
         assert!(ids(Some("remote"), false, true).is_empty() && ids(Some("remote"), true, false).is_empty());
         // A background agent of the viewer's turn asking in a later turn
@@ -1348,6 +1858,41 @@ mod tests {
         // is not overruled.
         assert_eq!(ids(Some("terminal"), true, true), ["own"]);
         assert_eq!(ids(None, true, true), ["own"]);
+    }
+
+    /// R-HOST-1: a terminal that closed with a question on screen leaves
+    /// the bridge the session's one answering client. With no other
+    /// (`!others`), a request of a turn begun at the terminal is denied
+    /// once nobody has been here for the wait and it has waited as long —
+    /// never while another answering client follows, nor while a viewer
+    /// is here, nor before it has waited.
+    #[test]
+    fn r_host_1_a_terminal_turns_request_is_denied_late_once_no_other_client_answers() {
+        let req = |id: &str, session: &str, turn: &str| ApprovalRequest { session_id: session.into(), turn_id: turn.into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() };
+        let at = Instant::now();
+        let approvals: BTreeMap<String, (ApprovalRequest, Instant)> = [req("local", "s", "terminal"), req("local-kid", "k2", "k2-turn"), req("own", "s", "remote")].into_iter().map(|r| (r.request_id.clone(), (r, at))).collect();
+        let turns = HashSet::from(["remote".to_string()]);
+        let children = HashMap::from([("k2".to_string(), "terminal".to_string())]);
+        let ids = |alone: bool, others: bool, waited: bool| late(&approvals, &turns, (&children, Some("terminal")), alone, others, |_| waited).iter().map(|r| r.request_id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(true, false, true), ["local", "local-kid", "own"], "nobody but the bridge answers: every waiting request");
+        assert_eq!(ids(true, true, true), ["own"], "the terminal still follows: only the viewer's turn's");
+        assert!(ids(false, false, true).is_empty(), "a viewer is here to answer");
+        assert!(ids(true, false, false).is_empty(), "not waited yet");
+    }
+
+    /// R-HOST-1: only the daemon saying the bridge is the session's one
+    /// answering client counts as nobody else; anything else is a guess,
+    /// and the bridge denies nothing on a guess.
+    #[test]
+    fn r_host_1_nobody_else_answers_only_when_the_daemon_counts_the_bridge_alone() {
+        let of = |session: serde_json::Value| serde_json::from_value::<crate::protocol::HostStatus>(serde_json::json!({"pid": 1, "krowkVersion": "t", "protocolVersion": 1, "socket": "s", "uptimeMs": 1, "clients": 1, "sessions": [session]})).unwrap();
+        let status = |answering: u32| of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2, "answering": answering}));
+        assert!(!others_in(Some(&status(1)), "s"), "the bridge alone");
+        assert!(others_in(Some(&status(2)), "s"), "the terminal too");
+        assert!(others_in(Some(&status(0)), "s"), "a count that leaves out the bridge");
+        assert!(others_in(Some(&of(serde_json::json!({"sessionId": "s", "running": true, "clients": 2}))), "s"), "a daemon that does not count");
+        assert!(others_in(Some(&status(1)), "another"), "the session not listed");
+        assert!(others_in(None, "s"), "no status");
     }
 
     /// R-SUB-12: a `subagent.started` is only a candidate. After a handoff
@@ -1456,7 +2001,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT, stale: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {
@@ -1477,6 +2022,9 @@ mod tests {
         let (chain, start) = Chain::start(laptop.subject("laptop"), &laptop.signing, None, T0).unwrap();
         let o = options(&url, &laptop, UserKeys::new(start.newest.clone(), []).unwrap(), chain.clone(), id);
         o.api.init_device_list(&post(&start)).unwrap();
+        // What the host's own reader (`list_loop`, as `krowk sync host`
+        // runs it with no `stale` given) ends the bridge with.
+        let list_news = |o: &Options, chain: &Chain| list_news(&o.api, o.device, chain).map_err(|e| e.why(&o.session));
         assert!(list_news(&o, &chain).unwrap().is_none(), "nothing new");
 
         let (two, add) = chain.batch(&start.newest, vec![Change::Add(desktop.subject("desktop")), Change::Add(phone.subject("phone"))], laptop.key.id(), &laptop.signing, T0 + 1).unwrap();

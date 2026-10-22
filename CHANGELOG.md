@@ -16,6 +16,47 @@ the versions are the `v*` tags a release is cut from. Entries land under
   reads on a dark or a light theme, and only on a terminal wide enough
   for it; piped, nothing changes. The code and the lines around it stay
   as they were, and typing the code still works.
+- **Sessions sync by themselves.** On a machine with sync set up, every
+  session that runs a turn in the host daemon (the TUI, `krowk -p
+  --daemon`) is synced without `krowk sync host`: another machine lists it
+  within seconds, and `krowk sync attach` follows it. To turn it off, set
+  `"sync": {"auto": false}` in `~/.krowk/config.json`, or
+  `KROWK_SYNC_AUTO=0` for the daemon. To keep one directory off sync, list
+  it in `sync.exclude` or put a `.krowk/no-sync` file in it. `krowk sync
+  status` now says whether auto-sync is on, whether the directory you're
+  in is synced, and how many sessions the daemon is syncing. A session
+  nobody has used for 10 minutes stops syncing until its next prompt on
+  this machine (`sync.idleMinutes`; `0` keeps it synced while the daemon
+  runs); until then other devices see it read-only. A directory opted
+  out while its session syncs stops syncing at that session's next
+  prompt. When the daemon restarts (`krowk upgrade`, `krowk host stop`, a
+  crash), each session picks up syncing again at its next prompt, and a
+  device following it carries on by itself; after a crash that can take
+  up to a minute. A session you host by hand with `krowk sync host`
+  stays yours: the daemon never takes it over. On a workspace without a
+  paid plan the daemon stops trying for an hour. The daemon exits once
+  nobody has used it for a while, so run `krowk host enable` to keep
+  sessions synced on an always-on machine. A machine without sync set up
+  behaves as before and makes no sync network call. `krowk sync host`
+  still syncs one session by hand, including one in an opted-out
+  directory.
+- **A synced session tells your iPhone when it needs your approval or
+  finishes a turn.** The machine hosting the session asks the registry to
+  send your other devices a generic alert, once per approval and once per
+  finished turn, with fixed text that carries nothing from the session. A
+  turn that ended more than two minutes before it was synced rings
+  nobody. If the registry can't send pushes, the host says so once and
+  the session syncs as before. For now a turn you run at the host's own
+  terminal, and an approval it asks there, rings your phone too.
+- **The iPhone app signs in through the browser.** Its first screen says
+  "Sign in to krowk" with one button, which opens krowk's approval page in
+  a browser sheet that uses your existing krowk login, naming the phone by
+  the name iOS gives apps ("iPhone"). Approve there and the sheet closes by itself. There is
+  no password field in the app. The key it receives is kept in the
+  Keychain only, never in a file or the app's settings. If you deny it or
+  15 minutes pass, the screen says so and offers "Start again". A
+  signed-in phone opens on "Signed in to <workspace>" until pairing
+  comes. Nothing changes for CLI users.
 - **The browser's approval page names the machine signing in, and the key
   it makes is named after it.** `krowk login`, and the sign-ins `krowk
   sync` and `krowk devices` ask for, used to show "Log in on this
@@ -51,12 +92,57 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A closed terminal no longer leaves a synced session waiting on a
+  question.** If you close krowk while it asks to approve a tool call, and
+  nobody is attached from another device, the question is declined once
+  it has been waiting five minutes and nobody has been attached for as
+  long, instead of waiting for good. That includes a question a
+  background agent asks after its turn ended. While krowk is still open,
+  or someone is attached, the question waits for an answer as before.
+- **krowk can now ask the registry to notify your other devices, and a
+  device can register for push notifications.** Nothing calls this yet.
+  Notifications from a host come in a later release. Nothing changes for
+  CLI users.
+- **The iPhone app's core can follow a session live.** The app's viewer
+  screens come next. The phone joins the session through the relay with
+  the same viewer the terminal runs: the handshake, the host's welcome,
+  batches applied in order, gaps caught up, commands queued while no host
+  is there and sent once one welcomes it. The app only opens the socket
+  and keeps the time. Nothing changes for CLI users.
+- **The iPhone app's core can list your synced sessions and open one.**
+  The app's screens for them come next. Each session's record is checked
+  against the device list the phone holds before its title is shown, and
+  an opened session is read from its latest checkpoint, then whatever was
+  written since. Sessions the phone can't open yet are counted, not shown.
+  The session's keys and the phone's signing key never leave the core.
+  Nothing changes for CLI users.
+- **The terminal follows a synced session with the same code the iPhone
+  app will.** `krowk sync attach`, `krowk sync take` and the TUI on a
+  synced session now run krowk-client's viewer, the one the phone will
+  link,
+  with only the sockets, the registry calls and the race for a direct
+  path left in the CLI. Nothing changes for you; the end-to-end sync
+  tests now cover the phone's viewer too.
+- **The protocol's types reach Swift.** The iPhone app will read the
+  daemon's lines (log events, live deltas, approval requests, results)
+  and build its commands as Swift enums and structs that UniFFI generates
+  from krowk-client's own protocol types, with JSON only at the edges. A
+  protocol change no longer builds until the app's copy of the types
+  follows it. Nothing changes for CLI users.
 - **krowk-client runs the new device's side of pairing.** Nothing
   changes for you: `krowk sync join` sends the same steps, waits as long
   and fails with the same messages. The sequence and its rules (a code is
   tried once, nothing is retried, keys kept by a join that didn't finish
   are forgotten) moved from the CLI into krowk-client, so the iPhone app
   will join the same way and supply only the network.
+- **The iPhone app keeps its keys in the Keychain, sealed by the Secure
+  Enclave.** Each key krowk keeps on the phone, and its krowk API key, is
+  a Keychain item that opens only while the phone is unlocked, never syncs
+  to iCloud and never moves to another device. It is sealed to a key that
+  can't leave this iPhone's Secure Enclave. Nothing is written to a file in
+  the app. Reinstalling the app starts with no keys. An iPhone with no
+  Secure Enclave keeps no keys, and the app says so. Nothing changes for
+  CLI users.
 - **The iPhone app's project is in `apps/ios`.** It is a UIKit shell that
   shows the protocol version it reads from the Rust core. On a Mac,
   XcodeGen generates its Xcode project; on Linux, xtool builds the same
@@ -67,6 +153,35 @@ the versions are the `v*` tags a release is cut from. Entries land under
   kept at rest, are the same JSON byte for byte. Their types moved from
   the harness into krowk-client, so the iPhone app will read them without
   a copy of its own.
+- **krowk-client reads a synced session back.** Nothing changes for you:
+  attaching to a session, catching up with it, and opening its key and
+  index read the same chunks, check them the same way and fetch them
+  just as fast. That reader moved from the harness into krowk-client, so
+  the iPhone app will list and open a session without decrypting it in
+  code of its own. Writing the log stays in the harness.
+- **krowk-client decides what a viewer of a synced session shows.**
+  Nothing changes for you: `krowk sync attach` and the TUI show the same
+  lines, each logged event and each waiting approval once, ack the relay
+  as often and try a direct path on the same schedule. How a stream batch
+  is applied, how events are deduped, the ack, the catch-ups a gap asks
+  for and the direct-path timings moved from the harness into
+  krowk-client, so the iPhone app will show a session the same way. The
+  live connection stays in the harness.
+- **krowk-client joins the relay.** Nothing changes for you: `krowk sync`
+  dials the same URL, signs the relay's challenge over the same origin
+  and sends the same join, and a refusal reads as before. The handshake
+  moved from the harness into krowk-client as a state machine with no
+  socket of its own, so the iPhone app will join the relay with the same
+  code. The connection, TLS and the 10-second waits stay in the harness.
+- **krowk-client can follow a synced session on its own rules.** Nothing
+  changes for you yet: `krowk sync attach` still runs its own loop. The
+  rules for following a session live (joining the relay, holding batches
+  until the host's welcome, reading the log up to the head it names,
+  acking, catching up on gaps, sending queued prompts at the welcome, the
+  heartbeat and one screen update a frame) now also exist in
+  krowk-client as a state machine you feed the bytes that arrived and the
+  time. It has no socket, thread or clock of its own, so the iPhone app
+  will follow a session with the same rules, using its own connection.
 - **The iPhone app's Rust core builds with `make ios-core`.** It makes a
   static, arm64-only XCFramework of krowk-ffi for device and simulator,
   with the release build's size settings, and a local Swift package,
@@ -116,6 +231,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A device that fails to move onto a direct path picks up where it
+  was.** When a device following a synced session tried a direct path
+  and the host never welcomed it there, it went back to the relay at
+  the live edge, so text streamed during the attempt could be missing
+  until the host logged it. It now rejoins the relay from the last batch it
+  showed, and the relay fills the gap.
+- **Commands an attached device sends again after a reconnect go in the
+  order you typed them.** A device following a synced session sends every
+  command the host hasn't answered yet again once it reconnects. Once it
+  had sent ten or more in a run, those could go out of order (the tenth
+  before the ninth), so two prompts could run swapped. They now go in the
+  order you typed them.
 - **A prompt sent from `krowk sync attach` that the host refuses now says
   why.** If the host's daemon turned the prompt down before its turn
   started, for example because the repository was trusted only for one
@@ -123,6 +250,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   heard nothing more. Now its `sync.acked` line carries the refusal, and
   the TUI shows it as an error. Fix the cause on the host and send the
   prompt again: nothing needs restarting.
+- **A session followed from another machine no longer silently misses
+  events when the relay drops a batch.** If the relay dropped a batch just
+  as `krowk sync attach` joined, while it moved the session onto a direct
+  path, or while it was already catching up on an earlier gap, the events
+  in that batch could never reach the screen, and no gap was shown. Now
+  every gap shows, and the viewer asks the host for what it missed, once
+  any catch-up already under way has finished.
 
 ### Security
 

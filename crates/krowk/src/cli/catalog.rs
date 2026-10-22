@@ -590,7 +590,7 @@ fn sync_command() -> Command {
                 flags: vec![flag("name", STRING, "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
                 ..cmd("recover", "krowk sync recover", "Back in from the recovery kit's 12 words, on a new machine")
             },
-            cmd("status", "krowk sync status", "This device's list, key generation and recovery kit, checked"),
+            cmd("status", "krowk sync status", "This device's list, recovery kit and auto-sync, checked"),
             Command {
                 subcommands: vec![
                     Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk sync recovery new [--save FILE]", "Make a new recovery kit") },
@@ -973,7 +973,13 @@ Sessions are encrypted on this machine before they leave it. `init` sets up
 your device list and shows a recovery kit, 12 words, once: the only way back
 in if every device is lost. `recover` takes them on a new machine — at its
 prompt, or piped from a file (`krowk sync recover < kit.txt`), never `echo`,
-which keeps them in your shell history.",
+which keeps them in your shell history.
+
+Once sync is set up, every session that runs a turn in the host daemon is
+synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
+and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync. A
+session idle for `sync.idleMinutes` (10) stops syncing until its next prompt
+here.",
         #[cfg(feature = "harness")]
         "devices" => "\
 Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
