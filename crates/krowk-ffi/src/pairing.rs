@@ -11,10 +11,10 @@
 //!
 //! The rules are `pairing_join`'s: the code starts one pairing once,
 //! nothing is retried, and any failure ends the pairing and forgets what
-//! the join kept. A cancel is one more failure, up to the moment the keys
-//! are kept: from then on the other device lists this one whatever it
-//! does, so the join is seen through rather than leave the phone listed
-//! without the keys.
+//! the join kept. A cancel is one more failure, up to the moment the other
+//! device's sealed reply is seen: it lists this one once its reply is out,
+//! acked or not, so from then on the join is seen through rather than
+//! leave the phone listed without the keys.
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -43,30 +43,34 @@ const OS: &str = "iOS";
 /// account's (keyed, signed by this device for the claim; the joining
 /// side's steps go with the key alone), `id` the pairing it is in.
 ///
-/// Once `cancel` is set, `read` and the hello and confirmation steps fail
-/// at once, with status 499 and code `cancelled` — never 0, which `join`
-/// counts as an ack that may have landed — and a pause returns within a
-/// quarter of a second; `end` still ends the pairing. Not so once the
-/// acknowledgement step is reached: the keys are kept by then and the
-/// other device posts this one to the list acked or not, so the ack and
-/// the claims go ahead, cancel or no cancel.
+/// Once `cancel` is set, a pause returns within a quarter of a second, and
+/// the calls fail at once with status 499 and code `cancelled` — never 0,
+/// which `join` counts as an ack that may have landed; `end` still ends
+/// the pairing. Not once the other device's sealed reply is seen: it
+/// posts this device to the list once its reply is out, acked or not, so
+/// from then on the check, the ack and the claims go ahead, cancel or no
+/// cancel. A cancel after the confirmation went out reads the pairing
+/// once more to see whether the reply has come; what it cannot see is a
+/// reply that lands between that read and the `end`.
 pub struct RegistryMailbox {
     client: Arc<Client>,
     id: String,
     cancel: Arc<AtomicBool>,
-    /// The acknowledgement step was reached: the keys are kept.
-    kept: AtomicBool,
+    /// The confirmation step was sent: a reply may come.
+    confirmed: AtomicBool,
+    /// The sealed reply was seen, or the ack reached: too late to cancel.
+    committed: AtomicBool,
 }
 
 impl RegistryMailbox {
     pub fn new(client: Arc<Client>, id: String, cancel: Arc<AtomicBool>) -> RegistryMailbox {
-        RegistryMailbox { client, id, cancel, kept: AtomicBool::new(false) }
+        RegistryMailbox { client, id, cancel, confirmed: AtomicBool::new(false), committed: AtomicBool::new(false) }
     }
 
-    /// Whether a cancel stopped this mailbox: one set before the keys were
-    /// kept.
+    /// Whether a cancel stopped this mailbox: one set before the other
+    /// device's reply was seen.
     pub fn cancelled(&self) -> bool {
-        self.cancel.load(Ordering::SeqCst) && !self.kept.load(Ordering::SeqCst)
+        self.cancel.load(Ordering::SeqCst) && !self.committed.load(Ordering::SeqCst)
     }
 
     fn check(&self) -> Result<(), krowk_api::Error> {
@@ -89,15 +93,26 @@ fn cancelled_error() -> krowk_api::Error {
 impl Mailbox for RegistryMailbox {
     fn step(&self, step: PairingStep, message: &[u8]) -> Result<(), krowk_api::Error> {
         if step == PairingStep::Acknowledgement {
-            self.kept.store(true, Ordering::SeqCst);
+            self.committed.store(true, Ordering::SeqCst);
         }
         self.check()?;
+        if step == PairingStep::Confirmation {
+            self.confirmed.store(true, Ordering::SeqCst);
+        }
         self.client.pairing_step(step, message).map(|_| ())
     }
 
     fn read(&self) -> Result<Pairing, krowk_api::Error> {
+        if self.cancelled() && !self.confirmed.load(Ordering::SeqCst) {
+            return Err(cancelled_error());
+        }
+        let p = self.client.show_pairing(&self.id)?;
+        if !p.sealed_reply.is_empty() {
+            self.committed.store(true, Ordering::SeqCst);
+        }
+        // Cancelled with no reply yet: the one last look is over.
         self.check()?;
-        self.client.show_pairing(&self.id)
+        Ok(p)
     }
 
     /// Ends the pairing whether or not the join was cancelled: a cancel is
@@ -194,12 +209,12 @@ impl Account {
 
     /// Ends the join under way, from any thread: within a second, unless a
     /// registry call is out, which is answered or times out first. The
-    /// pairing is ended on the registry and whatever the join kept is
-    /// forgotten; the join is refused with `cancelled`. Too late once the
-    /// keys are kept — the other device lists this one by then — so a join
-    /// that got that far finishes as it would have: `Joined`, or
-    /// `not_added`. Does nothing when no join is under way: a cancel is
-    /// not kept for the next one.
+    /// join is refused with `cancelled`, and once its hello has gone out
+    /// the pairing is ended on the registry. Too late once the other
+    /// device's sealed reply has been seen — that device lists this one
+    /// by then — so a join that got that far finishes as it would have:
+    /// `Joined`, `pairing_failed` or `not_added`. Does nothing when no
+    /// join is under way: a cancel is not kept for the next one.
     pub fn cancel_pairing(&self) {
         if let Some(cancel) = self.pairing_slot().as_ref() {
             cancel.store(true, Ordering::SeqCst);
@@ -268,7 +283,7 @@ impl Account {
                 return Err(refused("already_joined", "this device is already on your device list — there is nothing to join"));
             }
             Listing::Removed => {
-                return Err(refused("device_removed", "this device was removed from your devices, and its keys cannot be added again — delete the app's data and sign in again to join as a new device"));
+                return Err(refused("device_removed", "this device was removed from your device list, and a removed device's keys can never be added again — it can join only with new device keys"));
             }
             _ => {}
         }
@@ -277,7 +292,7 @@ impl Account {
             .find_open_pairing()
             .map_err(|e| if e.code() == "no_pairing" { refused("no_pairing", "none of your devices has a pairing open — run `krowk devices add` on a device already set up") } else { e.into() })
             .map_err(before)?;
-        let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again"))?;
+        let a_device = DeviceId::parse(&open.initiator_device.id).ok_or_else(|| refused("malformed_response", "the registry's pairing names no device id — try again")).map_err(before)?;
         let user_id = self.client.verify_key().map_err(KrowkError::from).map_err(before)?.user_id;
         if let Some(expected) = expected {
             if expected.user_id != user_id {

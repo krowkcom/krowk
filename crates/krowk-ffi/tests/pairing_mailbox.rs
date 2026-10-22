@@ -3,7 +3,7 @@
 //! pairing, ends it, and once the join is cancelled stops waiting within a
 //! second and refuses every call but `end` — as `cancelled`, never as the
 //! status 0 the join would count as an ack that may have landed — until
-//! the keys are kept: from the ack on, a cancel is too late.
+//! the other device's reply is seen: from then on, a cancel is too late.
 
 mod common;
 
@@ -75,6 +75,26 @@ fn r_e2e_3_end_ends_the_pairing_even_once_cancelled() {
     let e = w.host.find_open_pairing().unwrap_err();
     assert!(matches!(e.code().as_str(), "pairing_gone" | "no_pairing"), "{e:?}");
     assert!(w.host.open_pairing().is_ok(), "a new pairing can open: the old one is over");
+}
+
+#[test]
+fn r_e2e_3_a_cancel_after_the_confirmation_looks_once_more_for_the_reply() {
+    let w = World::new();
+    let (mailbox, cancel, _) = opened(&w);
+    // The stand-in takes the messages as opaque: a hello, A's answer, a
+    // confirmation, and then the reply, as the two sides would send them.
+    mailbox.step(PairingStep::Join, &[7; 32]).unwrap();
+    w.host.pairing_step(PairingStep::Answer, &[8; 32]).unwrap();
+    mailbox.step(PairingStep::Confirmation, &[9; 32]).unwrap();
+    cancel.store(true, Ordering::SeqCst);
+    // No reply yet: the last look finds none, and the join is cancelled.
+    let e = mailbox.read().unwrap_err();
+    assert_eq!((e.status, e.code().as_str()), (499, "cancelled"), "{e:?}");
+    // A reply out by then is seen, and the join goes on.
+    w.host.pairing_step(PairingStep::Reply, &[10; 64]).unwrap();
+    let p = mailbox.read().expect("the reply is read despite the cancel");
+    assert!(!p.sealed_reply.is_empty());
+    assert!(!mailbox.cancelled(), "too late to cancel");
 }
 
 #[test]

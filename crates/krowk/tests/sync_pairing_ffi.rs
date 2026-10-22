@@ -337,7 +337,7 @@ fn r_e2e_3_a_join_cancelled_while_the_other_device_waits_ends_within_a_second() 
     assert_eq!(code, "cancelled");
     assert!(!account.has_user_keys().unwrap());
     let ended = looked.find_open_pairing().map(|p| p.state);
-    assert!(!matches!(&ended, Ok(state) if state == "open"), "the pairing was ended: {ended:?}");
+    assert!(matches!(&ended, Err(e) if e.code() == "pairing_gone") || matches!(&ended, Ok(s) if s == "dead"), "the pairing was ended: {ended:?}");
 
     signal("-CONT");
     let a = wait(a, Duration::from_secs(30));
