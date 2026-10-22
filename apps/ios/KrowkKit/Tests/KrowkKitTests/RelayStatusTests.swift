@@ -64,6 +64,33 @@ struct RelayStatusTests {
         #expect(RelayStatus.ended(nil).text == "stopped")
     }
 
+    @Test("R-IOS-1: a gap reads catching up… until its catch-up comes, a host welcoming meanwhile changes nothing, and a drop reads reconnecting")
+    func catchingUp() {
+        var t = RelayStatusTracker()
+        t.gap()
+        #expect(t.status == .connecting, "nothing to miss before a join")
+        t.host(true)
+        t.gap()
+        #expect(t.status == .catchingUp)
+        #expect(t.status.text == "catching up…")
+        t.host(true)
+        #expect(t.status == .catchingUp)
+        t.caughtUp()
+        #expect(t.status == .live)
+        t.caughtUp()
+        #expect(t.status == .live, "a catch-up with no gap (a welcome's) changes nothing")
+        t.gap()
+        t.dropped()
+        #expect(t.status == .reconnecting)
+        t.host(false)
+        t.gap()
+        #expect(t.status == .hostOffline, "no host to catch up from")
+        t.host(true)
+        t.gap()
+        t.host(false)
+        #expect(t.status == .hostOffline, "the host went while catching up: host offline")
+    }
+
     @MainActor
     @Test("R-IOS-1: the session screen shows the bar under the navigation bar, above its transcript, follows its session, and stops it once gone")
     func screen() async throws {
@@ -114,14 +141,17 @@ struct RelayStatusTests {
     }
 }
 
-/// A session that says what the test tells it to, and brings the events
-/// it is given at the next frame.
+/// A session that says what the test tells it to, and brings the updates
+/// it is given at the next frame, waking the screen as a real one does.
 final class StubSession: LiveSession {
     let followed = Mutex(0)
     let stopped = Mutex(0)
     private let told = Mutex<(@MainActor @Sendable (RelayStatus) -> Void)?>(nil)
-    /// What the next frame brings: the session read at rest, or more.
-    private let pending = Mutex<[(attach: Bool, events: [TranscriptEvent])]>([])
+    private let waker = Mutex<(@MainActor @Sendable () -> Void)?>(nil)
+    /// What the next frame brings.
+    private let pending = Mutex<[TranscriptUpdate]>([])
+    /// Frames taken, and those that brought something.
+    let taken = Mutex(0)
 
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void) {
         followed.withLock { $0 += 1 }
@@ -132,21 +162,34 @@ final class StubSession: LiveSession {
         stopped.withLock { $0 += 1 }
     }
 
-    @MainActor func takeFrame(into transcript: TranscriptModel) -> Int {
-        let taken = pending.withLock { pending in
+    func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {
+        waker.withLock { $0 = wake }
+    }
+
+    @MainActor func takeFrame() -> [TranscriptUpdate] {
+        taken.withLock { $0 += 1 }
+        return pending.withLock { pending in
             defer { pending = [] }
             return pending
         }
-        for batch in taken {
-            if batch.attach { transcript.attach(batch.events) } else { transcript.apply(batch.events) }
-        }
-        return taken.count
     }
 
     /// `events` at the next frame, as the session read at rest when
-    /// `attach`.
+    /// `attach`, else as logged lines.
     func bring(_ events: [TranscriptEvent], attach: Bool = false) {
-        pending.withLock { $0.append((attach, events)) }
+        bring([attach ? .attached(events) : .logged(events)])
+    }
+
+    /// `updates` at the next frame; the screen is woken if none were
+    /// waiting, on the main actor, as a real session does.
+    func bring(_ updates: [TranscriptUpdate]) {
+        let waiting = pending.withLock { pending in
+            let waiting = !pending.isEmpty
+            pending.append(contentsOf: updates)
+            return waiting
+        }
+        guard !waiting, let wake = waker.withLock({ $0 }) else { return }
+        Task { @MainActor in wake() }
     }
 
     func say(_ status: RelayStatus) {
