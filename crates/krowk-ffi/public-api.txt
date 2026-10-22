@@ -48,6 +48,48 @@ pub enum KrowkError {
     Decode { detail: String },
 }
 
+pub struct RegistryMailbox {
+    // opaque: private fields
+}
+
+impl RegistryMailbox {
+    pub fn new(
+        client: Arc<Client>,
+        id: String,
+        cancel: Arc<AtomicBool>,
+    ) -> RegistryMailbox {}
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct Joined {
+    pub seq: u64,
+    pub device_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct PairingInvite {
+    pub code: String,
+    pub user_id: String,
+    pub device: String,
+}
+
+#[uniffi::export]
+pub fn parse_pairing_invite(uri: String) -> Option<PairingInvite> {}
+
+#[uniffi::export]
+impl Account {
+    pub fn join_pairing(
+        &self,
+        code: String,
+        name: String,
+    ) -> Result<Joined, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn cancel_pairing(&self) {}
+}
+
 uniffi::custom_type!(
     Value, String, { remote, lower : | v | v.to_string(), try_lift : | s |
     Ok(serde_json::from_str(& s) ?), }
@@ -727,6 +769,8 @@ impl Viewer {
 pub use account::Account;
 
 pub use error::KrowkError;
+
+pub use pairing::{Joined, PairingInvite, RegistryMailbox, parse_pairing_invite};
 
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 

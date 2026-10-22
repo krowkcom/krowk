@@ -88,6 +88,13 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "func workspaceName() -> String",
         "func hasUserKeys() throws -> Bool",
         "func signOut() throws",
+        // R-E2E-3: joining a pairing, and the scanned invite's code.
+        "func joinPairing(code: String, name: String) throws -> Joined",
+        "func cancelPairing()",
+        "struct Joined",
+        "var deviceName: String",
+        "func parsePairingInvite(uri: String) -> PairingInvite?",
+        "struct PairingInvite",
         "case Refused(code: String, detail: String)",
         "case Network(detail: String)",
         "case Decode(detail: String)",
