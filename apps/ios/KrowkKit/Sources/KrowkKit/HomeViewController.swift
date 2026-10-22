@@ -1,7 +1,8 @@
 import UIKit
 
-/// The M1 shell's only screen: the large title "krowk" and the protocol
-/// version the Rust core speaks. The version comes in from the app target,
+/// The large title "krowk" and the protocol version the Rust core speaks:
+/// what the app shows while it hosts the unit tests, which keep the
+/// Keychain to themselves. A paired phone opens on Sessions. The version comes in from the app target,
 /// which reads it through the bindings, so KrowkKit never imports them.
 public final class HomeViewController: UIViewController {
     private let protocolVersion: UInt32

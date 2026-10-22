@@ -2,7 +2,9 @@
 // fake fleet: sign in, then type the code the fleet's `krowk devices add`
 // shows. A wrong code says a code works once; a fresh one names host A
 // ("Pairing with host-a"), host A says yes by itself, and the app reaches
-// "This iPhone is on your devices". Relaunched, it skips onboarding. The
+// "This iPhone is on your devices". Continue opens Sessions (R-IOS-7,
+// R-IOS-3): the fleet's demo session, live on host-a; a tap opens its
+// place. Relaunched, it opens on Sessions, skipping onboarding. The
 // simulator has no camera, so the scan button is absent. Screenshots of
 // each screen, light and dark, are kept in the results.
 //
@@ -93,17 +95,37 @@ final class PairingUITests: XCTestCase {
         XCTAssertEqual(done.label, "This iPhone is on your devices.")
         Screenshots.keep("paired", in: app)
         app.buttons["pairing-continue"].tap()
-        XCTAssertTrue(app.staticTexts["protocol-version"].waitForExistence(timeout: 10), "Continue did not go home")
+        let demo = demoSession(in: app, after: "Continue")
+        Screenshots.keep("sessions", in: app)
+        demo.tap()
+        XCTAssertTrue(app.staticTexts["session-placeholder"].waitForExistence(timeout: 10), "a tap did not open the session")
+        Screenshots.keep("session", in: app)
         app.terminate()
 
-        // Relaunched, the paired phone skips onboarding.
+        // Relaunched, the paired phone opens on Sessions, no onboarding.
         let again = XCUIApplication()
         again.launchEnvironment["KROWK_API_URL"] = api
+        again.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
         again.launch()
-        XCTAssertTrue(again.staticTexts["protocol-version"].waitForExistence(timeout: 10), "a relaunch did not open home")
+        _ = demoSession(in: again, after: "a relaunch")
         XCTAssertFalse(again.staticTexts["sign-in-title"].exists)
         XCTAssertFalse(again.staticTexts["pairing-title"].exists)
         again.terminate()
+    }
+
+    /// R-IOS-7, R-IOS-3: Sessions is up, and lists the fleet's demo
+    /// session under its title, live on host-a: its row.
+    @MainActor
+    private func demoSession(in app: XCUIApplication, after: String) -> XCUIElement {
+        let list = app.collectionViews["sessions-list"]
+        if !list.waitForExistence(timeout: 10) { Screenshots.tree(of: app) }
+        XCTAssertTrue(list.exists, "\(after) did not open Sessions")
+        XCTAssertTrue(app.navigationBars["Sessions"].exists, "no Sessions title")
+        let demo = list.cells.matching(NSPredicate(format: "label BEGINSWITH 'A demo session, '")).firstMatch
+        if !demo.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        XCTAssertTrue(demo.exists, "the demo session is not listed 30 s \(after)")
+        XCTAssertTrue(demo.label.hasSuffix("live on host-a"), demo.label)
+        return demo
     }
 
     /// Types `code` into the field: a whole code starts at once. The last

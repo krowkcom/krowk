@@ -10,9 +10,12 @@
 #
 # xcodebuild hands every TEST_RUNNER_<NAME> variable to the test process as
 # <NAME>, so the tests read KROWK_API_URL, KROWK_RELAY_URL,
-# KROWK_PAIRING_CODE and KROWK_PAIR_URL: a POST there gives a fresh code
-# (the old one's pairing ended), since a code works once and the simulator
-# can't write to the fleet's stdin. The fleet binds 127.0.0.1 only; the simulator shares
+# KROWK_PAIRING_CODE, KROWK_PAIR_URL and KROWK_SESSIONS_URL: a POST to the
+# pair URL gives a fresh code (the old one's pairing ended), since a code
+# works once and the simulator can't write to the fleet's stdin; one to the
+# sessions URL hosts a session of the test's own, which a POST to
+# <url>/<id>/release lets go (its lease lapses). The fleet runs with
+# --demo: its session is titled "A demo session" and holds an approval. The fleet binds 127.0.0.1 only; the simulator shares
 # the Mac's loopback. Its log is appended to $KROWK_FLEET_LOG (default
 # target/fake-fleet.log), and its last lines are shown if it fails to start.
 #
@@ -61,14 +64,14 @@ trap 'exit 143' TERM
 echo "with-fleet: starting the fake fleet, $(date)" >>"$log"
 # Its own process group (job control), so stop() can end all of it.
 set -m
-cargo run -q -p krowk-harness --example fake_fleet -- --pair <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
+cargo run -q -p krowk-harness --example fake_fleet -- --demo <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
 fleet=$!
 set +m
 # Holding the write end open keeps the fleet running; closing it stops it.
 exec 3>"$fifo/stdin"
 exec 4<"$fifo/stdout"
 
-api='' relay='' pair='' pair_url='' ready=''
+api='' relay='' pair='' pair_url='' sessions_url='' ready=''
 # Five minutes: the first start builds and seeds the stand-in registry.
 while IFS= read -r -t 300 line <&4; do
   case $line in
@@ -76,6 +79,7 @@ while IFS= read -r -t 300 line <&4; do
     relay=*) relay=${line#relay=} ;;
     pair=*) pair=${line#pair=} ;;
     pair_url=*) pair_url=${line#pair_url=} ;;
+    sessions_url=*) sessions_url=${line#sessions_url=} ;;
     ready) ready=1; break ;;
   esac
 done
@@ -84,12 +88,13 @@ if [ -z "$ready" ] || [ -z "$api" ]; then
   tail -n 40 "$log" >&2 || true
   exit 1
 fi
-echo "with-fleet: api=$api relay=$relay pair=$pair pair_url=$pair_url" >&2
+echo "with-fleet: api=$api relay=$relay pair=$pair pair_url=$pair_url sessions_url=$sessions_url" >&2
 
 export TEST_RUNNER_KROWK_API_URL=$api
 export TEST_RUNNER_KROWK_RELAY_URL=$relay
 export TEST_RUNNER_KROWK_PAIRING_CODE=$pair
 export TEST_RUNNER_KROWK_PAIR_URL=$pair_url
+export TEST_RUNNER_KROWK_SESSIONS_URL=$sessions_url
 
 status=0
 # Without the fleet's pipes: a helper the command leaves running must not

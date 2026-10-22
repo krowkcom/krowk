@@ -287,7 +287,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4: the scheme's tests on the simulator, against the fake fleet"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2: the scheme's tests on the simulator, against the fake fleet"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do
@@ -308,7 +308,7 @@ jobs:
 
       # The UI tests' screenshots (XCTAttachment, kept always), light and
       # dark: onboarding, the approval page, waiting, signed in, pairing, a
-      # wrong code, pairing with host A, paired.
+      # wrong code, pairing with host A, paired, Sessions, a session.
       - name: The UI tests' screenshots
         if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |

@@ -134,6 +134,9 @@ pub struct Fleet {
     pub chain: Chain,
     pub user: UserKey,
     pub root: PathBuf,
+    /// Host A as the fleet's control uses it: a session of a test's own,
+    /// hosted and let go.
+    pub hosting: Arc<Hosting>,
     stop: watch::Sender<bool>,
     bridge: std::thread::JoinHandle<()>,
     _registry: krowk_devregistry::Running,
@@ -155,10 +158,12 @@ impl Fleet {
         let _ = self.stop.send(true);
     }
 
-    /// Stops the bridge, waits for it, and removes the scratch root.
+    /// Stops the bridge and every session a test had hosted, waits for
+    /// them, and removes the scratch root.
     pub fn stop(self) {
         self.stop_host();
         let _ = self.bridge.join();
+        self.hosting.release_all();
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -189,57 +194,30 @@ pub fn start(demo: bool) -> Fleet {
     store.save_device_list(&start.entries).expect("host A's home keeps the device list");
 
     serve(&root, env.clone());
-    let socket = daemon::socket(&env).unwrap();
-    let repo = root.join("repo");
-    let (keys, sessions) = (UserKeys::new(user.clone(), []).unwrap(), log::sessions_dir(&env).unwrap());
-    let options = |session: &str| host::Options {
+    let hosting = Arc::new(Hosting {
+        api: api.clone(),
         relay: relay.clone(),
-        env: "development".into(),
-        api: a.client(&api),
-        device: a.key.id(),
-        signing: a.signing_copy(),
-        keys: UserKeys::new(user.clone(), []).unwrap(),
+        socket: daemon::socket(&env).unwrap(),
+        repo: root.join("repo"),
+        sessions: log::sessions_dir(&env).unwrap(),
+        env: Arc::new(env.clone()),
+        host: Device::kept(&store, "host-a"),
         chain: chain.clone(),
-        session: session.into(),
-        title: if demo { DEMO_TITLE } else { TITLE }.into(),
-        cwd: repo.display().to_string(),
-        sessions: sessions.clone(),
-        ttl: host::LEASE_TTL,
-        keep: host::KEEP,
-        direct: None,
-        tailnet: None,
-        handed: None,
-        approval_wait: host::APPROVAL_WAIT,
-        stale: None,
-    };
-    let prompt = |session: Option<&str>, text: &str| {
-        let model = Registry::resolve(&InstancesConfig::default(), &env).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
-    };
+        user: user.clone(),
+        tests: std::sync::Mutex::default(),
+        started: std::sync::Condvar::new(),
+    });
+    let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
     // The first turn, then the bridge, on a runtime of their own thread.
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer: {}", connect_error(e)));
-    let first = prompt(None, HELLO);
-    let session = rt.block_on(async { d.execute(first, drain()).await }).expect("the first turn runs").expect("the first turn ends").session_id;
-    let bridged = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer the bridge: {}", connect_error(e)));
-    let (stop, stop_rx) = watch::channel(false);
-    let o = options(&session);
-    let bridge = std::thread::spawn(move || {
-        let (_cp, cp_rx) = mpsc::unbounded_channel();
-        if let Err(e) = rt.block_on(host::run(o, Arc::new(bridged), stop_rx, cp_rx)) {
-            eprintln!("fleet: the bridge ended: {e}");
-        }
-        drop(d);
-    });
-    synced(&a.client(&api), &session, &keys, &chain);
+    let (session, stop, bridge) = hosting.begin(if demo { DEMO_TITLE } else { TITLE }).unwrap_or_else(|e| panic!("{e}"));
 
     // With `demo`, a second turn, typed at the host, held on its approval.
     let request = demo.then(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let d = rt.block_on(Client::connect(&socket, &repo, "test", true)).unwrap_or_else(|e| panic!("the host daemon does not answer: {}", connect_error(e)));
         let (tx, rx) = std::sync::mpsc::channel();
-        let cmd = prompt(Some(&session), MAKE);
+        let cmd = hosting.prompt(Some(&session), MAKE);
         std::thread::spawn(move || {
             rt.block_on(async move {
                 let (out, mut lines) = mpsc::channel(4096);
@@ -261,7 +239,170 @@ pub fn start(demo: bool) -> Fleet {
     let approval = request.as_ref().map(|_| APPROVAL.to_string());
 
     let approve = format!("{}/_approve/cli/authorizations/{{code}}/approval", registry.url());
-    Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, stop, bridge, _registry: registry, _mock: m }
+    Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, hosting, stop, bridge, _registry: registry, _mock: m }
+}
+
+/// A session of a test's still starting: counted down when dropped.
+struct Starting<'a>(&'a Hosting);
+
+impl Drop for Starting<'_> {
+    fn drop(&mut self) {
+        let mut tests = self.0.tests.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        tests.starting -= 1;
+        self.0.started.notify_all();
+    }
+}
+
+/// A bridge the fleet runs: what stops it, and its thread.
+type Bridge = (watch::Sender<bool>, std::thread::JoinHandle<()>);
+
+/// Host A as it hosts a session: its daemon, its keys, the registry and
+/// the relay. The fleet's own session is hosted through it, and so is a
+/// test's own (`host`), which the test lets go (`release`) to see a
+/// session's lease lapse (R-IOS-7) without taking the fleet's host away
+/// from every other test.
+pub struct Hosting {
+    api: String,
+    relay: String,
+    socket: PathBuf,
+    repo: PathBuf,
+    sessions: PathBuf,
+    env: Arc<dyn Fn(&str) -> String + Send + Sync>,
+    host: Device,
+    chain: Chain,
+    user: UserKey,
+    /// The sessions hosted for tests, and a signal when one has finished
+    /// starting.
+    tests: std::sync::Mutex<Tests>,
+    started: std::sync::Condvar,
+}
+
+/// The sessions hosted for tests, by id; how many are still starting; and
+/// whether the fleet is stopping, which refuses a new one and waits for
+/// those starting.
+#[derive(Default)]
+struct Tests {
+    stopping: bool,
+    starting: usize,
+    bridges: std::collections::HashMap<String, Bridge>,
+}
+
+impl Hosting {
+    /// A new session titled `title`, its first turn run and a bridge
+    /// holding its lease: its id, once the registry shows it leased and
+    /// written.
+    pub fn host(&self, title: &str) -> Result<String, String> {
+        {
+            let mut tests = self.tests.lock().unwrap();
+            if tests.stopping {
+                return Err("the fleet is stopping".into());
+            }
+            tests.starting += 1;
+        }
+        // Counted down however `begin` ends, a panic included.
+        let starting = Starting(self);
+        let (session, stop, bridge) = self.begin(title)?;
+        let mut tests = self.tests.lock().unwrap();
+        if tests.stopping {
+            // `release_all` may have stopped waiting: stopped here, then.
+            drop(tests);
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            drop(starting);
+            return Err("the fleet is stopping".into());
+        }
+        tests.bridges.insert(session.clone(), (stop, bridge));
+        drop(tests);
+        drop(starting);
+        Ok(session)
+    }
+
+    /// Stops the bridge of `session`, a test's own, which lets its lease
+    /// go; returns once the registry shows no lease on it.
+    pub fn release(&self, session: &str) -> Result<(), String> {
+        let (stop, bridge) = self.tests.lock().unwrap().bridges.remove(session).ok_or_else(|| format!("the fleet hosts no test session {session}"))?;
+        let _ = stop.send(true);
+        let _ = bridge.join();
+        let api = self.host.client(&self.api);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match api.show_sync_session(session) {
+                Ok(s) if s.lease.is_none() => return Ok(()),
+                Ok(_) if Instant::now() >= deadline => return Err(format!("session {session} is still leased 10 s after its bridge stopped")),
+                Err(e) if Instant::now() >= deadline => return Err(format!("session {session} cannot be read: {e}")),
+                _ => std::thread::sleep(Duration::from_millis(50)),
+            }
+        }
+    }
+
+    /// Stops every test's session, and any that starts from now on.
+    fn release_all(&self) {
+        let all: Vec<Bridge> = {
+            let mut tests = self.tests.lock().unwrap();
+            tests.stopping = true;
+            // A session starting takes up to the bridge's sync wait.
+            let (mut tests, _) = self.started.wait_timeout_while(tests, Duration::from_secs(30), |t| t.starting > 0).unwrap();
+            tests.bridges.drain().map(|(_, b)| b).collect()
+        };
+        for (stop, _) in &all {
+            let _ = stop.send(true);
+        }
+        for (_, bridge) in all {
+            let _ = bridge.join();
+        }
+    }
+
+    /// A prompt to host A's daemon, for the mock model.
+    fn prompt(&self, session: Option<&str>, text: &str) -> Command {
+        let model = Registry::resolve(&InstancesConfig::default(), &*self.env).parse_model("claude-sonnet-4-6").unwrap();
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+    }
+
+    /// Runs a first turn at host A, then a bridge for its session on a
+    /// thread of its own, and waits until the registry shows it synced.
+    fn begin(&self, title: &str) -> Result<(String, watch::Sender<bool>, std::thread::JoinHandle<()>), String> {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let connect = || rt.block_on(Client::connect(&self.socket, &self.repo, "test", true)).map_err(|e| format!("the host daemon does not answer: {}", connect_error(e)));
+        let d = connect()?;
+        let first = self.prompt(None, HELLO);
+        let session = rt.block_on(async { d.execute(first, drain()).await }).map_err(|e| format!("the first turn failed: {e:?}"))?.ok_or("the first turn did not end")?.session_id;
+        let bridged = connect()?;
+        let (stop, stop_rx) = watch::channel(false);
+        let o = host::Options {
+            relay: self.relay.clone(),
+            env: "development".into(),
+            api: self.host.client(&self.api),
+            device: self.host.key.id(),
+            signing: self.host.signing_copy(),
+            keys: UserKeys::new(self.user.clone(), []).unwrap(),
+            chain: self.chain.clone(),
+            session: session.clone(),
+            title: title.into(),
+            cwd: self.repo.display().to_string(),
+            sessions: self.sessions.clone(),
+            ttl: host::LEASE_TTL,
+            keep: host::KEEP,
+            direct: None,
+            tailnet: None,
+            handed: None,
+            approval_wait: host::APPROVAL_WAIT,
+            stale: None,
+        };
+        let bridge = std::thread::spawn(move || {
+            let (_cp, cp_rx) = mpsc::unbounded_channel();
+            if let Err(e) = rt.block_on(host::run(o, Arc::new(bridged), stop_rx, cp_rx)) {
+                eprintln!("fleet: the bridge ended: {e}");
+            }
+            drop(d);
+        });
+        let keys = UserKeys::new(self.user.clone(), []).unwrap();
+        if let Err(e) = synced(&self.host.client(&self.api), &session, &keys, &self.chain) {
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            return Err(e);
+        }
+        Ok((session, stop, bridge))
+    }
 }
 
 fn connect_error(e: daemon::client::ConnectError) -> String {
@@ -334,7 +475,7 @@ fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'stat
 
 /// Waits until the session's sealed index names a lease, a checkpoint and
 /// a head: the bridge has taken the session up and written it.
-fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain) {
+fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let ready = (|| -> Result<(), String> {
@@ -347,8 +488,9 @@ fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain
             }
         })();
         match ready {
-            Ok(()) => return,
-            Err(e) => assert!(Instant::now() < deadline, "the bridge never synced the session: {e}"),
+            Ok(()) => return Ok(()),
+            Err(e) if Instant::now() >= deadline => return Err(format!("the bridge never synced the session: {e}")),
+            Err(_) => {}
         }
         std::thread::sleep(Duration::from_millis(50));
     }

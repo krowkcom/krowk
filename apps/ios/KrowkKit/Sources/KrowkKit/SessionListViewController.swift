@@ -1,0 +1,318 @@
+import Observation
+import UIKit
+
+/// "Sessions", the paired phone's first screen (R-IOS-3, R-IOS-7): one row
+/// per synced session, most recently written first, keyed by session id
+/// in a diffable data source over a plain list. A session is `● live`
+/// only while a host holds its lease; otherwise "last seen". Sessions
+/// this phone can't open are counted in the footer, never shown. The list
+/// never offers to take or host a session (R-HAND-4).
+public final class SessionListViewController: UIViewController, UICollectionViewDelegate {
+    /// What the screen shows, rebuilt from the model at most 10 times a
+    /// second and applied only when it changed.
+    struct Screen: Equatable {
+        enum Status: Equatable {
+            /// The first read is running.
+            case loading
+            /// No session: the empty sentence.
+            case empty
+            /// The first read failed: its sentence.
+            case failed(String)
+            case listed
+        }
+
+        var rows: [SessionRow]
+        var status: Status
+        /// "2 sessions can't be opened on this iPhone.", or nil.
+        var unreadable: String?
+        /// A refresh failed after a listing: the rows are the last ones read.
+        var stale: String?
+    }
+
+    static let emptySentence = "No synced sessions yet. Start one on your laptop with krowk; it syncs by itself once sync is on."
+
+    let model: SessionListModel
+    private let formatter = SessionRowFormatter()
+    /// What tapping a row pushes: the transcript's place (ticket 88).
+    private let open: @MainActor (SessionRow) -> UIViewController
+
+    private(set) var collectionView: UICollectionView!
+    private(set) var dataSource: UICollectionViewDiffableDataSource<Int, String>!
+    private(set) var throttle: SnapshotThrottle<Screen>!
+    /// The rows applied, by id: what each cell shows.
+    private var rows: [String: SessionRow] = [:]
+    /// The footer's lines, as last applied.
+    private var footerLines: [String] = []
+    let emptyLabel = UILabel()
+    let spinner = UIActivityIndicatorView(style: .medium)
+    private var observers: [NSObjectProtocol] = []
+
+    public init(model: SessionListModel, open: (@MainActor (SessionRow) -> UIViewController)? = nil) {
+        self.model = model
+        self.open = open ?? { SessionPlaceholderViewController(row: $0) }
+        super.init(nibName: nil, bundle: nil)
+        title = "Sessions"
+        navigationItem.largeTitleDisplayMode = .always
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("SessionListViewController is built in code")
+    }
+
+    override public func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+
+        // A footer only while it has something to say.
+        let layout = UICollectionViewCompositionalLayout { [weak self] _, environment in
+            var list = UICollectionLayoutListConfiguration(appearance: .plain)
+            list.footerMode = (self?.footerLines.isEmpty ?? true) ? .none : .supplementary
+            return NSCollectionLayoutSection.list(using: list, layoutEnvironment: environment)
+        }
+        collectionView = UICollectionView(frame: view.bounds, collectionViewLayout: layout)
+        collectionView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        collectionView.accessibilityIdentifier = "sessions-list"
+        collectionView.delegate = self
+        collectionView.alwaysBounceVertical = true
+        view.addSubview(collectionView)
+
+        let refresh = UIRefreshControl()
+        refresh.accessibilityIdentifier = "sessions-refresh"
+        refresh.addAction(UIAction { [weak self] _ in self?.pulled() }, for: .valueChanged)
+        collectionView.refreshControl = refresh
+
+        let cell = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, id in
+            guard let row = self?.rows[id] else { return }
+            Self.configure(cell, with: row)
+        }
+        dataSource = UICollectionViewDiffableDataSource<Int, String>(collectionView: collectionView) { view, path, id in
+            view.dequeueConfiguredReusableCell(using: cell, for: path, item: id)
+        }
+        let footer = UICollectionView.SupplementaryRegistration<UICollectionViewListCell>(elementKind: UICollectionView.elementKindSectionFooter) { [weak self] view, _, _ in
+            Self.configure(footer: view, lines: self?.footerLines ?? [])
+        }
+        dataSource.supplementaryViewProvider = { view, _, path in
+            view.dequeueConfiguredReusableSupplementary(using: footer, for: path)
+        }
+
+        emptyLabel.font = .preferredFont(forTextStyle: .body)
+        emptyLabel.adjustsFontForContentSizeCategory = true
+        emptyLabel.textColor = .secondaryLabel
+        emptyLabel.textAlignment = .center
+        emptyLabel.numberOfLines = 0
+        emptyLabel.accessibilityIdentifier = "sessions-empty"
+        spinner.accessibilityIdentifier = "sessions-loading"
+        spinner.accessibilityLabel = "Loading your sessions"
+        let background = UIView()
+        for v in [emptyLabel, spinner] as [UIView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            background.addSubview(v)
+        }
+        let guide = background.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            emptyLabel.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 16),
+            emptyLabel.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
+            emptyLabel.centerYAnchor.constraint(equalTo: background.centerYAnchor),
+            spinner.centerXAnchor.constraint(equalTo: background.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: background.centerYAnchor),
+        ])
+        collectionView.backgroundView = background
+
+        // Subscribed before the first read: the read is tracked, so a
+        // change after it schedules the next rebuild.
+        throttle = SnapshotThrottle(read: { [weak self] in self?.observedScreen() ?? Screen(rows: [], status: .loading) }, apply: { [weak self] previous, new in
+            self?.apply(new, animated: previous.map { $0.status == .listed || $0.status == .empty } ?? false)
+        })
+        throttle.rebuild()
+    }
+
+    override public func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        model.appeared()
+        if observers.isEmpty {
+            let center = NotificationCenter.default
+            observers = [
+                // sceneWillEnterForeground: read again at once, and drop a
+                // live mark older than a lease until it has been.
+                center.addObserver(forName: UIScene.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.model.appeared() }
+                },
+                center.addObserver(forName: UIScene.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.model.disappeared() }
+                },
+            ]
+        }
+    }
+
+    override public func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        model.disappeared()
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+    }
+
+    public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
+        collectionView.deselectItem(at: indexPath, animated: true)
+        guard let id = dataSource.itemIdentifier(for: indexPath), let row = rows[id] else { return }
+        navigationController?.pushViewController(open(row), animated: true)
+    }
+
+    // MARK: Building and applying
+
+    /// The screen, read under observation: the model's next change
+    /// triggers the next rebuild.
+    private func observedScreen() -> Screen {
+        withObservationTracking {
+            screen()
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.throttle.trigger() }
+        }
+    }
+
+    /// The screen the model calls for now.
+    func screen() -> Screen {
+        guard let listing = model.listing else {
+            return Screen(rows: [], status: model.failure.map { .failed($0.sentence + " Pull down to try again.") } ?? .loading)
+        }
+        let trusted = model.liveTrusted
+        let rows = listing.sessions.map { session in
+            formatter.row(session, holderName: session.hostedBy.flatMap { listing.deviceNames[$0] }, liveTrusted: trusted, now: model.now)
+        }
+        let unreadable = listing.unreadable > 0
+            ? "\(listing.unreadable) session\(listing.unreadable == 1 ? "" : "s") can't be opened on this iPhone."
+            : nil
+        let stale = model.failure.map { "\($0.sentence) This is the list as last read; no session shows as live until it's read again." }
+        return Screen(rows: rows, status: rows.isEmpty && unreadable == nil ? .empty : .listed, unreadable: unreadable, stale: stale)
+    }
+
+    /// Applies `screen`: the first listing without animation, later ones
+    /// animated in under 200 ms without holding up a touch.
+    private func apply(_ screen: Screen, animated: Bool) {
+        let previous = rows
+        rows = Dictionary(screen.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Set before the layout reads it: whether there is a footer.
+        let lines = [screen.stale, screen.unreadable].compactMap { $0 }
+        let footerChanged = lines != footerLines
+        footerLines = lines
+
+        var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
+        snapshot.appendSections([0])
+        snapshot.appendItems(screen.rows.map(\.id))
+        snapshot.reconfigureItems(screen.rows.filter { row in previous[row.id].map { $0 != row } ?? false }.map(\.id))
+        if animated {
+            UIView.animate(withDuration: 0.15, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
+                self.dataSource.apply(snapshot, animatingDifferences: true)
+            }
+        } else {
+            dataSource.apply(snapshot, animatingDifferences: false)
+        }
+
+        if footerChanged {
+            let kind = UICollectionView.elementKindSectionFooter
+            for path in collectionView.indexPathsForVisibleSupplementaryElements(ofKind: kind) {
+                if let footer = collectionView.supplementaryView(forElementKind: kind, at: path) as? UICollectionViewListCell {
+                    Self.configure(footer: footer, lines: lines)
+                }
+            }
+            // Shown, gone or a line longer: the footer's height follows.
+            collectionView.collectionViewLayout.invalidateLayout()
+        }
+
+        switch screen.status {
+        case .loading:
+            spinner.startAnimating()
+            emptyLabel.isHidden = true
+        case .empty:
+            spinner.stopAnimating()
+            emptyLabel.text = Self.emptySentence
+            emptyLabel.isHidden = false
+        case .failed(let sentence):
+            spinner.stopAnimating()
+            emptyLabel.text = sentence
+            emptyLabel.isHidden = false
+        case .listed:
+            spinner.stopAnimating()
+            emptyLabel.isHidden = true
+        }
+    }
+
+    private func pulled() {
+        let model = model
+        Task { [weak self] in
+            await model.refresh()
+            self?.collectionView.refreshControl?.endRefreshing()
+        }
+    }
+
+    private static func configure(_ cell: UICollectionViewListCell, with row: SessionRow) {
+        var content = UIListContentConfiguration.subtitleCell()
+        content.text = row.title
+        content.textProperties.numberOfLines = 1
+        content.secondaryTextProperties.color = .secondaryLabel
+        if row.live, let dot = row.detail.range(of: "●") {
+            // Only the dot's colour: the font and the rest's colour are the
+            // configuration's, so they follow Dynamic Type.
+            let detail = NSMutableAttributedString(string: row.detail)
+            detail.addAttribute(.foregroundColor, value: UIColor.systemGreen, range: NSRange(dot, in: row.detail))
+            content.secondaryAttributedText = detail
+        } else {
+            content.secondaryText = row.detail
+        }
+        cell.contentConfiguration = content
+        cell.accessories = [.disclosureIndicator()]
+        cell.accessibilityIdentifier = "session-\(row.id)"
+        // One element for VoiceOver: the title, the place, and live as a word.
+        cell.isAccessibilityElement = true
+        cell.accessibilityLabel = row.accessibilityLabel
+        cell.accessibilityTraits = .button
+    }
+
+    private static func configure(footer: UICollectionViewListCell, lines: [String]) {
+        var content = UIListContentConfiguration.footer()
+        content.text = lines.joined(separator: "\n")
+        content.textProperties.numberOfLines = 0
+        footer.contentConfiguration = content
+        footer.accessibilityIdentifier = "sessions-footer"
+    }
+
+    /// The footer's text, as applied.
+    var footerText: String { footerLines.joined(separator: "\n") }
+}
+
+/// Where a session's transcript opens (ticket 88): its title for now.
+public final class SessionPlaceholderViewController: UIViewController {
+    let row: SessionRow
+    let label = UILabel()
+
+    public init(row: SessionRow) {
+        self.row = row
+        super.init(nibName: nil, bundle: nil)
+        title = row.title
+        navigationItem.largeTitleDisplayMode = .never
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("SessionPlaceholderViewController is built in code")
+    }
+
+    override public func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        label.text = "\(row.title)\n\nIts transcript opens here in a coming version."
+        label.font = .preferredFont(forTextStyle: .body)
+        label.adjustsFontForContentSizeCategory = true
+        label.numberOfLines = 0
+        label.textAlignment = .center
+        label.accessibilityIdentifier = "session-placeholder"
+        label.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(label)
+        let guide = view.layoutMarginsGuide
+        NSLayoutConstraint.activate([
+            label.leadingAnchor.constraint(equalTo: guide.leadingAnchor),
+            label.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
+            label.centerYAnchor.constraint(equalTo: view.safeAreaLayoutGuide.centerYAnchor),
+        ])
+    }
+}

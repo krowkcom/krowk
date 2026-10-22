@@ -132,6 +132,32 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     assert!(started.elapsed() < Duration::from_secs(15), "the whole check took {:?}", started.elapsed());
 }
 
+/// R-IOS-7, R-IOS-15: a test's own session, hosted by the fleet and let
+/// go. Listed as another device lists it, it is held by host A under its
+/// title; released, it is listed with no holder — what the phone shows as
+/// "last seen" — while the fleet's own session stays hosted.
+#[test]
+fn r_ios_7_a_session_the_fleet_hosts_for_a_test_is_listed_held_then_unheld_once_released() {
+    let f = fleet::start(false);
+    let api = f.host.client(&f.api);
+    let keys = UserKeys::new(f.user.clone(), []).unwrap();
+    let listed = |id: &str| {
+        let (all, unreadable) = viewer::list(&api, &keys, &f.chain).unwrap();
+        assert_eq!(unreadable, 0);
+        all.into_iter().find(|l| l.id == id).unwrap_or_else(|| panic!("{id} is not listed"))
+    };
+    let id = f.hosting.host("let go").unwrap();
+    assert_ne!(id, f.session);
+    let held = listed(&id);
+    assert_eq!(held.index.title, "let go");
+    assert_eq!(held.holder.as_deref(), Some(f.host.key.id().to_string().as_str()));
+    f.hosting.release(&id).unwrap();
+    assert_eq!(listed(&id).holder, None, "released, it has no holder");
+    assert!(listed(&f.session).holder.is_some(), "the fleet's own session is still hosted");
+    assert!(f.hosting.release(&id).is_err(), "released once only");
+    f.stop();
+}
+
 // ------------------------------------------------- the process, pairing (ticket 76)
 
 /// A binary cargo built beside this test's, `target/<profile>/<rel>`: the
@@ -369,6 +395,24 @@ fn r_e2e_3_r_ios_15_a_post_to_pair_url_gives_the_fake_fleet_a_fresh_code_that_jo
     assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
     f.ended(true);
     assert_eq!(phone.devices(&f), ["host-a", "phone"]);
+    f.stop();
+}
+
+/// R-IOS-7, R-IOS-15: the fleet's control, as a simulator's test uses it:
+/// `sessions_url` hosts a session of the test's own and names it, and its
+/// `release` lets it go, once.
+#[test]
+fn r_ios_7_r_ios_15_a_post_to_sessions_url_hosts_a_session_and_release_lets_it_go() {
+    let f = Proc::start(&[]);
+    assert!(!f.lines.contains_key("pair_url"), "no pair_url without --pair");
+    let url = f.get("sessions_url").to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with("/sessions"), "{url}");
+    assert_eq!(request("GET", &url).0, "HTTP/1.1 404 X");
+    let (status, id) = request("POST", &url);
+    assert_eq!(status, "HTTP/1.1 200 X", "{id}");
+    assert!(!id.is_empty() && id != f.get("session"), "{id}");
+    assert_eq!(request("POST", &format!("{url}/{id}/release")), ("HTTP/1.1 200 X".into(), "released".into()));
+    assert_eq!(request("POST", &format!("{url}/{id}/release")).0, "HTTP/1.1 500 X", "released once only");
     f.stop();
 }
 
