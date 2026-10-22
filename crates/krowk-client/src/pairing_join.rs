@@ -43,6 +43,14 @@ pub trait Mailbox {
     fn claim_device(&self) -> Result<(), Error>;
     /// Waits between reads (the CLI: `std::thread::sleep`).
     fn pause(&self, d: Duration);
+    /// Whether the person gave up on the join (the phone's cancel button;
+    /// the CLI has none). Looked at between the claims and between the
+    /// reads, so a cancelled join ends now rather than when its wait is
+    /// over, as a failure like any other: the pairing ended, what it kept
+    /// forgotten. The mailbox's own calls should fail once it is set too.
+    fn cancelled(&self) -> bool {
+        false
+    }
 }
 
 /// How long B waits, and how often it looks.
@@ -126,7 +134,7 @@ pub fn join(mailbox: &dyn Mailbox, store: &Keystore, device: &DeviceKey, binding
     };
     let deadline = Instant::now() + timing.posted;
     while mailbox.claim_device().is_err() {
-        if Instant::now() > deadline {
+        if Instant::now() > deadline || mailbox.cancelled() {
             mailbox.end();
             let _ = store.forget_user_keys();
             return Err(JoinFailed::NotAdded);
@@ -174,7 +182,7 @@ fn wait_for(mailbox: &dyn Mailbox, field: Field, timing: &Timing) -> Option<Vec<
         if let Some(b) = field.blob(&p) {
             return Some(b);
         }
-        if p.state == "dead" || Instant::now() > deadline {
+        if p.state == "dead" || Instant::now() > deadline || mailbox.cancelled() {
             return None;
         }
         mailbox.pause(timing.poll);
