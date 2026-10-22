@@ -152,6 +152,14 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        // Dynamic Type: the drawn text's fonts are fixed in its attributes,
+        // so every row is drawn again at the new size.
+        registerForTraitChanges([UITraitPreferredContentSizeCategory.self]) { (self: Self, _: UITraitCollection) in
+            var snapshot = self.dataSource.snapshot()
+            snapshot.reconfigureItems(snapshot.itemIdentifiers)
+            self.dataSource.apply(snapshot, animatingDifferences: false)
+        }
+
         observeModel()
         session?.follow { [weak self] status in self?.relay(status) }
     }
@@ -299,7 +307,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// The sheet a tapped link opens: its title asks, its message is the
     /// whole URL, and "Open" calls `open` with it; "Cancel" does nothing.
     static func confirmation(for url: URL, open: @escaping @MainActor (URL) -> Void) -> UIAlertController {
-        let sheet = UIAlertController(title: "Open this link?", message: SafeText.clean(url.absoluteString), preferredStyle: .actionSheet)
+        let whole = SafeText.clean(url.absoluteString)
+        // A URL long enough to fill the screen is cut after 2,000 characters;
+        // its host, at the start, is always shown.
+        let message = whole.count > 2_000 ? String(whole.prefix(2_000)) + "…" : whole
+        let sheet = UIAlertController(title: "Open this link?", message: message, preferredStyle: .actionSheet)
         sheet.view.accessibilityIdentifier = "link-confirmation"
         sheet.addAction(UIAlertAction(title: "Open", style: .default) { _ in
             MainActor.assumeIsolated { open(url) }

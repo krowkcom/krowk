@@ -48,9 +48,9 @@ public final class ItemState {
     /// Followed already: at most one observation per item, however often
     /// cells show it.
     @ObservationIgnored var followed = false
-    /// Text as last drawn, by what it is ("text", "output"): a cell shown
+    /// Text as last drawn (`TranscriptDrawings`), by what it is ("text",
+    /// "output"): a cell shown
     /// again draws it without laying it out or finding its links again.
-    @ObservationIgnored private var drawn: [String: (source: String, size: CGFloat, text: NSAttributedString)] = [:]
 
     public init(id: String, kind: Kind, text: String = "", toolName: String = "", toolInput: String = "", done: Bool = true) {
         self.id = id
@@ -69,15 +69,16 @@ public final class ItemState {
     /// `source` drawn as `role` at `size`, from the last drawing if neither
     /// changed.
     func drawing(_ role: String, source: String, size: CGFloat, _ make: () -> NSAttributedString) -> NSAttributedString {
-        if let last = drawn[role], last.size == size, last.source == source { return last.text }
+        let key = "\(role) \(id)" as NSString
+        if let last = TranscriptDrawings.cache.object(forKey: key), last.size == size, last.source == source { return last.text }
         let text = make()
-        drawn[role] = (source, size, text)
+        TranscriptDrawings.cache.setObject(TranscriptDrawings.Drawing(source: source, size: size, text: text), forKey: key, cost: source.utf8.count)
         return text
     }
 
     /// Forgets a drawing (a collapsed output isn't kept).
     func forget(_ role: String) {
-        drawn[role] = nil
+        TranscriptDrawings.cache.removeObject(forKey: "\(role) \(id)" as NSString)
     }
 
     /// A tool call's one line: `<name> <summary of its input>`.
@@ -113,6 +114,29 @@ public final class ItemState {
         }
         return SafeText.line(input.prefix(80), limit: 80)
     }
+}
+
+/// Text as cells last drew it, shared by every transcript and bounded: a
+/// long session scrolled through keeps no more than this of it.
+@MainActor
+enum TranscriptDrawings {
+    final class Drawing {
+        let source: String
+        let size: CGFloat
+        let text: NSAttributedString
+        init(source: String, size: CGFloat, text: NSAttributedString) {
+            self.source = source
+            self.size = size
+            self.text = text
+        }
+    }
+
+    static let cache: NSCache<NSString, Drawing> = {
+        let cache = NSCache<NSString, Drawing>()
+        cache.countLimit = 300
+        cache.totalCostLimit = 8 << 20
+        return cache
+    }()
 }
 
 /// How a turn ended, as its separator says.
@@ -196,6 +220,12 @@ public final class TranscriptModel {
     /// Per event applied, the row at or above it ("" for the top): where an
     /// event that follows it goes, placed `afterParent`.
     @ObservationIgnored private var anchors: [String: String] = [:]
+    /// A result whose call wasn't applied yet (before the checkpoint, or a
+    /// gap's catch-up still to come), by `callId`: drawn on a row of its
+    /// own until its call comes, which takes it in.
+    @ObservationIgnored private var orphans: [String: ItemState] = [:]
+    /// Rows a call took in while `apply` runs, to drop.
+    @ObservationIgnored private var adopted: [(orphan: String, call: String)] = []
 
     public init(sessionID: String) {
         self.sessionID = sessionID
@@ -229,6 +259,12 @@ public final class TranscriptModel {
             } else {
                 anchors[event.id] = at == rows.startIndex ? "" : rows[at - 1]
             }
+            for (orphan, call) in adopted {
+                rows.removeAll { $0 == orphan }
+                for (event, row) in anchors where row == orphan { anchors[event] = call }
+                changed = true
+            }
+            adopted = []
         }
         guard changed else { return }
         assert(Set(rows).count == rows.count, "a transcript row twice")
@@ -256,20 +292,27 @@ public final class TranscriptModel {
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
             calls[callID] = state
+            if let orphan = orphans.removeValue(forKey: callID) {
+                state.output = orphan.output
+                state.isError = orphan.isError
+                items[orphan.id] = nil
+                adopted.append((orphan.id, row))
+            }
             return row
         case .toolResult(let item, let callID, let output, let isError):
-            if let call = calls[callID] {
-                guard call.output == nil else { return nil }
+            if let call = calls[callID], call.output == nil {
                 call.output = output
                 call.isError = isError
                 return nil
             }
-            // Its call is before the checkpoint the log was read from: the
-            // result on a row of its own.
+            // Its call isn't here (yet), or has its result already: the
+            // result on a row of its own, never dropped.
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: "result")
             state.output = output
             state.isError = isError
-            return add(state)
+            guard let row = add(state) else { return nil }
+            if calls[callID] == nil { orphans[callID] = state }
+            return row
         case .turnCompleted(let turn, let end):
             let state = ItemState(id: "turn:\(turn)", kind: .mark, text: end.line)
             state.alarming = end != .completed

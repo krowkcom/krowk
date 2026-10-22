@@ -165,7 +165,7 @@ struct TranscriptScreenTests {
         #expect(cell.body.view.text.isEmpty)
     }
 
-    @Test("R-IOS-10: hostile text in a cell is drawn cleaned, its link with its host, and a tap on it only asks")
+    @Test("R-IOS-10: hostile text in a cell is drawn cleaned, its link tappable with its host beside it, an image's markdown as text")
     func hostileCell() async throws {
         let session = StubSession()
         let screen = TranscriptViewController(row: row, session: session)

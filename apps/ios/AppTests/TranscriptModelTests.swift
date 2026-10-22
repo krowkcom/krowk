@@ -129,6 +129,17 @@ struct TranscriptModelTests {
         model.apply(.caughtUp(events: [a3, a4, a5]))
         #expect(model.ids == ["item:i1", "item:i2", "item:i3", "item:i5", "turn:t1"])
         #expect(model.item("item:i3")?.output == "x")
+        // A gap that took a call but not its result: the result shows on
+        // its own row until the catch-up brings the call, which takes it in.
+        let b1 = try event("b01", parent: "a06", #""type":"item.completed","turnId":"t3","itemId":"j1","item":{"kind":"toolCall","callId":"d","name":"read","input":{"path":"x"}}"#)
+        let b2 = try event("b02", parent: "b01", #""type":"item.completed","turnId":"t3","itemId":"j2","item":{"kind":"toolResult","callId":"d","output":"late","isError":false}"#)
+        model.apply(.line(line: .log(b2)))
+        #expect(model.ids.last == "item:j2")
+        model.apply(.caughtUp(events: [b1]))
+        #expect(model.ids.suffix(2) == ["turn:t1", "item:j1"], "\(model.ids)")
+        #expect(model.item("item:j1")?.output == "late")
+        #expect(model.item("item:j2") == nil)
+
         // A line after that still goes at the end.
         let a7 = try event("a07", parent: "a06", #""type":"item.completed","turnId":"t2","itemId":"i7","item":{"kind":"userText","text":"seven"}"#)
         model.apply(.line(line: .log(a7)))

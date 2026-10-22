@@ -89,9 +89,17 @@ public actor RelayConnection: LiveSession {
 
     @MainActor public func takeFrame(into transcript: TranscriptModel) -> Int {
         let updates = mailbox.drain()
+        // A run of logged lines is applied at once: one change to the rows.
+        var lines: [TranscriptEvent] = []
         for update in updates {
+            if case .line(.log(let event)) = update {
+                lines.append(TranscriptEvent(event))
+                continue
+            }
+            if !lines.isEmpty { transcript.apply(lines); lines = [] }
             transcript.apply(update)
         }
+        if !lines.isEmpty { transcript.apply(lines) }
         return updates.count
     }
 

@@ -210,10 +210,16 @@ final class TranscriptTextCell: TranscriptCell {
         var target = room
         if user {
             let most = max(0, room - 48 - 24)
-            let needed = textView.view.attributedText.boundingRect(
-                with: CGSize(width: most, height: .greatestFiniteMagnitude),
-                options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).width
-            target = min(most, ceil(needed) + 1)
+            // A long prompt fills the bubble's room: only a short one is
+            // measured.
+            if let shown, shown.length < 2_000 {
+                let needed = shown.boundingRect(
+                    with: CGSize(width: most, height: .greatestFiniteMagnitude),
+                    options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).width
+                target = min(most, ceil(needed) + 1)
+            } else {
+                target = most
+            }
         }
         if abs(textWidth.constant - target) > 0.5 { textWidth.constant = target }
     }

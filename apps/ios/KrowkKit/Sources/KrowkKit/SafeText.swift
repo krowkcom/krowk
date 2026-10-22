@@ -45,7 +45,9 @@ public enum SafeText {
     /// Reads at most `limit` + 1 characters of `text`, however long its
     /// first line.
     public static func line(_ text: Substring, limit: Int = 200) -> String {
-        let head = text.prefix(limit + 1)
+        // Bounded in scalars first: one cluster of a million combining
+        // marks is one character.
+        let head = Substring(Substring.UnicodeScalarView(text.unicodeScalars.prefix(limit * 8))).prefix(limit + 1)
         let first = head.prefix { $0 != "\n" && $0 != "\r\n" }
         let cut = first.prefix(limit)
         let line = clean(String(cut)).replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces)
@@ -132,7 +134,7 @@ public enum SafeText {
     }
 
     /// At most this much of a prompt, an answer or reasoning is laid out.
-    public static let textLimit = 256 * 1024
+    public static let textLimit = 64 * 1024
 
     /// What follows a truncated output: "… 1,234 more bytes".
     public static func more(_ bytes: Int) -> String {
