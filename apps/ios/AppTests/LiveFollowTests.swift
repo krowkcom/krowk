@@ -32,7 +32,7 @@ extension HostedKeychain {
 
         @Test("R-LAG-7, R-PERF-4, R-CLIENT-1: a turn streams into one cell, the same cell instance from item.started to item.completed, its text grown by appends; its tool call runs then settles; the turn's separator appears")
         func turnStreamsIntoOneCell() async throws {
-            let (screen, window, session, _) = try await Self.open("A streaming session")
+            let (screen, window, session, live) = try await Self.open("A streaming session")
             defer { window.isHidden = true }
             let model = screen.model
             let before = Set(model.ids)
@@ -48,9 +48,14 @@ extension HostedKeychain {
             var drawn: [String] = []
             var latencies: [Int64] = []
             var lastNewest = model.newestLiveMs
+            // The most updates ever waiting for a frame: the phone keeping
+            // up with what comes, however fast the host is.
+            var mostWaiting = 0
+            var scrolledUp = false
             let deadline = ContinuousClock.now + .seconds(60)
             while ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(4))
+                mostWaiting = max(mostWaiting, live.mailbox.waiting)
                 if let newest = model.newestLiveMs, newest != lastNewest {
                     latencies.append(Int64(Date.now.timeIntervalSince1970 * 1000) - newest)
                     lastNewest = newest
@@ -70,6 +75,21 @@ extension HostedKeychain {
                 }
                 let text = screen.drawnText(of: answer.id) ?? ""
                 if drawn.last != text { drawn.append(text) }
+                // Mid-stream, the person scrolls up: "↓ New" shows; a tap
+                // on it, and the list follows the end again.
+                if !scrolledUp, text.utf8.count > 1_500 {
+                    scrolledUp = true
+                    // A little: the answer's cell stays on screen, the same one.
+                    let list = screen.collectionView!
+                    list.setContentOffset(CGPoint(x: 0, y: max(0, list.contentOffset.y - 200)), animated: false)
+                    screen.scrollViewDidEndDragging(list, willDecelerate: false)
+                    #expect(!screen.following)
+                    try await Self.wait(until: { !screen.newPill.isHidden }, within: .seconds(10), "no ↓ New while it streamed")
+                    Self.keep("live-new", window)
+                    screen.newPill.sendActions(for: .primaryActionTriggered)
+                    #expect(screen.following)
+                    Self.keep("live-streaming", window)
+                }
             }
             let id = try #require(answerID, "no answer streamed: \(TranscriptTests.rows(of: model))")
             let state = try #require(model.item(id))
@@ -79,6 +99,9 @@ extension HostedKeychain {
             // Followed to the end, the turn's separator in view.
             window.layoutIfNeeded()
             #expect(screen.following && screen.isAtBottom, "not at the end after the turn")
+            Self.keep("live-done", window)
+            #expect(scrolledUp, "never scrolled up mid-stream")
+            #expect(mostWaiting < 100, "\(mostWaiting) updates waited for a frame: the phone fell behind")
             // Nothing under way once the turn ended: the display link pauses
             // within a second or so of the last update.
             #expect(!model.isStreaming, "an item still under way after the turn")
@@ -112,41 +135,11 @@ extension HostedKeychain {
             #expect(screen.snapshotApplies - snapshots <= 6, "\(screen.snapshotApplies - snapshots) snapshots for one turn")
             #expect(screen.driver?.transactions ?? 0 > 0)
 
+            print("krowk live follow: at most \(mostWaiting) updates waited for a frame; \(screen.driver?.frames ?? 0) frames, \(screen.driver?.transactions ?? 0) transactions, \(screen.snapshotApplies - snapshots) snapshot applies for the turn")
             let sorted = latencies.sorted()
             if !sorted.isEmpty {
                 print("krowk host→screen latency (live logged lines, \(sorted.count) samples, ±4 ms polling): p50 \(sorted[sorted.count / 2]) ms, p95 \(sorted[min(sorted.count - 1, sorted.count * 95 / 100)]) ms, max \(sorted.last!) ms")
             }
-        }
-
-        @Test("R-LAG-7, R-PERF-4: a very long answer (300 lines, about 16 s at 200 tokens a second) keeps up: its turn's separator is drawn within seconds of the host's end, and the display link then pauses")
-        func longAnswerKeepsUp() async throws {
-            let (screen, window, session, live) = try await Self.open("A very long answer")
-            defer { window.isHidden = true }
-            let model = screen.model
-            let started = ContinuousClock.now
-            #expect(try await SessionListTests.control("/\(session)/turn", body: "Please stream a very long answer") == "started")
-            let frames = screen.driver?.frames ?? 0
-            let ended = {
-                model.ids.last.flatMap(model.item).map { $0.kind == .mark && $0.id.hasPrefix("turn:") && model.ids.count > 4 } ?? false
-            }
-            // How it goes, every 2 s, until the turn ends: what's drawn, the
-            // frames and transactions, the link, the mailbox, the bar.
-            let state = {
-                let answer = model.ids.compactMap(model.item).last { $0.kind == .assistant }
-                return "\(ContinuousClock.now - started): \(answer?.text.utf8.count ?? 0) bytes, done \(answer?.done ?? false), \(screen.driver?.frames ?? 0) frames, \(screen.driver?.transactions ?? 0) transactions, paused \(screen.driver?.ticker?.isPaused ?? false), \(live.mailbox.waiting) waiting, \(live.status.text), \(live.dials) dials"
-            }
-            for _ in 0..<30 where !ended() {
-                try await Task.sleep(for: .seconds(2))
-                print("krowk long answer: \(state())")
-            }
-            try #require(ended(), "the turn never ended on screen: \(state()); \(TranscriptTests.rows(of: model).suffix(2).map { String($0.suffix(80)) })")
-            let took = ContinuousClock.now - started
-            let behind = Int64(Date.now.timeIntervalSince1970 * 1000) - (model.newestLiveMs ?? 0)
-            window.layoutIfNeeded()
-            print("krowk host→screen latency (a 300-line answer): ended on screen \(took) after the prompt, \(behind) ms after the host logged its end; \((screen.driver?.frames ?? 0) - frames) frames, \(screen.driver?.transactions ?? 0) transactions")
-            #expect(took < .seconds(40), "\(took) for a 16 s answer")
-            #expect(screen.following && screen.isAtBottom)
-            try await Self.wait(until: { screen.driver?.ticker?.isPaused == true }, within: .seconds(4), "the display link still runs after the turn")
         }
 
         @Test("R-LAG-7, R-HAND-4: when the host goes away mid-turn, the bar says host offline and what was drawn stays")
@@ -172,6 +165,17 @@ extension HostedKeychain {
             #expect(answer.text.hasPrefix(text), "what was drawn went")
             window.layoutIfNeeded()
             #expect(screen.dataSource.snapshot().itemIdentifiers.count >= rows.count)
+        }
+
+        /// `window` as drawn, kept in the results as `krowk-<name>-light`
+        /// (CI's screenshots artifact, beside the UI tests').
+        static func keep(_ name: String, _ window: UIWindow) {
+            window.layoutIfNeeded()
+            let image = UIGraphicsImageRenderer(bounds: window.bounds).image { _ in
+                _ = window.drawHierarchy(in: window.bounds, afterScreenUpdates: true)
+            }
+            guard let png = image.pngData() else { return }
+            Attachment.record(png, named: "krowk-\(name)-light")
         }
 
         /// Polls `done` on the main actor every 20 ms until it holds, or
