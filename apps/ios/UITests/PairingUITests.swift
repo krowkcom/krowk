@@ -6,8 +6,10 @@
 // R-IOS-3): the fleet's demo session, live on host-a; a tap opens its
 // transcript (ticket 88), prompts and answers drawn with no indicator over
 // them, joined live through the fleet's relay, the bar under the
-// navigation bar reading "live" (R-IOS-1, R-CLIENT-1). Relaunched, it
-// opens on Sessions, skipping onboarding. The
+// navigation bar reading "live" (R-IOS-1, R-CLIENT-1). A turn the host
+// runs in a session of the test's own is followed live (R-LAG-7, ticket
+// 89): the answer streams in and the turn's separator follows at the end. Relaunched, it opens on
+// Sessions, skipping onboarding. The
 // simulator has no camera, so the scan button is absent. Screenshots of
 // each screen, light and dark, are kept in the results.
 //
@@ -134,6 +136,7 @@ final class PairingUITests: XCTestCase {
         let output = tool.descendants(matching: .any)["transcript-tool-output"]
         XCTAssertTrue(output.waitForExistence(timeout: 5), "a tap did not expand the tool call")
         Screenshots.keep("session-tool", in: app)
+        try await followALiveTurn(in: app)
         app.terminate()
 
         // Relaunched, the paired phone opens on Sessions, no onboarding.
@@ -146,6 +149,67 @@ final class PairingUITests: XCTestCase {
         XCTAssertFalse(again.staticTexts["sign-in-title"].exists)
         XCTAssertFalse(again.staticTexts["pairing-title"].exists)
         again.terminate()
+    }
+
+    /// R-LAG-7: back on Sessions, a session of the test's own (the fleet
+    /// hosts it), opened; the fleet runs a turn in it whose answer streams
+    /// for about six seconds (longer on a busy CI runner). Screenshots
+    /// mid-stream and once the turn has ended, at the end of the list.
+    @MainActor
+    private func followALiveTurn(in app: XCUIApplication) async throws {
+        let sessions = try Self.env("KROWK_SESSIONS_URL")
+        let title = "A live turn \(UUID().uuidString.prefix(4))"
+        let (status, id) = try await Self.request(sessions, body: title)
+        XCTAssertEqual(status, 200, id)
+        let list = app.collectionViews["sessions-list"]
+        // A tap while the screen settles can go unheeded: tried again.
+        for _ in 0..<3 where !list.exists {
+            app.navigationBars.buttons["Sessions"].tap()
+            _ = list.waitForExistence(timeout: 5)
+        }
+        XCTAssertTrue(list.exists, "back did not return to Sessions")
+        let row = list.cells.matching(NSPredicate(format: "label BEGINSWITH %@", title + ", ")).firstMatch
+        // Pulled to refresh until it's listed.
+        for _ in 0..<10 where !row.waitForExistence(timeout: 3) {
+            list.swipeDown()
+        }
+        if !row.exists { Screenshots.tree(of: app) }
+        XCTAssertTrue(row.exists, "\(title) is not listed")
+        row.tap()
+        let transcript = app.collectionViews["transcript"]
+        let answers = transcript.cells.matching(identifier: "transcript-assistant")
+        XCTAssertTrue(answers.firstMatch.waitForExistence(timeout: 20), "the session's first turn is not drawn")
+        let bar = app.descendants(matching: .any)["relay-status"]
+        let live = Date.now.addingTimeInterval(20)
+        while bar.label != "live" && Date.now < live {
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        XCTAssertEqual(bar.label, "live")
+
+        let (started, reply) = try await Self.request("\(sessions)/\(id)/turn", body: "Please stream a long answer")
+        XCTAssertEqual(started, 200, reply)
+        let deadline = Date.now.addingTimeInterval(20)
+        while answers.count < 2 && Date.now < deadline {
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertGreaterThanOrEqual(answers.count, 2, "no answer streaming")
+        // The screen never idles while it streams (its display link runs),
+        // so XCUITest can't scroll mid-stream here: "↓ New" is
+        // LiveFollowTests' (hosted), which keeps its own screenshots.
+        Screenshots.keep("live-streaming-ui", in: app)
+        // Followed to the end: the turn's separator, last on screen (the
+        // first turn's has scrolled far above).
+        let ends = transcript.cells.matching(identifier: "transcript-turn-end")
+        let atEnd = { ends.allElementsBoundByIndex.contains { $0.exists && $0.frame.maxY > transcript.frame.maxY - 120 } }
+        let ended = Date.now.addingTimeInterval(120)
+        while !atEnd() && Date.now < ended {
+            try await Task.sleep(for: .milliseconds(250))
+        }
+        if !atEnd() { Screenshots.tree(of: app) }
+        XCTAssertTrue(atEnd(), "the live turn's separator never came at the end")
+        Screenshots.keep("live-done", in: app)
+        let (released, _) = try await Self.request("\(sessions)/\(id)/release")
+        XCTAssertEqual(released, 200)
     }
 
     /// R-IOS-7, R-IOS-3: Sessions is up, and lists the fleet's demo
@@ -210,9 +274,10 @@ final class PairingUITests: XCTestCase {
         XCTAssertEqual(status, 200, "POST \(url): \(body)")
     }
 
-    private static func request(_ url: String) async throws -> (Int, String) {
+    private static func request(_ url: String, body: String = "") async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
+        request.httpBody = Data(body.utf8)
         request.timeoutInterval = 60
         let (body, response) = try await URLSession.shared.data(for: request)
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: body, as: UTF8.self))

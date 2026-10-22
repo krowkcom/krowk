@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app follows a running turn live.** An open session now
+  moves as your laptop works: a new prompt appears, the answer streams
+  into its row word by word, a tool call shows `running…` as it starts
+  and settles with `✓` or `✗` and its result, and the turn's closing line
+  appears when it ends. While you're at the bottom the transcript keeps
+  up; scroll up to read and it stays put, with a `↓ New` button that
+  takes you back down (and keeps up again). If the relay drops part of
+  the stream, the bar reads `catching up…` while the phone fetches what
+  it missed from your laptop, and nothing is shown twice; if the laptop
+  goes away mid-turn, the bar reads `host offline` and what was drawn
+  stays. Updates are drawn once per screen refresh, up to 120 times a
+  second on ProMotion iPhones, and an idle session costs nothing.
+  Nothing changes for CLI users.
 - **The iPhone app shows a session's transcript.** Tapping a session
   opens its turns, top to bottom and scrolled to the end: your prompts in
   bubbles on the right (an attached image shows as `[Image #1]`), the

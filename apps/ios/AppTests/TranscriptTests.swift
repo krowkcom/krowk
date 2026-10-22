@@ -65,7 +65,9 @@ extension HostedKeychain {
 
             // As drawn: the snapshot is the model's rows, and the tool's
             // cell shows its call and, beneath it, its result.
-            #expect(screen.dataSource.snapshot().itemIdentifiers == model.ids)
+            // The snapshot follows the model a turn of the run loop later,
+            // and the demo's held turn may still be coming in live.
+            try await LiveFollowTests.wait(until: { screen.dataSource.snapshot().itemIdentifiers == model.ids }, within: .seconds(5), "the snapshot never caught up with the model")
             let path = try #require(screen.dataSource.indexPath(for: tool.id))
             screen.collectionView.scrollToItem(at: path, at: .centeredVertically, animated: false)
             window.layoutIfNeeded()

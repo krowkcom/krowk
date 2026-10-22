@@ -14,13 +14,18 @@ import UIKit
 /// opens only from a sheet naming its whole URL.
 ///
 /// The session is followed while the screen is in the navigation stack,
-/// and stopped as it leaves. What it brings is drained once per display
-/// frame into the model, on the main thread; the blocking reads behind it
-/// run on threads of their own (`LiveSession`).
+/// and stopped as it leaves. What it brings is applied once per display
+/// frame (`FrameDriver`, R-LAG-7): a `CADisplayLink` at up to 120 Hz,
+/// paused while the session is idle. A streaming answer grows in its own
+/// cell, which appends just the new text to its TextKit 2 storage and
+/// re-lays out alone; the snapshot changes only when a row is added. At
+/// the bottom, the list follows what comes; scrolled up, it stays put and
+/// a "↓ New" pill jumps back. The blocking reads behind it run on threads
+/// of their own (`LiveSession`).
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate {
     let row: SessionRow
     public let model: TranscriptModel
-    let statusBar = RelayStatusBar()
+    public let statusBar = RelayStatusBar()
     /// The session followed live, if the app gave one.
     let session: (any LiveSession)?
     /// Opens a URL the person confirmed: `UIApplication.shared.open`.
@@ -31,8 +36,32 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     let spinner = UIActivityIndicatorView(style: .medium)
     let emptyLabel = UILabel()
     private var frames: CADisplayLink?
-    /// Updates taken from the session, frame by frame.
-    private(set) var taken = 0
+    /// Applies what the session brings, one batch per display frame.
+    public let driver: FrameDriver?
+    /// Snapshots applied to the list: only when rows are added or go, or
+    /// rows are drawn again (Dynamic Type, an expanded row).
+    public private(set) var snapshotApplies = 0
+    /// The list follows what comes: it was at the bottom (within 8 pt)
+    /// and the person hasn't scrolled away since.
+    public private(set) var following = true
+    /// "↓ New": shown when something came while scrolled up; a tap jumps
+    /// back to the bottom, and following again.
+    public let newPill = UIButton(configuration: .filled())
+    /// The rows when the last frame applied: whether a frame added any.
+    private var rowsSeen = 0
+    /// The list is being scrolled by this screen (pinning, the first load,
+    /// "↓ New"), not by the person.
+    private var scrollingItself = false
+    /// What the list had laid out when it was last pinned: it's pinned
+    /// again only when that changes, so a scroll alone is left be.
+    private var pinnedFor: (content: CGSize, bounds: CGSize)?
+    /// The content's height when the person's drag began: what streamed in
+    /// meanwhile doesn't count against reaching the end.
+    private var dragFrom: CGFloat?
+    /// An assistive scroll down, animated: decided once it lands.
+    private var assistiveDown = false
+    /// VoiceOver's focus observer, removed as the screen goes.
+    private var focusObserver: (any NSObjectProtocol)?
     /// Rows have been drawn: no spinner shows again.
     public private(set) var drewRows = false
     /// The rows as last applied.
@@ -43,7 +72,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.row = row
         self.session = session
-        self.model = model ?? TranscriptModel(sessionID: row.id)
+        let model = model ?? TranscriptModel(sessionID: row.id)
+        self.model = model
+        self.driver = session.map { FrameDriver(session: $0, model: model) }
         self.opener = open ?? { UIApplication.shared.open($0) }
         super.init(nibName: nil, bundle: nil)
         title = row.title
@@ -55,7 +86,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         fatalError("TranscriptViewController is built in code")
     }
 
-    deinit {
+    /// Freed with its link still on the run loop (paused, so it never
+    /// fires to find its screen gone): invalidated here.
+    isolated deinit {
+        frames?.invalidate()
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         session?.stop()
     }
 
@@ -69,7 +104,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             list.backgroundColor = .clear
             return NSCollectionLayoutSection.list(using: list, layoutEnvironment: environment)
         }
-        collectionView = UICollectionView(frame: .zero, collectionViewLayout: layout)
+        let list = TranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
+        list.afterLayout = { [weak self] in self?.pin() }
+        list.accessibilityScrolled = { [weak self] in self?.personScrolled($0) }
+        collectionView = list
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.selfSizingInvalidation = .enabledIncludingConstraints
         collectionView.accessibilityIdentifier = "transcript"
@@ -152,6 +190,23 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             collectionView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        var pill = UIButton.Configuration.filled()
+        pill.title = "↓ New"
+        pill.cornerStyle = .capsule
+        pill.buttonSize = .small
+        newPill.configuration = pill
+        newPill.accessibilityIdentifier = "transcript-new"
+        newPill.accessibilityLabel = "New below"
+        newPill.accessibilityHint = "Scrolls to the end, and follows it again"
+        newPill.isHidden = true
+        newPill.translatesAutoresizingMaskIntoConstraints = false
+        newPill.addAction(UIAction { [weak self] _ in self?.jumpToEnd() }, for: .primaryActionTriggered)
+        view.addSubview(newPill)
+        NSLayoutConstraint.activate([
+            newPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            newPill.bottomAnchor.constraint(equalTo: safe.bottomAnchor, constant: -12),
+        ])
+
         // Dynamic Type: the drawn text's fonts are fixed in its attributes,
         // so every row is drawn again at the new size.
         registerForTraitChanges([UITraitPreferredContentSizeCategory.self, UITraitLegibilityWeight.self]) { (self: Self, _: UITraitCollection) in
@@ -160,18 +215,34 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             var snapshot = self.dataSource.snapshot()
             snapshot.reconfigureItems(snapshot.itemIdentifiers.filter { self.model.item($0) != nil })
             self.dataSource.apply(snapshot, animatingDifferences: false)
+            self.snapshotApplies += 1
+        }
+
+        // VoiceOver moving to a row above the last is reading back: not
+        // following, or the end would pull the row away every frame.
+        focusObserver = NotificationCenter.default.addObserver(forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main) { [weak self] note in
+            // Delivered on the main queue, where it was posted: the element
+            // never leaves it.
+            nonisolated(unsafe) let element = note.userInfo?[UIAccessibility.focusedElementUserInfoKey] as AnyObject?
+            MainActor.assumeIsolated { self?.focused(element) }
         }
 
         observeModel()
+        driver?.applied = { [weak self] done in self?.drawFrame(done) }
         session?.follow { [weak self] status in self?.relay(status) }
+        session?.onUpdates { [weak self] in self?.driver?.wake() }
     }
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        guard session != nil, frames == nil else { return }
+        guard let driver, frames == nil else { return }
         let link = CADisplayLink(target: TranscriptFrameTarget(self), selector: #selector(TranscriptFrameTarget.frame(_:)))
+        // ProMotion: up to 120 Hz, never under 30 (R-PERF-4's 60 fps on
+        // other iPhones, which can't go above it).
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: 30, maximum: 120, preferred: 120)
         link.add(to: .main, forMode: .common)
         frames = link
+        driver.ticker = DisplayLinkTicker(link)
     }
 
     /// Covered, the screen keeps draining what the session brings, so
@@ -179,16 +250,183 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     override public func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
-            frames?.invalidate()
-            frames = nil
-            session?.stop()
+            leave()
         }
     }
 
+    /// Taken out of its navigation stack however it went (popped from
+    /// beneath another screen, the stack replaced): its link, paused or
+    /// not, never fires again to invalidate itself, so it's done here.
+    override public func didMove(toParent parent: UIViewController?) {
+        super.didMove(toParent: parent)
+        if parent == nil, frames != nil { leave() }
+    }
+
+    private func leave() {
+        if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        focusObserver = nil
+        frames?.invalidate()
+        frames = nil
+        driver?.ticker = nil
+        session?.stop()
+    }
+
     /// One display frame: what the session brought, into the model.
-    func frame() {
-        guard let session else { return }
-        taken += session.takeFrame(into: model)
+    func frame(at now: TimeInterval = CACurrentMediaTime()) {
+        driver?.tick(at: now)
+    }
+
+    /// Inside the frame, after its apply: the streaming cells on screen
+    /// append their new text now, so the frame's layout has it; the pill
+    /// shows if something came while scrolled up; VoiceOver hears a turn
+    /// end (never each word).
+    private func drawFrame(_ done: FrameApplied) {
+        // A collapsed "Thought" draws none of its text.
+        let drawn = done.grown.filter { $0.kind != .reasoning || $0.expanded }
+        for state in drawn {
+            state.drawer?.render(state)
+        }
+        let rows = model.ids.count
+        if !following, !drawn.isEmpty || rows != rowsSeen {
+            newPill.isHidden = false
+        }
+        rowsSeen = rows
+        if UIAccessibility.isVoiceOverRunning, let end = done.ended.last {
+            UIAccessibility.post(notification: .announcement, argument: SafeText.line(end.text[...], limit: 200))
+        }
+    }
+
+    // MARK: Following the end
+
+    /// The content offset that shows the end.
+    private var bottomOffset: CGFloat {
+        guard let collectionView else { return 0 }
+        let inset = collectionView.adjustedContentInset
+        return max(-inset.top, collectionView.contentSize.height + inset.bottom - collectionView.bounds.height)
+    }
+
+    /// The list shows its end, within 8 points.
+    public var isAtBottom: Bool {
+        guard let collectionView else { return true }
+        return collectionView.contentOffset.y >= bottomOffset - 8
+    }
+
+    /// After each layout pass that changed what's laid out (the frame's,
+    /// which sized the streaming cell; a rotation): following, the end is
+    /// shown, without animation. A pass that only scrolled is left be, so
+    /// a scroll alone is never undone, and nothing moves while a finger is
+    /// on the list.
+    private func pin() {
+        guard following, drewRows, let collectionView, !collectionView.isTracking, !collectionView.isDecelerating else { return }
+        let laid = (content: collectionView.contentSize, bounds: collectionView.bounds.size)
+        if let pinnedFor, pinnedFor.content == laid.content, pinnedFor.bounds == laid.bounds { return }
+        pinnedFor = laid
+        let bottom = bottomOffset
+        if abs(collectionView.contentOffset.y - bottom) > 0.5 {
+            scrollingItself = true
+            collectionView.contentOffset.y = bottom
+            scrollingItself = false
+        }
+    }
+
+    /// The person scrolled with a finger: following if they left the list
+    /// at its end, not if they scrolled up from it. Other scrolls are the
+    /// list's own (cells sizing themselves, offsets clamped) and change
+    /// nothing; VoiceOver's and the status bar's say so themselves
+    /// (`personScrolled`, `scrollViewShouldScrollToTop`).
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !scrollingItself, scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
+        follow(reachedEnd)
+    }
+
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragFrom = scrollView.contentSize.height
+    }
+
+    /// At the end, for a drag: what streamed in since it began is slack, so
+    /// reaching the end while the answer grows under the finger counts.
+    private var reachedEnd: Bool {
+        guard let collectionView else { return true }
+        let grown = dragFrom.map { max(0, collectionView.contentSize.height - $0) } ?? 0
+        return collectionView.contentOffset.y >= bottomOffset - 8 - grown
+    }
+
+    /// VoiceOver focused `element`: in a row above the last, or in the
+    /// last above what's at the bottom of the screen (an early block of a
+    /// streaming answer), it's reading back, and the list stops following.
+    func focused(_ element: AnyObject?) {
+        guard let collectionView, let focused = element as? UIView, focused.isDescendant(of: collectionView) else { return }
+        var view = focused
+        while !(view is UICollectionViewCell), let up = view.superview { view = up }
+        guard let cell = view as? UICollectionViewCell, let path = collectionView.indexPath(for: cell) else { return }
+        // The bottom of what's on screen, or of the content if it's shorter.
+        let bottom = min(collectionView.contentOffset.y + collectionView.bounds.height - collectionView.adjustedContentInset.bottom,
+                         collectionView.contentSize.height)
+        let reachesBottom = focused.convert(focused.bounds, to: collectionView).maxY >= bottom - 44
+        if path.item < collectionView.numberOfItems(inSection: 0) - 1 || !reachesBottom { follow(false) }
+    }
+
+    /// VoiceOver's three-finger scroll (or another assistive one) moved the
+    /// list: up is away from the end.
+    func personScrolled(_ direction: UIAccessibilityScrollDirection) {
+        switch direction {
+        case .up, .previous: follow(false)
+        case .down, .next:
+            // Animated, it hasn't moved yet: decided when it lands too.
+            assistiveDown = true
+            follow(isAtBottom)
+        default: break
+        }
+    }
+
+    public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+        follow(reachedEnd)
+        dragFrom = nil
+    }
+
+    public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+        guard !decelerate else { return }
+        follow(reachedEnd)
+        dragFrom = nil
+    }
+
+    /// An animated assistive scroll down landed: at the end, following.
+    public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        guard assistiveDown else { return }
+        assistiveDown = false
+        follow(isAtBottom)
+    }
+
+    /// A tap on the status bar scrolls to the top: not following.
+    public func scrollViewShouldScrollToTop(_ scrollView: UIScrollView) -> Bool {
+        follow(false)
+        return true
+    }
+
+    public func scrollViewDidScrollToTop(_ scrollView: UIScrollView) {
+        follow(isAtBottom)
+    }
+
+    private func follow(_ atBottom: Bool) {
+        if atBottom, !following, let collectionView {
+            // From what's laid out now: the next change pins, not this scroll.
+            pinnedFor = (collectionView.contentSize, collectionView.bounds.size)
+        }
+        following = atBottom
+        if atBottom { newPill.isHidden = true }
+    }
+
+    /// "↓ New" tapped: the end, and following again; VoiceOver moves to
+    /// the last row.
+    func jumpToEnd() {
+        follow(true)
+        pinnedFor = nil
+        scrollToEnd()
+        DispatchQueue.main.async { MainActor.assumeIsolated { [weak self] in
+            guard let self, let collectionView = self.collectionView else { return }
+            let last = collectionView.visibleCells.max { $0.frame.maxY < $1.frame.maxY }
+            UIAccessibility.post(notification: .layoutChanged, argument: last)
+        } }
     }
 
     // MARK: The model to the screen
@@ -215,6 +453,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             // live rows arrive) every one after. A row's own changes are its
             // cell's, which observes it: nothing is reloaded.
             dataSource.apply(snapshot, animatingDifferences: false)
+            snapshotApplies += 1
             applied = rows
             if first && !rows.isEmpty { scrollToEnd() }
         }
@@ -260,12 +499,21 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             guard let self, let collectionView else { return }
             let count = collectionView.numberOfItems(inSection: 0)
             guard count > 0 else { return }
+            self.scrollingItself = true
+            defer { self.scrollingItself = false }
             collectionView.layoutIfNeeded()
             collectionView.scrollToItem(at: IndexPath(item: count - 1, section: 0), at: .bottom, animated: false)
         }
         end()
         end()
         DispatchQueue.main.async { MainActor.assumeIsolated { end() } }
+    }
+
+    /// The text row `id`'s cell draws now, if it's on screen: every block
+    /// of a streaming answer, in order (for the tests outside KrowkKit).
+    public func drawnText(of id: String) -> String? {
+        guard let path = dataSource.indexPath(for: id), let cell = collectionView.cellForItem(at: path) else { return nil }
+        return (cell as? TranscriptTextCell)?.text.drawnText ?? (cell as? TranscriptToolCell)?.output.drawnText
     }
 
     // MARK: Taps
@@ -289,10 +537,14 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     func toggle(_ id: String) {
         guard let state = model.item(id), state.kind == .tool || state.kind == .reasoning else { return }
         state.expanded.toggle()
+        // Opened to read: the list stays where it is rather than follow
+        // the end past it ("↓ New" says when more comes).
+        if state.expanded { follow(false) }
         var snapshot = dataSource.snapshot()
         guard snapshot.indexOfItem(id) != nil else { return }
         snapshot.reconfigureItems([id])
         dataSource.apply(snapshot, animatingDifferences: false)
+        snapshotApplies += 1
     }
 
     /// A link tapped: a sheet naming the whole URL, and only its "Open"
@@ -337,6 +589,30 @@ private final class TranscriptFrameTarget: NSObject {
 
     @objc func frame(_ link: CADisplayLink) {
         guard let screen else { return link.invalidate() }
-        screen.frame()
+        screen.frame(at: link.timestamp)
+    }
+}
+
+/// The transcript's list, which says when it has laid out: the screen
+/// keeps the end in view then, once the frame's cells have their sizes.
+final class TranscriptCollectionView: UICollectionView {
+    var afterLayout: (() -> Void)?
+    /// A finger on the list, as the tests say it (UIKit's own otherwise).
+    var touching: Bool?
+
+    override var isTracking: Bool { touching ?? super.isTracking }
+
+    /// An assistive scroll (VoiceOver's three fingers), after it scrolled.
+    var accessibilityScrolled: ((UIAccessibilityScrollDirection) -> Void)?
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        let scrolled = super.accessibilityScroll(direction)
+        accessibilityScrolled?(direction)
+        return scrolled
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        afterLayout?()
     }
 }

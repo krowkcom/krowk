@@ -114,13 +114,13 @@ struct TranscriptScreenTests {
 
         let thought = try #require(cells[1] as? TranscriptToolCell)
         #expect(thought.title.text == "Thought")
-        #expect(thought.body.view.isHidden, "collapsed until tapped")
+        #expect(thought.output.view.isHidden, "collapsed until tapped")
 
         let tool = try #require(cells[2] as? TranscriptToolCell)
         #expect(tool.title.text == "read README.md")
         #expect(tool.result.text == "✓ # The demo project")
-        #expect(tool.body.view.isHidden)
-        #expect(tool.body.view.text.isEmpty, "a collapsed output isn't laid out")
+        #expect(tool.output.view.isHidden)
+        #expect(tool.output.drawnText.isEmpty, "a collapsed output isn't laid out")
         #expect(tool.header.accessibilityValue == "collapsed")
 
         let answer = try #require(cells[3] as? TranscriptTextCell)
@@ -150,8 +150,8 @@ struct TranscriptScreenTests {
         let collapsed = cell.frame.height
 
         screen.collectionView(screen.collectionView, didSelectItemAt: path)
-        try await waitFor { !cell.body.view.isHidden }
-        let shown = cell.body.view.text ?? ""
+        try await waitFor { !cell.output.view.isHidden }
+        let shown = cell.output.drawnText
         #expect(shown.hasPrefix("first line\nxxx"))
         #expect(shown.hasSuffix("\n" + SafeText.more(output.utf8.count - SafeText.outputLimit)))
         #expect(cell.header.accessibilityValue == "expanded")
@@ -161,8 +161,8 @@ struct TranscriptScreenTests {
         }
 
         screen.collectionView(screen.collectionView, didSelectItemAt: path)
-        try await waitFor { cell.body.view.isHidden }
-        #expect(cell.body.view.text.isEmpty)
+        try await waitFor { cell.output.view.isHidden }
+        #expect(cell.output.drawnText.isEmpty)
     }
 
     @Test("R-IOS-10: hostile text in a cell is drawn cleaned, its link tappable with its host beside it, an image's markdown as text")
@@ -232,8 +232,8 @@ struct TranscriptScreenTests {
         let path = try #require(screen.dataSource.indexPath(for: "item:t1"))
         let cell = try #require(screen.collectionView.cellForItem(at: path) as? TranscriptToolCell)
         screen.model.item("item:t1")?.expanded = true
-        try await waitFor { !cell.body.view.isHidden }
-        #expect(cell.body.view.text.hasPrefix("# The demo project"))
+        try await waitFor { !cell.output.view.isHidden }
+        #expect(cell.output.drawnText.hasPrefix("# The demo project"))
         #expect(cell.header.accessibilityValue == "expanded")
     }
 

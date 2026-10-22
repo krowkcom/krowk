@@ -14,6 +14,9 @@ public enum RelayStatus: Equatable, Sendable {
     case hostOffline
     /// A connection that had joined dropped, and the viewer joins again.
     case reconnecting
+    /// The relay dropped a batch (`gap`): the host is asked for what it
+    /// held, until its catch-up comes (`caughtUp`).
+    case catchingUp
     /// The relay could not be joined: the viewer's note, verbatim. It
     /// keeps trying.
     case unreachable(String)
@@ -27,6 +30,7 @@ public enum RelayStatus: Equatable, Sendable {
         case .live: "live"
         case .hostOffline: "host offline"
         case .reconnecting: "reconnecting"
+        case .catchingUp: "catching up…"
         case .unreachable(let note): "can't reach the relay: \(note)"
         case .ended(let detail?): "stopped: \(detail)"
         case .ended(nil): "stopped"
@@ -44,6 +48,8 @@ public struct RelayStatusTracker: Equatable, Sendable {
     /// `Update` host: a host welcomed this phone, or none is on the session.
     public mutating func host(_ present: Bool) {
         guard !isEnded else { return }
+        // A host there while the catch-up is under way: still catching up.
+        if present, status == .catchingUp { return }
         status = present ? .live : .hostOffline
     }
 
@@ -58,9 +64,22 @@ public struct RelayStatusTracker: Equatable, Sendable {
     /// itself. A note stays: the retry it announced is this.
     public mutating func dropped() {
         switch status {
-        case .live, .hostOffline: status = .reconnecting
+        case .live, .hostOffline, .catchingUp: status = .reconnecting
         case .connecting, .reconnecting, .unreachable, .ended: break
         }
+    }
+
+    /// `Update` gap: the relay dropped a batch, and the core asks the host
+    /// for what it held. Live only: before a join there's nothing to miss,
+    /// and with no host there's no one to ask.
+    public mutating func gap() {
+        if status == .live { status = .catchingUp }
+    }
+
+    /// `Update` caughtUp: what the gap left out came. Live again; a catch-up
+    /// that comes without a gap (as a join's welcome) changes nothing.
+    public mutating func caughtUp() {
+        if status == .catchingUp { status = .live }
     }
 
     /// The viewer's `End`, with the `Failed` before it.
@@ -84,11 +103,15 @@ public protocol LiveSession: AnyObject, Sendable {
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void)
     /// Drops the connection and every timer; nothing more is called.
     func stop()
-    /// Once per display frame, on the main thread: takes what arrived
-    /// since the last and applies its logged events to `transcript` (the
-    /// session read at rest, a line, a catch-up), and says how many updates
-    /// it took. Live deltas are ticket 89's.
-    @MainActor func takeFrame(into transcript: TranscriptModel) -> Int
+    /// `wake` is called on the main actor whenever updates arrive with
+    /// none waiting: the screen's display link, paused while the session
+    /// is idle, runs again (`FrameDriver.wake`).
+    func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void)
+    /// Once per display frame, on the main thread: everything that arrived
+    /// since the last, oldest first, as the transcript takes it. Takes a
+    /// lock and maps what it holds: never blocks on the network or calls
+    /// into Rust.
+    @MainActor func takeFrame() -> [TranscriptUpdate]
 }
 
 /// The bar under the navigation bar: the status in one line of footnote
@@ -140,7 +163,7 @@ public final class RelayStatusBar: UIView {
         dot.backgroundColor = switch status {
         case .live: .systemGreen
         case .hostOffline: .systemGray
-        case .connecting, .reconnecting: .systemYellow
+        case .connecting, .reconnecting, .catchingUp: .systemYellow
         case .unreachable, .ended: .systemRed
         }
     }

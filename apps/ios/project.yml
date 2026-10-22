@@ -46,6 +46,8 @@ targets:
         # which would win over the project-wide setting.
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: YES
+        # Merged into the generated one: keys with no INFOPLIST_KEY_* setting.
+        INFOPLIST_FILE: Krowk-Info.plist
         INFOPLIST_KEY_CFBundleDisplayName: krowk
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
