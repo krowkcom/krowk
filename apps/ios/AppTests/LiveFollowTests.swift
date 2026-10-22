@@ -59,6 +59,7 @@ extension HostedKeychain {
                 if fresh.contains(where: { $0.kind == .tool && $0.running && $0.output == nil }) { sawRunning = true }
                 guard let answer = fresh.first(where: { $0.kind == .assistant }) else { continue }
                 answerID = answer.id
+                if answer.done, model.ids.last?.hasPrefix("turn:") == true { break }
                 window.layoutIfNeeded()
                 guard let path = screen.dataSource.indexPath(for: answer.id),
                       let cell = screen.collectionView.cellForItem(at: path) else { continue }
@@ -69,7 +70,6 @@ extension HostedKeychain {
                 }
                 let text = Self.text(in: cell) ?? ""
                 if drawn.last != text { drawn.append(text) }
-                if answer.done, model.ids.last?.hasPrefix("turn:") == true { break }
             }
             let id = try #require(answerID, "no answer streamed: \(TranscriptTests.rows(of: model))")
             let state = try #require(model.item(id))
@@ -79,6 +79,10 @@ extension HostedKeychain {
             // Followed to the end, the turn's separator in view.
             window.layoutIfNeeded()
             #expect(screen.following && screen.isAtBottom, "not at the end after the turn")
+            // Nothing under way once the turn ended: the display link pauses
+            // within a second or so of the last update.
+            #expect(!model.isStreaming, "an item still under way after the turn")
+            try await Self.wait(until: { screen.driver?.ticker?.isPaused == true }, within: .seconds(4), "the display link still runs after the turn")
 
             // One cell, start to end, grown by appends: each text drawn
             // begins with the one before it. (Scrolled to only if it went

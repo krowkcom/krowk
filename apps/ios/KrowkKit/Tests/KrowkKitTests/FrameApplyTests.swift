@@ -378,12 +378,21 @@ struct FrameApplyTests {
         window.layoutIfNeeded()
         #expect(screen.isAtBottom)
 
-        // A scroll no finger made (VoiceOver's, a key's) is the person's
-        // too: not snapped back.
-        list.setContentOffset(CGPoint(x: 0, y: 40), animated: false)
+        // A scroll alone, no finger's (the list's own, a key's), is never
+        // undone: what's laid out didn't change.
+        let bottom = list.contentOffset.y
+        list.setContentOffset(CGPoint(x: 0, y: bottom - 30), animated: false)
+        window.layoutIfNeeded()
+        #expect(abs(list.contentOffset.y - (bottom - 30)) < 1, "snapped back to the end: \(list.contentOffset.y)")
+        // VoiceOver's three-finger scroll up: not following.
+        _ = list.accessibilityScroll(.up)
         window.layoutIfNeeded()
         #expect(!screen.following, "a VoiceOver scroll up still followed")
-        #expect(abs(list.contentOffset.y - 40) < 1, "snapped back to the end: \(list.contentOffset.y)")
+        let held2 = list.contentOffset.y
+        session.bring([Self.delta("a2", "\nLine 22b")])
+        screen.frame()
+        window.layoutIfNeeded()
+        #expect(abs(list.contentOffset.y - held2) < 1, "moved after a VoiceOver scroll up")
         screen.newPill.sendActions(for: .primaryActionTriggered)
         try await waitFor {
             window.layoutIfNeeded()

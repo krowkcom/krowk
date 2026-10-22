@@ -95,6 +95,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
         let list = TranscriptCollectionView(frame: .zero, collectionViewLayout: layout)
         list.afterLayout = { [weak self] in self?.pin() }
+        list.accessibilityScrolled = { [weak self] in self?.personScrolled($0) }
         collectionView = list
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         collectionView.selfSizingInvalidation = .enabledIncludingConstraints
@@ -289,10 +290,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     /// After each layout pass that changed what's laid out (the frame's,
     /// which sized the streaming cell; a rotation): following, the end is
-    /// shown, without animation. A pass that only scrolled is left be —
-    /// a scroll this screen didn't make is the person's (a finger,
-    /// VoiceOver, a tap on the status bar, a key) — and nothing moves
-    /// while a finger is on the list.
+    /// shown, without animation. A pass that only scrolled is left be, so
+    /// a scroll alone is never undone, and nothing moves while a finger is
+    /// on the list.
     private func pin() {
         guard following, drewRows, let collectionView, !collectionView.isTracking, !collectionView.isDecelerating else { return }
         let laid = (content: collectionView.contentSize, bounds: collectionView.bounds.size)
@@ -306,16 +306,23 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
     }
 
-    /// The person scrolled (a finger, VoiceOver, the status bar, a key):
-    /// following if they left the list at its end, not if they scrolled
-    /// up from it. The list's own adjustments while what's laid out
-    /// changes (cells sizing themselves) are not theirs.
+    /// The person scrolled with a finger: following if they left the list
+    /// at its end, not if they scrolled up from it. Other scrolls are the
+    /// list's own (cells sizing themselves, offsets clamped) and change
+    /// nothing; VoiceOver's and the status bar's say so themselves
+    /// (`personScrolled`, `scrollViewShouldScrollToTop`).
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        guard !scrollingItself else { return }
-        if scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating {
-            follow(isAtBottom)
-        } else if let pinnedFor, pinnedFor.content == scrollView.contentSize, pinnedFor.bounds == scrollView.bounds.size {
-            follow(isAtBottom)
+        guard !scrollingItself, scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
+        follow(isAtBottom)
+    }
+
+    /// VoiceOver's three-finger scroll (or another assistive one) moved the
+    /// list: up is away from the end.
+    func personScrolled(_ direction: UIAccessibilityScrollDirection) {
+        switch direction {
+        case .up, .previous: follow(false)
+        case .down, .next: follow(isAtBottom)
+        default: break
         }
     }
 
@@ -520,6 +527,15 @@ final class TranscriptCollectionView: UICollectionView {
     var touching: Bool?
 
     override var isTracking: Bool { touching ?? super.isTracking }
+
+    /// An assistive scroll (VoiceOver's three fingers), after it scrolled.
+    var accessibilityScrolled: ((UIAccessibilityScrollDirection) -> Void)?
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        let scrolled = super.accessibilityScroll(direction)
+        accessibilityScrolled?(direction)
+        return scrolled
+    }
 
     override func layoutSubviews() {
         super.layoutSubviews()
