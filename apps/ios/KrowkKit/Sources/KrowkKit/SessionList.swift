@@ -139,7 +139,7 @@ public final class SessionRowFormatter {
         }
         return SessionRow(
             id: session.id, title: title, detail: place.isEmpty ? status : "\(place) · \(status)", live: live,
-            accessibilityLabel: [title, place, said].filter { !$0.isEmpty }.joined(separator: ", "))
+            accessibilityLabel: [title, place == title ? "" : place, said].filter { !$0.isEmpty }.joined(separator: ", "))
     }
 
     /// "12m ago", "3h ago"; "just now" under a minute, and for a time

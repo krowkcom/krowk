@@ -205,6 +205,7 @@ pub fn start(demo: bool) -> Fleet {
         chain: chain.clone(),
         user: user.clone(),
         tests: std::sync::Mutex::default(),
+        started: std::sync::Condvar::new(),
     });
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
@@ -259,15 +260,19 @@ pub struct Hosting {
     host: Device,
     chain: Chain,
     user: UserKey,
-    /// The sessions hosted for tests.
+    /// The sessions hosted for tests, and a signal when one has finished
+    /// starting.
     tests: std::sync::Mutex<Tests>,
+    started: std::sync::Condvar,
 }
 
-/// The sessions hosted for tests, by id, and whether the fleet is
-/// stopping: then a session that finished starting is stopped at once.
+/// The sessions hosted for tests, by id; how many are still starting; and
+/// whether the fleet is stopping, which refuses a new one and waits for
+/// those starting.
 #[derive(Default)]
 struct Tests {
     stopping: bool,
+    starting: usize,
     bridges: std::collections::HashMap<String, Bridge>,
 }
 
@@ -276,15 +281,24 @@ impl Hosting {
     /// holding its lease: its id, once the registry shows it leased and
     /// written.
     pub fn host(&self, title: &str) -> Result<String, String> {
-        let (session, stop, bridge) = self.begin(title)?;
+        {
+            let mut tests = self.tests.lock().unwrap();
+            if tests.stopping {
+                return Err("the fleet is stopping".into());
+            }
+            tests.starting += 1;
+        }
+        let begun = self.begin(title);
         let mut tests = self.tests.lock().unwrap();
+        tests.starting -= 1;
+        self.started.notify_all();
+        let (session, stop, bridge) = begun?;
+        // Kept even as the fleet stops: `release_all` waited for it, and
+        // stops it with the rest.
+        tests.bridges.insert(session.clone(), (stop, bridge));
         if tests.stopping {
-            drop(tests);
-            let _ = stop.send(true);
-            let _ = bridge.join();
             return Err("the fleet is stopping".into());
         }
-        tests.bridges.insert(session.clone(), (stop, bridge));
         Ok(session)
     }
 
@@ -311,6 +325,8 @@ impl Hosting {
         let all: Vec<Bridge> = {
             let mut tests = self.tests.lock().unwrap();
             tests.stopping = true;
+            // A session starting takes up to the bridge's sync wait.
+            let (mut tests, _) = self.started.wait_timeout_while(tests, Duration::from_secs(30), |t| t.starting > 0).unwrap();
             tests.bridges.drain().map(|(_, b)| b).collect()
         };
         for (stop, _) in &all {

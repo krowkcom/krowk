@@ -62,16 +62,19 @@ public final class SessionListModel {
     }
 
     /// On screen, or back in the foreground: the clock ticked now (so a
-    /// listing older than a lease's TTL shows none live), a read now, then
-    /// every 20 s, and the clock ticked each minute.
+    /// listing older than a lease's TTL shows none live) and again when
+    /// its live marks reach that age, a read now, then every 20 s, and the
+    /// clock ticked each minute. Called again while already on screen (a
+    /// launch's first foreground follows the first appearance), it only
+    /// ticks the clock: the read already under way is enough.
     public func appeared() {
         now = clock()
-        if timers.isEmpty {
-            timers = [
-                repeating(every: Self.refreshPeriod) { await $0.refresh() },
-                repeating(every: .seconds(60)) { $0.now = $0.clock() },
-            ]
-        }
+        if let listedAt { expire(at: listedAt.addingTimeInterval(Self.leaseTTL)) }
+        guard timers.isEmpty else { return }
+        timers = [
+            repeating(every: Self.refreshPeriod) { await $0.refresh() },
+            repeating(every: .seconds(60)) { $0.now = $0.clock() },
+        ]
         Task { await refresh() }
     }
 
@@ -119,7 +122,8 @@ public final class SessionListModel {
                 self.listing = listing.deduplicated()
                 listedAt = started
                 failure = nil
-                expire(at: started.addingTimeInterval(Self.leaseTTL))
+                // Only on screen: appearing arms it again.
+                if !timers.isEmpty { expire(at: started.addingTimeInterval(Self.leaseTTL)) }
             case .failure(let error):
                 // Once per kind, not every 20 s while it lasts.
                 if failure?.kind != error.kind { log("listing sessions failed: \(error.kind)") }

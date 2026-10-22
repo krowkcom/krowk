@@ -75,7 +75,8 @@ struct SessionRowFormatterTests {
         #expect(row.detail == "krowk · last seen 12m ago")
         #expect(!row.live)
         // VoiceOver hears whole words.
-        #expect(row.accessibilityLabel == "krowk, krowk, last seen 12 minutes ago")
+        #expect(row.accessibilityLabel == "krowk, last seen 12 minutes ago", "the place is said once")
+        #expect(formatter.row(Stub(id: "a", title: "Fix it", updatedMs: nowMs - 12 * 60_000), holderName: nil, liveTrusted: true, now: now).accessibilityLabel == "Fix it, krowk, last seen 12 minutes ago")
         #expect(formatter.row(Stub(id: "a", updatedMs: nowMs - 20_000), holderName: nil, liveTrusted: true, now: now).detail == "krowk · last seen just now")
         // A host's clock ahead of this phone's is "just now", not "in 2m".
         #expect(formatter.row(Stub(id: "a", updatedMs: nowMs + 120_000), holderName: nil, liveTrusted: true, now: now).detail == "krowk · last seen just now")
@@ -88,7 +89,7 @@ struct SessionRowFormatterTests {
         let named = formatter.row(held, holderName: "host-a", liveTrusted: true, now: now)
         #expect(named.live)
         #expect(named.detail == "krowk · ● live on host-a")
-        #expect(named.accessibilityLabel == "krowk, krowk, live on host-a")
+        #expect(named.accessibilityLabel == "krowk, live on host-a")
         let unnamed = formatter.row(held, holderName: nil, liveTrusted: true, now: now)
         #expect(unnamed.detail == "krowk · ● live")
         #expect(!unnamed.detail.contains(id))
@@ -248,7 +249,8 @@ struct SessionListModelTests {
             try await Task.sleep(for: .milliseconds(20))
         }
         #expect(list.model.listing != nil)
-        list.model.disappeared()
+        list.beginAppearanceTransition(false, animated: false)
+        list.endAppearanceTransition()
     }
 
     @Test("R-IOS-7: rows are one per id, most recently written first")
@@ -285,6 +287,21 @@ struct SessionListModelTests {
         await list.model.refresh()
         #expect(list.screen().rows.map(\.live) == [true])
         #expect(list.screen().stale == nil)
+    }
+
+    @Test("R-IOS-3: appearing, then the launch's first foreground, reads the list once")
+    func appearingTwiceReadsOnce() async throws {
+        let source = StubSource(.success(SessionListing(sessions: [], unreadable: 0)))
+        let model = model(source)
+        model.appeared()
+        model.appeared()
+        let deadline = ContinuousClock.now + .seconds(5)
+        while model.listing == nil, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(source.calls.count == 1)
+        model.disappeared()
     }
 
     @Test("R-IOS-7: a listing older than a lease's TTL shows none live until it is read again")
