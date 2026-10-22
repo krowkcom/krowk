@@ -332,6 +332,9 @@ struct Tests {
     stopping: bool,
     starting: usize,
     bridges: std::collections::HashMap<String, Bridge>,
+    /// Every test session's title, hosted or let go: what `host_again`
+    /// hosts it under.
+    titles: std::collections::HashMap<String, String>,
 }
 
 impl Hosting {
@@ -359,9 +362,50 @@ impl Hosting {
             return Err("the fleet is stopping".into());
         }
         tests.bridges.insert(session.clone(), (stop, bridge));
+        tests.titles.insert(session.clone(), title.into());
         drop(tests);
         drop(starting);
         Ok(session)
+    }
+
+    /// Hosts `session`, a test's own that `release` let go, again (R-HAND-4:
+    /// a host coming back): a bridge holds its lease once more, and every
+    /// viewer waiting on it is welcomed. Returns once the registry shows it
+    /// leased.
+    pub fn host_again(&self, session: &str) -> Result<(), String> {
+        let title = {
+            let mut tests = self.tests.lock().unwrap();
+            if tests.stopping {
+                return Err("the fleet is stopping".into());
+            }
+            if tests.bridges.contains_key(session) {
+                return Err(format!("the fleet hosts {session} already"));
+            }
+            let title = tests.titles.get(session).cloned().ok_or_else(|| format!("the fleet hosted no test session {session}"))?;
+            tests.starting += 1;
+            title
+        };
+        let starting = Starting(self);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+        let (stop, bridge) = self.bridge(rt, session, &title, None)?;
+        let keys = UserKeys::new(self.user.clone(), []).unwrap();
+        if let Err(e) = synced(&self.host.client(&self.api), session, &keys, &self.chain) {
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            return Err(e);
+        }
+        let mut tests = self.tests.lock().unwrap();
+        if tests.stopping || tests.bridges.contains_key(session) {
+            drop(tests);
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            drop(starting);
+            return Err(format!("the fleet is stopping, or hosts {session} already"));
+        }
+        tests.bridges.insert(session.into(), (stop, bridge));
+        drop(tests);
+        drop(starting);
+        Ok(())
     }
 
     /// Stops the bridge of `session`, a test's own, which lets its lease
@@ -449,7 +493,21 @@ impl Hosting {
         let d = connect()?;
         let first = self.prompt(None, HELLO);
         let session = rt.block_on(async { d.execute(first, drain()).await }).map_err(|e| format!("the first turn failed: {e:?}"))?.ok_or("the first turn did not end")?.session_id;
-        let bridged = connect()?;
+        let (stop, bridge) = self.bridge(rt, &session, title, Some(d))?;
+        let keys = UserKeys::new(self.user.clone(), []).unwrap();
+        if let Err(e) = synced(&self.host.client(&self.api), &session, &keys, &self.chain) {
+            let _ = stop.send(true);
+            let _ = bridge.join();
+            return Err(e);
+        }
+        Ok((session, stop, bridge))
+    }
+
+    /// A bridge for `session` on a thread of its own, running on `rt`,
+    /// connected to host A's daemon: what stops it, and its thread. `keep`,
+    /// the connection that ran the session's first turn, is held as long.
+    fn bridge(&self, rt: tokio::runtime::Runtime, session: &str, title: &str, keep: Option<Client>) -> Result<Bridge, String> {
+        let bridged = rt.block_on(Client::connect(&self.socket, &self.repo, "test", true)).map_err(|e| format!("the host daemon does not answer: {}", connect_error(e)))?;
         let (stop, stop_rx) = watch::channel(false);
         let o = host::Options {
             relay: self.relay.clone(),
@@ -459,7 +517,7 @@ impl Hosting {
             signing: self.host.signing_copy(),
             keys: UserKeys::new(self.user.clone(), []).unwrap(),
             chain: self.chain.clone(),
-            session: session.clone(),
+            session: session.into(),
             title: title.into(),
             cwd: self.repo.display().to_string(),
             sessions: self.sessions.clone(),
@@ -476,15 +534,9 @@ impl Hosting {
             if let Err(e) = rt.block_on(host::run(o, Arc::new(bridged), stop_rx, cp_rx)) {
                 eprintln!("fleet: the bridge ended: {e}");
             }
-            drop(d);
+            drop(keep);
         });
-        let keys = UserKeys::new(self.user.clone(), []).unwrap();
-        if let Err(e) = synced(&self.host.client(&self.api), &session, &keys, &self.chain) {
-            let _ = stop.send(true);
-            let _ = bridge.join();
-            return Err(e);
-        }
-        Ok((session, stop, bridge))
+        Ok((stop, bridge))
     }
 }
 

@@ -171,6 +171,52 @@ fn r_ios_7_a_session_the_fleet_hosts_for_a_test_is_listed_held_then_unheld_once_
     f.stop();
 }
 
+/// R-HAND-4, R-IOS-5: a prompt a viewer types while a test's own session
+/// has no host is shown queued; when the fleet hosts the session again
+/// (`Hosting::host_again`, the control's `POST /sessions/<id>/host`) it is
+/// sent at the welcome, acked, and runs once: one `userText` with its text,
+/// one turn. What the phone's `r_hand_4` test does through the relay.
+#[test]
+fn r_hand_4_a_prompt_queued_with_no_host_runs_once_when_the_fleet_hosts_the_session_again() {
+    let f = fleet::start(false);
+    let id = f.hosting.host("comes back").unwrap();
+    f.hosting.release(&id).unwrap();
+    let b = fleet::Device::new("machine-b");
+    let (chain, batch) = f.chain.clone().batch(&f.user, vec![Change::Add(b.subject("machine-b"))], f.host.key.id(), &f.host.signing, fleet::T0 + 1).unwrap();
+    f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
+    b.client(&f.api).claim_key_device().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let mut v = rt.block_on(viewer::attach(o)).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(false)))));
+
+    let text = "Queued while the laptop slept";
+    v.commands.send(Cmd::Prompt { session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None }).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Sent { .. }))));
+    let sent = got.iter().find_map(|u| if let viewer::Update::Sent { id, queued } = u { Some((id.clone(), *queued)) } else { None }).unwrap();
+    assert!(sent.1, "queued with no host: {got:?}");
+
+    f.hosting.host_again(&id).unwrap();
+    let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
+    let got = rt.block_on(until(&mut v, Duration::from_secs(30), |all| all.iter().any(ended)));
+    let acks: Vec<_> = got.iter().filter_map(|u| if let viewer::Update::Acked { id, error } = u { Some((id.clone(), error.clone())) } else { None }).collect();
+    assert_eq!(acks, [(sent.0.clone(), None)], "acked once, taken: {got:?}");
+    // Logged lines and any catch-up, each event once.
+    let mut seen = std::collections::HashSet::new();
+    let events: Vec<LogEvent> = got.iter().flat_map(|u| match u {
+        viewer::Update::CaughtUp(events) => events.iter().filter_map(|e| serde_json::from_value::<LogEvent>(e.clone()).ok()).collect(),
+        viewer::Update::Line(StreamLine::Log(e)) => vec![e.clone()],
+        _ => Vec::new(),
+    }).filter(|e| seen.insert(e.id.clone())).collect();
+    let prompts = events.iter().filter(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::UserText { text: t, .. }, .. } if t == text)).count();
+    assert_eq!(prompts, 1, "the queued prompt ran once: {events:#?}");
+    // A little longer: nothing runs it again.
+    std::thread::sleep(Duration::from_secs(2));
+    let later = rt.block_on(async { tokio::time::timeout(Duration::from_millis(200), v.updates.recv()).await.ok().flatten().unwrap_or_default() });
+    assert!(!format!("{later:?}").contains(text), "{later:?}");
+    f.stop();
+}
+
 /// R-LAG-7, R-PERF-4, R-IOS-15: a turn a test types at host A in its own
 /// session (`Hosting::turn`, the control's `POST /sessions/<id>/turn`)
 /// reaches a second device live: the `read` call starts, then the answer
@@ -477,9 +523,9 @@ fn r_e2e_3_r_ios_15_a_post_to_pair_url_gives_the_fake_fleet_a_fresh_code_that_jo
 
 /// R-IOS-7, R-IOS-15: the fleet's control, as a simulator's test uses it:
 /// `sessions_url` hosts a session of the test's own and names it, and its
-/// `release` lets it go, once.
+/// `release` lets it go, once; its `host` hosts it again (R-HAND-4).
 #[test]
-fn r_ios_7_r_ios_15_a_post_to_sessions_url_hosts_a_session_and_release_lets_it_go() {
+fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets_it_go_and_host_takes_it_back() {
     let f = Proc::start(&[]);
     assert!(!f.lines.contains_key("pair_url"), "no pair_url without --pair");
     let url = f.get("sessions_url").to_string();
@@ -490,6 +536,11 @@ fn r_ios_7_r_ios_15_a_post_to_sessions_url_hosts_a_session_and_release_lets_it_g
     assert!(!id.is_empty() && id != f.get("session"), "{id}");
     assert_eq!(request("POST", &format!("{url}/{id}/release")), ("HTTP/1.1 200 X".into(), "released".into()));
     assert_eq!(request("POST", &format!("{url}/{id}/release")).0, "HTTP/1.1 500 X", "released once only");
+    // R-HAND-4: hosted again, as a host coming back; then let go again.
+    assert_eq!(request("POST", &format!("{url}/{id}/host")), ("HTTP/1.1 200 X".into(), "hosted".into()));
+    assert_eq!(request("POST", &format!("{url}/{id}/host")).0, "HTTP/1.1 500 X", "hosted once at a time");
+    assert_eq!(request("POST", &format!("{url}/no-such-session/host")).0, "HTTP/1.1 500 X", "only a test's own session");
+    assert_eq!(request("POST", &format!("{url}/{id}/release")), ("HTTP/1.1 200 X".into(), "released".into()));
     f.stop();
 }
 
