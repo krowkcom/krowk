@@ -22,7 +22,7 @@ import Testing
 extension HostedKeychain {
     @Suite("R-CLIENT-1, R-LAG-9, R-HAND-4: the phone follows a session live through the fleet's relay")
     struct RelayConnectionTests {
-        @Test("R-CLIENT-1, R-LAG-9, R-IOS-1: the demo session reads live within 5 s, and its updates reach the mailbox")
+        @Test("R-CLIENT-1, R-LAG-9, R-IOS-1: the demo session reads live within 5 s, its updates reach the mailbox, and the link stays up past the heartbeats")
         func demoIsLive() async throws {
             let (live, statuses) = try await Self.follow(try await Self.demo())
             defer { live.stop() }
@@ -34,6 +34,14 @@ extension HostedKeychain {
             // The main queue has the statuses in order, after the fact.
             try await Self.wait(until: { statuses.all().last == .live }, within: .seconds(5), "\(statuses.all())")
             #expect(statuses.all().first == .connecting)
+
+            // R-LAG-9: held past the relay's 10 s ping and the viewer's own
+            // heartbeat, the link stays up: no drop, no second dial.
+            let dials = live.dials
+            try await Task.sleep(for: .seconds(13))
+            #expect(live.status == .live)
+            #expect(live.dials == dials, "redialed while live: \(dials) → \(live.dials)")
+            #expect(!statuses.all().contains(.reconnecting), "\(statuses.all())")
         }
 
         @Test("R-CLIENT-1, R-LAG-9: a dropped connection is joined again at the viewer's cursor, back to live, with no event drained twice")

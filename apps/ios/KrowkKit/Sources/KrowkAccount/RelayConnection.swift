@@ -51,8 +51,6 @@ public actor RelayConnection: LiveSession {
     private var started = false
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
-    /// The last `Failed` shown: why, if an `End` follows.
-    private var failure: String?
 
     private var tracker = RelayStatusTracker()
     private let shown = OSAllocatedUnfairLock<RelayStatus>(initialState: .connecting)
@@ -86,11 +84,14 @@ public actor RelayConnection: LiveSession {
         mailbox.drain().count
     }
 
+    #if DEBUG
     /// Ends the current connection as a network drop would (`forceCancel`):
-    /// the viewer hears it closed, and joins again at its cursor.
+    /// the viewer hears it closed, and joins again at its cursor. For the
+    /// tests.
     public nonisolated func dropConnection() {
         queue.async { self.assumeIsolated { $0.connection?.forceCancel() } }
     }
+    #endif
 
     // MARK: Driving the viewer
 
@@ -136,6 +137,8 @@ public actor RelayConnection: LiveSession {
     /// Carries out the viewer's effects in order, then sets the timer for
     /// when it next wants `tick`.
     private func run(_ effects: [Effect]) {
+        // The `Failed` this batch showed: why, if its `End` follows.
+        var failure: String?
         for effect in effects {
             guard !done, let viewer else { break }
             switch effect {
@@ -210,8 +213,6 @@ public actor RelayConnection: LiveSession {
 
     private func dial(url: String, ticket: String, number: UInt64) {
         drop()
-        counts.withLock { $0 += 1 }
-        current = number
         // TLS for wss (the system's trust, no exception); plain TCP only
         // for a DEBUG build's ws:// relay on this machine, the fake
         // fleet's. Anything else would send the ticket in the clear, and
@@ -221,6 +222,8 @@ public actor RelayConnection: LiveSession {
             halt()
             return
         }
+        counts.withLock { $0 += 1 }
+        current = number
         let parameters: NWParameters = secure ? .tls : .tcp
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
@@ -232,8 +235,8 @@ public actor RelayConnection: LiveSession {
             self?.assumeIsolated { $0.changed(state, number) }
         }
         self.connection = connection
-        receive(on: connection, number)
         connection.start(queue: queue)
+        receive(on: connection, number)
     }
 
     private func changed(_ state: NWConnection.State, _ number: UInt64) {
@@ -267,18 +270,24 @@ public actor RelayConnection: LiveSession {
         switch metadata?.opcode {
         case .binary?:
             run(viewer.received(connection: number, frame: .binary(bytes: content ?? Data()), nowMs: Self.now()))
-        // Text (the relay's `pong`) and a pong only say the link lives.
-        case .text?, .pong?:
+        // Text (the relay's `pong`), a ping (answered by Network.framework)
+        // and a pong only say the link lives.
+        case .text?, .pong?, .ping?:
             run(viewer.received(connection: number, frame: .text(text: ""), nowMs: Self.now()))
         case .close?:
             ended(number)
             return
-        // Nothing a WebSocket message carries: the stream ended under it.
-        default:
+        case .cont?:
+            break
+        // No WebSocket message at all, nothing in it: the stream ended
+        // under it.
+        case nil:
             if content == nil {
                 ended(number)
                 return
             }
+        @unknown default:
+            break
         }
         if !done, self.connection === connection { receive(on: connection, number) }
     }
@@ -338,7 +347,8 @@ public actor RelayConnection: LiveSession {
 
     /// Runs `work`, which blocks, on a thread of its own, then `then` with
     /// what it returned, back on the queue. `then` checks whether it's still
-    /// wanted: the connection may have stopped meanwhile.
+    /// wanted: the connection may have stopped meanwhile. A call can't be
+    /// cancelled: it runs until the registry answers or times out.
     private nonisolated func offQueue<T: Sendable>(
         _ queue: DispatchSerialQueue,
         _ work: @escaping @Sendable () -> T,
