@@ -1,8 +1,8 @@
 // R-IOS-13, R-IOS-9: the native app launches on an iPhone simulator and,
 // with no krowk key in its Keychain (decided by the Rust core, through
 // Account.open), opens on onboarding's "Sign in to krowk". The protocol
-// version read from Rust is KrowkCore's BindingsTests' now, as home is only
-// reached once paired.
+// version read from Rust is KrowkCore's BindingsTests' now: a paired
+// phone opens on Sessions (PairingUITests).
 import XCTest
 
 final class LaunchTests: XCTestCase {
