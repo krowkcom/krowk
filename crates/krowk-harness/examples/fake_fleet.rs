@@ -47,7 +47,8 @@
 //! request's body, else "Please stream a long answer") at host A in that
 //! session and replies `started`: on "stream a long answer" the model makes
 //! a `read` call, then streams 120 numbered lines at 200 tokens a second, a
-//! turn a phone's tests follow live (ticket 89).
+//! turn a phone's tests follow live (ticket 89); "stream a very long
+//! answer", 300 lines.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn

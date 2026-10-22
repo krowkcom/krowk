@@ -154,7 +154,7 @@ final class PairingUITests: XCTestCase {
 
     /// R-LAG-7: back on Sessions, a session of the test's own (the fleet
     /// hosts it), opened; the fleet runs a turn in it whose answer streams
-    /// for about six seconds. Screenshots mid-stream, with "↓ New" after a
+    /// for about sixteen seconds. Screenshots mid-stream, with "↓ New" after a
     /// swipe up, and once the turn has ended.
     @MainActor
     private func followALiveTurn(in app: XCUIApplication) async throws {
@@ -182,7 +182,8 @@ final class PairingUITests: XCTestCase {
         }
         XCTAssertEqual(bar.label, "live")
 
-        let (started, reply) = try await Self.request("\(sessions)/\(id)/turn", body: "Please stream a long answer")
+        // About 16 s of answer: time to scroll up while it streams.
+        let (started, reply) = try await Self.request("\(sessions)/\(id)/turn", body: "Please stream a very long answer")
         XCTAssertEqual(started, 200, reply)
         let deadline = Date.now.addingTimeInterval(20)
         while answers.count < 2 && Date.now < deadline {
@@ -202,7 +203,7 @@ final class PairingUITests: XCTestCase {
         // first turn's has scrolled far above).
         let ends = transcript.cells.matching(identifier: "transcript-turn-end")
         let atEnd = { ends.allElementsBoundByIndex.contains { $0.exists && $0.frame.maxY > transcript.frame.maxY - 120 } }
-        let ended = Date.now.addingTimeInterval(30)
+        let ended = Date.now.addingTimeInterval(60)
         while !atEnd() && Date.now < ended {
             try await Task.sleep(for: .milliseconds(250))
         }

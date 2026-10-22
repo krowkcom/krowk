@@ -291,6 +291,9 @@ public final class TranscriptModel {
     /// comes after its turn's end settled them (a gap's catch-up, after
     /// the end came live) still sets their text, or a call's input.
     @ObservationIgnored private var unsettled: Set<String> = []
+    /// The existing row a completion just settled (`take` adds none): the
+    /// row an event after it goes under.
+    @ObservationIgnored private var settledRow: String?
     /// Notes drawn so far, for their row ids, and the last one's text: the
     /// same note again, straight after, isn't drawn twice.
     @ObservationIgnored private var notices = 0
@@ -446,8 +449,11 @@ public final class TranscriptModel {
         state.text += more.utf8.count <= room ? more : SafeText.truncated(more, limit: room).shown
         if unshown.contains(id), state.text.contains(where: { !$0.isWhitespace }) {
             unshown.remove(id)
-            items[id] = state
-            working!.append(id)
+            // A row of that id already (a host reusing an item id): never twice.
+            if items[id] == nil {
+                items[id] = state
+                working!.append(id)
+            }
         }
         return state
     }
@@ -463,11 +469,16 @@ public final class TranscriptModel {
             // Its turn ended first: a row if it had one, its text now whole.
             guard let state = items[id] else { return .notLive }
             if state.text != text { state.text = text }
+            settledRow = id
             return .settled(nil)
         }
         if state.text != text { state.text = text }
         state.done = true
-        guard unshown.remove(id) != nil else { return .settled(nil) }
+        guard unshown.remove(id) != nil else {
+            settledRow = id
+            return .settled(nil)
+        }
+        guard items[id] == nil else { return .settled(nil) }
         // Never shown: a row now, unless there's nothing to show (an empty
         // answer beside a tool call, withheld reasoning).
         guard state.kind == .user || text.contains(where: { !$0.isWhitespace }) else { return .settled(nil) }
@@ -512,9 +523,14 @@ public final class TranscriptModel {
             if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != working!.last {
                 at = above.isEmpty ? working!.startIndex : (working!.firstIndex(of: above).map { $0 + 1 } ?? working!.endIndex)
             }
+            settledRow = nil
             if let change = event.change, let row = take(change, event: event.id) {
                 working!.insert(row, at: at)
                 anchors[event.id] = row
+            } else if let settledRow, working!.contains(settledRow) {
+                // A completion of a row drawn live: what follows it goes
+                // under that row, wherever the stream had put it.
+                anchors[event.id] = settledRow
             } else {
                 anchors[event.id] = at == working!.startIndex ? "" : working![at - 1]
             }
@@ -557,6 +573,7 @@ public final class TranscriptModel {
                 calls[callID] = live
                 // Its turn may have ended already (a catch-up): not running.
                 if live.output == nil, let entry { running[live.id] = (live, entry.turn) } else { live.running = false }
+                settledRow = live.id
                 return nil
             }
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)

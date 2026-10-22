@@ -28,8 +28,18 @@ final class FrameApplyBaselineTests: XCTestCase {
             }
         }
         XCTAssertFalse(perFrame.isEmpty)
-        let line = Self.summary("krowk.frame.apply baseline (the apply)", perFrame) + "\n"
-            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", withLayout)
+        // At 120 Hz too, as a ProMotion iPhone asks: about 1.7 tokens a
+        // frame, half the time for each.
+        var fast: (apply: [Duration], laid: [Duration]) = ([], [])
+        for _ in 0..<3 {
+            let run = Self.oneSecondOfStream(hz: 120)
+            fast.apply += run.apply
+            fast.laid += run.laid
+        }
+        let line = Self.summary("krowk.frame.apply baseline (the apply)", perFrame, hz: Self.hz) + "\n"
+            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", withLayout, hz: Self.hz) + "\n"
+            + Self.summary("krowk.frame.apply baseline (the apply)", fast.apply, hz: 120) + "\n"
+            + Self.summary("krowk.frame.apply baseline (the apply and the frame's layout)", fast.laid, hz: 120)
         print(line)
         let attachment = XCTAttachment(string: line)
         attachment.name = "krowk.frame.apply baseline"
@@ -37,7 +47,7 @@ final class FrameApplyBaselineTests: XCTestCase {
         add(attachment)
     }
 
-    static func summary(_ what: String, _ times: [Duration]) -> String {
+    static func summary(_ what: String, _ times: [Duration], hz: Int) -> String {
         let sorted = times.sorted()
         let micros = { (d: Duration) in Double(d.components.attoseconds) / 1e12 + Double(d.components.seconds) * 1e6 }
         let mean = sorted.map(micros).reduce(0, +) / Double(sorted.count)
@@ -51,7 +61,7 @@ final class FrameApplyBaselineTests: XCTestCase {
     /// `rate` word-sized deltas and laid out as the display would. The
     /// time each frame's apply took, and its apply and layout together.
     @MainActor
-    static func oneSecondOfStream() -> (apply: [Duration], laid: [Duration]) {
+    static func oneSecondOfStream(hz: Int = FrameApplyBaselineTests.hz) -> (apply: [Duration], laid: [Duration]) {
         let session = StubSession()
         let row = SessionRow(id: TranscriptScreenTests.session, title: "t", detail: "", live: true, accessibilityLabel: "t")
         let screen = TranscriptViewController(row: row, session: session)

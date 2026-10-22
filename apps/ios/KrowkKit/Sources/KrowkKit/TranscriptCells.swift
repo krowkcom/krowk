@@ -193,6 +193,8 @@ final class TranscriptTextCell: TranscriptCell {
     /// view's height follows the width it is given, never a stale one.
     private var textWidth: NSLayoutConstraint!
     private var user = false
+    /// The layout last configured: a prompt's, an answer's, or none yet.
+    private var configuredUser: Bool?
     /// The streaming state, as its text view keeps it (for the tests).
     var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)? { textView.streamed }
     var appends: Int { textView.appends }
@@ -233,14 +235,24 @@ final class TranscriptTextCell: TranscriptCell {
     }
 
     override func render(_ state: ItemState) {
-        user = state.kind == .user
-        textView.openLink = { [weak self] in self?.openLink?($0) }
-        NSLayoutConstraint.deactivate(user ? answerLayout : userLayout)
-        NSLayoutConstraint.activate(user ? userLayout : answerLayout)
-        bubble.backgroundColor = user ? .secondarySystemBackground : .clear
-        accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
-        textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
         let font = TranscriptFonts.body
+        // Streaming, with nothing new since this cell drew it (the frame
+        // drew it already; this is the observation's turn): nothing to do.
+        if !state.done, let streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,
+           streamed.bytes == min(state.text.utf8.count, SafeText.textLimit) {
+            return
+        }
+        let wasUser = configuredUser
+        user = state.kind == .user
+        configuredUser = user
+        if wasUser != user {
+            NSLayoutConstraint.deactivate(user ? answerLayout : userLayout)
+            NSLayoutConstraint.activate(user ? userLayout : answerLayout)
+            bubble.backgroundColor = user ? .secondarySystemBackground : .clear
+            accessibilityIdentifier = user ? "transcript-user" : "transcript-assistant"
+            textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
+        }
+        textView.openLink = { [weak self] in self?.openLink?($0) }
         guard state.done else { return stream(state, font: font) }
         let text = state.drawing("text", source: state.text, font: font) {
             SafeText.capped(state.text, font: font)
@@ -316,6 +328,8 @@ final class TranscriptToolCell: TranscriptCell {
     private var shownExpanded: (id: String, expanded: Bool)?
     /// Tapped on the header (VoiceOver's activate too): expand or collapse.
     var toggle: (@MainActor () -> Void)?
+    private static let down = UIImage(systemName: "chevron.down")
+    private static let right = UIImage(systemName: "chevron.right")
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -369,7 +383,7 @@ final class TranscriptToolCell: TranscriptCell {
     override func render(_ state: ItemState) {
         let expanded = state.expanded
         body.openLink = { [weak self] in self?.openLink?($0) }
-        chevron.image = UIImage(systemName: expanded ? "chevron.down" : "chevron.right")
+        chevron.image = expanded ? Self.down : Self.right
         let what: String
         if state.kind == .reasoning {
             accessibilityIdentifier = "transcript-reasoning"

@@ -249,6 +249,54 @@ struct FrameApplyTests {
         #expect(model.ids == ["item:a1", "item:c1", "turn:t1"])
     }
 
+    @Test("R-LAG-7: VoiceOver moving to a row above the last stops the following; on the last row it goes on")
+    func voiceOverReadsBack() async throws {
+        var rows: [TranscriptEvent] = []
+        for n in 0..<10 {
+            rows.append(Self.event("p\(n)", .userText(item: "u\(n)", text: "Prompt \(n)", images: [])))
+        }
+        let (_, screen, window, cell) = try await streaming("Streaming", rows: rows)
+        defer { window.isHidden = true }
+        #expect(screen.following)
+        screen.focused(cell.textView.view)
+        #expect(screen.following, "the last row: still following")
+        let path = IndexPath(item: 0, section: 0)
+        screen.collectionView.scrollToItem(at: path, at: .top, animated: false)
+        window.layoutIfNeeded()
+        let first = try #require(screen.collectionView.cellForItem(at: path))
+        NotificationCenter.default.post(name: UIAccessibility.elementFocusedNotification, object: nil, userInfo: [UIAccessibility.focusedElementUserInfoKey: first.contentView])
+        try await waitFor { !screen.following }
+    }
+
+    @Test("R-LAG-7: an event after a streamed item's late completion goes under that item, not under the row the stream left last")
+    func lateCompletionAnchors() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.attach([Self.event("e1", .userText(item: "u1", text: "Hi", images: []))])
+        model.apply(frame: [
+            Self.started("a1", .assistant, turn: "t1"), Self.delta("a1", "Hel"),
+            .logged([Self.event("e9", .turnCompleted(turn: "t1", end: .completed), parent: "e4")]),
+        ])
+        #expect(model.ids == ["item:u1", "item:a1", "turn:t1"])
+        model.apply(frame: [.caughtUp([
+            Self.event("e2", .assistantText(item: "a1", text: "Hello"), parent: "e1"),
+            Self.event("e3", .toolCall(item: "c1", callID: "k", name: "read", input: "{}"), parent: "e2"),
+        ])])
+        #expect(model.ids == ["item:u1", "item:a1", "item:c1", "turn:t1"])
+        #expect(model.item("item:a1")?.text == "Hello")
+    }
+
+    @Test("A host reusing an item id across kinds never draws a row twice")
+    func reusedItemID() {
+        let model = TranscriptModel(sessionID: Self.session)
+        model.apply(frame: [Self.started("x", .assistant, turn: "t1")])
+        model.apply(frame: [.logged([Self.event("e1", .toolCall(item: "x", callID: "k", name: "bash", input: "{}"))])])
+        model.apply(frame: [Self.delta("x", "text")])
+        #expect(model.ids == ["item:x"])
+        model.apply(frame: [Self.started("y", .assistant, turn: "t1"), .logged([Self.event("e2", .reasoning(item: "y", text: "r"))])])
+        model.apply(frame: [.logged([Self.event("e3", .assistantText(item: "y", text: "a"))])])
+        #expect(Set(model.ids).count == model.ids.count)
+    }
+
     @Test("A notice repeated straight after itself is drawn once")
     func noticeOnce() {
         let model = TranscriptModel(sessionID: Self.session)
@@ -378,12 +426,13 @@ struct FrameApplyTests {
         window.layoutIfNeeded()
         #expect(screen.isAtBottom)
 
-        // A scroll alone, no finger's (the list's own, a key's), is never
-        // undone: what's laid out didn't change.
+        // A scroll alone, no finger's (the list's own), isn't undone by
+        // the layout pass it causes: what's laid out didn't change.
         let bottom = list.contentOffset.y
         list.setContentOffset(CGPoint(x: 0, y: bottom - 30), animated: false)
         window.layoutIfNeeded()
         #expect(abs(list.contentOffset.y - (bottom - 30)) < 1, "snapped back to the end: \(list.contentOffset.y)")
+        #expect(screen.following, "the list's own scroll isn't the person's")
         // VoiceOver's three-finger scroll up: not following.
         _ = list.accessibilityScroll(.up)
         window.layoutIfNeeded()

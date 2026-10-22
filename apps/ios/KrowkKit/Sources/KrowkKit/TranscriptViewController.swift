@@ -55,6 +55,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// What the list had laid out when it was last pinned: it's pinned
     /// again only when that changes, so a scroll alone is left be.
     private var pinnedFor: (content: CGSize, bounds: CGSize)?
+    /// The content's height when the person's drag began: what streamed in
+    /// meanwhile doesn't count against reaching the end.
+    private var dragFrom: CGFloat?
+    /// An assistive scroll down, animated: decided once it lands.
+    private var assistiveDown = false
     /// Rows have been drawn: no spinner shows again.
     public private(set) var drewRows = false
     /// The rows as last applied.
@@ -79,7 +84,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         fatalError("TranscriptViewController is built in code")
     }
 
-    deinit {
+    /// Freed with its link still on the run loop (paused, so it never
+    /// fires to find its screen gone): invalidated here.
+    isolated deinit {
+        frames?.invalidate()
         session?.stop()
     }
 
@@ -207,6 +215,15 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             self.snapshotApplies += 1
         }
 
+        // VoiceOver moving to a row above the last is reading back: not
+        // following, or the end would pull the row away every frame.
+        NotificationCenter.default.addObserver(forName: UIAccessibility.elementFocusedNotification, object: nil, queue: .main) { [weak self] note in
+            // Delivered on the main queue, where it was posted: the element
+            // never leaves it.
+            nonisolated(unsafe) let element = note.userInfo?[UIAccessibility.focusedElementUserInfoKey] as AnyObject?
+            MainActor.assumeIsolated { self?.focused(element) }
+        }
+
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
         session?.follow { [weak self] status in self?.relay(status) }
@@ -260,11 +277,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// end (never each word).
     private func drawFrame(_ done: FrameApplied) {
         // A collapsed "Thought" draws none of its text.
-        for state in done.grown where state.kind != .reasoning || state.expanded {
+        let drawn = done.grown.filter { $0.kind != .reasoning || $0.expanded }
+        for state in drawn {
             state.drawer?.render(state)
         }
         let rows = model.ids.count
-        if !following, !done.grown.isEmpty || rows != rowsSeen {
+        if !following, !drawn.isEmpty || rows != rowsSeen {
             newPill.isHidden = false
         }
         rowsSeen = rows
@@ -313,7 +331,28 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// (`personScrolled`, `scrollViewShouldScrollToTop`).
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
         guard !scrollingItself, scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
-        follow(isAtBottom)
+        follow(reachedEnd)
+    }
+
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
+        dragFrom = scrollView.contentSize.height
+    }
+
+    /// At the end, for a drag: what streamed in since it began is slack, so
+    /// reaching the end while the answer grows under the finger counts.
+    private var reachedEnd: Bool {
+        guard let collectionView else { return true }
+        let grown = dragFrom.map { max(0, collectionView.contentSize.height - $0) } ?? 0
+        return collectionView.contentOffset.y >= bottomOffset - 8 - grown
+    }
+
+    /// VoiceOver focused `element`: in a row above the last, it's reading
+    /// back, and the list stops following.
+    func focused(_ element: AnyObject?) {
+        guard let collectionView, var view = element as? UIView, view.isDescendant(of: collectionView) else { return }
+        while !(view is UICollectionViewCell), let up = view.superview { view = up }
+        guard let cell = view as? UICollectionViewCell, let path = collectionView.indexPath(for: cell) else { return }
+        if path.item < collectionView.numberOfItems(inSection: 0) - 1 { follow(false) }
     }
 
     /// VoiceOver's three-finger scroll (or another assistive one) moved the
@@ -321,17 +360,30 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     func personScrolled(_ direction: UIAccessibilityScrollDirection) {
         switch direction {
         case .up, .previous: follow(false)
-        case .down, .next: follow(isAtBottom)
+        case .down, .next:
+            // Animated, it hasn't moved yet: decided when it lands too.
+            assistiveDown = true
+            follow(isAtBottom)
         default: break
         }
     }
 
     public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
-        follow(isAtBottom)
+        follow(reachedEnd)
+        dragFrom = nil
     }
 
     public func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
-        if !decelerate { follow(isAtBottom) }
+        guard !decelerate else { return }
+        follow(reachedEnd)
+        dragFrom = nil
+    }
+
+    /// An animated assistive scroll down landed: at the end, following.
+    public func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
+        guard assistiveDown else { return }
+        assistiveDown = false
+        follow(isAtBottom)
     }
 
     /// A tap on the status bar scrolls to the top: not following.
@@ -345,7 +397,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     }
 
     private func follow(_ atBottom: Bool) {
-        if atBottom, !following { pinnedFor = nil }
+        if atBottom, !following, let collectionView {
+            // From what's laid out now: the next change pins, not this scroll.
+            pinnedFor = (collectionView.contentSize, collectionView.bounds.size)
+        }
         following = atBottom
         if atBottom { newPill.isHidden = true }
     }
@@ -354,6 +409,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// the last row.
     func jumpToEnd() {
         follow(true)
+        pinnedFor = nil
         scrollToEnd()
         DispatchQueue.main.async { MainActor.assumeIsolated { [weak self] in
             guard let self, let collectionView = self.collectionView else { return }
