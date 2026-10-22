@@ -204,7 +204,7 @@ A tag is the whole trigger (R-IOS-16):
 
 ```
 git tag -a ios-v0.1.0 -m "iOS 0.1.0" && git push origin ios-v0.1.0
-gh run watch "$(gh run list --workflow testflight.yml --limit 1 --json databaseId -q '.[0].databaseId')"
+gh run watch        # pick the TestFlight run for ios-v0.1.0
 ```
 
 `.github/workflows/testflight.yml` answers tags `ios-v<major>.<minor>.<patch>`
@@ -216,7 +216,8 @@ only, never the CLI's `v*`, so the app and the CLI release independently
   is the tag minus `ios-v`, or the dispatch's `version`; anything but
   `N.N.N` fails before building. The build number (`CURRENT_PROJECT_VERSION`,
   `CFBundleVersion`) is `<run number>.<attempt>`, so every run and every
-  re-run uploads a new, higher build. `project.yml`'s `0.1.0` and `1` are
+  re-run uploads a new, higher build (as long as the workflow keeps its
+  file name: renaming it starts its run numbers again). `project.yml`'s `0.1.0` and `1` are
   placeholders for local builds. The cargo workspace's `0.0.0` plays no part.
 - **Signing.** Cloud-managed and automatic: `xcodebuild archive` and
   `-exportArchive` sign with `-allowProvisioningUpdates` and the person's
@@ -225,22 +226,33 @@ only, never the CLI's `v*`, so the app and the CLI release independently
   keychain is in the repo or its secrets. The `.p8` is written to the
   runner's temp folder for the job only and removed in a step that always
   runs, together with any signing identity and profile the job added to the
-  runner (a hosted runner is thrown away after the job anyway). Each run may
-  leave an "Apple Development … Created via API" certificate in the
-  developer account; revoke old ones there if they pile up.
+  runner (a hosted runner is thrown away after the job anyway). Archiving
+  with automatic signing makes a development profile, which Apple only
+  issues to a team with at least one registered device (the iPhone of
+  ticket 107 will do). Each run may leave an "Apple Development … Created
+  via API" certificate in the developer account; revoke old ones there if
+  they pile up.
 - **Secrets.** `APPLE_TEAM_ID`, `ASC_KEY_ID`, `ASC_ISSUER_ID` and `ASC_KEY`
   (the `.p8` file's contents), in the GitHub environment `testflight`, which
   only the `upload` job names. Its first step fails, naming the missing ones,
-  until all four are there; the next checks their shapes. Add required
-  reviewers to the environment (Settings → Environments → testflight) to
-  approve each upload by hand, and limit its deployment branches and tags to
-  `main` and `ios-v*`, so a workflow on another branch can't read them.
+  until all four are there; the next checks their shapes. In Settings →
+  Environments → testflight, limit its deployment branches and tags to
+  `main` and `ios-v*`: then a workflow on any other branch can't read them.
+  That alone doesn't stop someone with write access, who can push an
+  `ios-v*` tag on a commit whose own workflow does what it likes with the
+  secrets. Required reviewers on the environment (each upload waits for a
+  person's approval), and a tag ruleset that lets only you create `ios-v*`
+  tags (Settings → Rules → Rulesets → New tag ruleset), close that.
 - **Pull requests.** One that changes the workflow, `ExportOptions.plist`,
   `project.yml`, `scripts/release-preflight.sh` or
   `.github/actions/ios-project` runs the job `dry-run` instead: the preflight
   checks with stand-in values and the same Release archive, unsigned. It
   names no secret and no environment; `upload` never runs for a pull
   request, a fork's included.
+- **The API key's role.** Ticket 110 says App Manager. Cloud-managed
+  signing may need more: if the first run fails with "Cloud signing
+  permission error", make the key Admin (or give it access to cloud-managed
+  distribution certificates) and set `ASC_KEY`/`ASC_KEY_ID` again.
 - **The icon.** App Store Connect refuses a build with no app icon, and
   `App/Assets.xcassets/AppIcon.appiconset` is still empty, so `upload` stops
   after archiving, saying so, until it has a 1024×1024 PNG without alpha.
@@ -290,14 +302,16 @@ relay and the registry only ever carry ciphertext between the person's own
 devices. "Uses only exempt encryption (HTTPS)" therefore can't be assumed.
 
 The likely answer is "yes, non-exempt encryption, qualifying for the
-mass-market exemption under category 5A992 / an encryption registration
-self-classification", which may need an annual self-classification report
-to the US Bureau of Industry and Security. That is the person's call (or
-their counsel's), not the build's, and nothing here states it as a
-conclusion.
+mass-market exemption under category 5A992 (5D992 for software) / an
+encryption registration self-classification", which may need an annual
+self-classification report to the US Bureau of Industry and Security (the
+EAR's rules on that report have changed over the years; check the current
+ones). That is the person's call (or their counsel's), not the build's,
+and nothing here states it as a conclusion. Apple's guide: "Complying with
+encryption export regulations" in its developer documentation.
 
 Until it is decided, `project.yml` and `xtool-Info.plist` leave the key
-unset (the `dry-run` job checks the archive has none), and each uploaded
+unset (both jobs print what the archive says), and each uploaded
 build waits in App Store Connect as "Missing Compliance" until someone
 answers there, which is safe. Once decided:
 
@@ -320,9 +334,11 @@ icon).
    "krowk", that bundle id, SKU `krowk-ios`.
 2. **The API key and the secrets** (ticket 110). App Store Connect → Users
    and Access → Integrations → App Store Connect API → Team Keys → +, role
-   App Manager. Download the `.p8` (once only), note its Key ID and the
-   Issuer ID, then, without echoing them into shell history:
+   App Manager (or Admin; see "The API key's role" above). Download the
+   `.p8` (once only), note its Key ID and the Issuer ID, then, without
+   echoing them into shell history:
    ```
+   gh api -X PUT repos/krowkcom/krowk/environments/testflight >/dev/null   # if it isn't there yet
    gh secret set APPLE_TEAM_ID --env testflight -R krowkcom/krowk   # prompts for the value
    gh secret set ASC_KEY_ID    --env testflight -R krowkcom/krowk
    gh secret set ASC_ISSUER_ID --env testflight -R krowkcom/krowk
@@ -330,8 +346,10 @@ icon).
    gh secret list --env testflight -R krowkcom/krowk                # the four names
    ```
    In Settings → Environments → testflight, limit deployment branches and
-   tags to `main` and `ios-v*`, and add yourself as a required reviewer if
-   you want to approve each upload.
+   tags to `main` and `ios-v*` and add yourself as a required reviewer; in
+   Settings → Rules → Rulesets, a tag ruleset on `ios-v*` that only you can
+   bypass (Secrets, above, says why). The team must also have a registered
+   device (Signing, above).
 3. **The export-compliance decision** (ticket 111): above.
 4. **An app icon.** A 1024×1024 PNG without alpha in
    `App/Assets.xcassets/AppIcon.appiconset`, named in its `Contents.json`.
