@@ -49,9 +49,10 @@ use krowk_api::{fail, Client, Error};
 use krowk_client::device_chain::{Action, Chain, Change, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceId, DeviceKey, DeviceSigner, SigningKey};
 use krowk_client::keystore::{Keystore, Slot};
-use krowk_client::pairing::{self, Binding, NewDevice, PairA, PairingCode, PeerKind};
+use krowk_client::pairing::{self, invite, Binding, NewDevice, PairA, PairingCode, PeerKind};
 use krowk_client::pairing_join::{self, Field, JoinFailed, Mailbox};
 use krowk_client::pairing_payload;
+use krowk_client::Zeroizing;
 use krowk_client::user_key::UserKeys;
 use serde_json::json;
 use std::time::{Duration, Instant};
@@ -218,12 +219,12 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
 
     let user = client.verify_key()?.user_id;
-    let a = PairA::new(PeerKind::SamePersonDevice, user, device.id()).map_err(|e| fail("pairing_failed", e.0))?;
+    let a = PairA::new(PeerKind::SamePersonDevice, user.clone(), device.id()).map_err(|e| fail("pairing_failed", e.0))?;
     let opened = client.open_pairing()?;
     let id = opened.id.clone();
     // Up to the reply, anything that goes wrong ends the pairing on the
     // registry too, so the new machine hears it at once, and adds nothing.
-    let sealed = match seal_reply(ctx, &client, &id, a, (&chain, served_entries), &keys, (&device, &signing)) {
+    let sealed = match seal_reply(ctx, &client, &id, (a, &user), (&chain, served_entries), &keys, (&device, &signing)) {
         Ok(sealed) => sealed,
         Err(e) => {
             let _ = client.end_pairing();
@@ -357,8 +358,9 @@ struct Sealed {
 
 /// From the hello to the reply: B's confirmation checked before the person
 /// is asked anything, then the reply sealed and sent.
-fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut all): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
+fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, (a, user): (PairA, &str), (chain, mut all): Verified<'_>, keys: &UserKeys, (device, signing): (&DeviceKey, &SigningKey)) -> Result<Sealed, Error> {
     let _ = writeln!(ctx.io.stderr, "Pair a new device\n  Code: {}          valid 10 minutes, once\nOn the new device run:  krowk sync join\nWaiting…", a.code());
+    show_qr(ctx, a.code(), user, device.id());
     let _ = ctx.io.stderr.flush();
     let hello = wait_for(client, id, Field::JoinerMessage, &a_failed)?;
     let (await_confirm, spake) = a.receive_hello(&hello).map_err(|_| a_failed(None))?;
@@ -388,6 +390,101 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, a: PairA, (chain, mut al
     let (await_ack, reply) = confirmed.approve(&bytes).map_err(|_| a_failed(None))?;
     send_reply(client, id, &reply)?;
     Ok(Sealed { batch, entries: all, next, await_ack, name, os })
+}
+
+/// The invite URI (`krowk_client::pairing::invite`) as a QR code under the
+/// code, for the iPhone app to scan instead of typing it: on a terminal
+/// only. Piped stderr, as in an agent's run or the test suite's stand-in,
+/// gets nothing (`--json` at a terminal still draws it: the QR goes to
+/// stderr, the JSON to stdout). Nor is it drawn on a terminal too narrow to
+/// hold it, where every line would wrap and nothing could scan it, or for a
+/// user id the URI cannot carry as it is: the code on the screen still
+/// works. A terminal too short for it scrolls the code up off the window,
+/// and is drawn on anyway: the person scanning needs the QR whole, and the
+/// one typing scrolls back. The URI goes to the screen and nowhere else.
+fn show_qr(ctx: &mut Ctx, code: &PairingCode, user: &str, device: DeviceId) {
+    if !ctx.io.err_tty {
+        return;
+    }
+    if !invite::carries(user) {
+        return;
+    }
+    let uri = invite::uri(code, user, device);
+    let lines = qr_lines(&uri);
+    let wide = lines.first().map_or(0, |l| l.chars().count() - QR_SGR.len() - QR_RESET.len());
+    if lines.is_empty() || columns().is_some_and(|c| c < wide) {
+        return;
+    }
+    let _ = writeln!(ctx.io.stderr, "\nOr scan this with the krowk app on your iPhone:");
+    for line in lines.iter() {
+        let _ = writeln!(ctx.io.stderr, "{line}");
+    }
+}
+
+/// Black on white, set explicitly on every line, so the code scans on a
+/// dark terminal theme and a light one alike: a QR code needs dark modules
+/// on a light ground, and the terminal's own colours may be either. It is
+/// a functional image, not decoration, so `NO_COLOR` does not turn it off.
+/// A theme that draws "white" as a light grey, or "black" as a dark one,
+/// still leaves the contrast a reader needs. The half blocks are one column
+/// wide but for terminals set to draw Unicode's ambiguous-width characters
+/// wide, as some CJK setups are, where the code is drawn twice as wide.
+const QR_SGR: &str = "\x1b[30;47m";
+const QR_RESET: &str = "\x1b[0m";
+/// The light margin a reader needs around the code, in modules, each side.
+const QUIET: usize = 4;
+
+/// `uri` as a QR code at medium error correction, in lines of text: two
+/// module rows to a character row, drawn with the half blocks `▀ ▄ █` and
+/// a space, a 4-module quiet zone around it, and each line wrapped in
+/// `QR_SGR` … `QR_RESET`. Empty when the URI is too long for any QR code.
+/// The lines are each built in one buffer and wiped on drop. qrcodegen's
+/// buffers, which hold the URI and so the code, are not. As with what
+/// `spake2` holds (`krowk_client::pairing`), the code is single-use and
+/// dies with the pairing, so that is accepted.
+fn qr_lines(uri: &str) -> Zeroizing<Vec<String>> {
+    use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
+    let Ok(qr) = QrCode::encode_segments_advanced(&QrSegment::make_segments(uri), QrCodeEcc::Medium, Version::MIN, Version::MAX, None, false) else {
+        return Zeroizing::new(Vec::new());
+    };
+    let size = qr.size();
+    let quiet = QUIET as i32;
+    // Outside the code is the quiet zone, light; qrcodegen says so too.
+    let dark = |x: i32, y: i32| qr.get_module(x - quiet, y - quiet);
+    let width = size + 2 * quiet;
+    (0..width)
+        .step_by(2)
+        .map(|y| {
+            // Each half block is three bytes in UTF-8.
+            let mut line = String::with_capacity(QR_SGR.len() + 3 * width as usize + QR_RESET.len());
+            line.push_str(QR_SGR);
+            line.extend((0..width).map(|x| match (dark(x, y), dark(x, y + 1)) {
+                (true, true) => '█',
+                (true, false) => '▀',
+                (false, true) => '▄',
+                (false, false) => ' ',
+            }));
+            line.push_str(QR_RESET);
+            line
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// The terminal's width in columns, when stderr is one that says.
+#[cfg(unix)]
+fn columns() -> Option<usize> {
+    let mut ws = libc::winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: TIOCGWINSZ writes one winsize through the pointer, which
+    // points at one; on a closed or non-terminal stderr it fails, and
+    // writes nothing.
+    let ok = unsafe { libc::ioctl(libc::STDERR_FILENO, libc::TIOCGWINSZ, &mut ws) } == 0;
+    (ok && ws.ws_col > 0).then_some(usize::from(ws.ws_col))
+}
+
+#[cfg(not(unix))]
+fn columns() -> Option<usize> {
+    None
 }
 
 /// Posts the new device's entry and wrap, once. When the answer is lost the
@@ -571,5 +668,52 @@ impl Mailbox for ClientMailbox {
 
     fn pause(&self, d: Duration) {
         std::thread::sleep(d);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qrcodegen::{QrCode, QrCodeEcc, QrSegment, Version};
+
+    const URI: &str = "krowk://pair?v=1&code=K7QF9M3X&user=0192f5a0-7e1c-7cc3-9d1a-5b6f00000001&device=0123456789abcdef0123456789abcdef";
+
+    /// R-E2E-3 (a device added "by QR or code"): what `devices add` draws
+    /// is the crate's matrix for the URI at medium error correction, two
+    /// rows to a line, inside a 4-module quiet zone, each line black on
+    /// white.
+    #[test]
+    fn r_e2e_3_the_qr_lines_are_the_modules_of_the_uri() {
+        let qr = QrCode::encode_segments_advanced(&QrSegment::make_segments(URI), QrCodeEcc::Medium, Version::MIN, Version::MAX, None, false).unwrap();
+        assert_eq!(qr.error_correction_level(), QrCodeEcc::Medium);
+        let size = qr.size() as usize;
+        let lines = qr_lines(URI);
+        assert_eq!(lines.len(), (size + 8).div_ceil(2), "rows");
+        for (row, line) in lines.iter().enumerate() {
+            let body = line.strip_prefix("\x1b[30;47m").and_then(|l| l.strip_suffix("\x1b[0m")).unwrap_or_else(|| panic!("line {row} is not black on white: {line:?}"));
+            let cells: Vec<char> = body.chars().collect();
+            assert_eq!(cells.len(), size + 8, "columns of line {row}");
+            for (x, cell) in cells.iter().enumerate() {
+                let dark = |y: usize| x >= 4 && y >= 4 && x < size + 4 && y < size + 4 && qr.get_module(x as i32 - 4, y as i32 - 4);
+                let want = match (dark(2 * row), dark(2 * row + 1)) {
+                    (true, true) => '█',
+                    (true, false) => '▀',
+                    (false, true) => '▄',
+                    (false, false) => ' ',
+                };
+                assert_eq!(*cell, want, "line {row}, column {x}");
+            }
+        }
+        // The quiet zone: two blank lines on top, at least two below, four
+        // blank columns each side.
+        let blank = |l: &String| l.chars().all(|c| !matches!(c, '▀' | '▄' | '█'));
+        assert!(blank(&lines[0]) && blank(&lines[1]) && blank(&lines[lines.len() - 1]) && blank(&lines[lines.len() - 2]));
+        assert!(lines.iter().all(|l| { let c: Vec<char> = l.chars().collect(); let b = &c[8..c.len() - 4]; b[..4] == [' '; 4] && b[b.len() - 4..] == [' '; 4] }));
+    }
+
+    /// Too long for any QR code: nothing drawn rather than a panic.
+    #[test]
+    fn a_uri_no_qr_code_holds_draws_nothing() {
+        assert!(qr_lines(&"x".repeat(4000)).is_empty());
     }
 }

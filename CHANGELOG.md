@@ -11,6 +11,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk devices add` shows a QR code of the pairing code, for the
+  iPhone app to scan.** It's drawn under the code, black on white so it
+  reads on a dark or a light theme, and only on a terminal wide enough
+  for it; piped, nothing changes. The code and the lines around it stay
+  as they were, and typing the code still works.
 - **Sessions sync by themselves.** On a machine with sync set up, every
   session that runs a turn in the host daemon (the TUI, `krowk -p
   --daemon`) is synced without `krowk sync host`: another machine lists it

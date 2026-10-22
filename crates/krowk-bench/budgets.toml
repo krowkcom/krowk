@@ -274,6 +274,12 @@ unit = "bytes"
 # krowk-api's notify were linked already; the decision, the bounded set,
 # the off-loop call and its messages) adds 15,488: 16,261,320 (15.51 MiB).
 # Raised 15.50 -> 15.75 MiB, leaving 253,752.
+# Ticket 68's QR code of the pairing invite in `krowk devices add`
+# (qrcodegen, Project Nayuki's encoder, MIT, no dependencies, and the
+# invite URI) takes main's 16,275,944 to 16,291,784 (15.54 MiB): 15,840
+# bytes. On the main before ticket 104 it measured 8,768 bytes smaller,
+# the link laid out differently, and `qrcode` without its image feature
+# 18,624 bytes larger than it. 223,288 under this.
 max = { x86_64-linux = 16_515_072 }
 status = "enforced"
 

@@ -444,6 +444,47 @@ fn an_interrupted_add_ends_its_pairing() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
+/// R-E2E-3: the QR code of the invite is for a person at a terminal. A
+/// piped stderr, as here, gets the code and the lines around it, and no
+/// half block.
+#[test]
+fn r_e2e_3_a_piped_devices_add_prints_no_qr() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("no-qr");
+    let laptop = r.join("laptop");
+    set_up(&laptop, &api);
+    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let a_err = lines(&mut a);
+    // Waiting… is the block's last line: anything drawn after it is out by
+    // the time the registry has the pairing open.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut said = String::new();
+    while !said.contains("Waiting") && Instant::now() < deadline {
+        if let Ok(line) = a_err.recv_timeout(Duration::from_millis(200)) {
+            said.push_str(&line);
+            said.push('\n');
+        }
+    }
+    krowk_api::Client::new(&api, DESKTOP).find_open_pairing().unwrap();
+    // SAFETY: signalling a child this test spawned.
+    unsafe { libc::kill(a.id() as i32, libc::SIGINT) };
+    assert!(!wait(a, Duration::from_secs(10)).status.success());
+    // Everything it wrote, to the end: the reader thread hangs up once
+    // stderr closes.
+    while let Ok(line) = a_err.recv_timeout(Duration::from_secs(5)) {
+        said.push_str(&line);
+        said.push('\n');
+    }
+    // The block, word for word, the code masked.
+    let block: Vec<&str> = said.lines().take(4).collect();
+    assert_eq!(block.len(), 4, "{said}");
+    let masked = block[1].split_whitespace().nth(1).map_or(String::new(), |c| block[1].replacen(c, "XXXX-XXXX", 1));
+    assert_eq!([block[0], &masked, block[2], block[3]], ["Pair a new device", "  Code: XXXX-XXXX          valid 10 minutes, once", "On the new device run:  krowk sync join", "Waiting…"], "{said}");
+    assert!(!said.contains(['▀', '▄', '█']) && !said.contains("scan") && !said.contains("krowk://"), "a QR code on a pipe: {said}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
 fn chain_entries(api: &str) -> Vec<SignedEntry> {
     let list = krowk_api::Client::new(api, DESKTOP).device_list_all().unwrap();
     list.entries.iter().map(|e| SignedEntry::from_parts(e2e::unhex(&e.entry).unwrap(), &e2e::unhex(&e.signatures).unwrap()).unwrap()).collect()
