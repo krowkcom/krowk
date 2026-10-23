@@ -25,6 +25,15 @@ import os
 /// once per display frame (`takeFrame`), waking the screen's paused
 /// display link when they arrive with none waiting. Nothing here logs: a
 /// relay ticket never leaves the call that dials with it.
+///
+/// When it connects and tries again is its `ConnectionSupervisor`'s
+/// (krowk-ffi, ticket 86, R-IOS-2, R-OFF-2): a failed open or join waits
+/// on a jittered backoff from 250 ms to 30 s; in the background a live
+/// connection is kept but a lost one waits for the foreground; the scene's
+/// foreground, its activation, a network path that became usable
+/// (`NWPathMonitor`, on this queue) and pull-to-refresh wake it — joining
+/// at once, replacing a silent or long-backgrounded connection, or probing
+/// a live one with a `ping`. Every join resumes at the core's cursor.
 public actor RelayConnection: LiveSession {
     /// The relay's largest message, its header and a 4 MiB batch
     /// (`krowk_harness::relay`'s `max_message`): anything larger fails the
@@ -37,7 +46,7 @@ public actor RelayConnection: LiveSession {
     public nonisolated var unownedExecutor: UnownedSerialExecutor { queue.asUnownedSerialExecutor() }
 
     /// Opens the session from the registry: blocking.
-    private let opening: @Sendable () throws -> OpenedSession
+    private let open: @Sendable () throws -> OpenedSession
     private var session: OpenedSession?
     private var viewer: Viewer?
     /// The connection the viewer dialed last, and its number, until it is
@@ -45,7 +54,7 @@ public actor RelayConnection: LiveSession {
     private var connection: NWConnection?
     private var current: UInt64?
     /// When the viewer next wants `tick`.
-    private var wake: DispatchSourceTimer?
+    private var wakeTimer: DispatchSourceTimer?
     /// The `NeedTicket` acted on: a later one replaces it, and a ticket
     /// fetched for an earlier one is dropped.
     private var ticketAsk: UInt64 = 0
@@ -56,6 +65,17 @@ public actor RelayConnection: LiveSession {
     static let gapWait: DispatchTimeInterval = .seconds(5)
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
+    /// When to connect and try again (ticket 86): asked while the session
+    /// is opened, then handed to the viewer.
+    private let supervisor: ConnectionSupervisor
+    /// Opening the session, on a thread of its own.
+    private var opening = false
+    /// The next try at opening it, after one failed.
+    private var openRetry: DispatchWorkItem?
+    /// The network path, watched from `start`: a path that becomes usable
+    /// wakes the connection.
+    private var path: NWPathMonitor?
+    private var paths = PathChanges()
     /// Commands sent before the viewer was open, in order: they go to it
     /// as it opens.
     private var early: [(command: LiveCommand, token: UInt64)] = []
@@ -77,15 +97,19 @@ public actor RelayConnection: LiveSession {
     /// blocks; it runs once, on a thread of its own, as `follow` starts.
     public init(opening: @escaping @Sendable () throws -> OpenedSession, approvals: any ApprovalSink = NoApprovals()) {
         self.queue = DispatchSerialQueue(label: "krowk.relay")
-        self.opening = opening
+        self.open = opening
         self.approvals = approvals
+        self.supervisor = ConnectionSupervisor(nowMs: Self.now(), seed: UInt64.random(in: .min ... .max))
     }
 
     /// One never stopped (its screen let go of it) still closes its socket.
     deinit {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
-        wake?.cancel()
+        wakeTimer?.cancel()
+        path?.cancel()
+        // A retry of the open, if one waits, holds this weakly: it finds
+        // it gone and does nothing.
     }
 
     /// The status as last published.
@@ -124,6 +148,25 @@ public actor RelayConnection: LiveSession {
         queue.async { self.assumeIsolated { $0.issue(command, token: token) } }
     }
 
+    /// The scene is coming forward (`willEnterForeground`, R-IOS-2): before
+    /// any view appears, the connection is checked — joined at once if it
+    /// was lost, replaced after 10 s or more away, probed otherwise.
+    public nonisolated func foreground() {
+        queue.async { self.assumeIsolated { $0.lifecycle(.foreground) } }
+    }
+
+    /// The scene went to the background: the connection is kept while iOS
+    /// lets it be, and one lost meanwhile waits for the foreground.
+    public nonisolated func background() {
+        queue.async { self.assumeIsolated { $0.lifecycle(.background) } }
+    }
+
+    /// The scene became active, or the person pulled to refresh: joined at
+    /// once if lost, else probed.
+    public nonisolated func wake() {
+        queue.async { self.assumeIsolated { $0.lifecycle(.wake) } }
+    }
+
     #if DEBUG
     /// Ends the current connection as a network drop would (`forceCancel`):
     /// the viewer hears it closed, and joins again at its cursor. For the
@@ -131,6 +174,23 @@ public actor RelayConnection: LiveSession {
     public nonisolated func dropConnection() {
         queue.async { self.assumeIsolated { $0.connection?.forceCancel() } }
     }
+
+    /// A network path change, as `NWPathMonitor` reports one after its
+    /// first: a usable path wakes the connection. For the tests, which
+    /// can't change the simulator's network.
+    public nonisolated func pathChanged(satisfied: Bool) {
+        queue.async { self.assumeIsolated { $0.pathMoved(satisfied: satisfied) } }
+    }
+
+    /// Moves this connection's clock on by `by`, as time passing would, for
+    /// the viewer and its supervisor (a long background, without waiting
+    /// it out). For the tests; the timers already armed keep their time.
+    public nonisolated func advanceClock(by: Duration) {
+        let ms = UInt64(by.components.seconds) * 1000 + UInt64(by.components.attoseconds / 1_000_000_000_000_000)
+        clockOffset.withLock { $0 += ms }
+    }
+
+    private nonisolated let clockOffset = OSAllocatedUnfairLock<UInt64>(initialState: 0)
     #endif
 
     // MARK: Driving the viewer
@@ -140,13 +200,27 @@ public actor RelayConnection: LiveSession {
         started = true
         onStatus = status
         publish()
-        let opening = self.opening
+        watchPath()
+        openSession()
+    }
+
+    /// Opens the session and its viewer, off the queue: once at the start,
+    /// and again after a failure the network may mend.
+    private func openSession() {
+        guard !done, viewer == nil, !opening else { return }
+        opening = true
+        openRetry?.cancel()
+        openRetry = nil
+        let open = self.open
+        let supervisor = self.supervisor
+        let now = self.now()
         offQueue(queue) {
             Result { () throws -> (OpenedSession, Viewer) in
-                let session = try opening()
-                return (session, try Viewer.open(session: session, nowMs: Self.now()))
+                let session = try open()
+                return (session, try Viewer.openSupervised(session: session, supervisor: supervisor, nowMs: now))
             }
         } then: { (me: isolated RelayConnection, opened) in
+            me.opening = false
             me.opened(opened)
         }
     }
@@ -158,14 +232,28 @@ public actor RelayConnection: LiveSession {
             self.session = session
             self.viewer = viewer
             sessionID = session.id()
-            let wake = DispatchSource.makeTimerSource(queue: queue)
-            wake.setEventHandler { [weak self] in self?.assumeIsolated { $0.tick() } }
-            wake.resume()
-            self.wake = wake
-            run(viewer.start(nowMs: Self.now()))
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.setEventHandler { [weak self] in self?.assumeIsolated { $0.tick() } }
+            timer.resume()
+            wakeTimer = timer
+            run(viewer.start(nowMs: now()))
             let waiting = early
             early = []
             for (command, token) in waiting { issue(command, token: token) }
+        // The registry unreachable, a rate limit or a 5xx: tried again on
+        // the backoff, or at the foreground; the bar says why and when.
+        // Commands typed meanwhile wait for the viewer.
+        case .failure(let error) where Self.retryable(error):
+            let now = self.now()
+            if let at = supervisor.lost(nowMs: now) {
+                let retry = DispatchWorkItem { [weak self] in self?.assumeIsolated { $0.openSession() } }
+                openRetry = retry
+                queue.asyncAfter(deadline: .now() + .milliseconds(Int(min(at > now ? at - now : 0, 60_000))), execute: retry)
+                tracker.openFailed(Self.detail(error), retryAt: Self.instant(at, now: now))
+            } else {
+                tracker.openFailed(Self.detail(error), retryAt: .now)
+            }
+            publishIfChanged()
         case .failure(let error):
             done = true
             // Before the status: the screen applies what the mailbox holds
@@ -174,6 +262,71 @@ public actor RelayConnection: LiveSession {
             tracker.ended(Self.detail(error))
             publishIfChanged()
         }
+    }
+
+    /// A failed open the network may mend: the registry unreachable, a
+    /// rate limit or a 5xx (`Network`). Anything else (the session gone,
+    /// access refused) stops.
+    static func retryable(_ error: any Error) -> Bool {
+        if case .Network? = error as? KrowkError { true } else { false }
+    }
+
+    /// The lifecycle's events, as the scene and the network say them.
+    private enum Lifecycle { case foreground, background, wake }
+
+    private func lifecycle(_ event: Lifecycle) {
+        let now = self.now()
+        guard started, !done else {
+            // Not followed yet: only where the app is, for when it is.
+            switch event {
+            case .background: supervisor.background(nowMs: now)
+            case .foreground: _ = supervisor.foreground(nowMs: now, link: .down)
+            case .wake: break
+            }
+            return
+        }
+        if let viewer {
+            switch event {
+            case .foreground: run(viewer.foreground(nowMs: now))
+            case .background: run(viewer.background(nowMs: now))
+            case .wake: run(viewer.wake(nowMs: now))
+            }
+            return
+        }
+        // Still opening the session, or waiting to try again.
+        let link: LinkState = opening ? .joining : .down
+        let action: WakeAction
+        switch event {
+        case .background:
+            supervisor.background(nowMs: now)
+            return
+        case .foreground: action = supervisor.foreground(nowMs: now, link: link)
+        case .wake: action = supervisor.wake(nowMs: now, link: link)
+        }
+        if action == .connect { openSession() }
+    }
+
+    /// Watches the network path on this queue. Its first callback is the
+    /// path as it is, not a change (`PathChanges`).
+    private func watchPath() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            let satisfied = path.status == .satisfied
+            self?.assumeIsolated { $0.pathUpdate(satisfied: satisfied) }
+        }
+        monitor.start(queue: queue)
+        path = monitor
+    }
+
+    private func pathUpdate(satisfied: Bool) {
+        if paths.changed() { pathMoved(satisfied: satisfied) }
+    }
+
+    /// A usable path after a change (Wi-Fi to cellular, a VPN up or
+    /// down): the connection woken. An unusable one does nothing: the
+    /// socket says so itself, and nothing could be joined meanwhile.
+    private func pathMoved(satisfied: Bool) {
+        if satisfied { lifecycle(.wake) }
     }
 
     /// A command of the person's into the viewer: sent now, or queued in
@@ -189,7 +342,7 @@ public actor RelayConnection: LiveSession {
             return
         }
         unminted.append(token)
-        run(viewer.command(command: command.command(session: sessionID), nowMs: Self.now()))
+        run(viewer.command(command: command.command(session: sessionID), nowMs: now()))
     }
 
     /// A `Show`'s updates for the mailbox: each `sent` preceded by the id
@@ -222,7 +375,7 @@ public actor RelayConnection: LiveSession {
 
     private func tick() {
         guard !done, let viewer else { return }
-        run(viewer.tick(nowMs: Self.now()))
+        run(viewer.tick(nowMs: now()))
     }
 
     /// Carries out the viewer's effects in order, then sets the timer for
@@ -235,6 +388,9 @@ public actor RelayConnection: LiveSession {
             switch effect {
             case .needTicket(let atMs):
                 askTicket(at: atMs)
+                // The supervisor's backoff: the bar counts down to it.
+                let now = self.now()
+                if atMs > now { tracker.retry(at: Self.instant(atMs, now: now)) }
             case .dial(let url, let ticket, let connection):
                 dial(url: url, ticket: ticket, number: connection)
             case .send(let bytes):
@@ -261,7 +417,7 @@ public actor RelayConnection: LiveSession {
             case .readChunks:
                 offQueue(queue) { viewer.readChunks() } then: { me, read in
                     guard !me.done, let viewer = me.viewer else { return }
-                    me.run(viewer.chunksRead(read: read, nowMs: Self.now()))
+                    me.run(viewer.chunksRead(read: read, nowMs: me.now()))
                 }
             case .end:
                 tracker.ended(failure)
@@ -288,13 +444,15 @@ public actor RelayConnection: LiveSession {
     }
 
     private func armWake() {
-        guard !done, let wake, let at = viewer?.nextWakeMs() else { return }
-        let now = Self.now()
+        guard !done, let wakeTimer, let at = viewer?.nextWakeMs() else { return }
+        let now = self.now()
         // At least once a minute, whatever it asked: a clock read late
         // never leaves the viewer asleep.
         let wait = Int(min(at > now ? at - now : 0, 60_000))
-        // Wall time, which runs on while the phone sleeps, as `now` does.
-        wake.schedule(wallDeadline: .now() + .milliseconds(wait), leeway: .milliseconds(4))
+        // Uptime, not the wall clock: setting the clock back never holds a
+        // timer up. Uptime stops while the phone sleeps, and so does the
+        // app (the background); the foreground's `foreground` re-arms.
+        wakeTimer.schedule(deadline: .now() + .milliseconds(wait), leeway: .milliseconds(4))
     }
 
     /// `NeedTicket`: at `atMs`, the ticket from the registry, off the
@@ -303,16 +461,18 @@ public actor RelayConnection: LiveSession {
     private func askTicket(at atMs: UInt64) {
         ticketAsk += 1
         let ask = ticketAsk
-        let now = Self.now()
+        let now = self.now()
         let wait = Int(min(atMs > now ? atMs - now : 0, 60_000))
-        queue.asyncAfter(wallDeadline: .now() + .milliseconds(wait)) { [weak self] in
+        // Uptime, as `armWake`'s; a later `NeedTicket` (a wake's, now)
+        // replaces this one.
+        queue.asyncAfter(deadline: .now() + .milliseconds(wait)) { [weak self] in
             self?.assumeIsolated { me in
                 guard !me.done, ask == me.ticketAsk, let session = me.session else { return }
                 me.offQueue(me.queue) { Result { try session.relayTicket() } } then: { me, fetched in
                     guard !me.done, ask == me.ticketAsk, let viewer = me.viewer else { return }
                     switch fetched {
-                    case .success(let ticket): me.run(viewer.ticket(ticket: ticket, nowMs: Self.now()))
-                    case .failure(let error): me.run(viewer.ticketFailed(detail: Self.detail(error), nowMs: Self.now()))
+                    case .success(let ticket): me.run(viewer.ticket(ticket: ticket, nowMs: me.now()))
+                    case .failure(let error): me.run(viewer.ticketFailed(detail: Self.detail(error), nowMs: me.now()))
                     }
                 }
             }
@@ -379,11 +539,11 @@ public actor RelayConnection: LiveSession {
         let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition) as? NWProtocolWebSocket.Metadata
         switch metadata?.opcode {
         case .binary?:
-            run(viewer.received(connection: number, frame: .binary(bytes: content ?? Data()), nowMs: Self.now()))
+            run(viewer.received(connection: number, frame: .binary(bytes: content ?? Data()), nowMs: now()))
         // Text (the relay's `pong` to the viewer's `ping`) and a pong only
         // say the link lives.
         case .text?, .pong?:
-            run(viewer.received(connection: number, frame: .text(text: ""), nowMs: Self.now()))
+            run(viewer.received(connection: number, frame: .text(text: ""), nowMs: now()))
         // A ping Network.framework answered: not fed in, so a peer that
         // only pings never keeps a join that's going nowhere waiting.
         case .ping?:
@@ -412,7 +572,7 @@ public actor RelayConnection: LiveSession {
         guard !done, current == number, let viewer else { return }
         drop()
         tracker.dropped()
-        run(viewer.closed(connection: number, nowMs: Self.now()))
+        run(viewer.closed(connection: number, nowMs: now()))
     }
 
     private func send(_ content: Data, _ opcode: NWProtocolWebSocket.Opcode) {
@@ -437,8 +597,12 @@ public actor RelayConnection: LiveSession {
         guard !done else { return }
         done = true
         drop()
-        wake?.cancel()
-        wake = nil
+        wakeTimer?.cancel()
+        wakeTimer = nil
+        path?.cancel()
+        path = nil
+        openRetry?.cancel()
+        openRetry = nil
         viewer = nil
         session = nil
         unsendEarly()
@@ -494,9 +658,26 @@ public actor RelayConnection: LiveSession {
     }
 
     /// A monotonic clock in milliseconds, counting while the phone sleeps:
-    /// the viewer's `nowMs`.
+    /// the viewer's `nowMs`. The wall clock set back or forward never
+    /// moves it.
     static func now() -> UInt64 {
         clock_gettime_nsec_np(CLOCK_MONOTONIC) / 1_000_000
+    }
+
+    /// This connection's `now`: `Self.now()`, moved on in a DEBUG build by
+    /// the tests' `advanceClock`.
+    private nonisolated func now() -> UInt64 {
+        #if DEBUG
+        Self.now() + clockOffset.withLock { $0 }
+        #else
+        Self.now()
+        #endif
+    }
+
+    /// `at`, a `now()` in milliseconds, as an instant on the continuous
+    /// clock (both count while the phone sleeps), for the bar's countdown.
+    static func instant(_ at: UInt64, now: UInt64) -> ContinuousClock.Instant {
+        ContinuousClock.now.advanced(by: .milliseconds(Int64(at > now ? at - now : 0)))
     }
 
     /// What a failed registry call says: the core's words, never a ticket.

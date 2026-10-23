@@ -237,7 +237,10 @@ public final class SessionListViewController: UIViewController, UICollectionView
         }
     }
 
+    /// The list read again, and every session still followed (a screen
+    /// parked with commands out) woken: a connection lost is joined now.
     private func pulled() {
+        LiveSessions.shared.wake()
         let model = model
         Task { [weak self] in
             await model.refresh()
