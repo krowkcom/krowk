@@ -152,8 +152,9 @@ fn r_e2e_3_an_unpaired_phone_is_not_paired() {
     assert!(!fresh.has_recovery_kit().unwrap());
 }
 
-/// The phone's Keychain, counting the writes of the device list.
-struct Counting(Arc<Memory>, std::sync::atomic::AtomicUsize);
+/// The phone's Keychain, counting the writes of the device list, and
+/// refusing them once `.2` is set (a locked phone, a storage reset).
+struct Counting(Arc<Memory>, std::sync::atomic::AtomicUsize, std::sync::atomic::AtomicBool);
 
 impl KeyStorage for Counting {
     fn read(&self, slot: String) -> Result<Option<Vec<u8>>, KrowkError> {
@@ -161,6 +162,9 @@ impl KeyStorage for Counting {
     }
     fn write(&self, slot: String, bytes: Vec<u8>) -> Result<(), KrowkError> {
         if slot == "device-list.json" {
+            if self.2.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(KrowkError::Internal { detail: "the Keychain is locked".into() });
+            }
             self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         self.0.write(slot, bytes)
@@ -173,7 +177,7 @@ impl KeyStorage for Counting {
 #[test]
 fn r_e2e_3_a_list_the_same_as_the_pin_is_not_written_again_and_one_that_grew_is() {
     let w = World::new();
-    let counting = Arc::new(Counting(w.storage.clone(), Default::default()));
+    let counting = Arc::new(Counting(w.storage.clone(), Default::default(), Default::default()));
     let phone = Account::open(w.api.clone(), counting.clone()).unwrap();
     let writes = || counting.1.load(std::sync::atomic::Ordering::SeqCst);
     phone.check_device_list().unwrap();
@@ -224,4 +228,23 @@ fn r_e2e_3_a_kept_list_with_a_recovery_kit_says_so() {
     ks.save_device_list(&start.entries).unwrap();
     let phone = Account::open("http://127.0.0.1:9/v1".into(), storage).unwrap();
     assert!(phone.has_recovery_kit().unwrap());
+}
+
+#[test]
+fn r_e2e_3_a_list_the_keychain_wont_keep_is_internal_never_untrusted() {
+    let w = World::new();
+    let counting = Arc::new(Counting(w.storage.clone(), Default::default(), Default::default()));
+    let phone = Account::open(w.api.clone(), counting.clone()).unwrap();
+    let before = Keystore::with(Arc::new(Bridge(w.storage.clone()))).device_list().unwrap().unwrap().head();
+    let (d, s) = (DeviceKey::generate(), SigningKey::generate());
+    let other = subject("new laptop", &d, &s);
+    host_posts(&w, &w.user, move |_| vec![Change::Add(other)], common::T0 + 10);
+    counting.2.store(true, std::sync::atomic::Ordering::SeqCst);
+    match phone.check_device_list() {
+        Err(KrowkError::Internal { detail }) => assert!(detail.contains("locked"), "{detail}"),
+        other => panic!("a storage failure is no list to distrust: {other:?}"),
+    }
+    assert_eq!(Keystore::with(Arc::new(Bridge(w.storage.clone()))).device_list().unwrap().unwrap().head(), before);
+    counting.2.store(false, std::sync::atomic::Ordering::SeqCst);
+    phone.check_device_list().unwrap();
 }

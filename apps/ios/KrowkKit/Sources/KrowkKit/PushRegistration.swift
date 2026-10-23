@@ -120,6 +120,7 @@ public final class PushRegistration {
     /// Allowed, it asks iOS for the token; refused, it clears any token
     /// this device had. Whatever was registered before is registered again.
     public func afterPairing() async {
+        guard !retired else { return }
         defaults.removeObject(forKey: Self.digestKey)
         defaults.set(true, forKey: Self.askKey)
         await ask()
@@ -196,6 +197,13 @@ public final class PushRegistration {
     /// forgets what it kept (`signedOut`) when the phone is reset.
     public func retire() {
         retired = true
+    }
+
+    /// Returns once the call under way, if any, has ended: a reset clears
+    /// the registry's token after a retired registration's last `set`,
+    /// never before it.
+    public func drained() async {
+        await last?.value
     }
 
     /// Asks the person. An ask that failed, or never got its answer, is

@@ -202,7 +202,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Nothing re-registers for push meanwhile, a call already queued
         // included; the reset clears the registry's copy through an
         // account of its own.
-        Self.push?.retire()
+        let retired = Self.push
+        retired?.retire()
         Self.push = nil
         // An approval sheet over a transcript, say, goes with the screens.
         window?.rootViewController?.dismiss(animated: false)
@@ -210,13 +211,19 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         log.error("this iPhone is no longer on the person's devices: \(gone.kind, privacy: .public)")
         let tokens = RegistryPushTokens(api: api, storage: keys)
         let reset = PhoneReset(
-            clearPushToken: { try await tokens.clear() },
+            // After a `set` the retired registration had under way, never
+            // before it.
+            clearPushToken: {
+                await retired?.drained()
+                try await tokens.clear()
+            },
             forgetPush: {
                 Self.push = nil
                 PushRegistration.signedOut()
                 UIApplication.shared.unregisterForRemoteNotifications()
                 // An alert still on the lock screen can name a session.
                 UNUserNotificationCenter.current().removeAllDeliveredNotifications()
+                Task { try? await UNUserNotificationCenter.current().setBadgeCount(0) }
             },
             forgetKeys: { try keys.forgetAll() },
             // A failure's kind and the core's words; never a key.
@@ -226,6 +233,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             gone: gone, reset: reset,
             // The check alone, never `onGone`'s report: this screen is it.
             recheck: { source.checkQuietly() },
+            onlyCopy: { source.onlyCopy() },
             onReset: { [weak self] in
                 guard let self else { return }
                 log.notice("this iPhone was reset")

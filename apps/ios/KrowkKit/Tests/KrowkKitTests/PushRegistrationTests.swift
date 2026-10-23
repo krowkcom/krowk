@@ -265,6 +265,7 @@ struct PushRegistrationTests {
         #expect(rig.registry.calls.isEmpty)
         #expect(rig.permission.asked == 0)
         #expect(rig.defaults.string(forKey: PushRegistration.digestKey) == nil)
+        #expect(rig.defaults.object(forKey: PushRegistration.askKey) == nil)
         #expect(rig.push.state == nil)
     }
 

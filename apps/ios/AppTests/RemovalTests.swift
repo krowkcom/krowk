@@ -4,7 +4,9 @@
 // own fleet (`RemovalFleet`): removing a device rotates host A's user key,
 // which would stop the shared fleet's hosts. A phone signs in and pairs
 // over a Keychain storage of its own service, registers a push token and
-// lists the fleet's session; host A removes it; then the listing is
+// lists and follows the fleet's session; host A removes it; then the
+// followed link, dropped, asks for a ticket the registry refuses and stops
+// without joining again, the listing is
 // refused as removed and the session list stops reading, opening a
 // session stops its connection before any dial, the registry holds no
 // push token for it, and the reset leaves no Keychain item under its
@@ -12,7 +14,8 @@
 //
 // Needs the fleets: apps/ios/scripts/with-fleet.sh hands the removal
 // fleet's URLs to this process as KROWK_REMOVAL_API_URL,
-// KROWK_REMOVAL_PAIR_URL and KROWK_REMOVAL_DEVICES_URL. Hosted in the app,
+// KROWK_REMOVAL_RELAY_URL, KROWK_REMOVAL_PAIR_URL and
+// KROWK_REMOVAL_DEVICES_URL. Hosted in the app,
 // as the Keychain needs.
 import Foundation
 import Krowk
@@ -53,7 +56,26 @@ extension HostedKeychain {
             let session = try #require(listed.sessions.first, "the removal fleet's session is not listed")
             #expect(told.all().isEmpty)
 
+            // A session followed live from before the removal, on the
+            // removal fleet's relay.
+            let relay = fleet.relay
+            let following = RelayConnection(
+                opening: { try account.openSession(id: session.id, known: nil, relayOverride: relay) },
+                standing: { source.standing() })
+            following.follow { _ in }
+            defer { following.stop() }
+            try await Self.wait(until: { following.status == .live || following.status == .hostOffline }, within: .seconds(60), "never joined: \(following.status.text)")
+
             #expect(try await fleet.remove(name) == "removed")
+
+            // The relay doesn't know: the link joined before goes on until
+            // it drops. Joining again needs a ticket, which the registry
+            // refuses; the device list says why, and nothing joins again.
+            let dialed = following.dials
+            following.dropConnection()
+            try await Self.wait(until: { if case .ended = following.status { true } else { false } }, within: .seconds(60), "never stopped: \(following.status.text)")
+            #expect(following.status == .ended(DeviceGone.removed(detail: "").title + "."), "\(following.status.text)")
+            #expect(following.dials == dialed, "joined again after it was removed")
 
             // The session list: refused as removed, onGone told, and it
             // reads no more.
@@ -134,6 +156,7 @@ extension HostedKeychain {
 /// host A's `devices add`, and its control's removal.
 struct RemovalFleet {
     let api: String
+    let relay: String
     let pairURL: String
     let devicesURL: String
 
@@ -144,6 +167,7 @@ struct RemovalFleet {
                 "\(name) is unset: run the tests through apps/ios/scripts/with-fleet.sh, which starts the removal tests' fleet")
         }
         api = try env("KROWK_REMOVAL_API_URL")
+        relay = try env("KROWK_REMOVAL_RELAY_URL")
         pairURL = try env("KROWK_REMOVAL_PAIR_URL")
         devicesURL = try env("KROWK_REMOVAL_DEVICES_URL")
     }

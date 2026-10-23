@@ -157,6 +157,19 @@ struct DeviceGoneTests {
         #expect(forgotten.value == 0)
     }
 
+    @Test("R-E2E-3: with no other device and no kit on the list it kept, the confirmation says the reset may lose every session")
+    func onlyCopyWarns() async throws {
+        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: {})
+        let lone = DeviceGoneModel(gone: Self.removed, reset: reset, onlyCopy: { true }, onReset: {})
+        try await until { lone.onlyCopy }
+        #expect(lone.confirmation.contains("may hold the only copy of your keys"))
+        let listed = DeviceGoneModel(gone: Self.removed, reset: reset, onlyCopy: { false }, onReset: {})
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!listed.onlyCopy)
+        #expect(!listed.confirmation.contains("only copy"))
+        #expect(listed.confirmation.contains("krowk devices remove"))
+    }
+
     @Test("R-E2E-3: a list started over says so in its own words")
     func listResetWords() {
         let gone = DeviceGone.listReset(detail: "your device list was started over on 2027-01-15 at 08:00 UTC")

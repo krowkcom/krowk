@@ -112,6 +112,11 @@ impl Account {
             return held.verified_by(chain).map(|_| ()).map_err(key_refused);
         }
         if have > named {
+            // Another check took a newer list up meanwhile: the list kept now
+            // names the generation held.
+            if self.keystore.device_list().map_err(internal)?.is_some_and(|c| c.generation() >= have) {
+                return Ok(());
+            }
             return Err(refused("user_key_refused", format!("this iPhone holds user key generation {have}, newer than your device list names ({named}) — it will not go back")));
         }
         let wraps = self.client.user_key()?;

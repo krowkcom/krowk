@@ -75,6 +75,16 @@ public final class RegistrySessions: SessionSource {
         return found
     }
 
+    /// Whether the device list this phone kept names no other device and
+    /// no recovery kit: it may hold the person's only copy of their keys.
+    /// From the Keychain, no network; false when it can't be read.
+    /// Blocking.
+    public func onlyCopy() -> Bool {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        guard let account = try? opened(), let devices = try? account.devices(), let kit = try? account.hasRecoveryKit() else { return false }
+        return !kit && devices.allSatisfy(\.thisDevice)
+    }
+
     /// `check`, telling no one: what the removed screen's "Check again"
     /// asks. Blocking.
     public func checkQuietly() -> Standing {

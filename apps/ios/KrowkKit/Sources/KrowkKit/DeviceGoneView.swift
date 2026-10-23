@@ -21,6 +21,10 @@ public final class DeviceGoneModel {
     /// Why the last reset failed, or what the last check again found;
     /// nil before either.
     public private(set) var failure: String?
+    /// The list this phone kept names no other device and no recovery kit:
+    /// it may hold the only copy of the person's keys, and the
+    /// confirmation says what a reset then loses.
+    public private(set) var onlyCopy = false
 
     @ObservationIgnored private let reset: PhoneReset
     @ObservationIgnored private let recheck: @Sendable () -> Standing
@@ -33,8 +37,11 @@ public final class DeviceGoneModel {
     ///   - onReset: the keys are gone: the app shows sign-in.
     ///   - onListed: a check again found the phone on the list: the app
     ///     opens Sessions again.
+    ///   - onlyCopy: whether the list this phone kept names no other
+    ///     device and no recovery kit (blocking: the Keychain), read once.
     public init(
         gone: DeviceGone, reset: PhoneReset, recheck: @escaping @Sendable () -> Standing = { .unknown("") },
+        onlyCopy: @escaping @Sendable () -> Bool = { false },
         onReset: @escaping @MainActor () -> Void, onListed: @escaping @MainActor () -> Void = {}
     ) {
         self.gone = gone
@@ -42,6 +49,18 @@ public final class DeviceGoneModel {
         self.recheck = recheck
         self.onReset = onReset
         self.onListed = onListed
+        Task { [weak self] in
+            let only = await blocking { onlyCopy() }
+            self?.onlyCopy = only
+        }
+    }
+
+    /// What the confirmation says.
+    public var confirmation: String {
+        let lost = onlyCopy
+            ? "Your device list as this iPhone last saw it names no other device and no recovery kit: this iPhone may hold the only copy of your keys, and resetting it loses every session for good. "
+            : ""
+        return lost + "It forgets every key it keeps and signs in as a new device, to pair again. If your device list still shows it, remove it there with krowk devices remove."
     }
 
     /// "Check again": the phone listed after all goes back to Sessions;
@@ -139,7 +158,7 @@ public struct DeviceGoneView: View {
             Button("Reset", role: .destructive) { model.resetPhone() }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("It forgets every key it keeps and signs in as a new device, to pair again. If your device list still shows it, remove it there with krowk devices remove.")
+            Text(verbatim: model.confirmation)
         }
     }
 }

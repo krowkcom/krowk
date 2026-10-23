@@ -351,8 +351,9 @@ list they started over stops, says so, and offers one thing: to reset it
   list this iPhone doesn't trust, and the phone keeps its pin. Every read
   of the session list checks first, and so does a session screen whose
   open, or a relay ticket, is refused; while the paired app is in the
-  foreground, `StandingWatch` checks every minute and on each return,
-  before any session joins again.
+  foreground, `StandingWatch` checks every minute and on each return
+  (started before the sessions rejoin, which check for themselves if
+  their ticket is refused).
   The check runs off the main thread.
 - **What it does.** The first check that finds it gone replaces every
   screen with "This iPhone was removed from your devices" (or "Your device
@@ -366,13 +367,15 @@ list they started over stops, says so, and offers one thing: to reset it
   Sessions, and nothing is reset.
 - **Reset this iPhone** (`PhoneReset`), only when tapped and confirmed
   ("Reset this iPhone?", which says to remove the phone from the list if
-  it still shows there): the push token
+  it still shows there, and, when the list it kept names no other device
+  and no recovery kit, that it may hold the only copy of the keys and a
+  reset loses every session): the push token
   is cleared at the registry first, since that takes the phone's key (a
   removed phone's key is refused, and the registry dropped its token with
   the device, so a failure here is logged and the reset goes on); then
   what the phone kept about push is forgotten, iOS's registration dropped
-  (`unregisterForRemoteNotifications`) and the alerts still shown
-  removed; then
+  (`unregisterForRemoteNotifications`) and the alerts and the badge
+  still shown removed; then
   `KeychainKeyStorage.forgetAll` deletes every `com.krowk.keys` item, the
   slots, the API key and the item holding the Secure Enclave wrapping key,
   which leaves the enclave key nothing to open; a write under way finishes
