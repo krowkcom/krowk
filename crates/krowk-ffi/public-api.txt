@@ -709,6 +709,16 @@ impl SignIn {
     pub fn cancel(&self) {}
 }
 
+#[uniffi::export]
+impl Account {
+    pub fn check_device_list(&self) -> Result<(), KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn has_recovery_kit(&self) -> Result<bool, KrowkError> {}
+}
+
 #[uniffi::export(with_foreign)]
 pub trait KeyStorage: Send + Sync {
     fn read(&self, slot: String) -> Result<Option<Vec<u8>>, KrowkError>;
