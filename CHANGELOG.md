@@ -367,6 +367,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A prompt from your phone or another device reaches a session the
+  host had stopped syncing.** A session synced automatically used to stop
+  syncing after `sync.idleMinutes` with no turn run on the host itself,
+  even while another device had it open. After that it was read-only
+  elsewhere, and a prompt sent from there waited for the next turn typed
+  on the host, which might never come. Now a session stays synced while
+  another device has it open, and the idle window starts again when the
+  last one closes it. Once it has stopped, opening it on another device
+  syncs it again within a moment, and a prompt sent from there runs on the
+  host and is answered there. A session in a directory opted out with
+  `sync.exclude` or `.krowk/no-sync`, or on a machine with automatic sync
+  turned off, is never synced this way. While a session waits for a
+  device to open it, the host keeps one quiet connection to the relay for
+  it and makes no other request, and with none waiting it makes none at
+  all.
 - **A registry hiccup no longer drops a device off a synced session.**
   When a device following a session joins it, it first reads the
   session's log from the registry. If that read failed, even once, the
