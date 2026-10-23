@@ -376,12 +376,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   another device has it open, and the idle window starts again when the
   last one closes it. Once it has stopped, opening it on another device
   syncs it again within a moment, and a prompt sent from there runs on the
-  host and is answered there. A session in a directory opted out with
+  host and is answered there. This needs the host daemon still running: a
+  krowk window open on the host, or `krowk host enable` on an always-on
+  machine (otherwise the daemon exits after `host.idleMinutes`, as
+  before). It also needs the host's connection to the relay to have
+  stayed up since the session stopped: after the host sleeps or changes
+  network, or past 64 such sessions, a prompt waits for the next turn on
+  the host, as before. A session in a directory opted out with
   `sync.exclude` or `.krowk/no-sync`, or on a machine with automatic sync
   turned off, is never synced this way. While a session waits for a
   device to open it, the host keeps one quiet connection to the relay for
-  it and makes no other request, and with none waiting it makes none at
-  all.
+  it, sends a heartbeat every 10 seconds, and rereads its own sync settings
+  once a minute; it asks the registry nothing. With no session waiting, it
+  does none of this.
 - **A registry hiccup no longer drops a device off a synced session.**
   When a device following a session joins it, it first reads the
   session's log from the registry. If that read failed, even once, the

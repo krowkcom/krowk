@@ -77,7 +77,7 @@ The full build keeps a local store of your agent sessions, whether they came fro
 
 Sessions sync between your machines end-to-end encrypted: neither krowk's servers nor its relay can read them. Run a session on one machine, then follow it and prompt it from another.
 
-Once sync is set up, every session that runs a turn in the host daemon syncs by itself. Set `"sync": {"auto": false}` in `~/.krowk/config.json` to turn that off, or keep one directory off sync with `sync.exclude` or a `.krowk/no-sync` file. A session nobody has used or watched for 10 minutes (`sync.idleMinutes`) stops syncing until its next prompt on this machine, or until another device, your phone included, opens it. `krowk sync status` says what applies where you are, and `krowk host enable` keeps sessions synced on an always-on machine.
+Once sync is set up, every session that runs a turn in the host daemon syncs by itself. Set `"sync": {"auto": false}` in `~/.krowk/config.json` to turn that off, or keep one directory off sync with `sync.exclude` or a `.krowk/no-sync` file. A session nobody has used or watched for 10 minutes (`sync.idleMinutes`) stops syncing until its next prompt on this machine, or until another device, your phone included, opens it while the host daemon still runs (`krowk host enable` keeps it running). `krowk sync status` says what applies where you are, and `krowk host enable` keeps sessions synced on an always-on machine.
 
 | Command | What it does |
 | --- | --- |

@@ -163,21 +163,27 @@ pub enum Woke {
 }
 
 /// Holds a parked link until a viewer wants the session, its owner lets it
-/// go, or it goes. It sends nothing but the relay's heartbeat, `ping`, at
-/// `beats` — the owner's one schedule, so every link it parks is pinged on
-/// the same wake — and reads only what says the link lives or a viewer
-/// came: a viewer's join, or anything routed from one (its hello, a
-/// command), which is dropped unread. A viewer that asked something asks it
-/// again at the welcome of the bridge that takes the session up.
+/// go, or it goes. It sends nothing but the relay's heartbeat, `ping`: once
+/// as it is parked, then every `PING` from `beats`, the owner's one
+/// schedule, so the links it parks are pinged on the same wake (each
+/// `pong` is read as it comes). It reads only what says the link lives or a
+/// viewer came: a viewer's join, or anything routed from one, which is
+/// dropped unread — a viewer's hello, since a viewer holds its commands
+/// until a host welcomes it, and sends them to the bridge that does.
 pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::time::Instant) -> Woke {
     let Parked { mut ws, viewed } = p;
-    if viewed {
-        return Woke::Viewer;
-    }
     let mut beat = tokio::time::interval_at(beats, PING);
-    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // A beat missed (the process stopped, a laptop asleep) is let go
+    // rather than sent late, so the links stay on the one schedule.
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let (mut beaten, mut heard) = (Instant::now(), Instant::now());
-    let woke = loop {
+    // Nothing read or sent it while the bridge stopped (its last chunk, the
+    // lease given back): a heartbeat at once, rather than at the next beat.
+    let woke = if viewed {
+        Woke::Viewer
+    } else if !super::ping(&mut ws).await {
+        Woke::Gone("a heartbeat could not be sent".into())
+    } else { loop {
         tokio::select! {
             _ = stop.changed() => break Woke::Stopped,
             _ = beat.tick() => {
@@ -201,7 +207,7 @@ pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::ti
                 }
             }
         }
-    };
+    } };
     // Said goodbye to, so the relay tells the viewers the host went at
     // once rather than when the connection times out.
     let _ = tokio::time::timeout(Duration::from_secs(1), futures_util::SinkExt::close(&mut ws)).await;
@@ -1298,11 +1304,7 @@ impl Hosting {
             self.dpresent = None;
         }
         if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
-        let viewed = !self.link.viewers().is_empty();
-        if viewed != self.viewed {
-            self.viewed = viewed;
-            if let Some(s) = &self.o.supervised { (s.viewers)(viewed); }
-        }
+        self.report_viewers();
         // However the host's link to its listener went, nothing is said
         // until it is back (`join_direct`).
         if self.dws.is_none() { self.unreached.direct_down(); }
@@ -1352,6 +1354,17 @@ impl Hosting {
             self.approvals.remove(&r.request_id);
             let (tx, _) = mpsc::channel(1);
             let _ = self.daemon.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
+        }
+    }
+
+    /// Tells the owner whether a viewer is here, when that has changed
+    /// since it was last told: at a hello, and at each sweep, which sees
+    /// the last one go.
+    fn report_viewers(&mut self) {
+        let viewed = !self.link.viewers().is_empty();
+        if viewed != self.viewed {
+            self.viewed = viewed;
+            if let Some(s) = &self.o.supervised { (s.viewers)(viewed); }
         }
     }
 
@@ -1519,6 +1532,9 @@ impl Hosting {
         let from = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
         match self.link.open(from, &b[HEADER..]) {
             Ok(Inbound::Hello { .. }) => {
+                // Said before the welcome goes, so the owner knows of the
+                // viewer by the time the viewer knows of the host.
+                self.report_viewers();
                 let body = serde_json::to_vec(&Welcome { head: self.head, approvals: self.approvals.values().map(|(r, _)| r.clone()).collect(), candidates: self.listening.as_ref().map_or_else(|| self.candidates.clone(), |l| l.candidates_now()) }).expect("json");
                 let sock = if direct { &mut self.dws } else { &mut self.ws };
                 if let (Some(w), Ok(sealed)) = (sock.as_mut(), self.link.welcome(from, &body)) && !super::send(w, sealed).await { *sock = None; }

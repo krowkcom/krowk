@@ -33,14 +33,16 @@
 //! its window runs again from when its last viewer left. A bridge let go as
 //! idle leaves its relay link joined, parked (`host::parked`): its stream
 //! sealed and its lease given back, it sends nothing but the relay's
-//! heartbeat — every parked link on one schedule, so one wake a `PING`
-//! however many — until the relay says a viewer joined or one sends
-//! something. That takes the session up again through `start`'s checks, as
+//! heartbeat — every parked link's on one schedule, so they go out on one
+//! wake a `PING` however many there are, each pong read as it comes —
+//! until the relay says a viewer joined or one sends something. That takes the session up again through `start`'s checks, as
 //! a turn would, so a viewer never syncs a session the switch or an opt-out
 //! refuses; the viewer's prompt goes again at the new bridge's welcome. A
 //! parked link that goes (the network, a laptop asleep, another host taking
 //! the channel) is not joined again — it would need the lease — and the
-//! session waits for its next turn, as before. No parked link, no timer:
+//! session waits for its next turn, as before. While any is parked, the
+//! policy is read again every `PARKED_RECHECK`, on a beat: sync off, or a
+//! directory opted out, lets their links go. No parked link, no timer:
 //! nothing is asked of the registry or the relay to learn of a viewer.
 //!
 //! **A restart** needs nothing of its own (ticket 98): a daemon that stops
@@ -318,6 +320,9 @@ pub struct Config {
     /// How long sync stays off after a workspace's refusal for want of a
     /// paid plan (`PAID_PAUSE`; a test makes it short).
     pub paid_pause: Duration,
+    /// How often the policy is read again while sessions are parked
+    /// (`PARKED_RECHECK`; a test makes it short).
+    pub parked_recheck: Duration,
 }
 
 /// How long automatic sync makes no sync call after the registry says the
@@ -823,8 +828,11 @@ struct Sup {
     /// The last bridge's serial.
     serial: u64,
     /// When the supervisor started: every parked link's heartbeat is on
-    /// the same schedule from here, so all of them cost one wake each `PING`.
+    /// the same schedule from here, so all of them are sent on one wake.
     epoch: Instant,
+    /// When a rescan last read the policy: a parked session's is read
+    /// again `Config::parked_recheck` after, since no turn of its own will.
+    rescanned_at: Instant,
 }
 
 /// Sessions whose last reason is remembered, past which the oldest are
@@ -835,6 +843,12 @@ const SAID_MOST: usize = 4096;
 /// heartbeat each on the one schedule. Past it, the longest parked goes,
 /// and that session waits for its next turn as before.
 pub const PARKED_MOST: usize = 64;
+
+/// How often the policy is read again while sessions are parked and
+/// nothing else reads it: sync turned off, or a directory opted out, lets
+/// their links go within about this. On a beat the links make anyway, so
+/// it costs no wake of its own.
+pub const PARKED_RECHECK: Duration = Duration::from_secs(60);
 
 /// How long a rescan may take to read the policy and the bridged sessions'
 /// directories (a hung network mount, a dead disk): past it, the policy
@@ -916,6 +930,7 @@ impl Sup {
             viewers,
             serial: 0,
             epoch: Instant::now(),
+            rescanned_at: Instant::now(),
         }
     }
 
@@ -965,7 +980,15 @@ impl Sup {
     /// answer lets it go.
     fn next_due(&self) -> Option<Instant> {
         let idle = if self.rescans.is_empty() { self.idle_deadlines().min() } else { None };
-        self.backing.values().map(|w| w.at).chain(idle).min()
+        self.backing.values().map(|w| w.at).chain(idle).chain(self.recheck_at()).min()
+    }
+
+    /// When the policy is read again for the parked sessions: only while
+    /// one is parked and no rescan runs, on the beat after
+    /// `PARKED_RECHECK` has passed since the last.
+    fn recheck_at(&self) -> Option<Instant> {
+        let parked = self.has.values().any(|h| matches!(h, Has::Parked { .. }));
+        (parked && self.rescans.is_empty()).then(|| next_beat(self.epoch, self.rescanned_at + self.c.parked_recheck))
     }
 
     fn idle_deadlines(&self) -> impl Iterator<Item = Instant> + '_ {
@@ -978,7 +1001,7 @@ impl Sup {
     fn due(&mut self) {
         self.retry();
         let now = Instant::now();
-        if self.idle_deadlines().any(|at| at <= now) {
+        if self.idle_deadlines().any(|at| at <= now) || self.recheck_at().is_some_and(|at| at <= now) {
             self.rescan();
         }
     }
@@ -1143,6 +1166,7 @@ impl Sup {
     }
 
     fn rescanned(&mut self, r: Result<Rescan, JoinError>) {
+        self.rescanned_at = Instant::now();
         let (policy, outs) = r.unwrap_or_else(|e| (Err(format!("its policy could not be read again: {e}")), Vec::new()));
         // Checks begun before it are out of date only when it stops something.
         if !matches!(&policy, Ok(p) if p.on) || outs.iter().any(|(_, o)| o.is_some()) {
@@ -1213,11 +1237,14 @@ impl Sup {
 
     /// Every bridge told to stop, `why` said once if any was.
     fn stop_every(&mut self, why: &str) {
-        self.unpark_every();
+        let parked = self.unpark_every();
         let sessions: Vec<String> = self.has.keys().cloned().collect();
         let stopped = sessions.iter().filter(|s| self.stop_one(s)).count();
         if stopped > 0 {
             eprintln!("krowk: stopped syncing {stopped} session(s): {why}");
+        }
+        if parked > 0 {
+            eprintln!("krowk: {parked} session(s) let go earlier are off the relay too: {why}");
         }
     }
 
@@ -1419,11 +1446,13 @@ impl Sup {
     }
 
     /// Every parked link let go: sync is off, paused, or the daemon gone.
-    fn unpark_every(&mut self) {
+    /// How many there were.
+    fn unpark_every(&mut self) -> usize {
         let parked: Vec<String> = self.has.iter().filter(|(_, h)| matches!(h, Has::Parked { .. })).map(|(s, _)| s.clone()).collect();
-        for s in parked {
-            self.unpark(&s);
+        for s in &parked {
+            self.unpark(s);
         }
+        parked.len()
     }
 
     /// A parked link ended. A viewer wanting its session takes it up
@@ -1753,6 +1782,7 @@ mod tests {
                 ready: Box::new(move || ready.clone()),
                 bridged: Arc::default(),
                 paid_pause: PAID_PAUSE,
+                parked_recheck: PARKED_RECHECK,
             };
             let (turns, rx) = mpsc::unbounded_channel();
             let h = Supervisor::spawn(c, rx);

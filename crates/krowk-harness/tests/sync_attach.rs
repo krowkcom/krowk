@@ -2413,11 +2413,13 @@ struct AutoOpts {
     /// Every `build` refuses with this `(code, message)`.
     refuse: Option<(String, String)>,
     paid_pause: Duration,
+    /// How often the policy is read again while sessions are parked.
+    parked_recheck: Duration,
 }
 
 impl Default for AutoOpts {
     fn default() -> AutoOpts {
-        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE }
+        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK }
     }
 }
 
@@ -2457,7 +2459,7 @@ impl World {
 
     /// `auto`, as `o` says.
     fn auto_with(&self, a: &Device, o: AutoOpts) -> Auto {
-        let AutoOpts { panic_first, idle, on, refuse, paid_pause } = o;
+        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
         let daemon = self.serve_hooked(self.env(), "home", InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
@@ -2519,6 +2521,7 @@ impl World {
             ready: Box::new(|| Ok(())),
             bridged: bridged.clone(),
             paid_pause,
+            parked_recheck,
         };
         Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), daemon: Some(daemon), bridged, built, turns, checks }
     }
@@ -2865,10 +2868,10 @@ fn turns_logged(w: &World, session: &str) -> usize {
 
 /// R-HAND-4, R-SYNC-3 (ticket 116): a session let go as idle keeps its
 /// relay link, parked. B opens it and prompts at once: B's joining takes
-/// the session up again, with no turn at A, and the prompt — sent before
-/// the bridge was back, and sent again at its welcome — runs once on A and
-/// is answered on B. Let go again once B has gone, B coming back takes it
-/// up again.
+/// the session up again, with no turn at A, and the prompt — typed before
+/// the bridge was back, held by B until the new bridge welcomed it — runs
+/// once on A and is answered on B. Let go again once B has gone, B coming
+/// back takes it up again.
 #[tokio::test]
 async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answered() {
     let w = World::new("auto-wake");
@@ -2930,6 +2933,39 @@ async fn r_sync_3_a_session_opted_out_once_let_go_is_never_brought_back_by_a_vie
     assert!(auto.bridged.lock().unwrap().is_empty());
     assert_eq!(leased(&w, &session).await, Ok(false), "never leased again");
     assert_eq!(turns_logged(&w, &session), 1, "B's prompt never ran");
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): automatic sync turned off while a session is
+/// parked, and no turn or viewer to ask for the policy: it is read again on
+/// its own (`Config::parked_recheck`, a second here, on the next beat), and
+/// the parked link let go. B opening the session then finds no host at all
+/// — never one that goes as B comes — and nothing is built.
+#[tokio::test]
+async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
+    let w = World::new("auto-park-off");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let on = Arc::new(AtomicBool::new(true));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), on: on.clone(), parked_recheck: Duration::from_secs(1), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    on.store(false, Ordering::SeqCst);
+    let checks = auto.checks.load(Ordering::SeqCst);
+    let deadline = Instant::now() + krowk_harness::sync::PING + Duration::from_secs(5);
+    while auto.checks.load(Ordering::SeqCst) == checks {
+        assert!(Instant::now() < deadline, "the policy was never read again while the session was parked");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let seen = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(_))).await;
+    assert!(matches!(seen.iter().rev().find(|u| matches!(u, viewer::Update::Host(_))), Some(viewer::Update::Host(false))), "no host on the relay: {seen:?}");
+    assert_eq!(auto.built(&session).len(), 1, "never built again");
+    assert_eq!(leased(&w, &session).await, Ok(false));
     drop(v);
     auto.stop(Duration::from_secs(10)).await;
 }
