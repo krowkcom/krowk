@@ -126,6 +126,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// `landingGrace`, unless the connection joins again first.
     private var landedLive = false
     private var graceOver = false
+    /// The route landed on the sheet, and nothing has been answered here
+    /// since: should what it showed be settled elsewhere (the turn's
+    /// catch-up replaying a request and its answer, say), the notice says
+    /// so rather than a passing toast.
+    private var routedSheet = false
     private var landingWait: DispatchWorkItem?
     static let landingGrace: TimeInterval = 2
 
@@ -751,7 +756,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         switch event {
         case .arrived(let prompt), .returned(let prompt, _):
             approvalsPutAway = false
-            if noticeShown == .nothingWaiting { hideNotice() }
+            if noticeShown == .nothingWaiting {
+                // The route's after all: should it be settled elsewhere
+                // too, the notice comes back.
+                hideNotice()
+                routedSheet = true
+            }
             // A route waiting out its grace lands on it now.
             if landing != nil { land() }
             mark(prompt, "waiting for approval")
@@ -759,15 +769,18 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
                 UIAccessibility.post(notification: .announcement, argument: "Another approval is waiting")
             }
         case .answered(let prompt, let verdict):
+            routedSheet = false
             mark(prompt, Self.verdictLine(verdict, asks: prompt.asks) + " — sending…")
         case .settled(let prompt, let verdict):
             mark(prompt, Self.verdictLine(verdict, asks: prompt.asks))
         case .resolvedElsewhere(let prompt, let resolution):
             // A turn stopped denies what it asked, as another device would.
             mark(prompt, resolution == .denied ? "denied elsewhere" : "\(resolution.word) on another device")
+            if routeSettled() { return }
             say(resolution == .denied ? "Denied on another device, or as its turn stopped" : "Answered on another device: \(resolution.word)")
         case .dropped(let prompt, let why):
             mark(prompt, nil)
+            if routeSettled() { return }
             if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }
         }
     }
@@ -822,6 +835,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// sent over the relay: the route picks the session and nothing else.
     public func land(_ route: NotificationRoute) {
         landing = route
+        routedSheet = false
         landedLive = isLive
         graceOver = false
         landingWait?.cancel()
@@ -860,11 +874,25 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         landingWait = nil
         landing = nil
         switch landed {
-        case .sheet: syncApprovals()
+        case .sheet:
+            routedSheet = true
+            syncApprovals()
         case .nothingWaiting: showNotice(landed, RouteLanding.nothingWaitingNotice)
         case .hostOffline: showNotice(landed, RouteLanding.offlineNotice(lastSeen: row.lastSeen))
         case .shown: break
         }
+    }
+
+    /// A request settled elsewhere while a route's notice says nothing
+    /// waits, or the last one a route's sheet showed: the notice says it,
+    /// and stays, rather than a toast that would take its place. Whether
+    /// it did.
+    private func routeSettled() -> Bool {
+        if noticeShown == .nothingWaiting { return true }
+        guard routedSheet, approvals?.waiting == 0 else { return false }
+        routedSheet = false
+        showNotice(.nothingWaiting, RouteLanding.nothingWaitingNotice)
+        return true
     }
 
     private func showNotice(_ landed: RouteLanding, _ text: String) {

@@ -174,7 +174,7 @@ struct NotificationRoutingTests {
         #expect(screen.approvalSheet != nil)
     }
 
-    @Test("R-PERM-2: a welcome with nothing waiting opens the session with the notice, no sheet; a request that comes later raises it and the notice goes")
+    @Test("R-PERM-2: a welcome with nothing waiting opens the session with the notice, no sheet; a request that comes later raises it and the notice goes; settled elsewhere, the notice comes back")
     func nothingWaiting() async throws {
         let rig = try Rig()
         defer { rig.window.isHidden = true }
@@ -197,6 +197,13 @@ struct NotificationRoutingTests {
         screen.driver?.tick(at: CACurrentMediaTime())
         try await waitFor { screen.approvalSheet != nil }
         #expect(screen.noticeShown == nil)
+
+        // The turn's catch-up says it was answered at the terminal: the
+        // notice comes back and stays, no toast in its place.
+        rig.queues[Self.a]?.resolved(requestID: "r3", resolution: .allowed)
+        try await waitFor { screen.approvalSheet == nil && screen.noticeShown == .nothingWaiting }
+        #expect(!screen.notice.isHidden)
+        #expect(screen.toast.alpha == 0)
     }
 
     @Test("R-PERM-2: tapped with the session already open and live, a request read as the app comes back still raises the sheet; with none, the notice comes after the grace")
