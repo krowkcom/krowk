@@ -121,6 +121,91 @@ pub struct Options {
     /// `None` — `krowk sync host` — reads the list itself every
     /// `LIST_EVERY`.
     pub stale: Option<Arc<Mutex<Option<String>>>>,
+    /// What an owner that lets an idle bridge go and takes it up again is
+    /// told (the automatic sync's supervisor, ticket 116); `None` — `krowk
+    /// sync host` — tells nobody.
+    pub supervised: Option<Supervised>,
+}
+
+/// The automatic sync's hold on a bridge (ticket 116): who is watching,
+/// and the relay link a bridge it stopped leaves behind.
+pub struct Supervised {
+    /// Told, within a sweep, each time a viewer comes where none was or the
+    /// last one goes: a viewer is a link that has said hello, on the relay
+    /// or a direct path, so one that can send commands.
+    pub viewers: Box<dyn Fn(bool) + Send + Sync>,
+    /// Where a bridge stopped by its owner, its stream sealed and its lease
+    /// given back, leaves its relay link still joined (`Parked`), rather than
+    /// closing it. Only a stop asked for: a bridge that ends by itself, or
+    /// whose lease is another's, closes its link.
+    pub park: Arc<Mutex<Option<Parked>>>,
+}
+
+/// A stopped bridge's relay link, still joined as the session's host,
+/// though the lease is given back: it sends nothing but heartbeats, and the
+/// relay tells it of each viewer that joins (`parked`).
+pub struct Parked {
+    pub ws: super::Ws,
+    /// A viewer was here as the bridge stopped: it is wanted again at once.
+    pub viewed: bool,
+}
+
+/// Why a parked link ended (`parked`).
+#[derive(Debug, PartialEq, Eq)]
+pub enum Woke {
+    /// A viewer joined, or sent something: the session is wanted.
+    Viewer,
+    /// Its owner let it go.
+    Stopped,
+    /// The link went — closed, refused (another host took the channel), or
+    /// silent past `DEAD` — and nothing wakes the session but its next turn.
+    Gone(String),
+}
+
+/// Holds a parked link until a viewer wants the session, its owner lets it
+/// go, or it goes. It sends nothing but the relay's heartbeat, `ping`, at
+/// `beats` — the owner's one schedule, so every link it parks is pinged on
+/// the same wake — and reads only what says the link lives or a viewer
+/// came: a viewer's join, or anything routed from one (its hello, a
+/// command), which is dropped unread. A viewer that asked something asks it
+/// again at the welcome of the bridge that takes the session up.
+pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::time::Instant) -> Woke {
+    let Parked { mut ws, viewed } = p;
+    if viewed {
+        return Woke::Viewer;
+    }
+    let mut beat = tokio::time::interval_at(beats, PING);
+    beat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let (mut beaten, mut heard) = (Instant::now(), Instant::now());
+    let woke = loop {
+        tokio::select! {
+            _ = stop.changed() => break Woke::Stopped,
+            _ = beat.tick() => {
+                let gap = beaten.elapsed();
+                beaten = Instant::now();
+                if link_dead(gap, heard.elapsed(), 0, None) {
+                    break Woke::Gone(format!("nothing came on it for {} s", DEAD.as_secs()));
+                }
+                if !super::ping(&mut ws).await {
+                    break Woke::Gone("a heartbeat could not be sent".into());
+                }
+            }
+            m = super::recv(&mut ws) => {
+                heard = Instant::now();
+                match m {
+                    In::Closed => break Woke::Gone("the relay closed it".into()),
+                    In::Control(v) if v["type"] == "error" => break Woke::Gone(format!("the relay let it go: {}", v["code"].as_str().unwrap_or("?"))),
+                    In::Control(v) if v["type"] == "viewer" && v["event"] == "joined" => break Woke::Viewer,
+                    In::Envelope(b) if b[1] == KIND_ROUTED => break Woke::Viewer,
+                    _ => {}
+                }
+            }
+        }
+    };
+    // Said goodbye to, so the relay tells the viewers the host went at
+    // once rather than when the connection times out.
+    let _ = tokio::time::timeout(Duration::from_secs(1), futures_util::SinkExt::close(&mut ws)).await;
+    woke
 }
 
 /// How a bridge that handed its session over ends: what `krowk sync host`
@@ -884,10 +969,18 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         nobody_since: None,
         notified: Notified::default(),
         halt: halt.clone(),
+        viewed: false,
     };
     // The loop's end, however it comes, stops the bridge the one way.
     let ended = h.serve(Inbox { lines, heads, answers, on_demand, stop }).await;
-    h.stop(&halt, writing).await;
+    // Stopped as its owner asked, with its lease its own to give back: the
+    // owner may park its relay link (ticket 116).
+    let park = (ended.is_ok() && !lost.load(Ordering::Relaxed)).then(|| o.supervised.as_ref().map(|s| s.park.clone())).flatten();
+    if let Some((ws, viewed)) = h.stop(&halt, writing).await
+        && let Some(slot) = park
+    {
+        *slot.lock().unwrap_or_else(|e| e.into_inner()) = Some(Parked { ws, viewed });
+    }
     ended
 }
 
@@ -1019,6 +1112,9 @@ struct Hosting {
     /// Set as the bridge stops, before its lease is given back: a
     /// notification still to go then asks for nothing.
     halt: Arc<AtomicBool>,
+    /// Whether a viewer was here at the last sweep, as `Supervised::viewers`
+    /// was last told.
+    viewed: bool,
 }
 
 impl Hosting {
@@ -1202,6 +1298,11 @@ impl Hosting {
             self.dpresent = None;
         }
         if self.link.viewers().is_empty() { self.alone_since.get_or_insert_with(Instant::now); } else { self.alone_since = None; }
+        let viewed = !self.link.viewers().is_empty();
+        if viewed != self.viewed {
+            self.viewed = viewed;
+            if let Some(s) = &self.o.supervised { (s.viewers)(viewed); }
+        }
         // However the host's link to its listener went, nothing is said
         // until it is back (`join_direct`).
         if self.dws.is_none() { self.unreached.direct_down(); }
@@ -1619,13 +1720,18 @@ impl Hosting {
     }
 
     /// Stops the bridge: the stream ended, the listener closed, and the
-    /// lease given back once the writer is done.
-    async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) {
+    /// lease given back once the writer is done. Its relay link, while it
+    /// is up and no handoff took the session, and whether a viewer was here.
+    async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) -> Option<(super::Ws, bool)> {
         self.seal().await;
         drop(self.listening.take());
+        drop(self.dws.take());
         let _ = self.jobs.send(Write::Flush);
         drop(self.jobs);
+        let viewed = !self.link.viewers().is_empty();
+        let ws = self.ws.take().filter(|_| !self.handing && self.handed_at.is_none());
         give_back(self.o, self.held, self.lost, halt, writing).await;
+        ws.map(|w| (w, viewed))
     }
 
     /// The stream's end, sealed: a viewer that sees the link stop without
@@ -2001,7 +2107,7 @@ mod tests {
     /// `d` on the stand-in registry at `url`, hosting `session`.
     fn options(url: &str, d: &Dev, keys: UserKeys, chain: Chain, session: &str) -> Options {
         let api = Arc::new(client(url, d));
-        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT, stale: None }
+        Options { relay: String::new(), env: "development".into(), api, device: d.key.id(), signing: d.signing(), keys, chain, session: session.into(), title: "t".into(), cwd: String::new(), sessions: std::path::PathBuf::new(), ttl: LEASE_TTL, keep: KEEP, direct: None, tailnet: None, handed: None, approval_wait: APPROVAL_WAIT, stale: None, supervised: None }
     }
 
     fn registry() -> (krowk_devregistry::Running, String) {

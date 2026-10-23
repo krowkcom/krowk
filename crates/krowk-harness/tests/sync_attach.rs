@@ -382,6 +382,7 @@ impl World {
             handed: None,
             approval_wait,
             stale: None,
+            supervised: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -426,6 +427,7 @@ impl World {
             handed: None,
             approval_wait: host::APPROVAL_WAIT,
             stale: None,
+            supervised: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -2000,6 +2002,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         handed: Some(handed),
         approval_wait: host::APPROVAL_WAIT,
         stale: None,
+        supervised: None,
     };
     let (_b_stop, _b_cp, _b_bridge) = w.run_bridge(o, b_daemon);
 
@@ -2488,6 +2491,7 @@ impl World {
                 handed: None,
                 approval_wait: host::APPROVAL_WAIT,
                 stale: None,
+                supervised: None,
             })
         });
         let env = self.env();
