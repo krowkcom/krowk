@@ -206,7 +206,9 @@ extension HostedKeychain {
             let (live, _) = try await Self.follow(try await Self.open(id, phone: phone))
             defer { live.stop() }
             try await Self.wait(for: .live, on: live, within: .seconds(15))
-            #expect(try await SessionListTests.control("/\(id)/turn", body: "Please stream a very long answer") == "started")
+            try await Task.sleep(for: .seconds(1))
+            _ = live.mailbox.drain()
+            #expect(try await SessionListTests.control("/\(id)/turn", body: "Please stream a long answer") == "started")
             // Streaming: batches arriving and fed to the core on the queue.
             try await Self.wait(until: { live.mailbox.waiting > 0 }, within: .seconds(30), "nothing streamed")
             let dials = live.dials

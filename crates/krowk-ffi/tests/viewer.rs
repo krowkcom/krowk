@@ -689,6 +689,19 @@ fn r_ios_2_a_connection_lost_in_the_background_waits_for_the_foreground() {
     p.join(true, 0);
     p.welcome(Welcome::default());
     assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
+
+    // A ticket asked for before the background, arriving in it, is not
+    // dialed: the join is held for the foreground.
+    p.at(70_000);
+    p.closed();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { .. }]));
+    p.background();
+    let e = p.viewer.ticket("t".into(), p.now);
+    assert!(e.is_empty(), "dialed in the background: {e:?}");
+    p.at(80_000);
+    p.foreground();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 80_000 }]), "{:?}", p.rest);
+    p.join(true, 0);
 }
 
 /// R-IOS-2: back after 10 s or more away, a connection still up is

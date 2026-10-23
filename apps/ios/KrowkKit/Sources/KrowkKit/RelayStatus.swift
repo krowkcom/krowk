@@ -106,14 +106,6 @@ public struct RelayStatusTracker: Equatable, Sendable {
         status = .retrying(at: at, why: "couldn't open the session: \(detail)")
     }
 
-    /// The person is away (the app in the background) and a lost
-    /// connection waits for them: it reads as reconnecting, with no time.
-    public mutating func held() {
-        switch status {
-        case .live, .hostOffline, .catchingUp, .retrying: status = .reconnecting
-        case .connecting, .reconnecting, .unreachable, .ended: break
-        }
-    }
 
     /// `Update` gap: the relay dropped a batch, and the core asks the host
     /// for what it held. Live only: before a join there's nothing to miss,

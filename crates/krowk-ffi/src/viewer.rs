@@ -340,6 +340,13 @@ impl Viewer {
     /// is waiting for one.
     pub fn ticket(&self, ticket: String, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
+            // Asked for before the app went to the background: not dialed
+            // there, but held with the join for the foreground.
+            if i.pending.is_some() && i.sup.in_background() {
+                i.held = true;
+                i.ticket_at = None;
+                return Vec::new();
+            }
             let Some(extra) = i.pending.take() else { return Vec::new() };
             let o = &i.opened;
             let id = o.id();
