@@ -61,8 +61,29 @@ public final class FrameDriver {
         self.model = model
     }
 
+    /// A tick is under way, and one was asked for inside it (something it
+    /// applied called back into it).
+    private var ticking = false
+    private var again = false
+
     /// One display frame at `now` (seconds, the display link's clock).
+    /// Asked for inside another, it runs once that one is done, never
+    /// inside it: what the inner one took would be applied before what
+    /// the outer one already holds.
     public func tick(at now: TimeInterval) {
+        guard !ticking else {
+            again = true
+            return
+        }
+        ticking = true
+        defer { ticking = false }
+        repeat {
+            again = false
+            tickOnce(at: now)
+        } while again
+    }
+
+    private func tickOnce(at now: TimeInterval) {
         frames += 1
         let taken = session.takeFrame()
         guard !taken.isEmpty else {

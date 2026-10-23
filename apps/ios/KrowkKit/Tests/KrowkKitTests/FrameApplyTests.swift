@@ -571,6 +571,23 @@ struct FrameApplyTests {
         #expect(driver.transactions == 3)
     }
 
+    @Test("R-LAG-7: a tick asked for inside a tick (an approval landing a notification's route mid-drain) runs after it, never inside it: nothing is applied out of order or left in the mailbox")
+    func noTickInsideATick() {
+        let session = ReentrantSession()
+        let model = TranscriptModel(sessionID: Self.session)
+        let driver = FrameDriver(session: session, model: model)
+        session.batches = [
+            [Self.started("a1", .assistant, turn: "t1")],
+            // Posted while the first was being taken.
+            [Self.delta("a1", "Hello")],
+        ]
+        session.inside = { driver.tick(at: 1) }
+        driver.tick(at: 1)
+        #expect(session.taken == 2, "the inner tick ran, after the outer")
+        #expect(model.item("item:a1")?.text == "Hello", "the delta after its start")
+        #expect(driver.transactions == 2)
+    }
+
     @Test("R-LAG-7: the screen's display link asks for up to 120 Hz (ProMotion), at least 30")
     func frameRate() async throws {
         let session = StubSession()
@@ -594,4 +611,30 @@ struct FrameApplyTests {
 @MainActor
 final class FakeTicker: FrameTicker {
     var isPaused = false
+}
+
+/// A session whose first `takeFrame` asks for a tick from inside it, as an
+/// approval event landing a route did, and whose batches come one per take.
+final class ReentrantSession: LiveSession, @unchecked Sendable {
+    @MainActor var batches: [[TranscriptUpdate]] = []
+    @MainActor var inside: (@MainActor () -> Void)?
+    @MainActor var taken = 0
+
+    func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void) {}
+    func stop() {}
+    func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {}
+    func send(_ command: LiveCommand, token: UInt64) {}
+    func foreground() {}
+    func background() {}
+    func wake() {}
+
+    @MainActor func takeFrame() -> [TranscriptUpdate] {
+        taken += 1
+        let batch = batches.isEmpty ? [] : batches.removeFirst()
+        if let inside {
+            self.inside = nil
+            inside()
+        }
+        return batch
+    }
 }

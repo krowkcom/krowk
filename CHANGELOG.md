@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Tapping a krowk notification on the iPhone opens what it is about.**
+  "A turn finished" opens that session's transcript, followed live. "A
+  session needs your approval" opens the session and, as soon as its host
+  says what is waiting, puts up the approval sheet for the oldest request,
+  with Face ID before a risky allow as before. If it was answered
+  elsewhere or timed out meanwhile, the session says "Nothing is waiting
+  for you here any more" instead; if the laptop is offline, it says so and
+  when the session was last seen, and offers nothing to answer. This works
+  from a cold start too. A notification never grants anything by itself:
+  it only picks which of your sessions to open, and one that names
+  anything else is ignored. With the app open, an alert for the session
+  you are watching stays quiet. Nothing changes for CLI users.
 - **The iPhone gets a session back by itself after the background and
   network changes.** When you come back to krowk, a session you had open
   checks its connection before the screen even shows: it rejoins at once

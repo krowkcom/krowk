@@ -37,7 +37,7 @@ import UIKit
 /// sending…", R-LAG-8) and settles on the host's ack; one answered on
 /// another device first goes with a toast saying so.
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
-    let row: SessionRow
+    public let row: SessionRow
     public let model: TranscriptModel
     public let statusBar = RelayStatusBar()
     /// The session followed live, if the app gave one.
@@ -111,6 +111,28 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var approvalsRetry: DispatchWorkItem?
     /// The app's lifecycle, which this screen's session hears (ticket 86).
     private let lifecycle: LiveSessions
+    /// A notification's route that brought this screen up, until the
+    /// connection says what it lands on (ticket 106).
+    public private(set) var landing: NotificationRoute?
+    /// A line under the bar that stays until it no longer holds: nothing
+    /// waits here any more, or the host is away (ticket 106). Tapped, it
+    /// goes.
+    public let notice = UILabel()
+    /// What the notice says, while it's up.
+    public private(set) var noticeShown: RouteLanding?
+    /// The route came with the session already live: its welcome was
+    /// before the tap, and a request since may still be on its way (read
+    /// as the app comes back), so nothing waiting is said only after
+    /// `landingGrace`, unless the connection joins again first.
+    private var landedLive = false
+    private var graceOver = false
+    /// The route landed on the sheet, and nothing has been answered here
+    /// since: should what it showed be settled elsewhere (the turn's
+    /// catch-up replaying a request and its answer, say), the notice says
+    /// so rather than a passing toast.
+    private var routedSheet = false
+    private var landingWait: DispatchWorkItem?
+    static let landingGrace: TimeInterval = 2
 
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared) {
         self.row = row
@@ -304,6 +326,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
 
         setUpApprovals()
+        if noticeShown != nil { addNotice() }
         observeFocus()
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
@@ -390,6 +413,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames = nil
         driver?.ticker = nil
         putSheetDown()
+        // A route lands on a screen in view, never on one parked, and
+        // what it said goes with it.
+        if noticeShown == .nothingWaiting { hideNotice() }
+        landing = nil
+        landingWait?.cancel()
+        landingWait = nil
+        routedSheet = false
         // Commands the core still holds go on: a queued prompt survives
         // leaving the screen (R-HAND-4), until the host answers it.
         if model.commandsOut > 0, let parking, !isEnded {
@@ -733,20 +763,32 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         switch event {
         case .arrived(let prompt), .returned(let prompt, _):
             approvalsPutAway = false
+            if noticeShown == .nothingWaiting {
+                // The route's after all: should it be settled elsewhere
+                // too, the notice comes back.
+                hideNotice()
+                routedSheet = true
+            }
+            // A route waiting out its grace lands on it now: on what the
+            // queue holds, without draining again (this is mid-drain).
+            if landing != nil { land(drain: false) }
             mark(prompt, "waiting for approval")
             if UIAccessibility.isVoiceOverRunning, approvalSheet != nil {
                 UIAccessibility.post(notification: .announcement, argument: "Another approval is waiting")
             }
         case .answered(let prompt, let verdict):
+            routedSheet = false
             mark(prompt, Self.verdictLine(verdict, asks: prompt.asks) + " — sending…")
         case .settled(let prompt, let verdict):
             mark(prompt, Self.verdictLine(verdict, asks: prompt.asks))
         case .resolvedElsewhere(let prompt, let resolution):
             // A turn stopped denies what it asked, as another device would.
             mark(prompt, resolution == .denied ? "denied elsewhere" : "\(resolution.word) on another device")
+            if routeSettled(by: event) { return }
             say(resolution == .denied ? "Denied on another device, or as its turn stopped" : "Answered on another device: \(resolution.word)")
         case .dropped(let prompt, let why):
             mark(prompt, nil)
+            if routeSettled(by: event) { return }
             if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }
         }
     }
@@ -767,6 +809,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// The toast: `text` for four seconds, and told to VoiceOver.
     func say(_ text: String) {
         toast.text = " \(SafeText.line(text[...], limit: 300)) "
+        // Said over the notice's place: what it says is newer. The host
+        // away stays said: the bar's line, and still so.
+        if noticeShown == .nothingWaiting { hideNotice() }
         toastHide?.cancel()
         view.bringSubviewToFront(toast)
         UIView.animate(withDuration: 0.2) { self.toast.alpha = 1 }
@@ -782,6 +827,135 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             UIAccessibility.post(notification: .announcement, argument: text)
         }
     }
+
+    // MARK: Opened from a notification (ticket 106)
+
+    /// Joined and welcomed by a host: what comes shows as it comes.
+    public var isLive: Bool { statusBar.status == .live || statusBar.status == .catchingUp }
+
+    /// A tapped notification opened this session: once the connection
+    /// says (the first welcome from here, or no host), an approval's route
+    /// raises the sheet for the oldest request waiting, or says nothing
+    /// waits any more; with the host away, either says so and when it was
+    /// last seen, and no sheet rises (R-IOS-7). Already live, it lands on
+    /// what the session holds now, but says nothing waits only after
+    /// `landingGrace`: a request read as the app comes back still raises
+    /// the sheet. The sheet only ever shows what the host
+    /// sent over the relay: the route picks the session and nothing else.
+    public func land(_ route: NotificationRoute) {
+        landing = route
+        routedSheet = false
+        landedLive = isLive
+        graceOver = false
+        landingWait?.cancel()
+        landingWait = nil
+        hideNotice()
+        // Put away before: the person asked for it again.
+        if case .approval = route { approvalsPutAway = false }
+        land()
+    }
+
+    /// Lands the route, if the connection has said enough: what has come
+    /// (the welcome's requests, which the session posts before its status
+    /// says live) applied first.
+    private func land(drain: Bool = true) {
+        guard let route = landing else { return }
+        if drain, isViewLoaded { frame() }
+        // What the drain brought may have landed it already.
+        guard landing == route else { return }
+        // Joining again: the next live is a welcome.
+        if !isLive { landedLive = false }
+        guard let landed = RouteLanding.of(route, status: statusBar.status, waiting: approvals?.waiting ?? 0) else { return }
+        if landed == .nothingWaiting, landedLive, !graceOver {
+            if landingWait == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.landingWait = nil
+                        self.graceOver = true
+                        self.land()
+                    }
+                }
+                landingWait = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.landingGrace, execute: work)
+            }
+            return
+        }
+        landingWait?.cancel()
+        landingWait = nil
+        landing = nil
+        switch landed {
+        case .sheet:
+            routedSheet = true
+            syncApprovals()
+        case .nothingWaiting: showNotice(landed, RouteLanding.nothingWaitingNotice)
+        case .hostOffline: showNotice(landed, RouteLanding.offlineNotice(lastSeen: row.lastSeen))
+        case .shown: break
+        }
+    }
+
+    /// A request settled elsewhere while a route's notice says nothing
+    /// waits, or the last one a route's sheet showed: the notice says it,
+    /// and stays, rather than a toast that would take its place. Whether
+    /// it did.
+    private func routeSettled(by event: ApprovalQueue.Event) -> Bool {
+        // Settled elsewhere or by its turn's end: not a refusal of an
+        // answer of this phone's, nor the connection stopping, which the
+        // toast and the bar say.
+        switch event {
+        case .resolvedElsewhere: break
+        case .dropped(_, nil):
+            if case .ended = statusBar.status { return false }
+        default: return false
+        }
+        if noticeShown == .nothingWaiting { return true }
+        guard routedSheet, approvals?.waiting == 0 else { return false }
+        routedSheet = false
+        showNotice(.nothingWaiting, RouteLanding.nothingWaitingNotice)
+        return true
+    }
+
+    private func showNotice(_ landed: RouteLanding, _ text: String) {
+        noticeShown = landed
+        notice.text = " \(text) "
+        notice.isHidden = false
+        guard isViewLoaded else { return }
+        if notice.superview == nil { addNotice() }
+        view.bringSubviewToFront(notice)
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
+    }
+
+    func hideNotice() {
+        noticeShown = nil
+        notice.isHidden = true
+    }
+
+    private func addNotice() {
+        notice.font = .preferredFont(forTextStyle: .footnote)
+        notice.adjustsFontForContentSizeCategory = true
+        notice.numberOfLines = 0
+        notice.textAlignment = .center
+        notice.textColor = .secondaryLabel
+        notice.backgroundColor = .secondarySystemBackground
+        notice.layer.cornerRadius = 10
+        notice.layer.masksToBounds = true
+        notice.accessibilityIdentifier = "route-notice"
+        // A tap hides it: VoiceOver reads it as a button that does so.
+        notice.accessibilityHint = "Hides this line"
+        notice.isUserInteractionEnabled = true
+        notice.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(noticeTapped)))
+        notice.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(notice)
+        NSLayoutConstraint.activate([
+            notice.topAnchor.constraint(equalTo: session != nil ? statusBar.bottomAnchor : view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            notice.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            notice.widthAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.widthAnchor),
+        ])
+    }
+
+    @objc private func noticeTapped() { hideNotice() }
 
     // MARK: Following the end
 
@@ -973,6 +1147,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         statusBar.show(status)
         model.setHostOffline(status == .hostOffline)
         approvals?.connected = status == .live || status == .catchingUp
+        if isLive, noticeShown == .hostOffline { hideNotice() }
+        land()
         if case .ended = status {
             if !model.attached {
                 stoppedEarly = true

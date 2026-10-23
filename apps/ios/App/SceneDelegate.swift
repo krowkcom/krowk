@@ -268,6 +268,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let navigation = UINavigationController(rootViewController: root)
         navigation.navigationBar.prefersLargeTitles = true
         window?.rootViewController = navigation
+        // A tapped alert's session opens from the paired phone's list,
+        // held until it's up; signing in or pairing, routes are dropped. A
+        // key failure that may pass (locked) keeps one held for the next
+        // try (ticket 106).
+        switch root {
+        case let list as SessionListViewController: NotificationTaps.router.paired(list)
+        case is KeysUnavailableViewController: break
+        default: NotificationTaps.router.unpaired()
+        }
     }
 }
 

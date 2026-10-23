@@ -196,6 +196,13 @@ enum FleetUI {
             let (started, reply) = try await request("\(sessions)/\(id)/turn", body: "Please make the file approved.txt")
             XCTAssertEqual(started, 200, reply)
         }
+        openListed(title, in: app)
+    }
+
+    /// The session titled `title` opened from Sessions (back to it first,
+    /// if need be), the list pulled down until it's there.
+    @MainActor
+    static func openListed(_ title: String, in app: XCUIApplication) {
         let list = app.collectionViews["sessions-list"]
         for _ in 0..<3 where !list.exists {
             app.navigationBars.buttons["Sessions"].tap()
