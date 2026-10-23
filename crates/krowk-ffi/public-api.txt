@@ -41,6 +41,20 @@ impl Account {
 
 #[uniffi::export]
 impl Account {
+    pub fn set_push_token(
+        &self,
+        token_hex: String,
+        environment: String,
+    ) -> Result<(), KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn clear_push_token(&self) -> Result<(), KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
     pub fn sign_out(&self) -> Result<(), KrowkError> {}
 }
 
