@@ -44,9 +44,8 @@ struct ConnectionLifecycleTests {
     @Test("R-OFF-2: NWPathMonitor's first callback, the path as it is when it starts, is no change; every one after is")
     func firstPathIsNoChange() {
         var paths = PathChanges()
-        #expect(!paths.changed())
-        #expect(paths.changed())
-        #expect(paths.changed())
+        let seen = [paths.changed(), paths.changed(), paths.changed()]
+        #expect(seen == [false, true, true])
     }
 
     @Test("R-IOS-1: waiting on the backoff, the bar counts down to the next try in whole seconds, keeping why the last failed; never a spinner")
