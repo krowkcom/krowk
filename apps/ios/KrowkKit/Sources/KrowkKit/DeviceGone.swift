@@ -175,7 +175,7 @@ public struct PhoneReset: Sendable {
         do {
             try await clearPushToken()
         } catch {
-            log("reset: the push token was not cleared at the registry (it drops a removed device's by itself): \(error)")
+            log("reset: the push token was not cleared at the registry, which drops a removed device's by itself; iOS's registration is dropped here: \(error)")
         }
         await forgetPush()
         let forgetKeys = forgetKeys

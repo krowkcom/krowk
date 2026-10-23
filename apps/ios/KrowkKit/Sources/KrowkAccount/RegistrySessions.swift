@@ -44,7 +44,7 @@ public final class RegistrySessions: SessionSource {
         dispatchPrecondition(condition: .notOnQueue(.main))
         switch check() {
         case .gone(let gone): throw .gone(gone)
-        case .untrusted(let why): throw .other(detail: why)
+        case .untrusted(let why): throw .untrusted(detail: why)
         case .listed, .unknown: break
         }
         do {

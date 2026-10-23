@@ -103,13 +103,24 @@ public actor RelayConnection: LiveSession {
     private let counts = OSAllocatedUnfairLock<Int>(initialState: 0)
     /// Where approvals asked and answered live go (ticket 91).
     private nonisolated let approvals: any ApprovalSink
+    /// Whether the phone is gone from the person's devices (ticket 117),
+    /// asked when the registry refuses a relay ticket: blocking.
+    private let standing: (@Sendable () -> DeviceGone?)?
 
     /// `opening` opens the session to follow (`Account.openSession`), and
     /// blocks; it runs once, on a thread of its own, as `follow` starts.
-    public init(opening: @escaping @Sendable () throws -> OpenedSession, approvals: any ApprovalSink = NoApprovals()) {
+    /// `standing` (`RegistrySessions.standing`) is asked, off the queue,
+    /// when the registry refuses a relay ticket: a phone gone from the
+    /// person's devices stops here, joining nothing more, rather than ask
+    /// again on the backoff.
+    public init(
+        opening: @escaping @Sendable () throws -> OpenedSession, approvals: any ApprovalSink = NoApprovals(),
+        standing: (@Sendable () -> DeviceGone?)? = nil
+    ) {
         self.queue = DispatchSerialQueue(label: "krowk.relay")
         self.open = opening
         self.approvals = approvals
+        self.standing = standing
     }
 
     /// One never stopped (its screen let go of it) still closes its socket.
@@ -518,7 +529,22 @@ public actor RelayConnection: LiveSession {
                     guard !me.done, ask == me.ticketAsk, let viewer = me.viewer else { return }
                     switch fetched {
                     case .success(let ticket): me.run(viewer.ticket(ticket: ticket, nowMs: me.now()))
-                    case .failure(let error): me.run(viewer.ticketFailed(detail: Self.detail(error), nowMs: me.now()))
+                    case .failure(let error):
+                        let detail = Self.detail(error)
+                        // Refused, not the network: maybe this phone was
+                        // removed. Asked before the backoff tries again.
+                        guard case .Refused? = error as? KrowkError, let standing = me.standing else {
+                            me.run(viewer.ticketFailed(detail: detail, nowMs: me.now()))
+                            return
+                        }
+                        me.offQueue(me.queue) { standing() } then: { me, gone in
+                            guard !me.done, ask == me.ticketAsk, let viewer = me.viewer else { return }
+                            if let gone {
+                                me.stopGone(gone)
+                            } else {
+                                me.run(viewer.ticketFailed(detail: detail, nowMs: me.now()))
+                            }
+                        }
                     }
                 }
             }
@@ -640,6 +666,14 @@ public actor RelayConnection: LiveSession {
         self.connection = nil
         connection.stateUpdateHandler = nil
         connection.cancel()
+    }
+
+    /// The phone is gone from the person's devices: stopped, with nothing
+    /// joined or tried again, and the bar says why.
+    private func stopGone(_ gone: DeviceGone) {
+        halt()
+        tracker.ended(gone.title + ".")
+        publishIfChanged()
     }
 
     private func halt() {

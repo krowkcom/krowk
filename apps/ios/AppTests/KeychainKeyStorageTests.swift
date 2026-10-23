@@ -34,6 +34,26 @@ extension HostedKeychain {
             #expect(try storage.read(slot: "user-keys.json") == Data())
         }
 
+        @Test("R-IOS-8, R-E2E-3: forgetAll deletes every item, the wrapping key's too, and the storage refuses every call after it")
+        func forgetAllForgetsEverything() throws {
+            try storage.write(slot: "device.json", bytes: Self.random(64))
+            try storage.write(slot: "credentials.json", bytes: Self.random(48))
+            #expect(try Self.accounts() == ["credentials.json", "device.json", "wrapping-key"])
+            try storage.forgetAll()
+            #expect(try Self.accounts() == [])
+            // Nothing lands after: a write would be sealed to a key that is gone.
+            Self.expectInternal { try storage.write(slot: "device.json", bytes: Self.random(64)) }
+            Self.expectInternal { try storage.remove(slot: "device.json") }
+            Self.expectInternal { _ = try storage.read(slot: "credentials.json") }
+            #expect(try Self.accounts() == [])
+            // The next storage is no first launch, finds nothing, and makes
+            // a wrapping key of its own.
+            let next = try KeychainKeyStorage(installMarker: marker)
+            #expect(try next.read(slot: "device.json") == nil)
+            try next.write(slot: "device.json", bytes: Data([1]))
+            #expect(try next.read(slot: "device.json") == Data([1]))
+        }
+
         @Test("R-IOS-8: a slot never written reads as absent")
         func missingIsAbsent() throws {
             #expect(try storage.read(slot: "signing.json") == nil)

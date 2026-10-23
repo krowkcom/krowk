@@ -64,6 +64,10 @@ public enum SessionListFailure: Error, Sendable, Equatable {
     /// The phone is no longer on the person's devices: the list stops
     /// reading, and the app shows why and offers to reset it.
     case gone(DeviceGone)
+    /// The registry served a device list (or a key) this phone won't
+    /// trust: nothing was changed, and nothing is listed on it. Not a
+    /// removal. The core's words, never shown.
+    case untrusted(detail: String)
 
     /// One sentence for the screen.
     public var sentence: String {
@@ -72,6 +76,7 @@ public enum SessionListFailure: Error, Sendable, Equatable {
         case .notPaired: "This iPhone isn't on your devices yet."
         case .other: "Your sessions couldn't be listed."
         case .gone(let gone): gone.title + "."
+        case .untrusted: "krowk's registry served a device list this iPhone doesn't trust. Nothing was changed."
         }
     }
 
@@ -83,6 +88,7 @@ public enum SessionListFailure: Error, Sendable, Equatable {
         case .notPaired: "not_paired"
         case .other: "other"
         case .gone(let gone): gone.kind
+        case .untrusted: "untrusted"
         }
     }
 }

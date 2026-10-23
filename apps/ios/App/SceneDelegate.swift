@@ -3,6 +3,7 @@ import KrowkAccount
 import KrowkKeys
 import KrowkKit
 import UIKit
+import UserNotifications
 import os
 
 /// One window with one navigation controller: the M1 shell. iPad's
@@ -63,10 +64,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// any view appears, every session followed live checks its connection
     /// (R-IOS-2, ticket 86).
     func sceneWillEnterForeground(_ scene: UIScene) {
+        // A removal while the app was away is heard now, not a minute on;
+        // a session joining again meanwhile asks for itself (a refused
+        // ticket is checked).
+        watch?.start()
         LiveSessions.shared.willEnterForeground()
         if !opened { showRoot() }
-        // A removal while the app was away is heard now, not a minute on.
-        watch?.start()
         // Each time the app comes forward, a cold launch too (iOS calls
         // this after `willConnectTo`), the token is kept current and a
         // permission turned off in Settings clears it (R-IOS-12).
@@ -176,7 +179,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
             // Its approvals rise in a sheet over the transcript (R-PERM-2).
             let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
-            let live = RelayConnection(opening: { try source.openSession(id: row.id, known: known) }, approvals: approvals)
+            let live = RelayConnection(
+                opening: { try source.openSession(id: row.id, known: known) }, approvals: approvals,
+                standing: { source.standing() })
             let screen = TranscriptViewController(row: row, session: live, approvals: approvals)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
@@ -194,8 +199,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private func deviceGone(_ gone: DeviceGone, api: String, keys: KeychainKeyStorage, source: RegistrySessions) {
         LiveSessions.shared.stopAll()
         parkedScreens.letGoAll()
-        // Nothing re-registers for push meanwhile; the reset clears the
-        // registry's copy through an account of its own.
+        // Nothing re-registers for push meanwhile, a call already queued
+        // included; the reset clears the registry's copy through an
+        // account of its own.
+        Self.push?.retire()
         Self.push = nil
         // An approval sheet over a transcript, say, goes with the screens.
         window?.rootViewController?.dismiss(animated: false)
@@ -208,6 +215,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Self.push = nil
                 PushRegistration.signedOut()
                 UIApplication.shared.unregisterForRemoteNotifications()
+                // An alert still on the lock screen can name a session.
+                UNUserNotificationCenter.current().removeAllDeliveredNotifications()
             },
             forgetKeys: { try keys.forgetAll() },
             // A failure's kind and the core's words; never a key.

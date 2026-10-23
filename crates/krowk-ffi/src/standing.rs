@@ -70,15 +70,23 @@ impl Account {
             return Err(untrusted("the registry served an empty device list".into()));
         };
         if first.hash() != kept.root() {
-            // A list started over is a whole chain from its own first entry;
-            // one that isn't, no device of the person's made.
+            // A list started over is a whole chain from its own first entry.
+            // That proves only that it is well formed — anyone signed in as
+            // the person can start one — so it is never adopted, only said.
             Chain::verify(&entries, None).map_err(|e| untrusted(format!("the registry served a device list that starts elsewhere and does not verify ({})", e.0)))?;
             return Err(refused(DEVICE_LIST_RESET, reset(first)));
         }
         // The list as kept, entry for entry (the head's hash covers every
         // entry before it): nothing to verify or write again.
         let unchanged = entries.len() as u64 == kept.head().seq + 1 && entries.last().map(SignedEntry::hash) == Some(kept.head().hash);
-        let chain = if unchanged { kept } else { self.keystore.save_device_list(&entries).map_err(untrusted)? };
+        let chain = if unchanged {
+            kept
+        } else {
+            // Verified against the pin first, so a list this phone won't
+            // trust is told apart from a Keychain that won't keep one.
+            Chain::verify(&entries, Some(kept.head())).map_err(|e| untrusted(e.0))?;
+            self.keystore.save_device_list(&entries).map_err(internal)?
+        };
         if !chain.devices().iter().any(|d| d.id() == self.device) {
             return Err(refused(DEVICE_REMOVED, REMOVED.into()));
         }

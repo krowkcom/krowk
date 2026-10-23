@@ -347,17 +347,20 @@ list they started over stops, says so, and offers one thing: to reset it
   again), and a newer user key generation (a removal rotates it) is taken
   up, so the sessions hosts seal after a removal still open. A list the
   phone won't trust (forked, shorter, empty, or starting elsewhere without
-  verifying) is no removal: the list says the sessions couldn't be listed,
-  and the phone keeps its pin. Every read of the session list checks first, and so
-  does a session screen whose open is refused; while the paired app is in
-  the foreground, `StandingWatch` checks every minute and on each return.
+  verifying) is no removal: the list says the registry served a device
+  list this iPhone doesn't trust, and the phone keeps its pin. Every read
+  of the session list checks first, and so does a session screen whose
+  open, or a relay ticket, is refused; while the paired app is in the
+  foreground, `StandingWatch` checks every minute and on each return,
+  before any session joins again.
   The check runs off the main thread.
 - **What it does.** The first check that finds it gone replaces every
   screen with "This iPhone was removed from your devices" (or "Your device
   list was started over"), with the core's words under it. Every session
   followed live stops (`LiveSessions.stopAll`): its socket closed, nothing
   joined or retried after; kept session screens are let go; the session
-  list reads no more, the watch stops, and nothing registers for push.
+  list reads no more, the watch stops, and the push registration is
+  retired: nothing it had queued is sent or kept.
   "Check again" checks once more, telling no one: a phone listed after
   all (a registry that misspoke, a dashboard Revoke undone) goes back to
   Sessions, and nothing is reset.
@@ -367,8 +370,9 @@ list they started over stops, says so, and offers one thing: to reset it
   is cleared at the registry first, since that takes the phone's key (a
   removed phone's key is refused, and the registry dropped its token with
   the device, so a failure here is logged and the reset goes on); then
-  what the phone kept about push is forgotten and iOS's registration
-  dropped (`unregisterForRemoteNotifications`); then
+  what the phone kept about push is forgotten, iOS's registration dropped
+  (`unregisterForRemoteNotifications`) and the alerts still shown
+  removed; then
   `KeychainKeyStorage.forgetAll` deletes every `com.krowk.keys` item, the
   slots, the API key and the item holding the Secure Enclave wrapping key,
   which leaves the enclave key nothing to open; a write under way finishes
