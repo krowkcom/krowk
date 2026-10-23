@@ -157,8 +157,8 @@ fn main() {
 /// the test's own, hosted, its id the reply's body (the request's body, if
 /// any, its title), `POST /sessions/<id>/release` its lease let go,
 /// `POST /sessions/<id>/host` hosted again, `POST /sessions/<id>/turn`
-/// a turn typed at host A in it, and `POST /sessions/<id>/turn-ended` once
-/// those turns have ended.
+/// a turn typed at host A in it, and `POST /sessions/<id>/turn-ended`:
+/// `ended` once those turns have ended, or `running` after 5 s.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };

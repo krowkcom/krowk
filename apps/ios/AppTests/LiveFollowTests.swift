@@ -316,8 +316,9 @@ struct HostEnded {
         }
     }
 
-    /// Whether `limit` has passed since the host ended the turns, or since
-    /// the fleet's own five minutes (and a little) would have run out.
+    /// Whether `limit` has passed since the host ended the turns, or, if
+    /// the fleet never says so, since 330 s after asking (the most the host
+    /// gets).
     func past(_ limit: Duration) -> Bool {
         let now = ContinuousClock.now
         if let at = ended.at.withLock({ $0 }) { return now >= at + limit }

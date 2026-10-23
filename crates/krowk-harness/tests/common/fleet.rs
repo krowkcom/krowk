@@ -492,8 +492,8 @@ impl Hosting {
     /// bridge hands its last lines on after): `true` once they have,
     /// `false` if one still runs. A session with none running has nothing
     /// to wait for. How long a turn takes is the host's (a starved runner
-    /// streams slower); a test that waits on this first then checks only
-    /// how soon its viewer shows the end.
+    /// streams slower); a test asks this until `true`, then checks only how
+    /// soon its viewer shows the end.
     pub fn turn_ended(&self, session: &str, wait: Duration) -> Result<bool, String> {
         if !self.tests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).titles.contains_key(session) {
             return Err(format!("the fleet hosts no test session {session}"));
