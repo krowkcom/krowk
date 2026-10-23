@@ -657,9 +657,11 @@ fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'stat
 }
 
 /// Waits until the session's sealed index names a lease, a checkpoint and
-/// a head: the bridge has taken the session up and written it.
+/// a head: the bridge has taken the session up and written it. Up to a
+/// minute: a debug host on GitHub's busy macOS runner has taken longer
+/// than 10 s to write its first checkpoint, and the fleet never started.
 fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let ready = (|| -> Result<(), String> {
             let s = api.show_sync_session(session).map_err(|e| e.to_string())?;
