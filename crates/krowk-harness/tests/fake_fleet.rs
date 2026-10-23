@@ -252,7 +252,8 @@ fn streams(prompt: &str, lines_streamed: usize) {
     let started = Instant::now();
     f.hosting.turn(&id, prompt).unwrap();
     // What a phone's UI test waits on before it looks for the turn's end
-    // (`turn-ended`): running as it streams, ended once a viewer has it.
+    // (`turn-ended`): running as it streams; the host finished it before
+    // its last lines reached a viewer, so ended by the time one has them.
     assert!(f.hosting.turn_ended(&id, Duration::ZERO).is_err(), "the turn ended as it started");
     let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
     let got = rt.block_on(until(&mut v, Duration::from_secs(60), |all| all.iter().filter(|u| ended(u)).count() >= 1));
@@ -543,6 +544,7 @@ fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets
     assert_eq!(request("POST", &format!("{url}/{id}/release")).0, "HTTP/1.1 500 X", "released once only");
     // No turn typed there: none to wait for.
     assert_eq!(request("POST", &format!("{url}/{id}/turn-ended")), ("HTTP/1.1 200 X".into(), "ended".into()));
+    assert_eq!(request("POST", &format!("{url}/no-such-session/turn-ended")).0, "HTTP/1.1 500 X", "only a test's own session");
     // R-HAND-4: hosted again, as a host coming back; then let go again.
     assert_eq!(request("POST", &format!("{url}/{id}/host")), ("HTTP/1.1 200 X".into(), "hosted".into()));
     assert_eq!(request("POST", &format!("{url}/{id}/host")).0, "HTTP/1.1 500 X", "hosted once at a time");

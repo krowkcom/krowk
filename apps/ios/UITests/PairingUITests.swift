@@ -238,7 +238,8 @@ final class PairingUITests: XCTestCase {
         // index and read again could be a cell scrolled off and gone.
         let atEnd = {
             guard let shown = try? transcript.snapshot() else { return false }
-            return shown.children.contains { $0.identifier == "transcript-turn-end" && $0.frame.maxY > shown.frame.maxY - 120 }
+            let bottom = shown.frame.maxY
+            return shown.children.contains { $0.identifier == "transcript-turn-end" && $0.frame.maxY > bottom - 120 && $0.frame.minY < bottom }
         }
         let followed = Date.now.addingTimeInterval(30)
         while !atEnd() && Date.now < followed {

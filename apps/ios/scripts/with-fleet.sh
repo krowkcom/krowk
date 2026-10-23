@@ -19,7 +19,7 @@
 # <url>/<id>/turn runs a turn in (its body the prompt; "Please stream a
 # long answer" streams one at 200 tokens a second, far slower on a busy
 # runner), and <url>/<id>/turn-ended answers once that turn has ended at
-# the host. The fleet runs with
+# the host (up to five minutes, holding the control meanwhile). The fleet runs with
 # --demo: its session is titled "A demo session", has a turn with a tool
 # call and its result, and holds an approval. The fleet binds 127.0.0.1
 # only; the simulator shares

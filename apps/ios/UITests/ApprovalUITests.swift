@@ -161,17 +161,19 @@ enum FleetUI {
     /// come 20 s after the tap, so this waits for whichever comes first,
     /// the question or the page, rather than a while for the question
     /// alone: one that came late was never answered, and the page never
-    /// opened behind it. Whether the page showed within `timeout`.
+    /// opened behind it. A tap the prompt didn't take (it was still
+    /// animating in) leaves it up, and it is answered again. Whether the
+    /// page showed within `timeout`.
     @MainActor
     static func allowTheSignInPage(until page: XCUIElement, timeout: TimeInterval = 60) -> Bool {
         let proceed = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Continue"]
         let deadline = Date.now.addingTimeInterval(timeout)
         while Date.now < deadline {
+            if page.exists { return true }
             if proceed.waitForExistence(timeout: 1) {
                 proceed.tap()
-                return page.waitForExistence(timeout: max(1, deadline.timeIntervalSinceNow))
+                _ = page.waitForExistence(timeout: 3)
             }
-            if page.exists { return true }
         }
         return page.exists
     }
