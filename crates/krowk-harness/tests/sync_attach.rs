@@ -653,19 +653,28 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                     }
                     let asked = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
                     let notify = asked.starts_with("POST ") && asked.contains("/notification ");
-                    if notify && mode.load(Ordering::SeqCst) == HOLD_NOTIFY {
+                    // What becomes of a notification is settled by the mode it
+                    // came in under (or, held, the one that let it go), read
+                    // before it is logged: a test that sees it logged and
+                    // moves to the next mode does not change its fate.
+                    let mut fate = m;
+                    if notify && fate == HOLD_NOTIFY {
                         log.lock().unwrap().push((format!("HELD {asked}"), None));
-                    }
-                    while notify && mode.load(Ordering::SeqCst) == HOLD_NOTIFY {
-                        std::thread::sleep(Duration::from_millis(10));
+                        while fate == HOLD_NOTIFY {
+                            std::thread::sleep(Duration::from_millis(10));
+                            fate = mode.load(Ordering::SeqCst);
+                        }
                     }
                     // A notification is logged as it is handed on, not once
                     // answered: the stand-in records it before it answers.
                     if notify {
                         log.lock().unwrap().push((asked, None));
                     }
-                    if notify && mode.load(Ordering::SeqCst) == REFUSE_NOTIFY {
-                        let body = r#"{"error":"push_unconfigured","message":"this registry cannot send pushes","fix":"nothing to do here; the registry's operator adds its APNs key"}"#;
+                    if notify && fate == REFUSE_NOTIFY {
+                        // The registry's envelope: a flat `"error"` reads as a bare
+                        // 503, which the client retries, and the retry, come
+                        // under the next mode, rang.
+                        let body = r#"{"error":{"code":"push_unconfigured","message":"this registry cannot send pushes"}}"#;
                         let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
                     }
@@ -3104,6 +3113,9 @@ async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
     until(&mut v, Duration::from_secs(5), &mut frames, ended).await;
     let seen = notified(&w, &session, "done", 3, Duration::from_secs(10)).await;
     assert_eq!(seen.len(), 3, "the refused one never rang: {seen:?}");
+    // One ask a turn, the held one handed on once: `push_unconfigured` is
+    // tried once, never again under a mode that would let it ring.
+    assert_eq!(notify_calls(&w, &session), 4, "the refusal was not asked again");
     assert!(!bridge.is_finished(), "the bridge runs on");
 }
 
