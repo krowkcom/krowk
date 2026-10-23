@@ -102,6 +102,20 @@ public final class SessionListModel {
         }
     }
 
+    /// Returns once a listing or a failure is known: at once if one is,
+    /// after the read under way if one runs, else after a read of its own.
+    /// A route from a notification waits on this before it looks for its
+    /// session (ticket 106), without a second read at a cold launch, whose
+    /// list starts one as it appears.
+    public func settled() async {
+        guard listing == nil, failure == nil else { return }
+        if let reading {
+            await reading.value
+        } else {
+            await refresh()
+        }
+    }
+
     /// Reads until no refresh asked for is left unread.
     private func read() async {
         while done < asked {

@@ -46,6 +46,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
     let emptyLabel = UILabel()
     let spinner = UIActivityIndicatorView(style: .medium)
     private var observers: [NSObjectProtocol] = []
+    /// Routes from notifications taken: one finding its session gives way
+    /// to a later one.
+    private var routes = 0
 
     public init(model: SessionListModel, open: (@MainActor (SessionRow) -> UIViewController)? = nil) {
         self.model = model
@@ -281,4 +284,61 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     /// The footer's text, as applied.
     var footerText: String { footerLines.joined(separator: "\n") }
+}
+
+// MARK: Opened from a notification (ticket 106)
+
+extension SessionListViewController: RouteNavigator {
+    /// Back to this list and on to session `id`'s transcript, as a tap on
+    /// its row would push it: the screen already open for it when there is
+    /// one (on top, or under a sheet), never a second; one parked with
+    /// commands out (ticket 90) is taken back as a tap would. Only a
+    /// session in the person's listing opens: one that isn't there after a
+    /// fresh read (another account's, deleted, sealed under a key this
+    /// phone lacks) leaves the app as it is. Without animation: the person
+    /// tapped the alert to be there.
+    public func show(session id: String) async -> (any RoutedScreen)? {
+        routes += 1
+        let this = routes
+        if let open = openScreen(of: id) { return reveal(open) }
+        await model.settled()
+        if row(id) == nil, model.listing != nil { await model.refresh() }
+        // A later route, or the person, went somewhere else meanwhile.
+        guard this == routes, let row = row(id), let navigation = navigationController else { return nil }
+        if let open = openScreen(of: id) { return reveal(open) }
+        if navigation.presentedViewController != nil {
+            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
+                navigation.dismiss(animated: false) { done.resume() }
+            }
+            guard this == routes else { return nil }
+        }
+        navigation.popToViewController(self, animated: false)
+        let screen = open(row)
+        navigation.pushViewController(screen, animated: false)
+        return screen as? any RoutedScreen
+    }
+
+    public var shownSession: ShownSession? {
+        guard let screen = navigationController?.topViewController as? TranscriptViewController else { return nil }
+        return ShownSession(id: screen.row.id, live: screen.isLive)
+    }
+
+    /// The row the list shows for session `id`, by its id in any case.
+    private func row(_ id: String) -> SessionRow? {
+        screen().rows.first { $0.id.lowercased() == id }
+    }
+
+    /// Session `id`'s screen in this list's navigation stack, if one is.
+    private func openScreen(of id: String) -> TranscriptViewController? {
+        navigationController?.viewControllers.lazy.compactMap { $0 as? TranscriptViewController }.first { $0.row.id.lowercased() == id }
+    }
+
+    /// `screen`, already open, on top: what was pushed over it goes, and a
+    /// sheet of its own (the approval sheet) stays.
+    private func reveal(_ screen: TranscriptViewController) -> TranscriptViewController {
+        if navigationController?.topViewController !== screen {
+            navigationController?.popToViewController(screen, animated: false)
+        }
+        return screen
+    }
 }

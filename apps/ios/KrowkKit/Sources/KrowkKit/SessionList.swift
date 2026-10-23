@@ -94,13 +94,17 @@ public struct SessionRow: Hashable, Sendable {
     /// What VoiceOver reads: the title, the place and the status in
     /// words ("live on host-a", "last seen 12 minutes ago").
     public let accessibilityLabel: String
+    /// "last seen 12m ago", from when its host last wrote it, live or not:
+    /// what a session opened with its host away says (R-IOS-7).
+    public let lastSeen: String?
 
-    public init(id: String, title: String, detail: String, live: Bool, accessibilityLabel: String) {
+    public init(id: String, title: String, detail: String, live: Bool, accessibilityLabel: String, lastSeen: String? = nil) {
         self.id = id
         self.title = title
         self.detail = detail
         self.live = live
         self.accessibilityLabel = accessibilityLabel
+        self.lastSeen = lastSeen
     }
 }
 
@@ -135,6 +139,7 @@ public final class SessionRowFormatter {
             ? (place.isEmpty ? "Untitled session" : place)
             : session.title
         let live = liveTrusted && session.hostedBy != nil
+        let seen = "last seen \(lastSeen(session.updatedMs, now: now, in: relative))"
         let status: String
         let said: String
         if live {
@@ -142,12 +147,13 @@ public final class SessionRowFormatter {
             status = "● live\(on)"
             said = "live\(on)"
         } else {
-            status = "last seen \(lastSeen(session.updatedMs, now: now, in: relative))"
+            status = seen
             said = "last seen \(lastSeen(session.updatedMs, now: now, in: spoken))"
         }
         return SessionRow(
             id: session.id, title: title, detail: place.isEmpty ? status : "\(place) · \(status)", live: live,
-            accessibilityLabel: [title, place == title ? "" : place, said].filter { !$0.isEmpty }.joined(separator: ", "))
+            accessibilityLabel: [title, place == title ? "" : place, said].filter { !$0.isEmpty }.joined(separator: ", "),
+            lastSeen: seen)
     }
 
     /// "12m ago", "3h ago"; "just now" under a minute, and for a time
