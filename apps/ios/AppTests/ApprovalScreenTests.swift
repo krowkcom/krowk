@@ -65,7 +65,7 @@ final class ScreenStubSession: LiveSession {
 }
 
 @MainActor
-@Suite("R-PERM-2, R-LAG-8: the approval sheet over the transcript")
+@Suite("R-PERM-2, R-LAG-8: the approval sheet over the transcript", .serialized)
 struct ApprovalScreenTests {
     /// One frame's apply now, as the display link would.
     static func frame(_ screen: TranscriptViewController) {

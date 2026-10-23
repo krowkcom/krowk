@@ -438,9 +438,10 @@ left readable).
   bar of their own below it, which scrolls once it would take more than
   45% of the sheet. A summary of more than one line says how many, and
   runs of blank lines or of blanks in a line (any whitespace, and
-  characters that draw as nothing, like the Braille blank or the Hangul
-  fillers) are said ("⋯ 29 blank lines ⋯", "⋯ 40 blanks ⋯") rather than
-  drawn, so nothing after them is pushed out of sight; Face ID's sentence
+  characters that draw as nothing: default-ignorable ones, the Braille
+  blank, the Hangul fillers; 16 spaces or tabs, so code's indentation is
+  drawn, or 4 of anything else) are said ("⋯ 29 blank lines ⋯", "⋯ 40
+  blanks ⋯") rather than drawn, so nothing after them is pushed out of sight; Face ID's sentence
   is the first line with something on it, as drawn, and adds "(+N more
   lines)". An option's whole label is drawn, as it is sent.
 - **The choices.** Allow once; Allow for this session only when the
@@ -485,7 +486,7 @@ left readable).
   and as answered elsewhere, naming the decision, when the terminal
   decided otherwise. `approval.resolved` for a request
   waiting here takes it away with a toast ("Answered on another device:
-  allowed"); a turn's end (`turn.completed`, or the run's result) drops
+  allowed"; a denial says it may be the turn stopping); a turn's end (`turn.completed`, or the run's result) drops
   its requests. A screen left with an answer out is kept until its ack.
 - **Put away.** Swiped down, the sheet waits behind a hand in the
   navigation bar ("1 approval waiting"); a tap, or a new request, brings

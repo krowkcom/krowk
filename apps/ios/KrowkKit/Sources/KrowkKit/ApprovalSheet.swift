@@ -58,6 +58,8 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     private let scroll = UIScrollView()
     private let content = UIStackView()
     private let buttons = UIStackView()
+    /// The buttons' bar, which scrolls when capped.
+    private var bar: UIScrollView?
     /// The written-answer fields, by question id.
     public private(set) var fields: [String: UITextField] = [:]
     /// The option rows, by question id, in order.
@@ -162,8 +164,15 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         bar.alwaysBounceVertical = false
         buttons.translatesAutoresizingMaskIntoConstraints = false
         bar.addSubview(buttons)
+        // Below the buttons' own resistance: past the cap, the bar
+        // scrolls rather than squash a button.
         let fit = bar.heightAnchor.constraint(equalTo: buttons.heightAnchor)
-        fit.priority = .defaultHigh
+        fit.priority = .defaultHigh - 1
+        for b in [allowButton, allowSessionButton, answerButton, denyButton, declineButton] {
+            b.setContentCompressionResistancePriority(.required, for: .vertical)
+        }
+        // The room above the keyboard, which the cap is a share of.
+        let room = UILayoutGuide()
         let rule = UIView()
         rule.backgroundColor = .separator
         rule.translatesAutoresizingMaskIntoConstraints = false
@@ -171,6 +180,8 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         view.addSubview(scroll)
         view.addSubview(rule)
         view.addSubview(bar)
+        view.addLayoutGuide(room)
+        self.bar = bar
         let margins = view.layoutMarginsGuide
         let safe = view.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
@@ -196,7 +207,9 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
             buttons.trailingAnchor.constraint(equalTo: bar.contentLayoutGuide.trailingAnchor),
             buttons.widthAnchor.constraint(equalTo: bar.frameLayoutGuide.widthAnchor),
             fit,
-            bar.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, multiplier: 0.45),
+            room.topAnchor.constraint(equalTo: view.topAnchor),
+            room.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor),
+            bar.heightAnchor.constraint(lessThanOrEqualTo: room.heightAnchor, multiplier: 0.45),
         ])
         refresh()
     }
@@ -217,6 +230,8 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         if fields.values.allSatisfy({ !$0.isFirstResponder }) { becomeFirstResponder() }
+        // Capped, the bar shows it scrolls: Deny may be below the fold.
+        bar?.flashScrollIndicators()
         // The delay counts from when the request is on screen, not from
         // when the sheet began to rise.
         arm()
@@ -234,11 +249,15 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
             // What was picked and written for the request shown before is
             // kept for when it shows again (it may come back first).
             if let shownID { drafts[shownID] = draft }
+            // Only drafts of requests still held: what was written for one
+            // gone (a secret too) is not kept.
+            drafts = drafts.filter { id, _ in queue.held.contains { $0.prompt.requestID == id } }
             shownID = prompt.requestID
             draft = drafts[prompt.requestID] ?? QuestionDraft()
             inputShown = false
             draw(prompt)
             for (id, text) in draft.written { fields[id]?.text = text }
+            bar?.flashScrollIndicators()
             arm()
             UIAccessibility.post(notification: .screenChanged, argument: titleLabel)
         }
@@ -448,13 +467,15 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     override public var keyCommands: [UIKeyCommand]? {
         let allow = UIKeyCommand(title: "Allow once", action: #selector(keyAllow), input: "\r", modifierFlags: .command)
         allow.wantsPriorityOverSystemBehavior = true
+        allow.repeatBehavior = .nonRepeatable
         let later = UIKeyCommand(title: "Later", action: #selector(keyLater), input: UIKeyCommand.inputEscape)
         return [allow, later]
     }
 
     @objc private func keyAllow() {
-        // A held ⌘↵ repeats: only a press after half a second without one
-        // counts, so holding it never allows the next request too.
+        // Held, ⌘↵ never repeats (`nonRepeatable`), and only a press half a
+        // second after the last counts: holding it never allows the next
+        // request too.
         let now = CACurrentMediaTime()
         defer { lastKeyAllow = now }
         guard now - lastKeyAllow > 0.5, let held = queue.current else { return }

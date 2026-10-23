@@ -618,9 +618,15 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
         guard approvals.current != nil, !approvalsPutAway, !parked, !left, isViewLoaded, view.window != nil else { return }
         if let other = presentedViewController {
-            // The last sheet still going: its dismissal calls this again.
-            // Another sheet up (a link's): tried again shortly.
-            if !(other is ApprovalSheetController) { retryApprovals() }
+            if let stale = other as? ApprovalSheetController, !stale.isBeingDismissed, !stale.isBeingPresented {
+                // A sheet taken down whose dismissal never happened: down
+                // again, and this runs once it's gone.
+                takeDown(stale, animated: false)
+            } else if !(other is ApprovalSheetController) || other.isBeingPresented {
+                // Another sheet up (a link's), or one still rising: tried
+                // again shortly. One going calls this as it goes.
+                retryApprovals()
+            }
             return
         }
         let sheet = ApprovalSheetController(queue: approvals)
@@ -715,8 +721,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         case .settled(let prompt, let verdict):
             mark(prompt, Self.verdictLine(verdict, asks: prompt.asks))
         case .resolvedElsewhere(let prompt, let resolution):
-            mark(prompt, "\(resolution.word) on another device")
-            say("Answered on another device: \(resolution.word)")
+            // A turn stopped denies what it asked, as another device would.
+            mark(prompt, resolution == .denied ? "denied elsewhere" : "\(resolution.word) on another device")
+            say(resolution == .denied ? "Denied on another device, or as its turn stopped" : "Answered on another device: \(resolution.word)")
         case .dropped(let prompt, let why):
             mark(prompt, nil)
             if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }

@@ -154,16 +154,17 @@ public enum ApprovalRules {
     /// command whose first line is harmless never reads as all there is.
     public static func reason(_ prompt: ApprovalPrompt) -> String {
         let tool = SafeText.line(prompt.tool[...], limit: 60)
-        let first = shownSummary(prompt.summary).split(separator: "\n").first { !$0.hasPrefix("⋯ ") }.map { SafeText.line($0, limit: 60) } ?? ""
+        let head = SafeText.clean(SafeText.truncated(prompt.summary, limit: 4 * 1024).shown)
+        let first = head.split(separator: "\n").first { !$0.allSatisfy(isBlank) }.map { SafeText.line(squeezed($0)[...], limit: 60) } ?? ""
         let more = lines(prompt.summary) - 1
         let rest = more > 0 ? " (+\(more) more line\(more == 1 ? "" : "s"))" : ""
         return first.isEmpty ? "Allow \(tool)\(rest)" : "Allow \(tool): \(first)\(rest)"
     }
 
-    /// The lines `text` holds, once cleaned (a line or paragraph separator
-    /// counts as a break), blank ones too.
+    /// The lines `text` holds as drawn (a line or paragraph separator
+    /// counts as a break), blank ones too: counted, never copied.
     static func lines(_ text: String) -> Int {
-        SafeText.clean(text).split(separator: "\n", omittingEmptySubsequences: false).count
+        1 + text.unicodeScalars.reduce(0) { $0 + ($1 == "\n" || SafeText.breaks($1) ? 1 : 0) }
     }
 
     /// A summary as the sheet draws it: cleaned, at most 4 KiB, with a run
@@ -192,21 +193,26 @@ public enum ApprovalRules {
         return out.joined(separator: "\n")
     }
 
-    /// `line` with each run of 4 or more blanks said ("⋯ 40 blanks ⋯"),
-    /// counted in scalars: a run of Hangul fillers is one character.
+    /// `line` with each run of blanks said ("⋯ 40 blanks ⋯"), counted in
+    /// scalars (a run of Hangul fillers is one character): 16 or more
+    /// spaces and tabs (code's indentation is drawn as it is), or 4 or more
+    /// when any other blank is among them.
     static func squeezed(_ line: Substring) -> String {
         var out = ""
         var run = ""
         var count = 0
+        var odd = false
         func flush() {
-            out += count >= 4 ? " ⋯ \(count) blanks ⋯ " : run
+            out += count >= 16 || (odd && count >= 4) ? " ⋯ \(count) blanks ⋯ " : run
             run = ""
             count = 0
+            odd = false
         }
         for c in line {
             if isBlank(c) {
                 run.append(c)
                 count += c.unicodeScalars.count
+                odd = odd || (c != " " && c != "\t")
             } else {
                 flush()
                 out.append(c)
@@ -216,13 +222,15 @@ public enum ApprovalRules {
         return out
     }
 
-    /// Whitespace, or a character that draws as nothing: the Braille
-    /// blank, the Hangul fillers, the Mongolian vowel separator.
+    /// A character every scalar of which draws as nothing: whitespace, a
+    /// default-ignorable code point (format characters, variation
+    /// selectors, tags, fillers), or one of `drawsBlank`.
     static func isBlank(_ c: Character) -> Bool {
-        c.isWhitespace || c.unicodeScalars.allSatisfy { drawsBlank.contains($0.value) || $0.properties.isWhitespace }
+        c.unicodeScalars.allSatisfy { $0.properties.isWhitespace || $0.properties.isDefaultIgnorableCodePoint || drawsBlank.contains($0.value) }
     }
 
-    static let drawsBlank: Set<UInt32> = [0x2800, 0x3164, 0x115F, 0x1160, 0xFFA0, 0x180E, 0x2060, 0x00AD, 0x034F]
+    /// Blank-looking characters that aren't default-ignorable.
+    static let drawsBlank: Set<UInt32> = [0x2800, 0x3164, 0x115F, 0x1160, 0xFFA0, 0x180E]
 
     /// The most of a request's input the sheet shows.
     public static let inputLimit = 16 * 1024
