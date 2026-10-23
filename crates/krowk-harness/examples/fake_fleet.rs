@@ -50,10 +50,11 @@
 //! a `read` call, then streams 120 numbered lines at 200 tokens a second, a
 //! turn a phone's tests follow live (ticket 89); "stream a very long
 //! answer", 300 lines. A POST to `sessions_url/<id>/turn-ended` replies
-//! `ended` once every turn typed there has ended at host A, waiting up to
-//! five minutes (and holding the control meanwhile): a starved CI runner
-//! streams far slower than 200 tokens a second, so a test waits for the
-//! host here, then times only how soon the phone shows the end.
+//! `ended` once every turn typed there has ended at host A, or `running`
+//! if one still runs after 5 s (the control is served one request at a
+//! time, so it is never held longer): a starved CI runner streams far
+//! slower than 200 tokens a second, so a test asks until the host is done,
+//! then times only how soon the phone shows the end.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn
@@ -173,7 +174,8 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
     let again = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/host")).filter(|id| !id.is_empty() && !id.contains('/'));
     let ended = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/turn-ended")).filter(|id| !id.is_empty() && !id.contains('/'));
     if let ("POST", Some(id)) = (seen.method.as_str(), ended) {
-        return answered(&format!("POST {}", seen.path), hosting.turn_ended(id, std::time::Duration::from_secs(300)).map(|()| "ended".into()));
+        let ended = hosting.turn_ended(id, std::time::Duration::from_secs(5));
+        return answered(&format!("POST {}", seen.path), ended.map(|done| if done { "ended" } else { "running" }.into()));
     }
     if let ("POST", Some(id)) = (seen.method.as_str(), again) {
         return answered(&format!("POST {}", seen.path), hosting.host_again(id).map(|()| "hosted".into()));

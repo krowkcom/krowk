@@ -230,8 +230,15 @@ final class PairingUITests: XCTestCase {
         // which is the host's pace, not the phone's; and nothing here asks
         // the screen anything meanwhile: each query snapshots the whole
         // streaming transcript on the app's main thread, slowing the run.
-        let (ended, why) = try await Self.request("\(sessions)/\(id)/turn-ended", timeout: 330)
-        XCTAssertEqual(ended, 200, "the turn never ended at the host: \(why)")
+        // The fleet answers within 5 s each time, `running` until it's done.
+        var ended = "running"
+        let hostDone = Date.now.addingTimeInterval(330)
+        while ended == "running" && Date.now < hostDone {
+            let (status, reply) = try await Self.request("\(sessions)/\(id)/turn-ended")
+            XCTAssertEqual(status, 200, reply)
+            ended = reply
+        }
+        XCTAssertEqual(ended, "ended", "the turn never ended at the host")
         // Then the phone, followed to the end: the turn's separator, last
         // on screen (the first turn's has scrolled far above), soon after.
         // Each look is one snapshot of the transcript: an element bound by
@@ -297,7 +304,9 @@ final class PairingUITests: XCTestCase {
         XCTAssertEqual(status, 200, "POST \(url): \(body)")
     }
 
-    private static func request(_ url: String, body: String = "", timeout: TimeInterval = 60) async throws -> (Int, String) {
+    /// A POST to the fleet. Two minutes: hosting a session waits up to a
+    /// minute for its bridge on a busy runner, after its first turn.
+    private static func request(_ url: String, body: String = "", timeout: TimeInterval = 120) async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
         request.httpBody = Data(body.utf8)

@@ -290,8 +290,9 @@ final class CountingApprovals: ApprovalSink {
 }
 
 /// When the fleet's host ended the turns typed in a session: asked of the
-/// fleet (`turn-ended`, which answers once they have) on a task of its own,
-/// so the test goes on watching the screen meanwhile.
+/// fleet (`turn-ended`, which answers `running` within 5 s until they
+/// have) on a task of its own, so the test goes on watching the screen
+/// meanwhile.
 struct HostEnded {
     private final class At: Sendable {
         let at = Mutex<ContinuousClock.Instant?>(nil)
@@ -305,9 +306,12 @@ struct HostEnded {
         let ended = At()
         self.ended = ended
         watcher = Task {
-            // Answered or failed, the fleet has said what it will: a failure
-            // (a session not the test's own) starts the limit at once.
-            _ = try? await HostedKeychain.SessionListTests.control("/\(session)/turn-ended", timeout: 330)
+            // Until it says ended. A failure (a session not the test's own,
+            // the fleet gone) starts the limit at once; so does the test
+            // ending first, which cancels this.
+            while !Task.isCancelled {
+                guard let reply = try? await HostedKeychain.SessionListTests.control("/\(session)/turn-ended"), reply == "running" else { break }
+            }
             ended.at.withLock { $0 = .now }
         }
     }

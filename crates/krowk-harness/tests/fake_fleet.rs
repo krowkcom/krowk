@@ -254,10 +254,10 @@ fn streams(prompt: &str, lines_streamed: usize) {
     // What a phone's UI test waits on before it looks for the turn's end
     // (`turn-ended`): running as it streams; the host finished it before
     // its last lines reached a viewer, so ended by the time one has them.
-    assert!(f.hosting.turn_ended(&id, Duration::ZERO).is_err(), "the turn ended as it started");
+    assert_eq!(f.hosting.turn_ended(&id, Duration::ZERO), Ok(false), "the turn ended as it started");
     let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
     let got = rt.block_on(until(&mut v, Duration::from_secs(60), |all| all.iter().filter(|u| ended(u)).count() >= 1));
-    f.hosting.turn_ended(&id, Duration::from_secs(10)).expect("ended at the host once a viewer has its end");
+    assert_eq!(f.hosting.turn_ended(&id, Duration::from_secs(10)), Ok(true), "ended at the host once a viewer has its end");
     let took = started.elapsed();
     let lines: Vec<&StreamLine> = got.iter().filter_map(|u| if let viewer::Update::Line(l) = u { Some(l) } else { None }).collect();
     let call = lines.iter().find_map(|l| match l {

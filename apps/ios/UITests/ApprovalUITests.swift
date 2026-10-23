@@ -242,7 +242,9 @@ enum FleetUI {
         app.terminate()
     }
 
-    static func request(_ url: String, body: String = "", timeout: TimeInterval = 60) async throws -> (Int, String) {
+    /// A POST to the fleet. Two minutes: hosting a session waits up to a
+    /// minute for its bridge on a busy runner, after its first turn.
+    static func request(_ url: String, body: String = "", timeout: TimeInterval = 120) async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
         request.httpBody = Data(body.utf8)

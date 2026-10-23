@@ -72,8 +72,9 @@ extension HostedKeychain {
         }
 
         /// POSTs to the fleet's sessions URL plus `path`: its reply's body.
-        /// `timeout` is the request's: `turn-ended` waits for the host.
-        static func control(_ path: String, body: String = "", timeout: TimeInterval = 60) async throws -> String {
+        /// Two minutes: hosting a session waits up to a minute for its
+        /// bridge on a busy runner, after its first turn.
+        static func control(_ path: String, body: String = "", timeout: TimeInterval = 120) async throws -> String {
             let base = try #require(
                 ProcessInfo.processInfo.environment["KROWK_SESSIONS_URL"].flatMap { $0.isEmpty ? nil : $0 },
                 "KROWK_SESSIONS_URL is unset: run the tests through apps/ios/scripts/with-fleet.sh")

@@ -488,22 +488,20 @@ impl Hosting {
     }
 
     /// Waits, up to `wait`, until every turn `turn` typed in `session`, a
-    /// test's own, has ended at host A: the host daemon finished it (the
-    /// bridge hands its last lines on after). A session with none running
-    /// has nothing to wait for. How long a turn takes is the host's (a
-    /// starved runner streams slower); a test that waits here first then
-    /// checks only how soon its viewer shows the end.
-    pub fn turn_ended(&self, session: &str, wait: Duration) -> Result<(), String> {
+    /// test's own, has ended at host A (the host daemon finished it; the
+    /// bridge hands its last lines on after): `true` once they have,
+    /// `false` if one still runs. A session with none running has nothing
+    /// to wait for. How long a turn takes is the host's (a starved runner
+    /// streams slower); a test that waits on this first then checks only
+    /// how soon its viewer shows the end.
+    pub fn turn_ended(&self, session: &str, wait: Duration) -> Result<bool, String> {
         if !self.tests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).titles.contains_key(session) {
             return Err(format!("the fleet hosts no test session {session}"));
         }
         let (running, ended) = &*self.turns;
         let guard = running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (guard, timeout) = ended.wait_timeout_while(guard, wait, |r| r.get(session).is_some_and(|n| *n > 0)).unwrap_or_else(std::sync::PoisonError::into_inner);
-        if timeout.timed_out() {
-            return Err(format!("{} turn(s) in {session} still running after {} s", guard.get(session).copied().unwrap_or(0), wait.as_secs()));
-        }
-        Ok(())
+        let (still, _) = ended.wait_timeout_while(guard, wait, |r| r.get(session).is_some_and(|n| *n > 0)).unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(still.get(session).is_none_or(|n| *n == 0))
     }
 
     /// Stops every test's session, and any that starts from now on.
