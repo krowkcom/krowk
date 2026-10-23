@@ -116,17 +116,14 @@ extension HostedKeychain {
         // MARK: Ticket 86: backgrounding and network changes
 
         @Test("R-IOS-2: the scene delegate's willEnterForeground starts the connect of a session followed live, before any view appears")
-        @MainActor
         func connectEarly() async throws {
             let (live, _) = try await Self.follow(try await Self.demo())
             defer { live.stop() }
             try await Self.wait(for: .live, on: live, within: .seconds(15))
-            LiveSessions.shared.add(live)
-            defer { LiveSessions.shared.remove(live) }
+            await MainActor.run { LiveSessions.shared.add(live) }
 
             // Lost in the background: held, nothing dialed.
-            let scene = try #require(UIApplication.shared.connectedScenes.first)
-            SceneDelegate().sceneDidEnterBackground(scene)
+            try await Self.scene(.background)
             let dials = live.dials
             live.dropConnection()
             try await Task.sleep(for: .seconds(3))
@@ -134,9 +131,23 @@ extension HostedKeychain {
             #expect(Self.waiting(live.status), "\(live.status.text)")
 
             // No view, no screen: the scene's foreground alone dials.
-            SceneDelegate().sceneWillEnterForeground(scene)
+            try await Self.scene(.foreground)
             try await Self.wait(until: { live.dials > dials }, within: .seconds(5), "no connect after willEnterForeground: \(live.dials) dials")
             try await Self.wait(for: .live, on: live, within: .seconds(15))
+            await MainActor.run { LiveSessions.shared.remove(live) }
+        }
+
+        enum SceneEvent { case background, foreground }
+
+        /// The app's scene delegate told the scene went to the background,
+        /// or is coming forward, as UIKit tells it.
+        @MainActor
+        static func scene(_ event: SceneEvent) throws {
+            let scene = try #require(UIApplication.shared.connectedScenes.first, "no scene in the host app")
+            switch event {
+            case .background: SceneDelegate().sceneDidEnterBackground(scene)
+            case .foreground: SceneDelegate().sceneWillEnterForeground(scene)
+            }
         }
 
         @Test("R-OFF-2, R-IOS-2: a connection force-closed in a 15 s background comes back on the foreground: a fresh connection, live, no line drained twice")
