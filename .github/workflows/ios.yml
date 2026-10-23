@@ -338,14 +338,14 @@ jobs:
           done
           exit 1
 
-      - name: "R-LAG-7, R-PERF-4: the frame-apply baseline and host-to-screen latency (recorded, not a gate)"
+      - name: "R-LAG-7, R-PERF-4, R-PERM-2: the frame-apply baseline, host-to-screen latency and a notification's cold launch to its sheet (recorded, not a gate)"
         if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |
           test -f "$RUNNER_TEMP/test.log" || exit 0
           {
             echo "### Live follow: recorded on the simulator, not a device budget"
             echo '```'
-            grep -oE "(krowk\.frame\.apply baseline|krowk host→screen latency).*|Test Case .*testFrameApplyBaseline.*measured.*" "$RUNNER_TEMP/test.log" | sort -u || echo "no baseline lines in the log"
+            grep -oE "(krowk\.frame\.apply baseline|krowk host→screen latency|krowk notification cold launch).*|Test Case .*testFrameApplyBaseline.*measured.*" "$RUNNER_TEMP/test.log" | sort -u || echo "no baseline lines in the log"
             echo '```'
           } | tee -a "$GITHUB_STEP_SUMMARY"
 
