@@ -195,11 +195,21 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private static func push(api: String, keys: KeychainKeyStorage) -> PushRegistration {
         if let push { return push }
         let log = Logger(subsystem: "com.krowk.app", category: "push")
+        var register: @MainActor () -> Void = { UIApplication.shared.registerForRemoteNotifications() }
+        #if DEBUG
+        // The UI tests' stand-in for APNs, which gives GitHub's simulators
+        // no token: KROWK_FAKE_APNS_TOKEN (hex) is handed back as iOS would
+        // hand a token to the app delegate. Never in a Release build
+        // (ios.yml checks).
+        if let token = ProcessInfo.processInfo.environment["KROWK_FAKE_APNS_TOKEN"].flatMap(Self.bytes(hex:)) {
+            register = { Task { await Self.push?.didRegister(deviceToken: token) } }
+        }
+        #endif
         let made = PushRegistration(
             notifications: SystemNotifications(),
             sink: RegistryPushTokens(api: api, storage: keys),
             environment: PushEnvironment.current,
-            register: { UIApplication.shared.registerForRemoteNotifications() },
+            register: register,
             // A failure's kind and the core's words; never the token,
             // which PushRegistration never hands to the log.
             log: { log.error("\($0, privacy: .public)") }
@@ -207,6 +217,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         push = made
         return made
     }
+
+    #if DEBUG
+    private static func bytes(hex: String) -> Data? {
+        guard hex.count % 2 == 0, !hex.isEmpty else { return nil }
+        var data = Data()
+        var rest = Substring(hex)
+        while !rest.isEmpty {
+            guard let byte = UInt8(rest.prefix(2), radix: 16) else { return nil }
+            data.append(byte)
+            rest = rest.dropFirst(2)
+        }
+        return data
+    }
+    #endif
 
     /// What the phone calls itself: `UIDevice`'s name, the generic "iPhone"
     /// without a special entitlement. A DEBUG build takes `KROWK_DEVICE_NAME`

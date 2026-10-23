@@ -61,9 +61,11 @@ public final class PushRegistration {
     public enum State: String, Sendable {
         /// The token the digest names landed.
         case registered
-        /// A clear was asked for and has not landed yet: tried again while
-        /// notifications are off.
-        case clearing
+        /// A set or a clear went out and was not seen to land: a token may
+        /// be there (a retried call can land and still fail), so a clear is
+        /// owed while notifications are off, and a token is sent again
+        /// while they are on.
+        case pending
         /// A clear landed: nothing to clear again.
         case cleared
     }
@@ -80,6 +82,8 @@ public final class PushRegistration {
     private let log: @Sendable (String) -> Void
     /// The call under way, which the next one waits for.
     private var last: Task<Void, Never>?
+    /// iOS's prompt is up: coming forward meanwhile doesn't ask again.
+    private var asking = false
 
     /// - Parameters:
     ///   - environment: the APNs host this build's tokens belong to,
@@ -149,10 +153,11 @@ public final class PushRegistration {
                 return
             }
             if state == .registered, defaults.string(forKey: Self.digestKey) == digest { return }
+            defaults.set(State.pending.rawValue, forKey: Self.stateKey)
             do {
                 try await sink.set(tokenHex: token, environment: environment)
             } catch {
-                // Not stored: the next time the app comes forward sends it again.
+                // No digest: the next time the app comes forward sends it again.
                 log("push: the token was not registered: \(error)")
                 return
             }
@@ -182,6 +187,9 @@ public final class PushRegistration {
     /// Asks the person. An ask that failed, or never got its answer, is
     /// owed still: the next time the app comes forward asks again.
     private func ask() async {
+        guard !asking else { return }
+        asking = true
+        defer { asking = false }
         let granted: Bool
         do {
             granted = try await notifications.requestAuthorization(options: [.alert, .sound, .badge])
@@ -189,23 +197,27 @@ public final class PushRegistration {
             log("push: the permission could not be asked for: \(error)")
             return
         }
-        defaults.removeObject(forKey: Self.askKey)
         if granted {
+            defaults.removeObject(forKey: Self.askKey)
             register()
         } else {
+            // Owed before the ask is marked answered: a phone that dies in
+            // between still clears on its next foreground.
+            defaults.set(State.pending.rawValue, forKey: Self.stateKey)
+            defaults.removeObject(forKey: Self.askKey)
             await clear(always: true)
         }
     }
 
     /// Clears the registry's token: `always`, or when a token may be there
-    /// (registered, or a clear that has not landed), read once the calls
-    /// before it have ended. Marked `clearing` until it lands, so one that
-    /// failed is tried again the next time the app comes forward with
-    /// notifications off; the digest goes only once it landed.
+    /// (registered or pending), read once the calls before it have ended.
+    /// Pending until it lands, so one that failed is tried again the next
+    /// time the app comes forward with notifications off; the digest goes
+    /// only once it landed.
     private func clear(always: Bool) async {
         await serially { [self] in
-            guard always || state == .registered || state == .clearing else { return }
-            defaults.set(State.clearing.rawValue, forKey: Self.stateKey)
+            guard always || state == .registered || state == .pending else { return }
+            defaults.set(State.pending.rawValue, forKey: Self.stateKey)
             do {
                 try await sink.clear()
             } catch {

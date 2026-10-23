@@ -124,7 +124,7 @@ struct PushRegistrationTests {
         await rig.push.afterPairing()
         rig.registry.failing = true
         await rig.push.didRegister(deviceToken: Self.token)
-        #expect(rig.push.state == nil, "nothing stored for a set that failed")
+        #expect(rig.push.state == .pending, "no digest for a set that failed, and a token may be there")
 
         rig.registry.failing = false
         await rig.push.onForeground()
@@ -141,11 +141,54 @@ struct PushRegistrationTests {
         rig.permission.status = .denied
         rig.registry.failing = true
         await rig.push.onForeground()
-        #expect(rig.push.state == .clearing)
+        #expect(rig.push.state == .pending)
         rig.registry.failing = false
         await rig.push.onForeground()
         #expect(rig.registry.calls == [.set(Self.tokenHex, "sandbox"), .clear, .clear])
         #expect(rig.push.state == .cleared)
+    }
+
+    @Test("R-IOS-12: a set that failed may have landed, so notifications turned off then clear it")
+    func failedSetIsClearedOnDenial() async {
+        let rig = Rig()
+        await rig.push.afterPairing()
+        rig.registry.failing = true
+        await rig.push.didRegister(deviceToken: Self.token)
+        rig.registry.failing = false
+        rig.permission.status = .denied
+        await rig.push.onForeground()
+        #expect(rig.registry.calls == [.set(Self.tokenHex, "sandbox"), .clear])
+        #expect(rig.push.state == .cleared)
+    }
+
+    @Test("R-IOS-12: a set under way when notifications are turned off is followed by a clear")
+    func setThenDenied() async throws {
+        let rig = Rig(.authorized)
+        rig.registry.delay = .milliseconds(100)
+        async let set: Void = rig.push.didRegister(deviceToken: Self.token)
+        try await until { rig.registry.inFlight > 0 }
+        rig.permission.status = .denied
+        await rig.push.onForeground()
+        await set
+        #expect(rig.registry.calls == [.set(Self.tokenHex, "sandbox"), .clear])
+        #expect(rig.push.state == .cleared)
+        #expect(rig.registry.overlapped == false)
+    }
+
+    @Test("R-IOS-12: a token handed over while a clear is under way, allowed again, is sent after it")
+    func clearThenAllowed() async throws {
+        let rig = Rig()
+        await rig.push.afterPairing()
+        await rig.push.didRegister(deviceToken: Self.token)
+        rig.permission.status = .denied
+        rig.registry.delay = .milliseconds(100)
+        async let clear: Void = rig.push.onForeground()
+        try await until { rig.registry.inFlight > 0 }
+        rig.permission.status = .authorized
+        await rig.push.didRegister(deviceToken: Self.token)
+        await clear
+        #expect(rig.registry.calls == [.set(Self.tokenHex, "sandbox"), .clear, .set(Self.tokenHex, "sandbox")])
+        #expect(rig.push.state == .registered)
     }
 
     @Test("R-IOS-12: refused after pairing, a clear that failed is tried again on the next foreground until it lands")
@@ -153,7 +196,7 @@ struct PushRegistrationTests {
         let rig = Rig(answer: false)
         rig.registry.failing = true
         await rig.push.afterPairing()
-        #expect(rig.push.state == .clearing)
+        #expect(rig.push.state == .pending)
         await rig.push.onForeground()
         rig.registry.failing = false
         await rig.push.onForeground()
@@ -338,6 +381,7 @@ final class FakeRegistry: PushTokenSink {
     private let state = Mutex(State())
 
     var calls: [Call] { state.withLock { $0.calls } }
+    var inFlight: Int { state.withLock { $0.inFlight } }
     var overlapped: Bool { state.withLock { $0.overlapped } }
     var failing: Bool {
         get { state.withLock { $0.failing } }

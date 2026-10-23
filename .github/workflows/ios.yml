@@ -287,6 +287,10 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ReleaseData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app" release
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app" debug
+          # R-IOS-12: the UI tests' stand-in APNs token is a DEBUG build's only.
+          if grep -aq KROWK_FAKE_APNS_TOKEN "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app/Krowk"; then
+            echo "a Release build reads KROWK_FAKE_APNS_TOKEN" >&2; exit 1
+          fi
 
       - name: Boot an iPhone simulator
         run: |

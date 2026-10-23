@@ -58,6 +58,9 @@ final class PairingUITests: XCTestCase {
         app.launchEnvironment["KROWK_APPEARANCE"] = Screenshots.name(of: appearance)
         // Host A refuses a name that reads like one already on its list.
         app.launchEnvironment["KROWK_DEVICE_NAME"] = "UI iPhone \(UUID().uuidString.prefix(8))"
+        // R-IOS-12: GitHub's simulators get no APNs token, so the DEBUG
+        // build hands this one back for iOS: a token of this run's own.
+        app.launchEnvironment["KROWK_FAKE_APNS_TOKEN"] = (0..<32).map { _ in String(format: "%02x", UInt8.random(in: 0...255)) }.joined()
         app.launch()
 
         // Sign in; the test approves the code as the page's button would.
@@ -105,9 +108,9 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(done.exists, "not paired 90 s after the code")
         XCTAssertEqual(done.label, "This iPhone is on your devices.")
         // R-IOS-12: asked now, once per install (the first pairing of the
-        // run, which may be ApprovalUITests'); allowed, the simulator's
-        // sandbox token reaches the registry for this phone, a device not
-        // registered before.
+        // run, which may be ApprovalUITests'); allowed, the token reaches
+        // the registry as the simulator's sandbox one, for this phone, a
+        // device not registered before.
         NotificationPrompt.allow()
         var newDevices: [String: String] = [:]
         let registeredBy = Date.now.addingTimeInterval(60)
