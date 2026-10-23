@@ -347,6 +347,7 @@ pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, hande
         // Its own list reader: the host daemon's supervisor puts its one
         // reader's slot here for each bridge it starts.
         stale: None,
+        supervised: None,
     })
 }
 

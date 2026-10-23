@@ -367,6 +367,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A prompt from your phone or another device reaches a session the
+  host had stopped syncing.** A session synced automatically used to stop
+  syncing after `sync.idleMinutes` with no turn run on the host itself,
+  even while another device had it open. After that it was read-only
+  elsewhere, and a prompt sent from there waited for the next turn typed
+  on the host, which might never come. Now a session stays synced while
+  another device has it open, for up to an hour with nothing run, and the
+  idle window starts again when the last one closes it. Turning automatic
+  sync off, or opting the directory out, still stops it within about a
+  minute. Once it has stopped, opening it on another device
+  syncs it again within a moment, and a prompt sent from there runs on the
+  host and is answered there. This needs the host daemon still running: a
+  krowk window open on the host, or `krowk host enable` on an always-on
+  machine (otherwise the daemon exits after `host.idleMinutes`, as
+  before). It also needs the host's connection to the relay to have
+  stayed up since the session stopped: after the host sleeps or changes
+  network, or past 64 such sessions, a prompt waits for the next turn on
+  the host, as before. A session in a directory opted out with
+  `sync.exclude` or `.krowk/no-sync`, or on a machine with automatic sync
+  turned off, is never synced this way. While a session waits for a
+  device to open it, the host keeps one quiet connection to the relay for
+  it, sends a heartbeat every 10 seconds, and rereads its own sync settings
+  about once a minute; it asks the registry nothing. With no session waiting, it
+  does none of this.
 - **A registry hiccup no longer drops a device off a synced session.**
   When a device following a session joins it, it first reads the
   session's log from the registry. If that read failed, even once, the

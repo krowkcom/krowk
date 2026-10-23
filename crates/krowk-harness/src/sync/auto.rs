@@ -27,6 +27,26 @@
 //! without a paid plan stops every bridge and makes no sync call for an
 //! hour.
 //!
+//! **Watched, and woken** (ticket 116). A bridge says when a viewer — a
+//! link that has said hello, so one that can prompt — comes or the last one
+//! goes (`host::Supervised::viewers`): a session watched is not idle for
+//! up to `WATCHED_MOST` (an hour) with no turn, and its window runs again
+//! from when its last viewer left. A bridge let go as
+//! idle leaves its relay link joined, parked (`host::parked`): its stream
+//! sealed and its lease given back, it sends nothing but the relay's
+//! heartbeat — every parked link's on one schedule, so they go out on one
+//! wake a `PING` however many there are, each pong read as it comes —
+//! until the relay says a viewer joined or one sends something. That takes the session up again through `start`'s checks, as
+//! a turn would, so a viewer never syncs a session the switch or an opt-out
+//! refuses; the viewer's prompt goes again at the new bridge's welcome. A
+//! parked link that goes (the network, a laptop asleep, another host taking
+//! the channel) is not joined again — it would need the lease — and the
+//! session waits for its next turn, as before. While any is parked, or a
+//! viewer keeps a bridge with no turn, the policy is read again every
+//! `PARKED_RECHECK`, on a beat: sync off, or a directory opted out, lets
+//! those go. No parked link, no timer:
+//! nothing is asked of the registry or the relay to learn of a viewer.
+//!
 //! **A restart** needs nothing of its own (ticket 98): a daemon that stops
 //! stops its supervisor, each bridge sealing its stream and giving its
 //! lease back, and the next daemon's supervisor takes a session up at its
@@ -53,7 +73,7 @@
 use crate::daemon::client::Client as Daemon;
 use crate::daemon::server::TurnEvent;
 use crate::protocol::LogBody;
-use super::host;
+use super::{host, PING};
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -302,6 +322,10 @@ pub struct Config {
     /// How long sync stays off after a workspace's refusal for want of a
     /// paid plan (`PAID_PAUSE`; a test makes it short).
     pub paid_pause: Duration,
+    /// How often the policy is read again while sessions are parked, or
+    /// kept by a viewer with no turn (`PARKED_RECHECK`; a test makes it
+    /// short).
+    pub parked_recheck: Duration,
 }
 
 /// How long automatic sync makes no sync call after the registry says the
@@ -509,7 +533,7 @@ fn paid_fix(error: &str) -> String {
 /// session's own directory — a background one, so it never keeps the
 /// daemon up, and answering, so viewers and the phone can approve — and
 /// `host::run` until `stop` or its end.
-async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>) -> Result<(), String> {
+async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>, supervised: host::Supervised) -> Result<(), String> {
     let built = {
         let (c, session, cwd) = (c.clone(), session.clone(), cwd.clone());
         tokio::task::spawn_blocking(move || (c.build)(&session, &cwd)).await
@@ -522,6 +546,7 @@ async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf
             Err(e) => return Err(e.to_string()),
         },
     };
+    o.supervised = Some(supervised);
     if *stop.borrow() {
         return Ok(());
     }
@@ -734,6 +759,26 @@ enum Has {
         /// A turn started while it was stopping: taken up again once it
         /// has stopped.
         again: bool,
+        /// Which bridge of the session this is: what its viewers' reports
+        /// name, so a report of one before it is never read as this one's.
+        serial: u64,
+        /// A viewer is here (`host::Supervised::viewers`): never idle.
+        viewed: bool,
+        /// Told to stop as idle: its relay link is parked once it has.
+        parking: bool,
+        /// Where it leaves its relay link as it stops (`host::Parked`).
+        slot: Arc<Mutex<Option<host::Parked>>>,
+    },
+    /// Let go as idle, its relay link still joined (`host::parked`): a
+    /// viewer joining takes it up again, through the checks a turn's start
+    /// goes through.
+    Parked {
+        stop: watch::Sender<bool>,
+        task: tokio::task::Id,
+        /// The session's own directory, looked at again by each rescan.
+        cwd: PathBuf,
+        /// Parked since: past `PARKED_MOST`, the longest parked goes first.
+        at: Instant,
     },
 }
 
@@ -775,11 +820,54 @@ struct Sup {
     /// ran out, not because a turn asked: refused again, they wait for a
     /// turn.
     lease_retry: HashSet<String>,
+    /// The parked relay links (ticket 116), each until a viewer wants its
+    /// session, it goes, or it is let go.
+    parks: JoinSet<host::Woke>,
+    of_park: HashMap<tokio::task::Id, String>,
+    /// The bridges' viewer reports: the session, its bridge's serial, and
+    /// whether a viewer is there now.
+    viewers_tx: mpsc::UnboundedSender<(String, u64, bool)>,
+    viewers: mpsc::UnboundedReceiver<(String, u64, bool)>,
+    /// The last bridge's serial.
+    serial: u64,
+    /// When the supervisor started: every parked link's heartbeat is on
+    /// the same schedule from here, so all of them are sent on one wake.
+    epoch: Instant,
+    /// When a rescan last read the policy: a parked session's, or one a
+    /// viewer keeps, is read again `Config::parked_recheck` after, since no
+    /// turn of its own will.
+    rescanned_at: Instant,
 }
 
 /// Sessions whose last reason is remembered, past which the oldest are
 /// forgotten (and may be said again).
 const SAID_MOST: usize = 4096;
+
+/// Parked relay links held at once (ticket 116): a socket each, and a
+/// heartbeat each on the one schedule. Past it, the longest parked goes,
+/// and that session waits for its next turn as before.
+pub const PARKED_MOST: usize = 64;
+
+/// How often the policy is read again while sessions are parked and
+/// nothing else reads it: sync turned off, or a directory opted out, lets
+/// their links go within about this. On a beat the links make anyway, so
+/// it costs no wake of its own.
+pub const PARKED_RECHECK: Duration = Duration::from_secs(60);
+
+/// The longest a viewer keeps a session with no turn bridged: past it, the
+/// session is let go (and parked) all the same, so a viewer whose link
+/// went without the relay ever hearing it — a laptop asleep, a phone out
+/// of signal, a half-open socket — never holds a bridge for good. One still
+/// there wakes it with its next prompt, which the parked link reads as a
+/// viewer wanting it. Never shorter than the idle window.
+pub const WATCHED_MOST: Duration = Duration::from_secs(60 * 60);
+
+/// The idle window of a bridge, `watched` or not: a watched one waits
+/// `WATCHED_MOST`, or the window if that is longer. `None`, never, stays
+/// never. Pure.
+fn window(idle: Option<Duration>, watched: bool) -> Option<Duration> {
+    idle.map(|i| if watched { i.max(WATCHED_MOST) } else { i })
+}
 
 /// How long a rescan may take to read the policy and the bridged sessions'
 /// directories (a hung network mount, a dead disk): past it, the policy
@@ -810,6 +898,15 @@ fn wanted_again(w: &Wait, running: bool, idle: Option<Duration>, now: Instant) -
     running || w.wanted || w.once_more || (!w.lazy && idle_at(w.quiet, false, false, idle).is_none_or(|at| now < at))
 }
 
+/// The parked links' next heartbeat after `now`, on the one schedule that
+/// runs every `PING` from `epoch`: every link parked beats on the same
+/// instant, so however many there are, they cost one wake a beat. Pure.
+fn next_beat(epoch: Instant, now: Instant) -> Instant {
+    let every = PING.as_millis();
+    let beats = now.saturating_duration_since(epoch).as_millis() / every + 1;
+    epoch + Duration::from_millis(u64::try_from(beats * every).unwrap_or(u64::MAX))
+}
+
 /// Whether a bridge's error is the registry's refusal of a workspace
 /// without a paid plan: the code in brackets, as `take`'s, a refused
 /// renewal's and `build`'s errors name it. A handoff's end names a device,
@@ -825,6 +922,7 @@ fn for_how_long(d: Duration) -> String {
 
 impl Sup {
     fn new(c: Config) -> Sup {
+        let (viewers_tx, viewers) = mpsc::unbounded_channel();
         Sup {
             c: Arc::new(c),
             has: HashMap::new(),
@@ -845,6 +943,13 @@ impl Sup {
             gone: false,
             lists: Arc::default(),
             lease_retry: HashSet::new(),
+            parks: JoinSet::new(),
+            of_park: HashMap::new(),
+            viewers_tx,
+            viewers,
+            serial: 0,
+            epoch: Instant::now(),
+            rescanned_at: Instant::now(),
         }
     }
 
@@ -875,8 +980,11 @@ impl Sup {
                         self.backing.clear();
                         self.waits.clear();
                         self.running.clear();
+                        self.unpark_every();
                     }
                 },
+                Some((session, serial, viewed)) = self.viewers.recv() => self.viewed(&session, serial, viewed),
+                Some(r) = self.parks.join_next_with_id(), if !self.parks.is_empty() => self.woke(r),
                 Some(r) = self.checks.join_next(), if !self.checks.is_empty() => self.checked(r),
                 Some(r) = self.bridges.join_next_with_id(), if !self.bridges.is_empty() => self.ended(r),
                 Some(r) = self.rescans.join_next(), if !self.rescans.is_empty() => self.rescanned(r),
@@ -891,20 +999,34 @@ impl Sup {
     /// answer lets it go.
     fn next_due(&self) -> Option<Instant> {
         let idle = if self.rescans.is_empty() { self.idle_deadlines().min() } else { None };
-        self.backing.values().map(|w| w.at).chain(idle).min()
+        self.backing.values().map(|w| w.at).chain(idle).chain(self.recheck_at()).min()
+    }
+
+    /// When the policy is read again for sessions no turn of their own
+    /// has it read: parked ones, and bridged ones a viewer keeps with no
+    /// turn — so sync turned off, or an opt-out, stops those within about
+    /// `parked_recheck` too. Only while there is one and no rescan runs, on
+    /// the beat after `parked_recheck` has passed since the last.
+    fn recheck_at(&self) -> Option<Instant> {
+        let unread = self.has.iter().any(|(s, h)| match h {
+            Has::Parked { .. } => true,
+            Has::Bridging { viewed, stopping, .. } => *viewed && !*stopping && !self.running.contains(s),
+            Has::Checking(_) => false,
+        });
+        (unread && self.rescans.is_empty()).then(|| next_beat(self.epoch, self.rescanned_at + self.c.parked_recheck))
     }
 
     fn idle_deadlines(&self) -> impl Iterator<Item = Instant> + '_ {
         self.has.iter().filter_map(|(s, h)| match h {
-            Has::Bridging { quiet, stopping, .. } => idle_at(*quiet, self.running.contains(s), *stopping, self.idle),
-            Has::Checking(_) => None,
+            Has::Bridging { quiet, stopping, viewed, .. } => idle_at(*quiet, self.running.contains(s), *stopping, window(self.idle, *viewed)),
+            Has::Checking(_) | Has::Parked { .. } => None,
         })
     }
 
     fn due(&mut self) {
         self.retry();
         let now = Instant::now();
-        if self.idle_deadlines().any(|at| at <= now) {
+        if self.idle_deadlines().any(|at| at <= now) || self.recheck_at().is_some_and(|at| at <= now) {
             self.rescan();
         }
     }
@@ -918,6 +1040,14 @@ impl Sup {
         } else {
             self.running.remove(&session);
         }
+        // Parked: a turn takes it up as a turn takes up a session let go.
+        if matches!(self.has.get(&session), Some(Has::Parked { .. })) {
+            if running {
+                self.unpark(&session);
+                self.start(session);
+            }
+            return;
+        }
         match self.has.get_mut(&session) {
             Some(Has::Bridging { quiet, stopping, again, .. }) => {
                 *quiet = Instant::now();
@@ -930,6 +1060,7 @@ impl Sup {
             // Read again before it is bridged: an opt-out may have come
             // since its check read the policy.
             Some(Has::Checking(g)) => *g = u64::MAX,
+            Some(Has::Parked { .. }) => {}
             None => match self.backing.get_mut(&session) {
                 // Its wait runs: a turn meanwhile is why to start it again.
                 Some(w) if running => w.wanted = true,
@@ -998,10 +1129,13 @@ impl Sup {
                 self.said_of.remove(&session);
                 self.idle = idle;
                 let (stop, stop_rx) = watch::channel(false);
-                let task = self.bridges.spawn(bridge(self.c.clone(), self.lists.clone(), session.clone(), cwd.clone(), stop_rx));
+                self.serial += 1;
+                let (serial, slot, tx, of) = (self.serial, Arc::<Mutex<Option<host::Parked>>>::default(), self.viewers_tx.clone(), session.clone());
+                let supervised = host::Supervised { viewers: Box::new(move |viewed| { let _ = tx.send((of.clone(), serial, viewed)); }), park: slot.clone() };
+                let task = self.bridges.spawn(bridge(self.c.clone(), self.lists.clone(), session.clone(), cwd.clone(), stop_rx, supervised));
                 self.of_task.insert(task.id(), session.clone());
                 let now = Instant::now();
-                self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false, again: false });
+                self.has.insert(session, Has::Bridging { stop, since: now, cwd, quiet: now, stopping: false, again: false, serial, viewed: false, parking: false, slot });
             }
             Err(no) => {
                 self.has.remove(&session);
@@ -1041,7 +1175,7 @@ impl Sup {
             .has
             .iter()
             .filter_map(|(s, h)| match h {
-                Has::Bridging { cwd, stopping: false, .. } => Some((s.clone(), cwd.clone())),
+                Has::Bridging { cwd, stopping: false, .. } | Has::Parked { cwd, .. } => Some((s.clone(), cwd.clone())),
                 _ => None,
             })
             .collect();
@@ -1057,6 +1191,7 @@ impl Sup {
     }
 
     fn rescanned(&mut self, r: Result<Rescan, JoinError>) {
+        self.rescanned_at = Instant::now();
         let (policy, outs) = r.unwrap_or_else(|e| (Err(format!("its policy could not be read again: {e}")), Vec::new()));
         // Checks begun before it are out of date only when it stops something.
         if !matches!(&policy, Ok(p) if p.on) || outs.iter().any(|(_, o)| o.is_some()) {
@@ -1066,10 +1201,11 @@ impl Sup {
             Ok(p) if p.on => {
                 self.idle = p.idle;
                 for (session, out) in outs {
-                    if let Some(out) = out
-                        && self.stop_one(&session)
-                    {
+                    let Some(out) = out else { continue };
+                    if self.stop_one(&session) {
                         eprintln!("krowk: stopped syncing session {session}: opted out by {}", source(&out));
+                    } else if self.unpark(&session) {
+                        eprintln!("krowk: session {session} is off the relay: opted out by {}", source(&out));
                     }
                 }
             }
@@ -1087,24 +1223,41 @@ impl Sup {
     /// told to stop: its next turn bridges it again.
     fn release_idle(&mut self, now: Instant) {
         let Some(idle) = self.idle else { return };
-        let due: Vec<String> = self
+        let due: Vec<(String, bool)> = self
             .has
             .iter()
-            .filter(|(s, h)| matches!(h, Has::Bridging { quiet, stopping, .. } if idle_at(*quiet, self.running.contains(*s), *stopping, Some(idle)).is_some_and(|at| at <= now)))
-            .map(|(s, _)| s.clone())
+            .filter_map(|(s, h)| match h {
+                Has::Bridging { quiet, stopping, viewed, .. } if idle_at(*quiet, self.running.contains(s), *stopping, window(Some(idle), *viewed)).is_some_and(|at| at <= now) => Some((s.clone(), *viewed)),
+                _ => None,
+            })
             .collect();
-        for s in due {
+        for (s, viewed) in due {
             if self.stop_one(&s) {
-                eprintln!("krowk: stopped syncing session {s}: nothing ran in it for {}; its next turn syncs it again", human(idle));
+                if let Some(Has::Bridging { parking, .. }) = self.has.get_mut(&s) {
+                    *parking = true;
+                }
+                if viewed {
+                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it for {}, though a device still has it open; that device's next prompt, or a turn here, syncs it again", human(idle.max(WATCHED_MOST)));
+                } else {
+                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it, and no device watched it, for {}; its next turn, or a device opening it, syncs it again", human(idle));
+                }
             }
         }
     }
 
     /// `session`'s bridge told to stop — it seals its stream and gives the
     /// lease back (`Hosting::stop`) — unless it is stopping already.
+    ///
+    /// Stopped for any reason, its relay link is not parked: only
+    /// `release_idle` parks one, marking it so after this. One stopping as
+    /// idle that sync off or an opt-out stops again is not parked either.
     fn stop_one(&mut self, session: &str) -> bool {
         match self.has.get_mut(session) {
-            Some(Has::Bridging { stop, stopping, .. }) if !*stopping => {
+            Some(Has::Bridging { stop, stopping, parking, .. }) => {
+                *parking = false;
+                if *stopping {
+                    return false;
+                }
                 *stopping = true;
                 let _ = stop.send(true);
                 true
@@ -1115,10 +1268,14 @@ impl Sup {
 
     /// Every bridge told to stop, `why` said once if any was.
     fn stop_every(&mut self, why: &str) {
+        let parked = self.unpark_every();
         let sessions: Vec<String> = self.has.keys().cloned().collect();
         let stopped = sessions.iter().filter(|s| self.stop_one(s)).count();
         if stopped > 0 {
             eprintln!("krowk: stopped syncing {stopped} session(s): {why}");
+        }
+        if parked > 0 {
+            eprintln!("krowk: {parked} session(s) let go earlier are off the relay too: {why}");
         }
     }
 
@@ -1129,6 +1286,7 @@ impl Sup {
             eprintln!("krowk: automatic sync is off for {}: this workspace has no paid plan ({})", for_how_long(self.c.paid_pause), paid_fix(error));
             self.paused = Some(Instant::now() + self.c.paid_pause);
         }
+        self.unpark_every();
         let sessions: Vec<String> = self.has.keys().cloned().collect();
         for s in sessions {
             self.stop_one(&s);
@@ -1147,10 +1305,13 @@ impl Sup {
         };
         let Some(session) = self.of_task.remove(&id) else { return };
         let retried = self.lease_retry.remove(&session);
-        let (since, quiet, stopping, again) = match self.has.remove(&session) {
-            Some(Has::Bridging { since, quiet, stopping, again, .. }) => (since, quiet, stopping, again),
-            _ => (Instant::now(), Instant::now(), false, false),
+        let (since, quiet, stopping, again, parking, slot) = match self.has.remove(&session) {
+            Some(Has::Bridging { since, quiet, stopping, again, parking, slot, cwd, .. }) => (since, quiet, stopping, again, parking.then_some(cwd), Some(slot)),
+            _ => (Instant::now(), Instant::now(), false, false, None, None),
         };
+        // The link a bridge left as it stopped, which only an idle release
+        // keeps: any other end closes it here.
+        let parked = slot.and_then(|s| s.lock().unwrap_or_else(|e| e.into_inner()).take());
         lock(&self.c.bridged).remove(&session);
         if let Err(e) = &r
             && unpaid(e)
@@ -1164,7 +1325,14 @@ impl Sup {
             self.waits.remove(&session);
             self.said_lease.remove(&session);
             if (again || self.running.contains(&session)) && !self.gone {
+                drop(parked);
                 self.start(session);
+            } else if let Some(cwd) = parking.filter(|_| !self.gone) {
+                match parked {
+                    Some(p) => self.park(session, cwd, p),
+                    None if r.is_ok() => eprintln!("krowk: session {session} was off the relay as it was let go, so only its next turn syncs it again"),
+                    None => {}
+                }
             }
             return;
         }
@@ -1260,10 +1428,93 @@ impl Sup {
         }
     }
 
+    /// A bridge's viewer report: a session watched is never idle, and its
+    /// window runs again from when its last viewer left. One of a bridge
+    /// that is gone is dropped.
+    fn viewed(&mut self, session: &str, serial: u64, viewed: bool) {
+        if let Some(Has::Bridging { serial: s, viewed: v, quiet, .. }) = self.has.get_mut(session)
+            && *s == serial
+        {
+            *v = viewed;
+            if !viewed {
+                *quiet = Instant::now();
+            }
+        }
+    }
+
+    /// `session` let go as idle, its relay link held (`host::parked`) on
+    /// the supervisor's one heartbeat schedule; past `PARKED_MOST`, the
+    /// longest parked is let go.
+    fn park(&mut self, session: String, cwd: PathBuf, p: host::Parked) {
+        let (stop, stop_rx) = watch::channel(false);
+        let task = self.parks.spawn(host::parked(p, stop_rx, next_beat(self.epoch, Instant::now())));
+        self.of_park.insert(task.id(), session.clone());
+        self.has.insert(session, Has::Parked { stop, task: task.id(), cwd, at: Instant::now() });
+        let parked = self.has.values().filter(|h| matches!(h, Has::Parked { .. })).count();
+        if parked > PARKED_MOST
+            && let Some(oldest) = self.has.iter().filter_map(|(s, h)| match h {
+                Has::Parked { at, .. } => Some((*at, s.clone())),
+                _ => None,
+            }).min().map(|(_, s)| s)
+        {
+            self.unpark(&oldest);
+            eprintln!("krowk: session {oldest} is off the relay: {PARKED_MOST} sessions let go more lately are held there; its next turn syncs it again");
+        }
+    }
+
+    /// `session`'s parked link let go, and the session forgotten; whether
+    /// it was parked.
+    fn unpark(&mut self, session: &str) -> bool {
+        match self.has.get(session) {
+            Some(Has::Parked { .. }) => {
+                if let Some(Has::Parked { stop, .. }) = self.has.remove(session) {
+                    let _ = stop.send(true);
+                }
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Every parked link let go: sync is off, paused, or the daemon gone.
+    /// How many there were.
+    fn unpark_every(&mut self) -> usize {
+        let parked: Vec<String> = self.has.iter().filter(|(_, h)| matches!(h, Has::Parked { .. })).map(|(s, _)| s.clone()).collect();
+        for s in &parked {
+            self.unpark(s);
+        }
+        parked.len()
+    }
+
+    /// A parked link ended. A viewer wanting its session takes it up
+    /// through `start`'s checks — the switch, the setup, the directory and
+    /// its opt-outs — so a viewer never syncs a session the policy refuses.
+    /// One let go, or of a session parked again since, is done with.
+    fn woke(&mut self, r: Result<(tokio::task::Id, host::Woke), JoinError>) {
+        let (id, woke) = match r {
+            Ok((id, w)) => (id, w),
+            Err(e) => (e.id(), host::Woke::Gone(panicked(e))),
+        };
+        let Some(session) = self.of_park.remove(&id) else { return };
+        if !matches!(self.has.get(&session), Some(Has::Parked { task, .. }) if *task == id) {
+            return;
+        }
+        self.has.remove(&session);
+        match woke {
+            host::Woke::Viewer if !self.gone => {
+                eprintln!("krowk: a device opened session {session}; syncing it again, as its checks allow");
+                self.start(session);
+            }
+            host::Woke::Gone(why) => eprintln!("krowk: session {session} is off the relay ({why}); its next turn syncs it again"),
+            _ => {}
+        }
+    }
+
     /// Every bridge told to stop, and waited for up to `grace`.
     async fn stop_all(mut self, grace: Duration) {
         self.checks.abort_all();
         self.rescans.abort_all();
+        self.unpark_every();
         for h in self.has.values() {
             if let Has::Bridging { stop, .. } = h {
                 let _ = stop.send(true);
@@ -1288,6 +1539,9 @@ impl Sup {
                 }
             }
         }
+        // A parked link says goodbye within a second of being let go.
+        while tokio::time::timeout_at(deadline, self.parks.join_next()).await.is_ok_and(|r| r.is_some()) {}
+        self.parks.abort_all();
         // Whatever is left is no longer bridged: the runtime goes with it.
         let mut b = lock(&self.c.bridged);
         for s in self.of_task.values() {
@@ -1559,6 +1813,7 @@ mod tests {
                 ready: Box::new(move || ready.clone()),
                 bridged: Arc::default(),
                 paid_pause: PAID_PAUSE,
+                parked_recheck: PARKED_RECHECK,
             };
             let (turns, rx) = mpsc::unbounded_channel();
             let h = Supervisor::spawn(c, rx);
@@ -1604,6 +1859,31 @@ mod tests {
         assert!(!due(quiet + Duration::from_secs(86_400), true, false, window), "never while a turn runs, however long");
         assert!(!due(quiet + Duration::from_secs(86_400), false, true, window), "never twice");
         assert!(!due(quiet + Duration::from_secs(86_400), false, false, None), "never with no window");
+    }
+
+    /// R-SYNC-3 (ticket 116): a watched session waits an hour with no turn,
+    /// or its window when that is longer; never stays never.
+    #[test]
+    fn r_sync_3_a_watched_session_waits_an_hour_at_most() {
+        let m = |n: u64| Some(Duration::from_secs(n * 60));
+        assert_eq!(window(m(10), false), m(10));
+        assert_eq!(window(m(10), true), m(60), "a ghost viewer holds a bridge an hour, not for good");
+        assert_eq!(window(m(90), true), m(90), "never shorter than the window");
+        assert_eq!(window(None, true), None);
+    }
+
+    /// R-SYNC-3 (ticket 116): every parked link beats on one schedule, a
+    /// `PING` apart from the supervisor's start: the next beat is always
+    /// after the time asked about, never on it.
+    #[test]
+    fn r_sync_3_parked_links_beat_together_on_one_schedule() {
+        let epoch = Instant::now();
+        let at = |ms: u64| epoch + Duration::from_millis(ms);
+        assert_eq!(next_beat(epoch, epoch), at(10_000), "the first beat is a PING on, never now");
+        assert_eq!(next_beat(epoch, at(3_700)), at(10_000), "parked mid-way: the same beat as the first");
+        assert_eq!(next_beat(epoch, at(10_000)), at(20_000), "on a beat: the next one");
+        assert_eq!(next_beat(epoch, at(123_456)), at(130_000));
+        assert_eq!(PING, Duration::from_secs(10), "the relay's heartbeat (relay.md → Heartbeats)");
     }
 
     /// R-SYNC-1: the paid-plan refusal is found in either shape a bridge

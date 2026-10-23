@@ -172,6 +172,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         }),
         bridged,
         paid_pause: auto::PAID_PAUSE,
+        parked_recheck: auto::PARKED_RECHECK,
     }
 }
 

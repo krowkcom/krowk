@@ -570,6 +570,7 @@ impl Hosting {
             handed: None,
             approval_wait: host::APPROVAL_WAIT,
             stale: None,
+            supervised: None,
         };
         let bridge = std::thread::spawn(move || {
             let (_cp, cp_rx) = mpsc::unbounded_channel();

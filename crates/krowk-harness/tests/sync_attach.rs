@@ -95,6 +95,8 @@ struct World {
     a_mode: Arc<AtomicU8>,
     /// Connections A has opened to the relay: each a join.
     a_conns: Arc<AtomicUsize>,
+    /// A's connections to its relay open now.
+    a_live: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
     _mock: mock::Mock,
@@ -190,7 +192,8 @@ impl World {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
         let (a_mode, a_conns) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
-        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone());
+        let a_live = Arc::new(AtomicUsize::new(0));
+        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone(), a_live.clone());
         let (b_mode, b_batches) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
         let b_drop = Arc::new(AtomicUsize::new(0));
         let relay_b = viewer_proxy(relay_addr, seen.clone(), b_mode.clone(), b_batches.clone(), b_drop.clone());
@@ -200,7 +203,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone(), reg_log.clone(), reg_times.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, late: Arc::default(), b_mode, b_batches, b_drop }
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, late: Arc::default(), b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: on its own key, its calls that act
@@ -382,6 +385,7 @@ impl World {
             handed: None,
             approval_wait,
             stale: None,
+            supervised: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -426,6 +430,7 @@ impl World {
             handed: None,
             approval_wait: host::APPROVAL_WAIT,
             stale: None,
+            supervised: None,
         };
         self.run_bridge(o, daemon)
     }
@@ -520,7 +525,14 @@ fn relay(limits: krowk_harness::relay::Limits) -> SocketAddr {
 /// under `GHOST` it tells A on the connection open now, as the relay
 /// would, that its link was let go — and then forwards nothing more on it,
 /// the close never coming, while a new connection passes.
-fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>) -> SocketAddr {
+fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>, live: Arc<AtomicUsize>) -> SocketAddr {
+    // Counts a connection gone as the client's side of it ends.
+    struct Live(Arc<AtomicUsize>);
+    impl Drop for Live {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -531,11 +543,15 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: 
             }
             let Ok(up) = TcpStream::connect(to) else { continue };
             conns.fetch_add(1, Ordering::SeqCst);
+            live.fetch_add(1, Ordering::SeqCst);
+            let mut gone = Some(Live(live.clone()));
             // This connection alone, once a ghost: what joins after it passes.
             let ghost = Arc::new(AtomicBool::new(false));
             for (down, (mut from, mut into)) in [(false, (c.try_clone().unwrap(), up.try_clone().unwrap())), (true, (up, c))] {
                 let (seen, cut, mode, ghost) = (seen.clone(), cut.clone(), mode.clone(), ghost.clone());
+                let _gone = if down { None } else { gone.take() };
                 std::thread::spawn(move || {
+                    let _gone = _gone;
                     from.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
                     let mut buf = [0u8; 16384];
                     loop {
@@ -2000,6 +2016,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         handed: Some(handed),
         approval_wait: host::APPROVAL_WAIT,
         stale: None,
+        supervised: None,
     };
     let (_b_stop, _b_cp, _b_bridge) = w.run_bridge(o, b_daemon);
 
@@ -2410,11 +2427,13 @@ struct AutoOpts {
     /// Every `build` refuses with this `(code, message)`.
     refuse: Option<(String, String)>,
     paid_pause: Duration,
+    /// How often the policy is read again while sessions are parked.
+    parked_recheck: Duration,
 }
 
 impl Default for AutoOpts {
     fn default() -> AutoOpts {
-        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE }
+        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK }
     }
 }
 
@@ -2454,7 +2473,7 @@ impl World {
 
     /// `auto`, as `o` says.
     fn auto_with(&self, a: &Device, o: AutoOpts) -> Auto {
-        let AutoOpts { panic_first, idle, on, refuse, paid_pause } = o;
+        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
         let daemon = self.serve_hooked(self.env(), "home", InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
@@ -2488,6 +2507,7 @@ impl World {
                 handed: None,
                 approval_wait: host::APPROVAL_WAIT,
                 stale: None,
+                supervised: None,
             })
         });
         let env = self.env();
@@ -2515,6 +2535,7 @@ impl World {
             ready: Box::new(|| Ok(())),
             bridged: bridged.clone(),
             paid_pause,
+            parked_recheck,
         };
         Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), daemon: Some(daemon), bridged, built, turns, checks }
     }
@@ -2815,6 +2836,194 @@ async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {
     checked(&auto, checks + 1).await;
     assert_eq!((auto.built(&x).len(), auto.built(&y).len()), (1, 1), "neither bridged again while off");
     assert!(auto.bridged.lock().unwrap().is_empty());
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3, R-HAND-4 (ticket 116): with a 3-second idle window, a session
+/// B watches — a viewer that has said hello, so one that can prompt — is
+/// never let go, however long B watches with nothing running. Once B goes,
+/// the window runs again from then, and the session is let go after it.
+#[tokio::test]
+async fn r_sync_3_a_session_a_device_watches_is_not_let_go_at_its_idle_deadline() {
+    let w = World::new("auto-watched");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    // Let go before B came, B's coming takes it up again: either way it is
+    // held from here.
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    let builds = auto.built(&session).len();
+    let watched = Instant::now();
+    while watched.elapsed() < Duration::from_secs(7) {
+        assert!(auto.bridged.lock().unwrap().contains(&session), "let go {:?} into B's watch", watched.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(leased(&w, &session).await, Ok(true), "held while B watched");
+    assert_eq!(auto.built(&session).len(), builds, "one bridge throughout");
+
+    drop(v);
+    let left = Instant::now();
+    let gone = let_go(&w, &auto, &session, left + Duration::from_secs(9)).await;
+    assert!(gone - left >= Duration::from_millis(2500), "a whole window after B left: {:?}", gone - left);
+    println!("R-SYNC-3 let go {:?} after B left", gone - left);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// The turns `session`'s log on A holds.
+fn turns_logged(w: &World, session: &str) -> usize {
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(session).join(log::EVENTS_FILE)).unwrap();
+    log.lines().filter(|l| l.contains("\"turn.started\"")).count()
+}
+
+/// R-HAND-4, R-SYNC-3 (ticket 116): a session let go as idle keeps its
+/// relay link, parked. B opens it and prompts at once: B's joining takes
+/// the session up again, with no turn at A, and the prompt — typed before
+/// the bridge was back, held by B until the new bridge welcomed it — runs
+/// once on A and is answered on B. Let go again once B has gone, B coming
+/// back takes it up again.
+#[tokio::test]
+async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answered() {
+    let w = World::new("auto-wake");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    // The window as long as the bridge woken needs to take the lease up,
+    // join the relay and see B's hello, with room to spare.
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(6)).await;
+    assert_eq!(auto.built(&session).len(), 1);
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let sent = Instant::now();
+    v.commands.send(w.prompt(Some(&session), "asked from B once A had let it go")).unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    println!("R-HAND-4 B's prompt answered {:?} after it was sent", sent.elapsed());
+    assert_eq!(auto.built(&session).len(), 2, "taken up again by B, once");
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(log.contains("asked from B once A had let it go"), "B's prompt ran on A");
+    assert_eq!(turns_logged(&w, &session), 2, "and once");
+    assert_eq!(leased(&w, &session).await, Ok(true));
+
+    drop(v);
+    let_go(&w, &auto, &session, Instant::now() + Duration::from_secs(9)).await;
+    let v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    assert_eq!(auto.built(&session).len(), 3);
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): a viewer never syncs a session the policy
+/// refuses. A session let go as idle, then opted out with
+/// `.krowk/no-sync`: B opening it and prompting has the supervisor read the
+/// policy again, which refuses it — it is never built again nor leased,
+/// its parked link is let go so B sees no host, and B's prompt never runs.
+#[tokio::test]
+async fn r_sync_3_a_session_opted_out_once_let_go_is_never_brought_back_by_a_viewer() {
+    let w = World::new("auto-wake-out");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    std::fs::create_dir_all(w.repo().join(".krowk")).unwrap();
+    std::fs::write(w.repo().join(".krowk/no-sync"), "").unwrap();
+
+    let checks = auto.checks.load(Ordering::SeqCst);
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    v.commands.send(w.prompt(Some(&session), "asked of a session opted out")).unwrap();
+    checked(&auto, checks + 1).await;
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
+    assert_eq!(auto.built(&session).len(), 1, "never built again");
+    assert!(auto.bridged.lock().unwrap().is_empty());
+    assert_eq!(leased(&w, &session).await, Ok(false), "never leased again");
+    assert_eq!(turns_logged(&w, &session), 1, "B's prompt never ran");
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): automatic sync turned off while a session is
+/// parked, and no turn or viewer to ask for the policy: it is read again on
+/// its own (`Config::parked_recheck`, a second here, on the next beat), and
+/// the parked link let go. B opening the session then finds no host, and
+/// nothing reads the policy again: a link still parked would have been
+/// woken by B, and its wake checked. Nothing is built.
+#[tokio::test]
+async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
+    let w = World::new("auto-park-off");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let on = Arc::new(AtomicBool::new(true));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), on: on.clone(), parked_recheck: Duration::from_secs(1), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    on.store(false, Ordering::SeqCst);
+    let checks = auto.checks.load(Ordering::SeqCst);
+    let deadline = Instant::now() + krowk_harness::sync::PING + Duration::from_secs(5);
+    while auto.checks.load(Ordering::SeqCst) == checks {
+        assert!(Instant::now() < deadline, "the policy was never read again while the session was parked");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    // The parked link let go by that read, with no viewer near: A has no
+    // connection to its relay left.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while w.a_live.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < deadline, "the parked link stayed on the relay with sync off");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let read = auto.checks.load(Ordering::SeqCst);
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
+    // A wake's check is asked for after its link has gone: a moment for one.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(auto.checks.load(Ordering::SeqCst), read, "B woke nothing: the link was let go by the policy read");
+    assert_eq!(auto.built(&session).len(), 1, "never built again");
+    assert_eq!(leased(&w, &session).await, Ok(false));
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): a viewer keeping a session with no turn does not
+/// keep it from the policy. Sync turned off while B watches: the policy is
+/// read again on its own (`Config::parked_recheck`, on the next beat), and
+/// the bridge stops and gives its lease back, B still there. Nothing parks.
+#[tokio::test]
+async fn r_sync_3_sync_turned_off_stops_a_session_a_device_watches() {
+    let w = World::new("auto-watch-off");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let on = Arc::new(AtomicBool::new(true));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), on: on.clone(), parked_recheck: Duration::from_secs(1), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    on.store(false, Ordering::SeqCst);
+    let off = Instant::now();
+    let_go(&w, &auto, &session, off + krowk_harness::sync::PING + Duration::from_secs(5)).await;
+    println!("R-SYNC-3 a watched session stopped {:?} after sync was turned off", off.elapsed());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while w.a_live.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < deadline, "its relay link stayed, parked, with sync off");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    drop(v);
     auto.stop(Duration::from_secs(10)).await;
 }
 
