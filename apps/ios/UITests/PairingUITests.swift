@@ -110,6 +110,14 @@ final class PairingUITests: XCTestCase {
         // and once they are, no indicator (R-IOS-1).
         let transcript = app.collectionViews["transcript"]
         XCTAssertTrue(transcript.waitForExistence(timeout: 10), "a tap did not open the session's transcript")
+        // The demo's held approval, unless ApprovalUITests answered it,
+        // rises in a sheet (ticket 91): put away, it waits behind the hand.
+        let sheet = app.otherElements["approval-sheet"]
+        if sheet.waitForExistence(timeout: 5) {
+            sheet.swipeDown(velocity: .fast)
+            XCTAssertTrue(sheet.waitForNonExistence(timeout: 10), "the approval sheet could not be put away")
+            XCTAssertTrue(app.buttons["approvals-waiting"].waitForExistence(timeout: 5), "no hand for the approval put away")
+        }
         let prompt = transcript.cells.matching(identifier: "transcript-user").firstMatch
         if !prompt.waitForExistence(timeout: 20) { Screenshots.tree(of: app) }
         XCTAssertTrue(prompt.exists, "no prompt drawn 20 s after opening the session")

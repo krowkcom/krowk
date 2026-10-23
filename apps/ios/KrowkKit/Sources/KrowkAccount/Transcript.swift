@@ -1,20 +1,66 @@
 import Krowk
 import KrowkKit
 
-/// Where approvals asked and answered live go: ticket 91's prompt
-/// implements it. Until then, nothing (`NoApprovals`).
+/// Where approvals asked and answered live go, in the order the session
+/// says them, as the main thread takes its frame: the screen's
+/// `ApprovalQueue` (ticket 91), or nowhere (`NoApprovals`).
 public protocol ApprovalSink: AnyObject, Sendable {
-    /// `approval.requested`: a tool call waits for a yes.
+    /// `approval.requested`, live or re-sent in a host's welcome (the core
+    /// shows each once until it's resolved): a tool call waits for a yes.
     @MainActor func requested(_ request: ApprovalRequest)
     /// `approval.resolved`: it was answered, here or elsewhere.
     @MainActor func resolved(sessionId: String, requestId: String, decision: ApprovalDecision)
+    /// A turn ended (its logged `turn.completed`, or the run's result): what
+    /// it still asked is over.
+    @MainActor func turnEnded(sessionId: String, turnId: String)
 }
 
-/// Approvals go nowhere yet (ticket 91).
+/// Approvals go nowhere: a screen with no sheet.
 public final class NoApprovals: ApprovalSink {
     public init() {}
     @MainActor public func requested(_ request: ApprovalRequest) {}
     @MainActor public func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) {}
+    @MainActor public func turnEnded(sessionId: String, turnId: String) {}
+}
+
+/// The screen's queue takes the session's approvals (R-PERM-2): each
+/// request as KrowkKit's `ApprovalPrompt`, a resolution as allowed or
+/// denied, and turn ends.
+extension ApprovalQueue: ApprovalSink {
+    public func requested(_ request: ApprovalRequest) {
+        requested(ApprovalPrompt(request))
+    }
+
+    public func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) {
+        let resolution: ApprovalResolution = switch decision {
+        case .allow: .allowed
+        case .allowSession: .allowedForSession
+        case .deny: .denied
+        // A rule the host made for the project: the phone never makes
+        // one, only hears of it.
+        default: .allowedByRule
+        }
+        resolved(requestID: requestId, resolution: resolution)
+    }
+
+    public func turnEnded(sessionId: String, turnId: String) {
+        turnEnded(sessionID: sessionId, turnID: turnId)
+    }
+}
+
+extension ApprovalPrompt {
+    /// The generated request as the sheet takes it: its own session (a
+    /// subagent's, for its request), its input as JSON text.
+    public init(_ request: ApprovalRequest) {
+        self.init(
+            sessionID: request.sessionId, turnID: request.turnId, requestID: request.requestId, tool: request.tool,
+            input: request.input, summary: request.summary, reason: request.reason, remember: request.remember,
+            questions: request.questions.map {
+                ApprovalQuestion(id: $0.id, header: $0.header, question: $0.question,
+                                 options: $0.options.map { ApprovalOption(label: $0.label, description: $0.description) },
+                                 multiSelect: $0.multiSelect, secret: $0.secret)
+            })
+    }
 }
 
 /// The transcript from the generated protocol types (R-PROTO-2): the
@@ -58,14 +104,17 @@ extension TranscriptUpdate {
                 continue
             }
             if case .line(.log(let event)) = update {
+                ended(event, approvals: approvals)
                 logged.append(TranscriptEvent(event))
                 continue
             }
             flush()
             switch update {
             case .attached(let events, _):
+                for event in events { ended(event, approvals: approvals) }
                 out.append(.attached(events.map(TranscriptEvent.init)))
             case .caughtUp(let events):
+                for event in events { ended(event, approvals: approvals) }
                 out.append(.caughtUp(events.map(TranscriptEvent.init)))
             case .line(.live(let line)):
                 if let mapped = live(line, approvals: approvals) { out.append(mapped) }
@@ -79,6 +128,14 @@ extension TranscriptUpdate {
         }
         flush()
         return out
+    }
+
+    /// A logged turn's end, told to the approvals: what it asked is over.
+    @MainActor
+    static func ended(_ event: LogEvent, approvals: any ApprovalSink) {
+        if case .turnCompleted(let turn, _, _, _, _, _, _) = event.body {
+            approvals.turnEnded(sessionId: event.sessionId, turnId: turn)
+        }
     }
 
     /// One live line: what it draws, if anything. A tool call's input
@@ -110,7 +167,11 @@ extension TranscriptUpdate {
         case .approvalResolved(let session, _, let request, let decision):
             approvals.resolved(sessionId: session, requestId: request, decision: decision)
             return nil
-        case .cost, .limits, .result, .backendAgents, .background, .subagentStatus, .turnUnprompted:
+        case .result(let result):
+            // The run's end: its turn asks nothing more.
+            approvals.turnEnded(sessionId: result.sessionId, turnId: result.turnId)
+            return nil
+        case .cost, .limits, .backendAgents, .background, .subagentStatus, .turnUnprompted:
             return nil
         }
     }
@@ -130,7 +191,7 @@ extension LiveCommand {
     /// its JSON): a prompt with no images, model, toolset, effort or
     /// budget and the default permission mode, which the host's bridge
     /// sets from the session anyway.
-    func command(session: String) -> Command {
+    public func command(session: String) -> Command {
         switch self {
         case .prompt(let text):
             .prompt(sessionId: session, text: text, images: [], model: nil, permissionMode: .default, toolset: nil, effort: nil, budget: nil)
@@ -138,6 +199,23 @@ extension LiveCommand {
             .steer(sessionId: session, text: text, images: [])
         case .interrupt:
             .interrupt(sessionId: session)
+        case .approve(let reply):
+            // The request's own session, never the screen's: a subagent's
+            // request is answered for the subagent.
+            .approve(sessionId: reply.sessionID, requestId: reply.requestID, decision: reply.verdict.decision,
+                     answers: reply.answers.map { QuestionAnswer(id: $0.id, picked: $0.picked, text: $0.text) })
+        }
+    }
+}
+
+extension ApprovalVerdict {
+    /// The generated decision: once, for the session, or no. A viewer never
+    /// makes a rule for the project (R-IOS-11): the host makes those.
+    public var decision: ApprovalDecision {
+        switch self {
+        case .allow: .allow
+        case .allowSession: .allowSession
+        case .deny: .deny
         }
     }
 }

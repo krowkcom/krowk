@@ -11,6 +11,28 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Approve tool calls and answer questions from the iPhone.** When a
+  turn asks before it runs something, the request now rises in a sheet
+  over the session on your phone too: the tool, what it runs in
+  monospace, why it asks, and its full input under "Show input". Allow
+  once, Allow for this session (offered when the request has rules to
+  remember, and listing them) or Deny; whichever device answers first
+  decides, so a turn started from the phone no longer waits for you to
+  get back to your laptop. Allowing anything but a read-only tool (`read`,
+  `grep`, `glob`, and Claude Code's `Read`, `Grep`, `Glob`, `LS`) asks for
+  Face ID (or the passcode) first, so an unlocked phone in someone else's
+  hand can't run commands on your computer; Deny never asks. The phone
+  never makes a rule for the whole project — that stays on the laptop.
+  When the agent asks questions instead, the sheet shows each with its
+  options and a box to write your own answer (hidden as you type, for a
+  secret), with Answer and Decline. Several requests queue ("1 of 3");
+  each takes one answer, even on a double tap or a flaky link. The call's
+  line in the transcript reads `allowed — sending…` at once and `allowed`
+  when your laptop takes it; if it refuses, the request comes back saying
+  why. A request answered on another device goes away with a note saying
+  so, and a turn's end takes its requests with it. Swipe the sheet away
+  to read the transcript; a hand in the top bar brings it back. ⌘↵ allows
+  once with a hardware keyboard. Nothing changes for CLI users.
 - **Prompt, steer and stop from the iPhone.** An open session now has a
   message box under the transcript. When the session is idle, Send starts
   a turn; while a turn runs the button reads Steer and adds your message

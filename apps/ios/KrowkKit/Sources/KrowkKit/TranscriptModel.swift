@@ -53,6 +53,9 @@ public final class ItemState {
     /// A pending bubble the host refused (or that was never sent): its
     /// caption is the reason, and it offers "Edit and resend".
     public var refused = false
+    /// A tool call waiting on an approval (ticket 91), until its result:
+    /// "waiting for approval", "allowed — sending…", "allowed", "denied".
+    public var verdict = ""
 
     @ObservationIgnored private var summarized: (input: String, summary: String)?
     /// The cell drawing it now, if one is: redrawn on each change (the
@@ -73,7 +76,7 @@ public final class ItemState {
 
     /// Reads every property a cell draws, so one observation covers them.
     func touch() {
-        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded, caption, refused)
+        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded, caption, refused, verdict)
     }
 
     /// `source` drawn as `role` at `size`, from the last drawing if neither
@@ -262,6 +265,9 @@ public struct FrameApplied {
     public var refused: [ItemState] = []
     /// The host refused an interrupt while the turn still runs: why.
     public var stopRefused: String?
+    /// Approval answers the host acked (`error` nil) or refused, or that
+    /// never reached the core, in order: for the approval queue.
+    public var approvalAnswers: [(token: UInt64, error: String?)] = []
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -404,6 +410,7 @@ public final class TranscriptModel {
         case .prompt(let text): token = commands.add(.prompt, text: text)
         case .steer(let text): token = commands.add(.steer, text: text)
         case .interrupt: return commands.add(.interrupt)
+        case .approve: return commands.add(.approve)
         }
         let state = ItemState(id: Self.bubbleID(token), kind: .pending, text: commands.entry(token)?.text ?? "")
         bubbles[token] = state
@@ -497,7 +504,9 @@ public final class TranscriptModel {
         case .commandMinted(let token, let id):
             commands.minted(token, id: id)
         case .commandUnsent(let token, let why):
+            let answer = commands.entry(token)?.kind == .approve
             commands.unsent(token, why: why)
+            if answer { applied.approvalAnswers.append((token, why)) }
             refresh(token)
             if let state = bubbles[token], state.refused { applied.refused.append(state) }
         case .commandSent(let id, let queued):
@@ -518,11 +527,74 @@ public final class TranscriptModel {
                 }
             case .interrupt(_, let error?)? where runningTurn != nil:
                 applied.stopRefused = error
+            case .approval(let token, let error)?:
+                applied.approvalAnswers.append((token, error))
             case .interrupt?, nil:
                 break
             }
         default:
             break
+        }
+    }
+
+    // MARK: Approvals on tool rows (ticket 91)
+
+    /// The tool row each approval's line is on, by request id.
+    @ObservationIgnored private var approvalRows: [String: String] = [:]
+    /// Lines for requests whose row isn't drawn yet, in the order they
+    /// came: placed when it is.
+    @ObservationIgnored private var unplacedMarks: [(request: String, tool: String, input: String, line: String)] = []
+
+    /// Request `requestID`'s line on its tool call's row (R-LAG-8), in this
+    /// session (a subagent's call has no row here). Nil clears it. The
+    /// request names no call, so the row is found among the calls of
+    /// `tool` since the last turn's end with no result and no other
+    /// request's line: the one whose input is `input`, else the oldest
+    /// (requests come in the order their calls were made). A row found
+    /// once keeps the line.
+    public func markApproval(_ requestID: String, session: String, tool: String, input: String, line: String?) {
+        guard session == sessionID else { return }
+        unplacedMarks.removeAll { $0.request == requestID }
+        guard let line else {
+            if let row = approvalRows.removeValue(forKey: requestID), let state = items[row], !state.verdict.isEmpty { state.verdict = "" }
+            return
+        }
+        guard let row = approvalRows[requestID] ?? toolRow(for: tool, input: input), let state = items[row] else {
+            unplacedMarks.append((requestID, tool, input, line))
+            return
+        }
+        approvalRows[requestID] = row
+        if state.verdict != line { state.verdict = line }
+    }
+
+    /// The row for a request of `tool` with `input`, as `markApproval`
+    /// says.
+    private func toolRow(for tool: String, input: String) -> String? {
+        let taken = Set(approvalRows.values)
+        var open: [ItemState] = []
+        for id in rows.reversed() {
+            if id.hasPrefix("turn:") { break }
+            guard let state = items[id], state.kind == .tool, state.output == nil, state.toolName == tool, !taken.contains(id) else { continue }
+            open.append(state)
+        }
+        let wanted = Self.json(input)
+        return (open.last { wanted != nil && Self.json($0.toolInput) == wanted } ?? open.last)?.id
+    }
+
+    /// `text` parsed as JSON, to compare two inputs whatever their key
+    /// order or spacing; nil when it doesn't parse or is too large to.
+    nonisolated static func json(_ text: String) -> NSObject? {
+        guard !text.isEmpty, text.utf8.count <= ItemState.parsedInputLimit else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])) as? NSObject
+    }
+
+    /// Lines waiting for their rows, tried again after rows came.
+    private func placeMarks() {
+        guard !unplacedMarks.isEmpty else { return }
+        let waiting = unplacedMarks
+        unplacedMarks = []
+        for mark in waiting {
+            markApproval(mark.request, session: sessionID, tool: mark.tool, input: mark.input, line: mark.line)
         }
     }
 
@@ -594,6 +666,7 @@ public final class TranscriptModel {
         ended = []
         applied.refused += refusedNow
         refusedNow = []
+        placeMarks()
         return applied
     }
 

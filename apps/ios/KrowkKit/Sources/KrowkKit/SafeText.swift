@@ -7,9 +7,12 @@ import UIKit
 /// nothing else:
 ///
 /// - Control characters are stripped, keeping `\n` and `\t`: C0 but those
-///   two, DEL, C1 (U+0080–U+009F), and the bidi overrides and isolates
+///   two, DEL, C1 (U+0080–U+009F), the bidi overrides and isolates
 ///   (U+202A–U+202E, U+2066–U+2069), which can make a path or a URL read
-///   backwards.
+///   backwards, and the invisible marks that steer or split text without
+///   showing (U+200B, U+200E, U+200F, U+061C, U+FEFF). The line and
+///   paragraph separators (U+2028, U+2029) are line breaks: a one-line
+///   field ends at one rather than draw a second line.
 /// - Nothing is fetched, ever: markdown isn't rendered (M1), so an image's
 ///   markdown is its text, and the app has no web view.
 /// - A link is an `http` or `https` URL written out with its scheme, as
@@ -23,11 +26,17 @@ public enum SafeText {
     /// output in a self-sizing TextKit 2 view lays out slowly.
     public static let outputLimit = 64 * 1024
 
-    /// `text` without the characters a transcript never draws.
+    /// `text` without the characters a transcript never draws, and with
+    /// a line or paragraph separator as a line break.
     public static func clean(_ text: String) -> String {
         var scalars = String.UnicodeScalarView()
-        scalars.append(contentsOf: text.unicodeScalars.lazy.filter { !stripped($0) })
+        scalars.append(contentsOf: text.unicodeScalars.lazy.filter { !stripped($0) }.map { breaks($0) ? "\n" : $0 })
         return String(scalars)
+    }
+
+    /// U+2028 and U+2029: read as `\n`.
+    static func breaks(_ scalar: Unicode.Scalar) -> Bool {
+        scalar.value == 0x2028 || scalar.value == 0x2029
     }
 
     /// Whether `scalar` is one `clean` takes out.
@@ -36,6 +45,7 @@ public enum SafeText {
         case 0x09, 0x0A: false
         case 0x00...0x1F, 0x7F, 0x80...0x9F: true
         case 0x202A...0x202E, 0x2066...0x2069: true
+        case 0x200B, 0x200E, 0x200F, 0x061C, 0xFEFF: true
         default: false
         }
     }
@@ -48,7 +58,7 @@ public enum SafeText {
         // Bounded in scalars first: one cluster of a million combining
         // marks is one character.
         let head = Substring(Substring.UnicodeScalarView(text.unicodeScalars.prefix(limit * 8))).prefix(limit + 1)
-        let first = head.prefix { $0 != "\n" && $0 != "\r\n" }
+        let first = head.prefix { $0 != "\n" && $0 != "\r\n" && $0 != "\u{2028}" && $0 != "\u{2029}" }
         let cut = first.prefix(limit)
         let line = clean(String(cut)).replacingOccurrences(of: "\t", with: " ").trimmingCharacters(in: .whitespaces)
         return cut.count < first.count ? line + "…" : line

@@ -112,11 +112,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // named. One left with commands still out (a prompt queued for a
         // sleeping laptop) is kept, still followed, and opens as it was.
         let parked = parkedScreens
+        // Allowing a call asks for Face ID first (R-IOS-11).
+        let owner = OwnerChecks.make()
         return SessionListViewController(model: model) { [weak model] row in
             if let kept = parked.take(row.id) { return kept }
             let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
-            let live = RelayConnection { try source.openSession(id: row.id, known: known) }
-            let screen = TranscriptViewController(row: row, session: live)
+            // Its approvals rise in a sheet over the transcript (R-PERM-2).
+            let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
+            let live = RelayConnection(opening: { try source.openSession(id: row.id, known: known) }, approvals: approvals)
+            let screen = TranscriptViewController(row: row, session: live, approvals: approvals)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
             screen.restore(parked.takeRefusals(row.id))

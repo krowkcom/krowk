@@ -21,10 +21,14 @@ apps/ios/
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
-                     ComposerTests, and the TestFleet fixture
-  UITests/           XCUITest target: LaunchTests, SignInUITests, PairingUITests
+                     ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
+                     and the TestFleet fixture
+  UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
+                     PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
-                     no-web.sh: no web view, no remote image (R-IOS-10)
+                     no-web.sh: no web view, no remote image (R-IOS-10);
+                     approvals.sh: no allowProject, and only LAContext's owner
+                     check in a Release build (R-IOS-11)
 ```
 
 Both manifests are thin and point at the same sources. Add a file to `App/`
@@ -52,11 +56,12 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 ```
 
 `xcrun simctl list devices available` lists the simulators and their udids.
-The scheme `Krowk-iOS` runs the UI tests `LaunchTests`, `SignInUITests` and
-`PairingUITests`, the app-hosted `KeychainKeyStorageTests`, `SignInTests`,
-`PairingTests`, `SessionListTests`, `RelayConnectionTests`,
-`TranscriptModelTests`, `TranscriptTests`, `LiveFollowTests` and
-`ComposerTests` (target
+The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
+`SignInUITests` and `PairingUITests`, the app-hosted
+`KeychainKeyStorageTests`, `SignInTests`, `PairingTests`,
+`SessionListTests`, `RelayConnectionTests`, `TranscriptModelTests`,
+`TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
+`ApprovalMappingTests` and `ApprovalScreenTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -400,8 +405,10 @@ scrolled to the end (ticket 88).
   non-scrolling), its `textStorage` kept for ticket 89 to append to. A
   tool's output is laid out only when expanded.
 - **Hostile output** (R-IOS-10), in `SafeText`, which every cell draws
-  through: C0 controls but `\n` and `\t`, DEL, C1 and the bidi overrides
-  and isolates (U+202A–U+202E, U+2066–U+2069) are stripped; markdown is
+  through: C0 controls but `\n` and `\t`, DEL, C1, the bidi overrides
+  and isolates (U+202A–U+202E, U+2066–U+2069) and the invisible marks
+  (U+200B, U+200E, U+200F, U+061C, U+FEFF) are stripped, and the line and
+  paragraph separators (U+2028, U+2029) are line breaks; markdown is
   not rendered (M1), so an image's markdown is text and nothing is
   fetched; a link is only an `http(s)://` URL written with its scheme to
   an ASCII host with no user or password before it (`NSDataDetector`),
@@ -416,6 +423,74 @@ scrolled to the end (ticket 88).
   in the empty body while the session is read; once a row is drawn it
   never shows again. A session read with nothing to draw says so, and one
   that stopped before it was read points at the bar.
+
+## Approvals
+
+A tool call waiting for a yes, or a question the agent asks (ticket 91,
+R-PERM-2), rises in a UIKit sheet over the transcript
+(`ApprovalSheetController`, medium and large detents, the transcript above
+left readable).
+
+- **What it shows.** The tool, the request's `summary` in monospace, why it
+  asks, and its JSON `input` under "Show input" (at most 16 KiB). All of it
+  is the agent's and drawn as plain text through `SafeText` (R-IOS-10), in
+  boxes under the app's own labels, never as a link; the buttons sit in a
+  bar of their own below it, which scrolls once it would take more than
+  45% of the sheet. A summary of more than one line says how many, and
+  runs of blank lines or of blanks in a line (any whitespace, and
+  characters that draw as nothing: default-ignorable ones, the Braille
+  blank, the Hangul fillers; 16 spaces or tabs, so code's indentation is
+  drawn, or 4 of anything else) are said ("⋯ 29 blank lines ⋯", "⋯ 40
+  blanks ⋯") rather than drawn, so nothing after them is pushed out of sight; Face ID's sentence
+  is the first line with something on it, as drawn, and adds "(+N more
+  lines)". An option's whole label is drawn, as it is sent.
+- **The choices.** Allow once; Allow for this session only when the
+  request remembers rules, which it lists; Deny. Never a rule for the
+  project: the host refuses `allowProject` from a viewer, and
+  `scripts/approvals.sh` fails if any source names it outside a comment.
+  Questions show each one's header, question and options (single choice,
+  or check rows with `multiSelect`), and a field to write an answer,
+  secure for a `secret` one, which is never printed (`QuestionReply`'s
+  description hides it); Answer and Decline. ⌘↵ allows once (or answers);
+  Escape puts the sheet away.
+- **Face ID first** (R-IOS-11). Allowing any tool off the read-only list
+  (`read`, `grep`, `glob`, `Read`, `Grep`, `Glob`, `LS`; an unknown name
+  is not on it) asks `LAContext`'s `deviceOwnerAuthentication` first,
+  reading "Allow <tool>: <summary>": Face ID, falling back to the
+  passcode. A failure or cancel sends nothing and leaves the sheet up.
+  Deny and Decline never ask. The check is the `OwnerCheck` protocol; the
+  app's (`App/OwnerChecks.swift`) is `LAContext`'s, and a DEBUG build's UI
+  tests pick a stub with the launch argument `-KrowkOwnerCheck yes|no`.
+  The stub and the argument exist only under `#if DEBUG`: ios.yml builds
+  Release and `scripts/approvals.sh` checks neither is in it.
+  `NSFaceIDUsageDescription` is in both Info.plists.
+- **Once.** `ApprovalQueue` holds the requests in arrival order ("1 of
+  3"), each request id once however often it comes (live, and re-sent in
+  a host's welcome). A request takes one answer: locked while Face ID is
+  up, checked again after it (answered elsewhere or its turn over
+  meanwhile: nothing sent), and sent only with a live link to a host,
+  never queued for a later one. A request's buttons take a tap only 0.6 s
+  after it shows, so a double tap on one answer never answers the next;
+  the first tap turns them off until the answer has gone or been
+  refused, and a held ⌘↵ counts once.
+  The answer is ticket 90's command (`LiveCommand.approve`, the generated
+  `Command.approve` for the request's own session: a subagent's request
+  is answered for the subagent), whose id the core mints and the host
+  runs once.
+- **Optimistic** (R-LAG-8). The sheet shows the next request, or goes, at
+  once, and the call's row reads "allowed — sending…" until the ack, then
+  "allowed". An ack's error brings the request back first with the host's
+  sentence, unless `approval.resolved` settled it already or the host
+  says it isn't waiting any more. Resolved before its ack, an answer
+  given here reads as this phone's when the decision is the one it sent,
+  and as answered elsewhere, naming the decision, when the terminal
+  decided otherwise. `approval.resolved` for a request
+  waiting here takes it away with a toast ("Answered on another device:
+  allowed"; a denial says it may be the turn stopping); a turn's end (`turn.completed`, or the run's result) drops
+  its requests. A screen left with an answer out is kept until its ack.
+- **Put away.** Swiped down, the sheet waits behind a hand in the
+  navigation bar ("1 approval waiting"); a tap, or a new request, brings
+  it back. Nothing is answered by putting it away.
 
 ## Why the Xcode project is generated
 

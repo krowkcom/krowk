@@ -29,7 +29,14 @@ import UIKit
 /// replaced by the item the host logs; with no host it's queued in the
 /// core for the next one (R-HAND-4). The core owns the ids, the queue and
 /// the resending; this screen only shows what it reports.
-public final class TranscriptViewController: UIViewController, UICollectionViewDelegate {
+///
+/// A tool call waiting for a yes, or a question the agent asks, rises in
+/// the approval sheet over the transcript (ticket 91, R-PERM-2), one at a
+/// time in arrival order; put away, it waits behind the hand in the
+/// navigation bar. An answer shows at once on the call's row ("allowed —
+/// sending…", R-LAG-8) and settles on the host's ack; one answered on
+/// another device first goes with a toast saying so.
+public final class TranscriptViewController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
     let row: SessionRow
     public let model: TranscriptModel
     public let statusBar = RelayStatusBar()
@@ -88,9 +95,25 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// followed, what comes applied as it comes (no display link).
     public private(set) var parked = false
 
-    public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, open: (@MainActor (URL) -> Void)? = nil) {
+    /// The requests waiting for an answer from this phone (ticket 91), when
+    /// the app gave a queue.
+    public let approvals: ApprovalQueue?
+    /// The approval sheet, while it's up.
+    public private(set) var approvalSheet: ApprovalSheetController?
+    /// The person put the sheet away: it rises again for a new request,
+    /// or from the hand in the navigation bar.
+    public private(set) var approvalsPutAway = false
+    /// A line over the transcript for a moment: an approval answered on
+    /// another device, or one the host no longer waits on.
+    public let toast = UILabel()
+    private var toastHide: DispatchWorkItem?
+    /// A try again at raising the sheet, while another sheet is up.
+    private var approvalsRetry: DispatchWorkItem?
+
+    public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.row = row
         self.session = session
+        self.approvals = session == nil ? nil : approvals
         let model = model ?? TranscriptModel(sessionID: row.id)
         self.model = model
         self.driver = session.map { FrameDriver(session: $0, model: model) }
@@ -268,6 +291,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             self.snapshotApplies += 1
         }
 
+        setUpApprovals()
         observeFocus()
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
@@ -315,6 +339,18 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     /// Covered, the screen keeps draining what the session brings, so
     /// nothing piles up; leaving, it stops the session and the drain.
+    override public func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        syncApprovals()
+    }
+
+    override public func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
+            putSheetDown()
+        }
+    }
+
     override public func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         if isMovingFromParent || isBeingDismissed || navigationController?.isBeingDismissed == true {
@@ -339,6 +375,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames?.invalidate()
         frames = nil
         driver?.ticker = nil
+        putSheetDown()
         // Commands the core still holds go on: a queued prompt survives
         // leaving the screen (R-HAND-4), until the host answers it.
         if model.commandsOut > 0, let parking, !isEnded {
@@ -445,6 +482,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
         if let why = done.stopRefused { stopRefused = why }
         if !done.ended.isEmpty { stopRefused = nil }
+        for answer in done.approvalAnswers { approvals?.acked(answer.token, error: answer.error) }
+        // A sheet that couldn't rise (another sheet was up) tries again.
+        if approvalSheet == nil, approvals?.current != nil { syncApprovals() }
         updateComposer()
         settleParked()
     }
@@ -521,6 +561,206 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     @objc private func keySend() { sendTyped() }
     @objc private func keyStop() { stopTurn() }
+
+    // MARK: Approvals (ticket 91)
+
+    private func setUpApprovals() {
+        guard let approvals, session != nil else { return }
+        // The answer goes as the composer's commands do: shown at once,
+        // handed to the core off the main thread, acked by the host. Held
+        // weakly: the connection holds the queue.
+        approvals.sender = { [weak self] reply in
+            guard let self, let session = self.session else { return nil }
+            let token = self.model.issue(.approve(reply))
+            session.send(.approve(reply), token: token)
+            return token
+        }
+        approvals.onChange = { [weak self] in self?.syncApprovals() }
+        approvals.onEvent = { [weak self] in self?.approvalEvent($0) }
+
+        toast.font = .preferredFont(forTextStyle: .footnote)
+        toast.adjustsFontForContentSizeCategory = true
+        toast.numberOfLines = 0
+        toast.textAlignment = .center
+        toast.textColor = .label
+        toast.backgroundColor = .tertiarySystemBackground
+        toast.layer.cornerRadius = 10
+        toast.layer.masksToBounds = true
+        toast.layer.borderColor = UIColor.separator.cgColor
+        toast.layer.borderWidth = 0.5
+        toast.alpha = 0
+        toast.accessibilityIdentifier = "approval-toast"
+        toast.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(toast)
+        NSLayoutConstraint.activate([
+            toast.topAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: 8),
+            toast.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            toast.widthAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.widthAnchor),
+        ])
+        approvals.connected = statusBar.status == .live || statusBar.status == .catchingUp
+        syncApprovals()
+    }
+
+    /// The sheet up with the first request waiting, its content current,
+    /// or down with none; the hand in the navigation bar while it's put
+    /// away. Never over a screen that left or isn't in a window.
+    func syncApprovals() {
+        guard let approvals else { return }
+        defer { showApprovalsButton() }
+        if let sheet = approvalSheet {
+            if approvals.current == nil {
+                approvalSheet = nil
+                takeDown(sheet, animated: true)
+            } else {
+                sheet.refresh()
+            }
+            return
+        }
+        guard approvals.current != nil, !approvalsPutAway, !parked, !left, isViewLoaded, view.window != nil else { return }
+        if let other = presentedViewController {
+            if let stale = other as? ApprovalSheetController, !stale.isBeingDismissed, !stale.isBeingPresented {
+                // A sheet taken down whose dismissal never happened: down
+                // again, and this runs once it's gone.
+                takeDown(stale, animated: false)
+            } else if !(other is ApprovalSheetController) || other.isBeingPresented {
+                // Another sheet up (a link's), or one still rising: tried
+                // again shortly. One going calls this as it goes.
+                retryApprovals()
+            }
+            return
+        }
+        let sheet = ApprovalSheetController(queue: approvals)
+        sheet.presentationController?.delegate = self
+        approvalSheet = sheet
+        present(sheet, animated: true)
+    }
+
+    /// A sheet taken down, once it has finished rising if it's still
+    /// rising (UIKit ignores a dismissal then), and the queue looked at
+    /// again once it's gone: a request back from an ack's error rises at
+    /// once.
+    private func takeDown(_ sheet: ApprovalSheetController, animated: Bool) {
+        let down = { [weak self, weak sheet] in
+            sheet?.dismiss(animated: animated) {
+                MainActor.assumeIsolated { self?.syncApprovals() }
+            }
+        }
+        if sheet.isBeingPresented, let rising = sheet.transitionCoordinator,
+           rising.animate(alongsideTransition: nil, completion: { _ in MainActor.assumeIsolated { down() } }) {
+            return
+        }
+        down()
+    }
+
+    /// The sheet couldn't rise (another sheet is up): tried again in half
+    /// a second, while it's wanted.
+    private func retryApprovals() {
+        guard approvalsRetry == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.approvalsRetry = nil
+                self?.syncApprovals()
+            }
+        }
+        approvalsRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
+    }
+
+    /// The hand: how many wait, and a tap brings the sheet back.
+    private func showApprovalsButton() {
+        let waiting = approvals?.waiting ?? 0
+        guard waiting > 0, approvalSheet == nil else {
+            if navigationItem.rightBarButtonItem != nil { navigationItem.rightBarButtonItem = nil }
+            return
+        }
+        let label = waiting == 1 ? "1 approval waiting" : "\(waiting) approvals waiting"
+        if let item = navigationItem.rightBarButtonItem, item.accessibilityLabel == label { return }
+        let item = UIBarButtonItem(title: "\(waiting)", image: UIImage(systemName: "hand.raised.fill"), primaryAction: UIAction { [weak self] _ in
+            self?.approvalsPutAway = false
+            self?.syncApprovals()
+        })
+        item.accessibilityIdentifier = "approvals-waiting"
+        item.accessibilityLabel = label
+        item.accessibilityHint = "Shows the approval sheet"
+        item.tintColor = .systemOrange
+        navigationItem.rightBarButtonItem = item
+    }
+
+    /// Swiped down (or Escape): put away until a new request comes or the
+    /// hand is tapped. Nothing is answered.
+    public func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        guard presentationController.presentedViewController is ApprovalSheetController else { return }
+        // A sheet already taken down (one whose dismissal UIKit ignored)
+        // gone at last: the queue looked at again.
+        guard presentationController.presentedViewController === approvalSheet else { return syncApprovals() }
+        approvalSheet = nil
+        approvalsPutAway = true
+        showApprovalsButton()
+    }
+
+    /// The screen goes: the sheet with it, at once.
+    private func putSheetDown() {
+        approvalsRetry?.cancel()
+        approvalsRetry = nil
+        guard let sheet = approvalSheet else { return }
+        approvalSheet = nil
+        takeDown(sheet, animated: false)
+    }
+
+    /// What became of a request, on its tool's row and in a toast.
+    private func approvalEvent(_ event: ApprovalQueue.Event) {
+        switch event {
+        case .arrived(let prompt), .returned(let prompt, _):
+            approvalsPutAway = false
+            mark(prompt, "waiting for approval")
+            if UIAccessibility.isVoiceOverRunning, approvalSheet != nil {
+                UIAccessibility.post(notification: .announcement, argument: "Another approval is waiting")
+            }
+        case .answered(let prompt, let verdict):
+            mark(prompt, Self.verdictLine(verdict, asks: prompt.asks) + " — sending…")
+        case .settled(let prompt, let verdict):
+            mark(prompt, Self.verdictLine(verdict, asks: prompt.asks))
+        case .resolvedElsewhere(let prompt, let resolution):
+            // A turn stopped denies what it asked, as another device would.
+            mark(prompt, resolution == .denied ? "denied elsewhere" : "\(resolution.word) on another device")
+            say(resolution == .denied ? "Denied on another device, or as its turn stopped" : "Answered on another device: \(resolution.word)")
+        case .dropped(let prompt, let why):
+            mark(prompt, nil)
+            if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }
+        }
+    }
+
+    private func mark(_ prompt: ApprovalPrompt, _ line: String?) {
+        model.markApproval(prompt.requestID, session: prompt.sessionID, tool: prompt.tool, input: prompt.input, line: line)
+    }
+
+    /// What a row says of an answer given here.
+    static func verdictLine(_ verdict: ApprovalVerdict, asks: Bool) -> String {
+        switch verdict {
+        case .allow: asks ? "answered" : "allowed"
+        case .allowSession: "allowed for this session"
+        case .deny: asks ? "declined" : "denied"
+        }
+    }
+
+    /// The toast: `text` for four seconds, and told to VoiceOver.
+    func say(_ text: String) {
+        toast.text = " \(SafeText.line(text[...], limit: 300)) "
+        toastHide?.cancel()
+        view.bringSubviewToFront(toast)
+        UIView.animate(withDuration: 0.2) { self.toast.alpha = 1 }
+        let hide = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                UIView.animate(withDuration: 0.3) { self.toast.alpha = 0 }
+            }
+        }
+        toastHide = hide
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4, execute: hide)
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: text)
+        }
+    }
 
     // MARK: Following the end
 
@@ -711,6 +951,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private func relay(_ status: RelayStatus) {
         statusBar.show(status)
         model.setHostOffline(status == .hostOffline)
+        approvals?.connected = status == .live || status == .catchingUp
         if case .ended = status {
             if !model.attached {
                 stoppedEarly = true
@@ -720,6 +961,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             // status is published after them): applied first. Then nothing
             // still out will be answered: said on its bubble.
             frame()
+            approvals?.connectionEnded()
             let refused = model.connectionEnded()
             if UIAccessibility.isVoiceOverRunning, !refused.isEmpty {
                 UIAccessibility.post(notification: .announcement, argument: "The connection stopped: what you sent may not have gone")
