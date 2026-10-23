@@ -184,10 +184,12 @@ public actor RelayConnection: LiveSession {
 
     /// Moves this connection's clock on by `by`, as time passing would, for
     /// the viewer and its supervisor (a long background, without waiting
-    /// it out). For the tests; the timers already armed keep their time.
+    /// it out). On the queue, in order with `background` and `foreground`
+    /// called around it. For the tests; the timers already armed keep
+    /// their time.
     public nonisolated func advanceClock(by: Duration) {
         let ms = UInt64(by.components.seconds) * 1000 + UInt64(by.components.attoseconds / 1_000_000_000_000_000)
-        clockOffset.withLock { $0 += ms }
+        queue.async { self.clockOffset.withLock { $0 += ms } }
     }
 
     private nonisolated let clockOffset = OSAllocatedUnfairLock<UInt64>(initialState: 0)
