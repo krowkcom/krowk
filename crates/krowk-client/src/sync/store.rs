@@ -119,8 +119,52 @@ pub enum Chunk {
 /// How many chunks are read from storage at once.
 const FETCH: usize = 8;
 
-fn api(e: krowk_api::Error) -> String {
-    e.to_string()
+/// Why reading a session's chunks failed (`catch_up`), and whether reading
+/// them again could help: a viewer joins again after a transient failure,
+/// and stops at a permanent one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadError {
+    pub detail: String,
+    /// Reading again reads the same: the session is gone (the registry
+    /// answers 404 or 410), a chunk does not open under the keys this
+    /// device holds (a key rotated since it was opened, a chain that does
+    /// not hold) or is no chunk this build reads, or the log is not the one
+    /// the host sealed (a prefix or another log: `session_rolled_back`).
+    /// Anything else — the network, a registry error, a digest that did not
+    /// match as read — is transient.
+    pub permanent: bool,
+}
+
+impl ReadError {
+    pub fn transient(detail: impl Into<String>) -> ReadError {
+        ReadError { detail: detail.into(), permanent: false }
+    }
+
+    pub fn permanent(detail: impl Into<String>) -> ReadError {
+        ReadError { detail: detail.into(), permanent: true }
+    }
+
+    /// A registry or storage call that failed: permanent only when the
+    /// session is gone.
+    fn registry(e: krowk_api::Error) -> ReadError {
+        if matches!(e.status, 404 | 410) {
+            ReadError::permanent(format!("the registry no longer holds the session ({e})"))
+        } else {
+            ReadError::transient(e.to_string())
+        }
+    }
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.detail)
+    }
+}
+
+impl From<ReadError> for String {
+    fn from(e: ReadError) -> String {
+        e.detail
+    }
 }
 
 /// The whole log as the registry holds it: its events and where it ends,
@@ -149,10 +193,16 @@ pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Val
 /// writer's) are built on. It holds what it read to no head: a caller
 /// reading a session it was not told the length of goes through `attach`
 /// or `catch_up`, which do (`Head::at_least`).
-pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
+pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
+    read_chunks(client, id, reader, last, each).map_err(String::from)
+}
+
+/// `read_from`, its failure classified: what `catch_up` reads with. A
+/// refusal of `each`'s is permanent.
+fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, ReadError> {
     let mut after = reader.next().checked_sub(1);
     loop {
-        let page = client.list_chunks(id, after, 100).map_err(api)?;
+        let page = client.list_chunks(id, after, 100).map_err(ReadError::registry)?;
         let wanted: Vec<_> = page.chunks.iter().filter(|c| c.index >= reader.next()).collect();
         // Each chunk is a round trip to storage, so a page is fetched
         // FETCH at a time and opened in order: an attach costs a few round
@@ -163,12 +213,14 @@ pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, mut last: 
             fetched.extend(got);
         }
         for (c, sealed) in wanted.iter().zip(fetched) {
-            let sealed = sealed.map_err(api)?;
-            let plain = reader.open(&sealed).map_err(|e| e.to_string())?;
-            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| format!("chunk {} holds no chunk this krowk reads: {e}", c.index))?;
+            let sealed = sealed.map_err(ReadError::registry)?;
+            // The registry checked its digest as read: what does not open is
+            // sealed under a key this device lacks, or is another log.
+            let plain = reader.open(&sealed).map_err(|e| ReadError::permanent(e.to_string()))?;
+            let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| ReadError::permanent(format!("chunk {} holds no chunk this krowk reads: {e}", c.index)))?;
             let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
             last = Some(h);
-            each(chunk, h)?;
+            each(chunk, h).map_err(ReadError::permanent)?;
         }
         match page.next {
             Some(n) if !page.chunks.is_empty() => after = Some(n),
@@ -298,11 +350,13 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
 }
 
 /// Reads the tail again from where `a` stopped, until it reaches `known`.
-pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, String> {
+/// A log that stops short of `known`, or holds another chunk there, is a
+/// permanent `ReadError`, as `session_rolled_back` is to the phone.
+pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, ReadError> {
     let mut reader = ChunkReader::resume(key, crate::sync::uuid(id), a.next, a.previous, a.fence, a.epoch);
     let mut fresh = Vec::new();
     let mut heads = std::mem::take(&mut a.heads);
-    let head = read_from(client, id, &mut reader, a.head, &mut |c, h| {
+    let head = read_chunks(client, id, &mut reader, a.head, &mut |c, h| {
         if let Chunk::Events { events } = c {
             fresh.extend(events);
         }
@@ -311,7 +365,7 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
     });
     a.heads = heads;
     let head = head?;
-    Head::at_least(&a.heads, known)?;
+    Head::at_least(&a.heads, known).map_err(ReadError::permanent)?;
     a.head = head;
     a.next = reader.next();
     a.previous = reader.previous();
@@ -356,6 +410,23 @@ mod tests {
         assert!(Head::at_least(&log(5, 9), h(4, 1)).is_err(), "another chunk at the head");
         assert!(Head::at_least(&log(8, 9), h(4, 1)).is_err(), "a longer log that forked before the head");
         assert!(Head::at_least(&[], None).is_ok());
+    }
+
+    /// Ticket 115: a registry or storage failure is permanent only when the
+    /// session is gone (404, 410); the network, a 5xx, a 429, a refusal
+    /// and a digest that did not match as read are worth reading again.
+    #[test]
+    fn r_client_3_a_read_fails_for_good_only_when_the_session_is_gone() {
+        let refused = |status: u16, code: &str| ReadError::registry(krowk_api::Error { status, body: [("error".to_string(), serde_json::json!(code))].into() });
+        assert!(refused(404, "not_found").permanent);
+        assert!(refused(410, "gone").permanent);
+        assert!(refused(404, "not_found").detail.contains("no longer holds the session"));
+        for (status, code) in [(0, "network_unreachable"), (503, "http_503"), (429, "rate_limited"), (401, "unauthorized"), (0, "checksum_mismatch")] {
+            let e = refused(status, code);
+            assert!(!e.permanent && e.detail == code, "{status} {code}: {e:?}");
+        }
+        assert!(!ReadError::registry(krowk_api::fail("read_failed", "a chunk read panicked")).permanent);
+        assert_eq!(String::from(ReadError::permanent("a prefix, refused")), "a prefix, refused");
     }
 
     /// An index whose rotation's key landed and whose next index write did
