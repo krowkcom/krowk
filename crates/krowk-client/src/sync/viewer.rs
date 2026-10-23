@@ -312,6 +312,11 @@ fn ms(d: Duration) -> u64 {
 /// refused the join.
 const RETRY_MS: u64 = 1000;
 
+/// How a `Note` about a failed join ends: the cadence of `RETRY_MS`. A
+/// caller that times the retries itself (the phone's `supervisor`) says
+/// its own.
+pub const EVERY_SECOND: &str = "; trying again every second";
+
 /// A viewer of a synced session following its host live, without IO
 /// (R-CLIENT-3; engineering/harness.md → Sync): the caller passes in what
 /// arrived and the time, a monotonic `now_ms` from any origin, and gets
@@ -527,7 +532,7 @@ impl ViewerCore {
         }
         self.now_ms = now_ms;
         if self.unjoined.as_deref() != Some(error.as_str()) {
-            self.frame.push(Update::Note(format!("not on the relay {}: {error}; trying again every second", self.relay)));
+            self.frame.push(Update::Note(format!("not on the relay {}: {error}{EVERY_SECOND}", self.relay)));
             self.unjoined = Some(error);
         }
         self.join(now_ms.saturating_add(RETRY_MS));
