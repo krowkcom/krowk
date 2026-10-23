@@ -413,6 +413,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames = nil
         driver?.ticker = nil
         putSheetDown()
+        // A route lands on a screen in view, never on one parked.
+        landing = nil
+        landingWait?.cancel()
+        landingWait = nil
+        routedSheet = false
         // Commands the core still holds go on: a queued prompt survives
         // leaving the screen (R-HAND-4), until the host answers it.
         if model.commandsOut > 0, let parking, !isEnded {
@@ -762,8 +767,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
                 hideNotice()
                 routedSheet = true
             }
-            // A route waiting out its grace lands on it now.
-            if landing != nil { land() }
+            // A route waiting out its grace lands on it now: on what the
+            // queue holds, without draining again (this is mid-drain).
+            if landing != nil { land(drain: false) }
             mark(prompt, "waiting for approval")
             if UIAccessibility.isVoiceOverRunning, approvalSheet != nil {
                 UIAccessibility.post(notification: .announcement, argument: "Another approval is waiting")
@@ -776,11 +782,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         case .resolvedElsewhere(let prompt, let resolution):
             // A turn stopped denies what it asked, as another device would.
             mark(prompt, resolution == .denied ? "denied elsewhere" : "\(resolution.word) on another device")
-            if routeSettled() { return }
+            if routeSettled(by: event) { return }
             say(resolution == .denied ? "Denied on another device, or as its turn stopped" : "Answered on another device: \(resolution.word)")
         case .dropped(let prompt, let why):
             mark(prompt, nil)
-            if routeSettled() { return }
+            if routeSettled(by: event) { return }
             if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }
         }
     }
@@ -801,8 +807,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// The toast: `text` for four seconds, and told to VoiceOver.
     func say(_ text: String) {
         toast.text = " \(SafeText.line(text[...], limit: 300)) "
-        // Said over the notice's place: what it says is newer.
-        hideNotice()
+        // Said over the notice's place: what it says is newer. The host
+        // away stays said: the bar's line, and still so.
+        if noticeShown == .nothingWaiting { hideNotice() }
         toastHide?.cancel()
         view.bringSubviewToFront(toast)
         UIView.animate(withDuration: 0.2) { self.toast.alpha = 1 }
@@ -849,9 +856,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// Lands the route, if the connection has said enough: what has come
     /// (the welcome's requests, which the session posts before its status
     /// says live) applied first.
-    private func land() {
+    private func land(drain: Bool = true) {
         guard let route = landing else { return }
-        if isViewLoaded { frame() }
+        if drain, isViewLoaded { frame() }
+        // What the drain brought may have landed it already.
+        guard landing == route else { return }
         // Joining again: the next live is a welcome.
         if !isLive { landedLive = false }
         guard let landed = RouteLanding.of(route, status: statusBar.status, waiting: approvals?.waiting ?? 0) else { return }
@@ -887,7 +896,16 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// waits, or the last one a route's sheet showed: the notice says it,
     /// and stays, rather than a toast that would take its place. Whether
     /// it did.
-    private func routeSettled() -> Bool {
+    private func routeSettled(by event: ApprovalQueue.Event) -> Bool {
+        // Settled elsewhere or by its turn's end: not a refusal of an
+        // answer of this phone's, nor the connection stopping, which the
+        // toast and the bar say.
+        switch event {
+        case .resolvedElsewhere: break
+        case .dropped(_, nil):
+            if case .ended = statusBar.status { return false }
+        default: return false
+        }
         if noticeShown == .nothingWaiting { return true }
         guard routedSheet, approvals?.waiting == 0 else { return false }
         routedSheet = false

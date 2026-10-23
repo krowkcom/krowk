@@ -94,9 +94,14 @@ public enum RouteLanding: Equatable, Sendable {
     /// long as the connection takes, and lands when it says.
     public static func of(_ route: NotificationRoute, status: RelayStatus, waiting: Int) -> RouteLanding? {
         switch status {
-        case .live, .catchingUp:
+        case .live:
             guard case .approval = route else { return .shown }
             return waiting > 0 ? .sheet : .nothingWaiting
+        case .catchingUp:
+            // What the relay dropped may hold the request: an approval's
+            // route waits for the catch-up.
+            guard case .approval = route else { return .shown }
+            return waiting > 0 ? .sheet : nil
         case .hostOffline: return .hostOffline
         case .ended: return .shown
         case .connecting, .reconnecting, .unreachable, .retrying: return nil
@@ -155,8 +160,15 @@ public final class NotificationRouter {
 
     private var root = Root.pending
     private weak var navigator: (any RouteNavigator)?
-    /// The route that came before the root.
-    public private(set) var held: NotificationRoute?
+    /// The route that came before the root, and when.
+    public private(set) var held: NotificationRoute? {
+        didSet { heldAt = held == nil ? nil : clock.now }
+    }
+    private var heldAt: ContinuousClock.Instant?
+    private let clock = ContinuousClock()
+    /// A route held longer (the keys came back long after the tap) is
+    /// dropped: the person has moved on.
+    public static let heldFor: Duration = .seconds(60)
     /// Routes taken to the list: a later one supersedes an earlier still
     /// finding its session.
     private var taken = 0
@@ -185,9 +197,9 @@ public final class NotificationRouter {
     public func paired(_ navigator: any RouteNavigator) {
         root = .paired
         self.navigator = navigator
-        if let route = held {
+        if let route = held, let heldAt {
             held = nil
-            go(route, navigator)
+            if heldAt.duration(to: clock.now) <= Self.heldFor { go(route, navigator) }
         }
     }
 

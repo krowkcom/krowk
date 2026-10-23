@@ -62,7 +62,15 @@ public final class FrameDriver {
     }
 
     /// One display frame at `now` (seconds, the display link's clock).
+    /// A tick is under way (something it applied called back into it).
+    private var ticking = false
+
     public func tick(at now: TimeInterval) {
+        // Never inside another: what the inner one took would be applied
+        // before what the outer one already holds. Left for the next.
+        guard !ticking else { return }
+        ticking = true
+        defer { ticking = false }
         frames += 1
         let taken = session.takeFrame()
         guard !taken.isEmpty else {

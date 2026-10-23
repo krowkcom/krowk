@@ -85,6 +85,8 @@ struct NotificationRouteTests {
         let done = NotificationRoute.session(Self.id)
         #expect(RouteLanding.of(approval, status: .live, waiting: 2) == .sheet)
         #expect(RouteLanding.of(approval, status: .catchingUp, waiting: 1) == .sheet)
+        #expect(RouteLanding.of(approval, status: .catchingUp, waiting: 0) == nil, "what the relay dropped may hold it")
+        #expect(RouteLanding.of(done, status: .catchingUp, waiting: 0) == .shown)
         #expect(RouteLanding.of(approval, status: .live, waiting: 0) == .nothingWaiting)
         #expect(RouteLanding.of(done, status: .live, waiting: 1) == .shown)
         #expect(RouteLanding.of(approval, status: .hostOffline, waiting: 1) == .hostOffline, "R-IOS-7: no sheet with the host away")

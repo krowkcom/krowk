@@ -206,7 +206,7 @@ struct NotificationRoutingTests {
         #expect(screen.toast.alpha == 0)
     }
 
-    @Test("R-PERM-2: tapped with the session already open and live, a request read as the app comes back still raises the sheet; with none, the notice comes after the grace")
+    @Test("R-PERM-2: tapped with the session already open and live, a request that comes within the grace still raises the sheet; with none, the notice comes after the grace")
     func alreadyLive() async throws {
         let rig = try Rig()
         defer { rig.window.isHidden = true }
@@ -230,6 +230,7 @@ struct NotificationRoutingTests {
         // Answered elsewhere; tapped again with nothing waiting: the notice, after the grace.
         rig.queues[Self.a]?.resolved(requestID: "r4", resolution: .allowed)
         try await waitFor { screen.approvalSheet == nil }
+        #expect(screen.noticeShown == .nothingWaiting, "the route's request, settled elsewhere")
         rig.router.handle(.approval(Self.a))
         try await waitFor { rig.router.finished == 3 }
         #expect(screen.noticeShown == nil)
@@ -252,11 +253,12 @@ struct NotificationRoutingTests {
         #expect(notice.contains("last seen 12"), "\(notice)")
         #expect(screen.approvalSheet == nil)
         #expect(screen.statusBar.status == .hostOffline)
+        #expect(rig.queues[Self.a]?.connected == false, "nothing can be answered")
         #expect(screen.isLive == false)
         #expect(rig.list.shownSession == ShownSession(id: Self.a, live: false))
     }
 
-    @Test("R-IOS-12: a route to a session not in the listing (another account's) opens nothing; in the foreground, the session on screen and live rings no banner")
+    @Test("R-IOS-12: a route to a session not in the listing opens nothing; in the foreground, the session on screen and live rings no banner")
     func notListedAndForeground() async throws {
         let rig = try Rig()
         defer { rig.window.isHidden = true }
