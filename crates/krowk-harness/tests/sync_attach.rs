@@ -2822,6 +2822,118 @@ async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {
     auto.stop(Duration::from_secs(10)).await;
 }
 
+/// R-SYNC-3, R-HAND-4 (ticket 116): with a 2-second idle window, a session
+/// B watches — a viewer that has said hello, so one that can prompt — is
+/// never let go, however long B watches with nothing running. Once B goes,
+/// the window runs again from then, and the session is let go after it.
+#[tokio::test]
+async fn r_sync_3_a_session_a_device_watches_is_not_let_go_at_its_idle_deadline() {
+    let w = World::new("auto-watched");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    // Let go before B came, B's coming takes it up again: either way it is
+    // held from here.
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    let builds = auto.built(&session).len();
+    let watched = Instant::now();
+    while watched.elapsed() < Duration::from_secs(5) {
+        assert!(auto.bridged.lock().unwrap().contains(&session), "let go {:?} into B's watch", watched.elapsed());
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(leased(&w, &session).await, Ok(true), "held while B watched");
+    assert_eq!(auto.built(&session).len(), builds, "one bridge throughout");
+
+    drop(v);
+    let left = Instant::now();
+    let gone = let_go(&w, &auto, &session, left + Duration::from_secs(8)).await;
+    assert!(gone - left >= Duration::from_millis(1500), "a whole window after B left: {:?}", gone - left);
+    println!("R-SYNC-3 let go {:?} after B left", gone - left);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// The turns `session`'s log on A holds.
+fn turns_logged(w: &World, session: &str) -> usize {
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(session).join(log::EVENTS_FILE)).unwrap();
+    log.lines().filter(|l| l.contains("\"turn.started\"")).count()
+}
+
+/// R-HAND-4, R-SYNC-3 (ticket 116): a session let go as idle keeps its
+/// relay link, parked. B opens it and prompts at once: B's joining takes
+/// the session up again, with no turn at A, and the prompt — sent before
+/// the bridge was back, and sent again at its welcome — runs once on A and
+/// is answered on B. Let go again once B has gone, B coming back takes it
+/// up again.
+#[tokio::test]
+async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answered() {
+    let w = World::new("auto-wake");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    assert_eq!(auto.built(&session).len(), 1);
+
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let sent = Instant::now();
+    v.commands.send(w.prompt(Some(&session), "asked from B once A had let it go")).unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    println!("R-HAND-4 B's prompt answered {:?} after it was sent", sent.elapsed());
+    assert_eq!(auto.built(&session).len(), 2, "taken up again by B, once");
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    assert!(log.contains("asked from B once A had let it go"), "B's prompt ran on A");
+    assert_eq!(turns_logged(&w, &session), 2, "and once");
+    assert_eq!(leased(&w, &session).await, Ok(true));
+
+    drop(v);
+    let_go(&w, &auto, &session, Instant::now() + Duration::from_secs(8)).await;
+    let v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    assert_eq!(auto.built(&session).len(), 3);
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): a viewer never syncs a session the policy
+/// refuses. A session let go as idle, then opted out with
+/// `.krowk/no-sync`: B opening it and prompting has the supervisor read the
+/// policy again, which refuses it — it is never built again nor leased,
+/// its parked link is let go so B sees no host, and B's prompt never runs.
+#[tokio::test]
+async fn r_sync_3_a_session_opted_out_once_let_go_is_never_brought_back_by_a_viewer() {
+    let w = World::new("auto-wake-out");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    let ended = Instant::now();
+    w.synced(&session).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    std::fs::create_dir_all(w.repo().join(".krowk")).unwrap();
+    std::fs::write(w.repo().join(".krowk/no-sync"), "").unwrap();
+
+    let checks = auto.checks.load(Ordering::SeqCst);
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    v.commands.send(w.prompt(Some(&session), "asked of a session opted out")).unwrap();
+    checked(&auto, checks + 1).await;
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
+    assert_eq!(auto.built(&session).len(), 1, "never built again");
+    assert!(auto.bridged.lock().unwrap().is_empty());
+    assert_eq!(leased(&w, &session).await, Ok(false), "never leased again");
+    assert_eq!(turns_logged(&w, &session), 1, "B's prompt never ran");
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
 /// R-SYNC-2: one writer. A manual `krowk sync host` holds the session; two
 /// prompts follow with automatic sync on. The supervisor tries once — the
 /// registry refuses it the lease (`lease_held`) — and leaves the session
