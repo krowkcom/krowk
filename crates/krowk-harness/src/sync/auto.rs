@@ -1471,7 +1471,7 @@ impl Sup {
         self.has.remove(&session);
         match woke {
             host::Woke::Viewer if !self.gone => {
-                eprintln!("krowk: a device opened session {session}; syncing it again");
+                eprintln!("krowk: a device opened session {session}; syncing it again, as its checks allow");
                 self.start(session);
             }
             host::Woke::Gone(why) => eprintln!("krowk: session {session} is off the relay ({why}); its next turn syncs it again"),
@@ -1831,7 +1831,8 @@ mod tests {
     }
 
     /// R-SYNC-3 (ticket 116): every parked link beats on one schedule, a
-    /// `PING` apart from the supervisor's start, never at once.
+    /// `PING` apart from the supervisor's start: the next beat is always
+    /// after the time asked about, never on it.
     #[test]
     fn r_sync_3_parked_links_beat_together_on_one_schedule() {
         let epoch = Instant::now();

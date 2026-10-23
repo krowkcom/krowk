@@ -387,7 +387,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   turned off, is never synced this way. While a session waits for a
   device to open it, the host keeps one quiet connection to the relay for
   it, sends a heartbeat every 10 seconds, and rereads its own sync settings
-  once a minute; it asks the registry nothing. With no session waiting, it
+  about once a minute; it asks the registry nothing. With no session waiting, it
   does none of this.
 - **A registry hiccup no longer drops a device off a synced session.**
   When a device following a session joins it, it first reads the

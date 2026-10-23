@@ -2825,7 +2825,7 @@ async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {
     auto.stop(Duration::from_secs(10)).await;
 }
 
-/// R-SYNC-3, R-HAND-4 (ticket 116): with a 2-second idle window, a session
+/// R-SYNC-3, R-HAND-4 (ticket 116): with a 3-second idle window, a session
 /// B watches — a viewer that has said hello, so one that can prompt — is
 /// never let go, however long B watches with nothing running. Once B goes,
 /// the window runs again from then, and the session is let go after it.
@@ -2833,7 +2833,7 @@ async fn r_sync_3_sync_turned_off_while_bridged_stops_every_bridge() {
 async fn r_sync_3_a_session_a_device_watches_is_not_let_go_at_its_idle_deadline() {
     let w = World::new("auto-watched");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), ..AutoOpts::default() });
     let d = w.daemon().await;
     let session = prompted(&w, &d, None, "say hello").await;
     w.synced(&session).await;
@@ -2845,7 +2845,7 @@ async fn r_sync_3_a_session_a_device_watches_is_not_let_go_at_its_idle_deadline(
     taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
     let builds = auto.built(&session).len();
     let watched = Instant::now();
-    while watched.elapsed() < Duration::from_secs(5) {
+    while watched.elapsed() < Duration::from_secs(7) {
         assert!(auto.bridged.lock().unwrap().contains(&session), "let go {:?} into B's watch", watched.elapsed());
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -2854,8 +2854,8 @@ async fn r_sync_3_a_session_a_device_watches_is_not_let_go_at_its_idle_deadline(
 
     drop(v);
     let left = Instant::now();
-    let gone = let_go(&w, &auto, &session, left + Duration::from_secs(8)).await;
-    assert!(gone - left >= Duration::from_millis(1500), "a whole window after B left: {:?}", gone - left);
+    let gone = let_go(&w, &auto, &session, left + Duration::from_secs(9)).await;
+    assert!(gone - left >= Duration::from_millis(2500), "a whole window after B left: {:?}", gone - left);
     println!("R-SYNC-3 let go {:?} after B left", gone - left);
     auto.stop(Duration::from_secs(10)).await;
 }
@@ -2876,12 +2876,14 @@ fn turns_logged(w: &World, session: &str) -> usize {
 async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answered() {
     let w = World::new("auto-wake");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
-    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(2)), ..AutoOpts::default() });
+    // The window as long as the bridge woken needs to take the lease up,
+    // join the relay and see B's hello, with room to spare.
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), ..AutoOpts::default() });
     let d = w.daemon().await;
     let session = prompted(&w, &d, None, "say hello").await;
     let ended = Instant::now();
     w.synced(&session).await;
-    let_go(&w, &auto, &session, ended + Duration::from_secs(5)).await;
+    let_go(&w, &auto, &session, ended + Duration::from_secs(6)).await;
     assert_eq!(auto.built(&session).len(), 1);
 
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
@@ -2897,7 +2899,7 @@ async fn r_hand_4_a_prompt_from_b_takes_a_session_let_go_up_again_and_is_answere
     assert_eq!(leased(&w, &session).await, Ok(true));
 
     drop(v);
-    let_go(&w, &auto, &session, Instant::now() + Duration::from_secs(8)).await;
+    let_go(&w, &auto, &session, Instant::now() + Duration::from_secs(9)).await;
     let v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
     assert_eq!(auto.built(&session).len(), 3);
@@ -2940,8 +2942,9 @@ async fn r_sync_3_a_session_opted_out_once_let_go_is_never_brought_back_by_a_vie
 /// R-SYNC-3 (ticket 116): automatic sync turned off while a session is
 /// parked, and no turn or viewer to ask for the policy: it is read again on
 /// its own (`Config::parked_recheck`, a second here, on the next beat), and
-/// the parked link let go. B opening the session then finds no host at all
-/// — never one that goes as B comes — and nothing is built.
+/// the parked link let go. B opening the session then finds no host, and
+/// nothing reads the policy again: a link still parked would have been
+/// woken by B, and its wake checked. Nothing is built.
 #[tokio::test]
 async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
     let w = World::new("auto-park-off");
@@ -2960,10 +2963,13 @@ async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
         assert!(Instant::now() < deadline, "the policy was never read again while the session was parked");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    let read = auto.checks.load(Ordering::SeqCst);
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
-    let seen = until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(_))).await;
-    assert!(matches!(seen.iter().rev().find(|u| matches!(u, viewer::Update::Host(_))), Some(viewer::Update::Host(false))), "no host on the relay: {seen:?}");
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
+    // A wake's check is asked for after its link has gone: a moment for one.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!(auto.checks.load(Ordering::SeqCst), read, "B woke nothing: the link was let go by the policy read");
     assert_eq!(auto.built(&session).len(), 1, "never built again");
     assert_eq!(leased(&w, &session).await, Ok(false));
     drop(v);

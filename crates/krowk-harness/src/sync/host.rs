@@ -134,10 +134,11 @@ pub struct Supervised {
     /// last one goes: a viewer is a link that has said hello, on the relay
     /// or a direct path, so one that can send commands.
     pub viewers: Box<dyn Fn(bool) + Send + Sync>,
-    /// Where a bridge stopped by its owner, its stream sealed and its lease
-    /// given back, leaves its relay link still joined (`Parked`), rather than
-    /// closing it. Only a stop asked for: a bridge that ends by itself, or
-    /// whose lease is another's, closes its link.
+    /// Where a bridge that ends with no error, its stream sealed and its
+    /// lease its own to give back, leaves its relay link still joined
+    /// (`Parked`), rather than closing it; never after a handoff, nor with
+    /// the lease another's. The owner keeps it only for a stop it asked for
+    /// as idle, and closes it otherwise.
     pub park: Arc<Mutex<Option<Parked>>>,
 }
 
