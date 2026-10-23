@@ -83,10 +83,12 @@ extension HostedKeychain {
             #expect(model.item(bubble)?.kind == .pending)
             Self.keep("composer-steer", window)
             var settled = false
+            // The turn's end, 30 s after the host's, however long the host
+            // took to stream it (minutes on GitHub's runner).
             try await LiveFollowTests.wait(until: {
                 if model.item(bubble)?.caption == "" { settled = true }
                 return model.item("turn:\(turn)") != nil
-            }, within: .seconds(60), "the turn never ended: \(TranscriptTests.rows(of: model))")
+            }, afterTurnIn: session, within: .seconds(30), "the turn never ended: \(TranscriptTests.rows(of: model))")
             #expect(settled, "the steer was never acked before its logged item came")
             #expect(model.item(bubble) == nil, "the bubble stayed beside its logged item")
             let rows = model.ids.filter { !before.contains($0) }

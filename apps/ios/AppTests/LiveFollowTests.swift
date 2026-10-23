@@ -20,6 +20,7 @@ import Foundation
 import Krowk
 import KrowkAccount
 import KrowkKit
+import Synchronization
 import Testing
 import UIKit
 
@@ -52,8 +53,12 @@ extension HostedKeychain {
             // up with what comes, however fast the host is.
             var mostWaiting = 0
             var scrolledUp = false
-            let deadline = ContinuousClock.now + .seconds(60)
-            while ContinuousClock.now < deadline {
+            // Until 30 s after the host ended the turn, however long the
+            // host took: on GitHub's runner the fleet streams far slower
+            // than 200 tokens a second.
+            let ended = HostEnded(session)
+            defer { ended.watcher.cancel() }
+            while !ended.past(.seconds(30)) {
                 try await Task.sleep(for: .milliseconds(4))
                 mostWaiting = max(mostWaiting, live.mailbox.waiting)
                 if let newest = model.newestLiveMs, newest != lastNewest {
@@ -188,6 +193,19 @@ extension HostedKeychain {
             try #require(done(), Comment(rawValue: why()))
         }
 
+        /// Polls `done` on the main actor every 20 ms until it holds, or
+        /// fails `limit` after the fleet's host ended the turns typed in
+        /// `session` (`turn-ended`), saying `why`: how long the host takes
+        /// is its own, how soon the phone shows it is the test's.
+        static func wait(until done: () -> Bool, afterTurnIn session: String, within limit: Duration, _ why: @autoclosure () -> String) async throws {
+            let ended = HostEnded(session)
+            defer { ended.watcher.cancel() }
+            while !done() && !ended.past(limit) {
+                try await Task.sleep(for: .milliseconds(20))
+            }
+            try #require(done(), Comment(rawValue: why()))
+        }
+
         /// The text a cell draws (its text view's).
         static func text(in view: UIView) -> String? {
             if let text = view as? UITextView { return text.text }
@@ -269,4 +287,36 @@ final class CountingApprovals: ApprovalSink {
     func requested(_ request: ApprovalRequest) { requested += 1 }
     func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) { resolved += 1 }
     func turnEnded(sessionId: String, turnId: String) { ended += 1 }
+}
+
+/// When the fleet's host ended the turns typed in a session: asked of the
+/// fleet (`turn-ended`, which answers once they have) on a task of its own,
+/// so the test goes on watching the screen meanwhile.
+struct HostEnded {
+    private final class At: Sendable {
+        let at = Mutex<ContinuousClock.Instant?>(nil)
+    }
+
+    private let ended: At
+    private let asked = ContinuousClock.now
+    let watcher: Task<Void, Never>
+
+    init(_ session: String) {
+        let ended = At()
+        self.ended = ended
+        watcher = Task {
+            // Answered or failed, the fleet has said what it will: a failure
+            // (a session not the test's own) starts the limit at once.
+            _ = try? await HostedKeychain.SessionListTests.control("/\(session)/turn-ended", timeout: 330)
+            ended.at.withLock { $0 = .now }
+        }
+    }
+
+    /// Whether `limit` has passed since the host ended the turns, or since
+    /// the fleet's own five minutes (and a little) would have run out.
+    func past(_ limit: Duration) -> Bool {
+        let now = ContinuousClock.now
+        if let at = ended.at.withLock({ $0 }) { return now >= at + limit }
+        return now >= asked + .seconds(330) + limit
+    }
 }
