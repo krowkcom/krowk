@@ -3,6 +3,7 @@
 // from ../Package.swift; the same file for both.
 import KrowkKit
 import UIKit
+import UserNotifications
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
@@ -10,7 +11,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
     ) -> Bool {
-        true
+        // Before this returns: the tap on an alert that launched the app
+        // is delivered to the delegate set by now (ticket 106).
+        UNUserNotificationCenter.current().delegate = NotificationTaps.shared
+        #if DEBUG
+        NotificationTaps.tapFromLaunchEnvironment()
+        #endif
+        return true
     }
 
     /// The APNs token, new or the same again: the push registration sends
