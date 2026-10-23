@@ -36,6 +36,8 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     let titleLabel = UILabel()
     let toolLabel = UILabel()
     let summaryLabel = UILabel()
+    /// "12 lines" over a summary of more than one.
+    let summaryLines = UILabel()
     let reasonLabel = UILabel()
     let rememberLabel = UILabel()
     let inputButton = UIButton(configuration: .plain())
@@ -91,6 +93,7 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         titleLabel.accessibilityTraits = .header
         style(toolLabel, .subheadline, color: .secondaryLabel, id: "approval-tool")
         toolLabel.font = TranscriptFonts.monoLine
+        style(summaryLines, .caption1, color: .secondaryLabel, id: "approval-summary-lines")
         style(summaryLabel, .body, id: "approval-summary")
         summaryLabel.font = UIFontMetrics(forTextStyle: .body).scaledFont(for: .monospacedSystemFont(ofSize: 15, weight: .regular))
         style(reasonLabel, .subheadline, color: .secondaryLabel, id: "approval-reason")
@@ -126,7 +129,7 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         content.axis = .vertical
         content.spacing = 10
         content.alignment = .fill
-        for v in [positionLabel, titleLabel, toolLabel, summaryBox, reasonLabel, rememberLabel, inputButton, inputBox, questionsStack] as [UIView] {
+        for v in [positionLabel, titleLabel, noteLabel, toolLabel, summaryLines, summaryBox, reasonLabel, rememberLabel, inputButton, inputBox, questionsStack] as [UIView] {
             content.addArrangedSubview(v)
         }
         content.setCustomSpacing(4, after: positionLabel)
@@ -147,9 +150,7 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         buttons.axis = .vertical
         buttons.spacing = 8
         for b in [allowButton, allowSessionButton, answerButton, denyButton, declineButton] { buttons.addArrangedSubview(b) }
-        let bar = UIStackView(arrangedSubviews: [noteLabel, buttons])
-        bar.axis = .vertical
-        bar.spacing = 8
+        let bar = buttons
         bar.translatesAutoresizingMaskIntoConstraints = false
         let rule = UIView()
         rule.backgroundColor = .separator
@@ -179,6 +180,27 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
             bar.bottomAnchor.constraint(lessThanOrEqualTo: safe.bottomAnchor, constant: -8),
         ])
         refresh()
+    }
+
+    /// The sheet takes the keyboard's commands (⌘↵, Escape) once up, and
+    /// a request's buttons are armed from when it's on screen.
+    override public var canBecomeFirstResponder: Bool { true }
+
+    override public func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        // At an accessibility text size, the whole height: the buttons'
+        // bar would leave the medium detent no room for what runs.
+        if traitCollection.preferredContentSizeCategory.isAccessibilityCategory {
+            sheetPresentationController?.selectedDetentIdentifier = .large
+        }
+    }
+
+    override public func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        if fields.values.allSatisfy({ !$0.isFirstResponder }) { becomeFirstResponder() }
+        // The delay counts from when the request is on screen, not from
+        // when the sheet began to rise.
+        arm()
     }
 
     // MARK: Drawing
@@ -230,9 +252,12 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         titleLabel.text = asks ? "The agent asks" : "Allow this call?"
         toolLabel.text = SafeText.line(prompt.tool[...], limit: 80)
         toolLabel.accessibilityLabel = "Tool: \(toolLabel.text ?? "")"
-        summaryLabel.text = Self.plain(prompt.summary, limit: 4 * 1024)
+        summaryLabel.text = Self.shownSummary(prompt.summary)
         summaryBox.isHidden = summaryLabel.text?.isEmpty ?? true
-        summaryLabel.accessibilityLabel = "What it runs: \(summaryLabel.text ?? "")"
+        let lines = ApprovalRules.lines(prompt.summary)
+        summaryLines.text = lines > 1 ? "\(lines) lines" : nil
+        summaryLines.isHidden = lines <= 1 || summaryBox.isHidden
+        summaryLabel.accessibilityLabel = "What it runs\(lines > 1 ? ", \(lines) lines" : ""): \(summaryLabel.text ?? "")"
         let reason = SafeText.line(prompt.reason[...], limit: 500)
         reasonLabel.text = reason.isEmpty ? nil : "Why it asks: \(reason)"
         reasonLabel.isHidden = reason.isEmpty
@@ -287,11 +312,15 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         stack.addArrangedSubview(text)
         var rows: [UIButton] = []
         for (n, option) in question.options.enumerated() {
+            // The whole label, as it's sent (cleaned), never just its first
+            // line: what's picked is what's shown.
             var c = UIButton.Configuration.plain()
-            c.title = SafeText.line(option.label[...], limit: 200)
-            let about = SafeText.line(option.description[...], limit: 500)
+            c.title = Self.plain(option.label, limit: 1024)
+            let about = Self.plain(option.description, limit: 2 * 1024)
             c.subtitle = about.isEmpty ? nil : about
             c.titleAlignment = .leading
+            c.titleLineBreakMode = .byWordWrapping
+            c.subtitleLineBreakMode = .byWordWrapping
             c.imagePadding = 10
             c.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0)
             let row = UIButton(configuration: c)
@@ -316,6 +345,8 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         field.returnKeyType = .done
         field.delegate = self
         field.accessibilityIdentifier = "approval-written-\(index)"
+        field.accessibilityLabel = "Your answer to: \(SafeText.line(question.question[...], limit: 200))"
+        field.accessibilityHint = question.secret ? "A secret: not shown as you type" : nil
         field.addAction(UIAction { [weak self, weak field] _ in
             guard let self, let field else { return }
             self.draft.written[question.id] = field.text ?? ""
@@ -437,6 +468,44 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         button.accessibilityIdentifier = id
         button.accessibilityHint = hint
         button.addAction(UIAction { _ in action() }, for: .primaryActionTriggered)
+    }
+
+    /// A summary as the sheet draws it: `plain`, with a run of blank lines
+    /// or of spaces said rather than drawn, so nothing after it is pushed
+    /// out of sight.
+    static func shownSummary(_ text: String) -> String {
+        var out: [String] = []
+        var blank = 0
+        func flush() {
+            if blank == 1 { out.append("") } else if blank > 1 { out.append("⋯ \(blank) blank lines ⋯") }
+            blank = 0
+        }
+        for line in plain(text, limit: 4 * 1024).split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.allSatisfy(\.isWhitespace) {
+                blank += 1
+            } else {
+                flush()
+                out.append(squeezed(line))
+            }
+        }
+        flush()
+        return out.joined(separator: "\n")
+    }
+
+    /// `line` with each run of 8 or more spaces or tabs said ("⋯ 40
+    /// spaces ⋯").
+    static func squeezed(_ line: Substring) -> String {
+        var out = ""
+        var run = ""
+        func flush() {
+            out += run.count >= 8 ? " ⋯ \(run.count) spaces ⋯ " : run
+            run = ""
+        }
+        for c in line {
+            if c == " " || c == "\t" { run.append(c) } else { flush(); out.append(c) }
+        }
+        flush()
+        return out
     }
 
     /// `text` as the sheet draws it: cleaned, at most `limit` bytes, then

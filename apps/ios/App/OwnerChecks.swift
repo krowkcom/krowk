@@ -12,8 +12,10 @@ struct DeviceOwnerCheck: OwnerCheck {
         let context = LAContext()
         var unable: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &unable) else { return false }
+        // LocalAuthentication answers on a queue of its own: the reply is
+        // @Sendable, never main-actor isolated (which would trap there).
         return await withCheckedContinuation { (done: CheckedContinuation<Bool, Never>) in
-            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { yes, _ in
+            context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { @Sendable yes, _ in
                 done.resume(returning: yes)
             }
         }

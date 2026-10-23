@@ -404,8 +404,10 @@ scrolled to the end (ticket 88).
   non-scrolling), its `textStorage` kept for ticket 89 to append to. A
   tool's output is laid out only when expanded.
 - **Hostile output** (R-IOS-10), in `SafeText`, which every cell draws
-  through: C0 controls but `\n` and `\t`, DEL, C1 and the bidi overrides
-  and isolates (U+202A–U+202E, U+2066–U+2069) are stripped; markdown is
+  through: C0 controls but `\n` and `\t`, DEL, C1, the bidi overrides
+  and isolates (U+202A–U+202E, U+2066–U+2069) and the invisible marks
+  (U+200B, U+200E, U+200F, U+061C, U+FEFF) are stripped, and the line and
+  paragraph separators (U+2028, U+2029) are line breaks; markdown is
   not rendered (M1), so an image's markdown is text and nothing is
   fetched; a link is only an `http(s)://` URL written with its scheme to
   an ASCII host with no user or password before it (`NSDataDetector`),
@@ -432,7 +434,11 @@ left readable).
   asks, and its JSON `input` under "Show input" (at most 16 KiB). All of it
   is the agent's and drawn as plain text through `SafeText` (R-IOS-10), in
   boxes under the app's own labels, never as a link; the buttons sit in a
-  bar of their own below it.
+  bar of their own below it. A summary of more than one line says how
+  many, and runs of blank lines or spaces in it are said ("⋯ 29 blank
+  lines ⋯") rather than drawn, so nothing after them is pushed out of
+  sight; Face ID's sentence adds "(+N more lines)". An option's whole
+  label is drawn, as it is sent.
 - **The choices.** Allow once; Allow for this session only when the
   request remembers rules, which it lists; Deny. Never a rule for the
   project: the host refuses `allowProject` from a viewer, and
@@ -468,7 +474,9 @@ left readable).
   once, and the call's row reads "allowed — sending…" until the ack, then
   "allowed". An ack's error brings the request back first with the host's
   sentence, unless `approval.resolved` settled it already or the host
-  says it isn't waiting any more. `approval.resolved` for a request
+  says it isn't waiting any more. Resolved before its ack, an answer
+  given here reads as this phone's when the outcome is what it sent, and
+  as answered elsewhere when the terminal decided otherwise. `approval.resolved` for a request
   waiting here takes it away with a toast ("Answered on another device:
   allowed"); a turn's end (`turn.completed`, or the run's result) drops
   its requests. A screen left with an answer out is kept until its ack.

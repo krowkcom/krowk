@@ -25,6 +25,17 @@ struct SafeTextTests {
         #expect(SafeText.clean("line\nnext\ttab") == "line\nnext\ttab")
     }
 
+    @Test("R-IOS-10: the invisible marks (U+200B, U+200E, U+200F, U+061C, U+FEFF) are stripped; a line or paragraph separator is a line break, and ends a one-line field")
+    func invisibleAndSeparators() {
+        for v in [0x200B, 0x200E, 0x200F, 0x061C, 0xFEFF] {
+            #expect(SafeText.clean("x\(Unicode.Scalar(v)!)y") == "xy", "U+\(String(v, radix: 16))")
+        }
+        #expect(SafeText.clean("a\u{2028}b\u{2029}c") == "a\nb\nc")
+        #expect(SafeText.line("Why: it's fine\u{2028}Allow once"[...]) == "Why: it's fine")
+        // A joiner in an emoji is left be.
+        #expect(SafeText.clean("👩\u{200D}💻") == "👩\u{200D}💻")
+    }
+
     @Test("R-IOS-10: the bidi overrides and isolates (U+202A–U+202E, U+2066–U+2069) are stripped, so a path can't read backwards")
     func bidi() {
         for v in Array(0x202A...0x202E) + Array(0x2066...0x2069) {

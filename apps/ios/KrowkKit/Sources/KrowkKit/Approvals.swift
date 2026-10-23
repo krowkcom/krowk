@@ -149,11 +149,20 @@ public enum ApprovalRules {
     }
 
     /// What the Face ID prompt says: "Allow <tool>: <summary's first 60
-    /// characters>", cleaned.
+    /// characters>", cleaned, and how many more lines it has, so a command
+    /// whose first line is harmless never reads as all there is.
     public static func reason(_ prompt: ApprovalPrompt) -> String {
         let tool = SafeText.line(prompt.tool[...], limit: 60)
         let summary = SafeText.line(prompt.summary[...], limit: 60)
-        return summary.isEmpty ? "Allow \(tool)" : "Allow \(tool): \(summary)"
+        let more = lines(prompt.summary) - 1
+        let rest = more > 0 ? " (+\(more) more line\(more == 1 ? "" : "s"))" : ""
+        return summary.isEmpty ? "Allow \(tool)" : "Allow \(tool): \(summary)\(rest)"
+    }
+
+    /// The lines `text` holds, once cleaned (a line or paragraph separator
+    /// counts as a break), blank ones too.
+    static func lines(_ text: String) -> Int {
+        SafeText.clean(text).split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     /// The most of a request's input the sheet shows.
@@ -163,7 +172,7 @@ public enum ApprovalRules {
     /// any more (answered elsewhere, or its turn over): the answer is
     /// dropped, never offered again.
     static func saysGone(_ error: String) -> Bool {
-        error.contains("has no approval request") && error.contains("waiting")
+        (error.contains("has no approval request") && error.contains("waiting")) || error.contains("is no longer waiting")
     }
 }
 
@@ -290,13 +299,16 @@ public final class ApprovalQueue {
     }
 
     /// `approval.resolved`: answered, here or elsewhere. One still waiting
-    /// here goes, saying it was answered elsewhere; one answered here is
-    /// settled.
+    /// here goes, saying it was answered elsewhere. One answered here and
+    /// not yet acked is settled as it was resolved: as this phone's answer
+    /// when the outcome is the one it sent, and as answered elsewhere when
+    /// it isn't (the terminal got there first; this phone's answer will be
+    /// refused).
     public func resolved(requestID: String, resolution: ApprovalResolution) {
         resolved.insert(requestID)
         guard let at = held.firstIndex(where: { $0.prompt.requestID == requestID }) else { return }
         let gone = held.remove(at: at)
-        if case .answered(_, let verdict) = gone.phase {
+        if case .answered(_, let verdict) = gone.phase, verdict.allows == (resolution == .allowed) {
             onEvent?(.settled(gone.prompt, verdict))
         } else {
             onEvent?(.resolvedElsewhere(gone.prompt, resolution))

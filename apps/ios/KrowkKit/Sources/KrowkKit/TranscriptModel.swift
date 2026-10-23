@@ -541,47 +541,60 @@ public final class TranscriptModel {
 
     /// The tool row each approval's line is on, by request id.
     @ObservationIgnored private var approvalRows: [String: String] = [:]
-    /// Lines for requests whose row isn't drawn yet: placed when it is.
-    @ObservationIgnored private var unplacedMarks: [String: (tool: String, line: String)] = [:]
+    /// Lines for requests whose row isn't drawn yet, in the order they
+    /// came: placed when it is.
+    @ObservationIgnored private var unplacedMarks: [(request: String, tool: String, input: String, line: String)] = []
 
-    /// Request `requestID`'s line on its tool call's row (R-LAG-8): the
-    /// newest call of `tool` in the turn under way with no result yet, in
-    /// this session (a subagent's call has no row here). Nil clears it.
-    /// The request names no call, so the row is found by tool and turn; a
-    /// row found once keeps the line.
-    public func markApproval(_ requestID: String, session: String, tool: String, line: String?) {
+    /// Request `requestID`'s line on its tool call's row (R-LAG-8), in this
+    /// session (a subagent's call has no row here). Nil clears it. The
+    /// request names no call, so the row is found among the calls of
+    /// `tool` since the last turn's end with no result and no other
+    /// request's line: the one whose input is `input`, else the oldest
+    /// (requests come in the order their calls were made). A row found
+    /// once keeps the line.
+    public func markApproval(_ requestID: String, session: String, tool: String, input: String, line: String?) {
         guard session == sessionID else { return }
+        unplacedMarks.removeAll { $0.request == requestID }
         guard let line else {
-            unplacedMarks[requestID] = nil
             if let row = approvalRows.removeValue(forKey: requestID), let state = items[row], !state.verdict.isEmpty { state.verdict = "" }
             return
         }
-        guard let row = approvalRows[requestID] ?? toolRow(for: tool), let state = items[row] else {
-            unplacedMarks[requestID] = (tool, line)
+        guard let row = approvalRows[requestID] ?? toolRow(for: tool, input: input), let state = items[row] else {
+            unplacedMarks.append((requestID, tool, input, line))
             return
         }
-        unplacedMarks[requestID] = nil
         approvalRows[requestID] = row
         if state.verdict != line { state.verdict = line }
     }
 
-    /// The row of the newest call of `tool` since the last turn's end with
-    /// no result and no approval's line on it.
-    private func toolRow(for tool: String) -> String? {
+    /// The row for a request of `tool` with `input`, as `markApproval`
+    /// says.
+    private func toolRow(for tool: String, input: String) -> String? {
         let taken = Set(approvalRows.values)
+        var open: [ItemState] = []
         for id in rows.reversed() {
-            if id.hasPrefix("turn:") { return nil }
+            if id.hasPrefix("turn:") { break }
             guard let state = items[id], state.kind == .tool, state.output == nil, state.toolName == tool, !taken.contains(id) else { continue }
-            return id
+            open.append(state)
         }
-        return nil
+        let wanted = Self.json(input)
+        return (open.last { wanted != nil && Self.json($0.toolInput) == wanted } ?? open.last)?.id
+    }
+
+    /// `text` parsed as JSON, to compare two inputs whatever their key
+    /// order or spacing; nil when it doesn't parse or is too large to.
+    nonisolated static func json(_ text: String) -> NSObject? {
+        guard !text.isEmpty, text.utf8.count <= ItemState.parsedInputLimit else { return nil }
+        return (try? JSONSerialization.jsonObject(with: Data(text.utf8), options: [.fragmentsAllowed])) as? NSObject
     }
 
     /// Lines waiting for their rows, tried again after rows came.
     private func placeMarks() {
         guard !unplacedMarks.isEmpty else { return }
-        for (request, mark) in unplacedMarks {
-            markApproval(request, session: sessionID, tool: mark.tool, line: mark.line)
+        let waiting = unplacedMarks
+        unplacedMarks = []
+        for mark in waiting {
+            markApproval(mark.request, session: sessionID, tool: mark.tool, input: mark.input, line: mark.line)
         }
     }
 

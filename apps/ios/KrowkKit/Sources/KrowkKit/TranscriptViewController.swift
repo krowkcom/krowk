@@ -107,6 +107,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// another device, or one the host no longer waits on.
     public let toast = UILabel()
     private var toastHide: DispatchWorkItem?
+    /// A try again at raising the sheet, while another sheet is up.
+    private var approvalsRetry: DispatchWorkItem?
 
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil) {
         self.row = row
@@ -608,17 +610,54 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if let sheet = approvalSheet {
             if approvals.current == nil {
                 approvalSheet = nil
-                sheet.dismiss(animated: true)
+                takeDown(sheet, animated: true)
             } else {
                 sheet.refresh()
             }
             return
         }
-        guard approvals.current != nil, !approvalsPutAway, !parked, !left, isViewLoaded, view.window != nil, presentedViewController == nil else { return }
+        guard approvals.current != nil, !approvalsPutAway, !parked, !left, isViewLoaded, view.window != nil else { return }
+        if let other = presentedViewController {
+            // The last sheet still going: its dismissal calls this again.
+            // Another sheet up (a link's): tried again shortly.
+            if !(other is ApprovalSheetController) { retryApprovals() }
+            return
+        }
         let sheet = ApprovalSheetController(queue: approvals)
         sheet.presentationController?.delegate = self
         approvalSheet = sheet
         present(sheet, animated: true)
+    }
+
+    /// A sheet taken down, once it has finished rising if it's still
+    /// rising (UIKit ignores a dismissal then), and the queue looked at
+    /// again once it's gone: a request back from an ack's error rises at
+    /// once.
+    private func takeDown(_ sheet: ApprovalSheetController, animated: Bool) {
+        let down = { [weak self, weak sheet] in
+            sheet?.dismiss(animated: animated) {
+                MainActor.assumeIsolated { self?.syncApprovals() }
+            }
+        }
+        if sheet.isBeingPresented, let rising = sheet.transitionCoordinator {
+            rising.animate(alongsideTransition: nil) { _ in MainActor.assumeIsolated { down() } }
+        } else {
+            down()
+        }
+    }
+
+    /// The sheet couldn't rise (another sheet is up): tried again in half
+    /// a second, while it's wanted.
+    private func retryApprovals() {
+        guard approvalsRetry == nil else { return }
+        let work = DispatchWorkItem { [weak self] in
+            MainActor.assumeIsolated {
+                self?.approvalsRetry = nil
+                self?.syncApprovals()
+            }
+        }
+        approvalsRetry = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     /// The hand: how many wait, and a tap brings the sheet back.
@@ -652,9 +691,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     /// The screen goes: the sheet with it, at once.
     private func putSheetDown() {
+        approvalsRetry?.cancel()
+        approvalsRetry = nil
         guard let sheet = approvalSheet else { return }
         approvalSheet = nil
-        sheet.dismiss(animated: false)
+        takeDown(sheet, animated: false)
     }
 
     /// What became of a request, on its tool's row and in a toast.
@@ -675,12 +716,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             say("Answered on another device: \(resolution.word)")
         case .dropped(let prompt, let why):
             mark(prompt, nil)
-            if let why { say(why) }
+            if let why { say(ApprovalRules.saysGone(why) ? "Already answered elsewhere, or its turn is over." : why) }
         }
     }
 
     private func mark(_ prompt: ApprovalPrompt, _ line: String?) {
-        model.markApproval(prompt.requestID, session: prompt.sessionID, tool: prompt.tool, line: line)
+        model.markApproval(prompt.requestID, session: prompt.sessionID, tool: prompt.tool, input: prompt.input, line: line)
     }
 
     /// What a row says of an answer given here.
