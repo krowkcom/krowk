@@ -169,7 +169,8 @@ jobs:
   # PairingUITests (XCUITest), KrowkKit's unit tests, the hosted
   # KeychainKeyStorageTests, SignInTests, PairingTests, SessionListTests,
   # RelayConnectionTests, TranscriptModelTests, TranscriptTests,
-  # LiveFollowTests, ComposerTests and ApprovalMappingTests, and KrowkCore's
+  # LiveFollowTests, ComposerTests, ApprovalMappingTests and
+  # ApprovalScreenTests, and KrowkCore's
   # BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). The app links no WebKit and its

@@ -30,6 +30,10 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     private var arming: DispatchWorkItem?
     /// The answers to its questions, as picked and written so far.
     public private(set) var draft = QuestionDraft()
+    /// The drafts of requests shown before, by request id.
+    private var drafts: [String: QuestionDraft] = [:]
+    /// When ⌘↵ last fired: a held key repeats, and never answers twice.
+    private var lastKeyAllow: TimeInterval = 0
     private var inputShown = false
 
     let positionLabel = UILabel()
@@ -43,7 +47,7 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     let inputButton = UIButton(configuration: .plain())
     let inputLabel = UILabel()
     let questionsStack = UIStackView()
-    let noteLabel = UILabel()
+    public let noteLabel = UILabel()
     public let allowButton = UIButton(configuration: .filled())
     public let allowSessionButton = UIButton(configuration: .tinted())
     public let denyButton = UIButton(configuration: .gray())
@@ -150,8 +154,16 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         buttons.axis = .vertical
         buttons.spacing = 8
         for b in [allowButton, allowSessionButton, answerButton, denyButton, declineButton] { buttons.addArrangedSubview(b) }
-        let bar = buttons
+        // The bar scrolls once it would take more than 45% of the sheet
+        // (large text, landscape), so what the request says always has
+        // room above it.
+        let bar = UIScrollView()
         bar.translatesAutoresizingMaskIntoConstraints = false
+        bar.alwaysBounceVertical = false
+        buttons.translatesAutoresizingMaskIntoConstraints = false
+        bar.addSubview(buttons)
+        let fit = bar.heightAnchor.constraint(equalTo: buttons.heightAnchor)
+        fit.priority = .defaultHigh
         let rule = UIView()
         rule.backgroundColor = .separator
         rule.translatesAutoresizingMaskIntoConstraints = false
@@ -178,6 +190,13 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
             bar.trailingAnchor.constraint(equalTo: margins.trailingAnchor),
             bar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -8),
             bar.bottomAnchor.constraint(lessThanOrEqualTo: safe.bottomAnchor, constant: -8),
+            buttons.topAnchor.constraint(equalTo: bar.contentLayoutGuide.topAnchor),
+            buttons.bottomAnchor.constraint(equalTo: bar.contentLayoutGuide.bottomAnchor),
+            buttons.leadingAnchor.constraint(equalTo: bar.contentLayoutGuide.leadingAnchor),
+            buttons.trailingAnchor.constraint(equalTo: bar.contentLayoutGuide.trailingAnchor),
+            buttons.widthAnchor.constraint(equalTo: bar.frameLayoutGuide.widthAnchor),
+            fit,
+            bar.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, multiplier: 0.45),
         ])
         refresh()
     }
@@ -212,10 +231,14 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         guard isViewLoaded, let held = queue.current else { return }
         let prompt = held.prompt
         if prompt.requestID != shownID {
+            // What was picked and written for the request shown before is
+            // kept for when it shows again (it may come back first).
+            if let shownID { drafts[shownID] = draft }
             shownID = prompt.requestID
-            draft = QuestionDraft()
+            draft = drafts[prompt.requestID] ?? QuestionDraft()
             inputShown = false
             draw(prompt)
+            for (id, text) in draft.written { fields[id]?.text = text }
             arm()
             UIAccessibility.post(notification: .screenChanged, argument: titleLabel)
         }
@@ -252,7 +275,7 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         titleLabel.text = asks ? "The agent asks" : "Allow this call?"
         toolLabel.text = SafeText.line(prompt.tool[...], limit: 80)
         toolLabel.accessibilityLabel = "Tool: \(toolLabel.text ?? "")"
-        summaryLabel.text = Self.shownSummary(prompt.summary)
+        summaryLabel.text = ApprovalRules.shownSummary(prompt.summary)
         summaryBox.isHidden = summaryLabel.text?.isEmpty ?? true
         let lines = ApprovalRules.lines(prompt.summary)
         summaryLines.text = lines > 1 ? "\(lines) lines" : nil
@@ -406,7 +429,18 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         let prompt = held.prompt
         let answers = prompt.asks && verdict.allows ? draft.replies(for: prompt) : []
         view.endEditing(true)
-        Task { await queue.answer(prompt.requestID, verdict, answers: answers) }
+        // The first tap decides: the buttons are off from now, before the
+        // answer runs, so a second tap in the same burst does nothing.
+        armed = false
+        refresh()
+        Task { [weak self] in
+            let sent = await self?.queue.answer(prompt.requestID, verdict, answers: answers) ?? true
+            // Not sent (Face ID said no, the link went): the same request
+            // takes taps again.
+            guard let self, !sent, self.shownID == prompt.requestID else { return }
+            self.armed = true
+            self.refresh()
+        }
     }
 
     /// ⌘↵ allows once (answers, for questions), through the same checks
@@ -419,7 +453,11 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
     }
 
     @objc private func keyAllow() {
-        guard let held = queue.current else { return }
+        // A held ⌘↵ repeats: only a press after half a second without one
+        // counts, so holding it never allows the next request too.
+        let now = CACurrentMediaTime()
+        defer { lastKeyAllow = now }
+        guard now - lastKeyAllow > 0.5, let held = queue.current else { return }
         if held.prompt.asks, !answerButton.isEnabled { return }
         choose(.allow)
     }
@@ -468,44 +506,6 @@ public final class ApprovalSheetController: UIViewController, UITextFieldDelegat
         button.accessibilityIdentifier = id
         button.accessibilityHint = hint
         button.addAction(UIAction { _ in action() }, for: .primaryActionTriggered)
-    }
-
-    /// A summary as the sheet draws it: `plain`, with a run of blank lines
-    /// or of spaces said rather than drawn, so nothing after it is pushed
-    /// out of sight.
-    static func shownSummary(_ text: String) -> String {
-        var out: [String] = []
-        var blank = 0
-        func flush() {
-            if blank == 1 { out.append("") } else if blank > 1 { out.append("⋯ \(blank) blank lines ⋯") }
-            blank = 0
-        }
-        for line in plain(text, limit: 4 * 1024).split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.allSatisfy(\.isWhitespace) {
-                blank += 1
-            } else {
-                flush()
-                out.append(squeezed(line))
-            }
-        }
-        flush()
-        return out.joined(separator: "\n")
-    }
-
-    /// `line` with each run of 8 or more spaces or tabs said ("⋯ 40
-    /// spaces ⋯").
-    static func squeezed(_ line: Substring) -> String {
-        var out = ""
-        var run = ""
-        func flush() {
-            out += run.count >= 8 ? " ⋯ \(run.count) spaces ⋯ " : run
-            run = ""
-        }
-        for c in line {
-            if c == " " || c == "\t" { run.append(c) } else { flush(); out.append(c) }
-        }
-        flush()
-        return out
     }
 
     /// `text` as the sheet draws it: cleaned, at most `limit` bytes, then

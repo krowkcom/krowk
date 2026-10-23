@@ -21,7 +21,8 @@ apps/ios/
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
-                     ComposerTests, ApprovalMappingTests, and the TestFleet fixture
+                     ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
+                     and the TestFleet fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
                      PairingUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
@@ -59,8 +60,8 @@ The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
 `SignInUITests` and `PairingUITests`, the app-hosted
 `KeychainKeyStorageTests`, `SignInTests`, `PairingTests`,
 `SessionListTests`, `RelayConnectionTests`, `TranscriptModelTests`,
-`TranscriptTests`, `LiveFollowTests`, `ComposerTests` and
-`ApprovalMappingTests` (target
+`TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
+`ApprovalMappingTests` and `ApprovalScreenTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -434,11 +435,14 @@ left readable).
   asks, and its JSON `input` under "Show input" (at most 16 KiB). All of it
   is the agent's and drawn as plain text through `SafeText` (R-IOS-10), in
   boxes under the app's own labels, never as a link; the buttons sit in a
-  bar of their own below it. A summary of more than one line says how
-  many, and runs of blank lines or spaces in it are said ("⋯ 29 blank
-  lines ⋯") rather than drawn, so nothing after them is pushed out of
-  sight; Face ID's sentence adds "(+N more lines)". An option's whole
-  label is drawn, as it is sent.
+  bar of their own below it, which scrolls once it would take more than
+  45% of the sheet. A summary of more than one line says how many, and
+  runs of blank lines or of blanks in a line (any whitespace, and
+  characters that draw as nothing, like the Braille blank or the Hangul
+  fillers) are said ("⋯ 29 blank lines ⋯", "⋯ 40 blanks ⋯") rather than
+  drawn, so nothing after them is pushed out of sight; Face ID's sentence
+  is the first line with something on it, as drawn, and adds "(+N more
+  lines)". An option's whole label is drawn, as it is sent.
 - **The choices.** Allow once; Allow for this session only when the
   request remembers rules, which it lists; Deny. Never a rule for the
   project: the host refuses `allowProject` from a viewer, and
@@ -465,7 +469,9 @@ left readable).
   up, checked again after it (answered elsewhere or its turn over
   meanwhile: nothing sent), and sent only with a live link to a host,
   never queued for a later one. A request's buttons take a tap only 0.6 s
-  after it shows, so a double tap on one answer never answers the next.
+  after it shows, so a double tap on one answer never answers the next;
+  the first tap turns them off until the answer has gone or been
+  refused, and a held ⌘↵ counts once.
   The answer is ticket 90's command (`LiveCommand.approve`, the generated
   `Command.approve` for the request's own session: a subagent's request
   is answered for the subagent), whose id the core mints and the host
@@ -475,8 +481,9 @@ left readable).
   "allowed". An ack's error brings the request back first with the host's
   sentence, unless `approval.resolved` settled it already or the host
   says it isn't waiting any more. Resolved before its ack, an answer
-  given here reads as this phone's when the outcome is what it sent, and
-  as answered elsewhere when the terminal decided otherwise. `approval.resolved` for a request
+  given here reads as this phone's when the decision is the one it sent,
+  and as answered elsewhere, naming the decision, when the terminal
+  decided otherwise. `approval.resolved` for a request
   waiting here takes it away with a toast ("Answered on another device:
   allowed"); a turn's end (`turn.completed`, or the run's result) drops
   its requests. A screen left with an answer out is kept until its ack.

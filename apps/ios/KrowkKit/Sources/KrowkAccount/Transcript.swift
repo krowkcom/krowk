@@ -32,9 +32,15 @@ extension ApprovalQueue: ApprovalSink {
     }
 
     public func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) {
-        // Any allow (once, for the session, or a rule the host made) reads
-        // "allowed".
-        resolved(requestID: requestId, resolution: decision == .deny ? .denied : .allowed)
+        let resolution: ApprovalResolution = switch decision {
+        case .allow: .allowed
+        case .allowSession: .allowedForSession
+        case .deny: .denied
+        // A rule the host made for the project: the phone never makes
+        // one, only hears of it.
+        default: .allowedByRule
+        }
+        resolved(requestID: requestId, resolution: resolution)
     }
 
     public func turnEnded(sessionId: String, turnId: String) {

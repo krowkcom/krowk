@@ -639,11 +639,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
                 MainActor.assumeIsolated { self?.syncApprovals() }
             }
         }
-        if sheet.isBeingPresented, let rising = sheet.transitionCoordinator {
-            rising.animate(alongsideTransition: nil) { _ in MainActor.assumeIsolated { down() } }
-        } else {
-            down()
+        if sheet.isBeingPresented, let rising = sheet.transitionCoordinator,
+           rising.animate(alongsideTransition: nil, completion: { _ in MainActor.assumeIsolated { down() } }) {
+            return
         }
+        down()
     }
 
     /// The sheet couldn't rise (another sheet is up): tried again in half
@@ -683,7 +683,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// Swiped down (or Escape): put away until a new request comes or the
     /// hand is tapped. Nothing is answered.
     public func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
-        guard presentationController.presentedViewController === approvalSheet else { return }
+        guard presentationController.presentedViewController is ApprovalSheetController else { return }
+        // A sheet already taken down (one whose dismissal UIKit ignored)
+        // gone at last: the queue looked at again.
+        guard presentationController.presentedViewController === approvalSheet else { return syncApprovals() }
         approvalSheet = nil
         approvalsPutAway = true
         showApprovalsButton()

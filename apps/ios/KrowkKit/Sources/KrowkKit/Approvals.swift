@@ -148,15 +148,16 @@ public enum ApprovalRules {
         verdict.allows && !readOnly.contains(prompt.tool)
     }
 
-    /// What the Face ID prompt says: "Allow <tool>: <summary's first 60
-    /// characters>", cleaned, and how many more lines it has, so a command
-    /// whose first line is harmless never reads as all there is.
+    /// What the Face ID prompt says: "Allow <tool>: <the summary's first
+    /// line with something on it, at most 60 characters>", as the sheet
+    /// draws it (blank runs said), and how many more lines it has, so a
+    /// command whose first line is harmless never reads as all there is.
     public static func reason(_ prompt: ApprovalPrompt) -> String {
         let tool = SafeText.line(prompt.tool[...], limit: 60)
-        let summary = SafeText.line(prompt.summary[...], limit: 60)
+        let first = shownSummary(prompt.summary).split(separator: "\n").first { !$0.hasPrefix("⋯ ") }.map { SafeText.line($0, limit: 60) } ?? ""
         let more = lines(prompt.summary) - 1
         let rest = more > 0 ? " (+\(more) more line\(more == 1 ? "" : "s"))" : ""
-        return summary.isEmpty ? "Allow \(tool)" : "Allow \(tool): \(summary)\(rest)"
+        return first.isEmpty ? "Allow \(tool)\(rest)" : "Allow \(tool): \(first)\(rest)"
     }
 
     /// The lines `text` holds, once cleaned (a line or paragraph separator
@@ -164,6 +165,64 @@ public enum ApprovalRules {
     static func lines(_ text: String) -> Int {
         SafeText.clean(text).split(separator: "\n", omittingEmptySubsequences: false).count
     }
+
+    /// A summary as the sheet draws it: cleaned, at most 4 KiB, with a run
+    /// of blank lines, or of blanks in a line, said rather than drawn
+    /// ("⋯ 29 blank lines ⋯", "⋯ 40 blanks ⋯"), so nothing after it is
+    /// pushed out of sight. A blank is any whitespace, or a character that
+    /// draws as nothing (`drawsBlank`).
+    public static func shownSummary(_ text: String) -> String {
+        let (shown, more) = SafeText.truncated(text, limit: 4 * 1024)
+        var out: [String] = []
+        var blank = 0
+        func flush() {
+            if blank == 1 { out.append("") } else if blank > 1 { out.append("⋯ \(blank) blank lines ⋯") }
+            blank = 0
+        }
+        for line in SafeText.clean(shown).split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.allSatisfy(isBlank) {
+                blank += 1
+            } else {
+                flush()
+                out.append(squeezed(line))
+            }
+        }
+        flush()
+        if more > 0 { out.append(SafeText.more(more)) }
+        return out.joined(separator: "\n")
+    }
+
+    /// `line` with each run of 4 or more blanks said ("⋯ 40 blanks ⋯"),
+    /// counted in scalars: a run of Hangul fillers is one character.
+    static func squeezed(_ line: Substring) -> String {
+        var out = ""
+        var run = ""
+        var count = 0
+        func flush() {
+            out += count >= 4 ? " ⋯ \(count) blanks ⋯ " : run
+            run = ""
+            count = 0
+        }
+        for c in line {
+            if isBlank(c) {
+                run.append(c)
+                count += c.unicodeScalars.count
+            } else {
+                flush()
+                out.append(c)
+            }
+        }
+        flush()
+        return out
+    }
+
+    /// Whitespace, or a character that draws as nothing: the Braille
+    /// blank, the Hangul fillers, the Mongolian vowel separator.
+    static func isBlank(_ c: Character) -> Bool {
+        c.isWhitespace || c.unicodeScalars.allSatisfy { drawsBlank.contains($0.value) || $0.properties.isWhitespace }
+    }
+
+    static let drawsBlank: Set<UInt32> = [0x2800, 0x3164, 0x115F, 0x1160, 0xFFA0, 0x180E, 0x2060, 0x00AD, 0x034F]
 
     /// The most of a request's input the sheet shows.
     public static let inputLimit = 16 * 1024
@@ -179,9 +238,28 @@ public enum ApprovalRules {
 /// How a request was settled elsewhere, as `approval.resolved` says it.
 public enum ApprovalResolution: Equatable, Sendable {
     case allowed
+    case allowedForSession
+    /// Allowed with a rule the host made, for every session of the project.
+    case allowedByRule
     case denied
 
-    public var word: String { self == .allowed ? "allowed" : "denied" }
+    public var word: String {
+        switch self {
+        case .allowed: "allowed"
+        case .allowedForSession: "allowed for this session"
+        case .allowedByRule: "allowed by a rule for the project"
+        case .denied: "denied"
+        }
+    }
+
+    /// The resolution `verdict` makes, had it been the one taken.
+    init(_ verdict: ApprovalVerdict) {
+        switch verdict {
+        case .allow: self = .allowed
+        case .allowSession: self = .allowedForSession
+        case .deny: self = .denied
+        }
+    }
 }
 
 /// The requests waiting for an answer from this phone, in arrival order
@@ -308,7 +386,7 @@ public final class ApprovalQueue {
         resolved.insert(requestID)
         guard let at = held.firstIndex(where: { $0.prompt.requestID == requestID }) else { return }
         let gone = held.remove(at: at)
-        if case .answered(_, let verdict) = gone.phase, verdict.allows == (resolution == .allowed) {
+        if case .answered(_, let verdict) = gone.phase, ApprovalResolution(verdict) == resolution {
             onEvent?(.settled(gone.prompt, verdict))
         } else {
             onEvent?(.resolvedElsewhere(gone.prompt, resolution))
@@ -345,16 +423,18 @@ public final class ApprovalQueue {
             return
         }
         let said = PendingCommands.refusal(error)
-        if resolved.contains(held[at].prompt.requestID) || ApprovalRules.saysGone(said) {
+        // Never sent (the connection stopped first): its end drops it.
+        if resolved.contains(held[at].prompt.requestID) || ApprovalRules.saysGone(said) || said.hasPrefix("Not sent: ") {
             let gone = held.remove(at: at)
             resolved.insert(gone.prompt.requestID)
             onEvent?(.dropped(gone.prompt, said))
         } else {
-            // Back at the front: shown next, with the reason.
+            // Back at the front, with the reason: shown next — after one
+            // Face ID is up for, which stays the one shown.
             var back = held.remove(at: at)
             back.phase = .waiting
             back.error = said
-            held.insert(back, at: 0)
+            held.insert(back, at: held.firstIndex(where: \.isConfirming).map { $0 + 1 } ?? 0)
             onEvent?(.returned(back.prompt, said))
         }
         onChange?()
@@ -451,11 +531,16 @@ extension ApprovalQueue.Held {
 
 /// The answers to a request's questions as the sheet collects them: one
 /// pick per question (several when `multiSelect`) and what was written.
-public struct QuestionDraft: Equatable, Sendable {
+public struct QuestionDraft: Equatable, Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
     public private(set) var picked: [String: [String]] = [:]
     public var written: [String: String] = [:]
 
     public init() {}
+
+    /// What's written is never printed: a secret may be among it.
+    public var description: String { "QuestionDraft(picked: \(picked), written: \(written.count) answer(s))" }
+    public var debugDescription: String { description }
+    public var customMirror: Mirror { Mirror(self, children: ["picked": picked, "written": "<\(written.count) hidden>"], displayStyle: .struct) }
 
     /// Option `label` of `question` tapped: picked (the only one, unless
     /// several may be), or unpicked when it was.
