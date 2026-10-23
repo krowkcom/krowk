@@ -12,7 +12,7 @@
 
 use super::commands::CommandBook;
 use super::join::read_control;
-use super::store::{Attached, Head};
+use super::store::{Attached, Head, ReadError};
 use super::{Answer, Batch, Candidate, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::e2e::{self, DeviceId, SessionKeys};
 use crate::protocol::frame::{HEADER, KIND_ACK, KIND_BATCH, KIND_RELAY};
@@ -312,6 +312,11 @@ fn ms(d: Duration) -> u64 {
 /// refused the join.
 const RETRY_MS: u64 = 1000;
 
+/// The longest a viewer waits to join again after the chunks a welcome
+/// asked for could not be read: from `RETRY_MS`, doubling each time in a
+/// row, up to this.
+pub const REREAD_MAX: Duration = Duration::from_secs(30);
+
 /// How a `Note` about a failed join ends: the cadence of `RETRY_MS`. A
 /// caller that times the retries itself (the phone's `supervisor`) says
 /// its own.
@@ -350,12 +355,19 @@ pub struct ViewerCore {
     /// welcomed yet names no stream, and a join before its welcome still
     /// resumes from here.
     resume: Option<([u8; 16], u64)>,
+    /// The stream the relay's `joined` named: the one `applied` counts in
+    /// until a batch of it is opened.
+    joined_on: Option<[u8; 16]>,
     /// Whether the caller holds a current connection: from `joined` (or a
     /// `move_to`) until a `Join`.
     connected: bool,
     host: bool,
     /// Why the relay could not be joined, said once as it comes or changes.
     unjoined: Option<String>,
+    /// Why the chunks a welcome asked for could not be read, said likewise,
+    /// and the wait before the next join after one more such failure.
+    unread: Option<String>,
+    reread_ms: u64,
     heard_ms: u64,
     last_ping_ms: u64,
     // Direct paths (R-NET-2): the candidates the host's welcome named, a
@@ -406,9 +418,12 @@ impl ViewerCore {
             held: Vec::new(),
             link: None,
             resume: None,
+            joined_on: None,
             connected: false,
             host: false,
             unjoined: None,
+            unread: None,
+            reread_ms: RETRY_MS,
             heard_ms: now_ms,
             last_ping_ms: now_ms,
             candidates: Vec::new(),
@@ -496,6 +511,7 @@ impl ViewerCore {
         // another one's would make every join until a welcome a resync.
         let cursor = self.cursor().filter(|(s, _)| joined["stream"].as_str() == Some(e2e::hex(s).as_str()));
         self.resume = cursor;
+        self.joined_on = joined["stream"].as_str().and_then(e2e::unhex).and_then(|b| b.try_into().ok());
         let mut l = match self.link.take() {
             Some(l) => l.reconnect(n),
             None => ViewerLink::new(self.key.current(), self.raw, n),
@@ -585,8 +601,13 @@ impl ViewerCore {
     }
 
     /// The chunks a `ReadChunks` read: the events in them and where the
-    /// reading stopped, or why it failed.
-    pub fn chunks_read(&mut self, read: Result<(Vec<serde_json::Value>, Attached), String>, now_ms: u64) -> Vec<Effect> {
+    /// reading stopped, or why it failed. A failure the read calls
+    /// permanent (`ReadError::permanent`: the session gone, its chunks not
+    /// opening under this device's keys, a rollback) ends the viewer. A
+    /// transient one during a welcome joins the relay again, from the
+    /// cursor, after a wait that doubles each time in a row up to
+    /// `REREAD_MAX`; during a resync with no host it is let go.
+    pub fn chunks_read(&mut self, read: Result<(Vec<serde_json::Value>, Attached), ReadError>, now_ms: u64) -> Vec<Effect> {
         if self.ended {
             return Vec::new();
         }
@@ -595,18 +616,18 @@ impl ViewerCore {
             None => {}
             Some(Reading::Resync) => match read {
                 Ok((fresh, a)) => self.caught_up(fresh, a),
-                // The session moved to a key epoch this viewer opened it
-                // before: nothing after it opens here until it is opened again.
-                Err(e) if e.contains(e2e::ROTATED_SINCE_OPENED) => self.fail(e),
+                Err(e) if e.permanent => self.fail(e.detail),
                 Err(_) => {}
             },
             // The prefix check: the chunks must reach the head the host sealed.
             Some(Reading::Welcome(w)) => match read {
                 Ok((fresh, a)) => {
+                    (self.unread, self.reread_ms) = (None, RETRY_MS);
                     self.caught_up(fresh, a);
                     self.welcomed_with(w);
                 }
-                Err(e) => self.fail(e),
+                Err(e) if e.permanent => self.fail(e.detail),
+                Err(e) => self.read_failed(e.detail),
             },
         }
         while self.reading.is_none() && !self.ended {
@@ -780,9 +801,17 @@ impl ViewerCore {
     }
 
     /// The stream this viewer reads and the last batch it opened of it:
-    /// the link's, else the one it had before it was reconnected.
+    /// the link's, else the one it had before it was reconnected. Welcomed
+    /// onto a stream it has opened nothing of yet (a new host's), it is
+    /// where the relay stood for it at the join, not the stream's first
+    /// batch, which would have the relay send it everything it holds of
+    /// that stream again (ticket 115).
     fn cursor(&self) -> Option<([u8; 16], u64)> {
-        self.link.as_ref().and_then(|l| l.cursor()).or(self.resume)
+        match self.link.as_ref().and_then(|l| l.cursor()) {
+            Some((s, 0)) if self.joined_on == Some(s) => Some((s, self.applied)),
+            Some(c) => Some(c),
+            None => self.resume,
+        }
     }
 
     fn welcomed(&self) -> bool {
@@ -808,6 +837,31 @@ impl ViewerCore {
         if let Ok(sealed) = l.frame(&serde_json::to_vec(f).expect("json"), false) {
             self.send(sealed);
         }
+    }
+
+    /// The chunks a welcome asked for could not be read, for now (a registry
+    /// hiccup, the network): the welcome is not acted on, and the relay is
+    /// joined again from the cursor, where the host welcomes this viewer
+    /// again. The batches held for it and what waited on the read go with
+    /// the connection: the relay sends the batches again after the cursor,
+    /// and nothing else on a connection dropped is acted on. The wait
+    /// doubles each time in a row, so a registry that stays down is never
+    /// asked in a loop; a welcome whose read goes through starts it over.
+    fn read_failed(&mut self, e: String) {
+        if self.unread.as_deref() != Some(e.as_str()) {
+            self.frame.push(Update::Note(format!("could not read the session's log: {e}; joining the relay again")));
+            self.unread = Some(e);
+        }
+        (self.held, self.waiting) = (Vec::new(), VecDeque::new());
+        let wait = self.reread_ms;
+        self.reread_ms = self.reread_ms.saturating_mul(2).min(ms(REREAD_MAX));
+        // Welcomed onto a direct path: the next race put off, as when one
+        // is lost, or a registry that fails now and then would have the
+        // viewer race, move and fall back again every few seconds.
+        if self.on.is_some() {
+            self.later();
+        }
+        self.join(self.now_ms.saturating_add(wait));
     }
 
     /// The viewer cannot go on: shown at once, then the end.

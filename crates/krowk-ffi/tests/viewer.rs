@@ -801,3 +801,41 @@ fn r_ios_2_a_join_waiting_on_its_backoff_is_held_in_the_background() {
     assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 5_100 }]), "{:?}", p.rest);
     p.join(true, 0);
 }
+
+/// Ticket 115, as the phone runs it: a welcome whose chunks could not be
+/// read for now — the registry unreachable — drops the connection and asks
+/// for a ticket again on the supervisor's backoff, longer each time in a
+/// row, and never ends; one whose chunks fall short of the head the host
+/// sealed (a rollback) shows `Failed` and ends.
+#[test]
+fn r_client_1_a_welcomes_read_that_fails_for_now_joins_again_and_one_for_good_ends() {
+    let mut p = Phone::new();
+    p.start();
+    p.join(true, 0);
+    let past = krowk_client::sync::store::Head { index: 9, digest: [7; 32] };
+    p.welcome(Welcome { head: Some(past), ..Welcome::default() });
+    assert!(matches!(p.take_rest().as_slice(), [Effect::End]), "{:?}", p.rest);
+    assert!(p.shown.iter().any(|u| matches!(u, ViewerUpdate::Failed { detail } if detail.contains("prefix"))), "{:?}", p.shown);
+
+    let mut p = Phone::new();
+    p.start();
+    let standin = krowk_devregistry::start(std::net::TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
+    drop(std::mem::replace(&mut p.world.registry, standin));
+    let mut waits = Vec::new();
+    for n in 0..4u64 {
+        p.join(true, 0);
+        p.welcome(Welcome::default());
+        let rest = p.take_rest();
+        assert!(!rest.iter().any(|e| matches!(e, Effect::End)), "{rest:?}");
+        match rest.as_slice() {
+            [Effect::Close, Effect::NeedTicket { at_ms }] => waits.push(at_ms - p.now),
+            other => panic!("a close and a ticket later: {other:?}"),
+        }
+        p.rest.push(Effect::NeedTicket { at_ms: 0 });
+        p.at(p.now + 60_000 * (n + 1));
+    }
+    assert!(waits.iter().all(|w| *w > 0) && waits.windows(2).all(|w| w[1] >= w[0]), "backing off: {waits:?}");
+    assert!(waits[3] > waits[0], "{waits:?}");
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Note { text } if text.contains("could not read the session's log"))));
+    assert!(p.viewer.next_wake_ms().is_some(), "not ended");
+}

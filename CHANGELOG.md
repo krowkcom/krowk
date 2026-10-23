@@ -367,6 +367,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A registry hiccup no longer drops a device off a synced session.**
+  When a device following a session joins it, it first reads the
+  session's log from the registry. If that read failed, even once, the
+  device stopped following and you had to open the session again. Now
+  it says why, rejoins where it left off, and nothing is lost or shown
+  twice. If the registry stays unreachable it waits longer between
+  tries, up to 30 seconds (on the iPhone, on its usual reconnect
+  backoff). It still stops if the session was deleted, if this device's
+  keys can no longer open it, or if the registry serves an older copy of the
+  log than the host wrote. This applies to `krowk sync attach`, a
+  synced session open in the TUI, and the iPhone.
 - **A subagent with a worktree shows up as soon as it starts.** A
   subagent run with `isolation: worktree` used to appear in the status
   bar and the Agents overlay only once its worktree was fully prepared,

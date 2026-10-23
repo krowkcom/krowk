@@ -32,7 +32,7 @@ use std::sync::{Arc, Mutex};
 use krowk_client::e2e::{self, RELAY_ROLE_VIEWER};
 use krowk_client::protocol::{Command, LogEvent, StreamLine};
 use krowk_client::sync::join::{self, Joining, Step};
-use krowk_client::sync::store::{self, Attached, Head};
+use krowk_client::sync::store::{self, Attached, Head, ReadError};
 use krowk_client::sync::viewer::{self as core, Update, ViewerCore};
 use serde::Deserialize;
 use serde_json::Value;
@@ -230,8 +230,8 @@ fn decode(events: &[Value]) -> (Vec<LogEvent>, Option<String>) {
 }
 
 /// What `ViewerCore::chunks_read` takes: the events read and where the
-/// reading stopped, or why it failed.
-type Read = Result<(Vec<Value>, Attached), String>;
+/// reading stopped, or why it failed and whether for good.
+type Read = Result<(Vec<Value>, Attached), ReadError>;
 
 /// The chunks one `ReadChunks` read, or why the read failed: opaque, handed
 /// back to the `Viewer` that asked, once.
@@ -519,7 +519,12 @@ impl Viewer {
 
     /// Reads the chunks the host wrote since the viewer's last read, up to
     /// the head its welcome named, for `chunks_read`. A failed read is in
-    /// what it returns too: hand it on all the same. Blocking: a round trip
+    /// what it returns too: hand it on all the same. One that failed for
+    /// now (the network, a registry error) during a welcome gives a `Close`
+    /// and a `NeedTicket` on the supervisor's backoff, and the join resumes
+    /// at the cursor; one that failed for good (the session gone, its
+    /// chunks not opening under the phone's keys, a rollback) gives
+    /// `Failed` and `End`. Blocking: a round trip
     /// or more to the registry, with the viewer's lock not held; call it
     /// off the main thread, after a `ReadChunks`.
     pub fn read_chunks(&self) -> Arc<ChunksRead> {
@@ -533,7 +538,7 @@ impl Viewer {
         });
         let (asked, read) = match copied {
             Ok((asked, want, mut a, o)) => (asked, store::catch_up(o.client(), o.keys(), &o.id(), &mut a, want).map(|fresh| (fresh, a))),
-            Err(_) => (0, Err("the viewer failed inside".into())),
+            Err(_) => (0, Err(ReadError::permanent("the viewer failed inside"))),
         };
         Arc::new(ChunksRead { viewer: self.id, asked, read: Mutex::new(Some(read)) })
     }
