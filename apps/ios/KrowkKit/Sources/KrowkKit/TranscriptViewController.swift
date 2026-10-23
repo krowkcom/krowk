@@ -942,6 +942,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         notice.layer.cornerRadius = 10
         notice.layer.masksToBounds = true
         notice.accessibilityIdentifier = "route-notice"
+        // A tap hides it: VoiceOver reads it as a button that does so.
+        notice.accessibilityHint = "Hides this line"
         notice.isUserInteractionEnabled = true
         notice.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(noticeTapped)))
         notice.translatesAutoresizingMaskIntoConstraints = false

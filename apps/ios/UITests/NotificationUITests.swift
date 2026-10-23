@@ -64,7 +64,7 @@ final class NotificationUITests: XCTestCase {
 
         // A stale alert: answered already, so the welcome brings nothing.
         app = try Self.launch(tapping: approval)
-        let notice = app.staticTexts["route-notice"]
+        let notice = app.descendants(matching: .any)["route-notice"]
         if !notice.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
         XCTAssertTrue(notice.label.contains("Nothing is waiting for you here any more"), notice.label)
         XCTAssertFalse(app.otherElements["approval-sheet"].exists, "a sheet for an answered request")
@@ -75,7 +75,7 @@ final class NotificationUITests: XCTestCase {
         let (released, why) = try await FleetUI.request("\(sessions)/\(id)/release")
         XCTAssertEqual(released, 200, why)
         app = try Self.launch(tapping: #"{"krowk":{"session":"\#(id)","kind":"done"}}"#)
-        let offline = app.staticTexts["route-notice"]
+        let offline = app.descendants(matching: .any)["route-notice"]
         if !offline.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
         XCTAssertTrue(offline.label.contains("last seen"), offline.label)
         XCTAssertFalse(app.otherElements["approval-sheet"].exists)
