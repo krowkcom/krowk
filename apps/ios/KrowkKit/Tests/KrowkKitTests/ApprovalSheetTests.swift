@@ -88,7 +88,7 @@ struct ApprovalSheetTests {
         #expect(ApprovalRules.shownSummary("a" + String(repeating: " ", count: 15) + "b") == "a" + String(repeating: " ", count: 15) + "b")
         #expect(ApprovalRules.shownSummary("a" + String(repeating: " ", count: 16) + "b") == "a ⋯ 16 blanks ⋯ b")
         // A space with a visible mark on it is no blank.
-        #expect(ApprovalRules.shownSummary("a\u{2003}\u{2003}\u{2003} \u{20DD}b").contains("\u{20DD}"))
+        #expect(ApprovalRules.shownSummary("a\u{2003}\u{2003}\u{2003}\u{2003} \u{20DD}b") == "a ⋯ 4 blanks ⋯  \u{20DD}b")
     }
 
     @Test("R-IOS-11: Allow for this session shows only when the request remembers rules, and lists them")
