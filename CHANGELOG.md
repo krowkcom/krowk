@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone gets a session back by itself after the background and
+  network changes.** When you come back to krowk, a session you had open
+  checks its connection before the screen even shows: it rejoins at once
+  if the link was lost, replaces it if you were away 10 seconds or more,
+  and otherwise makes sure it still answers. Switching between Wi-Fi and
+  cellular, or a VPN coming up, does the same check at once, and so does
+  pulling down on Sessions. A link that keeps failing waits a little longer each
+  time, up to 30 seconds, instead of retrying every second, and the bar
+  says `reconnecting in 4s` while it waits. In the background a live
+  link is kept but a lost one is not retried until you return, and a
+  session that couldn't be opened because the network was down is
+  opened again instead of stopping. Nothing you saw is shown twice, and
+  nothing is missed. Nothing changes for CLI users.
 - **The iPhone asks to send notifications once it is paired.** Right
   after the phone joins your devices, iOS asks "Allow krowk to send
   notifications?" — never at launch. Allowed, the phone registers for

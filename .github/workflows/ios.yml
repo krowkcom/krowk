@@ -170,9 +170,10 @@ jobs:
   # simulator's token reaches the fleet's registry, R-IOS-12), KrowkKit's
   # unit tests (PushRegistrationTests among them), the hosted
   # KeychainKeyStorageTests, SignInTests, PairingTests, SessionListTests,
-  # RelayConnectionTests, TranscriptModelTests, TranscriptTests,
+  # RelayConnectionTests (with ticket 86's background, network-change and
+  # connect-early checks), TranscriptModelTests, TranscriptTests,
   # LiveFollowTests, ComposerTests, ApprovalMappingTests and
-  # ApprovalScreenTests, and KrowkCore's
+  # ApprovalScreenTests (ConnectionLifecycleTests among KrowkKit's), and KrowkCore's
   # BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). The app links no WebKit and its
@@ -318,7 +319,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12: the scheme's tests on the simulator, against the fake fleet"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2: the scheme's tests on the simulator, against the fake fleet"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do

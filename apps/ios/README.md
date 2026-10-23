@@ -318,8 +318,9 @@ Swift owns the socket and the timers, Rust decides everything else: the
 join and its signature (`X-Krowk-Ticket` header, the relay's challenge,
 the signed `join`), the 10 s heartbeat (`Ping`, a text `ping`), a link
 silent for 30 s being dead, the acks inside the relay's window, and when
-to join again and from which cursor (1 s after a drop or a refusal; on a
-host's presence notice). Swift never builds or parses those messages.
+to join again and from which cursor (on its `ConnectionSupervisor`'s
+backoff after a drop or a refusal, below; on a host's presence notice).
+Swift never builds or parses those messages.
 
 - **The socket** is Network.framework only: an `NWConnection` to the join
   URL with `NWProtocolWebSocket` (pings auto-answered, messages up to the
@@ -340,8 +341,9 @@ host's presence notice). Swift never builds or parses those messages.
   was fed: one at a time, so a fast relay waits in the socket, not in
   memory. A close frame, a receive with nothing in it, and a `waiting`,
   failed or cancelled connection are a close. Opening the session is
-  tried once: if it fails the bar says `stopped: <why>` until the screen
-  is opened again (ticket 86's lifecycle retries).
+  tried again on the backoff when the network failed it (the registry
+  unreachable, a rate limit or a 5xx), the bar saying why and when; any
+  other failure says `stopped: <why>` until the screen is opened again.
 - **Threading.** `RelayConnection` is an actor whose executor is its own
   serial queue (`krowk.relay`), the one each `NWConnection` starts on and
   the timers fire on; callbacks step in with `assumeIsolated`, and the
@@ -358,16 +360,43 @@ host's presence notice). Swift never builds or parses those messages.
   what's on screen (R-IOS-1): `connecting`; `live` once a host welcomed
   the phone; `host offline` when joined with no host, read-only, and the
   viewer waits for the relay's presence notice rather than redialing
-  (R-HAND-4); `reconnecting` after a drop; `can't reach the relay: <the
-  viewer's note>`; `stopped: <why>` if the viewer ends.
+  (R-HAND-4); `reconnecting` after a drop, `reconnecting in Ns` while the
+  backoff waits (counted down once a second, and only then); `can't
+  reach the relay: <the viewer's note>`, with `— trying again in Ns`
+  while it waits; `stopped: <why>` if the viewer ends.
 - **The relay.** Rust picks it from the registry (`wss://relay.krowk.com`
   for krowk's, env `production` only in a release build). A DEBUG build
   takes `KROWK_RELAY_URL` from its launch environment, the fake fleet's,
   passed to `Account.openSession` as its override.
 - Nothing is logged: the relay ticket goes from the registry call straight
   to the `Viewer`, which puts it in the `Dial` it returns.
-- Backoff, wake and suspend, network changes and connecting on return to
-  the foreground are ticket 86's.
+- **The lifecycle** (ticket 86, R-IOS-2, R-OFF-2, R-LAG-9) is krowk-ffi's
+  `ConnectionSupervisor` (krowk-client's `sync::supervisor`, tested on a
+  fake clock), one per followed session, asked while the session opens
+  and then by its `Viewer` on every loss, join and message:
+  - *Backoff*: 250 ms, doubling, capped at 30 s, each wait cut at random
+    by up to half; it starts over only after a connection stayed up 30 s.
+  - *Wake* (the scene active, a usable network path after a change, Sessions'
+    pull-to-refresh): lost, joined now with no backoff; silent past 30 s,
+    replaced now; otherwise a `ping`, and replaced if nothing answers in
+    5 s.
+  - *Background*: the connection is kept, never probed, and a lost one
+    is not tried again until the foreground (push covers a finished turn
+    and an approval). After 10 s or more away it is replaced on the
+    foreground rather than probed. While the app runs in the background
+    the screen applies what comes at once instead of per display frame,
+    so nothing piles up before iOS suspends it.
+  - *Connect early* (R-IOS-2): `sceneWillEnterForeground` reaches every
+    followed session (`LiveSessions`, which a session screen joins as it
+    is made) before any view appears.
+  - `NWPathMonitor` runs on the connection's queue; its first callback,
+    the path as it is, is not a change. Every join resumes at the core's
+    cursor; Swift keeps none and replays no command (the core resends
+    those unacked at the welcome, and the host runs each once).
+  - The timers are uptime timers and `now` is monotonic, so setting the
+    clock back or forward never holds one up; the foreground re-arms them.
+  - Device-only (ticket 107): real Wi-Fi and cellular handover, Tailscale,
+    and when iOS suspends the app and drops its socket.
 
 ## A session's transcript
 
