@@ -166,7 +166,9 @@ jobs:
   # the app's Xcode project generates from project.yml with the right
   # settings, builds for a device (unsigned) and for the simulator, and the
   # scheme Krowk-iOS passes ApprovalUITests, LaunchTests, SignInUITests and
-  # PairingUITests (XCUITest), KrowkKit's unit tests, the hosted
+  # PairingUITests (XCUITest; pairing asks to send notifications and the
+  # simulator's token reaches the fleet's registry, R-IOS-12), KrowkKit's
+  # unit tests (PushRegistrationTests among them), the hosted
   # KeychainKeyStorageTests, SignInTests, PairingTests, SessionListTests,
   # RelayConnectionTests, TranscriptModelTests, TranscriptTests,
   # LiveFollowTests, ComposerTests, ApprovalMappingTests and
@@ -238,19 +240,26 @@ jobs:
           test -z "$(git status --porcelain)" || { git status --porcelain; exit 1; }
           xcodebuild -list -project apps/ios/Krowk.xcodeproj -json | jq -e '.project.schemes | index("Krowk-iOS")'
 
-      - name: "R-IOS-13: build settings (module KrowkApp, iOS 26.0, iPhone only, no x86_64 simulator slice)"
+      - name: "R-IOS-13, R-IOS-12: build settings (module KrowkApp, iOS 26.0, iPhone only, no x86_64 simulator slice, the push entitlement)"
         run: |
           xcodebuild -showBuildSettings -project apps/ios/Krowk.xcodeproj -target Krowk-iOS -sdk iphonesimulator -json \
             > "$RUNNER_TEMP/settings.json"
           jq -r '.[0].buildSettings | {PRODUCT_MODULE_NAME, PRODUCT_NAME, PRODUCT_BUNDLE_IDENTIFIER, IPHONEOS_DEPLOYMENT_TARGET,
-            TARGETED_DEVICE_FAMILY, EXCLUDED_ARCHS, ARCHS, SWIFT_VERSION, SWIFT_STRICT_CONCURRENCY}' "$RUNNER_TEMP/settings.json"
+            TARGETED_DEVICE_FAMILY, EXCLUDED_ARCHS, ARCHS, SWIFT_VERSION, SWIFT_STRICT_CONCURRENCY, CODE_SIGN_ENTITLEMENTS}' "$RUNNER_TEMP/settings.json"
           jq -e '.[0].buildSettings
             | .PRODUCT_MODULE_NAME == "KrowkApp"
               and .IPHONEOS_DEPLOYMENT_TARGET == "26.0"
               and .TARGETED_DEVICE_FAMILY == "1"
               and (.EXCLUDED_ARCHS | split(" ") | index("x86_64"))
               and .SWIFT_VERSION == "6.0"
-              and .SWIFT_STRICT_CONCURRENCY == "complete"' "$RUNNER_TEMP/settings.json"
+              and .SWIFT_STRICT_CONCURRENCY == "complete"
+              and .CODE_SIGN_ENTITLEMENTS == "Krowk.entitlements"' "$RUNNER_TEMP/settings.json"
+          # R-IOS-12: alert pushes, development in the file (the App Store
+          # export signs production), and no background modes. xtool.yml
+          # names the same file.
+          test "$(plutil -extract aps-environment raw apps/ios/Krowk.entitlements)" = development
+          grep -qx 'entitlementsPath: Krowk.entitlements' apps/ios/xtool.yml
+          ! grep -q UIBackgroundModes apps/ios/Krowk-Info.plist apps/ios/xtool-Info.plist apps/ios/project.yml
 
       # The Secure Enclave wrapping key is the only one a device build has:
       # the software fallback is under #if targetEnvironment(simulator).
@@ -306,7 +315,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11: the scheme's tests on the simulator, against the fake fleet"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12: the scheme's tests on the simulator, against the fake fleet"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do

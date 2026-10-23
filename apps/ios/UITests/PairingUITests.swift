@@ -63,6 +63,8 @@ final class PairingUITests: XCTestCase {
         // Sign in; the test approves the code as the page's button would.
         let signIn = app.buttons["sign-in"]
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
+        // R-IOS-12: never asked at launch.
+        XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.exists, "a system prompt at launch")
         signIn.tap()
         allowTheSignInPage()
         let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
@@ -90,6 +92,7 @@ final class PairingUITests: XCTestCase {
         Screenshots.keep("pairing-failed", in: app)
 
         // A fresh code: "Pairing with host-a", then on the devices.
+        let tokensBefore = try await NotificationPrompt.registered(site: site)
         type(try await Self.freshCode(), in: app)
         let with = app.staticTexts["pairing-with"]
         let done = app.staticTexts["pairing-done"]
@@ -101,6 +104,18 @@ final class PairingUITests: XCTestCase {
         if !done.waitForExistence(timeout: 90) { Screenshots.tree(of: app) }
         XCTAssertTrue(done.exists, "not paired 90 s after the code")
         XCTAssertEqual(done.label, "This iPhone is on your devices.")
+        // R-IOS-12: asked now, once per install (the first pairing of the
+        // run, which may be ApprovalUITests'); allowed, the simulator's
+        // sandbox token reaches the registry for this phone, a device not
+        // registered before.
+        NotificationPrompt.allow()
+        var newDevices: [String: String] = [:]
+        let registeredBy = Date.now.addingTimeInterval(60)
+        while newDevices.isEmpty && Date.now < registeredBy {
+            newDevices = try await NotificationPrompt.registered(site: site).filter { tokensBefore[$0.key] == nil }
+            if newDevices.isEmpty { try await Task.sleep(for: .milliseconds(500)) }
+        }
+        XCTAssertEqual(Array(newDevices.values), ["sandbox"], "the paired phone's token is not registered 60 s after pairing")
         Screenshots.keep("paired", in: app)
         app.buttons["pairing-continue"].tap()
         let demo = demoSession(in: app, after: "Continue")

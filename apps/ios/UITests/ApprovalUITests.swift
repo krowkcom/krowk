@@ -141,6 +141,9 @@ enum FleetUI {
         let done = app.staticTexts["pairing-done"]
         if !done.waitForExistence(timeout: 90) { Screenshots.tree(of: app) }
         XCTAssertTrue(done.exists, "not paired 90 s after the code")
+        // R-IOS-12: iOS asks to send notifications once paired, once per
+        // install; PairingUITests checks what the answer registers.
+        NotificationPrompt.allow()
         app.buttons["pairing-continue"].tap()
         let list = app.collectionViews["sessions-list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10), "Continue did not open Sessions")
