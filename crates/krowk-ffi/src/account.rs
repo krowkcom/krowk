@@ -96,6 +96,25 @@ impl Account {
             .collect())
     }
 
+    /// Registers this device's APNs token with the registry, so the
+    /// person's other devices can ring it (R-IOS-12): `token_hex` as the
+    /// app read it (64 to 200 hex digits), `environment` `sandbox` or
+    /// `production`, the APNs host the token belongs to. Replaces any
+    /// token this device had; a token another device held moves here.
+    /// Signed by this device. Blocking (a registry call, retried): never
+    /// on the main thread. The token is sent in the body only, and never
+    /// logged or kept.
+    pub fn set_push_token(&self, token_hex: String, environment: String) -> Result<(), KrowkError> {
+        Ok(self.client.put_push_token(&token_hex, &environment)?)
+    }
+
+    /// This device takes no more pushes: its token, if any, is dropped at
+    /// the registry. Ok when it had none. Signed by this device. Blocking
+    /// (a registry call, retried): never on the main thread.
+    pub fn clear_push_token(&self) -> Result<(), KrowkError> {
+        Ok(self.client.delete_push_token()?)
+    }
+
     /// Forgets the krowk API key. The device keys stay, so signing in again
     /// is the same device.
     pub fn sign_out(&self) -> Result<(), KrowkError> {

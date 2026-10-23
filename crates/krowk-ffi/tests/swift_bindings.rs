@@ -88,6 +88,9 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "func workspaceName() -> String",
         "func hasUserKeys() throws -> Bool",
         "func signOut() throws",
+        // R-IOS-12: the phone's APNs token, set and cleared at the registry.
+        "func setPushToken(tokenHex: String, environment: String) throws",
+        "func clearPushToken() throws",
         // R-E2E-3: joining a pairing, and the scanned invite's code.
         "func joinPairing(code: String, name: String, os: String) throws -> Joined",
         "func cancelPairing()",

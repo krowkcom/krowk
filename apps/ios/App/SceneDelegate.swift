@@ -26,6 +26,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     private static let log = Logger(subsystem: "com.krowk.app", category: "sign-in")
 
+    /// The paired phone's push registration (R-IOS-12): made once the
+    /// phone is on the person's devices, nil before. The app delegate
+    /// hands it iOS's token.
+    private(set) static var push: PushRegistration?
+
     func scene(
         _ scene: UIScene,
         willConnectTo session: UISceneSession,
@@ -51,6 +56,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// connected) is tried again when the app comes forward.
     func sceneWillEnterForeground(_ scene: UIScene) {
         if !opened { showRoot() }
+        // Each time the app comes forward, a cold launch too (iOS calls
+        // this after `willConnectTo`), the token is kept current and a
+        // permission turned off in Settings clears it (R-IOS-12).
+        if let push = Self.push { Task { await push.onForeground() } }
     }
 
     private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -91,9 +100,17 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         guard let keys = Self.keys else { return home() }
         let api = SignInRules.apiURL()
         switch try Launch.read(api: api, storage: keys) {
-        case .signedOut: return signIn(api: api, keys: keys)
+        case .signedOut:
+            // Whatever was registered is forgotten: signed in again, the
+            // phone registers afresh.
+            Self.push = nil
+            PushRegistration.signedOut()
+            return signIn(api: api, keys: keys)
         case .signedIn(let workspace): return pairing(api: api, keys: keys, workspace: workspace)
-        case .paired: return sessions(api: api, keys: keys)
+        case .paired:
+            // Kept current from the foreground that follows; never asks.
+            _ = Self.push(api: api, keys: keys)
+            return sessions(api: api, keys: keys)
         }
     }
 
@@ -162,10 +179,63 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             onPaired: { [weak self] in
                 guard let self else { return }
                 self.show(self.sessions(api: api, keys: keys))
+            },
+            // On the person's devices: the one time the app asks to send
+            // notifications (R-IOS-12), never at launch.
+            onJoined: {
+                let push = Self.push(api: api, keys: keys)
+                Task { await push.afterPairing() }
             }
         )
         return PairingScreens.pairing(model, workspace: workspace)
     }
+
+    /// The push registration, made on first use, signing through the
+    /// account in `keys` (R-CLIENT-1).
+    private static func push(api: String, keys: KeychainKeyStorage) -> PushRegistration {
+        if let push { return push }
+        let log = Logger(subsystem: "com.krowk.app", category: "push")
+        let register: @MainActor () -> Void
+        #if DEBUG
+        // The UI tests' stand-in for APNs, which gives GitHub's simulators
+        // no token: KROWK_FAKE_APNS_TOKEN (hex) is handed back as iOS would
+        // hand a token to the app delegate. Only from the launch
+        // environment, in a Debug build (Xcode's, or xtool's dev build);
+        // never in a Release one (scripts/approvals.sh checks).
+        if let token = ProcessInfo.processInfo.environment["KROWK_FAKE_APNS_TOKEN"].flatMap({ Self.bytes(hex: $0) }) {
+            register = { Task { await Self.push?.didRegister(deviceToken: token) } }
+        } else {
+            register = { UIApplication.shared.registerForRemoteNotifications() }
+        }
+        #else
+        register = { UIApplication.shared.registerForRemoteNotifications() }
+        #endif
+        let made = PushRegistration(
+            notifications: SystemNotifications(),
+            sink: RegistryPushTokens(api: api, storage: keys),
+            environment: PushEnvironment.current,
+            register: register,
+            // A failure's kind and the core's words; never the token,
+            // which PushRegistration never hands to the log.
+            log: { log.error("\($0, privacy: .public)") }
+        )
+        push = made
+        return made
+    }
+
+    #if DEBUG
+    nonisolated private static func bytes(hex: String) -> Data? {
+        guard hex.count % 2 == 0, !hex.isEmpty else { return nil }
+        var data = Data()
+        var rest = Substring(hex)
+        while !rest.isEmpty {
+            guard let byte = UInt8(rest.prefix(2), radix: 16) else { return nil }
+            data.append(byte)
+            rest = rest.dropFirst(2)
+        }
+        return data
+    }
+    #endif
 
     /// What the phone calls itself: `UIDevice`'s name, the generic "iPhone"
     /// without a special entitlement. A DEBUG build takes `KROWK_DEVICE_NAME`

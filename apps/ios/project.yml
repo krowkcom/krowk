@@ -40,6 +40,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.krowk.app   # pending the person's confirmation (ticket 109)
         PRODUCT_NAME: Krowk
+        # Push (R-IOS-12): APNs tokens for alert notifications, no
+        # background modes. The file says development; Xcode's export for
+        # App Store Connect (testflight.yml, method app-store-connect) signs
+        # production, and cloud-managed signing with -allowProvisioningUpdates
+        # needs the App ID's Push Notifications capability (ticket 109).
+        # A setting, not XcodeGen's `entitlements:`, which would rewrite the
+        # file on every generate. xtool.yml names the same file, and ship.sh
+        # takes it as ASC_ENTITLEMENTS_PATH (README.md).
+        CODE_SIGN_ENTITLEMENTS: Krowk.entitlements
         # Not Krowk: on a case-insensitive disk it clashes with the bindings module.
         PRODUCT_MODULE_NAME: KrowkApp
         # Again here: XcodeGen's iOS target preset sets "1,2" per target,

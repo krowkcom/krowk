@@ -605,7 +605,7 @@ make ios-core
 cd apps/ios
 BUILD_NUMBER=1 ~/src/omarchy-apple-dev/ship.sh </dev/null          # offline check
 ASC_KEY_PATH=/path/to/AuthKey_XXXXXXXXXX.p8 ASC_ISSUER_ID=<issuer-uuid> ASC_KEY_ID=XXXXXXXXXX \
-  BUILD_NUMBER=<n> ~/src/omarchy-apple-dev/ship.sh --upload </dev/null
+  ASC_ENTITLEMENTS_PATH=Krowk.entitlements BUILD_NUMBER=<n> ~/src/omarchy-apple-dev/ship.sh --upload </dev/null
 ```
 
 The version is `CFBundleShortVersionString` in `xtool-Info.plist`; set it to
@@ -616,8 +616,11 @@ of a version higher than the last. `ship.sh`'s default, the UTC time as
 `yyyymmddHHMM`, is far above CI's `<run number>.<attempt>`, so CI's next
 upload of that version would be refused. Above CI's last build for that
 version (the run summary names it), e.g. `<last run + 1>.1`, works until
-CI runs that number. `ASC_ENTITLEMENTS_PATH` is
-not needed yet; push (ticket 105) will request `aps-environment` through it.
+CI runs that number. Push (R-IOS-12) needs the upload's
+`ASC_ENTITLEMENTS_PATH=Krowk.entitlements`: with
+`aps-environment` in it, `ship.sh` signs with the environment the profile
+grants (`production` for the App Store), and the bundle id needs
+`PUSH_NOTIFICATIONS` enabled first (ticket 109), or signing fails.
 Like the workflow, it stops at the empty icon (actool: "AppIcon declares
 size 1024x1024 but no source file matched").
 

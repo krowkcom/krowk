@@ -19,7 +19,8 @@ struct PairingModelTests {
     func typedCodeJoins() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
         let paired = Box(false)
-        let model = Self.model(registry, onPaired: { paired.value = true })
+        let joined = Box(0)
+        let model = Self.model(registry, onPaired: { paired.value = true }, onJoined: { joined.value += 1 })
         model.enter("k7qf 9m3")
         #expect(model.codeText == "K7QF 9M3")
         #expect(model.phase == .entering(nil))
@@ -33,10 +34,14 @@ struct PairingModelTests {
         try await until { model.phase == .pairing(with: "Elvinas's MacBook") }
         registry.finish(.success(()))
         try await until { model.phase == .paired }
+        // R-IOS-12: on the devices, before Continue: where the app asks to
+        // send notifications, once.
+        #expect(joined.value == 1 && !paired.value)
         #expect(registry.joined == [.code("K7QF-9M3X")])
         #expect(registry.parsedCodes == ["K7QF 9M3", "K7QF 9M3X"])
         model.finish()
         #expect(paired.value)
+        #expect(joined.value == 1)
     }
 
     @Test("R-E2E-3: what isn't a code is refused before anything is sent")
@@ -234,10 +239,12 @@ struct PairingModelTests {
 
     static func model(
         _ registry: StubPairing, scanner: Bool = false, camera: StubCamera = StubCamera(.allowed),
-        log: @escaping @Sendable (String) -> Void = { _ in }, onPaired: @escaping @MainActor () -> Void = {}
+        log: @escaping @Sendable (String) -> Void = { _ in }, onPaired: @escaping @MainActor () -> Void = {},
+        onJoined: @escaping @MainActor () -> Void = {}
     ) -> PairingModel {
         PairingModel(
-            service: registry, camera: camera, scannerSupported: scanner, deviceName: "Test iPhone", log: log, onPaired: onPaired)
+            service: registry, camera: camera, scannerSupported: scanner, deviceName: "Test iPhone", log: log, onPaired: onPaired,
+            onJoined: onJoined)
     }
 }
 

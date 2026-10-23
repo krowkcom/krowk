@@ -11,7 +11,8 @@
 #    check. The UI tests' stub and the launch argument that picks it are
 #    under #if DEBUG, so neither may be in any Mach-O file of a Release
 #    app, which must link LocalAuthentication. A Debug app must have both
-#    (the check finds what it looks for).
+#    (the check finds what it looks for). The same for the UI tests'
+#    stand-in APNs token, KROWK_FAKE_APNS_TOKEN (R-IOS-12).
 #
 #   apps/ios/scripts/approvals.sh [path/to/Krowk.app release|debug]
 #
@@ -35,12 +36,13 @@ app=$1 kind=${2:-release}
 libs() {
   if command -v otool >/dev/null; then otool -L "$1" 2>/dev/null; else llvm-objdump --macho --dylibs-used "$1" 2>/dev/null; fi
 }
-stub=0 auth=0 checked=0
+stub=0 auth=0 checked=0 apns=0
 while IFS= read -r -d '' file; do
   used=$(libs "$file") || continue
   [ -n "$used" ] || continue
   checked=$((checked + 1))
   if grep -aqE 'StubOwnerCheck|-KrowkOwnerCheck' "$file"; then stub=1; echo "the owner check's stub is in $file"; fi
+  if grep -aq KROWK_FAKE_APNS_TOKEN "$file"; then apns=1; echo "the stand-in APNs token is in $file"; fi
   if grep -qE '/LocalAuthentication\.framework/' <<<"$used"; then auth=1; fi
 done < <(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) -print0)
 [ "$checked" -gt 0 ] || { echo "approvals.sh: no Mach-O file in $app" >&2; exit 2; }
@@ -48,9 +50,11 @@ done < <(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) -print0)
 case $kind in
   release)
     [ "$stub" = 0 ] || { echo "R-IOS-11: a Release build has the owner check's stub" >&2; exit 1; }
+    [ "$apns" = 0 ] || { echo "R-IOS-12: a Release build reads KROWK_FAKE_APNS_TOKEN" >&2; exit 1; }
     echo "R-IOS-11: the Release build has only the LAContext owner check" ;;
   debug)
     [ "$stub" = 1 ] || { echo "approvals.sh: a Debug build has no stub, so this check finds nothing" >&2; exit 1; }
+    [ "$apns" = 1 ] || { echo "approvals.sh: a Debug build has no stand-in APNs token, so this check finds nothing" >&2; exit 1; }
     echo "R-IOS-11: the Debug build has the UI tests' stub, as it may" ;;
   *) echo "approvals.sh: release or debug, not $kind" >&2; exit 2 ;;
 esac
