@@ -37,6 +37,17 @@ public final class ParkedScreens {
     /// How many screens are kept.
     public var count: Int { screens.count }
 
+    /// The phone is no longer on the person's devices (ticket 117): every
+    /// kept screen and refusal is let go, so a phone paired again opens
+    /// none of them.
+    public func letGoAll() {
+        // Each let go first (it stops its session, and hands its refusals
+        // back here), then everything kept dropped.
+        for screen in Array(screens.values) { screen.letGo() }
+        screens = [:]
+        refusals = [:]
+    }
+
     func park(_ screen: TranscriptViewController) {
         // A second screen of the same session (opened while this one was
         // parked, before `take`) can't be: `take` is how it opens. If one

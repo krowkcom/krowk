@@ -20,6 +20,9 @@ public final class SessionListModel {
     public private(set) var listedAt: Date?
     /// Why the last refresh failed; nil once one succeeds.
     public private(set) var failure: SessionListFailure?
+    /// The phone is no longer on the person's devices: set by the read
+    /// that found it, after which nothing reads or ticks again.
+    public private(set) var gone: DeviceGone?
     /// What the rows' relative times are measured from: set at each
     /// refresh and each minute's tick.
     public private(set) var now: Date
@@ -69,6 +72,7 @@ public final class SessionListModel {
     /// launch's first foreground follows the first appearance), it only
     /// ticks the clock: the read already under way is enough.
     public func appeared() {
+        guard gone == nil else { return }
         now = clock()
         if let listedAt { expire(at: listedAt.addingTimeInterval(Self.leaseTTL)) }
         guard timers.isEmpty else { return }
@@ -92,6 +96,7 @@ public final class SessionListModel {
     /// kept in `failure`, and the listing before it stays, shown as not
     /// live.
     public func refresh() async {
+        guard gone == nil else { return }
         asked += 1
         let ticket = asked
         if reading == nil {
@@ -140,6 +145,15 @@ public final class SessionListModel {
                 failure = nil
                 // Only on screen: appearing arms it again.
                 if !timers.isEmpty { expire(at: started.addingTimeInterval(Self.leaseTTL)) }
+            case .failure(.gone(let found)):
+                // Stops here: no timer, no retry. The app shows why.
+                log("listing sessions failed: \(found.kind)")
+                failure = .gone(found)
+                gone = found
+                disappeared()
+                done = asked
+                reading = nil
+                return
             case .failure(let error):
                 // Once per kind, not every 20 s while it lasts.
                 if failure?.kind != error.kind { log("listing sessions failed: \(error.kind)") }

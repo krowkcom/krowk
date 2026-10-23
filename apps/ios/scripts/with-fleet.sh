@@ -26,6 +26,14 @@
 # is appended to $KROWK_FLEET_LOG (default target/fake-fleet.log), and its
 # last lines are shown if it fails to start.
 #
+# A second fleet, with no demo, runs beside it for the tests that remove
+# their phone from host A's devices (ticket 117): removing a device rotates
+# host A's user key, and the first fleet's hosts would stop on it. Its URLs
+# go to the tests as KROWK_REMOVAL_API_URL, KROWK_REMOVAL_RELAY_URL,
+# KROWK_REMOVAL_PAIR_URL and KROWK_REMOVAL_DEVICES_URL: a POST to
+# <devices url>/remove, its body a device's name, runs `krowk devices
+# remove` as that fleet's host A.
+#
 # The fleet answers pairings with a debug krowk built with the harness
 # feature: KROWK_BIN names one, else this builds it.
 set -euo pipefail
@@ -45,22 +53,29 @@ fi
 cargo build -q -p krowk-harness --example fake_fleet
 
 fifo=$(mktemp -d "${TMPDIR:-/tmp}/krowk-fleet.XXXXXX")
-mkfifo "$fifo/stdin" "$fifo/stdout"
-fleet=''
+mkfifo "$fifo/stdin" "$fifo/stdout" "$fifo/stdin2" "$fifo/stdout2"
+fleet='' fleet2=''
+
+# Waits up to ten seconds for a fleet to stop by itself (its stdin closed),
+# then kills it with every process it started (its own process group).
+end_fleet() {
+  local pid=$1
+  [ -n "$pid" ] || return 0
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    kill -0 "$pid" 2>/dev/null || break
+    sleep 1
+  done
+  kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+}
 
 stop() {
   { exec 3>&-; } 2>/dev/null || true
-  if [ -n "$fleet" ]; then
-    # A clean stop takes a moment; one that hangs is killed, with every
-    # process it started (its own process group).
-    for _ in 1 2 3 4 5 6 7 8 9 10; do
-      kill -0 "$fleet" 2>/dev/null || break
-      sleep 1
-    done
-    kill -- "-$fleet" 2>/dev/null || kill "$fleet" 2>/dev/null || true
-    wait "$fleet" 2>/dev/null || true
-  fi
+  { exec 5>&-; } 2>/dev/null || true
+  end_fleet "$fleet"
+  end_fleet "$fleet2"
   { exec 4<&-; } 2>/dev/null || true
+  { exec 6<&-; } 2>/dev/null || true
   rm -rf "$fifo"
 }
 trap stop EXIT
@@ -68,43 +83,58 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 # Appended, so a retried run keeps every attempt's log.
-echo "with-fleet: starting the fake fleet, $(date)" >>"$log"
-# Its own process group (job control), so stop() can end all of it.
+echo "with-fleet: starting the fake fleets, $(date)" >>"$log"
+# Each in its own process group (job control), so stop() can end all of it.
+# The second, with no demo, is the removal tests' own: removing a phone
+# rotates host A's user key, which would stop the first fleet's hosts.
 set -m
 cargo run -q -p krowk-harness --example fake_fleet -- --demo <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
 fleet=$!
+cargo run -q -p krowk-harness --example fake_fleet -- --pair <"$fifo/stdin2" >"$fifo/stdout2" 2>>"$log" &
+fleet2=$!
 set +m
-# Holding the write end open keeps the fleet running; closing it stops it.
+# Holding the write ends open keeps the fleets running; closing them stops them.
 exec 3>"$fifo/stdin"
 exec 4<"$fifo/stdout"
+exec 5>"$fifo/stdin2"
+exec 6<"$fifo/stdout2"
 
-api='' relay='' pair='' pair_url='' sessions_url='' ready=''
-# Five minutes: the first start builds and seeds the stand-in registry.
-while IFS= read -r -t 300 line <&4; do
-  case $line in
-    api=*) api=${line#api=} ;;
-    relay=*) relay=${line#relay=} ;;
-    pair=*) pair=${line#pair=} ;;
-    pair_url=*) pair_url=${line#pair_url=} ;;
-    sessions_url=*) sessions_url=${line#sessions_url=} ;;
-    ready) ready=1; break ;;
-  esac
-done
-if [ -z "$ready" ] || [ -z "$api" ]; then
-  echo "with-fleet: the fake fleet did not start; the end of $log:" >&2
+# Reads a fleet's lines from fd $1 up to `ready` into fleet_<key> variables
+# with the prefix $2. Five minutes: the first start builds and seeds the
+# stand-in registry.
+read_fleet() {
+  local fd=$1 prefix=$2 line ready=''
+  while IFS= read -r -t 300 line <&"$fd"; do
+    case $line in
+      ready) ready=1; break ;;
+      *=*) printf -v "${prefix}_${line%%=*}" '%s' "${line#*=}" ;;
+    esac
+  done
+  [ -n "$ready" ]
+}
+
+fleet_api='' fleet_relay='' fleet_pair='' fleet_pair_url='' fleet_sessions_url='' fleet_devices_url=''
+removal_api='' removal_relay='' removal_pair_url='' removal_devices_url=''
+if ! read_fleet 4 fleet || [ -z "$fleet_api" ] || ! read_fleet 6 removal || [ -z "$removal_api" ]; then
+  echo "with-fleet: a fake fleet did not start; the end of $log:" >&2
   tail -n 40 "$log" >&2 || true
   exit 1
 fi
-echo "with-fleet: api=$api relay=$relay pair=$pair pair_url=$pair_url sessions_url=$sessions_url" >&2
+echo "with-fleet: api=$fleet_api relay=$fleet_relay pair=$fleet_pair pair_url=$fleet_pair_url sessions_url=$fleet_sessions_url" >&2
+echo "with-fleet: removal api=$removal_api relay=$removal_relay pair_url=$removal_pair_url devices_url=$removal_devices_url" >&2
 
-export TEST_RUNNER_KROWK_API_URL=$api
-export TEST_RUNNER_KROWK_RELAY_URL=$relay
-export TEST_RUNNER_KROWK_PAIRING_CODE=$pair
-export TEST_RUNNER_KROWK_PAIR_URL=$pair_url
-export TEST_RUNNER_KROWK_SESSIONS_URL=$sessions_url
+export TEST_RUNNER_KROWK_API_URL=$fleet_api
+export TEST_RUNNER_KROWK_RELAY_URL=$fleet_relay
+export TEST_RUNNER_KROWK_PAIRING_CODE=$fleet_pair
+export TEST_RUNNER_KROWK_PAIR_URL=$fleet_pair_url
+export TEST_RUNNER_KROWK_SESSIONS_URL=$fleet_sessions_url
+export TEST_RUNNER_KROWK_REMOVAL_API_URL=$removal_api
+export TEST_RUNNER_KROWK_REMOVAL_RELAY_URL=$removal_relay
+export TEST_RUNNER_KROWK_REMOVAL_PAIR_URL=$removal_pair_url
+export TEST_RUNNER_KROWK_REMOVAL_DEVICES_URL=$removal_devices_url
 
 status=0
-# Without the fleet's pipes: a helper the command leaves running must not
-# hold the fleet's stdin open.
-"$@" 3>&- 4<&- || status=$?
+# Without the fleets' pipes: a helper the command leaves running must not
+# hold a fleet's stdin open.
+"$@" 3>&- 4<&- 5>&- 6<&- || status=$?
 exit "$status"

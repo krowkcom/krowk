@@ -51,10 +51,15 @@ fn post(url: &str) -> String {
 
 /// `method url` with no body: the reply's status line and its body.
 fn request(method: &str, url: &str) -> (String, String) {
+    request_with(method, url, "")
+}
+
+/// `method url` with `body`: the reply's status line and its body.
+fn request_with(method: &str, url: &str, body: &str) -> (String, String) {
     let rest = url.strip_prefix("http://").unwrap();
     let (host, path) = rest.split_at(rest.find('/').unwrap());
     let mut s = std::net::TcpStream::connect(host).unwrap();
-    write!(s, "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "{method} {path} HTTP/1.1\r\nHost: {host}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     let mut out = String::new();
     s.read_to_string(&mut out).unwrap();
     let (head, body) = out.split_once("\r\n\r\n").unwrap_or((&out, ""));
@@ -550,6 +555,43 @@ fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets
     assert_eq!(request("POST", &format!("{url}/{id}/host")).0, "HTTP/1.1 500 X", "hosted once at a time");
     assert_eq!(request("POST", &format!("{url}/no-such-session/host")).0, "HTTP/1.1 500 X", "only a test's own session");
     assert_eq!(request("POST", &format!("{url}/{id}/release")), ("HTTP/1.1 200 X".into(), "released".into()));
+    f.stop();
+}
+
+/// R-E2E-3, R-IOS-15: a simulator's test removes its phone from host A's
+/// devices through the fleet's control: a POST naming it to
+/// `devices_url/remove` runs the real `krowk devices remove` as host A and
+/// answers `removed` once the list no longer names it; the phone's key is
+/// refused from then on, and a fresh code still pairs the next phone.
+#[test]
+fn r_e2e_3_r_ios_15_a_post_to_devices_url_removes_a_phone_from_host_a() {
+    let f = Proc::start(&["--pair"]);
+    let devices = f.get("devices_url").to_string();
+    assert!(devices.starts_with("http://127.0.0.1:") && devices.ends_with("/devices"), "{devices}");
+    let phone = Phone::sign_in(&f, "phone-removed");
+    let out = phone.join(&f, f.get("pair"));
+    assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
+    f.ended(true);
+
+    assert_eq!(request("POST", &format!("{devices}/remove")).0, "HTTP/1.1 400 X", "a removal names its device");
+    let (status, why) = request_with("POST", &format!("{devices}/remove"), "no such phone");
+    assert_eq!(status, "HTTP/1.1 500 X", "{why}");
+    assert!(why.contains("no device on your list is called"), "{why}");
+    assert_eq!(request_with("POST", &format!("{devices}/remove"), "phone"), ("HTTP/1.1 200 X".into(), "removed".into()));
+
+    // The removed phone's key is refused; another key of the person's
+    // reads the list, which is host A's alone again.
+    let refused = krowk_api::Client::new(f.get("api"), &phone.token).device_list_all().unwrap_err();
+    assert_eq!(refused.code(), "unauthorized", "{refused}");
+    let reader = Phone::sign_in(&f, "reader");
+    assert_eq!(reader.devices(&f), ["host-a"]);
+    // The next phone pairs with a fresh code, on the list as it is now.
+    let (status, code) = request("POST", f.get("pair_url"));
+    assert_eq!(status, "HTTP/1.1 200 X", "{code}");
+    let next = Phone::sign_in(&f, "phone-next");
+    let out = next.join(&f, &code);
+    assert!(out.status.success(), "{}\nfleet:\n{}", said(&out), f.err.lock().unwrap());
+    assert_eq!(reader.devices(&f), ["host-a", "phone"]);
     f.stop();
 }
 

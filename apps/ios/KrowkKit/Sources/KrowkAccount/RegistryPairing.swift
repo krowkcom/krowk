@@ -117,6 +117,10 @@ public final class RegistryPairing: PairingService {
             account?.cancelPairing()
         }
 
+        func hasRecoveryKit() -> Bool? {
+            try? service.opened().hasRecoveryKit()
+        }
+
         private func checkCancelled() throws(PairingFailure) {
             if state.withLock({ $0.cancelled }) { throw .cancelled }
         }

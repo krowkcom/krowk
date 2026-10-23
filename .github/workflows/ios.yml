@@ -176,7 +176,10 @@ jobs:
   # ApprovalScreenTests (ConnectionLifecycleTests among KrowkKit's), and KrowkCore's
   # BindingsTests
   # on an iPhone simulator, against the fake fleet
-  # (apps/ios/scripts/with-fleet.sh). The app links no WebKit and its
+  # (apps/ios/scripts/with-fleet.sh). RemovalUITests and RemovalTests
+  # (ticket 117: a phone host A removes says so, stops and resets to
+  # sign-in, its keys and push token gone; the recovery-kit reminder shows
+  # once) run against the second fleet with-fleet.sh starts for them. The app links no WebKit and its
   # sources load no remote image (R-IOS-10); a Release build's owner check
   # is LAContext's alone, and nothing names allowProject (R-IOS-11); the UI tests' stand-in APNs token is a Debug build's only (R-IOS-12). The UI tests' screenshots,
   # light and dark, and one of the running app are kept as artifacts.

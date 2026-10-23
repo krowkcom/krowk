@@ -84,6 +84,9 @@ public final class PushRegistration {
     private var last: Task<Void, Never>?
     /// iOS's prompt is up: coming forward meanwhile doesn't ask again.
     private var asking = false
+    /// The phone is gone from the person's devices (ticket 117): nothing
+    /// more is asked, sent, cleared or kept, a call already queued too.
+    private var retired = false
 
     /// - Parameters:
     ///   - environment: the APNs host this build's tokens belong to,
@@ -117,6 +120,7 @@ public final class PushRegistration {
     /// Allowed, it asks iOS for the token; refused, it clears any token
     /// this device had. Whatever was registered before is registered again.
     public func afterPairing() async {
+        guard !retired else { return }
         defaults.removeObject(forKey: Self.digestKey)
         defaults.set(true, forKey: Self.askKey)
         await ask()
@@ -127,6 +131,7 @@ public final class PushRegistration {
     /// still have when they are off. Asks the person only to finish the
     /// ask after pairing, when it never got an answer.
     public func onForeground() async {
+        guard !retired else { return }
         let status = await notifications.authorizationStatus()
         if status == .notDetermined, defaults.bool(forKey: Self.askKey) {
             await ask()
@@ -144,7 +149,7 @@ public final class PushRegistration {
     public func didRegister(deviceToken: Data) async {
         let token = deviceToken.map { String(format: "%02x", $0) }.joined()
         await serially { [self] in
-            guard Self.allows(await notifications.authorizationStatus()) else { return }
+            guard !retired, Self.allows(await notifications.authorizationStatus()) else { return }
             let digest: String
             do {
                 digest = Self.digest(token: token, environment: environment, device: try await sink.device())
@@ -153,6 +158,7 @@ public final class PushRegistration {
                 return
             }
             if state == .registered, defaults.string(forKey: Self.digestKey) == digest { return }
+            guard !retired else { return }
             defaults.set(State.pending.rawValue, forKey: Self.stateKey)
             do {
                 try await sink.set(tokenHex: token, environment: environment)
@@ -161,6 +167,7 @@ public final class PushRegistration {
                 log("push: the token was not registered: \(error)")
                 return
             }
+            guard !retired else { return }
             defaults.set(digest, forKey: Self.digestKey)
             defaults.set(State.registered.rawValue, forKey: Self.stateKey)
         }
@@ -184,10 +191,25 @@ public final class PushRegistration {
         }
     }
 
+    /// The phone is no longer on the person's devices: from now on this
+    /// registration does nothing, and a call queued or under way keeps
+    /// nothing in `defaults` once it returns. The app drops it and
+    /// forgets what it kept (`signedOut`) when the phone is reset.
+    public func retire() {
+        retired = true
+    }
+
+    /// Returns once the call under way, if any, has ended: a reset clears
+    /// the registry's token after a retired registration's last `set`,
+    /// never before it.
+    public func drained() async {
+        await last?.value
+    }
+
     /// Asks the person. An ask that failed, or never got its answer, is
     /// owed still: the next time the app comes forward asks again.
     private func ask() async {
-        guard !asking else { return }
+        guard !asking, !retired else { return }
         asking = true
         defer { asking = false }
         let granted: Bool
@@ -197,6 +219,7 @@ public final class PushRegistration {
             log("push: the permission could not be asked for: \(error)")
             return
         }
+        guard !retired else { return }
         if granted {
             defaults.removeObject(forKey: Self.askKey)
             register()
@@ -216,7 +239,7 @@ public final class PushRegistration {
     /// only once it landed.
     private func clear(always: Bool) async {
         await serially { [self] in
-            guard always || state == .registered || state == .pending else { return }
+            guard !retired, always || state == .registered || state == .pending else { return }
             defaults.set(State.pending.rawValue, forKey: Self.stateKey)
             do {
                 try await sink.clear()
@@ -224,6 +247,7 @@ public final class PushRegistration {
                 log("push: the token was not cleared: \(error)")
                 return
             }
+            guard !retired else { return }
             defaults.removeObject(forKey: Self.digestKey)
             defaults.set(State.cleared.rawValue, forKey: Self.stateKey)
         }

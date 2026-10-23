@@ -44,6 +44,25 @@ struct PairingModelTests {
         #expect(joined.value == 1)
     }
 
+    @Test("R-E2E-3: once paired, the screen reminds of the recovery kit, as the joined list holds one or not; unread, it says nothing")
+    func recoveryKitReminder() async throws {
+        for kit: Bool? in [true, false, nil] {
+            let registry = StubPairing(open: .success(Self.laptop))
+            registry.setKit(kit)
+            let model = Self.model(registry)
+            #expect(model.recoveryKit == nil, "nothing to remind of before the join")
+            model.enter("K7QF-9M3X")
+            try await until { model.phase == .pairing(with: "Elvinas's MacBook") }
+            #expect(model.recoveryKit == nil)
+            registry.finish(.success(()))
+            try await until { model.phase == .paired }
+            #expect(model.recoveryKit == kit)
+        }
+        #expect(RecoveryKitReminder.sentence(hasKit: true).hasPrefix("Your recovery kit: the only way back in if you lose every device."))
+        #expect(RecoveryKitReminder.sentence(hasKit: false).hasPrefix(
+            "No recovery kit: if you lose every device you lose every session, and a stolen device that removes the others first can lock you out — `krowk sync recovery new`"))
+    }
+
     @Test("R-E2E-3: what isn't a code is refused before anything is sent")
     func notACode() async throws {
         let registry = StubPairing(open: .success(Self.laptop))
@@ -260,6 +279,7 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
     private var _joined: [PairingTicket] = []
     private var _cancelled = 0
     private var _parsedCodes: [String] = []
+    private var _kit: Bool?
 
     var opened: Int { locked { _opened } }
     var joined: [PairingTicket] { locked { _joined } }
@@ -310,6 +330,15 @@ final class StubPairing: PairingService, PairingAttempt, @unchecked Sendable {
 
     func finish(_ result: Result<Void, PairingFailure>) {
         locked { self.result = result }
+    }
+
+    /// What the joined list says of a recovery kit; nil, unread, until set.
+    func setKit(_ kit: Bool?) {
+        locked { _kit = kit }
+    }
+
+    func hasRecoveryKit() -> Bool? {
+        locked { _kit }
     }
 }
 

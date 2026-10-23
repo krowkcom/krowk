@@ -252,6 +252,23 @@ struct PushRegistrationTests {
         #expect(production.registry.calls == [.set(Self.tokenHex, "production")])
     }
 
+    @Test("R-IOS-12, R-E2E-3: retired (the phone removed), nothing is asked, sent, cleared or kept, a token handed over after too")
+    func retiredDoesNothing() async {
+        let rig = Rig(.authorized)
+        rig.push.retire()
+        await rig.push.onForeground()
+        await rig.push.didRegister(deviceToken: Self.token)
+        await rig.push.afterPairing()
+        rig.permission.status = .denied
+        await rig.push.onForeground()
+        #expect(rig.registered == 0)
+        #expect(rig.registry.calls.isEmpty)
+        #expect(rig.permission.asked == 0)
+        #expect(rig.defaults.string(forKey: PushRegistration.digestKey) == nil)
+        #expect(rig.defaults.object(forKey: PushRegistration.askKey) == nil)
+        #expect(rig.push.state == nil)
+    }
+
     @Test("R-IOS-12: the app keeps a digest and a state, never the token")
     func keepsNoToken() async {
         let rig = Rig()

@@ -75,6 +75,12 @@ public struct PairingView: View {
             Text("This iPhone is on your devices.")
                 .font(.headline)
                 .accessibilityIdentifier("pairing-done")
+            if let kit = model.recoveryKit {
+                // krowk's own sentence, read as markdown for its commands.
+                Text(LocalizedStringKey(RecoveryKitReminder.sentence(hasKit: kit)))
+                    .foregroundStyle(.secondary)
+                    .accessibilityIdentifier("pairing-kit")
+            }
             Button("Continue") { model.finish() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)

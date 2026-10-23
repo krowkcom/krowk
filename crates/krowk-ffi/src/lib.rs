@@ -63,6 +63,17 @@
 //! names the device showing the code before any is spent, and
 //! [`Account::devices`] reads the device list the join kept.
 //!
+//! # Still on the person's devices
+//!
+//! [`Account::check_device_list`] reads the device list the registry
+//! serves and holds it to the one the phone pinned, as `krowk sync status`
+//! does: a phone removed (or whose key the registry refuses) is refused
+//! `device_removed`, one left off a list that was started over
+//! `device_list_reset`, and either stops syncing until it is reset. A list
+//! that only grew becomes the pin, and a newer user key generation is
+//! taken up. [`Account::has_recovery_kit`] reads whether the pinned list
+//! holds a recovery kit, for the reminder after pairing.
+//!
 //! # Sessions
 //!
 //! [`Account::list_sessions`] lists the person's synced sessions from their
@@ -127,6 +138,7 @@ mod pairing;
 mod protocol;
 mod sessions;
 mod sign_in;
+mod standing;
 mod storage;
 mod supervisor;
 mod viewer;

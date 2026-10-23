@@ -12,21 +12,41 @@ extension SessionSummary: SessionRecord {}
 /// and counts those it can't open. It never reads a transcript to list.
 /// The holder's name comes from that verified list (`Account.devices`,
 /// read from the Keychain, no network).
+///
+/// Every listing first checks that the phone is still on the person's
+/// devices (`Account.checkDeviceList`, ticket 117), which also takes up a
+/// list that grew and a rotated user key: a phone removed, or left off a
+/// list that was started over, lists nothing (`SessionListFailure.gone`),
+/// and `onGone` hears it, as it does when opening a session is refused
+/// for that reason. A list this phone won't trust (forked, shorter, one
+/// that starts elsewhere and doesn't verify) lists nothing either, and
+/// says so; it is no removal.
 public final class RegistrySessions: SessionSource {
     public let api: String
     private let storage: any KeyStorage
     /// Opened on first use, off the main actor: opening reads the Keychain.
     private let account = Mutex<Account?>(nil)
+    private let onGone: @Sendable (DeviceGone) -> Void
 
-    public init(api: String, storage: any KeyStorage) {
+    /// - Parameters:
+    ///   - onGone: told, on whatever thread found it, each time a check
+    ///     finds the phone gone; the app shows why, once.
+    public init(api: String, storage: any KeyStorage, onGone: @escaping @Sendable (DeviceGone) -> Void = { _ in }) {
         self.api = api
         self.storage = storage
+        self.onGone = onGone
     }
 
-    /// Blocking: a registry call per page of 100 and one per session.
+    /// Blocking: the device list's check, then a registry call per page
+    /// of 100 and one per session.
     public func list() throws(SessionListFailure) -> SessionListing {
         // Never on the main thread: a long list takes a while.
         dispatchPrecondition(condition: .notOnQueue(.main))
+        switch check() {
+        case .gone(let gone): throw .gone(gone)
+        case .untrusted(let why): throw .untrusted(detail: why)
+        case .listed, .unknown: break
+        }
         do {
             let account = try opened()
             let list = try account.listSessions()
@@ -38,13 +58,59 @@ public final class RegistrySessions: SessionSource {
         }
     }
 
+    /// Whether the phone is gone from the person's devices, as the
+    /// registry's device list says now; nil while it is on it, and when
+    /// the check couldn't say (the registry out of reach, a list this
+    /// phone won't trust): the listing that follows says why. Told to
+    /// `onGone` too. Blocking: a registry call or two.
+    public func standing() -> DeviceGone? {
+        if case .gone(let gone) = check() { gone } else { nil }
+    }
+
+    /// The device list checked now, as `Standing`; a phone found gone is
+    /// told to `onGone`. Blocking: a registry call or two.
+    public func check() -> Standing {
+        let found = checkQuietly()
+        if case .gone(let gone) = found { onGone(gone) }
+        return found
+    }
+
+    /// Whether the device list this phone kept names no other device and
+    /// no recovery kit: it may hold the person's only copy of their keys.
+    /// From the Keychain, no network; false when it can't be read.
+    /// Blocking.
+    public func onlyCopy() -> Bool {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        guard let account = try? opened(), let devices = try? account.devices(), let kit = try? account.hasRecoveryKit() else { return false }
+        return !kit && devices.allSatisfy(\.thisDevice)
+    }
+
+    /// `check`, telling no one: what the removed screen's "Check again"
+    /// asks. Blocking.
+    public func checkQuietly() -> Standing {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        do {
+            try opened().checkDeviceList()
+            return .listed
+        } catch {
+            return Standing(error)
+        }
+    }
+
     /// Session `id`, opened to follow live (`RelayConnection`), held to at
     /// least `known`, the head its listing named. On the relay
     /// `RelayConnection.relayOverride` names, else the one Rust picks for
-    /// the registry. Blocking: registry calls.
+    /// the registry. A refusal is checked against the device list: a phone
+    /// gone from it is refused as such, and `onGone` hears it. Blocking:
+    /// registry calls.
     public func openSession(id: String, known: HeadRecord?) throws -> OpenedSession {
         dispatchPrecondition(condition: .notOnQueue(.main))
-        return try opened().openSession(id: id, known: known, relayOverride: RelayConnection.relayOverride())
+        do {
+            return try opened().openSession(id: id, known: known, relayOverride: RelayConnection.relayOverride())
+        } catch KrowkError.Refused(let code, let detail) {
+            if let gone = standing() { throw KrowkError.Refused(code: gone.kind, detail: gone.title + ".") }
+            throw KrowkError.Refused(code: code, detail: detail)
+        }
     }
 
     private func opened() throws -> Account {
@@ -58,9 +124,44 @@ public final class RegistrySessions: SessionSource {
     }
 }
 
+extension DeviceGone {
+    /// `Account.checkDeviceList`'s refusals that mean the phone is gone
+    /// from the person's devices; nil for anything else.
+    init?(_ error: any Error) {
+        switch error as? KrowkError {
+        case .Refused(code: "device_removed", let detail)?: self = .removed(detail: detail)
+        case .Refused(code: "device_list_reset", let detail)?: self = .listReset(detail: detail)
+        default: return nil
+        }
+    }
+}
+
+extension Standing {
+    /// `Account.checkDeviceList`'s refusal: gone, a list or key this phone
+    /// won't trust, or a check that couldn't say.
+    init(_ error: any Error) {
+        if let gone = DeviceGone(error) {
+            self = .gone(gone)
+            return
+        }
+        switch error as? KrowkError {
+        case .Refused(code: "device_list_refused", let detail)?, .Refused(code: "user_key_refused", let detail)?:
+            self = .untrusted(detail)
+        case .Refused(_, let detail)?, .Internal(let detail)?, .Decode(let detail)?, .InvalidInput(let detail)?, .Network(let detail)?:
+            self = .unknown(detail)
+        case nil:
+            self = .unknown(String(describing: error))
+        }
+    }
+}
+
 extension SessionListFailure {
     /// The core's refusals, as `Account.listSessions` names them.
     init(_ error: any Error) {
+        if let gone = DeviceGone(error) {
+            self = .gone(gone)
+            return
+        }
         switch error as? KrowkError {
         case .Network(let detail)?: self = .network(detail: detail)
         case .Refused(code: "not_paired", _)?: self = .notPaired

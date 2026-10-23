@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **An iPhone you remove from your devices says so, and can be reset.**
+  After `krowk devices remove <iphone>` (or a list started over with
+  `krowk sync init --start-over`), the app replaces its screens with "This
+  iPhone was removed from your devices" (or "Your device list was started
+  over"), stops every live session, and retries nothing. "Reset this
+  iPhone" clears its push token, forgets every key it kept, including the
+  Secure Enclave key that sealed them, and goes back to sign-in; pair it
+  again from `krowk devices add`. Nothing is reset until you tap it. A
+  phone still on your list now also picks up the newer key a removal
+  rotates to, so sessions sealed after it keep opening. Right after
+  pairing, the app reminds you of your recovery kit once, in the words the
+  terminal uses. Nothing changes for CLI users.
 - **Tapping a krowk notification on the iPhone opens what it is about.**
   "A turn finished" opens that session's transcript, followed live. "A
   session needs your approval" opens the session and, as soon as its host

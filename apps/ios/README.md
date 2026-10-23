@@ -22,9 +22,10 @@ apps/ios/
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
-                     NotificationRoutingTests, and the TestFleet fixture
+                     NotificationRoutingTests, RemovalTests, and the TestFleet
+                     fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
-                     PairingUITests, NotificationUITests
+                     PairingUITests, NotificationUITests, RemovalUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
                      no-web.sh: no web view, no remote image (R-IOS-10);
                      approvals.sh: no allowProject, and only LAContext's owner
@@ -58,12 +59,13 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 
 `xcrun simctl list devices available` lists the simulators and their udids.
 The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
-`SignInUITests`, `PairingUITests` and `NotificationUITests`, the app-hosted
+`SignInUITests`, `PairingUITests`, `NotificationUITests` and
+`RemovalUITests`, the app-hosted
 `KeychainKeyStorageTests`, `SignInTests`, `PairingTests`,
 `SessionListTests`, `RelayConnectionTests`, `TranscriptModelTests`,
 `TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
-`ApprovalMappingTests`, `ApprovalScreenTests` and
-`NotificationRoutingTests` (target
+`ApprovalMappingTests`, `ApprovalScreenTests`,
+`NotificationRoutingTests` and `RemovalTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -99,6 +101,13 @@ answers `started`: "Please stream a long answer" has the model make a
 `read` call, then stream 120 numbered lines at 200 tokens a second, the
 turn `LiveFollowTests` and the UI test follow live ("Please stream a very
 long answer" streams 300 lines, for a longer run by hand).
+A second fleet, with no demo, runs beside it for the tests that remove
+their phone from host A's devices (ticket 117), since a removal rotates
+host A's user key, which would stop the first fleet's hosts: its URLs are
+`TEST_RUNNER_KROWK_REMOVAL_API_URL`, `…_RELAY_URL`, `…_PAIR_URL` and
+`…_DEVICES_URL`, and a POST to `<devices url>/remove`, its body a device's
+name, runs `krowk devices remove` as its host A and answers `removed` once
+the list no longer names it.
 xcodebuild hands each `TEST_RUNNER_<NAME>` to the tests as `<NAME>`;
 without `KROWK_API_URL` the sign-in tests fail and say to use the script.
 A UI test hands it on to the app in its launch environment: a DEBUG build
@@ -266,7 +275,15 @@ devices add`, then scan its QR code or type the code.
   laptop's pairing stays open for it. Once the laptop's sealed reply is
   in, it lists the phone, so the join finishes instead and the screen
   follows the keys. A phone the person removed from their devices is told
-  so; resetting it is not built yet.
+  so (Removed from your devices, below).
+- **The recovery kit.** The screen that says the phone is on the
+  person's devices reminds them of the recovery kit, once, in the words
+  the terminal uses: with a kit on the list (krowk-ffi's
+  `Account.hasRecoveryKit`, read from the list the join kept), "Your
+  recovery kit: the only way back in if you lose every device", and how
+  `krowk sync recovery check` tests it; with none, what having none risks
+  and that `krowk sync recovery new` makes one. The next launch opens
+  Sessions, and never says it again.
 
 The hosted tests' `TestFleet` (an actor) signs a phone in through the
 fleet and joins it once per test process, over a `KeychainKeyStorage` of its
@@ -311,6 +328,67 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
 - A tap opens the session's transcript (below), followed live through the
   relay while it's open. The list never offers to take or
   host a session (R-HAND-4).
+
+## Removed from your devices
+
+A phone the person removes from their devices (`krowk devices remove`
+from another of them, or Revoke on the dashboard) or leaves off a device
+list they started over stops, says so, and offers one thing: to reset it
+(ticket 117; Canon `devices.md` → Removing a device, Starting over).
+
+- **How it finds out.** krowk-ffi's `Account.checkDeviceList`, the
+  terminal's `krowk sync status` check: it reads the device list the
+  registry serves and holds it to the one the phone pinned. Another first
+  entry is a list started over (a new chain epoch), refused
+  `device_list_reset`, with when; a list that no longer names the phone,
+  or a registry that refuses the phone's key (a removal revokes it, as a
+  start-over does every device it leaves off), is `device_removed`. A list
+  that only grew becomes the pin (one the same as the pin isn't written
+  again), and a newer user key generation (a removal rotates it) is taken
+  up, so the sessions hosts seal after a removal still open. A list the
+  phone won't trust (forked, shorter, empty, or starting elsewhere without
+  verifying) is no removal: the list says the registry served a device
+  list this iPhone doesn't trust, and the phone keeps its pin. Every read
+  of the session list checks first, and so does a session screen whose
+  open, or a relay ticket, is refused; while the paired app is in the
+  foreground, `StandingWatch` checks every minute and on each return
+  (started before the sessions rejoin, which check for themselves if
+  their ticket is refused).
+  The check runs off the main thread.
+- **What it does.** The first check that finds it gone replaces every
+  screen with "This iPhone was removed from your devices" (or "Your device
+  list was started over"), with the core's words under it. Every session
+  followed live stops (`LiveSessions.stopAll`): its socket closed, nothing
+  joined or retried after; kept session screens are let go; the session
+  list reads no more, the watch stops, and the push registration is
+  retired: nothing it had queued is sent or kept.
+  "Check again" checks once more, telling no one: a phone listed after
+  all (a registry that misspoke, a dashboard Revoke undone) goes back to
+  Sessions, and nothing is reset.
+- **Reset this iPhone** (`PhoneReset`), only when tapped and confirmed
+  ("Reset this iPhone?", which says to remove the phone from the list if
+  it still shows there, and, when the list it kept names no other device
+  and no recovery kit, that it may hold the only copy of the keys and a
+  reset loses every session): the push token
+  is cleared at the registry first, since that takes the phone's key (a
+  removed phone's key is refused, and the registry dropped its token with
+  the device, so a failure here is logged and the reset goes on); then
+  what the phone kept about push is forgotten, iOS's registration dropped
+  (`unregisterForRemoteNotifications`) and the alerts and the badge
+  still shown removed; then
+  `KeychainKeyStorage.forgetAll` deletes every `com.krowk.keys` item, the
+  slots, the API key and the item holding the Secure Enclave wrapping key,
+  which leaves the enclave key nothing to open; a write under way finishes
+  first, and none lands after (the storage refuses every call once it has
+  forgotten). The app then opens a new
+  storage and shows sign-in, as a fresh install: signed in again, it is a
+  new device to pair.
+- **What a lying registry can do.** Refuse the phone's key, or serve a
+  list with another first entry: the phone stops and the person resets and
+  pairs again, the denial of service any registry can already do. It can't
+  make the phone take a removal: the `remove` entry verifies only when a
+  device on the pinned list signed it. Nothing is forgotten without the
+  tap.
 
 ## Following a session live
 
