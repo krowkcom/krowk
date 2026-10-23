@@ -56,9 +56,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// connected) is tried again when the app comes forward.
     func sceneWillEnterForeground(_ scene: UIScene) {
         if !opened { showRoot() }
-        // Each time the app comes forward, the token is kept current and a
-        // permission turned off in Settings clears it. Never asks.
-        else if let push = Self.push { Task { await push.onForeground() } }
+        // Each time the app comes forward, a cold launch too (iOS calls
+        // this after `willConnectTo`), the token is kept current and a
+        // permission turned off in Settings clears it (R-IOS-12).
+        if let push = Self.push { Task { await push.onForeground() } }
     }
 
     private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -102,13 +103,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         case .signedOut:
             // Whatever was registered is forgotten: signed in again, the
             // phone registers afresh.
+            Self.push = nil
             PushRegistration.signedOut()
             return signIn(api: api, keys: keys)
         case .signedIn(let workspace): return pairing(api: api, keys: keys, workspace: workspace)
         case .paired:
-            // A paired launch keeps the token current; it never asks.
-            let push = Self.push(api: api, keys: keys)
-            Task { await push.onForeground() }
+            // Kept current from the foreground that follows; never asks.
+            _ = Self.push(api: api, keys: keys)
             return sessions(api: api, keys: keys)
         }
     }

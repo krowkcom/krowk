@@ -64,7 +64,7 @@ final class PairingUITests: XCTestCase {
         let signIn = app.buttons["sign-in"]
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
         // R-IOS-12: never asked at launch.
-        XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.exists, "a system prompt at launch")
+        XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.waitForExistence(timeout: 2), "a system prompt at launch")
         signIn.tap()
         allowTheSignInPage()
         let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")

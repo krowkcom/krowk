@@ -141,11 +141,51 @@ struct PushRegistrationTests {
         rig.permission.status = .denied
         rig.registry.failing = true
         await rig.push.onForeground()
-        #expect(rig.push.state == .registered)
+        #expect(rig.push.state == .clearing)
         rig.registry.failing = false
         await rig.push.onForeground()
         #expect(rig.registry.calls == [.set(Self.tokenHex, "sandbox"), .clear, .clear])
         #expect(rig.push.state == .cleared)
+    }
+
+    @Test("R-IOS-12: refused after pairing, a clear that failed is tried again on the next foreground until it lands")
+    func failedClearAfterPairingIsRetried() async {
+        let rig = Rig(answer: false)
+        rig.registry.failing = true
+        await rig.push.afterPairing()
+        #expect(rig.push.state == .clearing)
+        await rig.push.onForeground()
+        rig.registry.failing = false
+        await rig.push.onForeground()
+        await rig.push.onForeground()
+        #expect(rig.registry.calls == [.clear, .clear, .clear], "tried each time until one landed, then not again")
+        #expect(rig.push.state == .cleared)
+        #expect(rig.permission.asked == 1)
+    }
+
+    @Test("R-IOS-12: an ask after pairing that never got its answer is asked on the next foreground, once")
+    func unansweredAskIsFinished() async {
+        let rig = Rig()
+        rig.permission.failing = true
+        await rig.push.afterPairing()
+        #expect(rig.permission.asked == 1)
+        #expect(rig.registered == 0)
+        rig.permission.failing = false
+        await rig.push.onForeground()
+        #expect(rig.permission.asked == 2)
+        #expect(rig.registered == 1)
+        await rig.push.onForeground()
+        #expect(rig.permission.asked == 2, "answered: never asked again")
+        #expect(rig.registered == 2)
+
+        // Signed out, the ask owed is forgotten with the rest.
+        let other = Rig()
+        other.permission.failing = true
+        await other.push.afterPairing()
+        PushRegistration.signedOut(defaults: other.defaults)
+        other.permission.failing = false
+        await other.push.onForeground()
+        #expect(other.permission.asked == 1)
     }
 
     @Test("R-IOS-12: another environment, another device, a new pairing or a sign-out registers the same token again")
@@ -175,7 +215,7 @@ struct PushRegistrationTests {
         await rig.push.afterPairing()
         await rig.push.didRegister(deviceToken: Self.token)
         let kept = rig.defaults.dictionaryRepresentation().filter { $0.key.hasPrefix("krowk.push.") }
-        #expect(Set(kept.keys) == [PushRegistration.digestKey, PushRegistration.stateKey])
+        #expect(Set(kept.keys) == [PushRegistration.digestKey, PushRegistration.stateKey], "the ask is answered: nothing owed")
         #expect(!kept.values.contains { "\($0)".contains(Self.tokenHex) })
         #expect(kept[PushRegistration.digestKey] as? String == PushRegistration.digest(token: Self.tokenHex, environment: "sandbox", device: FakeRegistry.device))
     }
@@ -240,10 +280,18 @@ struct APSEnvironmentTests {
 
 /// iOS's permission: what it answers when asked, and what Settings says now.
 final class FakePermission: NotificationAuthorizing {
-    private let state: Mutex<(status: UNAuthorizationStatus, answer: Bool, asked: Int, options: UNAuthorizationOptions)>
+    private let state: Mutex<(status: UNAuthorizationStatus, answer: Bool, asked: Int, options: UNAuthorizationOptions, failing: Bool)>
 
     init(status: UNAuthorizationStatus, answer: Bool) {
-        state = Mutex((status, answer, 0, []))
+        state = Mutex((status, answer, 0, [], false))
+    }
+
+    struct Unasked: Error {}
+
+    /// Asks fail, as when the app quits with the prompt up.
+    var failing: Bool {
+        get { state.withLock { $0.failing } }
+        set { state.withLock { $0.failing = newValue } }
     }
 
     var status: UNAuthorizationStatus {
@@ -254,9 +302,10 @@ final class FakePermission: NotificationAuthorizing {
     var options: UNAuthorizationOptions { state.withLock { $0.options } }
 
     func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
-        state.withLock { s in
+        try state.withLock { s in
             s.asked += 1
             s.options = options
+            if s.failing { throw Unasked() }
             // Asked once; after that iOS answers what was chosen.
             if s.status == .notDetermined { s.status = s.answer ? .authorized : .denied }
             return s.status == .authorized

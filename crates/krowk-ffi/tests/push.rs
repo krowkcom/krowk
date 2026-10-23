@@ -50,13 +50,25 @@ fn r_ios_12_the_phone_sets_replaces_and_clears_its_push_token() {
 fn r_ios_12_a_bad_token_or_environment_is_refused_and_nothing_is_kept() {
     let w = World::new();
     for (token, environment) in [("cd".repeat(31), "sandbox"), ("xy".repeat(32), "sandbox"), ("cd".repeat(32), "staging")] {
-        match w.phone.set_push_token(token, environment.into()) {
+        match w.phone.set_push_token(token.clone(), environment.into()) {
             Err(KrowkError::Refused { code, detail }) => {
                 assert_eq!(code, "invalid", "{environment}: {detail}");
-                assert!(!detail.contains(&"cd".repeat(31)), "the token is not in the error: {detail}");
+                assert!(!detail.contains(&token), "the token is not in the error: {detail}");
             }
             other => panic!("{environment}: {other:?}"),
         }
     }
     assert_eq!(registered(&w), json!({ "push_tokens": [] }));
+}
+
+/// A token another device registered moves to the phone that registers
+/// it, as a phone paired again under new keys would find it.
+#[test]
+fn r_ios_12_a_token_another_device_held_moves_to_the_phone() {
+    let w = World::new();
+    let host = w.host_device.id().to_string();
+    w.host.put_push_token(&"cd".repeat(32), "production").unwrap();
+    assert_eq!(registered(&w), json!({ "push_tokens": [{ "device": host, "environment": "production" }] }));
+    w.phone.set_push_token("cd".repeat(32), "sandbox".into()).unwrap();
+    assert_eq!(registered(&w), json!({ "push_tokens": [{ "device": w.phone.device_id(), "environment": "sandbox" }] }));
 }

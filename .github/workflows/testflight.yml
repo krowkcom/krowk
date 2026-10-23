@@ -38,6 +38,7 @@ on:
       - "apps/ios/ExportOptions.plist"
       - "apps/ios/project.yml"
       - "apps/ios/Krowk-Info.plist"
+      - "apps/ios/Krowk.entitlements"
       - "apps/ios/scripts/release-preflight.sh"
 
 permissions:

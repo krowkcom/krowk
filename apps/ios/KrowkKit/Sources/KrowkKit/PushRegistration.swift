@@ -43,27 +43,34 @@ public struct SystemNotifications: NotificationAuthorizing {
 
 /// Keeps the registry's copy of this phone's APNs token current, so the
 /// person's other devices can ring it when a session needs an approval or
-/// ends a turn (R-IOS-12, R-PERM-2). Asks for permission once, right after
-/// pairing, never at launch or on coming forward; re-registers each time
-/// the app comes forward and whenever iOS hands over a token, sending
-/// nothing when nothing changed since the last registration that landed;
-/// clears the registry's copy when the person says no, then or later in
-/// Settings.
+/// ends a turn (R-IOS-12, R-PERM-2). Asks for permission right after
+/// pairing, never at launch or on coming forward (save to finish an ask
+/// after pairing that never got its answer: the app quit with the prompt
+/// up); re-registers each time the app comes forward and whenever iOS
+/// hands over a token, sending nothing when nothing changed since the last
+/// registration that landed; clears the registry's copy when the person
+/// says no, then or later in Settings, until a clear has landed.
 ///
-/// Keeps only a digest of what was last registered and whether the last
-/// thing that landed was a token or a clear, in `UserDefaults`: never the
-/// token, which it never logs either. The network calls run one at a time,
-/// in the order they were asked for.
+/// Keeps only a digest of what was last registered, where the registry
+/// stands, and whether an ask after pairing is still owed, in
+/// `UserDefaults`: never the token, which it never logs either. The
+/// network calls run one at a time, in the order they were asked for.
 @MainActor
 public final class PushRegistration {
-    /// What the last call that landed at the registry left there.
+    /// Where the registry stands, as far as this phone knows.
     public enum State: String, Sendable {
+        /// The token the digest names landed.
         case registered
+        /// A clear was asked for and has not landed yet: tried again while
+        /// notifications are off.
+        case clearing
+        /// A clear landed: nothing to clear again.
         case cleared
     }
 
     static let digestKey = "krowk.push.digest"
     static let stateKey = "krowk.push.state"
+    static let askKey = "krowk.push.askPending"
 
     private let notifications: any NotificationAuthorizing
     private let sink: any PushTokenSink
@@ -97,41 +104,32 @@ public final class PushRegistration {
         self.log = log
     }
 
-    /// What the last call that landed left at the registry; nil before any.
+    /// Where the registry stands; nil before anything landed.
     public var state: State? {
         defaults.string(forKey: Self.stateKey).flatMap(State.init(rawValue:))
     }
 
-    /// The phone is on the person's devices: the one time the app asks.
+    /// The phone is on the person's devices: the time the app asks.
     /// Allowed, it asks iOS for the token; refused, it clears any token
     /// this device had. Whatever was registered before is registered again.
     public func afterPairing() async {
         defaults.removeObject(forKey: Self.digestKey)
-        let granted: Bool
-        do {
-            granted = try await notifications.requestAuthorization(options: [.alert, .sound, .badge])
-        } catch {
-            // Not asked: the next time the app comes forward reads what is
-            // allowed, and asks nothing.
-            log("push: the permission could not be asked for: \(error)")
-            return
-        }
-        if granted {
-            register()
-        } else {
-            await clear()
-        }
+        defaults.set(true, forKey: Self.askKey)
+        await ask()
     }
 
     /// The app came forward (and a paired launch): ask iOS for the token
-    /// again when notifications are allowed, clear what the registry has
-    /// when they were turned off. Never asks the person.
+    /// again when notifications are allowed, clear what the registry may
+    /// still have when they are off. Asks the person only to finish the
+    /// ask after pairing, when it never got an answer.
     public func onForeground() async {
         let status = await notifications.authorizationStatus()
-        if Self.allows(status) {
+        if status == .notDetermined, defaults.bool(forKey: Self.askKey) {
+            await ask()
+        } else if Self.allows(status) {
             register()
-        } else if status == .denied, state == .registered {
-            await clear()
+        } else if status == .denied {
+            await clear(always: false)
         }
     }
 
@@ -171,18 +169,43 @@ public final class PushRegistration {
     }
 
     /// The phone is signed out: what was registered is forgotten here, so
-    /// signing in again registers afresh. The registry drops the token of
-    /// a device removed from the person's list by itself.
+    /// signing in again registers afresh. Clearing the registry's token
+    /// takes the key, so a sign-out clears it first (`Account.clearPushToken`
+    /// before `signOut`); the registry drops the token of a device revoked
+    /// or removed from the person's list by itself.
     public static func signedOut(defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: digestKey)
-        defaults.removeObject(forKey: stateKey)
+        for key in [digestKey, stateKey, askKey] {
+            defaults.removeObject(forKey: key)
+        }
     }
 
-    /// Clears the registry's token. The digest goes only once that landed:
-    /// a clear that failed is tried again the next time the app comes
-    /// forward, and until then an allow again has nothing to send.
-    private func clear() async {
+    /// Asks the person. An ask that failed, or never got its answer, is
+    /// owed still: the next time the app comes forward asks again.
+    private func ask() async {
+        let granted: Bool
+        do {
+            granted = try await notifications.requestAuthorization(options: [.alert, .sound, .badge])
+        } catch {
+            log("push: the permission could not be asked for: \(error)")
+            return
+        }
+        defaults.removeObject(forKey: Self.askKey)
+        if granted {
+            register()
+        } else {
+            await clear(always: true)
+        }
+    }
+
+    /// Clears the registry's token: `always`, or when a token may be there
+    /// (registered, or a clear that has not landed), read once the calls
+    /// before it have ended. Marked `clearing` until it lands, so one that
+    /// failed is tried again the next time the app comes forward with
+    /// notifications off; the digest goes only once it landed.
+    private func clear(always: Bool) async {
         await serially { [self] in
+            guard always || state == .registered || state == .clearing else { return }
+            defaults.set(State.clearing.rawValue, forKey: Self.stateKey)
             do {
                 try await sink.clear()
             } catch {

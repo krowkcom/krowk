@@ -44,7 +44,7 @@ extension HostedKeychain {
             #expect(try await Self.registered()[device] == nil)
         }
 
-        @Test("R-IOS-12: PushRegistration over the fleet registers a token once, and a refusal in Settings clears it")
+        @Test("R-IOS-12: PushRegistration over the fleet registers a token after pairing, and a refusal in Settings clears it")
         func registrationReachesTheRegistry() async throws {
             let phone = try await TestFleet.shared.paired()
             let sink = RegistryPushTokens(api: phone.api, storage: phone.storage)

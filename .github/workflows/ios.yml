@@ -259,7 +259,10 @@ jobs:
           # names the same file.
           test "$(plutil -extract aps-environment raw apps/ios/Krowk.entitlements)" = development
           grep -qx 'entitlementsPath: Krowk.entitlements' apps/ios/xtool.yml
-          ! grep -q UIBackgroundModes apps/ios/Krowk-Info.plist apps/ios/xtool-Info.plist apps/ios/project.yml
+          for f in apps/ios/Krowk-Info.plist apps/ios/xtool-Info.plist apps/ios/project.yml; do
+            test -f "$f"
+            if grep -q UIBackgroundModes "$f"; then echo "$f asks for background modes" >&2; exit 1; fi
+          done
 
       # The Secure Enclave wrapping key is the only one a device build has:
       # the software fallback is under #if targetEnvironment(simulator).
