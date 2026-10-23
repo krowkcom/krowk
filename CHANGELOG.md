@@ -374,8 +374,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it says why, rejoins where it left off, and nothing is lost or shown
   twice. If the registry stays unreachable it waits longer between
   tries, up to 30 seconds (on the iPhone, on its usual reconnect
-  backoff). It still stops if the session was deleted, if this device
-  can no longer open it, or if the registry serves an older copy of the
+  backoff). It still stops if the session was deleted, if this device's
+  keys can no longer open it, or if the registry serves an older copy of the
   log than the host wrote. This applies to `krowk sync attach`, a
   synced session open in the TUI, and the iPhone.
 - **A subagent with a worktree shows up as soon as it starts.** A

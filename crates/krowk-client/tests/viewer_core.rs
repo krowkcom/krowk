@@ -994,14 +994,32 @@ fn r_client_3_r_net_2_a_failed_read_on_a_new_stream_or_a_direct_path_rejoins_whe
     r.at(100).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
     r.take_rest();
     r.host = HostLink::new(&r.key, uuid(SESSION));
-    r.link += 1;
-    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": "33".repeat(16), "seq": 7}), 200);
-    r.take(e);
-    r.at(200).welcome_with(Welcome::default());
-    r.take_rest();
-    r.read(Err(ReadError::transient("http_500")));
     let new = krowk_client::e2e::hex(&r.host.stream());
-    assert_eq!(joins(&r.take_rest()), [(1200, json!({"stream": new, "afterSeq": 7}))]);
+    // Its first seven batches went out before this viewer joined.
+    let batches: Vec<Vec<u8>> = (2..=9).map(|n| r.batch(vec![logged(n)], false)).collect();
+    r.at(150).tick();
+    r.updates();
+    // Twice in a row: the second join is from the relay's count too.
+    for (t, wait) in [(200, 1000), (1200, 2000)] {
+        r.link += 1;
+        let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": new, "seq": 7}), t);
+        r.take(e);
+        r.at(t).welcome_with(Welcome::default());
+        r.take_rest();
+        r.read(Err(ReadError::transient("http_500")));
+        assert_eq!(joins(&r.take_rest()), [(t + wait, json!({"stream": new, "afterSeq": 7}))], "at {t}");
+    }
+    // Through at last: the relay's batch 8 is the next, no gap.
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": new, "seq": 7}), 3200);
+    r.take(e);
+    r.at(3200).welcome_with(Welcome::default());
+    r.read(Ok((vec![], Attached::default())));
+    r.receive(&batches[7]);
+    r.at(3300).tick();
+    let shown = r.updates();
+    assert_eq!(shown_ids(&shown), [id(9)], "{shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::Gap)), "{shown:?}");
 
     // On a direct path: the read fails, the relay is joined again, and the
     // next race waits its 10 s.

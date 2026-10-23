@@ -355,6 +355,9 @@ pub struct ViewerCore {
     /// welcomed yet names no stream, and a join before its welcome still
     /// resumes from here.
     resume: Option<([u8; 16], u64)>,
+    /// The stream the relay's `joined` named: the one `applied` counts in
+    /// until a batch of it is opened.
+    joined_on: Option<[u8; 16]>,
     /// Whether the caller holds a current connection: from `joined` (or a
     /// `move_to`) until a `Join`.
     connected: bool,
@@ -415,6 +418,7 @@ impl ViewerCore {
             held: Vec::new(),
             link: None,
             resume: None,
+            joined_on: None,
             connected: false,
             host: false,
             unjoined: None,
@@ -507,6 +511,7 @@ impl ViewerCore {
         // another one's would make every join until a welcome a resync.
         let cursor = self.cursor().filter(|(s, _)| joined["stream"].as_str() == Some(e2e::hex(s).as_str()));
         self.resume = cursor;
+        self.joined_on = joined["stream"].as_str().and_then(e2e::unhex).and_then(|b| b.try_into().ok());
         let mut l = match self.link.take() {
             Some(l) => l.reconnect(n),
             None => ViewerLink::new(self.key.current(), self.raw, n),
@@ -796,9 +801,17 @@ impl ViewerCore {
     }
 
     /// The stream this viewer reads and the last batch it opened of it:
-    /// the link's, else the one it had before it was reconnected.
+    /// the link's, else the one it had before it was reconnected. Welcomed
+    /// onto a stream it has opened nothing of yet (a new host's), it is
+    /// where the relay stood for it at the join, not the stream's first
+    /// batch, which would have the relay send it everything it holds of
+    /// that stream again (ticket 115).
     fn cursor(&self) -> Option<([u8; 16], u64)> {
-        self.link.as_ref().and_then(|l| l.cursor()).or(self.resume)
+        match self.link.as_ref().and_then(|l| l.cursor()) {
+            Some((s, 0)) if self.joined_on == Some(s) => Some((s, self.applied)),
+            Some(c) => Some(c),
+            None => self.resume,
+        }
     }
 
     fn welcomed(&self) -> bool {
@@ -848,17 +861,7 @@ impl ViewerCore {
         if self.on.is_some() {
             self.later();
         }
-        // A stream this viewer has opened nothing of yet (a new host's,
-        // welcomed just now) resumes from where the relay stood at the join,
-        // as that join did, not from the stream's first batch.
-        let extra = match self.cursor() {
-            Some((s, 0)) if self.applied > 0 => serde_json::json!({"stream": e2e::hex(&s), "afterSeq": self.applied}),
-            _ => self.cursor_extra(),
-        };
         self.join(self.now_ms.saturating_add(wait));
-        if let Some(Effect::Join { extra: e, .. }) = self.out.last_mut() {
-            *e = extra;
-        }
     }
 
     /// The viewer cannot go on: shown at once, then the end.
