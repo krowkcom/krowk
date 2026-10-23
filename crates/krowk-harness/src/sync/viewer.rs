@@ -275,8 +275,9 @@ impl Driver {
                     let (api, key, id) = (self.o.api.clone(), self.key.clone(), self.o.session.clone());
                     let mut a = self.core.attached().clone();
                     let read = tokio::task::spawn_blocking(move || store::catch_up(&api, &key, &id, &mut a, want).map(|f| (f, a))).await;
-                    // A read that did not run read nothing new.
-                    let read = read.unwrap_or_else(|_| Ok((Vec::new(), self.core.attached().clone())));
+                    // A read that did not finish failed, for now: never a
+                    // welcome acted on without its prefix check.
+                    let read = read.unwrap_or_else(|e| Err(store::ReadError::transient(format!("the chunk read did not finish: {e}"))));
                     todo.extend(self.core.chunks_read(read, self.now()));
                 }
                 Effect::Join { extra, at_ms } => {

@@ -842,7 +842,23 @@ impl ViewerCore {
         (self.held, self.waiting) = (Vec::new(), VecDeque::new());
         let wait = self.reread_ms;
         self.reread_ms = self.reread_ms.saturating_mul(2).min(ms(REREAD_MAX));
+        // Welcomed onto a direct path: the next race put off, as when one
+        // is lost, or a registry that fails now and then would have the
+        // viewer race, move and fall back again every few seconds.
+        if self.on.is_some() {
+            self.later();
+        }
+        // A stream this viewer has opened nothing of yet (a new host's,
+        // welcomed just now) resumes from where the relay stood at the join,
+        // as that join did, not from the stream's first batch.
+        let extra = match self.cursor() {
+            Some((s, 0)) if self.applied > 0 => serde_json::json!({"stream": e2e::hex(&s), "afterSeq": self.applied}),
+            _ => self.cursor_extra(),
+        };
         self.join(self.now_ms.saturating_add(wait));
+        if let Some(Effect::Join { extra: e, .. }) = self.out.last_mut() {
+            *e = extra;
+        }
     }
 
     /// The viewer cannot go on: shown at once, then the end.

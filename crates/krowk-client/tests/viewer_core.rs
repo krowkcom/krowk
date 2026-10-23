@@ -39,6 +39,7 @@ fn stop(n: usize) -> Command {
 /// viewer was told to do, kept for the test to read.
 struct Relay {
     core: ViewerCore,
+    key: SessionKey,
     host: HostLink,
     link: u64,
     now: u64,
@@ -59,8 +60,8 @@ impl Relay {
         let key = SessionKey::generate();
         let host = HostLink::new(&key, uuid(SESSION));
         let at_rest = Attached { events, ..Attached::default() };
-        let (core, first) = ViewerCore::new(SessionKeys::from(key), SESSION, DeviceId([1; 16]), RELAY, at_rest, now);
-        let mut r = Relay { core, host, link: 0, now, shown: Vec::new(), frames: Vec::new(), acks: Vec::new(), rest: Vec::new() };
+        let (core, first) = ViewerCore::new(SessionKeys::from(key.clone()), SESSION, DeviceId([1; 16]), RELAY, at_rest, now);
+        let mut r = Relay { core, key, host, link: 0, now, shown: Vec::new(), frames: Vec::new(), acks: Vec::new(), rest: Vec::new() };
         r.take(first);
         assert!(matches!(r.shown.as_slice(), [u] if matches!(u.as_slice(), [Update::Attached { .. }])), "{:?}", r.shown);
         assert!(matches!(r.rest.as_slice(), [Effect::Join { at_ms, extra }] if *at_ms == now && *extra == json!({})), "{:?}", r.rest);
@@ -976,4 +977,52 @@ fn r_client_3_repeated_read_failures_back_off_and_never_spin() {
     r.take_rest();
     let j = welcomed_and_failed(&mut r, t, "http_502");
     assert_eq!(j[0].0, t + 1000);
+}
+
+/// Ticket 115: a welcome onto a new host's stream whose read fails for now
+/// joins again from where the relay stood at the join, not from the new
+/// stream's first batch, so lines the viewer was never sent are not
+/// replayed; and a welcome onto a direct path whose read fails puts the
+/// next race off rather than racing again as soon as the relay welcomes.
+#[test]
+fn r_client_3_r_net_2_a_failed_read_on_a_new_stream_or_a_direct_path_rejoins_where_it_should() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    let b = r.batch(vec![logged(1)], false);
+    r.receive(&b);
+    // A new host: another stream, its relay count at 7 as the viewer joins.
+    r.at(100).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
+    r.take_rest();
+    r.host = HostLink::new(&r.key, uuid(SESSION));
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": "33".repeat(16), "seq": 7}), 200);
+    r.take(e);
+    r.at(200).welcome_with(Welcome::default());
+    r.take_rest();
+    r.read(Err(ReadError::transient("http_500")));
+    let new = krowk_client::e2e::hex(&r.host.stream());
+    assert_eq!(joins(&r.take_rest()), [(1200, json!({"stream": new, "afterSeq": 7}))]);
+
+    // On a direct path: the read fails, the relay is joined again, and the
+    // next race waits its 10 s.
+    let (mut r, c) = with_a_candidate(0);
+    r.at(0).tick();
+    assert_eq!(probes(&mut r), 1);
+    r.link += 1;
+    let e = r.core.move_to(c.clone(), &json!({"type": "joined", "link": r.link, "host": true, "seq": 0}), 100);
+    r.take(e);
+    r.at(120).welcome_with(Welcome::default());
+    r.take_rest();
+    r.read(Err(ReadError::transient("http_500")));
+    assert_eq!(joins(&r.take_rest()).len(), 1);
+    r.at(1120).joined(true, 0);
+    r.welcome_with(Welcome { candidates: vec![c], ..Welcome::default() });
+    r.read(Ok((vec![], Attached::default())));
+    r.take_rest();
+    r.at(1200).tick();
+    assert_eq!(probes(&mut r), 0, "not at once");
+    r.at(10_119).tick();
+    assert_eq!(probes(&mut r), 0);
+    r.at(10_120).tick();
+    assert_eq!(probes(&mut r), 1, "10 s after the read failed");
 }

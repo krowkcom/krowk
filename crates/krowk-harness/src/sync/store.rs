@@ -12,7 +12,7 @@ use serde_json::Value;
 
 /// The shapes of the index and the chunks, and the at-rest reader, shared
 /// by every client (R-CLIENT-1): `krowk_client::sync::store` declares them.
-pub use krowk_client::sync::store::{attach, catch_up, open_index, open_session_key, Attached, Checkpoint, Chunk, Head, HostedOn, Index, Mark};
+pub use krowk_client::sync::store::{attach, catch_up, open_index, open_session_key, Attached, Checkpoint, Chunk, Head, HostedOn, Index, Mark, ReadError};
 
 fn api(e: krowk_api::Error) -> String {
     e.to_string()

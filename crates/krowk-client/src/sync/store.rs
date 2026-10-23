@@ -148,7 +148,7 @@ impl ReadError {
     /// session is gone.
     fn registry(e: krowk_api::Error) -> ReadError {
         if matches!(e.status, 404 | 410) {
-            ReadError::permanent(format!("the registry no longer holds the session ({e})"))
+            ReadError::permanent(format!("the session, or a chunk of it, is gone from the registry ({e})"))
         } else {
             ReadError::transient(e.to_string())
         }
@@ -420,7 +420,7 @@ mod tests {
         let refused = |status: u16, code: &str| ReadError::registry(krowk_api::Error { status, body: [("error".to_string(), serde_json::json!(code))].into() });
         assert!(refused(404, "not_found").permanent);
         assert!(refused(410, "gone").permanent);
-        assert!(refused(404, "not_found").detail.contains("no longer holds the session"));
+        assert!(refused(404, "not_found").detail.contains("is gone from the registry"));
         for (status, code) in [(0, "network_unreachable"), (503, "http_503"), (429, "rate_limited"), (401, "unauthorized"), (0, "checksum_mismatch")] {
             let e = refused(status, code);
             assert!(!e.permanent && e.detail == code, "{status} {code}: {e:?}");
