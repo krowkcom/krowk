@@ -456,7 +456,9 @@ fn r_client_1_a_join_the_relay_never_answers_fails_and_is_tried_again() {
     p.at(10_000);
     let e = p.viewer.tick(p.now);
     p.take(e);
-    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { at_ms: 11_000 }]), "dropped, and tried again a second later");
+    // Tried again on the supervisor's backoff: its first wait, 250 ms cut
+    // by up to half.
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { at_ms: 10_125..=10_250 }]), "dropped, and tried again a moment later");
     assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Note { text } if text.contains("did not answer the join"))));
 
     // Each message of the join gives the relay ten seconds more.
@@ -562,4 +564,240 @@ fn r_client_1_a_viewer_on_a_relay_with_no_origin_is_invalid_input() {
     let _host = w.host_session(SESSION, "t", &[event(SESSION, 1, "before")], &[]);
     let opened = w.phone.open_session(SESSION.into(), None, Some("relay.example".into())).unwrap();
     assert!(matches!(Viewer::open(opened, 0), Err(krowk_ffi::KrowkError::InvalidInput { .. })));
+}
+
+// ------------------------------------------------- the supervisor (ticket 86)
+
+impl Phone {
+    fn wake(&mut self) {
+        let e = self.viewer.wake(self.now);
+        self.take(e);
+    }
+
+    fn background(&mut self) {
+        let e = self.viewer.background(self.now);
+        self.take(e);
+    }
+
+    fn foreground(&mut self) {
+        let e = self.viewer.foreground(self.now);
+        self.take(e);
+    }
+
+    fn tick(&mut self) {
+        let e = self.viewer.tick(self.now);
+        self.take(e);
+    }
+
+    fn pong(&mut self) {
+        assert!(self.viewer.received(self.conn, WsFrame::Text { text: "pong".into() }, self.now).is_empty());
+    }
+}
+
+/// R-OFF-2: a lost connection is joined again on the supervisor's backoff,
+/// 250 ms then doubling, each cut by up to half, never the core's fixed
+/// second; the note about it no longer says "every second". A wake (a
+/// usable network path, the scene active, pull-to-refresh) joins at once.
+#[test]
+fn r_off_2_a_lost_connection_backs_off_and_a_wake_joins_it_at_once() {
+    let mut p = Phone::live();
+    p.at(5_000);
+    p.closed();
+    match p.take_rest().as_slice() {
+        [Effect::NeedTicket { at_ms }] => assert!((5_125..=5_250).contains(at_ms), "{at_ms}"),
+        other => panic!("{other:?}"),
+    }
+    // Its join fails, and the next: 500 ms, then 1 s, each cut.
+    for (at, full) in [(6_000u64, 500u64), (8_000, 1_000)] {
+        p.at(at);
+        p.ticket("t");
+        p.take_rest();
+        p.closed();
+        match p.take_rest().as_slice() {
+            [Effect::NeedTicket { at_ms }] => assert!((at + full / 2..=at + full).contains(at_ms), "{full}: {at_ms}"),
+            other => panic!("{other:?}"),
+        }
+    }
+    let notes: Vec<String> = p.frame().into_iter().filter_map(|u| if let ViewerUpdate::Note { text } = u { Some(text) } else { None }).collect();
+    assert!(!notes.is_empty() && notes.iter().all(|n| n.contains(RELAY) && !n.contains("every second")), "{notes:?}");
+
+    // A wake: its ticket now, no backoff.
+    p.at(8_100);
+    p.wake();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 8_100 }]), "{:?}", p.rest);
+    // Asked for already: a second wake waits for it.
+    p.wake();
+    assert_eq!(p.rest.len(), 1, "{:?}", p.rest);
+    p.join(true, 0);
+    p.welcome(Welcome::default());
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
+}
+
+/// R-LAG-9: a wake on a live connection sends `ping`; a `pong` within 5 s
+/// keeps it; with none, the next tick past 5 s replaces it, joining again
+/// at once with no backoff, at the core's cursor. `next_wake_ms` says when,
+/// so Swift needs no timer of its own.
+#[test]
+fn r_lag_9_a_wake_probes_a_live_connection_and_replaces_one_that_never_answers() {
+    let mut p = Phone::live();
+    let b = p.batch(&[event(SESSION, 3, "three")]);
+    p.receive(&b);
+    assert_eq!(line_runs(&p.frame()), ["three"]);
+
+    p.at(2_000);
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    assert!(p.viewer.next_wake_ms().unwrap() <= 7_000, "the probe's deadline");
+    p.at(3_000);
+    p.pong();
+    p.at(7_100);
+    p.tick();
+    assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "answered: kept");
+
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    p.at(12_099);
+    p.tick();
+    assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "not yet");
+    p.at(12_100);
+    p.tick();
+    assert!(matches!(p.rest.as_slice(), [.., Effect::Close, Effect::NeedTicket { at_ms: 12_100 }]), "unanswered: replaced at once: {:?}", p.rest);
+    // At the cursor: the stream and the batch it applied.
+    let join = p.join(true, 1);
+    assert_eq!(join["afterSeq"], 1, "{join}");
+    assert!(join["stream"].is_string(), "{join}");
+}
+
+/// R-IOS-2: in the background a live connection is kept and never probed,
+/// a lost one is not tried again; at the foreground it is joined at once.
+#[test]
+fn r_ios_2_a_connection_lost_in_the_background_waits_for_the_foreground() {
+    let mut p = Phone::live();
+    p.at(1_000);
+    p.background();
+    p.wake();
+    assert!(p.take_rest().is_empty(), "no probe in the background");
+    p.at(4_000);
+    p.closed();
+    assert!(p.take_rest().is_empty(), "lost in the background: not tried again");
+    p.at(60_000);
+    p.tick();
+    assert!(p.take_rest().iter().all(|e| !matches!(e, Effect::NeedTicket { .. })), "nor later");
+    p.at(61_000);
+    p.foreground();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 61_000 }]), "{:?}", p.rest);
+    p.join(true, 0);
+    p.welcome(Welcome::default());
+    assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
+
+    // A ticket asked for before the background (here, on the backoff) is
+    // held there: the foreground asks for one afresh, at once.
+    p.at(70_000);
+    p.closed();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { .. }]));
+    p.background();
+    let e = p.viewer.ticket("t".into(), p.now);
+    assert!(e.is_empty(), "dialed in the background: {e:?}");
+    p.at(80_000);
+    p.foreground();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 80_000 }]), "{:?}", p.rest);
+    p.join(true, 0);
+}
+
+/// R-IOS-2: back after 10 s or more away, a connection still up is
+/// replaced at once rather than probed (iOS has likely dropped it); after
+/// less, it is probed.
+#[test]
+fn r_ios_2_ten_seconds_away_replaces_the_connection_on_the_foreground() {
+    let mut p = Phone::live();
+    p.at(1_000);
+    p.background();
+    p.at(11_000);
+    p.foreground();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Close, Effect::NeedTicket { at_ms: 11_000 }]));
+
+    let mut p = Phone::live();
+    p.at(1_000);
+    p.background();
+    p.at(10_999);
+    p.foreground();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+}
+
+/// R-LAG-9: a probe due while the chunks are being read replaces the
+/// connection once, when the read is in, and never spins: the next wake is
+/// not in the past, and nothing more is asked meanwhile.
+#[test]
+fn r_lag_9_a_probe_unanswered_during_a_read_replaces_once_after_it() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    p.welcome_with(Welcome::default());
+    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+    p.at(1_000);
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    p.at(6_000);
+    p.tick();
+    // The dead socket goes now; the join waits for the read.
+    let rest = p.take_rest();
+    assert_eq!(rest.iter().filter(|e| matches!(e, Effect::Close)).count(), 1, "{rest:?}");
+    assert!(!rest.iter().any(|e| matches!(e, Effect::NeedTicket { .. })), "{rest:?}");
+    // A wake meanwhile (the scene active, a path change) finds the replace
+    // under way: no second probe, and nothing ever due in the past.
+    p.wake();
+    assert!(p.take_rest().is_empty(), "a probe on a socket being replaced");
+    for at in [6_016, 11_100, 11_116] {
+        p.at(at);
+        p.tick();
+        assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "nothing but heartbeats while the read is out");
+        assert!(p.viewer.next_wake_ms().unwrap() > at, "a wake in the past: a busy loop");
+    }
+    // The read in: joined again now, from the cursor, with no second Close.
+    let read = p.viewer.read_chunks();
+    let e = p.viewer.chunks_read(read, p.now);
+    p.take(e);
+    let rest = p.take_rest();
+    assert!(!rest.iter().any(|e| matches!(e, Effect::Close)), "{rest:?}");
+    assert!(rest.iter().any(|e| matches!(e, Effect::NeedTicket { at_ms: 11_116 })), "{rest:?}");
+}
+
+/// R-LAG-9: a probe out when the socket dies is done with at its deadline:
+/// no busy loop on a deadline nothing can act on.
+#[test]
+fn r_lag_9_a_probe_out_when_the_socket_dies_never_spins() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    p.welcome_with(Welcome::default());
+    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+    p.at(1_000);
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    // Gone, its close held behind the read by the core.
+    p.closed();
+    for at in [6_000, 6_016, 6_032] {
+        p.at(at);
+        p.tick();
+        p.take_rest();
+        assert!(p.viewer.next_wake_ms().unwrap() > at, "a wake in the past: a busy loop");
+    }
+}
+
+/// R-IOS-2: a join waiting on its backoff when the app goes to the
+/// background is held there, not fetched: the foreground asks at once.
+#[test]
+fn r_ios_2_a_join_waiting_on_its_backoff_is_held_in_the_background() {
+    let mut p = Phone::live();
+    p.at(5_000);
+    p.closed();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { at_ms: 5_125..=5_250 }]));
+    p.background();
+    assert!(p.viewer.ticket("t".into(), p.now).is_empty(), "the ticket asked before is dropped");
+    p.at(5_100);
+    p.foreground();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 5_100 }]), "{:?}", p.rest);
+    p.join(true, 0);
 }

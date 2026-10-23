@@ -87,7 +87,9 @@ struct ApprovalScreenTests {
     func opened() async throws -> (ScreenStubSession, ApprovalQueue, TranscriptViewController, UIWindow) {
         let session = ScreenStubSession()
         let queue = ApprovalQueue(sessionID: Self.session, ownerCheck: AlwaysYes())
-        let screen = TranscriptViewController(row: row, session: session, approvals: queue)
+        // A registry of its own: this suite runs beside the hosted ones,
+        // which tell the shared one the app went to the background.
+        let screen = TranscriptViewController(row: row, session: session, approvals: queue, lifecycle: LiveSessions())
         let scene = try #require(UIApplication.shared.connectedScenes.first as? UIWindowScene, "no window scene in the host app")
         let window = UIWindow(windowScene: scene)
         window.rootViewController = UINavigationController(rootViewController: screen)

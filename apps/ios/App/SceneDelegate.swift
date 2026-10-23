@@ -53,13 +53,29 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// A failure that may pass (the phone was locked when the scene
-    /// connected) is tried again when the app comes forward.
+    /// connected) is tried again when the app comes forward. First, before
+    /// any view appears, every session followed live checks its connection
+    /// (R-IOS-2, ticket 86).
     func sceneWillEnterForeground(_ scene: UIScene) {
+        LiveSessions.shared.willEnterForeground()
         if !opened { showRoot() }
         // Each time the app comes forward, a cold launch too (iOS calls
         // this after `willConnectTo`), the token is kept current and a
         // permission turned off in Settings clears it (R-IOS-12).
         if let push = Self.push { Task { await push.onForeground() } }
+    }
+
+    /// Active again (after the foreground, or a system sheet or call):
+    /// a lost connection is joined, a live one probed.
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        LiveSessions.shared.didBecomeActive()
+    }
+
+    /// In the background a live connection is kept while iOS lets it be,
+    /// and a lost one waits for the foreground: push covers a finished
+    /// turn and an approval meanwhile.
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        LiveSessions.shared.didEnterBackground()
     }
 
     private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil

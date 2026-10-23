@@ -20,11 +20,30 @@ public enum RelayStatus: Equatable, Sendable {
     /// The relay could not be joined: the viewer's note, verbatim. It
     /// keeps trying.
     case unreachable(String)
+    /// Waiting to try again, until `at` on the supervisor's backoff
+    /// (ticket 86): after a drop, or with `why` it couldn't connect (the
+    /// relay unreachable, or the session not opened).
+    case retrying(at: ContinuousClock.Instant, why: String?)
     /// The viewer stopped and won't go on, and why, when it said.
     case ended(String?)
 
     /// What the bar reads.
-    public var text: String {
+    public var text: String { text(at: .now) }
+
+    /// What the bar reads at `now`: a wait counts down in whole seconds.
+    public func text(at now: ContinuousClock.Instant) -> String {
+        switch self {
+        case .retrying(let at, let why):
+            let left = now.duration(to: at)
+            let seconds = Int((Double(left.components.seconds) + Double(left.components.attoseconds) / 1e18).rounded(.up))
+            let when = seconds > 0 ? "in \(seconds)s" : "now"
+            return why.map { "\($0) — trying again \(when)" } ?? (seconds > 0 ? "reconnecting \(when)" : "reconnecting")
+        default:
+            return plainText
+        }
+    }
+
+    fileprivate var plainText: String {
         switch self {
         case .connecting: "connecting"
         case .live: "live"
@@ -32,6 +51,7 @@ public enum RelayStatus: Equatable, Sendable {
         case .reconnecting: "reconnecting"
         case .catchingUp: "catching up…"
         case .unreachable(let note): "can't reach the relay: \(note)"
+        case .retrying: "reconnecting"
         case .ended(let detail?): "stopped: \(detail)"
         case .ended(nil): "stopped"
         }
@@ -54,10 +74,16 @@ public struct RelayStatusTracker: Equatable, Sendable {
     }
 
     /// `Update` note: why the relay can't be joined. Stays until a join
-    /// says where the host is.
+    /// says where the host is. It comes after the wait it explains: a wait
+    /// already counting down keeps its time and takes the reason.
     public mutating func note(_ text: String) {
         guard !isEnded else { return }
-        status = .unreachable(text)
+        let unreachable = RelayStatus.unreachable(text)
+        if case .retrying(let at, _) = status {
+            status = .retrying(at: at, why: unreachable.plainText)
+        } else {
+            status = unreachable
+        }
     }
 
     /// The connection was dropped (the viewer's `Close`) or ended by
@@ -65,9 +91,33 @@ public struct RelayStatusTracker: Equatable, Sendable {
     public mutating func dropped() {
         switch status {
         case .live, .hostOffline, .catchingUp: status = .reconnecting
-        case .connecting, .reconnecting, .unreachable, .ended: break
+        case .connecting, .reconnecting, .unreachable, .retrying, .ended: break
         }
     }
+
+    /// The next try waits until `at` (the supervisor's backoff): the bar
+    /// counts down to it, keeping why the last one failed.
+    public mutating func retry(at: ContinuousClock.Instant) {
+        switch status {
+        case .connecting, .reconnecting: status = .retrying(at: at, why: nil)
+        case .unreachable: status = .retrying(at: at, why: status.plainText)
+        case .retrying(_, let why): status = .retrying(at: at, why: why)
+        case .live, .hostOffline, .catchingUp, .ended: break
+        }
+    }
+
+    /// The session opened, after a failure the bar may still say: it joins
+    /// now.
+    public mutating func opened() {
+        if case .retrying = status { status = .connecting }
+    }
+
+    /// Opening the session failed, and is tried again at `at`.
+    public mutating func openFailed(_ detail: String, retryAt at: ContinuousClock.Instant) {
+        guard !isEnded else { return }
+        status = .retrying(at: at, why: "couldn't open the session: \(detail)")
+    }
+
 
     /// `Update` gap: the relay dropped a batch, and the core asks the host
     /// for what it held. Live only: before a join there's nothing to miss,
@@ -117,6 +167,21 @@ public protocol LiveSession: AnyObject, Sendable {
     /// main thread, which mints its id (a `commandMinted` frame update),
     /// then reports it sent or queued and acked. Never kept or resent here.
     func send(_ command: LiveCommand, token: UInt64)
+    /// The scene is coming forward (ticket 86, R-IOS-2): the connection is
+    /// checked before any view appears. Never blocks.
+    func foreground()
+    /// The scene went to the background. Never blocks.
+    func background()
+    /// The scene became active, or the person pulled to refresh. Never
+    /// blocks.
+    func wake()
+}
+
+/// A session that follows no lifecycle (a test's stand-in) ignores it.
+public extension LiveSession {
+    func foreground() {}
+    func background() {}
+    func wake() {}
 }
 
 /// The bar under the navigation bar: the status in one line of footnote
@@ -163,13 +228,45 @@ public final class RelayStatusBar: UIView {
 
     public func show(_ status: RelayStatus) {
         self.status = status
-        label.text = status.text
-        accessibilityLabel = status.text
+        draw()
         dot.backgroundColor = switch status {
         case .live: .systemGreen
         case .hostOffline: .systemGray
-        case .connecting, .reconnecting, .catchingUp: .systemYellow
-        case .unreachable, .ended: .systemRed
+        case .connecting, .reconnecting, .catchingUp, .retrying(_, nil): .systemYellow
+        case .unreachable, .retrying, .ended: .systemRed
         }
+        // A wait counts down once a second, and only while it lasts: no
+        // timer runs for any other status.
+        countdown?.invalidate()
+        countdown = nil
+        if case .retrying(let at, _) = status, ContinuousClock.now < at {
+            let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.counted() }
+            }
+            timer.tolerance = 0.2
+            RunLoop.main.add(timer, forMode: .common)
+            countdown = timer
+        }
+    }
+
+    /// The countdown's timer, while a wait lasts.
+    private var countdown: Timer?
+
+    /// A second of the wait gone: drawn, and the timer stopped once over.
+    private func counted() {
+        draw()
+        if case .retrying(let at, _) = status, ContinuousClock.now < at { return }
+        countdown?.invalidate()
+        countdown = nil
+    }
+
+    isolated deinit {
+        countdown?.invalidate()
+    }
+
+    private func draw() {
+        let text = status.text
+        label.text = text
+        accessibilityLabel = text
     }
 }

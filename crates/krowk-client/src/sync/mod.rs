@@ -7,11 +7,13 @@
 //! the phone's viewer later, read and write the same JSON. `join` is the
 //! relay's join handshake, `viewer` what a viewer shows and `ViewerCore`,
 //! the viewer's whole state machine, and `commands` the book a viewer keeps
-//! of the commands it sends, all without IO.
+//! of the commands it sends, all without IO; `supervisor` when a phone's
+//! viewer connects and tries again (backoff, wake, background).
 
 pub mod commands;
 pub mod join;
 pub mod store;
+pub mod supervisor;
 pub mod viewer;
 
 use serde::{Deserialize, Serialize};

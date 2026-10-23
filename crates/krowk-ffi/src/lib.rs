@@ -128,6 +128,7 @@ mod protocol;
 mod sessions;
 mod sign_in;
 mod storage;
+mod supervisor;
 mod viewer;
 
 pub use account::{Account, ListedDevice};
@@ -137,6 +138,7 @@ pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
+pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
 
 use krowk_client::pairing::PairingCode;
