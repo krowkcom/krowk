@@ -413,7 +413,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames = nil
         driver?.ticker = nil
         putSheetDown()
-        // A route lands on a screen in view, never on one parked.
+        // A route lands on a screen in view, never on one parked, and
+        // what it said goes with it.
+        if noticeShown == .nothingWaiting { hideNotice() }
         landing = nil
         landingWait?.cancel()
         landingWait = nil
