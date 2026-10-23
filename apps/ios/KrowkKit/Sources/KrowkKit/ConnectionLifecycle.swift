@@ -72,6 +72,14 @@ public final class LiveSessions {
     public func wake() {
         for s in sessions { s.wake() }
     }
+
+    /// The phone is no longer on the person's devices (ticket 117): every
+    /// session followed live stops — its socket closed, no join or retry
+    /// after — and is let go.
+    public func stopAll() {
+        for s in sessions { s.stop() }
+        held = [:]
+    }
 }
 
 /// `NWPathMonitor`'s callbacks as changes: its first is the path as it is

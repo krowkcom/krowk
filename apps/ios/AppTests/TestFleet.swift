@@ -136,17 +136,22 @@ actor TestFleet {
 
     /// Signs `storage` in through the fleet, playing the browser: the
     /// stand-in approves the sign-in's code as its page's button would.
+    /// `api` is a fleet's `/v1` URL: this one's, or the removal tests' own
+    /// (`RemovalFleet`).
     static func signIn(api: String, storage: any KeyStorage, name: String) async throws {
         let attempt = try await blockingCall { () throws -> any SignInAttempt in
             try RegistrySignIn(api: api, storage: storage).start(deviceName: name)
         }
-        try await post("/_approve/cli/authorizations/\(attempt.code)/approval")
+        let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
+        try await post("/_approve/cli/authorizations/\(attempt.code)/approval", site: site)
         _ = try await blockingCall { try attempt.wait() }
     }
 
-    /// What the approval page's buttons post.
-    static func post(_ path: String) async throws {
-        var request = URLRequest(url: try #require(URL(string: try site() + path)))
+    /// What the approval page's buttons post, to this fleet's site or
+    /// `site`.
+    static func post(_ path: String, site: String? = nil) async throws {
+        let site = try site ?? Self.site()
+        var request = URLRequest(url: try #require(URL(string: site + path)))
         request.httpMethod = "POST"
         let (_, response) = try await URLSession.shared.data(for: request)
         try #require((response as? HTTPURLResponse)?.statusCode == 200, "POST \(path)")

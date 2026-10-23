@@ -29,9 +29,10 @@ import Synchronization
 /// secrets and AES keys it derives. Logs name a slot and an OSStatus, never
 /// bytes.
 ///
-/// Rust may call it from any thread; the Security framework is thread-safe
-/// and the only stored property is an immutable key handle. ticket 78
-/// exports no lock: the slot lock is Rust's, in-process (krowk-ffi).
+/// Rust may call it from any thread; the Security framework is thread-safe,
+/// and the stored properties are an immutable key handle and a flag behind
+/// a lock. Ticket 78 exports no lock: the slot lock is Rust's, in-process
+/// (krowk-ffi).
 public final class KeychainKeyStorage: KeyStorage {
     /// The file whose presence says this install has already purged what an
     /// earlier one left in the Keychain: `Library/Application Support/
@@ -57,6 +58,8 @@ public final class KeychainKeyStorage: KeyStorage {
 
     private let wrappingKey: any WrappingKey
     private let items: Keychain
+    /// Set by `forgetAll`: every call after it is refused.
+    private let forgotten = Mutex(false)
 
     /// Opens the install's keys, making its wrapping key on first use. On
     /// the first launch after an install it first deletes every item an
@@ -113,20 +116,40 @@ public final class KeychainKeyStorage: KeyStorage {
         }
     }
 
+    /// Forgets every key this storage keeps (ticket 117): every item under
+    /// its service, the slots and the item holding the wrapping key — on a
+    /// phone the Secure Enclave key's only handle, so it can never open
+    /// anything again. The install marker stays: the next storage made is
+    /// no first launch, and finds nothing. This storage refuses every call
+    /// after it, so nothing still holding it writes a slot sealed to a key
+    /// that is gone; the app makes a new one. Throws when the Keychain
+    /// refused (the phone locked): nothing is refused then, and it may be
+    /// called again.
+    public func forgetAll() throws(KrowkError) {
+        do throws(KeychainFailure) { try items.removeAll() } catch {
+            log.error("forgetting every key failed: OSStatus \(error.status, privacy: .public)")
+            throw .Internal(detail: error.description)
+        }
+        forgotten.withLock { $0 = true }
+    }
+
     public func read(slot: String) throws(KrowkError) -> Data? {
         try Self.check(slot)
+        try checkKept()
         guard let sealed = try keychain({ () throws(KeychainFailure) in try self.items.read(slot) }) else { return nil }
         return try open(sealed, slot: slot)
     }
 
     public func write(slot: String, bytes: Data) throws(KrowkError) {
         try Self.check(slot)
+        try checkKept()
         let sealed = try seal(bytes, slot: slot)
         try keychain { () throws(KeychainFailure) in try self.items.write(slot, sealed, replace: true) }
     }
 
     public func remove(slot: String) throws(KrowkError) {
         try Self.check(slot)
+        try checkKept()
         try keychain { () throws(KeychainFailure) in try self.items.remove(slot) }
     }
 
@@ -176,6 +199,14 @@ public final class KeychainKeyStorage: KeyStorage {
     }
 
     // MARK: Names and failures
+
+    /// Refused once `forgetAll` ran: the wrapping key this storage holds
+    /// is gone from the Keychain.
+    private func checkKept() throws(KrowkError) {
+        if forgotten.withLock({ $0 }) {
+            throw .Internal(detail: "this iPhone's keys were reset; krowk opens its key storage again")
+        }
+    }
 
     /// A slot name Rust may use: not empty, and not the wrapping key's
     /// item, which no slot may read, replace or remove.

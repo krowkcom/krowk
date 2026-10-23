@@ -37,6 +37,14 @@ public protocol PairingAttempt: Sendable {
     /// device's pairing stays open. A join already past the other
     /// device's reply finishes as it would have.
     func cancel()
+    /// Whether the person's device list, as the join kept it, holds a
+    /// recovery kit: what the reminder after pairing says. Nil when it
+    /// can't be read. Blocking (the Keychain), never the network.
+    func hasRecoveryKit() -> Bool?
+}
+
+extension PairingAttempt {
+    public func hasRecoveryKit() -> Bool? { nil }
 }
 
 /// What a scanned invite says, read by krowk-client's parser. Its
@@ -191,6 +199,10 @@ public final class PairingModel {
     /// The code field, upper-cased as typed (`enter`). Only Rust decides
     /// whether it is a code.
     public private(set) var codeText = ""
+    /// Once paired, whether the person's device list holds a recovery kit:
+    /// the reminder the paired screen shows, once (ticket 117). Nil when
+    /// it couldn't be read, and no reminder is shown.
+    public private(set) var recoveryKit: Bool?
 
     /// Whether this phone can scan at all (VisionKit's
     /// `DataScannerViewController.isSupported`): false in the simulator,
@@ -373,7 +385,9 @@ public final class PairingModel {
                 do throws(PairingFailure) { return .success(try attempt.join(ticket)) } catch { return .failure(error) }
             }
             switch joined {
-            case .success: await MainActor.run { self?.joined(run) }
+            case .success:
+                let kit = await blocking { attempt.hasRecoveryKit() }
+                await MainActor.run { self?.joined(run, kit: kit) }
             case .failure(let failure): await MainActor.run { self?.end(run, failure) }
             }
         }
@@ -392,7 +406,7 @@ public final class PairingModel {
 
     /// The keys are kept whichever run kept them, even one the screen had
     /// moved on from (a cancel too late to count): the screen follows them.
-    private func joined(_ run: Int) {
+    private func joined(_ run: Int, kit: Bool?) {
         if run != self.run {
             self.run &+= 1
             current.take()?.cancel()
@@ -400,6 +414,7 @@ public final class PairingModel {
             _ = current.take()
         }
         scanner = .closed
+        recoveryKit = kit
         becomePaired()
     }
 

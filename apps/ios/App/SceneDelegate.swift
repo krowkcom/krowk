@@ -31,6 +31,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// hands it iOS's token.
     private(set) static var push: PushRegistration?
 
+    /// While the paired app is in the foreground, whether the phone is
+    /// still on the person's devices (ticket 117): checked each minute and
+    /// on every return, besides every read of the session list. Nil
+    /// before pairing, and once it found the phone gone.
+    private var watch: StandingWatch?
+
     func scene(
         _ scene: UIScene,
         willConnectTo session: UISceneSession,
@@ -59,6 +65,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func sceneWillEnterForeground(_ scene: UIScene) {
         LiveSessions.shared.willEnterForeground()
         if !opened { showRoot() }
+        // A removal while the app was away is heard now, not a minute on.
+        watch?.start()
         // Each time the app comes forward, a cold launch too (iOS calls
         // this after `willConnectTo`), the token is kept current and a
         // permission turned off in Settings clears it (R-IOS-12).
@@ -76,6 +84,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// turn and an approval meanwhile.
     func sceneDidEnterBackground(_ scene: UIScene) {
         LiveSessions.shared.didEnterBackground()
+        watch?.stop()
     }
 
     private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
@@ -134,7 +143,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// person's synced sessions listed off the main thread.
     private func sessions(api: String, keys: KeychainKeyStorage) -> UIViewController {
         let log = Logger(subsystem: "com.krowk.app", category: "sessions")
-        let source = RegistrySessions(api: api, storage: keys)
+        // Every listing checks the phone is still on the person's devices,
+        // and so does a refused open; either finding it gone tells the
+        // watch, which shows why, once.
+        let source = RegistrySessions(api: api, storage: keys, onGone: { [weak self] gone in
+            Task { @MainActor in self?.watch?.report(gone) }
+        })
+        let watch = StandingWatch(check: { source.standing() }) { [weak self] gone in
+            self?.deviceGone(gone, api: api, keys: keys)
+        }
+        self.watch?.stop()
+        self.watch = watch
+        watch.start()
         let model = SessionListModel(
             source: source,
             // A failure's kind only: never a session's id, title or cwd.
@@ -159,6 +179,40 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             screen.restore(parked.takeRefusals(row.id))
             return screen
         }
+    }
+
+    /// The phone is no longer on the person's devices (ticket 117): every
+    /// live session stops, with nothing retried, and the app says why and
+    /// offers one thing, to reset the phone. The reset clears the push
+    /// token first (it takes the keys), then forgets everything the phone
+    /// kept, the Secure Enclave wrapping key included, and opens sign-in
+    /// as a fresh install would.
+    private func deviceGone(_ gone: DeviceGone, api: String, keys: KeychainKeyStorage) {
+        LiveSessions.shared.stopAll()
+        parkedScreens.letGoAll()
+        let log = Logger(subsystem: "com.krowk.app", category: "reset")
+        log.error("this iPhone is no longer on the person's devices: \(gone.kind, privacy: .public)")
+        let tokens = RegistryPushTokens(api: api, storage: keys)
+        let reset = PhoneReset(
+            clearPushToken: { try await tokens.clear() },
+            forgetPush: {
+                Self.push = nil
+                PushRegistration.signedOut()
+                UIApplication.shared.unregisterForRemoteNotifications()
+            },
+            forgetKeys: { try keys.forgetAll() },
+            // A failure's kind and the core's words; never a key.
+            log: { log.error("\($0, privacy: .public)") }
+        )
+        let model = DeviceGoneModel(gone: gone, reset: reset) { [weak self] in
+            guard let self else { return }
+            log.notice("this iPhone was reset")
+            watch = nil
+            Self.keys = nil
+            opened = false
+            showRoot()
+        }
+        show(DeviceGoneScreens.gone(model))
     }
 
     private func signIn(api: String, keys: KeychainKeyStorage) -> UIViewController {
