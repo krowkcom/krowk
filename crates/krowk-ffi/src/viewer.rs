@@ -18,6 +18,12 @@
 //! names the connection it came from: anything from one this viewer has
 //! since dropped (`Close`) — a message or a close Swift's queue still held
 //! — is ignored, so it never reaches the join or the session that follows.
+//!
+//! When it joins again is its `ConnectionSupervisor`'s (ticket 86): a loss
+//! waits on a jittered backoff from 250 ms to 30 s rather than the core's
+//! fixed second, a loss in the background waits for the foreground, and
+//! `wake`, `foreground` and `background` carry the app's lifecycle and
+//! network changes in. The join itself still resumes at the core's cursor.
 
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +39,7 @@ use serde_json::Value;
 
 use crate::KrowkError;
 use crate::sessions::{HeadRecord, OpenedSession};
+use crate::supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 
 /// How long the relay has from the dial to its first message, and then to
 /// send each next message of the join (the terminal's `JOIN_WAIT`, which
@@ -46,7 +53,8 @@ pub enum Effect {
     /// At `at_ms` (now, if it has passed), fetch a relay ticket with
     /// `OpenedSession::relay_ticket`, off the main thread, and hand it to
     /// `ticket`, or why it failed to `ticket_failed`. A later `NeedTicket`
-    /// replaces one not yet acted on.
+    /// replaces one not yet acted on. Later than now, it is the
+    /// supervisor's backoff: the screen may say when.
     NeedTicket { at_ms: u64 },
     /// Open WebSocket `connection` to `url`, `ticket` in its
     /// `X-Krowk-Ticket` header (never in the URL), and pass each message it
@@ -184,7 +192,10 @@ fn updates(u: Update, out: &mut Vec<ViewerUpdate>) {
             out.push(ViewerUpdate::Failed { detail });
             None
         }
+        // The core says it tries again every second; the supervisor's
+        // backoff times the phone's retries, and the screen says when.
         Update::Note(text) => {
+            let text = text.strip_suffix(core::EVERY_SECOND).map_or(text.clone(), str::to_string);
             out.push(ViewerUpdate::Note { text });
             None
         }
@@ -258,6 +269,15 @@ struct Inner {
     /// The `ReadChunks` out, by number, and the head it reads to.
     asked: u64,
     want: Option<Head>,
+    /// When to join again, and what wakes it.
+    sup: Arc<ConnectionSupervisor>,
+    /// A join is pending whose `NeedTicket` waits for the foreground.
+    held: bool,
+    /// When the pending join's `NeedTicket` said to fetch its ticket.
+    ticket_at: Option<u64>,
+    /// The next `Join` the core asks for replaces a connection now, on the
+    /// supervisor's word, rather than backing off.
+    replacing: bool,
 }
 
 /// What a viewer whose lock was poisoned says, every time. A panic aborts
@@ -288,13 +308,21 @@ impl Viewer {
     /// `session`'s `head` or `events`.
     #[uniffi::constructor]
     pub fn open(session: Arc<OpenedSession>, now_ms: u64) -> Result<Arc<Viewer>, KrowkError> {
+        let seed = session.id().bytes().fold(now_ms, |h, b| h.rotate_left(5) ^ u64::from(b));
+        Viewer::open_supervised(session, ConnectionSupervisor::new(now_ms, seed), now_ms)
+    }
+
+    /// `open`, its joins timed by `supervisor` (ticket 86): the one the app
+    /// opened the session under, so a backoff begun while opening goes on.
+    #[uniffi::constructor]
+    pub fn open_supervised(session: Arc<OpenedSession>, supervisor: Arc<ConnectionSupervisor>, now_ms: u64) -> Result<Arc<Viewer>, KrowkError> {
         let relay = session.relay().trim_end_matches('/');
         if e2e::canonical_origin(relay).is_none() {
             return Err(KrowkError::InvalidInput { detail: format!("{relay} is not a relay address — it is ws:// or wss:// and a host") });
         }
         let at_rest = session.snapshot();
         let (core, first) = ViewerCore::new(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, now_ms);
-        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None };
+        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false };
         Ok(Arc::new(Viewer { id: VIEWERS.fetch_add(1, Ordering::Relaxed), inner: Mutex::new(inner) }))
     }
 
@@ -351,6 +379,7 @@ impl Viewer {
             if i.connection != Some(connection) {
                 return Vec::new();
             }
+            i.sup.with(|s| s.rules.heard(now_ms));
             if let Some((j, by)) = i.joining.as_mut() {
                 *by = now_ms.saturating_add(JOIN_WAIT_MS);
                 let WsFrame::Binary { bytes } = frame else { return Vec::new() };
@@ -359,6 +388,7 @@ impl Viewer {
                     Ok(Step::Send(bytes)) => return vec![Effect::Send { bytes }],
                     Ok(Step::Joined(v)) => {
                         i.joining = None;
+                        i.sup.with(|s| s.rules.joined(now_ms));
                         i.core.joined(&v, now_ms)
                     }
                     Err(e) => {
@@ -407,9 +437,46 @@ impl Viewer {
                 let failed = i.core.join_failed(format!("the relay did not answer the join within {} seconds", JOIN_WAIT_MS / 1000), now_ms);
                 out = i.effects(failed, now_ms);
             }
+            // A wake's probe unanswered past its 5 s: replaced.
+            if i.link(now_ms) == LinkState::Up && i.sup.with(|s| s.rules.probe_due(now_ms)) {
+                out.extend(i.replace(now_ms));
+            }
             let ticked = i.core.tick(now_ms);
             out.extend(i.effects(ticked, now_ms));
             out
+        })
+    }
+
+    /// The scene became active, a network path became usable, or the
+    /// person pulled to refresh: with no connection, a ticket now; one
+    /// silent past `DEAD`, replaced now; else a `Ping`, and replaced at a
+    /// later `tick` if nothing comes back within 5 s (`next_wake_ms` says
+    /// when). Nothing in the background.
+    pub fn wake(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| {
+            let link = i.link(now_ms);
+            let w = i.sup.wake(now_ms, link);
+            i.act(w, now_ms)
+        })
+    }
+
+    /// The scene went to the background: the connection is kept, but one
+    /// lost from here is not joined again until `foreground`.
+    pub fn background(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| {
+            i.sup.background(now_ms);
+            Vec::new()
+        })
+    }
+
+    /// The scene is coming forward: after 10 s or more away the
+    /// connection is replaced at once, one lost meanwhile joined now, and
+    /// otherwise as `wake`.
+    pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| {
+            let link = i.link(now_ms);
+            let w = i.sup.foreground(now_ms, link);
+            i.act(w, now_ms)
         })
     }
 
@@ -427,7 +494,8 @@ impl Viewer {
     pub fn next_wake_ms(&self) -> Option<u64> {
         let i = self.inner.lock().ok()?;
         let core = i.core.next_wake()?;
-        Some(i.joining.as_ref().map_or(core, |(_, by)| core.min(*by)))
+        let at = i.joining.as_ref().map_or(core, |(_, by)| core.min(*by));
+        Some(i.sup.with(|s| s.rules.next_wake()).map_or(at, |p| at.min(p)))
     }
 
     /// Reads the chunks the host wrote since the viewer's last read, up to
@@ -473,6 +541,46 @@ impl Viewer {
 }
 
 impl Inner {
+    /// Where the connection stands, for the supervisor.
+    fn link(&self, now_ms: u64) -> LinkState {
+        if self.joining.is_some() || (self.connection.is_none() && self.pending.is_some() && !self.held && self.ticket_at.is_some_and(|at| at <= now_ms)) {
+            LinkState::Joining
+        } else if self.connection.is_some() {
+            LinkState::Up
+        } else {
+            LinkState::Down
+        }
+    }
+
+    /// What a wake or a foreground asked for, carried out.
+    fn act(&mut self, w: WakeAction, now_ms: u64) -> Vec<Effect> {
+        match w {
+            WakeAction::Nothing => Vec::new(),
+            WakeAction::Probe => vec![Effect::Ping],
+            WakeAction::Replace => self.replace(now_ms),
+            // The join waiting on its backoff, or held in the background:
+            // its ticket now.
+            WakeAction::Connect if self.pending.is_some() => {
+                self.held = false;
+                self.ticket_at = Some(now_ms);
+                vec![Effect::NeedTicket { at_ms: now_ms }]
+            }
+            WakeAction::Connect => Vec::new(),
+        }
+    }
+
+    /// The current connection dropped and joined again at once, from the
+    /// cursor, as if it had closed: no backoff. Mid-read, the core acts on
+    /// the close once the chunks are read.
+    fn replace(&mut self, now_ms: u64) -> Vec<Effect> {
+        if self.connection.is_none() || self.joining.is_some() {
+            return Vec::new();
+        }
+        self.replacing = true;
+        let out = self.core.closed(now_ms);
+        self.effects(out, now_ms)
+    }
+
     /// The core's effects as Swift carries them out. No `_` arm: a new
     /// `core::Effect` fails this build until it is handled.
     fn effects(&mut self, from: Vec<core::Effect>, now_ms: u64) -> Vec<Effect> {
@@ -493,13 +601,29 @@ impl Inner {
                     self.want = want;
                     out.push(Effect::ReadChunks);
                 }
+                // When is the supervisor's: a join the core wants now (the
+                // first, a dead link's) or one replacing on its word goes
+                // now; one after a loss (the core's second later) waits on
+                // the backoff; in the background, any waits for the
+                // foreground.
                 core::Effect::Join { extra, at_ms } => {
                     if self.connection.take().is_some() {
                         out.push(Effect::Close);
                     }
                     self.joining = None;
                     self.pending = Some(extra);
-                    out.push(Effect::NeedTicket { at_ms });
+                    let replacing = std::mem::take(&mut self.replacing);
+                    let at = self.sup.with(|s| {
+                        if !s.rules.in_background() && (replacing || at_ms <= now_ms) {
+                            s.rules.replaced();
+                            Some(at_ms.min(now_ms))
+                        } else {
+                            s.lost(now_ms)
+                        }
+                    });
+                    self.held = at.is_none();
+                    self.ticket_at = at;
+                    out.extend(at.map(|at_ms| Effect::NeedTicket { at_ms }));
                 }
                 // Relay only on the phone: a race for a direct path is lost
                 // as it is asked, and the core asks again later, backing off.
@@ -510,6 +634,7 @@ impl Inner {
                     self.pending = None;
                     self.joining = None;
                     self.connection = None;
+                    self.held = false;
                     out.push(Effect::End);
                 }
             }

@@ -716,6 +716,57 @@ pub trait KeyStorage: Send + Sync {
     fn remove(&self, slot: String) -> Result<(), KrowkError>;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum LinkState {
+    Down,
+    Joining,
+    Up,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
+pub enum WakeAction {
+    Nothing,
+    Connect,
+    Replace,
+    Probe,
+}
+
+#[derive(uniffi::Object)]
+pub struct ConnectionSupervisor {
+    // opaque: private fields
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    #[uniffi::constructor]
+    pub fn new(now_ms: u64, seed: u64) -> std::sync::Arc<ConnectionSupervisor> {}
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    pub fn lost(&self, now_ms: u64) -> Option<u64> {}
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    pub fn background(&self, now_ms: u64) {}
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    pub fn foreground(&self, now_ms: u64, link: LinkState) -> WakeAction {}
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    pub fn wake(&self, now_ms: u64, link: LinkState) -> WakeAction {}
+}
+
+#[uniffi::export]
+impl ConnectionSupervisor {
+    pub fn in_background(&self) -> bool {}
+}
+
 #[derive(Clone, uniffi::Enum)]
 pub enum Effect {
     NeedTicket { at_ms: u64 },
@@ -771,6 +822,16 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
+    #[uniffi::constructor]
+    pub fn open_supervised(
+        session: Arc<OpenedSession>,
+        supervisor: Arc<ConnectionSupervisor>,
+        now_ms: u64,
+    ) -> Result<Arc<Viewer>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Viewer {
     pub fn start(&self, now_ms: u64) -> Vec<Effect> {}
 }
 
@@ -797,6 +858,21 @@ impl Viewer {
 #[uniffi::export]
 impl Viewer {
     pub fn tick(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn wake(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn background(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {}
 }
 
 #[uniffi::export]
@@ -834,6 +910,8 @@ pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 pub use sign_in::{SignIn, SignedIn};
 
 pub use storage::KeyStorage;
+
+pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 
 pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
 
