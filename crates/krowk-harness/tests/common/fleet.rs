@@ -248,6 +248,7 @@ pub fn start(demo: bool) -> Fleet {
         user: user.clone(),
         tests: std::sync::Mutex::default(),
         started: std::sync::Condvar::new(),
+        turns: Arc::default(),
     });
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
@@ -322,6 +323,9 @@ pub struct Hosting {
     /// starting.
     tests: std::sync::Mutex<Tests>,
     started: std::sync::Condvar,
+    /// How many of the turns `turn` typed still run, by session, and a
+    /// signal when one ends.
+    turns: Arc<(std::sync::Mutex<std::collections::HashMap<String, usize>>, std::sync::Condvar)>,
 }
 
 /// The sessions hosted for tests, by id; how many are still starting; and
@@ -449,17 +453,42 @@ impl Hosting {
                 }
             }
         });
-        std::thread::spawn(move || match rt.block_on(d.execute(cmd, out)) {
-            // Ended with no line seen first: started all the same.
-            Ok(_) => {
-                let _ = said.send(Ok(()));
+        let turns = self.turns.clone();
+        *turns.0.lock().unwrap().entry(session.to_string()).or_default() += 1;
+        let id = session.to_string();
+        std::thread::spawn(move || {
+            match rt.block_on(d.execute(cmd, out)) {
+                // Ended with no line seen first: started all the same.
+                Ok(_) => {
+                    let _ = said.send(Ok(()));
+                }
+                Err(e) => {
+                    eprintln!("fleet: a test's turn failed: {e:?}");
+                    let _ = said.send(Err(format!("the turn failed: {e:?}")));
+                }
             }
-            Err(e) => {
-                eprintln!("fleet: a test's turn failed: {e:?}");
-                let _ = said.send(Err(format!("the turn failed: {e:?}")));
+            let (running, ended) = &*turns;
+            if let Some(n) = running.lock().unwrap().get_mut(&id) {
+                *n = n.saturating_sub(1);
             }
+            ended.notify_all();
         });
         heard.recv_timeout(Duration::from_secs(10)).map_err(|_| "the turn did not start within 10 s".to_string())?
+    }
+
+    /// Waits, up to `wait`, until every turn `turn` typed in `session` has
+    /// ended at host A: its last line written, the bridge handing it on. A
+    /// session with none running has nothing to wait for. How long a turn
+    /// takes is the host's (a starved runner streams slower); a test that
+    /// waits here first then checks only how soon its viewer shows the end.
+    pub fn turn_ended(&self, session: &str, wait: Duration) -> Result<(), String> {
+        let (running, ended) = &*self.turns;
+        let guard = running.lock().unwrap();
+        let (guard, timeout) = ended.wait_timeout_while(guard, wait, |r| r.get(session).is_some_and(|n| *n > 0)).unwrap();
+        if timeout.timed_out() {
+            return Err(format!("{} turn(s) in {session} still running after {} s", guard.get(session).copied().unwrap_or(0), wait.as_secs()));
+        }
+        Ok(())
     }
 
     /// Stops every test's session, and any that starts from now on.

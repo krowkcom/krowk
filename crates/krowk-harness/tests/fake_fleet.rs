@@ -251,8 +251,12 @@ fn streams(prompt: &str, lines_streamed: usize) {
     assert!(f.hosting.turn("no-such-session", prompt).is_err(), "only a test's own session");
     let started = Instant::now();
     f.hosting.turn(&id, prompt).unwrap();
+    // What a phone's UI test waits on before it looks for the turn's end
+    // (`turn-ended`): running as it streams, ended once a viewer has it.
+    assert!(f.hosting.turn_ended(&id, Duration::ZERO).is_err(), "the turn ended as it started");
     let ended = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. })));
     let got = rt.block_on(until(&mut v, Duration::from_secs(60), |all| all.iter().filter(|u| ended(u)).count() >= 1));
+    f.hosting.turn_ended(&id, Duration::from_secs(10)).expect("ended at the host once a viewer has its end");
     let took = started.elapsed();
     let lines: Vec<&StreamLine> = got.iter().filter_map(|u| if let viewer::Update::Line(l) = u { Some(l) } else { None }).collect();
     let call = lines.iter().find_map(|l| match l {
@@ -523,7 +527,8 @@ fn r_e2e_3_r_ios_15_a_post_to_pair_url_gives_the_fake_fleet_a_fresh_code_that_jo
 
 /// R-IOS-7, R-IOS-15: the fleet's control, as a simulator's test uses it:
 /// `sessions_url` hosts a session of the test's own and names it, and its
-/// `release` lets it go, once; its `host` hosts it again (R-HAND-4).
+/// `release` lets it go, once; its `host` hosts it again (R-HAND-4); its
+/// `turn-ended` has nothing to wait for with no turn typed.
 #[test]
 fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets_it_go_and_host_takes_it_back() {
     let f = Proc::start(&[]);
@@ -536,6 +541,8 @@ fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets
     assert!(!id.is_empty() && id != f.get("session"), "{id}");
     assert_eq!(request("POST", &format!("{url}/{id}/release")), ("HTTP/1.1 200 X".into(), "released".into()));
     assert_eq!(request("POST", &format!("{url}/{id}/release")).0, "HTTP/1.1 500 X", "released once only");
+    // No turn typed there: none to wait for.
+    assert_eq!(request("POST", &format!("{url}/{id}/turn-ended")), ("HTTP/1.1 200 X".into(), "ended".into()));
     // R-HAND-4: hosted again, as a host coming back; then let go again.
     assert_eq!(request("POST", &format!("{url}/{id}/host")), ("HTTP/1.1 200 X".into(), "hosted".into()));
     assert_eq!(request("POST", &format!("{url}/{id}/host")).0, "HTTP/1.1 500 X", "hosted once at a time");

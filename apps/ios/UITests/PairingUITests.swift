@@ -69,8 +69,8 @@ final class PairingUITests: XCTestCase {
         // R-IOS-12: never asked at launch.
         XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.waitForExistence(timeout: 2), "a system prompt at launch")
         signIn.tap()
-        allowTheSignInPage()
-        let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
+        let code = try XCTUnwrap(FleetUI.signInCode(in: app), "no sign-in code shown")
+        XCTAssertTrue(FleetUI.allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
         let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
         try await Self.post("\(site)/_approve/cli/authorizations/\(code)/approval")
 
@@ -179,8 +179,10 @@ final class PairingUITests: XCTestCase {
 
     /// R-LAG-7: back on Sessions, a session of the test's own (the fleet
     /// hosts it), opened; the fleet runs a turn in it whose answer streams
-    /// for about six seconds (longer on a busy CI runner). Screenshots
-    /// mid-stream and once the turn has ended, at the end of the list.
+    /// for about six seconds (a minute or two on GitHub's runner). Once
+    /// the host has ended it, the screen shows its end within 30 s.
+    /// Screenshots mid-stream and once the turn has ended, at the end of
+    /// the list.
     @MainActor
     private func followALiveTurn(in app: XCUIApplication) async throws {
         let sessions = try Self.env("KROWK_SESSIONS_URL")
@@ -223,16 +225,27 @@ final class PairingUITests: XCTestCase {
         // so XCUITest can't scroll mid-stream here: "↓ New" is
         // LiveFollowTests' (hosted), which keeps its own screenshots.
         Screenshots.keep("live-streaming-ui", in: app)
-        // Followed to the end: the turn's separator, last on screen (the
-        // first turn's has scrolled far above).
-        let ends = transcript.cells.matching(identifier: "transcript-turn-end")
-        let atEnd = { ends.allElementsBoundByIndex.contains { $0.exists && $0.frame.maxY > transcript.frame.maxY - 120 } }
-        let ended = Date.now.addingTimeInterval(120)
-        while !atEnd() && Date.now < ended {
-            try await Task.sleep(for: .milliseconds(250))
+        // The host's end first. On GitHub's runner the fleet streams far
+        // slower than 200 tokens a second (a minute or two for this turn),
+        // which is the host's pace, not the phone's; and nothing here asks
+        // the screen anything meanwhile: each query snapshots the whole
+        // streaming transcript on the app's main thread, slowing the run.
+        let (ended, why) = try await Self.request("\(sessions)/\(id)/turn-ended", timeout: 330)
+        XCTAssertEqual(ended, 200, "the turn never ended at the host: \(why)")
+        // Then the phone, followed to the end: the turn's separator, last
+        // on screen (the first turn's has scrolled far above), soon after.
+        // Each look is one snapshot of the transcript: an element bound by
+        // index and read again could be a cell scrolled off and gone.
+        let atEnd = {
+            guard let shown = try? transcript.snapshot() else { return false }
+            return shown.children.contains { $0.identifier == "transcript-turn-end" && $0.frame.maxY > shown.frame.maxY - 120 }
+        }
+        let followed = Date.now.addingTimeInterval(30)
+        while !atEnd() && Date.now < followed {
+            try await Task.sleep(for: .milliseconds(500))
         }
         if !atEnd() { Screenshots.tree(of: app) }
-        XCTAssertTrue(atEnd(), "the live turn's separator never came at the end")
+        XCTAssertTrue(atEnd(), "the live turn's separator was not at the end 30 s after the host ended it")
         Screenshots.keep("live-done", in: app)
         let (released, _) = try await Self.request("\(sessions)/\(id)/release")
         XCTAssertEqual(released, 200)
@@ -265,23 +278,6 @@ final class PairingUITests: XCTestCase {
         app.typeText(String(code.suffix(1)))
     }
 
-    /// The code the sign-in shows, from "Check the page shows the code K7QF-9M3X."
-    @MainActor
-    private func signInCode(in app: XCUIApplication) -> String? {
-        let label = app.staticTexts["sign-in-code"]
-        guard label.waitForExistence(timeout: 20) else { return nil }
-        return label.label.split(separator: " ").last.map { String($0.dropLast()) }
-    }
-
-    /// iOS asks before an app opens a sign-in page that shares Safari's
-    /// cookies; the person says Continue.
-    @MainActor
-    private func allowTheSignInPage() {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let proceed = springboard.buttons["Continue"]
-        if proceed.waitForExistence(timeout: 10) { proceed.tap() }
-    }
-
     private static func env(_ name: String) throws -> String {
         try XCTUnwrap(
             ProcessInfo.processInfo.environment[name].flatMap { $0.isEmpty ? nil : $0 },
@@ -300,11 +296,11 @@ final class PairingUITests: XCTestCase {
         XCTAssertEqual(status, 200, "POST \(url): \(body)")
     }
 
-    private static func request(_ url: String, body: String = "") async throws -> (Int, String) {
+    private static func request(_ url: String, body: String = "", timeout: TimeInterval = 60) async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
         request.httpBody = Data(body.utf8)
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeout
         let (body, response) = try await URLSession.shared.data(for: request)
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: body, as: UTF8.self))
     }

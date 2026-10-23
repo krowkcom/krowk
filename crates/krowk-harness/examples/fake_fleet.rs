@@ -49,7 +49,11 @@
 //! session and replies `started`: on "stream a long answer" the model makes
 //! a `read` call, then streams 120 numbered lines at 200 tokens a second, a
 //! turn a phone's tests follow live (ticket 89); "stream a very long
-//! answer", 300 lines.
+//! answer", 300 lines. A POST to `sessions_url/<id>/turn-ended` replies
+//! `ended` once every turn typed there has ended at host A, waiting up to
+//! five minutes (and holding the control meanwhile): a starved CI runner
+//! streams far slower than 200 tokens a second, so a test waits for the
+//! host here, then times only how soon the phone shows the end.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn
@@ -151,8 +155,9 @@ fn main() {
 /// `POST /pair` a fresh code (with `--pair`), `POST /sessions` a session of
 /// the test's own, hosted, its id the reply's body (the request's body, if
 /// any, its title), `POST /sessions/<id>/release` its lease let go,
-/// `POST /sessions/<id>/host` hosted again, and `POST /sessions/<id>/turn`
-/// a turn typed at host A in it.
+/// `POST /sessions/<id>/host` hosted again, `POST /sessions/<id>/turn`
+/// a turn typed at host A in it, and `POST /sessions/<id>/turn-ended` once
+/// those turns have ended.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
@@ -166,6 +171,10 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
     let release = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/release"));
     let turn = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/turn")).filter(|id| !id.is_empty() && !id.contains('/'));
     let again = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/host")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let ended = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/turn-ended")).filter(|id| !id.is_empty() && !id.contains('/'));
+    if let ("POST", Some(id)) = (seen.method.as_str(), ended) {
+        return answered(&format!("POST {}", seen.path), hosting.turn_ended(id, std::time::Duration::from_secs(300)).map(|()| "ended".into()));
+    }
     if let ("POST", Some(id)) = (seen.method.as_str(), again) {
         return answered(&format!("POST {}", seen.path), hosting.host_again(id).map(|()| "hosted".into()));
     }
@@ -180,7 +189,7 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
             answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
         }
         ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
-        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host and POST /sessions/<id>/turn"),
+        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn and POST /sessions/<id>/turn-ended"),
     }
 }
 

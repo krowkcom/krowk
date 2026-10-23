@@ -120,12 +120,8 @@ enum FleetUI {
         let signIn = app.buttons["sign-in"]
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
         signIn.tap()
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let proceed = springboard.buttons["Continue"]
-        if proceed.waitForExistence(timeout: 10) { proceed.tap() }
-        let label = app.staticTexts["sign-in-code"]
-        XCTAssertTrue(label.waitForExistence(timeout: 20), "no sign-in code shown")
-        let code = try XCTUnwrap(label.label.split(separator: " ").last.map { String($0.dropLast()) })
+        let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
+        XCTAssertTrue(allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
         let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
         let (approved, why) = try await request("\(site)/_approve/cli/authorizations/\(code)/approval")
         XCTAssertEqual(approved, 200, why)
@@ -148,6 +144,36 @@ enum FleetUI {
         let list = app.collectionViews["sessions-list"]
         XCTAssertTrue(list.waitForExistence(timeout: 10), "Continue did not open Sessions")
         return app
+    }
+
+    /// The code the sign-in shows, from "Check the page shows the code
+    /// K7QF-9M3X.": shown as the sheet opens, before iOS asks about it.
+    @MainActor
+    static func signInCode(in app: XCUIApplication) -> String? {
+        let label = app.staticTexts["sign-in-code"]
+        guard label.waitForExistence(timeout: 20) else { return nil }
+        return label.label.split(separator: " ").last.map { String($0.dropLast()) }
+    }
+
+    /// iOS asks before an app opens a sign-in page that shares Safari's
+    /// cookies, and the person says Continue; then `page`, an element of
+    /// the page in the sheet, shows. On a busy simulator the question can
+    /// come 20 s after the tap, so this waits for whichever comes first,
+    /// the question or the page, rather than a while for the question
+    /// alone: one that came late was never answered, and the page never
+    /// opened behind it. Whether the page showed within `timeout`.
+    @MainActor
+    static func allowTheSignInPage(until page: XCUIElement, timeout: TimeInterval = 60) -> Bool {
+        let proceed = XCUIApplication(bundleIdentifier: "com.apple.springboard").buttons["Continue"]
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while Date.now < deadline {
+            if proceed.waitForExistence(timeout: 1) {
+                proceed.tap()
+                return page.waitForExistence(timeout: max(1, deadline.timeIntervalSinceNow))
+            }
+            if page.exists { return true }
+        }
+        return page.exists
     }
 
     /// The row of the session titled `title`.
@@ -214,11 +240,11 @@ enum FleetUI {
         app.terminate()
     }
 
-    static func request(_ url: String, body: String = "") async throws -> (Int, String) {
+    static func request(_ url: String, body: String = "", timeout: TimeInterval = 60) async throws -> (Int, String) {
         var request = URLRequest(url: try XCTUnwrap(URL(string: url)))
         request.httpMethod = "POST"
         request.httpBody = Data(body.utf8)
-        request.timeoutInterval = 60
+        request.timeoutInterval = timeout
         let (body, response) = try await URLSession.shared.data(for: request)
         return ((response as? HTTPURLResponse)?.statusCode ?? 0, String(decoding: body, as: UTF8.self))
     }
