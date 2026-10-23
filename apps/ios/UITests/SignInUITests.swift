@@ -56,9 +56,8 @@ final class SignInUITests: XCTestCase {
         signIn.tap()
 
         // The sheet, with the stand-in's page naming the code.
-        allowTheSignInPage()
-        let code = try XCTUnwrap(shownCode(in: app))
-        XCTAssertTrue(app.staticTexts[code].waitForExistence(timeout: 20), "the page in the sheet does not show \(code)")
+        let code = try XCTUnwrap(FleetUI.signInCode(in: app), "no sign-in code shown")
+        XCTAssertTrue(FleetUI.allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
         Screenshots.keep("approval-page", in: app)
 
         // Closing the sheet doesn't stop the sign-in. Its close button,
@@ -77,10 +76,9 @@ final class SignInUITests: XCTestCase {
 
         // The page again, approved there: the sheet closes by itself.
         reopen.tap()
-        allowTheSignInPage()
         // The page's button, in the sheet's web content.
         let approve = app.buttons["Approve"].firstMatch
-        if !approve.waitForExistence(timeout: 20) { Screenshots.tree(of: app) }
+        if !FleetUI.allowTheSignInPage(until: approve) { Screenshots.tree(of: app) }
         XCTAssertTrue(approve.exists, "no Approve button on the page")
         approve.tap()
         let signedIn = app.staticTexts["signed-in"]
@@ -89,22 +87,5 @@ final class SignInUITests: XCTestCase {
         XCTAssertFalse(app.buttons["Approve"].exists, "the sheet is still open")
         Screenshots.keep("signed-in", in: app)
         app.terminate()
-    }
-
-    /// The code the app shows, from "Check the page shows the code K7QF-9M3X."
-    @MainActor
-    private func shownCode(in app: XCUIApplication) -> String? {
-        let label = app.staticTexts["sign-in-code"]
-        guard label.waitForExistence(timeout: 20) else { return nil }
-        return label.label.split(separator: " ").last.map { String($0.dropLast()) }
-    }
-
-    /// iOS asks before an app opens a sign-in page that shares Safari's
-    /// cookies (the session is not ephemeral); the person says Continue.
-    @MainActor
-    private func allowTheSignInPage() {
-        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        let proceed = springboard.buttons["Continue"]
-        if proceed.waitForExistence(timeout: 10) { proceed.tap() }
     }
 }

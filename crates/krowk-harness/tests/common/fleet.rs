@@ -248,6 +248,7 @@ pub fn start(demo: bool) -> Fleet {
         user: user.clone(),
         tests: std::sync::Mutex::default(),
         started: std::sync::Condvar::new(),
+        turns: Arc::default(),
     });
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
@@ -300,6 +301,24 @@ impl Drop for Starting<'_> {
     }
 }
 
+/// How many of the turns `Hosting::turn` typed still run, by session, and
+/// a signal when one ends.
+type Turns = Arc<(std::sync::Mutex<std::collections::HashMap<String, usize>>, std::sync::Condvar)>;
+
+/// A turn `Hosting::turn` typed, running: counted down when dropped, so a
+/// turn whose thread panics still ends for `turn_ended`.
+struct TypedTurn(Turns, String);
+
+impl Drop for TypedTurn {
+    fn drop(&mut self) {
+        let (running, ended) = &*self.0;
+        if let Some(n) = running.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&self.1) {
+            *n = n.saturating_sub(1);
+        }
+        ended.notify_all();
+    }
+}
+
 /// A bridge the fleet runs: what stops it, and its thread.
 type Bridge = (watch::Sender<bool>, std::thread::JoinHandle<()>);
 
@@ -322,6 +341,7 @@ pub struct Hosting {
     /// starting.
     tests: std::sync::Mutex<Tests>,
     started: std::sync::Condvar,
+    turns: Turns,
 }
 
 /// The sessions hosted for tests, by id; how many are still starting; and
@@ -449,17 +469,39 @@ impl Hosting {
                 }
             }
         });
-        std::thread::spawn(move || match rt.block_on(d.execute(cmd, out)) {
-            // Ended with no line seen first: started all the same.
-            Ok(_) => {
-                let _ = said.send(Ok(()));
-            }
-            Err(e) => {
-                eprintln!("fleet: a test's turn failed: {e:?}");
-                let _ = said.send(Err(format!("the turn failed: {e:?}")));
+        *self.turns.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner).entry(session.to_string()).or_default() += 1;
+        let typed = TypedTurn(self.turns.clone(), session.to_string());
+        std::thread::spawn(move || {
+            let _typed = typed;
+            match rt.block_on(d.execute(cmd, out)) {
+                // Ended with no line seen first: started all the same.
+                Ok(_) => {
+                    let _ = said.send(Ok(()));
+                }
+                Err(e) => {
+                    eprintln!("fleet: a test's turn failed: {e:?}");
+                    let _ = said.send(Err(format!("the turn failed: {e:?}")));
+                }
             }
         });
         heard.recv_timeout(Duration::from_secs(10)).map_err(|_| "the turn did not start within 10 s".to_string())?
+    }
+
+    /// Waits, up to `wait`, until every turn `turn` typed in `session`, a
+    /// test's own, has ended at host A (the host daemon finished it; the
+    /// bridge hands its last lines on after): `true` once they have,
+    /// `false` if one still runs. A session with none running has nothing
+    /// to wait for. How long a turn takes is the host's (a starved runner
+    /// streams slower); a test asks this until `true`, then checks only how
+    /// soon its viewer shows the end.
+    pub fn turn_ended(&self, session: &str, wait: Duration) -> Result<bool, String> {
+        if !self.tests.lock().unwrap_or_else(std::sync::PoisonError::into_inner).titles.contains_key(session) {
+            return Err(format!("the fleet hosts no test session {session}"));
+        }
+        let (running, ended) = &*self.turns;
+        let guard = running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (still, _) = ended.wait_timeout_while(guard, wait, |r| r.get(session).is_some_and(|n| *n > 0)).unwrap_or_else(std::sync::PoisonError::into_inner);
+        Ok(still.get(session).is_none_or(|n| *n == 0))
     }
 
     /// Stops every test's session, and any that starts from now on.
@@ -613,9 +655,11 @@ fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'stat
 }
 
 /// Waits until the session's sealed index names a lease, a checkpoint and
-/// a head: the bridge has taken the session up and written it.
+/// a head: the bridge has taken the session up and written it. Up to a
+/// minute: a debug host on GitHub's busy macOS runner has taken longer
+/// than 10 s to write its first checkpoint, and the fleet never started.
 fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(60);
     loop {
         let ready = (|| -> Result<(), String> {
             let s = api.show_sync_session(session).map_err(|e| e.to_string())?;

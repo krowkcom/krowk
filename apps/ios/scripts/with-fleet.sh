@@ -17,12 +17,14 @@
 # <url>/<id>/release lets go (its lease lapses) and <url>/<id>/host hosts
 # again (the host coming back, R-HAND-4), and a POST to
 # <url>/<id>/turn runs a turn in (its body the prompt; "Please stream a
-# long answer" streams one at 200 tokens a second). The fleet runs with
-# --demo: its session is titled "A demo session", has a turn with a tool
-# call and its result, and holds an approval. The fleet binds 127.0.0.1
-# only; the simulator shares
-# the Mac's loopback. Its log is appended to $KROWK_FLEET_LOG (default
-# target/fake-fleet.log), and its last lines are shown if it fails to start.
+# long answer" streams one at 200 tokens a second, far slower on a busy
+# runner), and <url>/<id>/turn-ended answers `ended` once that turn has
+# ended at the host, or `running` if it still runs 5 s later. The fleet
+# runs with --demo: its session is titled "A demo session", has a turn
+# with a tool call and its result, and holds an approval. The fleet
+# binds 127.0.0.1 only; the simulator shares the Mac's loopback. Its log
+# is appended to $KROWK_FLEET_LOG (default target/fake-fleet.log), and its
+# last lines are shown if it fails to start.
 #
 # The fleet answers pairings with a debug krowk built with the harness
 # feature: KROWK_BIN names one, else this builds it.
