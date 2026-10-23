@@ -109,9 +109,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var toastHide: DispatchWorkItem?
     /// A try again at raising the sheet, while another sheet is up.
     private var approvalsRetry: DispatchWorkItem?
+    /// The app's lifecycle, which this screen's session hears (ticket 86).
+    private let lifecycle: LiveSessions
 
-    public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil) {
+    public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared) {
         self.row = row
+        self.lifecycle = lifecycle
         self.session = session
         self.approvals = session == nil ? nil : approvals
         let model = model ?? TranscriptModel(sessionID: row.id)
@@ -123,7 +126,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         navigationItem.largeTitleDisplayMode = .never
         // From now, before the view loads: the scene's foreground reaches
         // the connection before any view appears (R-IOS-2).
-        if let session { LiveSessions.shared.add(session) }
+        if let session { lifecycle.add(session) }
     }
 
     @available(*, unavailable)
@@ -320,7 +323,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// applied now, so none pile up in the mailbox until iOS suspends the
     /// app (ticket 86). Each post after a drain wakes once: no busy loop.
     private func woken() {
-        if parked || UIApplication.shared.applicationState == .background {
+        if parked || lifecycle.inBackground {
             frame()
         } else {
             driver?.wake()
@@ -452,7 +455,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// The session stopped, and no longer told of the app's lifecycle.
     private func stopSession() {
         guard let session else { return }
-        LiveSessions.shared.remove(session)
+        lifecycle.remove(session)
         session.stop()
     }
 

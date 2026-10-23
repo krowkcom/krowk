@@ -17,6 +17,11 @@ public final class LiveSessions {
 
     private var held: [ObjectIdentifier: Held] = [:]
 
+    /// The app is in the background (from `didEnterBackground` to
+    /// `willEnterForeground`): a screen applies what comes at once, as its
+    /// display link doesn't fire there.
+    public private(set) var inBackground = false
+
     public init() {}
 
     public func add(_ session: any LiveSession) {
@@ -35,6 +40,7 @@ public final class LiveSessions {
 
     /// The scene is coming forward: before any view appears (R-IOS-2).
     public func willEnterForeground() {
+        inBackground = false
         for s in sessions { s.foreground() }
     }
 
@@ -45,6 +51,7 @@ public final class LiveSessions {
 
     /// The scene went to the background.
     public func didEnterBackground() {
+        inBackground = true
         for s in sessions { s.background() }
     }
 

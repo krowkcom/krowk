@@ -15,30 +15,62 @@ struct ConnectionLifecycleTests {
     @Test("R-IOS-2: a session screen's session hears the foreground from the moment the screen is made, before its view loads; one stopped no longer does")
     func foregroundBeforeAnyView() {
         let session = CountingSession()
-        let screen = TranscriptViewController(row: SessionRow(id: "s", title: "t", detail: "", live: true, accessibilityLabel: "t"), session: session)
-        LiveSessions.shared.willEnterForeground()
+        let lifecycle = LiveSessions()
+        let screen = TranscriptViewController(row: SessionRow(id: "s", title: "t", detail: "", live: true, accessibilityLabel: "t"), session: session, lifecycle: lifecycle)
+        lifecycle.willEnterForeground()
         #expect(session.counts.withLock { $0 } == LifecycleCounts(foreground: 1))
         #expect(!screen.isViewLoaded, "no view was needed")
-        LiveSessions.shared.didBecomeActive()
-        LiveSessions.shared.didEnterBackground()
-        LiveSessions.shared.wake()
+        lifecycle.didBecomeActive()
+        lifecycle.didEnterBackground()
+        #expect(lifecycle.inBackground)
+        lifecycle.wake()
         #expect(session.counts.withLock { $0 } == LifecycleCounts(foreground: 1, background: 1, wake: 2))
-        LiveSessions.shared.remove(session)
-        LiveSessions.shared.willEnterForeground()
+        lifecycle.remove(session)
+        lifecycle.willEnterForeground()
+        #expect(!lifecycle.inBackground)
         #expect(session.counts.withLock { $0 }.foreground == 1)
         _ = screen
     }
 
     @Test("R-IOS-2: the registry holds its sessions weakly: one let go is never told again, nor kept")
     func weak() {
+        let lifecycle = LiveSessions()
         weak var gone: CountingSession?
         do {
             let session = CountingSession()
             gone = session
-            LiveSessions.shared.add(session)
+            lifecycle.add(session)
         }
         #expect(gone == nil)
-        LiveSessions.shared.willEnterForeground()
+        lifecycle.willEnterForeground()
+    }
+
+    @Test("Ticket 86: in the background a screen applies what comes at once (its display link doesn't fire there), so nothing piles up in the mailbox before iOS suspends the app; in the foreground it waits for the link")
+    func appliedInTheBackground() async throws {
+        let session = StubSession()
+        let lifecycle = LiveSessions()
+        let screen = TranscriptViewController(row: SessionRow(id: TranscriptScreenTests.session, title: "t", detail: "", live: true, accessibilityLabel: "t"), session: session, lifecycle: lifecycle)
+        // Loaded, never shown: no display link, so only the background
+        // path can apply anything.
+        screen.loadViewIfNeeded()
+        lifecycle.didEnterBackground()
+        session.bring(TranscriptScreenTests.turn, attach: true)
+        try await waitFor { screen.model.attached }
+        let taken = session.taken.withLock { $0 }
+        #expect(taken >= 1)
+
+        lifecycle.willEnterForeground()
+        session.bring([TranscriptScreenTests.event("e7", .userText(item: "u2", text: "And then?", images: []))])
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(session.taken.withLock { $0 } == taken, "applied with no display frame in the foreground")
+    }
+
+    private func waitFor(_ done: () -> Bool) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !done() && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        #expect(done())
     }
 
     @Test("R-OFF-2: NWPathMonitor's first callback, the path as it is when it starts, is no change; every one after is")
