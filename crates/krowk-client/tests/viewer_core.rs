@@ -10,7 +10,7 @@ use krowk_client::protocol::frame::{HEADER, KIND_ACK, KIND_FRAME};
 use krowk_client::protocol::{ApprovalRequest, Command, LiveEvent, StreamLine};
 use krowk_client::relay_link::{HostLink, Inbound};
 use krowk_client::sync::join::control;
-use krowk_client::sync::store::Attached;
+use krowk_client::sync::store::{Attached, ReadError};
 use krowk_client::sync::viewer::{Effect, Update, ViewerCore};
 use krowk_client::sync::{uuid, Answer, Candidate, ViewerFrame, Welcome};
 use serde_json::{json, Value};
@@ -113,7 +113,7 @@ impl Relay {
         self.take(e);
     }
 
-    fn read(&mut self, r: Result<(Vec<Value>, Attached), String>) {
+    fn read(&mut self, r: Result<(Vec<Value>, Attached), ReadError>) {
         let e = self.core.chunks_read(r, self.now);
         self.take(e);
     }
@@ -416,15 +416,17 @@ fn r_client_3_any_word_keeps_the_connection() {
     assert!(matches!(r.take_rest().as_slice(), [Effect::Join { .. }]));
 }
 
-/// R-CLIENT-3: a welcome whose chunks cannot be read up to its head shows
-/// `Failed` and ends the viewer: nothing after does anything.
+/// R-CLIENT-3: a welcome whose chunks cannot be read up to its head, for
+/// good — the session gone, its chunks not opening under this device's
+/// keys, or a rollback — shows `Failed` and ends the viewer: nothing after
+/// does anything.
 #[test]
 fn r_client_3_a_failed_read_shows_failed_and_ends() {
     let mut r = Relay::new(vec![], 0);
     r.joined(true, 0);
     r.welcome_with(Welcome::default());
     r.take_rest();
-    r.read(Err("the log is shorter than the head".into()));
+    r.read(Err(ReadError::permanent("the log is shorter than the head")));
     assert!(matches!(r.take_rest().as_slice(), [Effect::End]));
     let shown = r.updates();
     assert!(matches!(shown.last(), Some(Update::Failed(e)) if e.contains("shorter")), "{shown:?}");
@@ -527,20 +529,20 @@ fn r_hand_4_a_handoff_asked_with_no_host_goes_after_the_commands() {
     assert!(matches!(r.frames.as_slice(), [ViewerFrame::CatchUp { .. }, ViewerFrame::Command(_), ViewerFrame::Handoff { .. }]), "{:?}", r.frames);
 }
 
-/// R-HAND-4: with no host, a resync read that finds the session's key
-/// rotated since it was opened ends the viewer; any other failed read is
-/// let go.
+/// R-HAND-4: with no host, a resync read that fails for good — the
+/// session's key rotated since it was opened, say — ends the viewer; one
+/// that failed for now is let go, with no join.
 #[test]
-fn r_hand_4_a_resync_read_ends_only_on_a_rotated_key() {
+fn r_hand_4_a_resync_read_ends_only_on_a_permanent_failure() {
     let mut r = Relay::new(vec![], 0);
     r.joined(false, 0);
     let resync = json!({"type": "resync", "reason": "beyond_buffer", "stream": "00", "seq": 0});
     r.control(resync.clone());
-    r.read(Err("the registry could not be reached".into()));
-    assert!(r.take_rest().iter().all(|e| !matches!(e, Effect::End)));
+    r.read(Err(ReadError::transient("network_unreachable")));
+    assert!(r.take_rest().iter().all(|e| !matches!(e, Effect::End | Effect::Join { .. })));
     r.control(resync);
     assert!(matches!(r.take_rest().as_slice(), [Effect::ReadChunks { want: None }]));
-    r.read(Err(format!("chunk 3 is sealed under a newer epoch — {}; open it again", krowk_client::e2e::ROTATED_SINCE_OPENED)));
+    r.read(Err(ReadError::permanent(format!("chunk 3 is sealed under a newer epoch — {}; open it again", krowk_client::e2e::ROTATED_SINCE_OPENED))));
     assert!(matches!(r.take_rest().as_slice(), [Effect::End]));
     assert!(matches!(r.updates().last(), Some(Update::Failed(_))));
 }
@@ -820,4 +822,158 @@ fn r_net_2_a_candidate_with_no_host_is_refused() {
     assert_eq!(probes(&mut r), 0);
     r.at(10_050).tick();
     assert_eq!(probes(&mut r), 1);
+}
+
+/// The logged events shown, by id, in the order shown: lines and catch-ups.
+fn shown_ids(u: &[Update]) -> Vec<String> {
+    let mut ids = Vec::new();
+    for u in u {
+        match u {
+            Update::Line(StreamLine::Log(e)) => ids.push(e.id.clone()),
+            Update::CaughtUp(events) => ids.extend(events.iter().map(|e| e["id"].as_str().unwrap().to_string())),
+            _ => {}
+        }
+    }
+    ids
+}
+
+fn joins(effects: &[Effect]) -> Vec<(u64, Value)> {
+    effects.iter().filter_map(|e| if let Effect::Join { at_ms, extra } = e { Some((*at_ms, extra.clone())) } else { None }).collect()
+}
+
+/// R-CLIENT-3, R-OFF-2 (ticket 115): a welcome whose chunks could not be
+/// read for now — a registry hiccup — does not end the viewer: it says why,
+/// drops the connection and joins the relay again a second later, from the
+/// cursor, with what was held and what waited on the read gone with the
+/// connection. The host welcomes it again, the read goes through, and every
+/// event shows once: none lost, none twice. A command typed meanwhile goes
+/// once, at the welcome that was acted on.
+#[test]
+fn r_client_3_a_transient_read_failure_during_a_welcome_rejoins_and_catches_up() {
+    let mut r = Relay::new(vec![logged(1)], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    let b1 = r.batch(vec![logged(2)], false);
+    r.receive(&b1);
+    r.at(16).tick();
+    assert_eq!(shown_ids(&r.updates()), [id(2)]);
+
+    // The relay lets the viewer go; joined again, welcomed, and while the
+    // welcome's read is out batch 2 is held, the person types, and the
+    // connection closes.
+    let stream = krowk_client::e2e::hex(&r.host.stream());
+    assert!(matches!(joins(&r.core.closed(100)).as_slice(), [(1100, _)]));
+    r.at(1100);
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": stream, "seq": 1}), 1100);
+    r.take(e);
+    r.welcome_with(Welcome::default());
+    assert!(matches!(r.take_rest().as_slice(), [Effect::ReadChunks { want: None }]));
+    let b2 = r.batch(vec![logged(3)], false);
+    r.receive(&b2);
+    r.command(stop(1));
+    assert!(r.core.closed(1150).is_empty(), "held behind the read");
+    r.frames.clear();
+
+    r.at(1200).read(Err(ReadError::transient("http_503")));
+    let rest = r.take_rest();
+    assert!(!rest.iter().any(|e| matches!(e, Effect::End)), "{rest:?}");
+    assert_eq!(joins(&rest), [(2200, json!({"stream": stream, "afterSeq": 1}))], "once, a second on, from the cursor: {rest:?}");
+    assert!(r.frames.is_empty(), "the welcome not acted on: no catch-up, no command");
+    r.at(1216).tick();
+    let shown = r.updates();
+    assert!(shown.iter().any(|u| matches!(u, Update::Note(n) if n.contains("http_503"))), "said why: {shown:?}");
+    assert!(shown_ids(&shown).is_empty() && !shown.iter().any(|u| matches!(u, Update::Failed(_) | Update::Host(true))), "{shown:?}");
+    assert!(r.core.next_wake().is_some(), "not ended");
+
+    // Joined again at the cursor: the relay sends batch 2 again, the read
+    // goes through holding events 2 and 3, and batch 3 comes live.
+    r.at(2200);
+    r.link += 1;
+    let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": stream, "seq": 2}), 2200);
+    r.take(e);
+    r.welcome_with(Welcome::default());
+    r.receive(&b2);
+    r.read(Ok((vec![logged(2), logged(3)], Attached::default())));
+    assert_eq!(catch_ups(&r.frames), [Some(id(3))], "from the newest event held");
+    assert_eq!(commands(&r.frames), [stop(1)], "the command typed meanwhile, once");
+    let b3 = r.batch(vec![logged(4)], false);
+    r.receive(&b3);
+    r.answer(&Answer::CatchUp { events: vec![serde_json::from_value(logged(4)).unwrap()], more: false });
+    r.at(2300).tick();
+    let shown = r.updates();
+    assert_eq!(shown_ids(&shown), [id(3), id(4)], "each once: {shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::Gap)), "{shown:?}");
+    assert_eq!(hosts(&shown), [true]);
+}
+
+/// R-CLIENT-3 (ticket 115): a welcome's read that fails for good ends the
+/// viewer whatever the cause; one that failed for now never does.
+#[test]
+fn r_client_3_only_a_permanent_read_failure_during_a_welcome_ends() {
+    for (failure, ends) in [
+        (ReadError::permanent("the registry no longer holds the session (not_found)"), true),
+        (ReadError::permanent(format!("chunk 3 is sealed under session key epoch 2 — {}", krowk_client::e2e::ROTATED_SINCE_OPENED)), true),
+        (ReadError::permanent("the registry served the log only to chunk 2, where the session's host has sealed to chunk 4: a prefix, refused"), true),
+        (ReadError::transient("network_unreachable"), false),
+        (ReadError::transient("checksum_mismatch"), false),
+    ] {
+        let mut r = Relay::new(vec![], 0);
+        r.joined(true, 0);
+        r.welcome_with(Welcome::default());
+        r.take_rest();
+        r.at(10).read(Err(failure.clone()));
+        let rest = r.take_rest();
+        assert_eq!(rest.iter().any(|e| matches!(e, Effect::End)), ends, "{failure:?}: {rest:?}");
+        assert_eq!(joins(&rest).len(), usize::from(!ends), "{failure:?}: {rest:?}");
+        assert_eq!(r.core.next_wake().is_none(), ends);
+        if ends {
+            assert!(matches!(r.updates().last(), Some(Update::Failed(e)) if *e == failure.detail));
+        }
+    }
+}
+
+/// R-CLIENT-3, R-OFF-2 (ticket 115): a welcome's read that keeps failing
+/// joins again after 1 s, then 2, 4 … up to 30 s, never sooner, and says
+/// why once while the reason holds; a read that goes through starts the
+/// wait over.
+#[test]
+fn r_client_3_repeated_read_failures_back_off_and_never_spin() {
+    let mut r = Relay::new(vec![], 0);
+    let mut t = 0;
+    let welcomed_and_failed = |r: &mut Relay, t: u64, why: &str| -> Vec<(u64, Value)> {
+        r.at(t).joined(true, 0);
+        r.welcome_with(Welcome::default());
+        assert!(matches!(r.take_rest().as_slice(), [Effect::ReadChunks { .. }]));
+        r.read(Err(ReadError::transient(why)));
+        joins(&r.take_rest())
+    };
+    for wait in [1, 2, 4, 8, 16, 30, 30, 30] {
+        let j = welcomed_and_failed(&mut r, t, "http_502");
+        assert_eq!(j.iter().map(|(at, _)| *at).collect::<Vec<_>>(), [t + wait * 1000], "at {t}");
+        // Nothing until then but the frame: no join, no read, no ping.
+        while let Some(w) = r.core.next_wake().filter(|w| *w < t + wait * 1000) {
+            r.at(w.max(t)).tick();
+            assert!(r.take_rest().is_empty(), "at {w}");
+        }
+        t += wait * 1000;
+    }
+    let notes = r.updates().into_iter().filter(|u| matches!(u, Update::Note(_))).count();
+    assert_eq!(notes, 1, "said once while the reason holds");
+    let j = welcomed_and_failed(&mut r, t, "network_unreachable");
+    assert_eq!(j[0].0, t + 30_000, "still backed off");
+    r.at(t + 16).tick();
+    assert_eq!(r.updates().into_iter().filter(|u| matches!(u, Update::Note(_))).count(), 1, "a new reason is said");
+
+    // Through: the next failure waits a second again.
+    t += 30_000;
+    r.at(t).joined(true, 0);
+    r.welcome_with(Welcome::default());
+    r.take_rest();
+    r.read(Ok((vec![], Attached::default())));
+    t += 5_000;
+    r.at(t).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
+    r.take_rest();
+    let j = welcomed_and_failed(&mut r, t, "http_502");
+    assert_eq!(j[0].0, t + 1000);
 }

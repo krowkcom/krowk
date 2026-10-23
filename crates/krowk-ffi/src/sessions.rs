@@ -255,7 +255,7 @@ impl OpenedSession {
             (Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads }, a.events.len(), lent)
         };
         let decoded = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None)
-            .map_err(internal)
+            .map_err(|e| internal(e.into()))
             .and_then(|fresh| decode(&fresh, before).map(|d| (fresh, d)));
         let mut a = self.attached();
         let (fresh, decoded) = match decoded {
