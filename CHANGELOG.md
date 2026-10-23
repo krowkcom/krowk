@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone asks to send notifications once it is paired.** Right
+  after the phone joins your devices, iOS asks "Allow krowk to send
+  notifications?" — never at launch. Allowed, the phone registers for
+  push with krowk's registry, signed by its own device key, so it can
+  ring when a session needs an approval or finishes a turn even while it
+  sits in your pocket. It keeps that registration current each time the
+  app comes forward and when iOS changes its push token, sending nothing
+  when nothing changed. Say no, or turn notifications off later in
+  Settings, and the registration is dropped. The app keeps only a digest
+  of what it registered, never the token, and never logs it. Nothing
+  changes for CLI users.
 - **Approve tool calls and answer questions from the iPhone.** When a
   turn asks before it runs something, the request now rises in a sheet
   over the session on your phone too: the tool, what it runs in
