@@ -74,10 +74,16 @@ public struct RelayStatusTracker: Equatable, Sendable {
     }
 
     /// `Update` note: why the relay can't be joined. Stays until a join
-    /// says where the host is.
+    /// says where the host is. It comes after the wait it explains: a wait
+    /// already counting down keeps its time and takes the reason.
     public mutating func note(_ text: String) {
         guard !isEnded else { return }
-        status = .unreachable(text)
+        let unreachable = RelayStatus.unreachable(text)
+        if case .retrying(let at, _) = status {
+            status = .retrying(at: at, why: unreachable.plainText)
+        } else {
+            status = unreachable
+        }
     }
 
     /// The connection was dropped (the viewer's `Close`) or ended by
@@ -98,6 +104,12 @@ public struct RelayStatusTracker: Equatable, Sendable {
         case .retrying(_, let why): status = .retrying(at: at, why: why)
         case .connecting, .live, .hostOffline, .catchingUp, .ended: break
         }
+    }
+
+    /// The session opened, after a failure the bar may still say: it joins
+    /// now.
+    public mutating func opened() {
+        if case .retrying = status { status = .connecting }
     }
 
     /// Opening the session failed, and is tried again at `at`.

@@ -195,7 +195,10 @@ fn updates(u: Update, out: &mut Vec<ViewerUpdate>) {
         // The core says it tries again every second; the supervisor's
         // backoff times the phone's retries, and the screen says when.
         Update::Note(text) => {
-            let text = text.strip_suffix(core::EVERY_SECOND).map_or(text.clone(), str::to_string);
+            let text = match text.strip_suffix(core::EVERY_SECOND) {
+                Some(cut) => cut.to_string(),
+                None => text,
+            };
             out.push(ViewerUpdate::Note { text });
             None
         }
@@ -468,10 +471,17 @@ impl Viewer {
     }
 
     /// The scene went to the background: the connection is kept, but one
-    /// lost from here is not joined again until `foreground`.
+    /// lost from here is not joined again until `foreground`. A join
+    /// waiting for its ticket (on the backoff, or being fetched) is held
+    /// too: Swift drops the ticket it asked for, and `foreground` asks
+    /// afresh, so a fetch iOS suspended never holds the return up.
     pub fn background(&self, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             i.sup.background(now_ms);
+            if i.pending.is_some() && i.joining.is_none() {
+                i.held = true;
+                i.ticket_at = None;
+            }
             Vec::new()
         })
     }
@@ -579,10 +589,15 @@ impl Inner {
     /// The current connection dropped and joined again at once, from the
     /// cursor, as if it had closed: no backoff. Mid-read, the core acts on
     /// the close once the chunks are read.
+    ///
+    /// Once: a replace already asked waits for its join, and the probe
+    /// that asked it is done with, so a tick never asks again (a read out
+    /// would otherwise queue a close every tick).
     fn replace(&mut self, now_ms: u64) -> Vec<Effect> {
-        if self.connection.is_none() || self.joining.is_some() {
+        if self.connection.is_none() || self.joining.is_some() || self.replacing {
             return Vec::new();
         }
+        self.sup.with(|s| s.rules.replaced(now_ms));
         self.replacing = true;
         let out = self.core.closed(now_ms);
         self.effects(out, now_ms)
@@ -622,7 +637,7 @@ impl Inner {
                     let replacing = std::mem::take(&mut self.replacing);
                     let at = self.sup.with(|s| {
                         if !s.rules.in_background() && (replacing || at_ms <= now_ms) {
-                            s.rules.replaced();
+                            s.rules.replaced(now_ms);
                             Some(at_ms.min(now_ms))
                         } else {
                             s.lost(now_ms)

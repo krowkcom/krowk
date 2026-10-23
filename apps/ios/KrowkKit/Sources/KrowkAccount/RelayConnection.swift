@@ -66,10 +66,20 @@ public actor RelayConnection: LiveSession {
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
     /// When to connect and try again (ticket 86): asked while the session
-    /// is opened, then handed to the viewer.
-    private let supervisor: ConnectionSupervisor
-    /// Opening the session, on a thread of its own.
+    /// is opened, then handed to the viewer. Made on the queue the first
+    /// time it's needed, never on the main thread, where this is made.
+    private var supervisor: ConnectionSupervisor {
+        if let madeSupervisor { return madeSupervisor }
+        let made = ConnectionSupervisor(nowMs: now(), seed: seed)
+        madeSupervisor = made
+        return made
+    }
+    private var madeSupervisor: ConnectionSupervisor?
+    private let seed = UInt64.random(in: .min ... .max)
+    /// Opening the session, on a thread of its own, and which open is the
+    /// current one: one the background abandoned is dropped when it ends.
     private var opening = false
+    private var openAsk: UInt64 = 0
     /// The next try at opening it, after one failed.
     private var openRetry: DispatchWorkItem?
     /// The network path, watched from `start`: a path that becomes usable
@@ -99,7 +109,6 @@ public actor RelayConnection: LiveSession {
         self.queue = DispatchSerialQueue(label: "krowk.relay")
         self.open = opening
         self.approvals = approvals
-        self.supervisor = ConnectionSupervisor(nowMs: Self.now(), seed: UInt64.random(in: .min ... .max))
     }
 
     /// One never stopped (its screen let go of it) still closes its socket.
@@ -193,6 +202,11 @@ public actor RelayConnection: LiveSession {
     }
 
     private nonisolated let clockOffset = OSAllocatedUnfairLock<UInt64>(initialState: 0)
+
+    /// The text `ping`s sent (the heartbeat's and the probes') and the
+    /// text or pong messages heard back, for the tests.
+    public nonisolated var heartbeats: (pings: Int, pongs: Int) { beats.withLock { ($0.pings, $0.pongs) } }
+    private nonisolated let beats = OSAllocatedUnfairLock<(pings: Int, pongs: Int)>(initialState: (0, 0))
     #endif
 
     // MARK: Driving the viewer
@@ -211,6 +225,8 @@ public actor RelayConnection: LiveSession {
     private func openSession() {
         guard !done, viewer == nil, !opening else { return }
         opening = true
+        openAsk += 1
+        let ask = openAsk
         openRetry?.cancel()
         openRetry = nil
         let open = self.open
@@ -222,6 +238,7 @@ public actor RelayConnection: LiveSession {
                 return (session, try Viewer.openSupervised(session: session, supervisor: supervisor, nowMs: now))
             }
         } then: { (me: isolated RelayConnection, opened) in
+            guard ask == me.openAsk else { return }
             me.opening = false
             me.opened(opened)
         }
@@ -231,6 +248,7 @@ public actor RelayConnection: LiveSession {
         guard !done else { return }
         switch opened {
         case .success(let (session, viewer)):
+            tracker.opened()
             self.session = session
             self.viewer = viewer
             sessionID = session.id()
@@ -290,7 +308,12 @@ public actor RelayConnection: LiveSession {
         if let viewer {
             switch event {
             case .foreground: run(viewer.foreground(nowMs: now))
-            case .background: run(viewer.background(nowMs: now))
+            case .background:
+                // A ticket asked for and not yet used is dropped (the
+                // viewer holds its join): the foreground asks afresh, so a
+                // fetch iOS suspended mid-call never holds the return up.
+                ticketAsk += 1
+                run(viewer.background(nowMs: now))
             case .wake: run(viewer.wake(nowMs: now))
             }
             return
@@ -300,7 +323,16 @@ public actor RelayConnection: LiveSession {
         let action: WakeAction
         switch event {
         case .background:
+            // Neither retried nor waited on there: an open under way is
+            // abandoned (its answer dropped) and one due later is not
+            // made; the foreground opens it at once.
             supervisor.background(nowMs: now)
+            openRetry?.cancel()
+            openRetry = nil
+            if opening {
+                opening = false
+                openAsk += 1
+            }
             return
         case .foreground: action = supervisor.foreground(nowMs: now, link: link)
         case .wake: action = supervisor.wake(nowMs: now, link: link)
@@ -398,6 +430,9 @@ public actor RelayConnection: LiveSession {
             case .send(let bytes):
                 send(bytes, .binary)
             case .ping:
+                #if DEBUG
+                beats.withLock { $0.pings += 1 }
+                #endif
                 send(Data("ping".utf8), .text)
             case .close:
                 drop()
@@ -545,6 +580,9 @@ public actor RelayConnection: LiveSession {
         // Text (the relay's `pong` to the viewer's `ping`) and a pong only
         // say the link lives.
         case .text?, .pong?:
+            #if DEBUG
+            beats.withLock { $0.pongs += 1 }
+            #endif
             run(viewer.received(connection: number, frame: .text(text: ""), nowMs: now()))
         // A ping Network.framework answered: not fed in, so a peer that
         // only pings never keeps a join that's going nowhere waiting.

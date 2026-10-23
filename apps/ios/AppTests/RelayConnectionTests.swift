@@ -121,20 +121,30 @@ extension HostedKeychain {
             defer { live.stop() }
             try await Self.wait(for: .live, on: live, within: .seconds(15))
             await MainActor.run { LiveSessions.shared.add(live) }
+            // Forward again however it ends: the registry is the app's.
+            do {
+                try await Self.connectsOnForeground(live)
+            } catch {
+                try? await Self.scene(.foreground)
+                await MainActor.run { LiveSessions.shared.remove(live) }
+                throw error
+            }
+            await MainActor.run { LiveSessions.shared.remove(live) }
+        }
 
+        private static func connectsOnForeground(_ live: RelayConnection) async throws {
             // Lost in the background: held, nothing dialed.
-            try await Self.scene(.background)
+            try await scene(.background)
             let dials = live.dials
             live.dropConnection()
             try await Task.sleep(for: .seconds(3))
             #expect(live.dials == dials, "redialed in the background: \(dials) → \(live.dials)")
-            #expect(Self.waiting(live.status), "\(live.status.text)")
+            #expect(waiting(live.status), "\(live.status.text)")
 
             // No view, no screen: the scene's foreground alone dials.
-            try await Self.scene(.foreground)
-            try await Self.wait(until: { live.dials > dials }, within: .seconds(5), "no connect after willEnterForeground: \(live.dials) dials")
-            try await Self.wait(for: .live, on: live, within: .seconds(15))
-            await MainActor.run { LiveSessions.shared.remove(live) }
+            try await scene(.foreground)
+            try await wait(until: { live.dials > dials }, within: .seconds(5), "no connect after willEnterForeground: \(live.dials) dials")
+            try await wait(for: .live, on: live, within: .seconds(15))
         }
 
         enum SceneEvent { case background, foreground }
@@ -216,15 +226,27 @@ extension HostedKeychain {
             let id = try await SessionListTests.control("", body: "Probed while it streams")
             let (live, _) = try await Self.follow(try await Self.open(id, phone: phone))
             defer { live.stop() }
-            try await Self.wait(for: .live, on: live, within: .seconds(15))
+            do {
+                try await Self.probedWhileFeeding(live, id: id)
+            } catch {
+                _ = try? await SessionListTests.control("/\(id)/release")
+                throw error
+            }
+            #expect(try await SessionListTests.control("/\(id)/release") == "released")
+        }
+
+        private static func probedWhileFeeding(_ live: RelayConnection, id: String) async throws {
+            try await wait(for: .live, on: live, within: .seconds(15))
             try await Task.sleep(for: .seconds(1))
             _ = live.mailbox.drain()
             #expect(try await SessionListTests.control("/\(id)/turn", body: "Please stream a long answer") == "started")
             // Streaming: batches arriving and fed to the core on the queue.
-            try await Self.wait(until: { live.mailbox.waiting > 0 }, within: .seconds(30), "nothing streamed")
+            try await wait(until: { live.mailbox.waiting > 0 }, within: .seconds(30), "nothing streamed")
             let dials = live.dials
-            // A wake a second for ten seconds: each a probe while the batches
-            // feed, each answered within its 5 s or the link is replaced.
+            let (pings, pongs) = live.heartbeats
+            // A wake a second for ten seconds while the batches feed: each
+            // a `ping` sent between batches, and its `pong` back within the
+            // 5 s, or the link is replaced.
             for _ in 0..<10 {
                 live.wake()
                 _ = live.mailbox.drain()
@@ -232,9 +254,13 @@ extension HostedKeychain {
             }
             try await Task.sleep(for: .seconds(6))
             _ = live.mailbox.drain()
+            let (sent, heard) = live.heartbeats
+            // The heartbeat's own pings come every 10 s: most of these are
+            // the probes'.
+            #expect(sent - pings >= 8, "the probes never went out: \(sent - pings) pings")
+            #expect(heard - pongs >= 8, "the probes' pongs never came back: \(heard - pongs) of \(sent - pings)")
             #expect(live.dials == dials, "a probe went unanswered while feeding: \(dials) → \(live.dials) dials")
             #expect(live.status == .live, "\(live.status.text)")
-            #expect(try await SessionListTests.control("/\(id)/release") == "released")
         }
 
         @Test("R-OFF-2: a session whose opening failed on the network is opened again on the backoff, the bar saying why and when, until it is live")

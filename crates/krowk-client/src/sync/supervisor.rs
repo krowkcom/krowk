@@ -94,26 +94,29 @@ pub struct ConnectionSupervisor {
     probe_until: Option<u64>,
     /// In the background since.
     background_since: Option<u64>,
-    /// A connection lost in the background, not tried again yet.
-    held: bool,
 }
 
 impl ConnectionSupervisor {
     pub fn new(now_ms: u64) -> ConnectionSupervisor {
-        ConnectionSupervisor { full_ms: ms(BACKOFF_BASE), up_since: None, heard_ms: now_ms, probe_until: None, background_since: None, held: false }
+        ConnectionSupervisor { full_ms: ms(BACKOFF_BASE), up_since: None, heard_ms: now_ms, probe_until: None, background_since: None }
+    }
+
+    /// The connection ends (lost or replaced): the backoff starts over if
+    /// it stayed up `STAYED_UP`, and nothing of it is waited on any more.
+    fn ended(&mut self, now_ms: u64) {
+        if self.up_since.is_some_and(|t| now_ms.saturating_sub(t) >= ms(STAYED_UP)) {
+            self.full_ms = ms(BACKOFF_BASE);
+        }
+        self.up_since = None;
+        self.probe_until = None;
     }
 
     /// The connection was lost, or a join (its ticket, dial or handshake)
     /// failed: when to try again, `random` drawing the cut; `None` in the
     /// background, where it is held until the foreground.
     pub fn lost(&mut self, now_ms: u64, random: u8) -> Option<u64> {
-        if self.up_since.is_some_and(|t| now_ms.saturating_sub(t) >= ms(STAYED_UP)) {
-            self.full_ms = ms(BACKOFF_BASE);
-        }
-        self.up_since = None;
-        self.probe_until = None;
+        self.ended(now_ms);
         if self.background_since.is_some() {
-            self.held = true;
             return None;
         }
         let wait = jittered(self.full_ms, random);
@@ -122,10 +125,11 @@ impl ConnectionSupervisor {
     }
 
     /// The connection is dropped and joined again at once (`Replace`, or
-    /// the core's own dead-link rejoin): no loss to back off from.
-    pub fn replaced(&mut self) {
-        self.up_since = None;
-        self.probe_until = None;
+    /// the core's own dead-link rejoin): no loss to back off from, but a
+    /// connection that stayed up `STAYED_UP` starts the backoff over, as a
+    /// loss would.
+    pub fn replaced(&mut self, now_ms: u64) {
+        self.ended(now_ms);
     }
 
     /// A connection joined.
@@ -133,7 +137,6 @@ impl ConnectionSupervisor {
         self.up_since = Some(now_ms);
         self.heard_ms = now_ms;
         self.probe_until = None;
-        self.held = false;
     }
 
     /// Anything came on the current connection, a `pong` included: it
@@ -150,13 +153,10 @@ impl ConnectionSupervisor {
             return Wake::Nothing;
         }
         match link {
-            Link::Down => {
-                self.held = false;
-                Wake::Connect
-            }
+            Link::Down => Wake::Connect,
             Link::Joining => Wake::Nothing,
             Link::Up if now_ms.saturating_sub(self.heard_ms) > ms(DEAD) => {
-                self.replaced();
+                self.replaced(now_ms);
                 Wake::Replace
             }
             Link::Up if self.probe_until.is_some() => Wake::Nothing,
@@ -179,7 +179,7 @@ impl ConnectionSupervisor {
     pub fn foreground(&mut self, now_ms: u64, link: Link) -> Wake {
         let away = self.background_since.take().map(|t| now_ms.saturating_sub(t));
         if link == Link::Up && away.is_some_and(|a| a >= ms(LONG_BACKGROUND)) {
-            self.replaced();
+            self.replaced(now_ms);
             return Wake::Replace;
         }
         self.wake(now_ms, link)
@@ -198,10 +198,5 @@ impl ConnectionSupervisor {
     /// In the background.
     pub fn in_background(&self) -> bool {
         self.background_since.is_some()
-    }
-
-    /// A connection lost in the background, waiting for the foreground.
-    pub fn held(&self) -> bool {
-        self.held
     }
 }

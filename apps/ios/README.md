@@ -382,10 +382,13 @@ Swift never builds or parses those messages.
     5 s.
   - *Background*: the connection is kept, never probed, and a lost one
     is not tried again until the foreground (push covers a finished turn
-    and an approval). After 10 s or more away it is replaced on the
-    foreground rather than probed. While the app runs in the background
-    the screen applies what comes at once instead of per display frame,
-    so nothing piles up before iOS suspends it.
+    and an approval); nor is a join waiting for its ticket, or a session
+    being opened, whose answers are dropped so a call iOS suspended never
+    holds the return up. After 10 s or more away the connection is
+    replaced on the foreground rather than probed. As the app goes to the
+    background each screen applies what it holds, and while it runs there
+    applies what comes at once instead of per display frame, so nothing
+    piles up before iOS suspends it.
   - *Connect early* (R-IOS-2): `sceneWillEnterForeground` reaches every
     followed session (`LiveSessions`, which a session screen joins as it
     is made) before any view appears.

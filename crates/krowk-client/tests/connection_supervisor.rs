@@ -58,6 +58,23 @@ fn r_off_2_the_backoff_starts_over_only_after_a_connection_stayed_up_30_s() {
 }
 
 #[test]
+fn r_off_2_a_connection_replaced_after_30_s_up_starts_the_backoff_over_too() {
+    let mut s = ConnectionSupervisor::new(T0);
+    waits(&mut s, T0, 8);
+    // Up 31 s, then replaced (a long background, a silent link, a probe
+    // unanswered): its replacement failing waits the first wait again.
+    s.joined(T0);
+    s.replaced(T0 + 31_000);
+    assert_eq!(s.lost(T0 + 31_100, 255), Some(T0 + 31_100 + 125));
+    // Up less: the backoff goes on from where it was.
+    let mut s = ConnectionSupervisor::new(T0);
+    waits(&mut s, T0, 3);
+    s.joined(T0);
+    s.replaced(T0 + 1000);
+    assert_eq!(s.lost(T0 + 1000, 0), Some(T0 + 1000 + 2000));
+}
+
+#[test]
 fn r_off_2_a_wake_with_no_connection_joins_now_with_no_backoff() {
     let mut s = ConnectionSupervisor::new(T0);
     waits(&mut s, T0, 6);
@@ -104,10 +121,10 @@ fn r_ios_2_a_connection_lost_in_the_background_is_held_until_the_foreground_and_
     assert_eq!(s.wake(T0 + 2000, Link::Down), Wake::Nothing, "no retry in the background, whatever wakes it");
     // Lost: not tried again.
     assert_eq!(s.lost(T0 + 3000, 0), None);
-    assert!(s.held());
+    assert!(s.in_background());
     // Forward again: joined at once.
     assert_eq!(s.foreground(T0 + 4000, Link::Down), Wake::Connect);
-    assert!(!s.held() && !s.in_background());
+    assert!(!s.in_background());
 }
 
 #[test]

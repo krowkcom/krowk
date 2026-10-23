@@ -126,7 +126,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         navigationItem.largeTitleDisplayMode = .never
         // From now, before the view loads: the scene's foreground reaches
         // the connection before any view appears (R-IOS-2).
-        if let session { lifecycle.add(session) }
+        if let session {
+            lifecycle.add(session) { [weak self] in
+                // Loaded only: before its view, nothing is drawn to apply to.
+                guard let self, self.isViewLoaded else { return }
+                self.frame()
+            }
+        }
     }
 
     @available(*, unavailable)

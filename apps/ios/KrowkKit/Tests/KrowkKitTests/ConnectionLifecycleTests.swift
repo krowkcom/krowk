@@ -59,10 +59,15 @@ struct ConnectionLifecycleTests {
         let taken = session.taken.withLock { $0 }
         #expect(taken >= 1)
 
+        // Something waiting as the app goes to the background (it came
+        // after the last frame, and woke nothing more): applied as it goes.
         lifecycle.willEnterForeground()
-        session.bring([TranscriptScreenTests.event("e7", .userText(item: "u2", text: "And then?", images: []))])
-        try await Task.sleep(for: .milliseconds(300))
-        #expect(session.taken.withLock { $0 } == taken, "applied with no display frame in the foreground")
+        session.bring([TranscriptScreenTests.event("e6", .userText(item: "u1b", text: "Before", images: []))])
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(session.taken.withLock { $0 } == taken, "no frame in the foreground without the link")
+        lifecycle.didEnterBackground()
+        #expect(session.taken.withLock { $0 } == taken + 1, "drained as the app went to the background")
+        lifecycle.willEnterForeground()
     }
 
     private func waitFor(_ done: () -> Bool) async throws {
@@ -96,7 +101,9 @@ struct ConnectionLifecycleTests {
         let at = now + .seconds(5)
         t.retry(at: at)
         #expect(t.status == .retrying(at: at, why: nil))
+        // As the viewer says them: the wait, then its reason (a later Show).
         t.note("not on the relay ws://127.0.0.1:1: refused")
+        #expect(t.status == .retrying(at: at, why: "can't reach the relay: not on the relay ws://127.0.0.1:1: refused"), "the countdown kept")
         t.retry(at: at)
         #expect(t.status == .retrying(at: at, why: "can't reach the relay: not on the relay ws://127.0.0.1:1: refused"))
         let later = at + .seconds(5)
@@ -110,6 +117,8 @@ struct ConnectionLifecycleTests {
         var opening = RelayStatusTracker()
         opening.openFailed("krowk's registry cannot be reached", retryAt: at)
         #expect(opening.status == .retrying(at: at, why: why))
+        opening.opened()
+        #expect(opening.status == .connecting, "opened: the old reason gone")
         opening.host(true)
         #expect(opening.status == .live)
         opening.ended("gone")

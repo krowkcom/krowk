@@ -690,8 +690,8 @@ fn r_ios_2_a_connection_lost_in_the_background_waits_for_the_foreground() {
     p.welcome(Welcome::default());
     assert!(p.frame().iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })));
 
-    // A ticket asked for before the background, arriving in it, is not
-    // dialed: the join is held for the foreground.
+    // A ticket asked for before the background (here, on the backoff) is
+    // held there: the foreground asks for one afresh, at once.
     p.at(70_000);
     p.closed();
     assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { .. }]));
@@ -722,4 +722,49 @@ fn r_ios_2_ten_seconds_away_replaces_the_connection_on_the_foreground() {
     p.at(10_999);
     p.foreground();
     assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+}
+
+/// R-LAG-9: a probe due while the chunks are being read replaces the
+/// connection once, when the read is in, and never spins: the next wake is
+/// not in the past, and nothing more is asked meanwhile.
+#[test]
+fn r_lag_9_a_probe_unanswered_during_a_read_replaces_once_after_it() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    p.welcome_with(Welcome::default());
+    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+    p.at(1_000);
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    for at in [6_000, 6_016, 6_032] {
+        p.at(at);
+        p.tick();
+        assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "nothing but heartbeats while the read is out");
+        assert!(p.viewer.next_wake_ms().unwrap() > at, "a wake in the past: a busy loop");
+    }
+    // The read in: replaced now, once.
+    let read = p.viewer.read_chunks();
+    let e = p.viewer.chunks_read(read, p.now);
+    p.take(e);
+    let rest = p.take_rest();
+    assert_eq!(rest.iter().filter(|e| matches!(e, Effect::Close)).count(), 1, "{rest:?}");
+    assert!(rest.iter().any(|e| matches!(e, Effect::NeedTicket { at_ms: 6_032 })), "{rest:?}");
+}
+
+/// R-IOS-2: a join waiting on its backoff when the app goes to the
+/// background is held there, not fetched: the foreground asks at once.
+#[test]
+fn r_ios_2_a_join_waiting_on_its_backoff_is_held_in_the_background() {
+    let mut p = Phone::live();
+    p.at(5_000);
+    p.closed();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::NeedTicket { at_ms: 5_125..=5_250 }]));
+    p.background();
+    assert!(p.viewer.ticket("t".into(), p.now).is_empty(), "the ticket asked before is dropped");
+    p.at(5_100);
+    p.foreground();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms: 5_100 }]), "{:?}", p.rest);
+    p.join(true, 0);
 }

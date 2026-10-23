@@ -13,6 +13,8 @@ public final class LiveSessions {
 
     private struct Held {
         weak var session: (any LiveSession)?
+        /// The screen's: what its session brought, applied now.
+        var drain: (@MainActor () -> Void)?
     }
 
     private var held: [ObjectIdentifier: Held] = [:]
@@ -24,8 +26,12 @@ public final class LiveSessions {
 
     public init() {}
 
-    public func add(_ session: any LiveSession) {
-        held[ObjectIdentifier(session)] = Held(session: session)
+    /// `session` hears the lifecycle; `drain`, if given, is called as the
+    /// app goes to the background, so what its screen holds unapplied is
+    /// applied before the display link stops (a mailbox that already held
+    /// something wakes nothing when more comes).
+    public func add(_ session: any LiveSession, drain: (@MainActor () -> Void)? = nil) {
+        held[ObjectIdentifier(session)] = Held(session: session, drain: drain)
     }
 
     public func remove(_ session: any LiveSession) {
@@ -36,6 +42,12 @@ public final class LiveSessions {
     private var sessions: [any LiveSession] {
         held = held.filter { $0.value.session != nil }
         return held.values.compactMap(\.session)
+    }
+
+    /// The screens' drains, for the sessions still held.
+    private var drains: [@MainActor () -> Void] {
+        held = held.filter { $0.value.session != nil }
+        return held.values.compactMap(\.drain)
     }
 
     /// The scene is coming forward: before any view appears (R-IOS-2).
@@ -52,6 +64,7 @@ public final class LiveSessions {
     /// The scene went to the background.
     public func didEnterBackground() {
         inBackground = true
+        for drain in drains { drain() }
         for s in sessions { s.background() }
     }
 
