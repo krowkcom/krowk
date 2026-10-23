@@ -16,6 +16,7 @@
 //! pair=7KQ2-M9XD
 //! pair_url=http://127.0.0.1:53013/pair
 //! sessions_url=http://127.0.0.1:53013/sessions
+//! devices_url=http://127.0.0.1:53013/devices
 //! ready
 //! ```
 //!
@@ -55,6 +56,13 @@
 //! time, so it is never held longer): a starved CI runner streams far
 //! slower than 200 tokens a second, so a test asks until the host is done,
 //! then times only how soon the phone shows the end.
+//!
+//! A test that removes its phone from host A's devices (R-E2E-3) POSTs the
+//! phone's name to `devices_url/remove`: the fleet runs `krowk devices
+//! remove <name>` as host A, saying yes, and replies `removed` once the
+//! list no longer names it (its keys refused, the user key rotated to the
+//! devices left). The running `devices add` is ended first, so the next
+//! pairing asks `pair_url` for a fresh code.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn
@@ -128,6 +136,7 @@ fn main() {
         writeln!(out, "pair_url={}/pair", control.url).unwrap();
     }
     writeln!(out, "sessions_url={}/sessions", control.url).unwrap();
+    writeln!(out, "devices_url={}/devices", control.url).unwrap();
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
     drop(out);
@@ -157,8 +166,10 @@ fn main() {
 /// the test's own, hosted, its id the reply's body (the request's body, if
 /// any, its title), `POST /sessions/<id>/release` its lease let go,
 /// `POST /sessions/<id>/host` hosted again, `POST /sessions/<id>/turn`
-/// a turn typed at host A in it, and `POST /sessions/<id>/turn-ended`:
-/// `ended` once those turns have ended, or `running` after 5 s.
+/// a turn typed at host A in it, `POST /sessions/<id>/turn-ended`:
+/// `ended` once those turns have ended, or `running` after 5 s, and
+/// `POST /devices/remove` the device the body names removed from host A's
+/// list.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
@@ -186,12 +197,19 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
     }
     match (seen.method.as_str(), seen.path.as_str(), release) {
         ("POST", "/pair", _) if pair => answered("POST /pair", pairer.lock().unwrap().pair()),
+        ("POST", "/devices/remove", _) => {
+            let name = seen.raw.trim();
+            if name.is_empty() {
+                return text(400, "POST /devices/remove names the device to remove in its body");
+            }
+            answered("POST /devices/remove", pairer.lock().unwrap().remove(name).map(|()| "removed".into()))
+        }
         ("POST", "/sessions", _) => {
             let title = seen.raw.trim();
             answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
         }
         ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
-        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn and POST /sessions/<id>/turn-ended"),
+        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended and POST /devices/remove"),
     }
 }
 

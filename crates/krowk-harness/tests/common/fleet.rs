@@ -777,6 +777,19 @@ impl Pairer {
         shown.recv_timeout(Duration::from_secs(30)).map_err(|_| "`krowk devices add` showed no code (its lines are above) — is KROWK_BIN a debug build, `cargo build -p krowk --features harness`?".to_string())
     }
 
+    /// `krowk devices remove <name>` as host A, saying yes (R-E2E-3): the
+    /// device is off the list, its keys are refused, and the user key
+    /// rotates to the devices left. The running `devices add` is ended
+    /// first: its code was for the list as it was, so the next pairing
+    /// asks for a fresh one. Its lines, on failure, are the error.
+    pub fn remove(&mut self, name: &str) -> Result<(), String> {
+        self.end();
+        let out = self.krowk(&["devices", "remove", name]).env("KROWK_TEST_ANSWERS", "y").output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        eprintln!("fleet: krowk devices remove: {said}");
+        if out.status.success() { Ok(()) } else { Err(format!("`krowk devices remove` as host A failed ({}): {said}", out.status)) }
+    }
+
     /// Ends the running `devices add`: ^C, on which it ends its pairing on
     /// the registry — which keeps one live pairing a person — and exits;
     /// killed if it has not within five seconds, which leaves its pairing
