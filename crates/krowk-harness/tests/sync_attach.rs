@@ -610,9 +610,11 @@ fn fence_in(resp: &[u8]) -> Option<u64> {
 }
 
 /// A registry proxy: `CUT` drops every connection, `FAIL_WRITES` answers
-/// every write (a POST or PUT) 503 — a registry failing, not gone — and
-/// `HOLD_TICKETS` holds the second relay ticket asked for. Each request it
-/// hands on is kept in `log`.
+/// every write (a POST or PUT) 503 — a registry failing, not gone —
+/// `HOLD_TICKETS` holds the second relay ticket asked for, `HOLD_NOTIFY`
+/// holds each notification until the mode moves on, and `REFUSE_NOTIFY`
+/// refuses each `push_unconfigured`. Each request it hands on is kept in
+/// `log`.
 fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTimes) -> SocketAddr {
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
@@ -653,10 +655,10 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                     }
                     let asked = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
                     let notify = asked.starts_with("POST ") && asked.contains("/notification ");
-                    // What becomes of a notification is settled by the mode it
-                    // came in under (or, held, the one that let it go), read
-                    // before it is logged: a test that sees it logged and
-                    // moves to the next mode does not change its fate.
+                    // What becomes of a notification is settled before it is
+                    // logged as handed on, by the mode it came in under (or,
+                    // held, the one that let it go): a test that sees it
+                    // logged and moves on does not change its fate.
                     let mut fate = m;
                     if notify && fate == HOLD_NOTIFY {
                         log.lock().unwrap().push((format!("HELD {asked}"), None));
@@ -671,9 +673,9 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                         log.lock().unwrap().push((asked, None));
                     }
                     if notify && fate == REFUSE_NOTIFY {
-                        // The registry's envelope: a flat `"error"` reads as a bare
-                        // 503, which the client retries, and the retry, come
-                        // under the next mode, rang.
+                        // The registry's envelope: `push_unconfigured` is a 503
+                        // the client never retries. A flat `"error"` would read
+                        // as a bare 503, and be retried.
                         let body = r#"{"error":{"code":"push_unconfigured","message":"this registry cannot send pushes"}}"#;
                         let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
@@ -2928,7 +2930,8 @@ fn notifications(w: &World, session: &str) -> Vec<(String, String)> {
 }
 
 /// The notifications A's bridge asked the registry for, through A's proxy,
-/// repeats and refusals and all; `held`, those the proxy began to hold.
+/// repeats and refusals and all; `asked_to_notify` with `how` "HELD POST ",
+/// those the proxy began to hold.
 fn notify_calls(w: &World, session: &str) -> usize {
     asked_to_notify(w, session, "POST ")
 }
@@ -3115,7 +3118,8 @@ async fn r_ios_12_a_notify_the_registry_refuses_leaves_the_bridge_running() {
     assert_eq!(seen.len(), 3, "the refused one never rang: {seen:?}");
     // One ask a turn, the held one handed on once: `push_unconfigured` is
     // tried once, never again under a mode that would let it ring.
-    assert_eq!(notify_calls(&w, &session), 4, "the refusal was not asked again");
+    let asked: Vec<String> = w.reg_log.lock().unwrap().iter().filter(|(l, _)| l.contains("/notification ")).map(|(l, _)| l.clone()).collect();
+    assert_eq!(notify_calls(&w, &session), 4, "asked once a turn, the refusal never again: {asked:?}");
     assert!(!bridge.is_finished(), "the bridge runs on");
 }
 
