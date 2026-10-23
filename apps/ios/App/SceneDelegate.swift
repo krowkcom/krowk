@@ -146,12 +146,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Every listing checks the phone is still on the person's devices,
         // and so does a refused open; either finding it gone tells the
         // watch, which shows why, once.
-        let source = RegistrySessions(api: api, storage: keys, onGone: { [weak self] gone in
-            Task { @MainActor in self?.watch?.report(gone) }
+        // This list's own watch, never a later pairing's: a check this
+        // account makes late reports to the watch it was made with.
+        let ref = WatchRef()
+        let source = RegistrySessions(api: api, storage: keys, onGone: { gone in
+            Task { @MainActor in ref.watch?.report(gone) }
         })
         let watch = StandingWatch(check: { source.standing() }) { [weak self] gone in
-            self?.deviceGone(gone, api: api, keys: keys)
+            self?.deviceGone(gone, api: api, keys: keys, source: source)
         }
+        ref.watch = watch
         self.watch?.stop()
         self.watch = watch
         watch.start()
@@ -187,9 +191,14 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// token first (it takes the keys), then forgets everything the phone
     /// kept, the Secure Enclave wrapping key included, and opens sign-in
     /// as a fresh install would.
-    private func deviceGone(_ gone: DeviceGone, api: String, keys: KeychainKeyStorage) {
+    private func deviceGone(_ gone: DeviceGone, api: String, keys: KeychainKeyStorage, source: RegistrySessions) {
         LiveSessions.shared.stopAll()
         parkedScreens.letGoAll()
+        // Nothing re-registers for push meanwhile; the reset clears the
+        // registry's copy through an account of its own.
+        Self.push = nil
+        // An approval sheet over a transcript, say, goes with the screens.
+        window?.rootViewController?.dismiss(animated: false)
         let log = Logger(subsystem: "com.krowk.app", category: "reset")
         log.error("this iPhone is no longer on the person's devices: \(gone.kind, privacy: .public)")
         let tokens = RegistryPushTokens(api: api, storage: keys)
@@ -204,14 +213,25 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // A failure's kind and the core's words; never a key.
             log: { log.error("\($0, privacy: .public)") }
         )
-        let model = DeviceGoneModel(gone: gone, reset: reset) { [weak self] in
-            guard let self else { return }
-            log.notice("this iPhone was reset")
-            watch = nil
-            Self.keys = nil
-            opened = false
-            showRoot()
-        }
+        let model = DeviceGoneModel(
+            gone: gone, reset: reset,
+            // The check alone, never `onGone`'s report: this screen is it.
+            recheck: { source.checkQuietly() },
+            onReset: { [weak self] in
+                guard let self else { return }
+                log.notice("this iPhone was reset")
+                watch = nil
+                Self.keys = nil
+                opened = false
+                showRoot()
+            },
+            onListed: { [weak self] in
+                guard let self else { return }
+                log.notice("checked again: this iPhone is on the person's devices")
+                _ = Self.push(api: api, keys: keys)
+                show(sessions(api: api, keys: keys))
+            }
+        )
         show(DeviceGoneScreens.gone(model))
     }
 
@@ -332,6 +352,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         default: NotificationTaps.router.unpaired()
         }
     }
+}
+
+/// The watch a session list reports to, held weakly: the one it was made
+/// with.
+@MainActor
+private final class WatchRef {
+    weak var watch: StandingWatch?
 }
 
 private extension KrowkError {

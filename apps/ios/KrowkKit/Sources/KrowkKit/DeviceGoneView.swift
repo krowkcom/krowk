@@ -14,25 +14,59 @@ public final class DeviceGoneModel {
     public let gone: DeviceGone
     /// The reset under way.
     public private(set) var resetting = false
-    /// Why the last reset failed; nil before one has, and once one
-    /// succeeds.
+    /// "Reset this iPhone?" is up, waiting for the person.
+    public var confirming = false
+    /// A check asked for with "Check again" under way.
+    public private(set) var checking = false
+    /// Why the last reset failed, or what the last check again found;
+    /// nil before either.
     public private(set) var failure: String?
 
     @ObservationIgnored private let reset: PhoneReset
+    @ObservationIgnored private let recheck: @Sendable () -> Standing
     @ObservationIgnored private let onReset: @MainActor () -> Void
+    @ObservationIgnored private let onListed: @MainActor () -> Void
 
     /// - Parameters:
+    ///   - recheck: the device list checked again (blocking): a registry
+    ///     that misspoke, or a revoke undone, finds the phone listed.
     ///   - onReset: the keys are gone: the app shows sign-in.
-    public init(gone: DeviceGone, reset: PhoneReset, onReset: @escaping @MainActor () -> Void) {
+    ///   - onListed: a check again found the phone on the list: the app
+    ///     opens Sessions again.
+    public init(
+        gone: DeviceGone, reset: PhoneReset, recheck: @escaping @Sendable () -> Standing = { .unknown("") },
+        onReset: @escaping @MainActor () -> Void, onListed: @escaping @MainActor () -> Void = {}
+    ) {
         self.gone = gone
         self.reset = reset
+        self.recheck = recheck
         self.onReset = onReset
+        self.onListed = onListed
     }
 
-    /// "Reset this iPhone". Once at a time; a failure says so and may be
-    /// tried again.
+    /// "Check again": the phone listed after all goes back to Sessions;
+    /// anything else says what was found, and nothing is reset.
+    public func checkAgain() {
+        guard !checking, !resetting else { return }
+        checking = true
+        failure = nil
+        let recheck = recheck
+        Task {
+            let found = await blocking { recheck() }
+            checking = false
+            switch found {
+            case .listed: onListed()
+            case .gone: failure = "Checked again: this iPhone is still not on your devices."
+            case .untrusted(let why), .unknown(let why): failure = "Couldn't check again: \(why)"
+            }
+        }
+    }
+
+    /// "Reset this iPhone", confirmed. Once at a time; a failure says so
+    /// and may be tried again.
     public func resetPhone() {
-        guard !resetting else { return }
+        confirming = false
+        guard !resetting, !checking else { return }
         resetting = true
         failure = nil
         let reset = reset
@@ -50,7 +84,7 @@ public final class DeviceGoneModel {
 }
 
 public struct DeviceGoneView: View {
-    let model: DeviceGoneModel
+    @Bindable var model: DeviceGoneModel
 
     public init(model: DeviceGoneModel) {
         self.model = model
@@ -76,7 +110,7 @@ public struct DeviceGoneView: View {
                         .accessibilityIdentifier("removed-failed")
                 }
                 Button(role: .destructive) {
-                    model.resetPhone()
+                    model.confirming = true
                 } label: {
                     HStack(spacing: 8) {
                         if model.resetting { ProgressView() }
@@ -85,11 +119,27 @@ public struct DeviceGoneView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .disabled(model.resetting)
+                .disabled(model.resetting || model.checking)
                 .accessibilityIdentifier("removed-reset")
+                Button {
+                    model.checkAgain()
+                } label: {
+                    HStack(spacing: 8) {
+                        if model.checking { ProgressView() }
+                        Text("Check again")
+                    }
+                }
+                .disabled(model.resetting || model.checking)
+                .accessibilityIdentifier("removed-recheck")
             }
             .padding(24)
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .alert("Reset this iPhone?", isPresented: $model.confirming) {
+            Button("Reset", role: .destructive) { model.resetPhone() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("It forgets every key it keeps and signs in as a new device, to pair again. If your device list still shows it, remove it there with krowk devices remove.")
         }
     }
 }

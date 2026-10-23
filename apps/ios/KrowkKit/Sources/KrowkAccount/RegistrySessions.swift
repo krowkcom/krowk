@@ -18,7 +18,9 @@ extension SessionSummary: SessionRecord {}
 /// list that grew and a rotated user key: a phone removed, or left off a
 /// list that was started over, lists nothing (`SessionListFailure.gone`),
 /// and `onGone` hears it, as it does when opening a session is refused
-/// for that reason.
+/// for that reason. A list this phone won't trust (forked, shorter, one
+/// that starts elsewhere and doesn't verify) lists nothing either, and
+/// says so; it is no removal.
 public final class RegistrySessions: SessionSource {
     public let api: String
     private let storage: any KeyStorage
@@ -40,7 +42,11 @@ public final class RegistrySessions: SessionSource {
     public func list() throws(SessionListFailure) -> SessionListing {
         // Never on the main thread: a long list takes a while.
         dispatchPrecondition(condition: .notOnQueue(.main))
-        if let gone = standing() { throw .gone(gone) }
+        switch check() {
+        case .gone(let gone): throw .gone(gone)
+        case .untrusted(let why): throw .other(detail: why)
+        case .listed, .unknown: break
+        }
         do {
             let account = try opened()
             let list = try account.listSessions()
@@ -58,16 +64,27 @@ public final class RegistrySessions: SessionSource {
     /// phone won't trust): the listing that follows says why. Told to
     /// `onGone` too. Blocking: a registry call or two.
     public func standing() -> DeviceGone? {
+        if case .gone(let gone) = check() { gone } else { nil }
+    }
+
+    /// The device list checked now, as `Standing`; a phone found gone is
+    /// told to `onGone`. Blocking: a registry call or two.
+    public func check() -> Standing {
+        let found = checkQuietly()
+        if case .gone(let gone) = found { onGone(gone) }
+        return found
+    }
+
+    /// `check`, telling no one: what the removed screen's "Check again"
+    /// asks. Blocking.
+    public func checkQuietly() -> Standing {
         dispatchPrecondition(condition: .notOnQueue(.main))
-        let gone: DeviceGone?
         do {
             try opened().checkDeviceList()
-            gone = nil
+            return .listed
         } catch {
-            gone = DeviceGone(error)
+            return Standing(error)
         }
-        if let gone { onGone(gone) }
-        return gone
     }
 
     /// Session `id`, opened to follow live (`RelayConnection`), held to at
@@ -105,6 +122,25 @@ extension DeviceGone {
         case .Refused(code: "device_removed", let detail)?: self = .removed(detail: detail)
         case .Refused(code: "device_list_reset", let detail)?: self = .listReset(detail: detail)
         default: return nil
+        }
+    }
+}
+
+extension Standing {
+    /// `Account.checkDeviceList`'s refusal: gone, a list or key this phone
+    /// won't trust, or a check that couldn't say.
+    init(_ error: any Error) {
+        if let gone = DeviceGone(error) {
+            self = .gone(gone)
+            return
+        }
+        switch error as? KrowkError {
+        case .Refused(code: "device_list_refused", let detail)?, .Refused(code: "user_key_refused", let detail)?:
+            self = .untrusted(detail)
+        case .Refused(_, let detail)?, .Internal(let detail)?, .Decode(let detail)?, .InvalidInput(let detail)?, .Network(let detail)?:
+            self = .unknown(detail)
+        case nil:
+            self = .unknown(String(describing: error))
         }
     }
 }

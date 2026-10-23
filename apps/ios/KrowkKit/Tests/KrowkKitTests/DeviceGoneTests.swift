@@ -37,8 +37,8 @@ struct DeviceGoneTests {
         #expect(watch.gone == Self.removed)
         let calls = check.calls
         #expect(calls == 3)
-        // Nothing more: not the timer, not a foreground, not a restart.
-        watch.checkNow()
+        // Nothing more: not the timer, not a return to the foreground.
+        watch.stop()
         watch.start()
         try await Task.sleep(for: .milliseconds(150))
         #expect(check.calls == calls, "checked again after it was found gone")
@@ -121,7 +121,7 @@ struct DeviceGoneTests {
             }
         )
         let done = Box(0)
-        let model = DeviceGoneModel(gone: Self.removed, reset: reset) { done.value += 1 }
+        let model = DeviceGoneModel(gone: Self.removed, reset: reset, onReset: { done.value += 1 })
         #expect(model.gone.title == "This iPhone was removed from your devices")
         #expect(forgotten.value == 0 && done.value == 0, "nothing is reset before the tap")
         model.resetPhone()
@@ -133,6 +133,28 @@ struct DeviceGoneTests {
         try await until { done.value == 1 }
         #expect(forgotten.value == 1)
         #expect(model.failure == nil)
+    }
+
+    @Test("R-E2E-3: Check again goes back to Sessions when the phone is listed after all, and resets nothing either way")
+    func checkAgain() async throws {
+        let forgotten = Box(0)
+        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: { forgotten.value += 1 })
+        let answer = Box<Standing>(.gone(Self.removed))
+        let listed = Box(0)
+        let model = DeviceGoneModel(
+            gone: Self.removed, reset: reset, recheck: { answer.value }, onReset: { Issue.record("reset without a tap") },
+            onListed: { listed.value += 1 })
+        model.checkAgain()
+        try await until { !model.checking && model.failure != nil }
+        #expect(model.failure == "Checked again: this iPhone is still not on your devices.")
+        answer.value = .unknown("krowk's registry cannot be reached")
+        model.checkAgain()
+        try await until { !model.checking && model.failure?.hasPrefix("Couldn't check again") == true }
+        #expect(listed.value == 0)
+        answer.value = .listed
+        model.checkAgain()
+        try await until { listed.value == 1 }
+        #expect(forgotten.value == 0)
     }
 
     @Test("R-E2E-3: a list started over says so in its own words")

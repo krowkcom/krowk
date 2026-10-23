@@ -55,8 +55,8 @@ extension HostedKeychain {
 
             #expect(try await fleet.remove(name) == "removed")
 
-            // The session list: refused as removed, told once per check,
-            // and it reads no more.
+            // The session list: refused as removed, onGone told, and it
+            // reads no more.
             let counting = CountingSource(source)
             let model = SessionListModel(source: counting)
             model.appeared()
@@ -70,8 +70,9 @@ extension HostedKeychain {
             let reads = counting.reads
             await model.refresh()
             model.appeared()
+            await model.settled()
             #expect(counting.reads == reads, "read again once removed")
-            if case .removed? = told.all().first {} else { Issue.record("onGone was not told: \(told.all())") }
+            #expect(!told.all().isEmpty && told.all().allSatisfy { if case .removed = $0 { true } else { false } }, "onGone: \(told.all())")
 
             // A session screen opened now: refused as removed, stopped,
             // never dialed.

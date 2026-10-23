@@ -343,9 +343,12 @@ list they started over stops, says so, and offers one thing: to reset it
   `device_list_reset`, with when; a list that no longer names the phone,
   or a registry that refuses the phone's key (a removal revokes it, as a
   start-over does every device it leaves off), is `device_removed`. A list
-  that only grew becomes the pin, and a newer user key generation (a
-  removal rotates it) is taken up, so the sessions hosts seal after a
-  removal still open. Every read of the session list checks first, and so
+  that only grew becomes the pin (one the same as the pin isn't written
+  again), and a newer user key generation (a removal rotates it) is taken
+  up, so the sessions hosts seal after a removal still open. A list the
+  phone won't trust (forked, shorter, empty, or starting elsewhere without
+  verifying) is no removal: the list says the sessions couldn't be listed,
+  and the phone keeps its pin. Every read of the session list checks first, and so
   does a session screen whose open is refused; while the paired app is in
   the foreground, `StandingWatch` checks every minute and on each return.
   The check runs off the main thread.
@@ -354,8 +357,13 @@ list they started over stops, says so, and offers one thing: to reset it
   list was started over"), with the core's words under it. Every session
   followed live stops (`LiveSessions.stopAll`): its socket closed, nothing
   joined or retried after; kept session screens are let go; the session
-  list reads no more, and the watch stops.
-- **Reset this iPhone** (`PhoneReset`), only when tapped: the push token
+  list reads no more, the watch stops, and nothing registers for push.
+  "Check again" checks once more, telling no one: a phone listed after
+  all (a registry that misspoke, a dashboard Revoke undone) goes back to
+  Sessions, and nothing is reset.
+- **Reset this iPhone** (`PhoneReset`), only when tapped and confirmed
+  ("Reset this iPhone?", which says to remove the phone from the list if
+  it still shows there): the push token
   is cleared at the registry first, since that takes the phone's key (a
   removed phone's key is refused, and the registry dropped its token with
   the device, so a failure here is logged and the reset goes on); then
@@ -363,7 +371,9 @@ list they started over stops, says so, and offers one thing: to reset it
   dropped (`unregisterForRemoteNotifications`); then
   `KeychainKeyStorage.forgetAll` deletes every `com.krowk.keys` item, the
   slots, the API key and the item holding the Secure Enclave wrapping key,
-  which leaves the enclave key nothing to open. The app then opens a new
+  which leaves the enclave key nothing to open; a write under way finishes
+  first, and none lands after (the storage refuses every call once it has
+  forgotten). The app then opens a new
   storage and shows sign-in, as a fresh install: signed in again, it is a
   new device to pair.
 - **What a lying registry can do.** Refuse the phone's key, or serve a

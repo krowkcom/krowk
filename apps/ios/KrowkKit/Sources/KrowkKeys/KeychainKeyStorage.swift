@@ -122,15 +122,20 @@ public final class KeychainKeyStorage: KeyStorage {
     /// anything again. The install marker stays: the next storage made is
     /// no first launch, and finds nothing. This storage refuses every call
     /// after it, so nothing still holding it writes a slot sealed to a key
-    /// that is gone; the app makes a new one. Throws when the Keychain
-    /// refused (the phone locked): nothing is refused then, and it may be
-    /// called again.
+    /// that is gone; the app makes a new one. A write or remove under way
+    /// finishes first, and none starts until it is done: each holds the
+    /// same lock across its check and its Keychain call. Throws when the
+    /// Keychain refused (the phone locked): nothing is refused then, and it
+    /// may be called again.
     public func forgetAll() throws(KrowkError) {
-        do throws(KeychainFailure) { try items.removeAll() } catch {
-            log.error("forgetting every key failed: OSStatus \(error.status, privacy: .public)")
-            throw .Internal(detail: error.description)
+        try forgotten.withLock { (gone: inout Bool) throws(KrowkError) in
+            gone = true
+            do throws(KeychainFailure) { try items.removeAll() } catch {
+                gone = false
+                log.error("forgetting every key failed: OSStatus \(error.status, privacy: .public)")
+                throw .Internal(detail: error.description)
+            }
         }
-        forgotten.withLock { $0 = true }
     }
 
     public func read(slot: String) throws(KrowkError) -> Data? {
@@ -142,15 +147,17 @@ public final class KeychainKeyStorage: KeyStorage {
 
     public func write(slot: String, bytes: Data) throws(KrowkError) {
         try Self.check(slot)
-        try checkKept()
         let sealed = try seal(bytes, slot: slot)
-        try keychain { () throws(KeychainFailure) in try self.items.write(slot, sealed, replace: true) }
+        try kept { () throws(KrowkError) in
+            try keychain { () throws(KeychainFailure) in try self.items.write(slot, sealed, replace: true) }
+        }
     }
 
     public func remove(slot: String) throws(KrowkError) {
         try Self.check(slot)
-        try checkKept()
-        try keychain { () throws(KeychainFailure) in try self.items.remove(slot) }
+        try kept { () throws(KrowkError) in
+            try keychain { () throws(KeychainFailure) in try self.items.remove(slot) }
+        }
     }
 
     // MARK: Sealing
@@ -203,9 +210,20 @@ public final class KeychainKeyStorage: KeyStorage {
     /// Refused once `forgetAll` ran: the wrapping key this storage holds
     /// is gone from the Keychain.
     private func checkKept() throws(KrowkError) {
-        if forgotten.withLock({ $0 }) {
-            throw .Internal(detail: "this iPhone's keys were reset; krowk opens its key storage again")
+        if forgotten.withLock({ $0 }) { throw Self.reset }
+    }
+
+    /// `change`, a Keychain write or remove, under the lock `forgetAll`
+    /// takes, unless it ran: nothing lands after the items are gone.
+    private func kept(_ change: () throws(KrowkError) -> Void) throws(KrowkError) {
+        try forgotten.withLock { (gone: inout Bool) throws(KrowkError) in
+            if gone { throw Self.reset }
+            try change()
         }
+    }
+
+    private static var reset: KrowkError {
+        .Internal(detail: "this iPhone's keys were reset; krowk opens its key storage again")
     }
 
     /// A slot name Rust may use: not empty, and not the wrapping key's

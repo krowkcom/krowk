@@ -36,17 +36,20 @@ impl Account {
     /// generation is taken up (only as the id the list names, and only
     /// when it opens back down to the one held).
     ///
-    /// Refused, and nothing kept, with:
-    /// - `device_removed`: the verified list no longer names this phone,
-    ///   or the registry refuses its key (`unauthorized`,
+    /// Refused with:
+    /// - `device_removed`: the verified list no longer names this phone
+    ///   (the list, which only grew, is kept as the pin), or the registry
+    ///   refuses its key (`unauthorized`,
     ///   `device_revoked`): removed with `krowk devices remove`, revoked
     ///   on the dashboard, or left behind by a start-over, which revokes
     ///   the keys of every device it leaves off;
-    /// - `device_list_reset`: the list's first entry is not the one kept —
-    ///   it was started over, under a new chain epoch — and the detail
-    ///   says when, as the new list's first entry dates it;
+    /// - `device_list_reset`: the list's first entry is not the one kept,
+    ///   and the list verifies from its own: it was started over, under a
+    ///   new chain epoch, and the detail says when, as the new list's first
+    ///   entry dates it. Never adopted;
     /// - `device_list_refused`: a list that doesn't extend the one kept
-    ///   (shorter, forked): this phone won't trust it;
+    ///   (shorter, forked), one that starts elsewhere and doesn't verify,
+    ///   or none at all: this phone won't trust it, and keeps its pin;
     /// - `user_key_refused` or `user_key_missing`: a newer generation that
     ///   doesn't open, or isn't wrapped to this phone yet;
     /// - `not_paired`: the phone holds no device list.
@@ -62,10 +65,20 @@ impl Account {
             Err(e) => return Err(e.into()),
         };
         let entries = decode(&list)?;
-        if entries.first().map(SignedEntry::hash) != Some(kept.root()) {
-            return Err(refused(DEVICE_LIST_RESET, reset(entries.first())));
+        let untrusted = |e: String| refused("device_list_refused", format!("{e} — this iPhone does not trust it, and nothing was changed"));
+        let Some(first) = entries.first() else {
+            return Err(untrusted("the registry served an empty device list".into()));
+        };
+        if first.hash() != kept.root() {
+            // A list started over is a whole chain from its own first entry;
+            // one that isn't, no device of the person's made.
+            Chain::verify(&entries, None).map_err(|e| untrusted(format!("the registry served a device list that starts elsewhere and does not verify ({})", e.0)))?;
+            return Err(refused(DEVICE_LIST_RESET, reset(first)));
         }
-        let chain = self.keystore.save_device_list(&entries).map_err(|e| refused("device_list_refused", format!("{e} — this iPhone does not trust it, and nothing was changed")))?;
+        // The list as kept, entry for entry (the head's hash covers every
+        // entry before it): nothing to verify or write again.
+        let unchanged = entries.len() as u64 == kept.head().seq + 1 && entries.last().map(SignedEntry::hash) == Some(kept.head().hash);
+        let chain = if unchanged { kept } else { self.keystore.save_device_list(&entries).map_err(untrusted)? };
         if !chain.devices().iter().any(|d| d.id() == self.device) {
             return Err(refused(DEVICE_REMOVED, REMOVED.into()));
         }
@@ -110,9 +123,9 @@ const REMOVED: &str = "this iPhone is no longer on your device list — it was r
 
 /// The list was started over: when, as its new first entry dates it, if
 /// there is one to say it by.
-fn reset(first: Option<&SignedEntry>) -> String {
-    let when = first
-        .and_then(|e| Entry::decode(&e.bytes).ok())
+fn reset(first: &SignedEntry) -> String {
+    let when = Entry::decode(&first.bytes)
+        .ok()
         .and_then(|e| jiff::Timestamp::from_second(i64::try_from(e.time).ok()?).ok())
         .map(|t| format!(" on {}", t.strftime("%Y-%m-%d at %H:%M UTC")))
         .unwrap_or_default();

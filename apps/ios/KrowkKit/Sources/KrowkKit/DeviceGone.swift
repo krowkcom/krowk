@@ -44,9 +44,24 @@ public enum DeviceGone: Error, Equatable, Sendable {
     }
 }
 
+/// What a check of the device list found (krowk-ffi's
+/// `Account.checkDeviceList`).
+public enum Standing: Equatable, Sendable {
+    /// On the list.
+    case listed
+    /// No longer on the person's devices.
+    case gone(DeviceGone)
+    /// The registry served a list (or a key) this phone won't trust: it
+    /// keeps what it had, and lists nothing on it. Not a removal.
+    case untrusted(String)
+    /// The check couldn't say: the registry out of reach, a newer key not
+    /// wrapped to this phone yet. Tried again later.
+    case unknown(String)
+}
+
 /// Checks, while the paired app is in the foreground, that the phone is
 /// still on the person's devices: at once, then every `period`, and again
-/// whenever the app comes forward (`checkNow`). The first check that finds
+/// whenever the app comes forward (`start` after `stop`). The first check that finds
 /// it gone tells `onGone`, once, and the watch stops: nothing checks or
 /// retries after that. The check blocks (a registry call or two): it runs
 /// on a thread of its own, never the main thread. A check that fails for
@@ -92,11 +107,6 @@ public final class StandingWatch {
                 try? await Task.sleep(for: period)
             }
         }
-    }
-
-    /// The app came forward: checked now, unless a check is under way.
-    public func checkNow() {
-        Task { await runCheck() }
     }
 
     /// The app went to the background, or the screens it watched for

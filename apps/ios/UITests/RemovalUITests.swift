@@ -117,8 +117,11 @@ final class RemovalUITests: XCTestCase {
         let after = try await NotificationPrompt.registered(site: site)
         XCTAssertNil(after[phone], "the removed phone still has a push token")
 
-        // Reset: sign-in, now and at the next launch.
+        // Reset, confirmed: sign-in, now and at the next launch.
         app.buttons["removed-reset"].tap()
+        let confirm = app.alerts["Reset this iPhone?"].buttons["Reset"]
+        XCTAssertTrue(confirm.waitForExistence(timeout: 10), "no confirmation before the reset")
+        confirm.tap()
         XCTAssertTrue(signIn.waitForExistence(timeout: 30), "the reset did not open sign-in")
         app.terminate()
         app.launch()
