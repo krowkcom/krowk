@@ -303,15 +303,12 @@ extension SessionListViewController: RouteNavigator {
         if let open = openScreen(of: id) { return reveal(open) }
         await model.settled()
         if row(id) == nil, model.listing != nil { await model.refresh() }
-        // A later route, or the person, went somewhere else meanwhile.
-        guard this == routes, let row = row(id), let navigation = navigationController else { return nil }
+        // A later route came meanwhile, or this list is no longer the
+        // window's (signed out, the scene gone): nothing opens.
+        guard this == routes, let row = row(id), let navigation = navigationController, navigation.view.window != nil else { return nil }
         if let open = openScreen(of: id) { return reveal(open) }
-        if navigation.presentedViewController != nil {
-            await withCheckedContinuation { (done: CheckedContinuation<Void, Never>) in
-                navigation.dismiss(animated: false) { done.resume() }
-            }
-            guard this == routes else { return nil }
-        }
+        await Self.dismissPresented(over: navigation)
+        guard this == routes, navigation.view.window != nil else { return nil }
         navigation.popToViewController(self, animated: false)
         let screen = open(row)
         navigation.pushViewController(screen, animated: false)
@@ -321,6 +318,19 @@ extension SessionListViewController: RouteNavigator {
     public var shownSession: ShownSession? {
         guard let screen = navigationController?.topViewController as? TranscriptViewController else { return nil }
         return ShownSession(id: screen.row.id, live: screen.isLive)
+    }
+
+    /// Whatever is presented over `navigation` taken down: once it has
+    /// finished rising, if it still is (UIKit ignores a dismissal asked
+    /// mid-transition), and given at most a second, so a dismissal UIKit
+    /// drops never holds the route up.
+    private static func dismissPresented(over navigation: UINavigationController) async {
+        guard let presented = navigation.presentedViewController else { return }
+        if presented.isBeingPresented || presented.isBeingDismissed, let moving = presented.transitionCoordinator {
+            await RouteWait.once { done in moving.animate(alongsideTransition: nil) { _ in MainActor.assumeIsolated { done.fire() } } }
+        }
+        guard navigation.presentedViewController != nil else { return }
+        await RouteWait.once { done in navigation.dismiss(animated: false) { MainActor.assumeIsolated { done.fire() } } }
     }
 
     /// The row the list shows for session `id`, by its id in any case.
@@ -340,5 +350,29 @@ extension SessionListViewController: RouteNavigator {
             navigationController?.popToViewController(screen, animated: false)
         }
         return screen
+    }
+}
+
+/// One wait of a route's: over when its callback fires, or after a second,
+/// whichever comes first.
+@MainActor
+private final class RouteWait {
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    private init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func fire() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    static func once(_ start: (RouteWait) -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let wait = RouteWait(continuation)
+            start(wait)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1) { MainActor.assumeIsolated { wait.fire() } }
+        }
     }
 }

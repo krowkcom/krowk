@@ -10,8 +10,58 @@
 // KrowkKit's NotificationRouteTests; through the fleet, UITests'
 // NotificationUITests.
 import KrowkKit
+import QuartzCore
+import Synchronization
 import Testing
 import UIKit
+
+/// A session whose host's welcome reaches the screen as RelayConnection's
+/// does: its requests posted first, handed to the approval queue only
+/// when the screen drains the mailbox (`takeFrame`), then the status. No
+/// wake: only the screen's own drain brings them.
+final class WelcomeStubSession: LiveSession {
+    private let told = Mutex<(@MainActor @Sendable (RelayStatus) -> Void)?>(nil)
+    private let posted = Mutex<[ApprovalPrompt]>([])
+    @MainActor weak var queue: ApprovalQueue?
+
+    func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void) {
+        told.withLock { $0 = status }
+    }
+
+    var following: Bool { told.withLock { $0 != nil } }
+
+    func stop() {}
+    func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {}
+    func send(_ command: LiveCommand, token: UInt64) {}
+    func foreground() {}
+    func background() {}
+    func wake() {}
+
+    @MainActor func takeFrame() -> [TranscriptUpdate] {
+        let requests = posted.withLock { posted in
+            defer { posted = [] }
+            return posted
+        }
+        for request in requests { queue?.requested(request) }
+        return []
+    }
+
+    /// A welcome: `requests` posted, then `status` published.
+    func welcome(_ requests: [ApprovalPrompt], status: RelayStatus) {
+        posted.withLock { $0.append(contentsOf: requests) }
+        say(status)
+    }
+
+    /// Requests that come live, with the link already up.
+    func post(_ requests: [ApprovalPrompt]) {
+        posted.withLock { $0.append(contentsOf: requests) }
+    }
+
+    func say(_ status: RelayStatus) {
+        guard let told = told.withLock({ $0 }) else { return }
+        Task { @MainActor in told(status) }
+    }
+}
 
 @MainActor
 @Suite("R-PERM-2, R-IOS-7: NotificationRoutingTests, a route over the session list and its transcript", .serialized)
@@ -48,7 +98,7 @@ struct NotificationRoutingTests {
         let list: SessionListViewController
         let navigation: UINavigationController
         let window: UIWindow
-        var sessions: [String: ScreenStubSession] = [:]
+        var sessions: [String: WelcomeStubSession] = [:]
         var queues: [String: ApprovalQueue] = [:]
         var opened = 0
 
@@ -67,8 +117,9 @@ struct NotificationRoutingTests {
             window.layoutIfNeeded()
             made = { [unowned self] row in
                 opened += 1
-                let session = ScreenStubSession()
+                let session = WelcomeStubSession()
                 let queue = ApprovalQueue(sessionID: row.id, ownerCheck: AlwaysYes())
+                session.queue = queue
                 sessions[row.id] = session
                 queues[row.id] = queue
                 return TranscriptViewController(row: row, session: session, approvals: queue, lifecycle: LiveSessions())
@@ -79,21 +130,18 @@ struct NotificationRoutingTests {
 
         /// Session `id`'s screen on top and following its stub.
         func onTop(_ id: String) async throws -> TranscriptViewController {
-            try await waitFor { self.top?.row.id == id && self.top?.isViewLoaded == true }
-            let screen = try #require(top)
-            // Its stub heard `follow` (viewDidLoad).
-            screen.view.layoutIfNeeded()
-            return screen
+            try await waitFor { self.top?.row.id == id && self.top?.isViewLoaded == true && self.sessions[id]?.following == true }
+            return try #require(top)
         }
 
-        /// The host's welcome: `requests` re-sent, oldest first, then the
-        /// status the session publishes after them.
+        static func request(_ id: String, _ request: String) -> ApprovalPrompt {
+            ApprovalPrompt(sessionID: id, turnID: "turn2", requestID: request, tool: "bash", input: #"{"command":"touch approved.txt"}"#, summary: "bash `touch approved.txt`", reason: "bash isn't allowed by a rule")
+        }
+
+        /// The host's welcome: `requests` re-sent, oldest first, posted
+        /// before the status the session publishes after them.
         func welcome(_ id: String, _ requests: [String], status: RelayStatus = .live) throws {
-            let queue = try #require(queues[id])
-            for request in requests {
-                queue.requested(ApprovalPrompt(sessionID: id, turnID: "turn2", requestID: request, tool: "bash", input: #"{"command":"touch approved.txt"}"#, summary: "bash `touch approved.txt`", reason: "bash isn't allowed by a rule"))
-            }
-            try #require(sessions[id]).say(status)
+            try #require(sessions[id]).welcome(requests.map { Self.request(id, $0) }, status: status)
         }
     }
 
@@ -118,8 +166,8 @@ struct NotificationRoutingTests {
 
         // Tapped again: the same screen, its one sheet.
         rig.router.handle(.approval(Self.a))
-        try await waitFor { screen.landing == nil }
-        try await Task.sleep(for: .milliseconds(100))
+        try await waitFor { rig.router.finished == 2 }
+        #expect(screen.landing == nil)
         #expect(rig.navigation.viewControllers.count == 2)
         #expect(rig.top === screen)
         #expect(rig.opened == 1)
@@ -144,9 +192,43 @@ struct NotificationRoutingTests {
         #expect(!screen.notice.isHidden)
         #expect(screen.approvalSheet == nil)
 
-        try rig.welcome(Self.a, ["r3"])
+        // A request live afterwards: the sheet, and the notice goes.
+        try #require(rig.sessions[Self.a]).post([Rig.request(Self.a, "r3")])
+        screen.driver?.tick(at: CACurrentMediaTime())
         try await waitFor { screen.approvalSheet != nil }
         #expect(screen.noticeShown == nil)
+    }
+
+    @Test("R-PERM-2: tapped with the session already open and live, a request read as the app comes back still raises the sheet; with none, the notice comes after the grace")
+    func alreadyLive() async throws {
+        let rig = try Rig()
+        defer { rig.window.isHidden = true }
+        rig.router.paired(rig.list)
+        rig.router.handle(.session(Self.a))
+        let screen = try await rig.onTop(Self.a)
+        try rig.welcome(Self.a, [])
+        try await waitFor { screen.isLive && screen.landing == nil }
+
+        rig.router.handle(.approval(Self.a))
+        try await waitFor { rig.router.finished == 2 }
+        #expect(screen.landing == .approval(Self.a), "no notice yet: a request may be on its way")
+        #expect(screen.noticeShown == nil)
+        try #require(rig.sessions[Self.a]).post([Rig.request(Self.a, "r4")])
+        screen.driver?.tick(at: CACurrentMediaTime())
+        try await waitFor { screen.approvalSheet != nil }
+        #expect(screen.landing == nil)
+        #expect(screen.noticeShown == nil)
+        #expect(rig.opened == 1)
+
+        // Answered elsewhere; tapped again with nothing waiting: the notice, after the grace.
+        rig.queues[Self.a]?.resolved(requestID: "r4", resolution: .allowed)
+        try await waitFor { screen.approvalSheet == nil }
+        rig.router.handle(.approval(Self.a))
+        try await waitFor { rig.router.finished == 3 }
+        #expect(screen.noticeShown == nil)
+        try await waitFor { screen.noticeShown == .nothingWaiting }
+        #expect(screen.landing == nil)
+        #expect(screen.approvalSheet == nil)
     }
 
     @Test("R-IOS-7 a route to a session whose host is offline opens it read-only with last seen, and no sheet")
@@ -173,7 +255,7 @@ struct NotificationRoutingTests {
         defer { rig.window.isHidden = true }
         rig.router.paired(rig.list)
         rig.router.handle(.approval(Self.notListed))
-        try await Task.sleep(for: .milliseconds(300))
+        try await waitFor { rig.router.finished == 1 }
         #expect(rig.navigation.viewControllers.count == 1)
         #expect(rig.opened == 0)
 
@@ -183,7 +265,7 @@ struct NotificationRoutingTests {
         try await waitFor { screen.isLive }
         #expect(rig.router.shownSession == ShownSession(id: Self.a, live: true))
         #expect(NotificationRoute.presentation(of: .approval(Self.a), shown: rig.router.shownSession) == [])
-        #expect(NotificationRoute.presentation(of: .approval(Self.b), shown: rig.router.shownSession) == [.banner, .sound])
+        #expect(NotificationRoute.presentation(of: .approval(Self.b), shown: rig.router.shownSession) == [.banner, .list, .sound])
         #expect(screen.noticeShown == nil, "a finished turn's route says nothing more")
     }
 }

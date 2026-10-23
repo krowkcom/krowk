@@ -84,7 +84,7 @@ final class NotificationUITests: XCTestCase {
         // A payload naming no session of this phone's: the app just opens.
         app = try Self.launch(tapping: #"{"krowk":{"session":"\#(UUID().uuidString)","kind":"approval"}}"#)
         XCTAssertTrue(app.collectionViews["sessions-list"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.navigationBars.buttons["Sessions"].waitForExistence(timeout: 3), "a session opened for an alert naming none of the phone's")
+        XCTAssertFalse(app.navigationBars.buttons["Sessions"].waitForExistence(timeout: 10), "a session opened for an alert naming none of the phone's")
         app.terminate()
     }
 

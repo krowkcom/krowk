@@ -55,7 +55,8 @@ public enum NotificationRoute: Equatable, Sendable {
     /// away or its connection down, or an alert that names no route).
     public static func presentation(of route: NotificationRoute?, shown: ShownSession?) -> UNNotificationPresentationOptions {
         if let route, let shown, shown.live, shown.id.lowercased() == route.sessionID { return [] }
-        return [.banner, .sound]
+        // Kept in Notification Center too, once the banner goes.
+        return [.banner, .list, .sound]
     }
 }
 
@@ -89,7 +90,8 @@ public enum RouteLanding: Equatable, Sendable {
     /// The landing `route` makes with the connection at `status` and
     /// `waiting` requests in the session's queue, all the welcome brought
     /// applied; nil while the connection hasn't said yet (joining,
-    /// reconnecting, waiting to try again).
+    /// reconnecting, waiting to try again): the route then waits for as
+    /// long as the connection takes, and lands when it says.
     public static func of(_ route: NotificationRoute, status: RelayStatus, waiting: Int) -> RouteLanding? {
         switch status {
         case .live, .catchingUp:
@@ -158,6 +160,9 @@ public final class NotificationRouter {
     /// Routes taken to the list: a later one supersedes an earlier still
     /// finding its session.
     private var taken = 0
+    /// Routes that have finished looking for their session, found or not:
+    /// what the tests wait on.
+    public private(set) var finished = 0
 
     public init() {}
 
@@ -169,7 +174,9 @@ public final class NotificationRouter {
         case .pending: held = route
         case .unpaired: break
         case .paired:
-            if let navigator { go(route, navigator) }
+            // The list gone (its scene disconnected, or replaced by a key
+            // failure that may pass): held for the next.
+            if let navigator { go(route, navigator) } else { held = route }
         }
     }
 
@@ -184,7 +191,7 @@ public final class NotificationRouter {
         }
     }
 
-    /// The root is onboarding, pairing or a key failure: no route applies.
+    /// The root is onboarding or pairing: no route applies.
     public func unpaired() {
         root = .unpaired
         navigator = nil
@@ -202,7 +209,9 @@ public final class NotificationRouter {
         let this = taken
         Task { [weak self] in
             let screen = await navigator.show(session: route.sessionID)
-            guard let self, this == self.taken, let screen else { return }
+            guard let self else { return }
+            defer { self.finished += 1 }
+            guard this == self.taken, let screen else { return }
             screen.land(route)
         }
     }

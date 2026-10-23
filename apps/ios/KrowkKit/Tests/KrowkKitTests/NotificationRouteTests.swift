@@ -72,11 +72,11 @@ struct NotificationRouteTests {
         let other = NotificationRoute.session("1c2d3e4f-0000-4000-8000-000000000001")
         #expect(NotificationRoute.presentation(of: route, shown: ShownSession(id: Self.id, live: true)) == [])
         #expect(NotificationRoute.presentation(of: .session(Self.id), shown: ShownSession(id: Self.id.uppercased(), live: true)) == [])
-        #expect(NotificationRoute.presentation(of: other, shown: ShownSession(id: Self.id, live: true)) == [.banner, .sound])
+        #expect(NotificationRoute.presentation(of: other, shown: ShownSession(id: Self.id, live: true)) == [.banner, .list, .sound])
         // On screen but not live (host away, reconnecting): it says something new.
-        #expect(NotificationRoute.presentation(of: route, shown: ShownSession(id: Self.id, live: false)) == [.banner, .sound])
-        #expect(NotificationRoute.presentation(of: route, shown: nil) == [.banner, .sound])
-        #expect(NotificationRoute.presentation(of: nil, shown: ShownSession(id: Self.id, live: true)) == [.banner, .sound])
+        #expect(NotificationRoute.presentation(of: route, shown: ShownSession(id: Self.id, live: false)) == [.banner, .list, .sound])
+        #expect(NotificationRoute.presentation(of: route, shown: nil) == [.banner, .list, .sound])
+        #expect(NotificationRoute.presentation(of: nil, shown: ShownSession(id: Self.id, live: true)) == [.banner, .list, .sound])
     }
 
     @Test("R-PERM-2, R-IOS-7: a route lands once the connection says: the sheet or nothing waiting when welcomed, the host away when none, nothing while joining")
@@ -130,25 +130,29 @@ struct NotificationRouterTests {
     static let a = "0b9e7c1a-55f2-4c8e-9d3b-7f1e2a6c4d10"
     static let b = "1c2d3e4f-0000-4000-8000-000000000001"
 
-    func settle() async {
-        for _ in 0..<20 { await Task.yield() }
+    /// Until `count` routes have finished looking for their session.
+    func finished(_ count: Int, _ router: NotificationRouter) async throws {
+        for _ in 0..<1000 where router.finished < count {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(router.finished == count)
     }
 
     @Test("R-PERM-2: a route at cold launch is held, and applied once the root exists")
-    func coldLaunch() async {
+    func coldLaunch() async throws {
         let router = NotificationRouter()
         router.handle(.approval(Self.a))
         #expect(router.held == .approval(Self.a))
         let navigator = FakeNavigator([Self.a])
         router.paired(navigator)
         #expect(router.held == nil)
-        await settle()
+        try await finished(1, router)
         #expect(navigator.asked == [Self.a])
         #expect(navigator.screens[Self.a]?.landed == [.approval(Self.a)])
     }
 
     @Test("R-IOS-12: an unpaired phone ignores routes, and drops one held")
-    func unpaired() async {
+    func unpaired() async throws {
         let router = NotificationRouter()
         router.handle(.session(Self.a))
         router.unpaired()
@@ -156,24 +160,38 @@ struct NotificationRouterTests {
         router.handle(.approval(Self.a))
         #expect(router.held == nil)
         #expect(router.shownSession == nil)
-        // Paired later (signed in and paired in this run): a later tap goes.
+        // Paired later (signed in and paired in this run): only a later tap goes.
         let navigator = FakeNavigator([Self.a])
         router.paired(navigator)
-        await settle()
-        #expect(navigator.asked.isEmpty, "nothing held from before pairing")
         router.handle(.session(Self.a))
-        await settle()
-        #expect(navigator.asked == [Self.a])
+        try await finished(1, router)
+        #expect(navigator.asked == [Self.a], "nothing held from before pairing")
+        #expect(navigator.screens[Self.a]?.landed == [.session(Self.a)])
+    }
+
+    @Test("R-PERM-2: a route that comes while the list is gone (its scene disconnected) is held for the next list")
+    func listGone() async throws {
+        let router = NotificationRouter()
+        do {
+            let gone = FakeNavigator([Self.a])
+            router.paired(gone)
+        }
+        router.handle(.approval(Self.a))
+        #expect(router.held == .approval(Self.a))
+        let navigator = FakeNavigator([Self.a])
+        router.paired(navigator)
+        try await finished(1, router)
+        #expect(navigator.screens[Self.a]?.landed == [.approval(Self.a)])
     }
 
     @Test("R-IOS-12: no route, or a session not listed (another account's), changes nothing")
-    func notListed() async {
+    func notListed() async throws {
         let router = NotificationRouter()
         let navigator = FakeNavigator([Self.a])
         router.paired(navigator)
         router.handle(nil)
         router.handle(.approval(Self.b))
-        await settle()
+        try await finished(1, router)
         #expect(navigator.asked == [Self.b])
         #expect(navigator.screens.isEmpty)
     }
@@ -184,16 +202,16 @@ struct NotificationRouterTests {
         let navigator = FakeNavigator([Self.a, Self.b])
         router.paired(navigator)
         router.handle(.session(Self.a))
-        await settle()
+        try await finished(1, router)
         router.handle(.approval(Self.a))
-        await settle()
+        try await finished(2, router)
         #expect(navigator.screens.count == 1)
         #expect(navigator.screens[Self.a]?.landed == [.session(Self.a), .approval(Self.a)])
 
         navigator.delay = .milliseconds(50)
         router.handle(.approval(Self.b))
         router.handle(.session(Self.a))
-        try await Task.sleep(for: .milliseconds(200))
+        try await finished(4, router)
         #expect(navigator.screens[Self.b]?.landed ?? [] == [], "the earlier route gave way")
         #expect(navigator.screens[Self.a]?.landed.last == .session(Self.a))
     }

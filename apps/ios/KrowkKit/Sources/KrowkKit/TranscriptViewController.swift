@@ -120,6 +120,14 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public let notice = UILabel()
     /// What the notice says, while it's up.
     public private(set) var noticeShown: RouteLanding?
+    /// The route came with the session already live: its welcome was
+    /// before the tap, and a request since may still be on its way (read
+    /// as the app comes back), so nothing waiting is said only after
+    /// `landingGrace`, unless the connection joins again first.
+    private var landedLive = false
+    private var graceOver = false
+    private var landingWait: DispatchWorkItem?
+    static let landingGrace: TimeInterval = 2
 
     public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared) {
         self.row = row
@@ -313,6 +321,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
 
         setUpApprovals()
+        if noticeShown != nil { addNotice() }
         observeFocus()
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
@@ -743,6 +752,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         case .arrived(let prompt), .returned(let prompt, _):
             approvalsPutAway = false
             if noticeShown == .nothingWaiting { hideNotice() }
+            // A route waiting out its grace lands on it now.
+            if landing != nil { land() }
             mark(prompt, "waiting for approval")
             if UIAccessibility.isVoiceOverRunning, approvalSheet != nil {
                 UIAccessibility.post(notification: .announcement, argument: "Another approval is waiting")
@@ -805,10 +816,16 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// raises the sheet for the oldest request waiting, or says nothing
     /// waits any more; with the host away, either says so and when it was
     /// last seen, and no sheet rises (R-IOS-7). Already live, it lands on
-    /// what the session holds now. The sheet only ever shows what the host
+    /// what the session holds now, but says nothing waits only after
+    /// `landingGrace`: a request read as the app comes back still raises
+    /// the sheet. The sheet only ever shows what the host
     /// sent over the relay: the route picks the session and nothing else.
     public func land(_ route: NotificationRoute) {
         landing = route
+        landedLive = isLive
+        graceOver = false
+        landingWait?.cancel()
+        landingWait = nil
         hideNotice()
         // Put away before: the person asked for it again.
         if case .approval = route { approvalsPutAway = false }
@@ -821,7 +838,26 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private func land() {
         guard let route = landing else { return }
         if isViewLoaded { frame() }
+        // Joining again: the next live is a welcome.
+        if !isLive { landedLive = false }
         guard let landed = RouteLanding.of(route, status: statusBar.status, waiting: approvals?.waiting ?? 0) else { return }
+        if landed == .nothingWaiting, landedLive, !graceOver {
+            if landingWait == nil {
+                let work = DispatchWorkItem { [weak self] in
+                    MainActor.assumeIsolated {
+                        guard let self else { return }
+                        self.landingWait = nil
+                        self.graceOver = true
+                        self.land()
+                    }
+                }
+                landingWait = work
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.landingGrace, execute: work)
+            }
+            return
+        }
+        landingWait?.cancel()
+        landingWait = nil
         landing = nil
         switch landed {
         case .sheet: syncApprovals()

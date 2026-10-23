@@ -102,18 +102,19 @@ public final class SessionListModel {
         }
     }
 
-    /// Returns once a listing or a failure is known: at once if one is,
-    /// after the read under way if one runs, else after a read of its own.
+    /// Returns once a listing is known, or a read of its own failed: at
+    /// once if one is, after the read under way if one runs (and one more
+    /// if that one failed), else after a read of its own.
     /// A route from a notification waits on this before it looks for its
-    /// session (ticket 106), without a second read at a cold launch, whose
-    /// list starts one as it appears.
+    /// session (ticket 106); one that fails is tried once more.
     public func settled() async {
-        guard listing == nil, failure == nil else { return }
+        guard listing == nil else { return }
         if let reading {
             await reading.value
-        } else {
-            await refresh()
         }
+        // Never read, or the last read failed (the registry briefly out of
+        // reach as the app launched): one more try.
+        if listing == nil { await refresh() }
     }
 
     /// Reads until no refresh asked for is left unread.
