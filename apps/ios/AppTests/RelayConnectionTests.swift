@@ -211,7 +211,7 @@ extension HostedKeychain {
             let dials = live.dials
             live.dropConnection()
             try await Self.wait(until: {
-                if case .retrying(let at, _) = live.status { ContinuousClock.now.duration(to: at) > .seconds(3) } else { false }
+                if case .retrying(let at, _) = live.status { ContinuousClock.now.duration(to: at) > .seconds(2) } else { false }
             }, within: .seconds(5), "no long wait: \(live.status.text)")
             #expect(live.status.text.hasPrefix("reconnecting in "), "\(live.status.text)")
 

@@ -99,10 +99,10 @@ public struct RelayStatusTracker: Equatable, Sendable {
     /// counts down to it, keeping why the last one failed.
     public mutating func retry(at: ContinuousClock.Instant) {
         switch status {
-        case .reconnecting: status = .retrying(at: at, why: nil)
+        case .connecting, .reconnecting: status = .retrying(at: at, why: nil)
         case .unreachable: status = .retrying(at: at, why: status.plainText)
         case .retrying(_, let why): status = .retrying(at: at, why: why)
-        case .connecting, .live, .hostOffline, .catchingUp, .ended: break
+        case .live, .hostOffline, .catchingUp, .ended: break
         }
     }
 

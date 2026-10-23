@@ -190,6 +190,18 @@ impl ConnectionSupervisor {
         self.probe_until.is_some_and(|t| now_ms >= t)
     }
 
+    /// `probe_due`, and the probe done with either way once it is: a
+    /// deadline that has passed is never asked about again, so a caller
+    /// that can't act on it (the connection gone, or being replaced) is
+    /// never woken for it again and again.
+    pub fn take_probe_due(&mut self, now_ms: u64) -> bool {
+        let due = self.probe_due(now_ms);
+        if due {
+            self.probe_until = None;
+        }
+        due
+    }
+
     /// When `probe_due` next turns true, if a probe is out.
     pub fn next_wake(&self) -> Option<u64> {
         self.probe_until

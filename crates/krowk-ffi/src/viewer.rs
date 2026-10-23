@@ -447,8 +447,9 @@ impl Viewer {
                 let failed = i.core.join_failed(format!("the relay did not answer the join within {} seconds", JOIN_WAIT_MS / 1000), now_ms);
                 out = i.effects(failed, now_ms);
             }
-            // A wake's probe unanswered past its 5 s: replaced.
-            if i.link(now_ms) == LinkState::Up && i.sup.with(|s| s.rules.probe_due(now_ms)) {
+            // A wake's probe unanswered past its 5 s: replaced. The deadline
+            // is done with either way, so one past is never asked again.
+            if i.sup.with(|s| s.rules.take_probe_due(now_ms)) && i.link(now_ms) == LinkState::Up {
                 out.extend(i.replace(now_ms));
             }
             let ticked = i.core.tick(now_ms);
@@ -560,7 +561,8 @@ impl Viewer {
 impl Inner {
     /// Where the connection stands, for the supervisor.
     fn link(&self, now_ms: u64) -> LinkState {
-        if self.joining.is_some() || (self.connection.is_none() && self.pending.is_some() && !self.held && self.ticket_at.is_some_and(|at| at <= now_ms)) {
+        // A replace under way (waiting, maybe, for a read) is a join.
+        if self.replacing || self.joining.is_some() || (self.connection.is_none() && self.pending.is_some() && !self.held && self.ticket_at.is_some_and(|at| at <= now_ms)) {
             LinkState::Joining
         } else if self.connection.is_some() {
             LinkState::Up
@@ -588,19 +590,24 @@ impl Inner {
 
     /// The current connection dropped and joined again at once, from the
     /// cursor, as if it had closed: no backoff. Mid-read, the core acts on
-    /// the close once the chunks are read.
+    /// the close once the chunks are read: the socket is dropped now all
+    /// the same, and the join follows the read.
     ///
-    /// Once: a replace already asked waits for its join, and the probe
-    /// that asked it is done with, so a tick never asks again (a read out
-    /// would otherwise queue a close every tick).
+    /// Once: a replace already asked waits for its join (the link reads as
+    /// joining meanwhile), and the probe that asked it is done with.
     fn replace(&mut self, now_ms: u64) -> Vec<Effect> {
         if self.connection.is_none() || self.joining.is_some() || self.replacing {
             return Vec::new();
         }
         self.sup.with(|s| s.rules.replaced(now_ms));
         self.replacing = true;
-        let out = self.core.closed(now_ms);
-        self.effects(out, now_ms)
+        let core = self.core.closed(now_ms);
+        let joins = core.iter().any(|e| matches!(e, core::Effect::Join { .. }));
+        let mut out = self.effects(core, now_ms);
+        if !joins && self.connection.take().is_some() {
+            out.push(Effect::Close);
+        }
+        out
     }
 
     /// The core's effects as Swift carries them out. No `_` arm: a new

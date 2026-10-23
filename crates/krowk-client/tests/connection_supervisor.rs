@@ -94,6 +94,10 @@ fn r_lag_9_a_wake_probes_a_live_connection_and_replaces_one_that_stays_silent() 
     assert_eq!(s.wake(T0 + 2500, Link::Up), Wake::Nothing, "one probe out at a time");
     assert!(!s.probe_due(T0 + 2000 + ms(PROBE) - 1));
     assert!(s.probe_due(T0 + 2000 + ms(PROBE)), "nothing back in 5 s: replace");
+    let mut taken = s.clone();
+    assert!(!taken.take_probe_due(T0 + 2000 + ms(PROBE) - 1));
+    assert!(taken.take_probe_due(T0 + 2000 + ms(PROBE)));
+    assert!(!taken.take_probe_due(T0 + 60_000) && taken.next_wake().is_none(), "asked once, then done with");
     // Anything back, a pong included, answers it.
     assert_eq!(s.wake(T0 + 10_000, Link::Up), Wake::Nothing);
     s.heard(T0 + 8000);

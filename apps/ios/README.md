@@ -385,7 +385,8 @@ Swift never builds or parses those messages.
     and an approval); nor is a join waiting for its ticket, or a session
     being opened, whose answers are dropped so a call iOS suspended never
     holds the return up. After 10 s or more away the connection is
-    replaced on the foreground rather than probed. As the app goes to the
+    replaced on the foreground rather than probed: dropped at once, and
+    joined again at once, or as soon as a chunk read under way is in. As the app goes to the
     background each screen applies what it holds, and while it runs there
     applies what comes at once instead of per display frame, so nothing
     piles up before iOS suspends it.

@@ -95,10 +95,14 @@ struct ConnectionLifecycleTests {
         #expect(RelayStatus.retrying(at: now + .seconds(2), why: why).text(at: now) == "\(why) — trying again in 2s")
         #expect(RelayStatus.retrying(at: now - .seconds(1), why: why).text(at: now) == "\(why) — trying again now")
 
+        let at = now + .seconds(5)
+        var first = RelayStatusTracker()
+        first.retry(at: at)
+        #expect(first.status == .retrying(at: at, why: nil), "the first join failing counts down too")
+
         var t = RelayStatusTracker()
         t.host(true)
         t.dropped()
-        let at = now + .seconds(5)
         t.retry(at: at)
         #expect(t.status == .retrying(at: at, why: nil))
         // As the viewer says them: the wait, then its reason (a later Show).

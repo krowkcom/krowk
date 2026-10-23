@@ -238,7 +238,12 @@ public actor RelayConnection: LiveSession {
                 return (session, try Viewer.openSupervised(session: session, supervisor: supervisor, nowMs: now))
             }
         } then: { (me: isolated RelayConnection, opened) in
-            guard ask == me.openAsk else { return }
+            // One the background abandoned: a success is still used if no
+            // other open has started since (its first join is held there);
+            // a failure is dropped, the foreground opening afresh.
+            if ask != me.openAsk {
+                guard case .success = opened, me.viewer == nil, !me.opening else { return }
+            }
             me.opening = false
             me.opened(opened)
         }
@@ -295,8 +300,9 @@ public actor RelayConnection: LiveSession {
     private enum Lifecycle { case foreground, background, wake }
 
     private func lifecycle(_ event: Lifecycle) {
+        guard !done else { return }
         let now = self.now()
-        guard started, !done else {
+        guard started else {
             // Not followed yet: only where the app is, for when it is.
             switch event {
             case .background: supervisor.background(nowMs: now)

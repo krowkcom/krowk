@@ -738,19 +738,52 @@ fn r_lag_9_a_probe_unanswered_during_a_read_replaces_once_after_it() {
     p.at(1_000);
     p.wake();
     assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
-    for at in [6_000, 6_016, 6_032] {
+    p.at(6_000);
+    p.tick();
+    // The dead socket goes now; the join waits for the read.
+    let rest = p.take_rest();
+    assert_eq!(rest.iter().filter(|e| matches!(e, Effect::Close)).count(), 1, "{rest:?}");
+    assert!(!rest.iter().any(|e| matches!(e, Effect::NeedTicket { .. })), "{rest:?}");
+    // A wake meanwhile (the scene active, a path change) finds the replace
+    // under way: no second probe, and nothing ever due in the past.
+    p.wake();
+    assert!(p.take_rest().is_empty(), "a probe on a socket being replaced");
+    for at in [6_016, 11_100, 11_116] {
         p.at(at);
         p.tick();
         assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "nothing but heartbeats while the read is out");
         assert!(p.viewer.next_wake_ms().unwrap() > at, "a wake in the past: a busy loop");
     }
-    // The read in: replaced now, once.
+    // The read in: joined again now, from the cursor, with no second Close.
     let read = p.viewer.read_chunks();
     let e = p.viewer.chunks_read(read, p.now);
     p.take(e);
     let rest = p.take_rest();
-    assert_eq!(rest.iter().filter(|e| matches!(e, Effect::Close)).count(), 1, "{rest:?}");
-    assert!(rest.iter().any(|e| matches!(e, Effect::NeedTicket { at_ms: 6_032 })), "{rest:?}");
+    assert!(!rest.iter().any(|e| matches!(e, Effect::Close)), "{rest:?}");
+    assert!(rest.iter().any(|e| matches!(e, Effect::NeedTicket { at_ms: 11_116 })), "{rest:?}");
+}
+
+/// R-LAG-9: a probe out when the socket dies is done with at its deadline:
+/// no busy loop on a deadline nothing can act on.
+#[test]
+fn r_lag_9_a_probe_out_when_the_socket_dies_never_spins() {
+    let mut p = Phone::new();
+    p.start();
+    p.shown.clear();
+    p.join(true, 0);
+    p.welcome_with(Welcome::default());
+    assert!(matches!(p.take_rest().as_slice(), [Effect::ReadChunks]));
+    p.at(1_000);
+    p.wake();
+    assert!(matches!(p.take_rest().as_slice(), [Effect::Ping]));
+    // Gone, its close held behind the read by the core.
+    p.closed();
+    for at in [6_000, 6_016, 6_032] {
+        p.at(at);
+        p.tick();
+        p.take_rest();
+        assert!(p.viewer.next_wake_ms().unwrap() > at, "a wake in the past: a busy loop");
+    }
 }
 
 /// R-IOS-2: a join waiting on its backoff when the app goes to the
