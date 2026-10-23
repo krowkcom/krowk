@@ -69,7 +69,8 @@ pub enum Effect {
     /// drop it.
     Ping,
     /// Drop the current connection; anything more from it is ignored, its
-    /// close included. A `NeedTicket` follows.
+    /// close included. A `NeedTicket` follows, at once or (a replace held
+    /// behind a chunk read) once the read is in.
     Close,
     /// Updates for the screen, at most one `Show` per display frame.
     Show { updates: Vec<ViewerUpdate> },
@@ -601,6 +602,10 @@ impl Inner {
         }
         self.sup.with(|s| s.rules.replaced(now_ms));
         self.replacing = true;
+        // With a connection and no join under way the core is connected:
+        // it either joins now or holds the close behind a read, and joins
+        // once the read is in (chunk reads always return: the registry
+        // client times out). So `replacing` is always cleared by a `Join`.
         let core = self.core.closed(now_ms);
         let joins = core.iter().any(|e| matches!(e, core::Effect::Join { .. }));
         let mut out = self.effects(core, now_ms);

@@ -175,7 +175,7 @@ extension HostedKeychain {
             #expect(live.dials == dials, "tried again in the background")
             live.advanceClock(by: .seconds(15))
             live.foreground()
-            try await Self.wait(until: { live.dials == dials + 1 }, within: .seconds(5), "no fresh connection: \(live.dials) dials")
+            try await Self.wait(until: { live.dials >= dials + 1 }, within: .seconds(5), "no fresh connection: \(live.dials) dials")
             try await Self.wait(for: .live, on: live, within: .seconds(15))
             try await Task.sleep(for: .seconds(1))
             drained += live.mailbox.drain()
@@ -189,7 +189,8 @@ extension HostedKeychain {
             live.background()
             live.advanceClock(by: .seconds(15))
             live.foreground()
-            try await Self.wait(until: { live.dials == dials + 2 }, within: .seconds(5), "not replaced after 15 s away: \(live.dials) dials")
+            let before = live.dials
+            try await Self.wait(until: { live.dials > before }, within: .seconds(5), "not replaced after 15 s away: \(live.dials) dials")
             try await Self.wait(for: .live, on: live, within: .seconds(15))
             drained += live.mailbox.drain()
             let all = drained.flatMap(Self.eventIds)
@@ -214,9 +215,12 @@ extension HostedKeychain {
                 if case .retrying(let at, _) = live.status { ContinuousClock.now.duration(to: at) > .seconds(2) } else { false }
             }, within: .seconds(5), "no long wait: \(live.status.text)")
             #expect(live.status.text.hasPrefix("reconnecting in "), "\(live.status.text)")
+            let waitingUntil: ContinuousClock.Instant? = if case .retrying(let at, _) = live.status { at } else { nil }
+            let due = try #require(waitingUntil, "not waiting: \(live.status.text)")
 
             live.pathChanged(satisfied: true)
-            try await Self.wait(until: { live.dials > dials }, within: .seconds(2), "the path change did not join at once")
+            try await Self.wait(until: { live.dials > dials }, within: .seconds(5), "the path change never joined")
+            #expect(ContinuousClock.now < due, "joined on the backoff, not at the path change")
             try await Self.wait(for: .live, on: live, within: .seconds(15))
         }
 

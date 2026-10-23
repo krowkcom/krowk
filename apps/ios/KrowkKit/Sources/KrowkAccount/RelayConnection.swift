@@ -77,7 +77,8 @@ public actor RelayConnection: LiveSession {
     private var madeSupervisor: ConnectionSupervisor?
     private let seed = UInt64.random(in: .min ... .max)
     /// Opening the session, on a thread of its own, and which open is the
-    /// current one: one the background abandoned is dropped when it ends.
+    /// current one: one the background abandoned is kept if it succeeds
+    /// and nothing newer has started, and dropped otherwise.
     private var opening = false
     private var openAsk: UInt64 = 0
     /// The next try at opening it, after one failed.
@@ -330,8 +331,8 @@ public actor RelayConnection: LiveSession {
         switch event {
         case .background:
             // Neither retried nor waited on there: an open under way is
-            // abandoned (its answer dropped) and one due later is not
-            // made; the foreground opens it at once.
+            // abandoned (a success is still kept, a failure dropped) and one
+            // due later is not made; the foreground opens it at once.
             supervisor.background(nowMs: now)
             openRetry?.cancel()
             openRetry = nil
@@ -446,7 +447,9 @@ public actor RelayConnection: LiveSession {
             case .show(let updates):
                 for update in updates {
                     switch update {
-                    case .host(let present): tracker.host(present)
+                    // Said of a socket since dropped (a replace held behind a
+                    // read, then the read's welcome): not the bar's to show.
+                    case .host(let present): if connection != nil { tracker.host(present) }
                     case .note(let text): tracker.note(text)
                     case .gap:
                         tracker.gap()
