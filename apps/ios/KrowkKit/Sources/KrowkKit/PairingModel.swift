@@ -202,6 +202,7 @@ public final class PairingModel {
     @ObservationIgnored private let service: any PairingService
     @ObservationIgnored private let camera: any CameraAccess
     @ObservationIgnored private let onPaired: @MainActor () -> Void
+    @ObservationIgnored private let onJoined: @MainActor () -> Void
     @ObservationIgnored private let log: @Sendable (String) -> Void
     /// The attempt under way, outside the actor so `deinit` can cancel it.
     @ObservationIgnored private let current = CurrentAttempt()
@@ -214,6 +215,9 @@ public final class PairingModel {
     ///   - deviceName: the name the other device will ask about, as
     ///     `SignInRules.deviceName` cleaned it.
     ///   - onPaired: moves the app on, once "Continue" is tapped.
+    ///   - onJoined: the moment this phone is on the person's devices,
+    ///     before "Continue": where the app asks to send notifications
+    ///     (R-IOS-12). Once per screen.
     ///   - log: where a failure's detail goes, never the screen. No code
     ///     is ever handed to it.
     public init(
@@ -222,7 +226,8 @@ public final class PairingModel {
         scannerSupported: Bool,
         deviceName: String,
         log: @escaping @Sendable (String) -> Void = { _ in },
-        onPaired: @escaping @MainActor () -> Void = {}
+        onPaired: @escaping @MainActor () -> Void = {},
+        onJoined: @escaping @MainActor () -> Void = {}
     ) {
         self.service = service
         self.camera = camera
@@ -230,6 +235,7 @@ public final class PairingModel {
         self.deviceName = SignInRules.deviceName(deviceName)
         self.log = log
         self.onPaired = onPaired
+        self.onJoined = onJoined
     }
 
     deinit {
@@ -394,7 +400,13 @@ public final class PairingModel {
             _ = current.take()
         }
         scanner = .closed
+        becomePaired()
+    }
+
+    private func becomePaired() {
+        guard phase != .paired else { return }
         phase = .paired
+        onJoined()
     }
 
     private func end(_ run: Int, _ failure: PairingFailure) {
@@ -404,7 +416,7 @@ public final class PairingModel {
         case .cancelled:
             phase = .entering(nil)
         case .alreadyJoined:
-            phase = .paired
+            becomePaired()
         case .network(let detail), .other(let detail):
             log("pairing: \(detail)")
             phase = .entering(failure)
