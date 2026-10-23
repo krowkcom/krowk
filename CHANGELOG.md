@@ -373,8 +373,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   even while another device had it open. After that it was read-only
   elsewhere, and a prompt sent from there waited for the next turn typed
   on the host, which might never come. Now a session stays synced while
-  another device has it open, and the idle window starts again when the
-  last one closes it. Once it has stopped, opening it on another device
+  another device has it open, for up to an hour with nothing run, and the
+  idle window starts again when the last one closes it. Turning automatic
+  sync off, or opting the directory out, still stops it within about a
+  minute. Once it has stopped, opening it on another device
   syncs it again within a moment, and a prompt sent from there runs on the
   host and is answered there. This needs the host daemon still running: a
   krowk window open on the host, or `krowk host enable` on an always-on

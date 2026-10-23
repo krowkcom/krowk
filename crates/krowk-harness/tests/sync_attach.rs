@@ -95,6 +95,8 @@ struct World {
     a_mode: Arc<AtomicU8>,
     /// Connections A has opened to the relay: each a join.
     a_conns: Arc<AtomicUsize>,
+    /// A's connections to its relay open now.
+    a_live: Arc<AtomicUsize>,
     relay_a: String,
     relay_b: String,
     _mock: mock::Mock,
@@ -190,7 +192,8 @@ impl World {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let cut = Arc::new(AtomicBool::new(false));
         let (a_mode, a_conns) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
-        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone());
+        let a_live = Arc::new(AtomicUsize::new(0));
+        let relay_a = proxy(relay_addr, seen.clone(), cut.clone(), a_mode.clone(), a_conns.clone(), a_live.clone());
         let (b_mode, b_batches) = (Arc::new(AtomicU8::new(PASS)), Arc::new(AtomicUsize::new(0)));
         let b_drop = Arc::new(AtomicUsize::new(0));
         let relay_b = viewer_proxy(relay_addr, seen.clone(), b_mode.clone(), b_batches.clone(), b_drop.clone());
@@ -200,7 +203,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone(), reg_log.clone(), reg_times.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, late: Arc::default(), b_mode, b_batches, b_drop }
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, late: Arc::default(), b_mode, b_batches, b_drop }
     }
 
     /// A device's own registry client: on its own key, its calls that act
@@ -522,7 +525,14 @@ fn relay(limits: krowk_harness::relay::Limits) -> SocketAddr {
 /// under `GHOST` it tells A on the connection open now, as the relay
 /// would, that its link was let go — and then forwards nothing more on it,
 /// the close never coming, while a new connection passes.
-fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>) -> SocketAddr {
+fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: Arc<AtomicU8>, conns: Arc<AtomicUsize>, live: Arc<AtomicUsize>) -> SocketAddr {
+    // Counts a connection gone as the client's side of it ends.
+    struct Live(Arc<AtomicUsize>);
+    impl Drop for Live {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
     let l = TcpListener::bind("127.0.0.1:0").unwrap();
     let addr = l.local_addr().unwrap();
     std::thread::spawn(move || {
@@ -533,11 +543,15 @@ fn proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, cut: Arc<AtomicBool>, mode: 
             }
             let Ok(up) = TcpStream::connect(to) else { continue };
             conns.fetch_add(1, Ordering::SeqCst);
+            live.fetch_add(1, Ordering::SeqCst);
+            let mut gone = Some(Live(live.clone()));
             // This connection alone, once a ghost: what joins after it passes.
             let ghost = Arc::new(AtomicBool::new(false));
             for (down, (mut from, mut into)) in [(false, (c.try_clone().unwrap(), up.try_clone().unwrap())), (true, (up, c))] {
                 let (seen, cut, mode, ghost) = (seen.clone(), cut.clone(), mode.clone(), ghost.clone());
+                let _gone = if down { None } else { gone.take() };
                 std::thread::spawn(move || {
+                    let _gone = _gone;
                     from.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
                     let mut buf = [0u8; 16384];
                     loop {
@@ -2963,6 +2977,13 @@ async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
         assert!(Instant::now() < deadline, "the policy was never read again while the session was parked");
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
+    // The parked link let go by that read, with no viewer near: A has no
+    // connection to its relay left.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while w.a_live.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < deadline, "the parked link stayed on the relay with sync off");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     let read = auto.checks.load(Ordering::SeqCst);
     let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
     let mut frames = Vec::new();
@@ -2972,6 +2993,36 @@ async fn r_sync_3_sync_turned_off_lets_a_parked_session_off_the_relay() {
     assert_eq!(auto.checks.load(Ordering::SeqCst), read, "B woke nothing: the link was let go by the policy read");
     assert_eq!(auto.built(&session).len(), 1, "never built again");
     assert_eq!(leased(&w, &session).await, Ok(false));
+    drop(v);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-3 (ticket 116): a viewer keeping a session with no turn does not
+/// keep it from the policy. Sync turned off while B watches: the policy is
+/// read again on its own (`Config::parked_recheck`, on the next beat), and
+/// the bridge stops and gives its lease back, B still there. Nothing parks.
+#[tokio::test]
+async fn r_sync_3_sync_turned_off_stops_a_session_a_device_watches() {
+    let w = World::new("auto-watch-off");
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let on = Arc::new(AtomicBool::new(true));
+    let mut auto = w.auto_with(&a, AutoOpts { idle: Some(Duration::from_secs(3)), on: on.clone(), parked_recheck: Duration::from_secs(1), ..AutoOpts::default() });
+    let d = w.daemon().await;
+    let session = prompted(&w, &d, None, "say hello").await;
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    taken_up(&w, &auto, &session, Instant::now() + Duration::from_secs(10)).await;
+    on.store(false, Ordering::SeqCst);
+    let off = Instant::now();
+    let_go(&w, &auto, &session, off + krowk_harness::sync::PING + Duration::from_secs(5)).await;
+    println!("R-SYNC-3 a watched session stopped {:?} after sync was turned off", off.elapsed());
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while w.a_live.load(Ordering::SeqCst) > 0 {
+        assert!(Instant::now() < deadline, "its relay link stayed, parked, with sync off");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
     drop(v);
     auto.stop(Duration::from_secs(10)).await;
 }

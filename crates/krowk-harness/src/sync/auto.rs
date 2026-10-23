@@ -29,8 +29,9 @@
 //!
 //! **Watched, and woken** (ticket 116). A bridge says when a viewer — a
 //! link that has said hello, so one that can prompt — comes or the last one
-//! goes (`host::Supervised::viewers`): a session watched is never idle, and
-//! its window runs again from when its last viewer left. A bridge let go as
+//! goes (`host::Supervised::viewers`): a session watched is not idle for
+//! up to `WATCHED_MOST` (an hour) with no turn, and its window runs again
+//! from when its last viewer left. A bridge let go as
 //! idle leaves its relay link joined, parked (`host::parked`): its stream
 //! sealed and its lease given back, it sends nothing but the relay's
 //! heartbeat — every parked link's on one schedule, so they go out on one
@@ -40,9 +41,10 @@
 //! refuses; the viewer's prompt goes again at the new bridge's welcome. A
 //! parked link that goes (the network, a laptop asleep, another host taking
 //! the channel) is not joined again — it would need the lease — and the
-//! session waits for its next turn, as before. While any is parked, the
-//! policy is read again every `PARKED_RECHECK`, on a beat: sync off, or a
-//! directory opted out, lets their links go. No parked link, no timer:
+//! session waits for its next turn, as before. While any is parked, or a
+//! viewer keeps a bridge with no turn, the policy is read again every
+//! `PARKED_RECHECK`, on a beat: sync off, or a directory opted out, lets
+//! those go. No parked link, no timer:
 //! nothing is asked of the registry or the relay to learn of a viewer.
 //!
 //! **A restart** needs nothing of its own (ticket 98): a daemon that stops
@@ -320,8 +322,9 @@ pub struct Config {
     /// How long sync stays off after a workspace's refusal for want of a
     /// paid plan (`PAID_PAUSE`; a test makes it short).
     pub paid_pause: Duration,
-    /// How often the policy is read again while sessions are parked
-    /// (`PARKED_RECHECK`; a test makes it short).
+    /// How often the policy is read again while sessions are parked, or
+    /// kept by a viewer with no turn (`PARKED_RECHECK`; a test makes it
+    /// short).
     pub parked_recheck: Duration,
 }
 
@@ -830,8 +833,9 @@ struct Sup {
     /// When the supervisor started: every parked link's heartbeat is on
     /// the same schedule from here, so all of them are sent on one wake.
     epoch: Instant,
-    /// When a rescan last read the policy: a parked session's is read
-    /// again `Config::parked_recheck` after, since no turn of its own will.
+    /// When a rescan last read the policy: a parked session's, or one a
+    /// viewer keeps, is read again `Config::parked_recheck` after, since no
+    /// turn of its own will.
     rescanned_at: Instant,
 }
 
@@ -849,6 +853,21 @@ pub const PARKED_MOST: usize = 64;
 /// their links go within about this. On a beat the links make anyway, so
 /// it costs no wake of its own.
 pub const PARKED_RECHECK: Duration = Duration::from_secs(60);
+
+/// The longest a viewer keeps a session with no turn bridged: past it, the
+/// session is let go (and parked) all the same, so a viewer whose link
+/// went without the relay ever hearing it — a laptop asleep, a phone out
+/// of signal, a half-open socket — never holds a bridge for good. One still
+/// there wakes it with its next prompt, which the parked link reads as a
+/// viewer wanting it. Never shorter than the idle window.
+pub const WATCHED_MOST: Duration = Duration::from_secs(60 * 60);
+
+/// The idle window of a bridge, `watched` or not: a watched one waits
+/// `WATCHED_MOST`, or the window if that is longer. `None`, never, stays
+/// never. Pure.
+fn window(idle: Option<Duration>, watched: bool) -> Option<Duration> {
+    idle.map(|i| if watched { i.max(WATCHED_MOST) } else { i })
+}
 
 /// How long a rescan may take to read the policy and the bridged sessions'
 /// directories (a hung network mount, a dead disk): past it, the policy
@@ -983,17 +1002,23 @@ impl Sup {
         self.backing.values().map(|w| w.at).chain(idle).chain(self.recheck_at()).min()
     }
 
-    /// When the policy is read again for the parked sessions: only while
-    /// one is parked and no rescan runs, on the beat after
-    /// `PARKED_RECHECK` has passed since the last.
+    /// When the policy is read again for sessions no turn of their own
+    /// has it read: parked ones, and bridged ones a viewer keeps with no
+    /// turn — so sync turned off, or an opt-out, stops those within about
+    /// `parked_recheck` too. Only while there is one and no rescan runs, on
+    /// the beat after `parked_recheck` has passed since the last.
     fn recheck_at(&self) -> Option<Instant> {
-        let parked = self.has.values().any(|h| matches!(h, Has::Parked { .. }));
-        (parked && self.rescans.is_empty()).then(|| next_beat(self.epoch, self.rescanned_at + self.c.parked_recheck))
+        let unread = self.has.iter().any(|(s, h)| match h {
+            Has::Parked { .. } => true,
+            Has::Bridging { viewed, stopping, .. } => *viewed && !*stopping && !self.running.contains(s),
+            Has::Checking(_) => false,
+        });
+        (unread && self.rescans.is_empty()).then(|| next_beat(self.epoch, self.rescanned_at + self.c.parked_recheck))
     }
 
     fn idle_deadlines(&self) -> impl Iterator<Item = Instant> + '_ {
         self.has.iter().filter_map(|(s, h)| match h {
-            Has::Bridging { quiet, stopping, viewed, .. } => idle_at(*quiet, self.running.contains(s) || *viewed, *stopping, self.idle),
+            Has::Bridging { quiet, stopping, viewed, .. } => idle_at(*quiet, self.running.contains(s), *stopping, window(self.idle, *viewed)),
             Has::Checking(_) | Has::Parked { .. } => None,
         })
     }
@@ -1198,18 +1223,24 @@ impl Sup {
     /// told to stop: its next turn bridges it again.
     fn release_idle(&mut self, now: Instant) {
         let Some(idle) = self.idle else { return };
-        let due: Vec<String> = self
+        let due: Vec<(String, bool)> = self
             .has
             .iter()
-            .filter(|(s, h)| matches!(h, Has::Bridging { quiet, stopping, viewed, .. } if idle_at(*quiet, self.running.contains(*s) || *viewed, *stopping, Some(idle)).is_some_and(|at| at <= now)))
-            .map(|(s, _)| s.clone())
+            .filter_map(|(s, h)| match h {
+                Has::Bridging { quiet, stopping, viewed, .. } if idle_at(*quiet, self.running.contains(s), *stopping, window(Some(idle), *viewed)).is_some_and(|at| at <= now) => Some((s.clone(), *viewed)),
+                _ => None,
+            })
             .collect();
-        for s in due {
+        for (s, viewed) in due {
             if self.stop_one(&s) {
                 if let Some(Has::Bridging { parking, .. }) = self.has.get_mut(&s) {
                     *parking = true;
                 }
-                eprintln!("krowk: stopped syncing session {s}: nothing ran in it, and no device watched it, for {}; its next turn, or a device opening it, syncs it again", human(idle));
+                if viewed {
+                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it for {}, though a device still has it open; that device's next prompt, or a turn here, syncs it again", human(idle.max(WATCHED_MOST)));
+                } else {
+                    eprintln!("krowk: stopped syncing session {s}: nothing ran in it, and no device watched it, for {}; its next turn, or a device opening it, syncs it again", human(idle));
+                }
             }
         }
     }
@@ -1828,6 +1859,17 @@ mod tests {
         assert!(!due(quiet + Duration::from_secs(86_400), true, false, window), "never while a turn runs, however long");
         assert!(!due(quiet + Duration::from_secs(86_400), false, true, window), "never twice");
         assert!(!due(quiet + Duration::from_secs(86_400), false, false, None), "never with no window");
+    }
+
+    /// R-SYNC-3 (ticket 116): a watched session waits an hour with no turn,
+    /// or its window when that is longer; never stays never.
+    #[test]
+    fn r_sync_3_a_watched_session_waits_an_hour_at_most() {
+        let m = |n: u64| Some(Duration::from_secs(n * 60));
+        assert_eq!(window(m(10), false), m(10));
+        assert_eq!(window(m(10), true), m(60), "a ghost viewer holds a bridge an hour, not for good");
+        assert_eq!(window(m(90), true), m(90), "never shorter than the window");
+        assert_eq!(window(None, true), None);
     }
 
     /// R-SYNC-3 (ticket 116): every parked link beats on one schedule, a
