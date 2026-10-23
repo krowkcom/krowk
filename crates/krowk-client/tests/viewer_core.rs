@@ -999,10 +999,11 @@ fn r_client_3_r_net_2_a_failed_read_on_a_new_stream_or_a_direct_path_rejoins_whe
     let batches: Vec<Vec<u8>> = (2..=9).map(|n| r.batch(vec![logged(n)], false)).collect();
     r.at(150).tick();
     r.updates();
-    // Twice in a row: the second join is from the relay's count too.
-    for (t, wait) in [(200, 1000), (1200, 2000)] {
+    // Twice in a row: the second join, the relay moved on to 9 meanwhile,
+    // still resumes from 7, where the viewer was carried from.
+    for (t, wait, seq) in [(200, 1000, 7), (1200, 2000, 9)] {
         r.link += 1;
-        let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": new, "seq": 7}), t);
+        let e = r.core.joined(&json!({"type": "joined", "link": r.link, "host": true, "stream": new, "seq": seq}), t);
         r.take(e);
         r.at(t).welcome_with(Welcome::default());
         r.take_rest();
