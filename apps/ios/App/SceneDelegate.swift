@@ -195,15 +195,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private static func push(api: String, keys: KeychainKeyStorage) -> PushRegistration {
         if let push { return push }
         let log = Logger(subsystem: "com.krowk.app", category: "push")
-        var register: @MainActor () -> Void = { UIApplication.shared.registerForRemoteNotifications() }
+        let register: @MainActor () -> Void
         #if DEBUG
         // The UI tests' stand-in for APNs, which gives GitHub's simulators
         // no token: KROWK_FAKE_APNS_TOKEN (hex) is handed back as iOS would
-        // hand a token to the app delegate. Never in a Release build
-        // (ios.yml checks).
-        if let token = ProcessInfo.processInfo.environment["KROWK_FAKE_APNS_TOKEN"].flatMap(Self.bytes(hex:)) {
+        // hand a token to the app delegate. Only from the launch
+        // environment, in a Debug build (Xcode's, or xtool's dev build);
+        // never in a Release one (scripts/approvals.sh checks).
+        if let token = ProcessInfo.processInfo.environment["KROWK_FAKE_APNS_TOKEN"].flatMap({ Self.bytes(hex: $0) }) {
             register = { Task { await Self.push?.didRegister(deviceToken: token) } }
+        } else {
+            register = { UIApplication.shared.registerForRemoteNotifications() }
         }
+        #else
+        register = { UIApplication.shared.registerForRemoteNotifications() }
         #endif
         let made = PushRegistration(
             notifications: SystemNotifications(),
@@ -219,7 +224,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     #if DEBUG
-    private static func bytes(hex: String) -> Data? {
+    nonisolated private static func bytes(hex: String) -> Data? {
         guard hex.count % 2 == 0, !hex.isEmpty else { return nil }
         var data = Data()
         var rest = Substring(hex)
