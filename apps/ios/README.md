@@ -22,13 +22,14 @@ apps/ios/
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
-                     and the TestFleet fixture
+                     NotificationRoutingTests, and the TestFleet fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
-                     PairingUITests
+                     PairingUITests, NotificationUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
                      no-web.sh: no web view, no remote image (R-IOS-10);
                      approvals.sh: no allowProject, and only LAContext's owner
-                     check in a Release build (R-IOS-11)
+                     check in a Release build (R-IOS-11), with none of the
+                     UI tests' stand-ins (APNs token, tapped alert)
 ```
 
 Both manifests are thin and point at the same sources. Add a file to `App/`
@@ -57,11 +58,12 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 
 `xcrun simctl list devices available` lists the simulators and their udids.
 The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
-`SignInUITests` and `PairingUITests`, the app-hosted
+`SignInUITests`, `PairingUITests` and `NotificationUITests`, the app-hosted
 `KeychainKeyStorageTests`, `SignInTests`, `PairingTests`,
 `SessionListTests`, `RelayConnectionTests`, `TranscriptModelTests`,
 `TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
-`ApprovalMappingTests` and `ApprovalScreenTests` (target
+`ApprovalMappingTests`, `ApprovalScreenTests` and
+`NotificationRoutingTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -525,6 +527,46 @@ left readable).
 - **Put away.** Swiped down, the sheet waits behind a hand in the
   navigation bar ("1 approval waiting"); a tap, or a new request, brings
   it back. Nothing is answered by putting it away.
+
+## Opened from a notification
+
+Tapping "A turn finished" or "A session needs your approval" (ticket 106)
+opens that session (`App/NotificationTaps.swift`, KrowkKit's
+`NotificationRoute.swift`).
+
+- **The payload is untrusted.** `NotificationRoute(userInfo:)` reads only
+  `userInfo["krowk"]`: a `session` that parses as a UUID (exactly 36
+  characters) and a `kind` of `approval` or `done`. Anything else routes
+  nowhere, and the app just opens. A route picks a session and nothing
+  more: only one in the person's listing opens (after a fresh read if it
+  isn't there; another account's, a deleted or an unreadable one opens
+  nothing), and a sheet only ever shows a request the session's host sent
+  over the relay.
+- **Cold launch.** `UNUserNotificationCenter`'s delegate is set in
+  `application(_:didFinishLaunchingWithOptions:)` before it returns, so
+  the tap that launched a killed app is delivered. A route that comes
+  before the window has a root is held, then applied to the paired
+  phone's session list once it's up; signing in or pairing, routes are
+  dropped.
+- **Navigating.** Back to Sessions, then the session's transcript, pushed
+  without animation; the screen already open for it (or one parked with
+  commands out) is used, never a second.
+- **An approval.** Once the first welcome after the tap has been applied
+  (the screen drains what the session posted before its status says
+  live), the sheet rises for the oldest request waiting, with Face ID
+  before a dangerous allow as ever; with none waiting (answered elsewhere,
+  denied after five minutes, its turn over), a line under the bar says
+  "Nothing is waiting for you here any more". With the host offline, the
+  line says so and when it was last seen (R-IOS-7), and no sheet rises.
+- **In the foreground.** An alert for the session on screen and live
+  shows nothing; any other shows a banner with its sound.
+- **Testing.** A simulator can't be made to tap an alert reliably, so a
+  Debug build takes an alert's `userInfo` as JSON from the launch
+  environment's `KROWK_NOTIFICATION_USERINFO` and hands it to the same
+  parsing and router at launch (`NotificationUITests`, which prints the
+  cold launch's time to the sheet for CI's summary). A Release build never
+  reads it: `scripts/approvals.sh` checks. Real APNs delivery to a phone
+  is checked by hand (ticket 107).
 
 ## Why the Xcode project is generated
 
