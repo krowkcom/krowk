@@ -7,3 +7,6 @@ product: KrowkApp
 # What Xcode generates from project.yml's INFOPLIST_KEY_* settings; xtool
 # needs it as a file.
 infoPath: xtool-Info.plist
+# Push (R-IOS-12): the same entitlements file as project.yml's; xtool
+# signs a dev build with it, ship.sh reads it as ASC_ENTITLEMENTS_PATH.
+entitlementsPath: Krowk.entitlements
