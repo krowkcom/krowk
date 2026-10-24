@@ -1,0 +1,6 @@
+{
+  "binaryBytes": {"max": 100000000, "measured": null, "why": "provisional, until the first CI measurement"},
+  "appKilobytes": {"max": 200000, "measured": null, "why": "provisional, until the first CI measurement"},
+  "memoryScrollMB": {"max": 4000, "measured": null, "why": "provisional, until the first CI measurement"},
+  "stall": {"baselineMs": 50, "factor": 2, "why": "provisional, until the median of five CI runs"}
+}

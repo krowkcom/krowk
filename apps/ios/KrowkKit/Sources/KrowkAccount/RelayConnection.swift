@@ -797,7 +797,9 @@ public final class UpdateMailbox: Sendable {
 
     public init() {}
 
-    func post(_ updates: [MailboxItem]) {
+    /// `updates`, after what waits: the connection's queue posts them, and
+    /// so does StallBudgetTests' replay of a recorded stream.
+    public func post(_ updates: [MailboxItem]) {
         guard !updates.isEmpty else { return }
         let wake = held.withLock { held -> (@Sendable () -> Void)? in
             let waiting = !held.updates.isEmpty

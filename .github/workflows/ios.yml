@@ -183,18 +183,29 @@ jobs:
   # sources load no remote image (R-IOS-10); a Release build's owner check
   # is LAContext's alone, and nothing names allowProject (R-IOS-11); the UI tests' stand-in APNs token is a Debug build's only (R-IOS-12). The UI tests' screenshots,
   # light and dark, and one of the running app are kept as artifacts.
+  # R-PERF-7 (ticket 127): three gates against apps/ios/budgets.json — the
+  # Release app's size, the memory while BudgetUITests scrolls 10,000
+  # items, and the longest frame gap while StallBudgetTests replays a
+  # burst (2× a stored baseline; a run with a deliberate 250 ms stall must
+  # fail it) — and a trend that fails nothing: the launch, the frame-apply
+  # baseline, host-to-screen latency and a notification's cold launch, in
+  # the step summary and the ios-perf.json artifact on every run.
   app:
     needs: [key, bindings]
     # Also when bindings was skipped on a cache hit.
     if: ${{ !failure() && !cancelled() }}
     runs-on: macos-26
-    # The fleet's first build on a cold cache is most of it.
-    timeout-minutes: 75
+    # The fleet's first build on a cold cache is most of it; the budgets'
+    # passes through 10,000 items and the stall gate's second run add a
+    # few minutes.
+    timeout-minutes: 90
     steps:
       - name: Xcode
         run: |
           xcodebuild -version
           echo "DERIVED=$RUNNER_TEMP/DerivedData" >> "$GITHUB_ENV"
+          # What scripts/budgets.sh measured, kept as an artifact.
+          echo "IOS_PERF=$RUNNER_TEMP/ios-perf.json" >> "$GITHUB_ENV"
 
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -292,6 +303,11 @@ jobs:
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app" release
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app" debug
 
+      # The Release app as it ships: its executable and the whole bundle,
+      # against their ceilings. A raise is a commit to budgets.json.
+      - name: "R-PERF-7: the Release app's binary and bundle size (gate)"
+        run: apps/ios/scripts/budgets.sh size "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app"
+
       - name: Boot an iPhone simulator
         run: |
           # An iPhone on the newest iOS runtime installed: the app needs
@@ -322,7 +338,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2: the scheme's tests on the simulator, against the fake fleet"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2, R-PERF-7: the scheme's tests on the simulator, against the fake fleet (StallBudgetTests is the stall gate)"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do
@@ -341,16 +357,53 @@ jobs:
           done
           exit 1
 
-      - name: "R-LAG-7, R-PERF-4, R-PERM-2: the frame-apply baseline, host-to-screen latency and a notification's cold launch to its sheet (recorded, not a gate)"
+      # XCTMemoryMetric's peak physical memory over BudgetUITests' five
+      # passes through 10,000 items, from the result bundle.
+      - name: "R-PERF-7: memory while scrolling 10,000 items (gate)"
         if: ${{ !cancelled() && env.BUILT == '1' }}
+        run: apps/ios/scripts/budgets.sh memory "$RUNNER_TEMP/Tests.xcresult"
+
+      # The stall gate must bite: StallBudgetTests again, with the Debug
+      # build's deliberate 250 ms sleep in each frame's apply
+      # (KROWK_TEST_STALL_MS, which a Release build lacks: approvals.sh).
+      # Passes only if the test fails, and on the stall.
+      - name: "R-PERF-7: a deliberate 250 ms stall fails the stall gate"
         run: |
-          test -f "$RUNNER_TEMP/test.log" || exit 0
-          {
-            echo "### Live follow: recorded on the simulator, not a device budget"
-            echo '```'
-            grep -oE "(krowk\.frame\.apply baseline|krowk host→screen latency|krowk notification cold launch).*|Test Case .*testFrameApplyBaseline.*measured.*" "$RUNNER_TEMP/test.log" | sort -u || echo "no baseline lines in the log"
-            echo '```'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
+          set -o pipefail
+          for attempt in 1 2 3; do
+            if TEST_RUNNER_KROWK_TEST_STALL_MS=250 xcodebuild test-without-building -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
+              -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath "$DERIVED" \
+              -only-testing:Krowk-iOSTests/StallBudgetTests/testR_PERF_7_replayingABurstNeverStallsTheMainThread \
+              -resultBundlePath "$RUNNER_TEMP/Stall.xcresult" 2>&1 | tee "$RUNNER_TEMP/stall.log"; then
+              echo "::error::R-PERF-7: StallBudgetTests passed with a 250 ms stall in every frame's apply: the gate does not bite"
+              exit 1
+            fi
+            if grep -q "R-PERF-7: the main thread stalled" "$RUNNER_TEMP/stall.log"; then
+              grep -oE "krowk main-thread stall:.*" "$RUNNER_TEMP/stall.log" | head -1
+              exit 0
+            fi
+            grep -q "Failed to install or launch the test runner" "$RUNNER_TEMP/stall.log" || break
+            rm -rf "$RUNNER_TEMP/Stall.xcresult"
+            echo "::warning::attempt $attempt: the simulator failed to launch the test runner; restarting it"
+            xcrun simctl shutdown "$UDID" || true
+            xcrun simctl boot "$UDID" || true
+            xcrun simctl bootstatus "$UDID" -b
+          done
+          echo "::error::R-PERF-7: the stalled run failed, but not on the stall"
+          exit 1
+
+      - name: "R-PERF-7, R-LAG-7, R-PERF-4, R-PERM-2: the launch, the frame-apply baseline, host-to-screen latency, a notification's cold launch to its sheet and the longest frame gap (a trend, not a gate)"
+        if: ${{ !cancelled() && env.BUILT == '1' }}
+        run: apps/ios/scripts/budgets.sh perf "$RUNNER_TEMP/test.log" "$RUNNER_TEMP/Tests.xcresult" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # Every run's numbers: a trend is these artifacts over time.
+      - name: Keep ios-perf.json
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ios-perf
+          path: ${{ runner.temp }}/ios-perf.json
+          if-no-files-found: warn
 
       # The UI tests' screenshots (XCTAttachment, kept always), light and
       # dark: onboarding, the approval page, waiting, signed in, pairing, a

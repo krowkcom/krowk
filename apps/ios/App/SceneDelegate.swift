@@ -93,6 +93,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     private static let hostingUnitTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
 
     private func showRoot() {
+        #if DEBUG
+        // The memory budget's fixture (ticket 127): no keys, no network.
+        if let fixture = Fixture.screen() {
+            opened = true
+            return show(fixture)
+        }
+        #endif
         let root: UIViewController
         do {
             // Hosting Krowk-iOSTests, the app leaves the Keychain to the
