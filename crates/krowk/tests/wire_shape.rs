@@ -149,6 +149,9 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     assert!(!client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap(), "a repeat is a duplicate");
     client.put_push_token(&"cd".repeat(32), "sandbox").unwrap();
     client.delete_push_token().unwrap();
+    client.put_presence(b"sealed", 30).unwrap();
+    assert!(client.list_presences().unwrap()[0].online);
+    client.delete_presence().unwrap();
     client.release_lease(id, &lease.token).unwrap();
 
     assert!(failures.lock().unwrap().is_empty(), "{:?}", failures.lock().unwrap());
@@ -186,6 +189,11 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         // device: PUT sets or replaces it, DELETE clears it.
         "PUT /v1/key/device/push_token +signed",
         "DELETE /v1/key/device/push_token +signed",
+        // The host's sealed announcement (R-HOST-3), refreshed like a
+        // lease and signed; the person's presences are read unsigned.
+        "PUT /v1/key/device/presence +signed",
+        "GET /v1/users/{slug}/presences",
+        "DELETE /v1/key/device/presence +signed",
         "DELETE /v1/sessions/{id}/lease +signed",
     ];
     let got = calls.lock().unwrap().clone();

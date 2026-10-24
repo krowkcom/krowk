@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The registry keeps each host's sealed announcement.** A host can now
+  publish the announcement it seals to your devices, refresh it like a
+  lease (10 to 120 seconds, 30 by default), and clear it going away; your
+  devices list them, each marked online until it lapses by the registry's
+  clock, and with when it was last seen. The registry holds only the
+  sealed bytes and the times, and drops a device's announcement when the
+  device is revoked or removed. Nothing publishes one yet.
 - **krowk-client can seal a host's announcement to your devices.** The
   record a host will use to tell your other devices it is online, with its
   instances and their models, the directories it starts sessions in and the

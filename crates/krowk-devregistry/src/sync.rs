@@ -205,6 +205,21 @@ pub struct SyncStore {
     /// `production`), set and cleared by the device itself. Dropped when the
     /// device is revoked or removed from its list.
     pub push_tokens: HashMap<String, (String, String)>,
+    /// Device id → its sealed announcement and times (R-HOST-3), published
+    /// and cleared by the device itself. Dropped when the device is revoked
+    /// or removed from its list.
+    pub presences: HashMap<String, Presence>,
+}
+
+/// A host's presence as the registry keeps it: the bytes, opaque, and when
+/// it was last refreshed and lapses. Nothing else: the row is the device,
+/// the bytes and the times (R-E2E-1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Presence {
+    pub sealed: Vec<u8>,
+    pub created_at: Timestamp,
+    pub updated_at: Timestamp,
+    pub expires_at: Timestamp,
 }
 
 /// One notification a lease holder asked for: the session, the kind
@@ -321,7 +336,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 
 /// A hex field of a fixed size (or at most `max`), refused as the registry's
 /// Sync::Malformed is: `invalid`, naming the field.
-fn blob(field: &str, value: &str, bytes: Option<usize>, max: Option<usize>) -> Result<Vec<u8>, Resp> {
+pub fn blob(field: &str, value: &str, bytes: Option<usize>, max: Option<usize>) -> Result<Vec<u8>, Resp> {
     let raw = unhex(value).ok_or_else(|| invalid(field, "must be hex"))?;
     if let Some(n) = bytes
         && raw.len() != n
@@ -669,16 +684,22 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
 /// that is not a whole number of seconds in the window is refused, as the
 /// registry's `Integer(…)` refuses it — a number, or a string of one.
 fn ttl(f: &Fields) -> Result<SignedDuration, Resp> {
+    ttl_within(f, DEFAULT_LEASE_TTL, LEASE_TTL)
+}
+
+/// A ttl in seconds, as the registry's `lease_ttl` reads one for a lease or
+/// a presence: `default` when absent, refused outside `window`.
+pub fn ttl_within(f: &Fields, default: i64, window: std::ops::RangeInclusive<i64>) -> Result<SignedDuration, Resp> {
     let secs = match f.get_value("ttl") {
-        None => Some(DEFAULT_LEASE_TTL),
+        None => Some(default),
         Some(Value::Num(n)) => n.parse().ok(),
         Some(Value::Str(t)) => t.parse().ok(),
         Some(_) => None,
     };
-    if let Some(secs) = secs.filter(|s| LEASE_TTL.contains(s)) {
+    if let Some(secs) = secs.filter(|s| window.contains(s)) {
         Ok(SignedDuration::from_secs(secs))
     } else {
-        Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", LEASE_TTL.start(), LEASE_TTL.end())))
+        Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", window.start(), window.end())))
     }
 }
 
@@ -861,8 +882,9 @@ pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
     let device = d.id.clone();
     let keys: Vec<String> = s.sync.bindings.iter().filter(|(_, bound)| **bound == device).map(|(key, _)| key.clone()).collect();
     s.sync.revoked_keys.extend(keys);
-    // Its push token goes with it (R-IOS-12).
+    // Its push token goes with it (R-IOS-12), and its presence (R-HOST-3).
     s.sync.push_tokens.remove(&device);
+    s.sync.presences.remove(&device);
     Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
 
