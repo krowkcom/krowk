@@ -356,19 +356,36 @@ impl Owed {
 struct Offered {
     offer: Option<crate::protocol::SwitchOffer>,
     last_prompt: Option<String>,
+    /// The prompt of the session's latest turn, as its log has it: the
+    /// limited turn is this viewer's when it is `last_prompt`.
+    asked: Option<String>,
+    /// The limited turn was prompted from here.
+    mine: bool,
 }
 
 impl Offered {
     /// A result of the session's own turn replaces the offer, said on
-    /// stderr when there is one.
+    /// stderr when there is one; the session's next turn starting
+    /// withdraws it.
     fn saw(&mut self, session: &str, u: &viewer::Update) {
-        if let viewer::Update::Line(crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::Result(r))) = u
-            && r.session_id == session
-        {
-            self.offer = r.switch_offer.clone();
-            if let Some(o) = &self.offer {
-                eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
+        use crate::protocol::{Item, LiveEvent, LogBody, StreamLine};
+        match u {
+            viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) if r.session_id == session => {
+                self.offer = r.switch_offer.clone();
+                self.mine = self.asked.is_some() && self.asked == self.last_prompt;
+                if let Some(o) = &self.offer {
+                    eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
+                }
             }
+            viewer::Update::Line(StreamLine::Log(e)) if e.session_id == session => match &e.body {
+                LogBody::TurnStarted { .. } => {
+                    self.offer = None;
+                    self.asked = None;
+                }
+                LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } => self.asked = Some(text.clone()),
+                _ => {}
+            },
+            _ => {}
         }
     }
 
@@ -382,15 +399,16 @@ impl Offered {
     }
 
     /// `/switch`: the switch to the offer's instance, and the prompt to
-    /// send again once the host has taken it — none when no prompt was
-    /// sent from here, the limited turn another device's.
+    /// send again once the host has taken it — none when the limited turn
+    /// was not prompted from here, another device's.
     fn switch(&mut self, session: &str) -> Result<(crate::protocol::Command, Option<crate::protocol::Command>), String> {
         let offer = self.offer.take().ok_or("no switch offer is waiting")?;
         let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone() };
-        if self.last_prompt.is_none() {
-            eprintln!("krowk: switching to {} — no prompt was sent from here, so type the next one", offer.to);
+        let again = self.last_prompt.clone().filter(|_| self.mine);
+        if again.is_none() {
+            eprintln!("krowk: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
         }
-        Ok((switch, self.last_prompt.clone().map(|text| prompt(session, text))))
+        Ok((switch, again.map(|text| prompt(session, text))))
     }
 }
 
@@ -523,16 +541,29 @@ mod tests {
         super::viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r)))
     }
 
+    fn logged(session: &str, text: &str) -> super::viewer::Update {
+        use crate::protocol::{Item, LogBody, LogEvent, StreamLine};
+        super::viewer::Update::Line(StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(text) } }))
+    }
+
+    fn started(session: &str) -> super::viewer::Update {
+        use crate::protocol::{LogBody, LogEvent, ModelRef, StreamLine};
+        let body = LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None };
+        super::viewer::Update::Line(StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body }))
+    }
+
     /// R-INST-7, R-SWITCH-4: `/switch` with no offer waiting is refused;
     /// with one, it is a switch to the offer's instance and the last prompt
-    /// sent from here, which goes only once the host has taken the switch,
-    /// and never when it refused it. A prompt sent instead answers no.
+    /// sent from here when the limited turn was its, which goes only once
+    /// the host has taken the switch, and never when it refused it. A
+    /// prompt sent instead answers no.
     #[test]
     fn r_switch_4_switch_takes_the_offer_waiting_and_sends_the_prompt_once_the_switch_is_taken() {
         use super::viewer::Update;
         let mut o = super::Offered::default();
         assert_eq!(o.switch("s").unwrap_err(), "no switch offer is waiting");
         o.sending(&super::prompt("s", "do the thing".into()));
+        o.saw("s", &logged("s", "do the thing"));
         o.saw("s", &offered("other", "a", "b"));
         assert!(o.switch("s").is_err(), "another session's offer is not this one's");
         o.saw("s", &offered("s", "a", "b"));
@@ -544,6 +575,15 @@ mod tests {
         o.saw("s", &offered("s", "a", "b"));
         o.sending(&super::prompt("s", "something else".into()));
         assert!(o.switch("s").is_err(), "a prompt instead is a no");
+        // Another device's turn: its offer is a switch alone, and the
+        // session's next turn starting withdraws it.
+        o.saw("s", &started("s"));
+        o.saw("s", &logged("s", "from the host's terminal"));
+        o.saw("s", &offered("s", "a", "b"));
+        assert!(matches!(o.switch("s"), Ok((Command::SwitchModel { .. }, None))), "never this viewer's last prompt again");
+        o.saw("s", &offered("s", "a", "b"));
+        o.saw("s", &started("s"));
+        assert!(o.switch("s").is_err(), "a turn under way withdrew it");
 
         // The prompt waits on the switch's ack, and goes only if taken.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

@@ -140,6 +140,10 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+
+/// How long a synced session's switch waits on the host's ack: the host
+/// checks the model as its own, a vendor's login included.
+const SYNCED_SWITCH_WAIT: Duration = Duration::from_secs(10);
 /// How long `flush_requests` waits in all, its interrupt and every steer
 /// together: what is not sent by then is sent at the next retry. One turn
 /// of the loop never waits past it on the host (`hangup::STUCK`).
@@ -1622,7 +1626,20 @@ impl<'h> Ui<'h> {
     /// over.
     async fn switch(&mut self, app: &mut App, m: ModelRef) -> bool {
         let (tx, _rx) = mpsc::channel(4);
-        match self.host.execute(Command::SwitchModel { session_id: app.session_id.clone(), model: m.clone() }, tx).await {
+        let switch = Command::SwitchModel { session_id: app.session_id.clone(), model: m.clone() };
+        // A synced session's switch waits on its host's ack, which a host
+        // that is not there never sends: refused at once then, and the keys
+        // never held up for longer than `SYNCED_SWITCH_WAIT`.
+        let answered = if self.host.synced().is_some() {
+            if app.sync.as_ref().is_some_and(|s| s.host == Some(false)) {
+                app.notice("the host is offline: switch once it is back");
+                return false;
+            }
+            tokio::time::timeout(SYNCED_SWITCH_WAIT, self.host.execute(switch, tx)).await.unwrap_or_else(|_| Err(EngineError::new(SLOW, "the host did not answer the switch in time; it was sent, so send the prompt again once it says the session moved")))
+        } else {
+            self.host.execute(switch, tx).await
+        };
+        match answered {
             Ok(_) => {
                 let when = if app.running() { " once this turn is over" } else { "" };
                 app.say_switched(&format!("now on {m}{when}"));
@@ -1857,6 +1874,9 @@ impl<'h> Ui<'h> {
                 if self.turn.is_some() {
                     return;
                 }
+                // Another device's turn: an offer its limit makes is a
+                // switch alone here, never this TUI's own last prompt again.
+                self.last_prompt.clear();
                 self.turn = Some(Box::pin(async move { done.await.unwrap_or(Ok(None)) }));
                 self.rx = Some(rx);
                 app.start_turn(std::time::Instant::now());

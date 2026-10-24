@@ -247,9 +247,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A rate-limit switch offer can be taken from another machine.** When a
   turn hits its instance's limit, `krowk sync attach --json` says on
   stderr which instance the host offers, and `/switch` takes it: the
-  session switches there, then the last prompt sent from there runs
-  again. The TUI attached to a synced session now takes the offer with
-  `y`, as it does locally; before, its yes was refused.
+  session switches there, then your prompt runs again if the limited
+  turn was yours. The TUI attached to a synced session now takes the
+  offer with `y`, as it does locally; before, its yes was refused.
 - **The iPhone app can join a pairing that `krowk devices add` shows.**
   The phone runs the same joining steps as `krowk sync join`, by the code
   typed or scanned from the QR code, and the new device appears on the
