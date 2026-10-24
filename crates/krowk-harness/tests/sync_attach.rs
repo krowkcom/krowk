@@ -1066,18 +1066,21 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     // once the daemon has said so for as long again (`deny_late`): two
     // waits and up to two sweeps, under four seconds on Linux and macOS
     // alike, held below. The denied turn then ends with the model's paced
-    // answer; the deadline is only how long the test looks for that end.
+    // answer, held below too; the deadline is only how long the test looks.
     let deadline = left + Duration::from_secs(10);
     let mut denied = None;
-    let results = loop {
-        let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+    let (results, ended) = loop {
+        // Read as the daemon appends: a last line cut off mid-write is
+        // read again at the next look.
+        let read = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE));
+        let events = read.as_deref().unwrap_or_default();
         if denied.is_none() && events.iter().any(|e| matches!(e.body, LogBody::ItemCompleted { item: Item::ToolResult { is_error: true, .. }, .. })) {
             denied = Some(left.elapsed());
         }
         if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
-            break tool_results(&w, &session);
+            break (tool_results(&w, &session), left.elapsed());
         }
-        assert!(Instant::now() < deadline, "the turn still waits on the question");
+        assert!(Instant::now() < deadline, "the turn still waits on the question (the log read: {:?})", read.err());
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
     // The bridge's doing, after its wait: not the daemon's, which would
@@ -1086,6 +1089,8 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     let denied = denied.expect("the turn ended with its request denied");
     assert!(denied >= Duration::from_millis(500), "denied {denied:?} after the terminal went");
     assert!(denied <= wait * 2 + Duration::from_millis(3500), "denied {denied:?} after the terminal went, a sweep or more late");
+    // And the turn goes on at once: the model's short answer to the denial.
+    assert!(ended <= denied + Duration::from_secs(3), "the turn ended {ended:?} after the terminal went, denied at {denied:?}");
     assert!(matches!(results.as_slice(), [(_, true)]), "bash was denied: {results:?}");
     assert!(!w.repo().join("approved.txt").exists());
 }
