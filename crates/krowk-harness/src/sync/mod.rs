@@ -354,54 +354,58 @@ impl Owed {
 /// offered — the terminal's yes (R-INST-7, R-SWITCH-4).
 #[derive(Default)]
 struct Offered {
-    offer: Option<crate::protocol::SwitchOffer>,
+    /// The offer, and the turn that hit the limit.
+    offer: Option<(String, crate::protocol::SwitchOffer)>,
     last_prompt: Option<String>,
-    /// The prompt of the session's latest turn, as its log has it: the
-    /// limited turn is this viewer's when it is `last_prompt`.
-    asked: Option<String>,
-    /// The limited turn was prompted from here.
-    mine: bool,
+    /// The session's latest turns' prompts, each its first text from the
+    /// person as the log has it (a skill's instructions, a hook's context,
+    /// steering are logged after it): the limited turn is this viewer's
+    /// when its prompt is `last_prompt`.
+    asked: std::collections::VecDeque<(String, String)>,
 }
+
+/// Turns `Offered` keeps the prompt of: enough for a catch-up that
+/// arrives after the result of the turn it brings the start of.
+const ASKED: usize = 8;
 
 impl Offered {
     /// A result of the session's own turn replaces the offer, said on
-    /// stderr when there is one; the session's next turn starting
-    /// withdraws it.
+    /// stderr when there is one; another turn of the session starting, as
+    /// it happens, withdraws it.
     fn saw(&mut self, session: &str, u: &viewer::Update) {
         use crate::protocol::{LiveEvent, StreamLine};
         match u {
             viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) if r.session_id == session => {
-                self.offer = r.switch_offer.clone();
-                self.mine = self.asked.is_some() && self.asked == self.last_prompt;
-                if let Some(o) = &self.offer {
+                self.offer = r.switch_offer.clone().map(|o| (r.turn_id.clone(), o));
+                if let Some((_, o)) = &self.offer {
                     eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
                 }
             }
-            viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e),
-            // A rejoin's catch-up brings what the stream missed meanwhile.
+            viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e, true),
+            // A rejoin's catch-up brings what the stream missed, which may
+            // come after the result it went before.
             viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => {
                 for e in events.iter().filter_map(|e| serde_json::from_value::<crate::protocol::LogEvent>(e.clone()).ok()) {
-                    self.logged(session, &e);
+                    self.logged(session, &e, false);
                 }
             }
             _ => {}
         }
     }
 
-    /// The session's turn starting withdraws the offer; its prompt is the
-    /// turn's first text from the person, the rest (a skill's
-    /// instructions, a hook's context, steering) logged after it.
-    fn logged(&mut self, session: &str, e: &crate::protocol::LogEvent) {
+    fn logged(&mut self, session: &str, e: &crate::protocol::LogEvent, live: bool) {
         use crate::protocol::{Item, LogBody};
         if e.session_id != session {
             return;
         }
         match &e.body {
-            LogBody::TurnStarted { .. } => {
-                self.offer = None;
-                self.asked = None;
+            LogBody::TurnStarted { turn_id, .. } if live && self.offer.as_ref().is_some_and(|(t, _)| t != turn_id) => self.offer = None,
+            LogBody::ItemCompleted { turn_id, item: Item::UserText { text, .. }, .. } if !self.asked.iter().any(|(t, _)| t == turn_id) => {
+                if self.asked.len() == ASKED {
+                    self.asked.pop_front();
+                }
+                self.asked.push_back((turn_id.clone(), text.clone()));
             }
-            LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if self.asked.is_none() => self.asked = Some(text.clone()),
             _ => {}
         }
     }
@@ -419,9 +423,10 @@ impl Offered {
     /// send again once the host has taken it — none when the limited turn
     /// was not prompted from here, another device's.
     fn switch(&mut self, session: &str) -> Result<(crate::protocol::Command, Option<crate::protocol::Command>), String> {
-        let offer = self.offer.take().ok_or("no switch offer is waiting")?;
+        let (turn, offer) = self.offer.take().ok_or("no switch offer is waiting")?;
         let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone() };
-        let again = self.last_prompt.clone().filter(|_| self.mine);
+        let asked = self.asked.iter().find(|(t, _)| *t == turn).map(|(_, text)| text);
+        let again = self.last_prompt.clone().filter(|p| asked == Some(p));
         if again.is_none() {
             eprintln!("krowk: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
         }
@@ -551,66 +556,74 @@ mod tests {
         assert_eq!(prompt_text(p("//switch")), "/switch");
     }
 
-    fn offered(session: &str, from: &str, to: &str) -> super::viewer::Update {
+    fn offered(session: &str, turn: &str) -> super::viewer::Update {
         use crate::protocol::{LiveEvent, ModelRef, StreamLine, SwitchOffer};
         let m = |i: &str| ModelRef { instance: i.into(), model: "m".into() };
-        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: "t".into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m(from), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m(from), to: m(to), resets_at_ms: None }), worktree: None };
+        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None }), worktree: None };
         super::viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r)))
     }
 
-    fn logged(session: &str, text: &str) -> super::viewer::Update {
-        use crate::protocol::{Item, LogBody, LogEvent, StreamLine};
-        super::viewer::Update::Line(StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(text) } }))
+    fn event(session: &str, body: crate::protocol::LogBody) -> crate::protocol::LogEvent {
+        crate::protocol::LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body }
     }
 
-    fn started(session: &str) -> super::viewer::Update {
-        use crate::protocol::{LogBody, LogEvent, ModelRef, StreamLine};
-        let body = LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None };
-        super::viewer::Update::Line(StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body }))
+    fn said(turn: &str, text: &str) -> crate::protocol::LogEvent {
+        event("s", crate::protocol::LogBody::ItemCompleted { turn_id: turn.into(), item_id: "i".into(), item: crate::protocol::Item::user(text) })
+    }
+
+    fn started(turn: &str) -> crate::protocol::LogEvent {
+        use crate::protocol::ModelRef;
+        event("s", crate::protocol::LogBody::TurnStarted { turn_id: turn.into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None })
+    }
+
+    fn live(e: crate::protocol::LogEvent) -> super::viewer::Update {
+        super::viewer::Update::Line(crate::protocol::StreamLine::Log(e))
     }
 
     /// R-INST-7, R-SWITCH-4: `/switch` with no offer waiting is refused;
     /// with one, it is a switch to the offer's instance and the last prompt
     /// sent from here when the limited turn was its, which goes only once
     /// the host has taken the switch, and never when it refused it. A
-    /// prompt sent instead answers no.
+    /// prompt sent instead answers no; another turn starting withdraws it.
     #[test]
     fn r_switch_4_switch_takes_the_offer_waiting_and_sends_the_prompt_once_the_switch_is_taken() {
         use super::viewer::Update;
         let mut o = super::Offered::default();
         assert_eq!(o.switch("s").unwrap_err(), "no switch offer is waiting");
         o.sending(&super::prompt("s", "do the thing".into()));
-        o.saw("s", &started("s"));
-        o.saw("s", &logged("s", "do the thing"));
-        o.saw("s", &logged("s", "a hook's context, or steering"));
-        o.saw("s", &offered("other", "a", "b"));
+        for e in [started("t1"), said("t1", "do the thing"), said("t1", "a hook's context, or steering")] {
+            o.saw("s", &live(e));
+        }
+        o.saw("s", &offered("other", "t1"));
         assert!(o.switch("s").is_err(), "another session's offer is not this one's");
-        o.saw("s", &offered("s", "a", "b"));
+        o.saw("s", &offered("s", "t1"));
         let (switch, again) = o.switch("s").unwrap();
         let Command::SwitchModel { session_id, model } = &switch else { panic!("{switch:?}") };
         assert_eq!((session_id.as_deref(), model.instance.as_str()), (Some("s"), "b"));
-        assert_eq!(prompt_text(Typed::Command(again.clone().unwrap())), "do the thing");
+        assert_eq!(prompt_text(Typed::Command(again.clone().unwrap())), "do the thing", "the turn's first text, not what followed it");
         assert!(o.switch("s").is_err(), "taken once");
-        o.saw("s", &offered("s", "a", "b"));
+        o.saw("s", &offered("s", "t1"));
         o.sending(&super::prompt("s", "something else".into()));
         assert!(o.switch("s").is_err(), "a prompt instead is a no");
-        // Another device's turn: its offer is a switch alone, and the
-        // session's next turn starting withdraws it.
-        o.saw("s", &started("s"));
-        o.saw("s", &logged("s", "from the host's terminal"));
-        o.saw("s", &offered("s", "a", "b"));
+
+        // Another device's turn: its offer is a switch alone.
+        for e in [started("t2"), said("t2", "from the host's terminal")] {
+            o.saw("s", &live(e));
+        }
+        o.saw("s", &offered("s", "t2"));
         assert!(matches!(o.switch("s"), Ok((Command::SwitchModel { .. }, None))), "never this viewer's last prompt again");
-        o.saw("s", &offered("s", "a", "b"));
-        o.saw("s", &started("s"));
+        // The next turn starting withdraws it; its own start, caught up
+        // after its result, does not.
+        o.saw("s", &offered("s", "t2"));
+        o.saw("s", &live(started("t3")));
         assert!(o.switch("s").is_err(), "a turn under way withdrew it");
-        // Another device's turn, its start caught up after a rejoin.
         o.sending(&super::prompt("s", "mine".into()));
-        let json = |u: super::viewer::Update| match u {
-            super::viewer::Update::Line(crate::protocol::StreamLine::Log(e)) => serde_json::to_value(e).unwrap(),
-            _ => unreachable!(),
-        };
-        o.saw("s", &super::viewer::Update::CaughtUp(vec![json(started("s")), json(logged("s", "theirs"))]));
-        o.saw("s", &offered("s", "a", "b"));
+        let caught = |es: Vec<crate::protocol::LogEvent>| Update::CaughtUp(es.into_iter().map(|e| serde_json::to_value(e).unwrap()).collect());
+        o.saw("s", &offered("s", "t4"));
+        o.saw("s", &caught(vec![started("t4"), said("t4", "mine")]));
+        assert_eq!(o.switch("s").map(|(_, again)| again.map(|a| prompt_text(Typed::Command(a)))), Ok(Some("mine".into())), "a caught-up start of the limited turn keeps its offer");
+        o.saw("s", &offered("s", "t5"));
+        o.saw("s", &caught(vec![started("t5"), said("t5", "theirs")]));
         assert!(matches!(o.switch("s"), Ok((_, None))), "a caught-up turn is read too");
 
         // The prompt waits on the switch's ack, and goes only if taken.

@@ -611,7 +611,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), prompted_turn: None, ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -773,6 +773,8 @@ struct Ui<'h> {
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
+    /// The turn `last_prompt` started, on a synced session.
+    prompted_turn: Option<String>,
     /// The window title, the terminal's root record and herdr's agent
     /// state.
     presence: presence::Presence,
@@ -1361,6 +1363,16 @@ impl<'h> Ui<'h> {
             // and a retry probe still scheduled is moot.
             reach.online(app);
         }
+        // The turn of this TUI's own prompt on a synced session: its
+        // result, should it reach `on_watched`, is still this TUI's.
+        if let StreamLine::Log(e) = line
+            && let krowk_harness::protocol::LogBody::TurnStarted { turn_id, .. } = &e.body
+            && self.host.synced().is_some()
+            && app.session_id.as_deref() == Some(e.session_id.as_str())
+            && !self.last_prompt.is_empty()
+        {
+            self.prompted_turn = Some(turn_id.clone());
+        }
         app.on_line(line);
         self.follow(app);
         self.follow_the_agent(app);
@@ -1845,9 +1857,12 @@ impl<'h> Ui<'h> {
 
     /// A line of a turn another client runs.
     fn on_watched(&mut self, app: &mut App, line: &StreamLine) {
-        // A synced turn this TUI did not follow from its start, first seen
-        // caught up: its offer is a switch alone.
-        if self.host.synced().is_some() && matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(_))) {
+        // A synced turn this TUI did not prompt, first seen caught up: its
+        // offer is a switch alone.
+        if let StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(r)) = line
+            && self.host.synced().is_some()
+            && self.prompted_turn.as_deref() != Some(r.turn_id.as_str())
+        {
             self.last_prompt.clear();
         }
         app.on_line(line);
