@@ -30,11 +30,17 @@ final class BudgetUITests: XCTestCase {
         var passes = 0
         measure(metrics: [XCTMemoryMetric(application: app)], options: options) {
             passes += 1
-            scroll.tap()
-            // Top to bottom: the button reads the pass once it's done.
             let done = NSPredicate(format: "label == %@", "Scrolled \(passes)")
+            // A tap the app missed (it came as the screen settled) is tried
+            // again: the button reads "Scrolling…" once a pass starts.
+            let started = NSPredicate(format: "label == %@ OR label == %@", "Scrolling…", "Scrolled \(passes)")
+            for _ in 0..<3 where !started.evaluate(with: scroll) {
+                scroll.tap()
+                _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: started, object: scroll)], timeout: 15)
+            }
+            // Top to bottom: the button reads the pass once it's done.
             let scrolled = XCTNSPredicateExpectation(predicate: done, object: scroll)
-            XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 300), .completed, "pass \(passes) never reached the bottom: \(scroll.label)")
+            XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 400), .completed, "pass \(passes) never reached the bottom: \(scroll.label)")
         }
         Screenshots.keep("fixture-tenk-bottom", in: app)
         app.terminate()

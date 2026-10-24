@@ -246,7 +246,8 @@ final class TranscriptStreamingText {
 
     /// `whole`, the item's completed text, kept in the blocks it streamed
     /// into, if that's what they hold: it's what streamed (nothing a gap
-    /// lost), under the 64 KiB cap, and every cut was at a line break (a
+    /// lost; what came in the frame that completed it is appended first,
+    /// `TranscriptTextCell.render`), under the 64 KiB cap, and every cut was at a line break (a
     /// space cut would leave a paragraph broken, a character cut could
     /// split a link). Only the views holding a link are drawn again, with
     /// it; the rest keep their layout, so an answer's last frame lays out
@@ -364,6 +365,15 @@ final class TranscriptTextCell: TranscriptCell {
         if text.openLink == nil { text.openLink = { [weak self] in self?.openLink?($0) } }
         guard state.done else { return stream(state, font: font) }
         if let finished, finished.item == ObjectIdentifier(state), finished.font == font { return }
+        if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font {
+            // Its last deltas may have come in the frame that completed it:
+            // appended first, as any frame's are, so a whole text that only
+            // extends what streamed keeps its blocks rather than being drawn
+            // again in one view (a quarter-second stall on CI's simulator for
+            // a 10 KB answer, StallBudgetTests). One that differs is caught
+            // by `finish`.
+            stream(state, font: font)
+        }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,
            text.finish(state.text, font: font) {
             finished = (ObjectIdentifier(state), font)

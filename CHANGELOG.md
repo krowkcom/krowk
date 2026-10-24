@@ -24,7 +24,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   burst streams in fails the iOS workflow; the ceilings live in
   `apps/ios/budgets.json`, and raising one is a commit with a new
   measurement. Launch and latency are recorded on every run as a trend,
-  not a gate. Nothing changes for CLI users.
+  not a gate. The new stall gate found one: an answer whose last words
+  arrived in the same frame as its end was drawn again whole, a
+  quarter-second freeze on the simulator; it now keeps the text it
+  streamed. Nothing changes for CLI users.
 - **An iPhone you remove from your devices says so, and can be reset.**
   After `krowk devices remove <iphone>` (or a list started over with
   `krowk sync init --start-over`), the app replaces its screens with "This

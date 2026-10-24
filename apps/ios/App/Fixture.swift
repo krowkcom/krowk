@@ -8,7 +8,8 @@ import UIKit
 /// `tenk`, a transcript screen on `TranscriptFixture`'s 10,000 rows, held
 /// in memory and followed by no session, so nothing touches the network.
 /// Its "Scroll through" button takes the list from its top to its bottom,
-/// a screen a display frame, and reads "Scrolled N" after the Nth pass:
+/// a screen a display frame, reading "Scrolling…" meanwhile and "Scrolled
+/// N" after the Nth pass:
 /// BudgetUITests measures the app's memory over those passes. Not in a
 /// Release build (scripts/approvals.sh).
 @MainActor
@@ -45,6 +46,7 @@ final class FixtureScroller: NSObject {
         // As a tap on the status bar would: the list stops following the end.
         _ = screen.scrollViewShouldScrollToTop(list)
         list.setContentOffset(CGPoint(x: 0, y: -list.adjustedContentInset.top), animated: false)
+        button?.title = "Scrolling…"
         let link = CADisplayLink(target: self, selector: #selector(step))
         link.add(to: .main, forMode: .common)
         self.link = link
