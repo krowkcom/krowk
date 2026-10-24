@@ -290,3 +290,14 @@ fn r_host_3_a_bidi_override_is_refused_like_a_control_character() {
     let spoof = Announcement { directories: vec!["/home/someone/\u{202e}txt.exe".into()], ..record(&me) };
     assert!(presence::seal(&spoof, &keys(1), 1, &me).unwrap_err().contains("control character"));
 }
+
+#[test]
+fn r_host_3_a_sealed_announcement_one_byte_over_the_bound_is_refused_before_it_opens() {
+    let w = world();
+    let me = w.laptop.id();
+    let most = presence::MAX_JSON.div_ceil(presence::PAD) * presence::PAD;
+    let fits = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, &vec![b' '; most]).unwrap();
+    assert!(presence::open(&fits, &me, &keys(1), &chain(&w)).unwrap_err().contains("does not decode"));
+    let over = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, &vec![b' '; most + 1]).unwrap();
+    assert!(presence::open(&over, &me, &keys(1), &chain(&w)).unwrap_err().contains("longer than"));
+}

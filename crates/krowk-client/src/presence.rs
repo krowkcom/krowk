@@ -95,11 +95,11 @@ impl Announcement {
         if self.strings().any(|s| s.chars().any(refused_in_name)) {
             return Err("the announcement has a control character in it".into());
         }
-        if self.name.chars().count() > MAX_NAME {
-            return Err(format!("the announcement's name is longer than {MAX_NAME} characters"));
+        if self.name.len() > MAX_NAME {
+            return Err(format!("the announcement's name is longer than {MAX_NAME} bytes"));
         }
-        if self.os.chars().count() > MAX_OS {
-            return Err(format!("the announcement's OS is longer than {MAX_OS} characters"));
+        if self.os.len() > MAX_OS {
+            return Err(format!("the announcement's OS is longer than {MAX_OS} bytes"));
         }
         if self.instances.len() > MAX_INSTANCES {
             return Err(format!("the announcement lists more than {MAX_INSTANCES} instances"));
@@ -153,14 +153,14 @@ pub fn open(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Chain) ->
     if listed.kind == Kind::Recovery {
         return Err(format!("device {device} is your recovery kit, which announces nothing"));
     }
+    let generation = e2e::person_generation(sealed).map_err(|e| e.0)?;
     if sealed.len() > e2e::PERSON_OVERHEAD + MAX_JSON.div_ceil(PAD) * PAD {
         return Err(format!("the announcement from {device} is longer than {MAX_JSON} bytes"));
     }
     // Any device that ever held an older generation could have sealed one
     // under it, a device removed since included.
-    let generation = e2e::person_generation(sealed).map_err(|e| e.0)?;
     if generation < chain.generation() {
-        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} announces itself again", chain.generation()));
+        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk devices`) and announces itself again", chain.generation()));
     }
     let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
     // serde's message can quote what the host wrote, so it is escaped.
