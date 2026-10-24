@@ -37,6 +37,9 @@ const ANSWER: &str = "the-answer-marker-5c2e";
 /// What the model answers a prompt typed into the TUI on B.
 const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 
+/// A prompt A's `anthropic` instance answers with its rate limit.
+const LIMITED: &str = "past-the-limit-prompt-3e0a";
+
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
 
@@ -67,6 +70,9 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     }
     if !has_result && text.contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
+    }
+    if !has_result && text.contains(LIMITED) {
+        return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
     }
     if !has_result && text.contains("tui round trip") {
         return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
@@ -273,6 +279,20 @@ impl Running {
         panic!("no {what} within 20s: {:#?}\nstderr: {:?}", self.seen, self.err.try_iter().collect::<Vec<_>>());
     }
 
+    /// Reads stderr until a line passes `want`.
+    fn said(&mut self, what: &str, want: impl Fn(&str) -> bool) -> String {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let mut seen = Vec::new();
+        while Instant::now() < deadline {
+            let Ok(l) = self.err.recv_timeout(Duration::from_millis(100)) else { continue };
+            if want(&l) {
+                return l;
+            }
+            seen.push(l);
+        }
+        panic!("no {what} on stderr within 20s: {seen:#?}\nstdout: {:#?}", self.seen);
+    }
+
     fn stderr(&self) -> Vec<String> {
         self.err.try_iter().collect()
     }
@@ -474,10 +494,55 @@ fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_on
     assert_eq!(result["status"], "completed", "the turn ran once A trusted the repository: {result}");
 }
 
+/// R-SWITCH-4, R-INST-7, R-CRED-1: a turn B prompts with `krowk sync
+/// attach` that hits the limit of A's instance is named on B's stderr with
+/// the instance A offers, and `/switch` takes it as the terminal does: a
+/// `switchModel` to it, then, once A has taken that, the prompt again,
+/// which runs there. With no offer waiting, `/switch` sends nothing.
+#[test]
+fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
+    let w = World::new("offer");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
+    let config = serde_json::json!({"tui": {"screen": "inline"}, "instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
+    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
+    let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+
+    view.type_line("/switch");
+    view.said("the refusal", |l| l == "krowk: no switch offer is waiting");
+    view.type_line(&format!("say {LIMITED}"));
+    let result = view.until("the limited turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["switchOffer"]["to"]["instance"], "anthropic:personal", "{result}");
+    view.said("the offer", |l| l == "krowk: anthropic/claude-sonnet-4-6 is at its limit — type /switch to continue on anthropic:personal/claude-sonnet-4-6");
+
+    view.type_line("/switch");
+    let result = view.until("the turn again", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!((result["status"].as_str(), result["model"]["instance"].as_str()), (Some("completed"), Some("anthropic:personal")), "{result}");
+    assert!(result["result"].as_str().is_some_and(|r| r.contains("on the other")), "{result}");
+    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let switched: Vec<_> = events.iter().filter(|e| e["type"] == "model.switched").collect();
+    assert_eq!(switched.len(), 1, "{switched:?}");
+    assert_eq!(switched[0]["to"]["instance"], "anthropic:personal");
+    let turns: Vec<_> = events.iter().filter(|e| e["type"] == "turn.started").collect();
+    assert_eq!(turns.last().unwrap()["model"]["instance"], "anthropic:personal", "the prompt again ran on the offered instance");
+    assert_eq!(turns.len(), 3, "hello, the limited turn, and once again: {turns:?}");
+    assert!(other.seen.lock().unwrap().last().is_some_and(|c| c.body["messages"].to_string().contains(LIMITED)), "B's last prompt was sent again");
+}
+
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
 /// to the registry: the host's process, and the session's id.
 fn hosted(w: &World, a: &Machine) -> (Running, String) {
-    let made = a.command(&["-p", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    let _ = w;
+    hosted_on(a, "claude-sonnet-4-6")
+}
+
+/// `hosted`, the session made on `model`.
+fn hosted_on(a: &Machine, model: &str) -> (Running, String) {
+    let made = a.command(&["-p", "hello", "--model", model]).output().unwrap();
     assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
     let session = a.session();
     let host = Running::spawn(a.command(&["sync", "host", &session]));
@@ -486,7 +551,6 @@ fn hosted(w: &World, a: &Machine) -> (Running, String) {
         assert!(Instant::now() < deadline, "A syncs the session: {:?}", host.stderr());
         std::thread::sleep(Duration::from_millis(50));
     }
-    let _ = w;
     (host, session)
 }
 
