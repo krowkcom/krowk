@@ -140,6 +140,10 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+
+/// How long a synced session's switch waits on the host's ack, which a
+/// key waits on: `FLUSH_WAIT`'s bound, under the hang-up watchdog's.
+const SYNCED_SWITCH_WAIT: Duration = FLUSH_WAIT;
 /// How long `flush_requests` waits in all, its interrupt and every steer
 /// together: what is not sent by then is sent at the next retry. One turn
 /// of the loop never waits past it on the host (`hangup::STUCK`).
@@ -607,7 +611,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), prompted_turn: None, ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -769,6 +773,8 @@ struct Ui<'h> {
     /// The last prompt sent: what a yes to a limit's offer sends again on
     /// the instance it moves to (R-INST-7).
     last_prompt: String,
+    /// The turn `last_prompt` started, on a synced session.
+    prompted_turn: Option<String>,
     /// The window title, the terminal's root record and herdr's agent
     /// state.
     presence: presence::Presence,
@@ -1234,10 +1240,7 @@ impl<'h> Ui<'h> {
                     return Ok(());
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
-                line = watched(&mut self.watch) => {
-                    app.on_line(&line);
-                    self.go_on(app);
-                }
+                line = watched(&mut self.watch) => self.on_watched(app, &line),
                 e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
                 r = finish(&mut self.turn) => {
                     if self.on_turn_end(app, r, &mut reach, quitting).await {
@@ -1359,6 +1362,16 @@ impl<'h> Ui<'h> {
             // Bytes are arriving from the model: it is reachable,
             // and a retry probe still scheduled is moot.
             reach.online(app);
+        }
+        // The turn of this TUI's own prompt on a synced session: its
+        // result, should it reach `on_watched`, is still this TUI's.
+        if let StreamLine::Log(e) = line
+            && let krowk_harness::protocol::LogBody::TurnStarted { turn_id, .. } = &e.body
+            && self.host.synced().is_some()
+            && app.session_id.as_deref() == Some(e.session_id.as_str())
+            && !self.last_prompt.is_empty()
+        {
+            self.prompted_turn = Some(turn_id.clone());
         }
         app.on_line(line);
         self.follow(app);
@@ -1622,7 +1635,20 @@ impl<'h> Ui<'h> {
     /// over.
     async fn switch(&mut self, app: &mut App, m: ModelRef) -> bool {
         let (tx, _rx) = mpsc::channel(4);
-        match self.host.execute(Command::SwitchModel { session_id: app.session_id.clone(), model: m.clone() }, tx).await {
+        let switch = Command::SwitchModel { session_id: app.session_id.clone(), model: m.clone() };
+        // A synced session's switch waits on its host's ack, which a host
+        // that is not there never sends: refused at once then, and the keys
+        // never held up for longer than `SYNCED_SWITCH_WAIT`.
+        let answered = if self.host.synced().is_some() {
+            if app.sync.as_ref().is_some_and(|s| s.host == Some(false)) {
+                app.notice("the host is offline: switch once it is back");
+                return false;
+            }
+            tokio::time::timeout(SYNCED_SWITCH_WAIT, self.host.execute(switch, tx)).await.unwrap_or_else(|_| Err(EngineError::new(SLOW, "the host did not answer the switch in time; it was sent, so send the prompt again once it says the session moved")))
+        } else {
+            self.host.execute(switch, tx).await
+        };
+        match answered {
             Ok(_) => {
                 let when = if app.running() { " once this turn is over" } else { "" };
                 app.say_switched(&format!("now on {m}{when}"));
@@ -1829,6 +1855,20 @@ impl<'h> Ui<'h> {
         });
     }
 
+    /// A line of a turn another client runs.
+    fn on_watched(&mut self, app: &mut App, line: &StreamLine) {
+        // A synced turn this TUI did not prompt, first seen caught up: its
+        // offer is a switch alone.
+        if let StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(r)) = line
+            && self.host.synced().is_some()
+            && self.prompted_turn.as_deref() != Some(r.turn_id.as_str())
+        {
+            self.last_prompt.clear();
+        }
+        app.on_line(line);
+        self.go_on(app);
+    }
+
     /// A synced session's news: the status line's host and path, a note,
     /// or a turn begun elsewhere, followed as the TUI's own — so Esc
     /// interrupts it, as `reattach` does a daemon's.
@@ -1857,6 +1897,9 @@ impl<'h> Ui<'h> {
                 if self.turn.is_some() {
                     return;
                 }
+                // Another device's turn: an offer its limit makes is a
+                // switch alone here, never this TUI's own last prompt again.
+                self.last_prompt.clear();
                 self.turn = Some(Box::pin(async move { done.await.unwrap_or(Ok(None)) }));
                 self.rx = Some(rx);
                 app.start_turn(std::time::Instant::now());

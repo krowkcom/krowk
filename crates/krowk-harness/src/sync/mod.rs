@@ -181,15 +181,25 @@ pub fn ask_handoff(o: viewer::Options, wait: Duration) -> Result<Handed, String>
     })
 }
 
+/// What a line typed into `krowk sync attach` asks of the session.
+#[derive(Debug)]
+pub enum Typed {
+    /// Sent as it is.
+    Command(crate::protocol::Command),
+    /// `/switch`: the rate-limit offer the attach loop holds, taken
+    /// (`Offered::switch`).
+    Switch,
+}
+
 /// What a line typed into `krowk sync attach` asks of the session: a
 /// prompt, unless it is one of the slash commands `krowk help sync attach`
 /// lists. Any other line starting with `/` is a prompt as typed, so a skill
 /// (`/review x`) or a path still reaches the model; `//text` sends `/text`
 /// for a prompt that would otherwise read as a command.
-pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, String> {
+pub fn typed(session: &str, line: String) -> Result<Typed, String> {
     use crate::protocol::{ApprovalDecision, Command};
     let session_id = session.to_string();
-    let prompt = |text: String| Ok(Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None });
+    let prompt = |text: String| Ok(Typed::Command(prompt(session, text)));
     let trimmed = line.trim();
     if let Some(literal) = trimmed.strip_prefix("//") {
         return prompt(format!("/{literal}"));
@@ -200,26 +210,34 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
         "approve" => ApprovalDecision::Allow,
         "allow-session" => ApprovalDecision::AllowSession,
         "deny" => ApprovalDecision::Deny,
-        "interrupt" if arg.is_empty() => return Ok(Command::Interrupt { session_id }),
+        "interrupt" if arg.is_empty() => return Ok(Typed::Command(Command::Interrupt { session_id })),
         // One of the session's subagents, by the id its `subagent.started`
         // line names (R-SUB-12): the host refuses any other.
-        "interrupt" if crate::log::valid_id(arg) => return Ok(Command::Interrupt { session_id: arg.to_string() }),
-        "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() }),
+        "interrupt" if crate::log::valid_id(arg) => return Ok(Typed::Command(Command::Interrupt { session_id: arg.to_string() })),
+        "steer" if !arg.is_empty() => return Ok(Typed::Command(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() })),
         "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone or with a subagent's session id, or `/steer TEXT`")),
         // The `<instance>/<id>` form `--model` takes: the instances are the
         // host's, so the host checks the model against its own (R-CRED-1).
         "model" => {
             return match arg.split_once('/') {
-                Some((instance, model)) if !instance.is_empty() && !model.is_empty() && !arg.contains(char::is_whitespace) => Ok(Command::SwitchModel { session_id: Some(session_id), model: crate::protocol::ModelRef { instance: instance.into(), model: model.into() } }),
+                Some((instance, model)) if !instance.is_empty() && !model.is_empty() && !arg.contains(char::is_whitespace) => Ok(Typed::Command(Command::SwitchModel { session_id: Some(session_id), model: crate::protocol::ModelRef { instance: instance.into(), model: model.into() } })),
                 _ => Err("`/model` takes the model as `<instance>/<id>`, e.g. `/model anthropic/claude-opus-5-5`".into()),
             };
         }
+        "switch" if arg.is_empty() => return Ok(Typed::Switch),
+        "switch" => return Err("`/switch` takes nothing: it takes the switch a rate limit offered".into()),
         _ => return prompt(line),
     };
     if arg.is_empty() || arg.contains(char::is_whitespace) {
         return Err(format!("`/{word}` takes the requestId an approval.requested line names"));
     }
-    Ok(Command::Approve { session_id, request_id: arg.to_string(), decision, answers: Vec::new() })
+    Ok(Typed::Command(Command::Approve { session_id, request_id: arg.to_string(), decision, answers: Vec::new() }))
+}
+
+/// A prompt from `krowk sync attach`: the session's model, settings and
+/// mode, the host's to choose.
+fn prompt(session: &str, text: String) -> crate::protocol::Command {
+    crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None }
 }
 
 /// `krowk sync attach`: follows a synced session, writing each update as
@@ -240,6 +258,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
             }
         });
         let mut owed = Owed::default();
+        let mut offered = Offered::default();
         loop {
             tokio::select! {
                 // The session first: stdin closed at once (`</dev/null`)
@@ -248,7 +267,10 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 u = v.updates.recv() => {
                     let Some(batch) = u else { return Ok(()) };
                     for u in batch {
-                        owed.saw(&u);
+                        if let Some(next) = owed.saw(&u) {
+                            owed.hand(&v.commands, next, None);
+                        }
+                        offered.saw(&session, &u);
                         let line = jsonl(u)?;
                         if !line.is_empty() {
                             let _ = writeln!(out, "{line}");
@@ -258,10 +280,14 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 }
                 l = lines.recv(), if !owed.eof => match l {
                     Some(text) if !text.trim().is_empty() => match typed(&session, text) {
-                        Ok(c) => {
-                            owed.handed += 1;
-                            let _ = v.commands.send(c);
+                        Ok(Typed::Command(c)) => {
+                            offered.sending(&c);
+                            owed.hand(&v.commands, c, None);
                         }
+                        Ok(Typed::Switch) => match offered.switch(&session) {
+                            Ok((switch, again)) => owed.hand(&v.commands, switch, again),
+                            Err(e) => eprintln!("krowk: {e}"),
+                        },
                         Err(e) => eprintln!("krowk: {e}"),
                     },
                     Some(_) => {}
@@ -280,28 +306,131 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
 #[derive(Default)]
 struct Owed {
     eof: bool,
-    /// Handed to the viewer, not yet shown as sent.
-    handed: usize,
+    /// Handed to the viewer, not yet shown as sent, in the order handed,
+    /// each with the command to send once the host has taken it.
+    handed: std::collections::VecDeque<Option<crate::protocol::Command>>,
     /// Sent (or queued) and not yet acknowledged, by id.
     unacked: std::collections::HashSet<String>,
+    /// What follows a sent command once the host takes it, by its id.
+    then: std::collections::HashMap<String, crate::protocol::Command>,
 }
 
 impl Owed {
-    fn saw(&mut self, u: &viewer::Update) {
+    /// `c` to the viewer, and `then` once the host has taken it: the host
+    /// runs a viewer's commands side by side, so a prompt sent with the
+    /// switch before it could start on the model it switches from.
+    fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, c: crate::protocol::Command, then: Option<crate::protocol::Command>) {
+        if commands.send(c).is_ok() {
+            self.handed.push_back(then);
+        }
+    }
+
+    /// Notes `u`, and answers the command to send now: one that waited on
+    /// the command just taken. A refused one's never goes.
+    fn saw(&mut self, u: &viewer::Update) -> Option<crate::protocol::Command> {
         match u {
             viewer::Update::Sent { id, .. } => {
-                self.handed = self.handed.saturating_sub(1);
+                if let Some(then) = self.handed.pop_front().flatten() {
+                    self.then.insert(id.clone(), then);
+                }
                 self.unacked.insert(id.clone());
+                None
             }
-            viewer::Update::Acked { id, .. } => {
+            viewer::Update::Acked { id, error } => {
                 self.unacked.remove(id);
+                self.then.remove(id).filter(|_| error.is_none())
+            }
+            _ => None,
+        }
+    }
+
+    fn done(&self) -> bool {
+        self.eof && self.handed.is_empty() && self.unacked.is_empty()
+    }
+}
+
+/// The rate-limit offer `krowk sync attach` last saw for its session, and
+/// the last prompt it sent, which `/switch` sends again on the instance
+/// offered — the terminal's yes (R-INST-7, R-SWITCH-4).
+#[derive(Default)]
+struct Offered {
+    /// The offer, and the turn that hit the limit.
+    offer: Option<(String, crate::protocol::SwitchOffer)>,
+    last_prompt: Option<String>,
+    /// The session's latest turns' prompts, each its first text from the
+    /// person as the log has it (a skill's instructions, a hook's context,
+    /// steering are logged after it): the limited turn is this viewer's
+    /// when its prompt is `last_prompt`.
+    asked: std::collections::VecDeque<(String, String)>,
+}
+
+/// Turns `Offered` keeps the prompt of: enough for a catch-up that
+/// arrives after the result of the turn it brings the start of.
+const ASKED: usize = 8;
+
+impl Offered {
+    /// A result of the session's own turn replaces the offer, said on
+    /// stderr when there is one; another turn of the session starting, as
+    /// it happens, withdraws it.
+    fn saw(&mut self, session: &str, u: &viewer::Update) {
+        use crate::protocol::{LiveEvent, StreamLine};
+        match u {
+            viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) if r.session_id == session => {
+                self.offer = r.switch_offer.clone().map(|o| (r.turn_id.clone(), o));
+                if let Some((_, o)) = &self.offer {
+                    eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
+                }
+            }
+            viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e, true),
+            // A rejoin's catch-up brings what the stream missed, which may
+            // come after the result it went before.
+            viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => {
+                for e in events.iter().filter_map(|e| serde_json::from_value::<crate::protocol::LogEvent>(e.clone()).ok()) {
+                    self.logged(session, &e, false);
+                }
             }
             _ => {}
         }
     }
 
-    fn done(&self) -> bool {
-        self.eof && self.handed == 0 && self.unacked.is_empty()
+    fn logged(&mut self, session: &str, e: &crate::protocol::LogEvent, live: bool) {
+        use crate::protocol::{Item, LogBody};
+        if e.session_id != session {
+            return;
+        }
+        match &e.body {
+            LogBody::TurnStarted { turn_id, .. } if live && self.offer.as_ref().is_some_and(|(t, _)| t != turn_id) => self.offer = None,
+            LogBody::ItemCompleted { turn_id, item: Item::UserText { text, .. }, .. } if !self.asked.iter().any(|(t, _)| t == turn_id) => {
+                if self.asked.len() == ASKED {
+                    self.asked.pop_front();
+                }
+                self.asked.push_back((turn_id.clone(), text.clone()));
+            }
+            _ => {}
+        }
+    }
+
+    /// A prompt sent from here is the one `/switch` sends again, and
+    /// answers the offer with a no.
+    fn sending(&mut self, c: &crate::protocol::Command) {
+        if let crate::protocol::Command::Prompt { text, .. } = c {
+            self.last_prompt = Some(text.clone());
+            self.offer = None;
+        }
+    }
+
+    /// `/switch`: the switch to the offer's instance, and the prompt to
+    /// send again once the host has taken it — none when the limited turn
+    /// was not prompted from here, another device's.
+    fn switch(&mut self, session: &str) -> Result<(crate::protocol::Command, Option<crate::protocol::Command>), String> {
+        let (turn, offer) = self.offer.take().ok_or("no switch offer is waiting")?;
+        let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone() };
+        let asked = self.asked.iter().find(|(t, _)| *t == turn).map(|(_, text)| text);
+        let again = self.last_prompt.clone().filter(|p| asked == Some(p));
+        if again.is_none() {
+            eprintln!("krowk: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
+        }
+        Ok((switch, again.map(|text| prompt(session, text))))
     }
 }
 
@@ -343,12 +472,12 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::typed;
+    use super::{typed, Typed};
     use crate::protocol::{ApprovalDecision, Command};
 
-    fn prompt_text(c: Command) -> String {
+    fn prompt_text(c: Typed) -> String {
         match c {
-            Command::Prompt { text, session_id, .. } => {
+            Typed::Command(Command::Prompt { text, session_id, .. }) => {
                 assert_eq!(session_id.as_deref(), Some("s"));
                 text
             }
@@ -394,12 +523,16 @@ mod tests {
         assert_eq!(super::handshake::read_control(&b), Some(v));
     }
 
-    /// The five commands, each to its `Command`; anything else starting
-    /// with `/` is a prompt as typed, and `//` escapes a command's name.
+    /// The commands, each to its `Command`, and `/switch` to the marker
+    /// the attach loop takes the offer on; anything else starting with `/`
+    /// is a prompt as typed, and `//` escapes a command's name.
     /// `/interrupt` takes a subagent's session id, and nothing else.
     #[test]
-    fn typed_lines_are_the_six_commands_or_else_prompts() {
-        let t = |l: &str| typed("s", l.to_string());
+    fn typed_lines_are_the_commands_or_else_prompts() {
+        let t = |l: &str| typed("s", l.to_string()).map(|c| match c {
+            Typed::Command(c) => c,
+            Typed::Switch => panic!("{l} is no /switch"),
+        });
         for (line, want) in [("/approve r1", ApprovalDecision::Allow), ("/allow-session r1", ApprovalDecision::AllowSession), ("/deny  r1 ", ApprovalDecision::Deny)] {
             let Ok(Command::Approve { session_id, request_id, decision, .. }) = t(line) else { panic!("{line}") };
             assert_eq!((session_id.as_str(), request_id.as_str(), decision), ("s", "r1", want), "{line}");
@@ -413,10 +546,101 @@ mod tests {
         for bad in ["/approve", "/deny a b", "/interrupt now", "/steer", "/model", "/model opus", "/model /x", "/model a/", "/model a/b c"] {
             assert!(t(bad).is_err(), "{bad}");
         }
-        assert_eq!(prompt_text(t("say hi").unwrap()), "say hi");
-        assert_eq!(prompt_text(t("/review x").unwrap()), "/review x");
-        assert_eq!(prompt_text(t("/usr/bin is where").unwrap()), "/usr/bin is where");
-        assert_eq!(prompt_text(t("//approve r1").unwrap()), "/approve r1");
-        assert_eq!(prompt_text(t("//etc").unwrap()), "/etc");
+        assert!(matches!(typed("s", " /switch ".into()), Ok(Typed::Switch)));
+        assert!(typed("s", "/switch now".into()).is_err());
+        let p = |l: &str| typed("s", l.to_string()).unwrap();
+        assert_eq!(prompt_text(p("say hi")), "say hi");
+        assert_eq!(prompt_text(p("/review x")), "/review x");
+        assert_eq!(prompt_text(p("/usr/bin is where")), "/usr/bin is where");
+        assert_eq!(prompt_text(p("//approve r1")), "/approve r1");
+        assert_eq!(prompt_text(p("//switch")), "/switch");
+    }
+
+    fn offered(session: &str, turn: &str) -> super::viewer::Update {
+        use crate::protocol::{LiveEvent, ModelRef, StreamLine, SwitchOffer};
+        let m = |i: &str| ModelRef { instance: i.into(), model: "m".into() };
+        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None }), worktree: None };
+        super::viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r)))
+    }
+
+    fn event(session: &str, body: crate::protocol::LogBody) -> crate::protocol::LogEvent {
+        crate::protocol::LogEvent { id: "e".into(), parent_id: None, session_id: session.into(), time_ms: 0, body }
+    }
+
+    fn said(turn: &str, text: &str) -> crate::protocol::LogEvent {
+        event("s", crate::protocol::LogBody::ItemCompleted { turn_id: turn.into(), item_id: "i".into(), item: crate::protocol::Item::user(text) })
+    }
+
+    fn started(turn: &str) -> crate::protocol::LogEvent {
+        use crate::protocol::ModelRef;
+        event("s", crate::protocol::LogBody::TurnStarted { turn_id: turn.into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None })
+    }
+
+    fn live(e: crate::protocol::LogEvent) -> super::viewer::Update {
+        super::viewer::Update::Line(crate::protocol::StreamLine::Log(e))
+    }
+
+    /// R-INST-7, R-SWITCH-4: `/switch` with no offer waiting is refused;
+    /// with one, it is a switch to the offer's instance and the last prompt
+    /// sent from here when the limited turn was its, which goes only once
+    /// the host has taken the switch, and never when it refused it. A
+    /// prompt sent instead answers no; another turn starting withdraws it.
+    #[test]
+    fn r_switch_4_switch_takes_the_offer_waiting_and_sends_the_prompt_once_the_switch_is_taken() {
+        use super::viewer::Update;
+        let mut o = super::Offered::default();
+        assert_eq!(o.switch("s").unwrap_err(), "no switch offer is waiting");
+        o.sending(&super::prompt("s", "do the thing".into()));
+        for e in [started("t1"), said("t1", "do the thing"), said("t1", "a hook's context, or steering")] {
+            o.saw("s", &live(e));
+        }
+        o.saw("s", &offered("other", "t1"));
+        assert!(o.switch("s").is_err(), "another session's offer is not this one's");
+        o.saw("s", &offered("s", "t1"));
+        let (switch, again) = o.switch("s").unwrap();
+        let Command::SwitchModel { session_id, model } = &switch else { panic!("{switch:?}") };
+        assert_eq!((session_id.as_deref(), model.instance.as_str()), (Some("s"), "b"));
+        assert_eq!(prompt_text(Typed::Command(again.clone().unwrap())), "do the thing", "the turn's first text, not what followed it");
+        assert!(o.switch("s").is_err(), "taken once");
+        o.saw("s", &offered("s", "t1"));
+        o.sending(&super::prompt("s", "something else".into()));
+        assert!(o.switch("s").is_err(), "a prompt instead is a no");
+
+        // Another device's turn: its offer is a switch alone.
+        for e in [started("t2"), said("t2", "from the host's terminal")] {
+            o.saw("s", &live(e));
+        }
+        o.saw("s", &offered("s", "t2"));
+        assert!(matches!(o.switch("s"), Ok((Command::SwitchModel { .. }, None))), "never this viewer's last prompt again");
+        // The next turn starting withdraws it; its own start, caught up
+        // after its result, does not.
+        o.saw("s", &offered("s", "t2"));
+        o.saw("s", &live(started("t3")));
+        assert!(o.switch("s").is_err(), "a turn under way withdrew it");
+        o.sending(&super::prompt("s", "mine".into()));
+        let caught = |es: Vec<crate::protocol::LogEvent>| Update::CaughtUp(es.into_iter().map(|e| serde_json::to_value(e).unwrap()).collect());
+        o.saw("s", &offered("s", "t4"));
+        o.saw("s", &caught(vec![started("t4"), said("t4", "mine")]));
+        assert_eq!(o.switch("s").map(|(_, again)| again.map(|a| prompt_text(Typed::Command(a)))), Ok(Some("mine".into())), "a caught-up start of the limited turn keeps its offer");
+        o.saw("s", &offered("s", "t5"));
+        o.saw("s", &caught(vec![started("t5"), said("t5", "theirs")]));
+        assert!(matches!(o.switch("s"), Ok((_, None))), "a caught-up turn is read too");
+
+        // The prompt waits on the switch's ack, and goes only if taken.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut owed = super::Owed { eof: true, ..Default::default() };
+        owed.hand(&tx, switch.clone(), again.clone());
+        assert!(rx.try_recv().is_ok() && !owed.done());
+        assert!(owed.saw(&Update::Sent { id: "1".into(), queued: false }).is_none());
+        let next = owed.saw(&Update::Acked { id: "1".into(), error: None }).expect("the prompt, once the switch is taken");
+        owed.hand(&tx, next, None);
+        assert!(!owed.done(), "the prompt is owed too");
+        owed.saw(&Update::Sent { id: "2".into(), queued: false });
+        assert!(owed.saw(&Update::Acked { id: "2".into(), error: None }).is_none());
+        assert!(owed.done());
+        owed.hand(&tx, switch, again);
+        owed.saw(&Update::Sent { id: "3".into(), queued: false });
+        assert!(owed.saw(&Update::Acked { id: "3".into(), error: Some("refused".into()) }).is_none(), "a refused switch sends no prompt");
+        assert!(owed.done());
     }
 }

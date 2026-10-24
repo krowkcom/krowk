@@ -45,6 +45,9 @@ use tokio::sync::{mpsc, watch};
 const PROMPT_MARKER: &str = "plaintext-marker-prompt-6d1f";
 const ANSWER_MARKER: &str = "plaintext-marker-answer-93be";
 
+/// A prompt A's `anthropic` instance answers with its rate limit.
+const LIMITED: &str = "past-the-limit-prompt";
+
 /// A model that answers any prompt with the marker, except one asking for
 /// the file, which it makes with `bash` — an approval — and then answers.
 fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
@@ -55,6 +58,10 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     if body["system"].to_string().contains("You are a subagent") {
         let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    // A's own instance at its rate limit; the instance it offers answers.
+    if !has_result && last.to_string().contains(LIMITED) {
+        return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
     }
     if !has_result && last.to_string().contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
@@ -882,7 +889,12 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
 /// A's daemon with a second instance, `mock2`, on the same mock model, and
 /// a first turn on `anthropic`; B attached to it through A's bridge.
 async fn two_instances(w: &World) -> (String, viewer::Viewer, Vec<Instant>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
-    let kind = krowk_harness::instances::InstanceKind::AnthropicApi { api_key_env: None, base_url: Some(w.mock_url.clone()), thinking: None, max_tokens: None, effort: None };
+    two_instances_at(w, &w.mock_url).await
+}
+
+/// `two_instances`, `mock2` on the model at `url`.
+async fn two_instances_at(w: &World, url: &str) -> (String, viewer::Viewer, Vec<Instant>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
+    let kind = krowk_harness::instances::InstanceKind::AnthropicApi { api_key_env: None, base_url: Some(url.into()), thinking: None, max_tokens: None, effort: None };
     w.serve_with(w.env(), "home", InstancesConfig { instances: [("mock2".to_string(), kind)].into_iter().collect(), ..Default::default() });
     let d = w.daemon().await;
     let (tx, mut rx) = mpsc::channel(1024);
@@ -991,6 +1003,46 @@ async fn r_switch_4_a_switch_b_asks_for_an_instance_a_lacks_is_refused_and_the_s
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
     let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
     assert_eq!(started["model"], was, "the session stays");
+}
+
+/// R-SWITCH-4, R-INST-7, R-INST-6, R-CRED-1: a turn B prompts that hits
+/// the limit of A's instance reaches B as a result with A's offer of its
+/// other instance of the kind; B takes it as the terminal does, a
+/// `switchModel` to the offer's `to` and the prompt again, and A checks the
+/// switch as its own, logs it and runs the prompt there.
+#[tokio::test]
+async fn r_switch_4_a_rate_limit_offer_is_accepted_from_b_and_the_prompt_runs_on_the_offered_instance() {
+    let w = World::new("switch-offer");
+    let other = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream(ANSWER_MARKER)));
+    let (session, mut v, mut frames, _bridge) = two_instances_at(&w, &other.url).await;
+    let mut limited = w.prompt(Some(&session), LIMITED);
+    if let Command::Prompt { model, .. } = &mut limited {
+        *model = None;
+    }
+    v.commands.send(limited.clone()).unwrap();
+    let got = until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let r = got.into_iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) = u { Some(r) } else { None }).unwrap();
+    assert_eq!(r.error.as_ref().map(|e| e.code.as_str()), Some("rate_limited"), "{r:?}");
+    let offer = r.switch_offer.expect("B hears the offer");
+    assert_eq!((offer.from.instance.as_str(), offer.to.instance.as_str(), offer.to.model.as_str()), ("anthropic", "mock2", "claude-sonnet-4-6"));
+    assert!(!a_log(&w, &session).iter().any(|e| e["type"] == "model.switched"), "offered, never taken by itself");
+
+    // The yes, from B: the switch, taken, then the prompt again.
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: offer.to.clone() }).unwrap();
+    assert_eq!(ack(&mut v, &mut frames).await, None);
+    v.commands.send(limited).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    let r = got.into_iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) = u { Some(r) } else { None }).unwrap();
+    assert_eq!((r.status, r.model.instance.as_str()), (krowk_harness::protocol::TurnStatus::Completed, "mock2"), "{r:?}");
+    assert!(r.result.contains(ANSWER_MARKER), "{r:?}");
+    let log = a_log(&w, &session);
+    let switched: Vec<_> = log.iter().filter(|e| e["type"] == "model.switched").collect();
+    assert_eq!(switched.len(), 1, "{switched:?}");
+    assert_eq!((switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("mock2"), Some("claude-sonnet-4-6")), "{}", switched[0]);
+    let started = log.iter().rfind(|e| e["type"] == "turn.started").unwrap();
+    assert_eq!(started["model"]["instance"], "mock2", "{started}");
+    let seen = other.seen.lock().unwrap();
+    assert!(seen.last().is_some_and(|c| c.body["messages"].to_string().contains(LIMITED)), "the prompt ran again on the offered instance");
 }
 
 /// R-SWITCH-4, R-CRED-1: a prompt from B naming an instance A lacks is

@@ -215,18 +215,21 @@ fn refused(e: String) -> EngineError {
 }
 
 impl SyncLink {
-    /// A prompt, an approval, an interrupt or steering, sent through the
-    /// viewer. A prompt answers with its turn's result; the rest with the
-    /// host's ack. Anything else is the host's to decide, not a viewer's.
+    /// A prompt, an approval, an interrupt, steering or a model switch,
+    /// sent through the viewer. A prompt answers with its turn's result;
+    /// the rest with the host's ack, a switch once the host has checked it
+    /// as its own (R-SWITCH-4), which is how a rate-limit offer's yes
+    /// switches before its prompt goes again. Anything else is the host's
+    /// to decide, not a viewer's.
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         match &cmd {
             // A rule for the project is written on the host, into its
             // repository's settings: not a viewer's to make.
             Command::Approve { decision: ApprovalDecision::AllowProject, .. } => return Err(EngineError::new("not_on_sync", "a viewer allows a call once or for the session; a rule for the project is made on the host")),
-            Command::Prompt { .. } | Command::Approve { .. } | Command::Interrupt { .. } | Command::Steer { .. } => {}
+            Command::Prompt { .. } | Command::Approve { .. } | Command::Interrupt { .. } | Command::Steer { .. } | Command::SwitchModel { session_id: Some(_), .. } => {}
             // A turn a backend began by itself is the host's to run.
             Command::Continue { .. } => return Err(EngineError::new("nothing_pending", "the host runs the turns it begins")),
-            _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: this TUI prompts, steers, interrupts and answers approvals, and nothing else")),
+            _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: this TUI prompts, steers, interrupts, answers approvals and takes a rate-limit offer, and nothing else")),
         }
         // The model this TUI last saw may be stale (a host's prompt on
         // another model logs no switch), and a model a prompt names now
@@ -535,6 +538,25 @@ mod tests {
         let Some(krowk_harness::protocol::Command::Prompt { model, .. }) = sent.recv().await else { panic!("no prompt sent") };
         assert_eq!(model, None);
         run.abort();
+    }
+
+    /// R-SWITCH-4, R-INST-7: a rate-limit offer's yes is a switch, which
+    /// goes through the viewer like a prompt and answers with the host's
+    /// ack, so the prompt sent again follows the switch the host took.
+    #[tokio::test]
+    async fn r_switch_4_a_synced_tui_sends_an_offers_switch_and_hears_its_ack() {
+        let (p, _rx, state) = pump();
+        let (commands, mut sent) = mpsc::unbounded_channel();
+        let link = super::SyncLink { commands, state, children: Default::default(), watch: broadcast::channel(16).0, events: Mutex::new(None) };
+        let to = ModelRef { instance: "anthropic:personal".into(), model: "m".into() };
+        let switch = krowk_harness::protocol::Command::SwitchModel { session_id: Some("s".into()), model: to.clone() };
+        let (out, _lines) = mpsc::channel(4);
+        let run = tokio::spawn(async move { link.execute(switch, out).await });
+        let Some(krowk_harness::protocol::Command::SwitchModel { model, .. }) = sent.recv().await else { panic!("no switch sent") };
+        assert_eq!(model, to);
+        p.update(Update::Sent { id: "w".into(), queued: false }).await;
+        p.update(Update::Acked { id: "w".into(), error: None }).await;
+        assert!(matches!(run.await.unwrap(), Ok(None)), "taken, with no turn of its own");
     }
 
     /// R-SUB-12, R-SUB-6: a child's logged events, as the chunks (attached,

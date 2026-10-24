@@ -165,10 +165,13 @@ is online, except these:
   /steer TEXT                add TEXT to the running turn without stopping it
   /model INSTANCE/ID         run the session's next turn on that model, if
                              the host can run it there
+  /switch                    take the switch a rate limit offered: the
+                             model it names, then the last prompt sent
+                             from here again
 
 Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.
 Each approval.requested line carries its requestId, and a hint on stderr
-names the command that answers it.";
+names the command that answers it, as one does for a result's switchOffer.";
 
 const CLAIM_ABOUT: &str = "\
 Moves an anonymous upload into this key's workspace, spending the claim token
