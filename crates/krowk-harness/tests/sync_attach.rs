@@ -929,7 +929,7 @@ async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     }
     v.commands.send(next).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
-    let started = a_log(&w, &session).into_iter().filter(|e| e["type"] == "turn.started").last().unwrap();
+    let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
     assert_eq!((started["model"]["instance"].as_str(), started["model"]["model"].as_str()), (Some("mock2"), Some("claude-haiku-4-5")), "{started}");
     let seen = w._mock.seen.lock().unwrap();
     let call = seen.last().expect("the next turn called the model");
@@ -959,7 +959,7 @@ async fn r_switch_4_a_switch_b_asks_for_an_instance_a_lacks_is_refused_and_the_s
     }
     v.commands.send(next).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
-    let started = a_log(&w, &session).into_iter().filter(|e| e["type"] == "turn.started").last().unwrap();
+    let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
     assert_eq!(started["model"], was, "the session stays");
 }
 
