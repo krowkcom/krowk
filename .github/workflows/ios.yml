@@ -294,7 +294,7 @@ jobs:
       # person runs: the UI tests' stub and the launch argument that picks
       # it are under #if DEBUG, so a Release build has neither, and links
       # LocalAuthentication. And no source names allowProject.
-      - name: "R-IOS-11, R-IOS-12: a Release build has only the LAContext owner check, no allowProject and no stand-in APNs token"
+      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and neither budget seam"
         run: |
           xcodebuild build -quiet -skipPackagePluginValidation \
             -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
@@ -302,11 +302,6 @@ jobs:
             -derivedDataPath "$RUNNER_TEMP/ReleaseData" COMPILER_INDEX_STORE_ENABLE=NO CODE_SIGNING_ALLOWED=NO
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app" release
           apps/ios/scripts/approvals.sh "$RUNNER_TEMP/DeviceData/Build/Products/Debug-iphoneos/Krowk.app" debug
-
-      # The Release app as it ships: its executable and the whole bundle,
-      # against their ceilings. A raise is a commit to budgets.json.
-      - name: "R-PERF-7, R-IOS-PERF: the Release app's binary and bundle size (gate)"
-        run: apps/ios/scripts/budgets.sh size "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app"
 
       - name: Boot an iPhone simulator
         run: |
@@ -356,6 +351,13 @@ jobs:
             xcrun simctl bootstatus "$UDID" -b
           done
           exit 1
+
+      # The Release app as it ships: its executable and the whole bundle,
+      # against their ceilings. A raise is a commit to budgets.json. After
+      # the tests, so a size regression still leaves every other number.
+      - name: "R-PERF-7, R-IOS-PERF: the Release app's binary and bundle size (gate)"
+        if: ${{ !cancelled() }}
+        run: apps/ios/scripts/budgets.sh size "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app"
 
       # XCTMemoryMetric's peak physical memory over BudgetUITests' five
       # passes through 10,000 items, from the result bundle.

@@ -36,7 +36,8 @@ record() {
 # Fails when `$2` (a number) is over budget `$1`'s max, saying so either way.
 hold() {
   local id=$1 measured=$2 unit=$3 max
-  max=$(jq -er --arg id "$id" '.[$id].max' "$budgets")
+  max=$(jq -er --arg id "$id" '.[$id].max | numbers' "$budgets") \
+    || { echo "::error::R-PERF-7: apps/ios/budgets.json has no numeric max for $id"; return 1; }
   if jq -en --argjson m "$measured" --argjson max "$max" '$m > $max' >/dev/null; then
     echo "::error::R-PERF-7: $id is $measured $unit, over its ceiling of $max $unit (apps/ios/budgets.json)"
     return 1
@@ -86,7 +87,7 @@ case ${1:-} in
           | .measurements[] | (if type == "object" then .value // .doubleValue else . end)] | sort | if length == 0 then null else .[length / 2 | floor] * 1000 | round end' || echo null)
     fi
     lines() { { [ -f "$log" ] && grep -oE "$1" "$log" || true; } | sort -u | jq -R . | jq -s .; }
-    apply=$(lines 'krowk\.frame\.apply baseline.*')
+    apply=$(lines 'krowk\.frame\.apply baseline.*|Test Case .*testFrameApplyBaseline.*measured.*')
     latency=$(lines 'krowk host→screen latency.*')
     cold=$(lines 'krowk notification cold launch.*')
     stall=$(lines 'krowk main-thread stall:.*')
