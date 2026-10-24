@@ -368,7 +368,7 @@ impl Offered {
     /// stderr when there is one; the session's next turn starting
     /// withdraws it.
     fn saw(&mut self, session: &str, u: &viewer::Update) {
-        use crate::protocol::{Item, LiveEvent, LogBody, StreamLine};
+        use crate::protocol::{LiveEvent, StreamLine};
         match u {
             viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) if r.session_id == session => {
                 self.offer = r.switch_offer.clone();
@@ -377,14 +377,31 @@ impl Offered {
                     eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
                 }
             }
-            viewer::Update::Line(StreamLine::Log(e)) if e.session_id == session => match &e.body {
-                LogBody::TurnStarted { .. } => {
-                    self.offer = None;
-                    self.asked = None;
+            viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e),
+            // A rejoin's catch-up brings what the stream missed meanwhile.
+            viewer::Update::Attached { events, .. } | viewer::Update::CaughtUp(events) => {
+                for e in events.iter().filter_map(|e| serde_json::from_value::<crate::protocol::LogEvent>(e.clone()).ok()) {
+                    self.logged(session, &e);
                 }
-                LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } => self.asked = Some(text.clone()),
-                _ => {}
-            },
+            }
+            _ => {}
+        }
+    }
+
+    /// The session's turn starting withdraws the offer; its prompt is the
+    /// turn's first text from the person, the rest (a skill's
+    /// instructions, a hook's context, steering) logged after it.
+    fn logged(&mut self, session: &str, e: &crate::protocol::LogEvent) {
+        use crate::protocol::{Item, LogBody};
+        if e.session_id != session {
+            return;
+        }
+        match &e.body {
+            LogBody::TurnStarted { .. } => {
+                self.offer = None;
+                self.asked = None;
+            }
+            LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if self.asked.is_none() => self.asked = Some(text.clone()),
             _ => {}
         }
     }
@@ -563,7 +580,9 @@ mod tests {
         let mut o = super::Offered::default();
         assert_eq!(o.switch("s").unwrap_err(), "no switch offer is waiting");
         o.sending(&super::prompt("s", "do the thing".into()));
+        o.saw("s", &started("s"));
         o.saw("s", &logged("s", "do the thing"));
+        o.saw("s", &logged("s", "a hook's context, or steering"));
         o.saw("s", &offered("other", "a", "b"));
         assert!(o.switch("s").is_err(), "another session's offer is not this one's");
         o.saw("s", &offered("s", "a", "b"));
@@ -584,6 +603,15 @@ mod tests {
         o.saw("s", &offered("s", "a", "b"));
         o.saw("s", &started("s"));
         assert!(o.switch("s").is_err(), "a turn under way withdrew it");
+        // Another device's turn, its start caught up after a rejoin.
+        o.sending(&super::prompt("s", "mine".into()));
+        let json = |u: super::viewer::Update| match u {
+            super::viewer::Update::Line(crate::protocol::StreamLine::Log(e)) => serde_json::to_value(e).unwrap(),
+            _ => unreachable!(),
+        };
+        o.saw("s", &super::viewer::Update::CaughtUp(vec![json(started("s")), json(logged("s", "theirs"))]));
+        o.saw("s", &offered("s", "a", "b"));
+        assert!(matches!(o.switch("s"), Ok((_, None))), "a caught-up turn is read too");
 
         // The prompt waits on the switch's ack, and goes only if taken.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();

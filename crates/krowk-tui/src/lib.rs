@@ -141,9 +141,9 @@ const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
 
-/// How long a synced session's switch waits on the host's ack: the host
-/// checks the model as its own, a vendor's login included.
-const SYNCED_SWITCH_WAIT: Duration = Duration::from_secs(10);
+/// How long a synced session's switch waits on the host's ack, which a
+/// key waits on: `FLUSH_WAIT`'s bound, under the hang-up watchdog's.
+const SYNCED_SWITCH_WAIT: Duration = FLUSH_WAIT;
 /// How long `flush_requests` waits in all, its interrupt and every steer
 /// together: what is not sent by then is sent at the next retry. One turn
 /// of the loop never waits past it on the host (`hangup::STUCK`).
@@ -1239,6 +1239,11 @@ impl<'h> Ui<'h> {
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => {
+                    // A synced turn this TUI did not follow from its start,
+                    // first seen caught up: its offer is a switch alone.
+                    if self.host.synced().is_some() && matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(_))) {
+                        self.last_prompt.clear();
+                    }
                     app.on_line(&line);
                     self.go_on(app);
                 }
