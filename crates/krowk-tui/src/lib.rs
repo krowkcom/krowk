@@ -1868,8 +1868,8 @@ impl<'h> Ui<'h> {
         app.touch();
     }
 
-    /// What a viewer of a synced session cannot do: the host runs it on its
-    /// own model and settings, and remote prompts no further than its
+    /// What a viewer of a synced session cannot do here: the host runs it
+    /// on its own settings, and remote prompts no further than its
     /// default mode (plan, if the session is in plan). Said, and true, when
     /// this is one.
     fn synced_refuses(&self, app: &mut App, what: &str) -> bool {

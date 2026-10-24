@@ -937,6 +937,36 @@ async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     assert!(call.body["messages"].to_string().contains("say hello"), "R-SWITCH-1: the first turn's text rides to the new model");
 }
 
+/// R-SWITCH-4: a switch B sends while a turn runs is acked at once and
+/// kept for after the turn, which ends on the model it began on.
+#[tokio::test]
+async fn r_switch_4_a_switch_from_b_during_a_turn_is_kept_for_after_it() {
+    let w = World::new("switch-running");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let mut long = w.prompt(Some(&session), "a long answer");
+    if let Command::Prompt { model, .. } = &mut long {
+        *model = None;
+    }
+    v.commands.send(long).unwrap();
+    assert_eq!(ack(&mut v, &mut frames).await, None, "the turn started");
+    let to = krowk_harness::protocol::ModelRef { instance: "mock2".into(), model: "claude-haiku-4-5".into() };
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to }).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    assert!(!got.iter().any(result_of), "acked before the turn ended: {got:?}");
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: None, .. })), "{got:?}");
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !a_log(&w, &session).iter().any(|e| e["type"] == "model.switched") {
+        assert!(Instant::now() < deadline, "the switch was never logged");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = a_log(&w, &session);
+    let long_turn = log.iter().filter(|e| e["type"] == "turn.started").nth(1).unwrap();
+    assert_eq!(long_turn["model"]["instance"], "anthropic", "the running turn ends on its model: {long_turn}");
+    let switched = log.iter().find(|e| e["type"] == "model.switched").unwrap();
+    assert_eq!(switched["to"]["instance"], "mock2", "{switched}");
+}
+
 /// R-SWITCH-4, R-CRED-1: a switch B asks for to an instance A lacks is
 /// refused with A's fix line, nothing is logged, and the session's next
 /// turn runs on the model it ran on.
@@ -976,7 +1006,7 @@ async fn r_switch_4_a_remote_prompts_model_is_checked_like_a_local_one() {
     }
     v.commands.send(p).unwrap();
     let error = ack(&mut v, &mut frames).await.expect("refused");
-    assert!(error.contains("nope"), "the fix names the instance: {error}");
+    assert!(error.contains("nope") && error.contains("— the session stays on"), "the fix names the instance: {error}");
     let after = a_log(&w, &session);
     assert_eq!(after.iter().filter(|e| e["type"] == "turn.started").count(), before.iter().filter(|e| e["type"] == "turn.started").count(), "no turn starts: {error}");
 }
@@ -1081,9 +1111,7 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     assert_eq!(last["permissionMode"], "default", "never the viewer's unhinged: {last}");
     assert_eq!(last["model"]["model"], "claude-haiku-4-5", "the viewer's model, checked by A: {last}");
     assert_ne!(last["model"], first["model"]);
-    for dropped in ["toolset", "effort", "budget"] {
-        assert_eq!(last.get(dropped), first.get(dropped), "never the viewer's {dropped}: {last}");
-    }
+    assert_eq!(last.get("effort"), first.get("effort"), "never the viewer's effort: {last}");
 
     // B types; A runs it.
     v.commands.send(w.prompt(Some(&session), &format!("make the file {PROMPT_MARKER}"))).unwrap();

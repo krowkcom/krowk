@@ -228,6 +228,13 @@ impl SyncLink {
             Command::Continue { .. } => return Err(EngineError::new("nothing_pending", "the host runs the turns it begins")),
             _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: a viewer prompts, steers, interrupts and answers approvals, and nothing else")),
         }
+        // The model this TUI last saw may be stale (a host's prompt on
+        // another model logs no switch), and a model a prompt names now
+        // switches the session: a prompt from here runs on the session's.
+        let mut cmd = cmd;
+        if let Command::Prompt { model, .. } = &mut cmd {
+            *model = None;
+        }
         let prompt = matches!(cmd, Command::Prompt { .. });
         let (ack, acked) = oneshot::channel();
         let (done_tx, done) = oneshot::channel();
@@ -514,6 +521,20 @@ mod tests {
         assert!(matches!(approve_rx.try_recv(), Ok(Ok(()))));
         p.update(Update::Host(false)).await;
         assert!(done_rx.try_recv().is_err(), "the prompt is still queued, not ended as taken");
+    }
+
+    /// R-SWITCH-4: a prompt from a synced TUI never names the model it
+    /// last saw, which the host would take for a switch.
+    #[tokio::test]
+    async fn r_switch_4_a_synced_tuis_prompt_names_no_model() {
+        let (commands, mut sent) = mpsc::unbounded_channel();
+        let link = super::SyncLink { commands, state: Default::default(), children: Default::default(), watch: broadcast::channel(16).0, events: Mutex::new(None) };
+        let prompt = krowk_harness::protocol::Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(ModelRef { instance: "claude".into(), model: "stale".into() }), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let (out, _lines) = mpsc::channel(4);
+        let run = tokio::spawn(async move { link.execute(prompt, out).await.err() });
+        let Some(krowk_harness::protocol::Command::Prompt { model, .. }) = sent.recv().await else { panic!("no prompt sent") };
+        assert_eq!(model, None);
+        run.abort();
     }
 
     /// R-SUB-12, R-SUB-6: a child's logged events, as the chunks (attached,
