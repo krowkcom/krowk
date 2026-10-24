@@ -1045,7 +1045,8 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     let w = World::new("unattended");
     let a = w.device("machine-a");
     let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, Duration::from_secs(1));
+    let wait = Duration::from_secs(1);
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, wait);
     w.synced(&session).await;
     let (t, turn, req) = ask_at_the_terminal(&w, &session).await;
     assert_eq!(req.tool, "bash");
@@ -1053,7 +1054,14 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     turn.abort();
     drop((t, d));
     let left = Instant::now();
-    let deadline = left + Duration::from_secs(5);
+    // The bridge sweeps once a second. It sees the request has waited out
+    // `wait`, asks the daemon, and believes that nobody else answers only
+    // once the daemon has said so for as long again (`deny_late`): about
+    // two waits and two sweeps, each sweep up to a second late — four
+    // seconds, on Linux and macOS alike. The denied turn then ends with the
+    // model's paced answer. Never denied is what this test fails; the
+    // deadline only bounds how long it looks, with room for a slow runner.
+    let deadline = left + wait * 2 + Duration::from_secs(2) + Duration::from_secs(6);
     let results = loop {
         let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
         if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
