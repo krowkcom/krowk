@@ -11,8 +11,8 @@
 // and passes only if that run fails: the gate bites.
 //
 // Hosted, with the app's bindings: the lines are decoded by krowk-ffi's
-// decodeStreamLine, off the main thread and before the clock starts, as
-// the core decodes them on the connection's queue.
+// decodeStreamLine before the replay starts, so what the main thread does
+// meanwhile is only what it does live: drain the mailbox and apply.
 import Foundation
 import Krowk
 import KrowkAccount
@@ -29,7 +29,7 @@ final class StallBudgetTests: XCTestCase {
     func testR_PERF_7_replayingABurstNeverStallsTheMainThread() async throws {
         let (baseline, factor) = try Self.budget()
         let limit = baseline * factor
-        let lines = try await Task.detached { try Self.recording() }.value
+        let lines = try Self.recording()
         XCTAssertGreaterThan(lines.count, 4_000)
 
         let replay = ReplaySession()
