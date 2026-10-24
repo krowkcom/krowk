@@ -1238,15 +1238,7 @@ impl<'h> Ui<'h> {
                     return Ok(());
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
-                line = watched(&mut self.watch) => {
-                    // A synced turn this TUI did not follow from its start,
-                    // first seen caught up: its offer is a switch alone.
-                    if self.host.synced().is_some() && matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(_))) {
-                        self.last_prompt.clear();
-                    }
-                    app.on_line(&line);
-                    self.go_on(app);
-                }
+                line = watched(&mut self.watch) => self.on_watched(app, &line),
                 e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
                 r = finish(&mut self.turn) => {
                     if self.on_turn_end(app, r, &mut reach, quitting).await {
@@ -1849,6 +1841,17 @@ impl<'h> Ui<'h> {
             Some(h) => format!("{h}\n\n{text}"),
             None => text,
         });
+    }
+
+    /// A line of a turn another client runs.
+    fn on_watched(&mut self, app: &mut App, line: &StreamLine) {
+        // A synced turn this TUI did not follow from its start, first seen
+        // caught up: its offer is a switch alone.
+        if self.host.synced().is_some() && matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::Result(_))) {
+            self.last_prompt.clear();
+        }
+        app.on_line(line);
+        self.go_on(app);
     }
 
     /// A synced session's news: the status line's host and path, a note,
