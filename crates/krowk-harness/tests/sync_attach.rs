@@ -65,6 +65,13 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
         let words: String = (0..750).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
+    // Eight seconds of typing: well over a hundred of the host's batches,
+    // one a frame, even where the frame's timer wakes late (40 ms, not 16,
+    // on a macOS runner).
+    if !has_result && last.to_string().contains("an answer of many batches") {
+        let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
     if !has_result && last.to_string().contains("a long answer") {
         let words: String = (0..160).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -1302,7 +1309,7 @@ async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
     until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
     let before = w.b_batches.load(Ordering::SeqCst);
     let dd = d.clone();
-    let prompt = w.prompt(Some(&session), "a long answer, please");
+    let prompt = w.prompt(Some(&session), "an answer of many batches, please");
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1313,7 +1320,7 @@ async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
     assert!(batches > 100, "only {batches} batches");
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { .. }))) ), "the typing arrived");
     let text: String = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { delta, .. })) = u && let krowk_harness::protocol::Delta::Text { text } = delta { Some(text.clone()) } else { None }).collect();
-    assert!(text.contains("word0 ") && text.contains("word159 "), "the whole answer: {} chars", text.len());
+    assert!(text.contains("word0 ") && text.contains("word399 "), "the whole answer: {} chars", text.len());
 }
 
 /// R-LAG-8: a prompt whose ack was lost — B's downlink dropped, then cut —
