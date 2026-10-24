@@ -829,6 +829,12 @@ fn r_proto_1_a_new_sessions_stream_is_bound_by_its_command_and_leave_stops_the_r
         }
         assert!(saw_s, "S's frames went where they belong");
         a.leave(&s);
+        // A leave is not answered, and B's prompt goes on a connection of
+        // its own, so it could reach the daemon first. The daemon takes A's
+        // frames in order: once it has answered one sent after the leave,
+        // it has left. What came for S before that is behind it.
+        a.status().await.unwrap();
+        while watch.try_recv().is_ok() {}
         let (btx, _brx) = mpsc::channel(1024);
         b.execute(resume("once more"), btx).await.unwrap().unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
