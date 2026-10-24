@@ -1063,23 +1063,29 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     let left = Instant::now();
     // The bridge sweeps once a second. It sees the request has waited out
     // `wait`, asks the daemon, and believes that nobody else answers only
-    // once the daemon has said so for as long again (`deny_late`): about
-    // two waits and two sweeps, each sweep up to a second late — four
-    // seconds, on Linux and macOS alike. The denied turn then ends with the
-    // model's paced answer. Never denied is what this test fails; the
-    // deadline only bounds how long it looks, with room for a slow runner.
-    let deadline = left + wait * 2 + Duration::from_secs(2) + Duration::from_secs(6);
+    // once the daemon has said so for as long again (`deny_late`): two
+    // waits and up to two sweeps, under four seconds on Linux and macOS
+    // alike, held below. The denied turn then ends with the model's paced
+    // answer; the deadline is only how long the test looks for that end.
+    let deadline = left + Duration::from_secs(10);
+    let mut denied = None;
     let results = loop {
         let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
+        if denied.is_none() && events.iter().any(|e| matches!(e.body, LogBody::ItemCompleted { item: Item::ToolResult { is_error: true, .. }, .. })) {
+            denied = Some(left.elapsed());
+        }
         if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
-            // The bridge's doing, after its wait: not the daemon's, which
-            // would have denied it the moment the terminal went.
-            assert!(left.elapsed() >= Duration::from_millis(500), "denied {:?} after the terminal went", left.elapsed());
             break tool_results(&w, &session);
         }
         assert!(Instant::now() < deadline, "the turn still waits on the question");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    // The bridge's doing, after its wait: not the daemon's, which would
+    // have denied it the moment the terminal went; and no later than its
+    // two waits and two sweeps, with a second and a half to spare.
+    let denied = denied.expect("the turn ended with its request denied");
+    assert!(denied >= Duration::from_millis(500), "denied {denied:?} after the terminal went");
+    assert!(denied <= wait * 2 + Duration::from_millis(3500), "denied {denied:?} after the terminal went, a sweep or more late");
     assert!(matches!(results.as_slice(), [(_, true)]), "bash was denied: {results:?}");
     assert!(!w.repo().join("approved.txt").exists());
 }
@@ -1700,8 +1706,9 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let mut v = viewer::attach(o).await.unwrap();
     let mut frames = Vec::new();
     v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
-    // The long answer takes over 20 seconds on a macOS runner (r_lag_7's
-    // takes 24 there), however quickly it streams on Linux.
+    // The long answer streams for about 3.3 seconds, on schedule wherever
+    // it runs (the mock makes up a late wake); the wait is only how long
+    // the test gives up after.
     let mut got = until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: true, .. })), "the prompt waited for the host: {got:?}");
     assert!(!got.iter().any(direct_path), "the race waits on its ticket");
