@@ -879,6 +879,138 @@ async fn first_turn(w: &World) -> (Arc<Client>, String) {
     (d, r.session_id)
 }
 
+/// A's daemon with a second instance, `mock2`, on the same mock model, and
+/// a first turn on `anthropic`; B attached to it through A's bridge.
+async fn two_instances(w: &World) -> (String, viewer::Viewer, Vec<Instant>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
+    let kind = krowk_harness::instances::InstanceKind::AnthropicApi { api_key_env: None, base_url: Some(w.mock_url.clone()), thinking: None, max_tokens: None, effort: None };
+    w.serve_with(w.env(), "home", InstancesConfig { instances: [("mock2".to_string(), kind)].into_iter().collect(), ..Default::default() });
+    let d = w.daemon().await;
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let session = d.execute(w.prompt(None, "say hello"), tx).await.unwrap().unwrap().session_id;
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let bridge = w.bridge(&a, &session, d);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    (session, v, frames, bridge)
+}
+
+/// A's log of `session`, line by line.
+fn a_log(w: &World, session: &str) -> Vec<serde_json::Value> {
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(session).join("events.jsonl")).unwrap();
+    log.lines().map(|l| serde_json::from_str(l).unwrap()).collect()
+}
+
+/// The error of B's ack, once A gives it.
+async fn ack(v: &mut viewer::Viewer, frames: &mut Vec<Instant>) -> Option<String> {
+    let got = until(v, Duration::from_secs(15), frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+}
+
+/// R-SWITCH-4, R-SWITCH-1, R-CRED-1: a `switchModel` sent from B reaches
+/// A's daemon, which checks it against A's own instances and logs it; A's
+/// next turn runs on that model, the session's history carried to it.
+#[tokio::test]
+async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
+    let w = World::new("switch-remote");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let to = krowk_harness::protocol::ModelRef { instance: "mock2".into(), model: "claude-haiku-4-5".into() };
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to.clone() }).unwrap();
+    assert_eq!(ack(&mut v, &mut frames).await, None);
+    let switched: Vec<_> = a_log(&w, &session).into_iter().filter(|e| e["type"] == "model.switched").collect();
+    assert_eq!(switched.len(), 1, "{switched:?}");
+    assert_eq!((switched[0]["reason"].as_str(), switched[0]["to"]["instance"].as_str(), switched[0]["to"]["model"].as_str()), (Some("requested"), Some("mock2"), Some("claude-haiku-4-5")), "{}", switched[0]);
+
+    let mut next = w.prompt(Some(&session), "and now");
+    if let Command::Prompt { model, .. } = &mut next {
+        *model = None;
+    }
+    v.commands.send(next).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
+    assert_eq!((started["model"]["instance"].as_str(), started["model"]["model"].as_str()), (Some("mock2"), Some("claude-haiku-4-5")), "{started}");
+    let seen = w._mock.seen.lock().unwrap();
+    let call = seen.last().expect("the next turn called the model");
+    assert_eq!(call.body["model"], "claude-haiku-4-5");
+    assert!(call.body["messages"].to_string().contains("say hello"), "R-SWITCH-1: the first turn's text rides to the new model");
+}
+
+/// R-SWITCH-4: a switch B sends while a turn runs is acked at once and
+/// kept for after the turn, which ends on the model it began on.
+#[tokio::test]
+async fn r_switch_4_a_switch_from_b_during_a_turn_is_kept_for_after_it() {
+    let w = World::new("switch-running");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let mut long = w.prompt(Some(&session), "a long answer");
+    if let Command::Prompt { model, .. } = &mut long {
+        *model = None;
+    }
+    v.commands.send(long).unwrap();
+    assert_eq!(ack(&mut v, &mut frames).await, None, "the turn started");
+    let to = krowk_harness::protocol::ModelRef { instance: "mock2".into(), model: "claude-haiku-4-5".into() };
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: to }).unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+    assert!(!got.iter().any(result_of), "acked before the turn ended: {got:?}");
+    assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: None, .. })), "{got:?}");
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !a_log(&w, &session).iter().any(|e| e["type"] == "model.switched") {
+        assert!(Instant::now() < deadline, "the switch was never logged");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let log = a_log(&w, &session);
+    let long_turn = log.iter().filter(|e| e["type"] == "turn.started").nth(1).unwrap();
+    assert_eq!(long_turn["model"]["instance"], "anthropic", "the running turn ends on its model: {long_turn}");
+    let switched = log.iter().find(|e| e["type"] == "model.switched").unwrap();
+    assert_eq!(switched["to"]["instance"], "mock2", "{switched}");
+}
+
+/// R-SWITCH-4, R-CRED-1: a switch B asks for to an instance A lacks is
+/// refused with A's fix line, nothing is logged, and the session's next
+/// turn runs on the model it ran on.
+#[tokio::test]
+async fn r_switch_4_a_switch_b_asks_for_an_instance_a_lacks_is_refused_and_the_session_stays() {
+    let w = World::new("switch-refused");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let before = a_log(&w, &session);
+    let was = before.iter().find(|e| e["type"] == "turn.started").unwrap()["model"].clone();
+    let nope = krowk_harness::protocol::ModelRef { instance: "nope".into(), model: "x".into() };
+    v.commands.send(Command::SwitchModel { session_id: Some(session.clone()), model: nope }).unwrap();
+    let error = ack(&mut v, &mut frames).await.expect("refused");
+    let stays = format!("— the session stays on {}/{}", was["instance"].as_str().unwrap(), was["model"].as_str().unwrap());
+    assert!(error.ends_with(&stays), "{error}");
+    assert_eq!(a_log(&w, &session).len(), before.len(), "nothing is logged");
+
+    let mut next = w.prompt(Some(&session), "and now");
+    if let Command::Prompt { model, .. } = &mut next {
+        *model = None;
+    }
+    v.commands.send(next).unwrap();
+    until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+    let started = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.started").unwrap();
+    assert_eq!(started["model"], was, "the session stays");
+}
+
+/// R-SWITCH-4, R-CRED-1: a prompt from B naming an instance A lacks is
+/// checked as a local one is: refused with the fix, and no turn starts.
+#[tokio::test]
+async fn r_switch_4_a_remote_prompts_model_is_checked_like_a_local_one() {
+    let w = World::new("switch-prompt");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let before = a_log(&w, &session);
+    let mut p = w.prompt(Some(&session), "on a model A lacks");
+    if let Command::Prompt { model, .. } = &mut p {
+        *model = Some(krowk_harness::protocol::ModelRef { instance: "nope".into(), model: "x".into() });
+    }
+    v.commands.send(p).unwrap();
+    let error = ack(&mut v, &mut frames).await.expect("refused");
+    assert!(error.contains("nope") && error.contains("— the session stays on"), "the fix names the instance: {error}");
+    let after = a_log(&w, &session);
+    assert_eq!(after.iter().filter(|e| e["type"] == "turn.started").count(), before.iter().filter(|e| e["type"] == "turn.started").count(), "no turn starts: {error}");
+}
+
 /// R-SYNC-1, R-SYNC-2, R-PERF-6, R-PERM-2, R-LAG-7, R-LAG-8, R-E2E-1: B
 /// lists A's session from its sealed index and attaches from the checkpoint
 /// in under 500 ms; a prompt typed on B runs on A, shown on B at once and
@@ -961,11 +1093,15 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Acked { error: Some(e), .. } if e.contains("made on the host"))), "{got:?}");
 
-    // B's prompt runs under the session's settings, whatever it asks for.
+    // B's prompt runs under the session's settings, whatever it asks for,
+    // but on the model it names (R-SWITCH-4): A checks that like its own.
     let mut unhinged = w.prompt(Some(&session), "asking for more than it may");
-    if let Command::Prompt { permission_mode, model, .. } = &mut unhinged {
+    if let Command::Prompt { permission_mode, model, toolset, effort, budget, .. } = &mut unhinged {
         *permission_mode = PermissionMode::Unhinged;
         *model = Some(Registry::resolve(&InstancesConfig::default(), &w.env()).parse_model("claude-haiku-4-5").unwrap());
+        *toolset = Some("gpt".into());
+        *effort = Some(krowk_harness::protocol::Effort::Max);
+        *budget = Some(krowk_harness::protocol::BudgetLimits { max_usd: Some(1000.0), max_tokens: None });
     }
     v.commands.send(unhinged).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
@@ -973,7 +1109,9 @@ async fn r_sync_2_a_prompt_typed_on_b_runs_on_a_and_b_answers_its_approval() {
     let started: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|e| e["type"] == "turn.started").collect();
     let (first, last) = (&started[0], started.last().unwrap());
     assert_eq!(last["permissionMode"], "default", "never the viewer's unhinged: {last}");
-    assert_eq!(last["model"], first["model"], "never the viewer's model: {last}");
+    assert_eq!(last["model"]["model"], "claude-haiku-4-5", "the viewer's model, checked by A: {last}");
+    assert_ne!(last["model"], first["model"]);
+    assert_eq!(last.get("effort"), first.get("effort"), "never the viewer's effort: {last}");
 
     // B types; A runs it.
     v.commands.send(w.prompt(Some(&session), &format!("make the file {PROMPT_MARKER}"))).unwrap();

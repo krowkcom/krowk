@@ -1868,13 +1868,17 @@ impl<'h> Ui<'h> {
         app.touch();
     }
 
-    /// What a viewer of a synced session cannot do: the host runs it on its
-    /// own model and settings, and remote prompts no further than its
+    /// What a viewer of a synced session cannot do here: the host runs it
+    /// on its own settings, and remote prompts no further than its
     /// default mode (plan, if the session is in plan). Said, and true, when
     /// this is one.
     fn synced_refuses(&self, app: &mut App, what: &str) -> bool {
         if self.host.synced().is_none() {
             return false;
+        }
+        if what.eq_ignore_ascii_case("/model") || what.eq_ignore_ascii_case("model") {
+            app.notice("this TUI has no /model for a session on another machine yet: `krowk sync attach --json` takes `/model INSTANCE/ID`, which the host checks as its own");
+            return true;
         }
         app.notice(&format!("{what} is the host's to change: this session runs on another machine, and prompts from here run in its default mode (plan, if it is in plan)"));
         true

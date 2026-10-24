@@ -637,7 +637,7 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
 }
 
 /// What a viewer may ask of the host: its session's prompt, steer,
-/// interrupt and approval, and an interrupt or an approval's answer for
+/// interrupt, approval and model switch, and an interrupt or an approval's answer for
 /// one of its own children (R-SUB-12), and nothing else. A viewer holds
 /// this session's key and no other, so a command naming another session —
 /// or none, which would start one in the host's directory — is refused,
@@ -653,6 +653,7 @@ fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool)
         Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
         Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session || is_child(session_id),
         Command::Steer { session_id, .. } => session_id == session,
+        Command::SwitchModel { session_id, .. } => session_id.as_deref() == Some(session),
         _ => false,
     }
 }
@@ -722,8 +723,11 @@ fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
 }
 
 /// A viewer's prompt runs under the session's own settings, never its own:
-/// the model and effort the session last ran on, the configured toolset
-/// and no budget of the viewer's choosing. Its permission mode is the one
+/// its instance's default effort, the configured toolset and no budget of
+/// the viewer's choosing. A model it names is kept: the daemon
+/// checks it against this host's own instances and credentials as it
+/// checks a local switch, and refuses one that cannot run (R-SWITCH-4,
+/// R-CRED-1). Its permission mode is the one
 /// the session's last turn ran in, capped at `default`: a mode that asks
 /// less (`acceptEdits`, `bypassPermissions`, `unhinged`) is the host
 /// person's choice for their own turns, and a remote turn never runs looser
@@ -731,7 +735,7 @@ fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
 fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
     let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
     match c {
-        Command::Prompt { session_id, text, images, .. } => Command::Prompt { session_id, text, images, model: None, permission_mode: mode, toolset: None, effort: None, budget: None },
+        Command::Prompt { session_id, text, images, model, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, budget: None },
         other => other,
     }
 }
@@ -1565,7 +1569,7 @@ impl Hosting {
                 let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("session {} is moving to another machine; send it there once it has moved", self.o.session)) }));
             }
             Ok(ViewerFrame::Command(r)) if !for_this_session(&r.command, &self.o.session, |id| self.children.contains(id) && parent_here(&self.o.sessions, id, &self.o.session)) => {
-                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt or answer an approval of that session, or interrupt or answer an approval of one of its own subagents, and nothing else", self.o.session)) }));
+                let _ = self.answers_tx.send((from, Answer::Ack { id: r.id, error: Some(format!("a viewer of session {} may prompt, steer, interrupt, switch the model of or answer an approval of that session, or interrupt or answer an approval of one of its own subagents, and nothing else", self.o.session)) }));
             }
             // A rule for the whole project is written into the
             // host's repository settings: made at the host, not
@@ -1844,6 +1848,18 @@ mod tests {
         assert_eq!(permission_mode, PermissionMode::Plan, "plan asks more, and stays");
     }
 
+    /// R-SWITCH-4, R-CRED-1: a remote prompt's model reaches the daemon's
+    /// own checks; its toolset, effort and budget stay the host's.
+    #[test]
+    fn r_switch_4_a_remote_prompt_keeps_its_model_and_nothing_else() {
+        let model = crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() };
+        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }) };
+        let Command::Prompt { model: kept, permission_mode, toolset, effort, budget, .. } = under_session_settings(asked, PermissionMode::Unhinged) else { unreachable!() };
+        assert_eq!(kept, Some(model));
+        assert_eq!(permission_mode, PermissionMode::Default);
+        assert!(toolset.is_none() && effort.is_none() && budget.is_none());
+    }
+
     fn asked(id: &str, session: &str) -> StreamLine {
         StreamLine::Live(LiveEvent::ApprovalRequested(ApprovalRequest { session_id: session.into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({"command": "rm -rf secret"}), summary: "Bash `rm -rf secret`".into(), reason: String::new(), remember: Vec::new(), questions: Vec::new() }))
     }
@@ -1957,7 +1973,10 @@ mod tests {
             let approve = Command::Approve { session_id: refused.into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
             assert!(!for_this_session(&approve, "s", is_child), "{refused}");
         }
-        for c in [steer, prompt] {
+        let switch = |id: Option<&str>| Command::SwitchModel { session_id: id.map(String::from), model: crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() } };
+        assert!(for_this_session(&switch(Some("s")), "s", is_child), "the session's own model switch");
+        assert!(!for_this_session(&switch(None), "s", is_child), "a switch naming no session is only a check");
+        for c in [steer, prompt, switch(Some("kid"))] {
             assert!(!for_this_session(&c, "s", is_child), "only an interrupt or an approval reaches a child: {c:?}");
         }
     }

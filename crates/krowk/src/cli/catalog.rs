@@ -148,7 +148,8 @@ prompt box sends prompts, approvals are answered in the usual dialog, Esc
 interrupts, and the status line says whether the host is there (prompts
 wait for it when it is not) and whether the session comes by the relay or
 directly. The host runs prompts from here in the session's default mode, so
-/mode, /model, /new and /sessions are its to change, not this TUI's.
+/mode, /new and /sessions are its to change, not this TUI's; this TUI has no
+/model yet either, while --json takes one.
 
 With --json, or stdout not a terminal, prints the session as stream-json on
 stdout instead, and ends when stdin does, once every command sent is
@@ -162,6 +163,8 @@ is online, except these:
   /interrupt SESSION_ID      stop one subagent of the session alone, by the
                              subagentSessionId its subagent.started names
   /steer TEXT                add TEXT to the running turn without stopping it
+  /model INSTANCE/ID         run the session's next turn on that model, if
+                             the host can run it there
 
 Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.
 Each approval.requested line carries its requestId, and a hint on stderr

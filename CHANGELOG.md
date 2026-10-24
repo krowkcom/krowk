@@ -236,6 +236,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A synced session's model can be switched from another machine.** A
+  prompt from another device now runs on the model it names, and
+  `/model INSTANCE/ID` on `krowk sync attach --json`'s stdin switches the
+  session's model. The
+  host checks the model against its own instances and credentials, as it
+  does a switch made at its terminal; one it can't run is refused with its
+  fix line, and the session stays on its model. Mode, effort, toolset and
+  budget are still the host's.
 - **The iPhone app can join a pairing that `krowk devices add` shows.**
   The phone runs the same joining steps as `krowk sync join`, by the code
   typed or scanned from the QR code, and the new device appears on the
