@@ -370,8 +370,9 @@ final class TranscriptTextCell: TranscriptCell {
             // appended first, as any frame's are, so a whole text that only
             // extends what streamed keeps its blocks rather than being drawn
             // again in one view (a quarter-second stall on CI's simulator for
-            // a 10 KB answer, StallBudgetTests). One that differs is caught
-            // by `finish`.
+            // a 10 KB answer, StallBudgetTests). One that differs in what
+            // streamed is caught by `finish` and drawn again; a shorter one
+            // is drawn again by `stream` itself.
             stream(state, font: font)
         }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,

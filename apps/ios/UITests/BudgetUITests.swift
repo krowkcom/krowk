@@ -38,6 +38,7 @@ final class BudgetUITests: XCTestCase {
                 scroll.tap()
                 _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: started, object: scroll)], timeout: 15)
             }
+            XCTAssertTrue(started.evaluate(with: scroll), "pass \(passes) never started: \(scroll.label)")
             // Top to bottom: the button reads the pass once it's done.
             let scrolled = XCTNSPredicateExpectation(predicate: done, object: scroll)
             XCTAssertEqual(XCTWaiter().wait(for: [scrolled], timeout: 400), .completed, "pass \(passes) never reached the bottom: \(scroll.label)")

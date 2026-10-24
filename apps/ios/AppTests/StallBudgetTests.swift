@@ -147,6 +147,7 @@ final class FrameGaps: NSObject {
 
     func reset() {
         longest = 0
+        longestEnd = 0
         frames = 0
     }
 
@@ -206,7 +207,8 @@ final class ReplaySession: LiveSession {
                 case nil: "nil"
                 }
             }.joined(separator: "+")
-        default: "\(update)".prefix { $0 != "(" }.description
+        // The case's name only: never formatting what it carries.
+        default: Mirror(reflecting: update).children.first?.label ?? "update"
         }
     }
 
