@@ -206,6 +206,14 @@ pub fn typed(session: &str, line: String) -> Result<crate::protocol::Command, St
         "interrupt" if crate::log::valid_id(arg) => return Ok(Command::Interrupt { session_id: arg.to_string() }),
         "steer" if !arg.is_empty() => return Ok(Command::Steer { session_id, text: arg.to_string(), images: Vec::new() }),
         "interrupt" | "steer" => return Err(format!("`/{word}` is `/interrupt` alone or with a subagent's session id, or `/steer TEXT`")),
+        // The `<instance>/<id>` form `--model` takes: the instances are the
+        // host's, so the host checks the model against its own (R-CRED-1).
+        "model" => {
+            return match arg.split_once('/') {
+                Some((instance, model)) if !instance.is_empty() && !model.is_empty() && !arg.contains(char::is_whitespace) => Ok(Command::SwitchModel { session_id: Some(session_id), model: crate::protocol::ModelRef { instance: instance.into(), model: model.into() } }),
+                _ => Err("`/model` takes the model as `<instance>/<id>`, e.g. `/model anthropic/claude-opus-5-5`".into()),
+            };
+        }
         _ => return prompt(line),
     };
     if arg.is_empty() || arg.contains(char::is_whitespace) {
@@ -390,7 +398,7 @@ mod tests {
     /// with `/` is a prompt as typed, and `//` escapes a command's name.
     /// `/interrupt` takes a subagent's session id, and nothing else.
     #[test]
-    fn typed_lines_are_the_five_commands_or_else_prompts() {
+    fn typed_lines_are_the_six_commands_or_else_prompts() {
         let t = |l: &str| typed("s", l.to_string());
         for (line, want) in [("/approve r1", ApprovalDecision::Allow), ("/allow-session r1", ApprovalDecision::AllowSession), ("/deny  r1 ", ApprovalDecision::Deny)] {
             let Ok(Command::Approve { session_id, request_id, decision, .. }) = t(line) else { panic!("{line}") };
@@ -400,7 +408,9 @@ mod tests {
         let child = "01a0ec7b-0000-7000-8000-00000000c41d";
         assert!(matches!(t(&format!("/interrupt {child}")), Ok(Command::Interrupt { session_id }) if session_id == child), "R-SUB-12: a subagent, by its id");
         assert!(matches!(t("/steer go on"), Ok(Command::Steer { text, .. }) if text == "go on"));
-        for bad in ["/approve", "/deny a b", "/interrupt now", "/steer"] {
+        let Ok(Command::SwitchModel { session_id, model }) = t("/model mock/other") else { panic!("/model") };
+        assert_eq!((session_id.as_deref(), model.to_string().as_str()), (Some("s"), "mock/other"));
+        for bad in ["/approve", "/deny a b", "/interrupt now", "/steer", "/model", "/model opus", "/model /x", "/model a/", "/model a/b c"] {
             assert!(t(bad).is_err(), "{bad}");
         }
         assert_eq!(prompt_text(t("say hi").unwrap()), "say hi");

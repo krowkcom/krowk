@@ -162,6 +162,8 @@ is online, except these:
   /interrupt SESSION_ID      stop one subagent of the session alone, by the
                              subagentSessionId its subagent.started names
   /steer TEXT                add TEXT to the running turn without stopping it
+  /model INSTANCE/ID         run the session's next turn on that model, if
+                             the host can run it there
 
 Any other line starting with / is a prompt as typed; //TEXT sends /TEXT.
 Each approval.requested line carries its requestId, and a hint on stderr
