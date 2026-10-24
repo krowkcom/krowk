@@ -52,8 +52,13 @@ final class StallBudgetTests: XCTestCase {
                             "the replay never reached the turn's end: \(screen.model.ids.suffix(3))")
         let longest = gaps.longest * 1000
         let frames = gaps.frames
-        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f)",
-                          longest, frames, lines.count, limit, baseline, factor)
+        // What the frames that applied something during the longest gap
+        // brought: where the time went, when it fails.
+        let during = replay.applied.withLock { $0 }
+            .filter { $0.at >= gaps.longestEnd - gaps.longest - 0.001 && $0.at <= gaps.longestEnd }
+            .map(\.what).joined(separator: "; ")
+        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f); applied in it: %@",
+                          longest, frames, lines.count, limit, baseline, factor, during.isEmpty ? "nothing" : during)
         print(text)
         let attachment = XCTAttachment(string: text)
         attachment.name = "krowk main-thread stall"
@@ -120,6 +125,8 @@ final class FrameGaps: NSObject {
     private var link: CADisplayLink?
     private var last: CFTimeInterval?
     private(set) var longest: CFTimeInterval = 0
+    /// When the longest gap ended (`CACurrentMediaTime`'s clock).
+    private(set) var longestEnd: CFTimeInterval = 0
     private(set) var frames = 0
 
     override init() {
@@ -130,7 +137,10 @@ final class FrameGaps: NSObject {
     }
 
     @objc private func frame(_ link: CADisplayLink) {
-        if let last { longest = max(longest, link.timestamp - last) }
+        if let last, link.timestamp - last > longest {
+            longest = link.timestamp - last
+            longestEnd = link.timestamp
+        }
         last = link.timestamp
         frames += 1
     }
@@ -153,6 +163,9 @@ final class FrameGaps: NSObject {
 final class ReplaySession: LiveSession {
     let mailbox = UpdateMailbox()
     private let finished = OSAllocatedUnfairLock(initialState: false)
+    /// Each frame that took something: when (`CACurrentMediaTime`), and
+    /// what it took.
+    let applied = OSAllocatedUnfairLock<[(at: CFTimeInterval, what: String)]>(initialState: [])
 
     var done: Bool { finished.withLock { $0 } }
 
@@ -170,7 +183,31 @@ final class ReplaySession: LiveSession {
     }
 
     @MainActor func takeFrame() -> [TranscriptUpdate] {
-        TranscriptUpdate.from(posted: mailbox.drainAll(), approvals: NoApprovals())
+        let taken = TranscriptUpdate.from(posted: mailbox.drainAll(), approvals: NoApprovals())
+        if !taken.isEmpty {
+            let what = Dictionary(grouping: taken.map(Self.kind), by: { $0 }).map { "\($0.value.count) \($0.key)" }.sorted().joined(separator: ", ")
+            let at = CACurrentMediaTime()
+            applied.withLock { $0.append((at, what)) }
+        }
+        return taken
+    }
+
+    /// An update's kind, and a logged item's.
+    static func kind(_ update: TranscriptUpdate) -> String {
+        switch update {
+        case .delta: "delta"
+        case .started: "started"
+        case .logged(let events):
+            "logged " + events.map { event in
+                switch event.change {
+                case .toolResult(_, _, let output, _): "toolResult(\(output.utf8.count) B)"
+                case .assistantText(_, let text): "assistantText(\(text.utf8.count) B)"
+                case let change?: "\(change)".prefix { $0 != "(" }.description
+                case nil: "nil"
+                }
+            }.joined(separator: "+")
+        default: "\(update)".prefix { $0 != "(" }.description
+        }
     }
 
     func send(_ command: LiveCommand, token: UInt64) {}
