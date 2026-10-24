@@ -90,8 +90,9 @@ case ${1:-} in
     apply=$(lines 'krowk\.frame\.apply baseline.*|Test Case .*testFrameApplyBaseline.*measured.*')
     latency=$(lines 'krowk host→screen latency.*')
     cold=$(lines 'krowk notification cold launch.*')
-    stall=$(lines 'krowk main-thread stall:.*')
-    stallMs=$(jq -r '.[0] // "" | capture("frames (?<ms>[0-9.]+) ms") | .ms // empty' <<<"$stall" || true)
+    # In run order, not sorted: a gate run again reports its last.
+    stall=$({ [ -f "$log" ] && grep -oE 'krowk main-thread stall:.*' "$log" || true; } | jq -R . | jq -s .)
+    stallMs=$(jq -r '.[-1] // "" | capture("frames (?<ms>[0-9.]+) ms") | .ms // empty' <<<"$stall" || true)
     record "$(jq -n --argjson launch "$launch" --argjson apply "$apply" --argjson latency "$latency" --argjson cold "$cold" \
       --argjson stall "$stall" --arg stallMs "${stallMs:-}" \
       '{launchMs: $launch, frameApply: $apply, hostToScreen: $latency, notificationColdLaunch: $cold,

@@ -664,9 +664,10 @@ fails when:
 - the longest gap between display frames while `StallBudgetTests` replays
   `AppTests/burst.stream` (20 s at 200 tokens a second, two 1 MiB tool
   outputs; `scripts/burst-fixture.py` writes it) through the mailbox the
-  live path uses is over `stall.baselineMs × stall.factor`. A second run
-  with `KROWK_TEST_STALL_MS=250`, a Debug build's sleep in each frame's
-  apply, must fail it.
+  live path uses is over `stall.baselineMs × stall.factor`, twice: the
+  shared runner's speed varies, so a failure is run once more. A run with
+  `KROWK_TEST_STALL_MS=250`, a Debug build's sleep in each frame's apply,
+  must fail it.
 
 A Release build has neither seam (`scripts/approvals.sh`). Raising a
 ceiling is a commit that changes its `max`, with the new measurement and

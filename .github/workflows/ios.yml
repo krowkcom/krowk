@@ -333,13 +333,14 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2, R-PERF-7: the scheme's tests on the simulator, against the fake fleet (StallBudgetTests is the stall gate)"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2, R-PERF-7: the scheme's tests on the simulator, against the fake fleet (StallBudgetTests apart: the stall gate below)"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do
             rm -rf "$RUNNER_TEMP/Tests.xcresult"
             if apps/ios/scripts/with-fleet.sh xcodebuild test-without-building -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
               -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath "$DERIVED" \
+              -skip-testing:Krowk-iOSTests/StallBudgetTests \
               -resultBundlePath "$RUNNER_TEMP/Tests.xcresult" 2>&1 | tee "$RUNNER_TEMP/test.log"; then
               exit 0
             fi
@@ -349,6 +350,37 @@ jobs:
             xcrun simctl shutdown "$UDID" || true
             xcrun simctl boot "$UDID" || true
             xcrun simctl bootstatus "$UDID" -b
+          done
+          exit 1
+
+      # The stall gate (R-PERF-7, R-LAG-7): StallBudgetTests' longest frame
+      # gap against 2x the stored baseline. The shared runner's speed varies
+      # (five runs: 70-129 ms against a 149 ms limit), so a failure is run
+      # once more and fails the job only if it fails again; a regression,
+      # like the deliberate stall below (317-379 ms), fails both. Its lines
+      # join test.log for the trend.
+      - name: "R-PERF-7, R-LAG-7: no main-thread stall while a burst streams (gate)"
+        if: ${{ !cancelled() && env.BUILT == '1' }}
+        run: |
+          set -o pipefail
+          stalls=0
+          for attempt in 1 2 3; do
+            if xcodebuild test-without-building -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS \
+              -destination "platform=iOS Simulator,id=$UDID" -derivedDataPath "$DERIVED" \
+              -only-testing:Krowk-iOSTests/StallBudgetTests/testR_PERF_7_replayingABurstNeverStallsTheMainThread \
+              2>&1 | tee "$RUNNER_TEMP/stall-gate.log"; then
+              cat "$RUNNER_TEMP/stall-gate.log" >> "$RUNNER_TEMP/test.log"
+              exit 0
+            fi
+            cat "$RUNNER_TEMP/stall-gate.log" >> "$RUNNER_TEMP/test.log"
+            if grep -q "R-PERF-7: the main thread stalled" "$RUNNER_TEMP/stall-gate.log"; then
+              stalls=$((stalls + 1))
+              [ "$stalls" -lt 2 ] || { echo "::error::R-PERF-7: StallBudgetTests stalled twice"; exit 1; }
+            else
+              grep -q "Failed to install or launch the test runner" "$RUNNER_TEMP/stall-gate.log" || exit 1
+            fi
+            [ "$attempt" != 3 ] || exit 1
+            echo "::warning::attempt $attempt: $(grep -oE 'krowk main-thread stall: the longest gap between frames [0-9.]+ ms' "$RUNNER_TEMP/stall-gate.log" | tail -1 || echo 'the test runner did not launch'); running it again"
           done
           exit 1
 
@@ -370,6 +402,7 @@ jobs:
       # (KROWK_TEST_STALL_MS, which a Release build lacks: approvals.sh).
       # Passes only if the test fails, and on the stall.
       - name: "R-PERF-7, R-LAG-7: a deliberate 250 ms stall fails the stall gate"
+        if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |
           set -o pipefail
           for attempt in 1 2 3; do
