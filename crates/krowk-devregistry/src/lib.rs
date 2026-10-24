@@ -296,8 +296,9 @@ fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
 }
 
 /// `/v1/users/:user_id/…`: a person's device list, the user key wrapped to
-/// each device, their hosts' presences and their one pairing. `:user_id` is the key's own person
-/// (`GET /v1/key`'s `user_id`); any other is not there to be found.
+/// each device, their hosts' presences and their one pairing. `:user_id` is
+/// the key's own person (`GET /v1/key`'s `user_id`); any other is not there
+/// to be found.
 fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Resp {
     if auth::token(req).is_some_and(|t| store::person_for(&t) != user) {
         return errors::not_found();

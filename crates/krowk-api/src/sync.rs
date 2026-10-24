@@ -184,8 +184,9 @@ struct PresencesAnswer {
     presences: Vec<Presence>,
 }
 
-/// Bytes from the hex the registry sends them as, either case; anything
-/// else is a malformed answer rather than empty bytes.
+/// Bytes from the hex the registry sends them as, either case. Hex that is
+/// not is a malformed answer; a `sealed` that is absent reads as no bytes,
+/// which nothing opens.
 fn hex_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     let s: String = nullable(d)?;
     if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {

@@ -684,16 +684,22 @@ pub fn put_session(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
 /// that is not a whole number of seconds in the window is refused, as the
 /// registry's `Integer(…)` refuses it — a number, or a string of one.
 fn ttl(f: &Fields) -> Result<SignedDuration, Resp> {
+    ttl_within(f, DEFAULT_LEASE_TTL, LEASE_TTL)
+}
+
+/// A ttl in seconds, as the registry's `lease_ttl` reads one for a lease or
+/// a presence: `default` when absent, refused outside `window`.
+pub fn ttl_within(f: &Fields, default: i64, window: std::ops::RangeInclusive<i64>) -> Result<SignedDuration, Resp> {
     let secs = match f.get_value("ttl") {
-        None => Some(DEFAULT_LEASE_TTL),
+        None => Some(default),
         Some(Value::Num(n)) => n.parse().ok(),
         Some(Value::Str(t)) => t.parse().ok(),
         Some(_) => None,
     };
-    if let Some(secs) = secs.filter(|s| LEASE_TTL.contains(s)) {
+    if let Some(secs) = secs.filter(|s| window.contains(s)) {
         Ok(SignedDuration::from_secs(secs))
     } else {
-        Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", LEASE_TTL.start(), LEASE_TTL.end())))
+        Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", window.start(), window.end())))
     }
 }
 

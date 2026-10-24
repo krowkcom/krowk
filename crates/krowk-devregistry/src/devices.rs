@@ -319,16 +319,7 @@ pub fn presence(app: &App, req: &mut Req) -> Resp {
             Some(Value::Str(h)) => crate::sync::blob("sealed", h, None, Some(PRESENCE_SEALED_BYTES))?,
             _ => return Err(invalid("sealed", "must be hex")),
         };
-        let ttl = match f.get_value("ttl") {
-            None => Some(DEFAULT_PRESENCE_TTL),
-            Some(Value::Num(n)) => n.parse().ok(),
-            Some(Value::Str(t)) => t.parse().ok(),
-            Some(_) => None,
-        };
-        let Some(ttl) = ttl.filter(|t| PRESENCE_TTL.contains(t)) else {
-            return Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", PRESENCE_TTL.start(), PRESENCE_TTL.end())));
-        };
-        let expires_at = now + jiff::SignedDuration::from_secs(ttl);
+        let expires_at = now + crate::sync::ttl_within(&f, DEFAULT_PRESENCE_TTL, PRESENCE_TTL)?;
         let created_at = s.sync.presences.get(&device).map_or(now, |p| p.created_at);
         s.sync.presences.insert(device.clone(), crate::sync::Presence { sealed, created_at, updated_at: now, expires_at });
         let answer = Json::map([("device", Json::str(device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
