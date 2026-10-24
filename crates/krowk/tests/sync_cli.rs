@@ -501,6 +501,12 @@ fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
     let a = w.machine("a");
     let b = w.machine("b");
     let (host, session) = hosted(&w, &a);
+    // The registry lists the session before A's host is on the relay, and
+    // the attach line says what the relay first says of the host: the test
+    // waits, as another viewer, until A is there.
+    let mut there = Running::spawn(b.command(&["sync", "attach", &session]));
+    there.until("A on the relay", |v| v["type"] == "sync.host" && v["present"] == true);
+    drop(there);
     let mut c = b.command(&["sync", "attach", &session]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 40);
