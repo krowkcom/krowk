@@ -11,6 +11,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **krowk-client can seal a host's announcement to your devices.** The
+  record a host will use to tell your other devices it is online, with its
+  instances and their models, the directories it starts sessions in and the
+  ids of its sessions, is sealed under your user key and bound to the device
+  it is about. The registry sees only its length, padded to whole
+  kilobytes. Nothing publishes one yet.
 - **An iPhone you remove from your devices says so, and can be reset.**
   After `krowk devices remove <iphone>` (or a list started over with
   `krowk sync init --start-over`), the app replaces its screens with "This

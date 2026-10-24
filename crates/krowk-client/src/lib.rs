@@ -21,6 +21,8 @@
 //! - `device_chain`: the signed, append-only device list and its verifier.
 //! - `session_record`: a synced session's record, signed by the device
 //!   that published it and checked against the device list.
+//! - `presence`: a host's announcement of itself — its instances, models,
+//!   directories and session ids — sealed to the person's devices.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //! - `sync`: the wire and at-rest shapes of a synced session — a viewer's
@@ -36,6 +38,7 @@ pub mod keystore;
 pub mod pairing;
 pub mod pairing_join;
 pub mod pairing_payload;
+pub mod presence;
 pub mod protocol;
 pub mod relay_link;
 pub mod relay_ticket;
