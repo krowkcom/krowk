@@ -2255,18 +2255,35 @@ fn quit_reports(mut t: pty::Pty) -> (Vec<String>, String) {
     (reports(&out), out)
 }
 
+/// `reply`, held before its `message_start` until `gate` opens: a model
+/// that has not begun to answer for as long as the test looks.
+fn held(reply: mock::Reply, gate: &mock::Gate) -> mock::Reply {
+    mock::Reply { pace: Some(Duration::from_millis(1)), hold: Some(("message_start", gate.clone())), ..reply }
+}
+
 /// `mock::edit_script`, with a plain answer to a call that offers no
-/// edit tool (the session's title), and the answer after the edit slowed,
-/// so the turn is seen working again before it ends: a state that comes
-/// and goes between two frames is never drawn, nor reported.
-fn edit_or_answer(body: &serde_json::Value, n: usize) -> mock::Reply {
-    let has_result = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    let edits = body["tools"].as_array().into_iter().flatten().any(|t| ["str_replace", "apply_patch", "search_replace"].iter().any(|e| t["name"] == *e));
-    match (edits, has_result) {
-        (true, true) => mock::Reply::paced(mock::fixture("turn2_answer.sse"), Duration::from_millis(100)),
-        (true, false) => mock::edit_script(body, n),
-        (false, _) => mock::Reply::sse(&mock::text_stream("Editing the readme")),
+/// edit tool (the session's title). The edit is held by `asked` and the
+/// answer after it by `answered`, so the turn is seen working before it
+/// asks and again before it ends, however slowly the machine runs krowk: a
+/// state that comes and goes between two frames is never drawn, nor
+/// reported, and a mock that answers at once can come and go inside one.
+fn edit_or_answer([asked, answered]: [mock::Gate; 2]) -> impl Fn(&serde_json::Value, usize) -> mock::Reply + Send + 'static {
+    move |body, n| {
+        let has_result = body["messages"].as_array().and_then(|m| m.last()).and_then(|m| m["content"].as_array()).is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
+        let edits = body["tools"].as_array().into_iter().flatten().any(|t| ["str_replace", "apply_patch", "search_replace"].iter().any(|e| t["name"] == *e));
+        match (edits, has_result) {
+            (true, true) => held(mock::Reply::sse(&mock::fixture("turn2_answer.sse")), &answered),
+            (true, false) => held(mock::edit_script(body, n), &asked),
+            (false, _) => mock::Reply::sse(&mock::text_stream("Editing the readme")),
+        }
     }
+}
+
+/// Waits for the `n`th report, the turn working, and lets the model's
+/// held reply go (`held`).
+fn working_then(t: &pty::Pty, n: usize, gate: &mock::Gate) {
+    assert!(reported(t, n, Duration::from_secs(20)), "the turn was never reported working: {:?}", reports(&t.text()));
+    gate.open();
 }
 
 /// A prompt, its approval and the answer, done until a key: each change
@@ -2274,10 +2291,13 @@ fn edit_or_answer(body: &serde_json::Value, n: usize) -> mock::Reply {
 /// cleared on the way out, after the last report.
 fn root_record_follows_a_turn(screen: &str) {
     use krowk_tui::osc7501::{Kind, State};
-    let (_m, _b, mut t) = pres_pty("pres-turn", screen, edit_or_answer);
+    let gates: [mock::Gate; 2] = Default::default();
+    let (_m, _b, mut t) = pres_pty("pres-turn", screen, edit_or_answer(gates.clone()));
     t.write(b"edit the readme\r");
+    working_then(&t, 2, &gates[0]);
     assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
     allow(&mut t, 4);
+    gates[1].open();
     assert!(reported(&t, 5, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
     assert!(t.wait_for("tokens", Duration::from_secs(10)).is_some());
     key_goes_idle(&mut t, 6);
@@ -2309,8 +2329,11 @@ fn r_pres_2_a_prompt_an_approval_and_its_answer_report_working_blocked_working_d
 fn root_record_waits_on_a_question(screen: &str) {
     use krowk_tui::osc7501::{Kind, State};
     let input = serde_json::json!({"questions": [{"question": "Which way?", "header": "Way", "options": [{"label": "Left"}, {"label": "Right"}]}]});
-    let (_m, _b, mut t) = pres_pty("pres-ask", screen, move |_, _| mock::Reply::sse(&mock::tool_use("toolu_01Ask", "ask_user", &input)));
+    let asked = mock::Gate::default();
+    let gate = asked.clone();
+    let (_m, _b, mut t) = pres_pty("pres-ask", screen, move |_, _| held(mock::Reply::sse(&mock::tool_use("toolu_01Ask", "ask_user", &input)), &gate));
     t.write(b"ask me\r");
+    working_then(&t, 2, &asked);
     assert!(reported(&t, 3, Duration::from_secs(20)), "no question reported: {:?}", reports(&t.text()));
     t.write(b"\x03");
     assert!(reported(&t, 4, Duration::from_secs(10)), "the interrupt was not reported: {:?}", reports(&t.text()));
@@ -2332,14 +2355,17 @@ fn r_pres_2_a_question_reports_blocked_on_a_question_fullscreen() {
 /// again: here an approval still waiting.
 fn root_record_is_cleared_at_a_job_stop_and_told_again_on_resume(screen: &str) {
     use krowk_tui::osc7501::{Kind, State};
-    let (_m, _b, mut t) = pres_pty("pres-stop", screen, edit_or_answer);
+    let gates: [mock::Gate; 2] = Default::default();
+    let (_m, _b, mut t) = pres_pty("pres-stop", screen, edit_or_answer(gates.clone()));
     t.write(b"edit the readme\r");
+    working_then(&t, 2, &gates[0]);
     assert!(reported(&t, 3, Duration::from_secs(20)), "no approval reported: {:?}", reports(&t.text()));
     // Ctrl-Z: the stop is dropped here (see the keyboard protocol's test),
     // so krowk gives the terminal up and takes it back at once.
     t.write(b"\x1a");
     assert!(reported(&t, 5, Duration::from_secs(10)), "nothing reported on the way back: {:?}", reports(&t.text()));
     allow(&mut t, 6);
+    gates[1].open();
     assert!(reported(&t, 7, Duration::from_secs(20)), "the turn never ended: {:?}", reports(&t.text()));
     key_goes_idle(&mut t, 8);
     let (got, _) = quit_reports(t);
