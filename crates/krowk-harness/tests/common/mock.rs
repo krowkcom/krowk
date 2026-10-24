@@ -35,13 +35,17 @@ pub struct Reply {
     pub body: String,
     pub content_type: Option<&'static str>,
     pub headers: Vec<(String, String)>,
-    /// Sent one SSE event at a time with this pause between, rather than
-    /// whole: a model typing at a known rate.
+    /// Sent one SSE event at a time, one this long after another, rather
+    /// than whole: a model typing at a known rate.
     pub pace: Option<std::time::Duration>,
     /// A paced reply stops before its first event holding this, until the
     /// gate opens: a model mid-answer for as long as the test looks.
     pub hold: Option<(&'static str, Gate)>,
 }
+
+/// How far behind its schedule a paced reply may fall and still catch up:
+/// later than this, it was held up, not woken late.
+const STALLED: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// Shut until opened, then open for good.
 #[derive(Clone, Default)]
@@ -175,6 +179,15 @@ pub fn serve_seen_on(listener: TcpListener, answer: impl Fn(&Seen, usize) -> Rep
                 // request — a connectivity probe above all.
                 Some(pace) => {
                     std::thread::spawn(move || {
+                        // Each event is due a pace after the one before, and
+                        // a sleep that wakes late is made up by the next: a
+                        // pause of `pace` slept each time is `pace` plus how
+                        // late the machine wakes a thread, which on a loaded
+                        // macOS runner is several times the pace itself. Held
+                        // up for longer than a late wake (a gate, a reader
+                        // that stopped reading), it starts again from now
+                        // rather than send what it is behind all at once.
+                        let mut due = std::time::Instant::now();
                         for event in reply.body.split_inclusive("\n\n") {
                             if let Some((at, gate)) = &reply.hold
                                 && event.contains(at)
@@ -184,7 +197,9 @@ pub fn serve_seen_on(listener: TcpListener, answer: impl Fn(&Seen, usize) -> Rep
                             if conn.write_all(event.as_bytes()).and_then(|()| conn.flush()).is_err() {
                                 return;
                             }
-                            std::thread::sleep(pace);
+                            let now = std::time::Instant::now();
+                            due = if now > due + STALLED { now + pace } else { due + pace };
+                            std::thread::sleep(due.saturating_duration_since(now));
                         }
                     });
                 }

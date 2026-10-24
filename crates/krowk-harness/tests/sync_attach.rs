@@ -65,6 +65,13 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
         let words: String = (0..750).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
+    // Eight seconds of typing: well over a hundred of the host's batches,
+    // one a frame, even where the frame's timer wakes late (40 ms, not 16,
+    // on a macOS runner).
+    if !has_result && last.to_string().contains("an answer of many batches") {
+        let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
     if !has_result && last.to_string().contains("a long answer") {
         let words: String = (0..160).map(|i| format!("word{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -1045,7 +1052,8 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     let w = World::new("unattended");
     let a = w.device("machine-a");
     let (d, session) = first_turn(&w).await;
-    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, Duration::from_secs(1));
+    let wait = Duration::from_secs(1);
+    let (_stop, _cp, _bridge) = w.bridge_with(&a, &session, w.daemon().await, host::LEASE_TTL, host::KEEP, wait);
     w.synced(&session).await;
     let (t, turn, req) = ask_at_the_terminal(&w, &session).await;
     assert_eq!(req.tool, "bash");
@@ -1053,18 +1061,36 @@ async fn r_host_1_a_terminal_that_leaves_with_a_question_open_is_not_kept_waitin
     turn.abort();
     drop((t, d));
     let left = Instant::now();
-    let deadline = left + Duration::from_secs(5);
-    let results = loop {
-        let events = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
-        if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
-            // The bridge's doing, after its wait: not the daemon's, which
-            // would have denied it the moment the terminal went.
-            assert!(left.elapsed() >= Duration::from_millis(500), "denied {:?} after the terminal went", left.elapsed());
-            break tool_results(&w, &session);
+    // The bridge sweeps once a second. It sees the request has waited out
+    // `wait`, asks the daemon, and believes that nobody else answers only
+    // once the daemon has said so for as long again (`deny_late`): two
+    // waits and up to two sweeps, under four seconds on Linux and macOS
+    // alike, held below. The denied turn then ends with the model's paced
+    // answer, held below too; the deadline is only how long the test looks.
+    let deadline = left + Duration::from_secs(10);
+    let mut denied = None;
+    let (results, ended) = loop {
+        // Read as the daemon appends: a last line cut off mid-write is
+        // read again at the next look.
+        let read = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE));
+        let events = read.as_deref().unwrap_or_default();
+        if denied.is_none() && events.iter().any(|e| matches!(e.body, LogBody::ItemCompleted { item: Item::ToolResult { is_error: true, .. }, .. })) {
+            denied = Some(left.elapsed());
         }
-        assert!(Instant::now() < deadline, "the turn still waits on the question");
+        if events.iter().filter(|e| matches!(e.body, LogBody::TurnCompleted { .. })).count() >= 2 {
+            break (tool_results(&w, &session), left.elapsed());
+        }
+        assert!(Instant::now() < deadline, "the turn still waits on the question (the log read: {:?})", read.err());
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    // The bridge's doing, after its wait: not the daemon's, which would
+    // have denied it the moment the terminal went; and no later than its
+    // two waits and two sweeps, with a second and a half to spare.
+    let denied = denied.expect("the turn ended with its request denied");
+    assert!(denied >= Duration::from_millis(500), "denied {denied:?} after the terminal went");
+    assert!(denied <= wait * 2 + Duration::from_millis(3500), "denied {denied:?} after the terminal went, a sweep or more late");
+    // And the turn goes on at once: the model's short answer to the denial.
+    assert!(ended <= denied + Duration::from_secs(3), "the turn ended {ended:?} after the terminal went, denied at {denied:?}");
     assert!(matches!(results.as_slice(), [(_, true)]), "bash was denied: {results:?}");
     assert!(!w.repo().join("approved.txt").exists());
 }
@@ -1294,7 +1320,7 @@ async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
     until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
     let before = w.b_batches.load(Ordering::SeqCst);
     let dd = d.clone();
-    let prompt = w.prompt(Some(&session), "a long answer, please");
+    let prompt = w.prompt(Some(&session), "an answer of many batches, please");
     tokio::spawn(async move {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -1305,7 +1331,7 @@ async fn r_lag_7_a_viewer_acks_so_a_long_answer_reaches_it_whole() {
     assert!(batches > 100, "only {batches} batches");
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { .. }))) ), "the typing arrived");
     let text: String = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ItemDelta { delta, .. })) = u && let krowk_harness::protocol::Delta::Text { text } = delta { Some(text.clone()) } else { None }).collect();
-    assert!(text.contains("word0 ") && text.contains("word159 "), "the whole answer: {} chars", text.len());
+    assert!(text.contains("word0 ") && text.contains("word399 "), "the whole answer: {} chars", text.len());
 }
 
 /// R-LAG-8: a prompt whose ack was lost — B's downlink dropped, then cut —
@@ -1685,8 +1711,9 @@ async fn r_net_2_moving_to_the_direct_path_mid_session_stalls_nothing_and_shows_
     let mut v = viewer::attach(o).await.unwrap();
     let mut frames = Vec::new();
     v.commands.send(w.prompt(Some(&session), "a long answer, queued")).unwrap();
-    // The long answer takes over 20 seconds on a macOS runner (r_lag_7's
-    // takes 24 there), however quickly it streams on Linux.
+    // The long answer streams for about 3.3 seconds, on schedule wherever
+    // it runs (the mock makes up a late wake); the wait is only how long
+    // the test gives up after.
     let mut got = until(&mut v, Duration::from_secs(90), &mut frames, result_of).await;
     assert!(got.iter().any(|u| matches!(u, viewer::Update::Sent { queued: true, .. })), "the prompt waited for the host: {got:?}");
     assert!(!got.iter().any(direct_path), "the race waits on its ticket");
