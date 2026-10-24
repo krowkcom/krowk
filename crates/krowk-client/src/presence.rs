@@ -8,7 +8,7 @@
 //! Pure code: the endpoint that carries it and the daemon that publishes
 //! it are elsewhere.
 
-use crate::device_chain::{Chain, Kind};
+use crate::device_chain::{refused_in_name, Chain, Kind};
 use crate::e2e::{self, DeviceId, Label};
 use crate::pairing::{MAX_NAME, MAX_OS};
 use crate::protocol::LimitStatus;
@@ -72,15 +72,29 @@ pub struct AnnouncedInstance {
     /// Model ids, newest first.
     #[serde(default)]
     pub models: Vec<String>,
-    /// The last limits frame seen for it, if any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// The last limits frame seen for it, if any. One an older device
+    /// cannot read (a state added since) reads as none, rather than
+    /// refusing the whole record.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub limit: Option<LimitStatus>,
+}
+
+fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<LimitStatus>, D::Error> {
+    let v = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 impl Announcement {
     /// The record's bounds, held on seal (the host trims before it seals)
     /// and on open.
     pub fn check(&self) -> Result<(), String> {
+        // First, so nothing the host wrote reaches an error below unchecked.
+        // The device list's rule for a name: no control, format or
+        // separator characters, so a path cannot be spoofed by a bidi
+        // override either.
+        if self.strings().any(|s| s.chars().any(refused_in_name)) {
+            return Err("the announcement has a control character in it".into());
+        }
         if self.name.chars().count() > MAX_NAME {
             return Err(format!("the announcement's name is longer than {MAX_NAME} characters"));
         }
@@ -98,9 +112,6 @@ impl Announcement {
         }
         if self.sessions.len() > MAX_SESSIONS {
             return Err(format!("the announcement lists more than {MAX_SESSIONS} sessions"));
-        }
-        if self.strings().any(|s| s.chars().any(char::is_control)) {
-            return Err("the announcement has a control character in it".into());
         }
         let json = serde_json::to_vec(self).map_err(|e| format!("the announcement does not encode: {e}"))?;
         if json.len() > MAX_JSON {
@@ -142,12 +153,18 @@ pub fn open(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Chain) ->
     if listed.kind == Kind::Recovery {
         return Err(format!("device {device} is your recovery kit, which announces nothing"));
     }
-    let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
-    if json.len() > MAX_JSON.div_ceil(PAD) * PAD {
+    if sealed.len() > e2e::PERSON_OVERHEAD + MAX_JSON.div_ceil(PAD) * PAD {
         return Err(format!("the announcement from {device} is longer than {MAX_JSON} bytes"));
     }
-    let mut a: Announcement = serde_json::from_slice(&json).map_err(|e| format!("the announcement from {device} does not decode: {e}"))?;
-    // Checked first, so nothing the host wrote reaches an error unchecked.
+    // Any device that ever held an older generation could have sealed one
+    // under it, a device removed since included.
+    let generation = e2e::person_generation(sealed).map_err(|e| e.0)?;
+    if generation < chain.generation() {
+        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} announces itself again", chain.generation()));
+    }
+    let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
+    // serde's message can quote what the host wrote, so it is escaped.
+    let mut a: Announcement = serde_json::from_slice(&json).map_err(|e| format!("the announcement from {device} does not decode: {}", e.to_string().escape_debug()))?;
     a.check()?;
     if a.device != device.to_string() {
         return Err(format!("the announcement from {device} is about another device ({})", a.device));

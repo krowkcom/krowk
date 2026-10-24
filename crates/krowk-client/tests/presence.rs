@@ -262,3 +262,31 @@ fn r_e2e_1_a_changed_byte_does_not_open() {
     newer[0] = 2;
     assert!(presence::open(&newer, &me, &keys(1), &chain(&w)).unwrap_err().contains("upgrade krowk"));
 }
+
+#[test]
+fn r_e2e_1_a_removed_device_cannot_forge_a_current_devices_announcement() {
+    let w = world();
+    // The tablet, removed, still holds generation 1, and writes a record
+    // as the laptop's for the registry to serve.
+    let json = serde_json::to_vec(&record(&w.laptop.id())).unwrap();
+    let forged = e2e::seal_to_person(&keys(1), 1, Label::Presence, &w.laptop.id().0, &json).unwrap();
+    let e = presence::open(&forged, &w.laptop.id(), &keys(2), &chain_without(&w, &w.tablet)).unwrap_err();
+    assert!(e.contains("generation 1, older than the generation 2"), "{e}");
+}
+
+#[test]
+fn r_host_3_a_limit_state_added_since_reads_as_no_limit() {
+    let w = world();
+    let me = w.laptop.id();
+    let json = format!(r#"{{"device":"{me}","name":"laptop","os":"linux","version":"9.0.0","onlineSinceMs":1,"instances":[{{"name":"a","kind":"a","ready":true,"state":"ready","limit":{{"status":"throttled"}}}}]}}"#);
+    let sealed = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, json.as_bytes()).unwrap();
+    assert_eq!(presence::open(&sealed, &me, &keys(1), &chain(&w)).unwrap().instances[0].limit, None);
+}
+
+#[test]
+fn r_host_3_a_bidi_override_is_refused_like_a_control_character() {
+    let w = world();
+    let me = w.laptop.id();
+    let spoof = Announcement { directories: vec!["/home/someone/\u{202e}txt.exe".into()], ..record(&me) };
+    assert!(presence::seal(&spoof, &keys(1), 1, &me).unwrap_err().contains("control character"));
+}

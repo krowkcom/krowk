@@ -547,8 +547,29 @@ pub fn seal_to_person(keys: &UserKeys, current_generation: u32, label: Label, bi
     Ok([&head[..], &generation, &key_nonce, &wrapped, &nonce, &sealed].concat())
 }
 
+/// What `seal_to_person` adds to a plaintext: the head, the wrapped key and
+/// the body's nonce and tag.
+pub const PERSON_OVERHEAD: usize = 2 + 4 + NONCE + KEY + TAG + NONCE + TAG;
+
+/// The user key generation a record sealed by `seal_to_person` names, in
+/// the clear, so an opener can refuse one older than its device list's
+/// current generation before opening it: the construction is symmetric,
+/// and a device removed since still holds the older generations.
+pub fn person_generation(blob: &[u8]) -> Result<u32, Error> {
+    if let Some(&v) = blob.first().filter(|&&v| v > PERSON_V1) {
+        return Err(err(format!("the record is format {v}, newer than this krowk reads — upgrade krowk")));
+    }
+    if blob.len() < PERSON_OVERHEAD || blob[0] != PERSON_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(err("the record is not one this krowk reads"));
+    }
+    Ok(u32::from_be_bytes(blob[2..6].try_into().expect("four bytes")))
+}
+
 /// A record sealed by `seal_to_person`, opened under the user key of the
-/// generation it names. A refusal does not say which layer failed.
+/// generation it names. A refusal does not say which layer failed. It
+/// opens under any generation this device holds: a caller that must not
+/// take a record a removed device could have sealed holds it to the device
+/// list's current generation with `person_generation`.
 pub fn open_from_person(blob: &[u8], label: Label, binding: &[u8], keys: &UserKeys) -> Result<Vec<u8>, Error> {
     let refused = || err("the record does not open with your user key: it was changed, or belongs to another device or person");
     match blob.first() {
