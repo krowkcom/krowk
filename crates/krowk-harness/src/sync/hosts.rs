@@ -6,10 +6,26 @@
 //! and what they are called, and the tailnet says which are reachable.
 //! Nothing here reads a tag: a tagged machine is the tag's in Tailscale's
 //! eyes, not yours, so the same-user check could never pass it.
+//!
+//! A machine also says so itself (R-HOST-3): each host daemon's sealed
+//! announcement, opened here, lists it — hosting nothing, or with no
+//! Tailscale — online or offline since it was last seen, with its version,
+//! instances and directories.
 
 use super::tailscale::{Node, Status, Tailnet};
 use super::viewer::Listed;
 use krowk_client::device_chain::{Chain, Kind};
+use krowk_client::presence::Announcement;
+
+/// A host's announcement, opened, as the registry lists it.
+#[derive(Debug, Clone)]
+pub struct Announced {
+    /// The registry lists it online now, by its own clock.
+    pub online: bool,
+    /// When it was last refreshed: last seen.
+    pub updated_at: String,
+    pub announcement: Announcement,
+}
 
 /// One machine of yours that hosts synced sessions.
 #[derive(Debug, Clone)]
@@ -31,6 +47,8 @@ pub struct Host {
     /// That node among this machine's tailnet peers, when Tailscale here
     /// answered and finds it.
     pub peer: Option<Node>,
+    /// What it last announced of itself, if it did.
+    pub announced: Option<Announced>,
 }
 
 impl Host {
@@ -49,8 +67,10 @@ impl Host {
 /// generation it still holds — names nobody's machine. Only devices on
 /// `chain` are listed, the recovery device never, so a removed machine and
 /// anyone else's are not. `me` is this device; `status` this machine's
-/// tailnet, none when Tailscale here did not answer.
-pub fn hosts(listed: &[Listed], chain: &Chain, me: &str, status: Option<&Status>) -> Vec<Host> {
+/// tailnet, none when Tailscale here did not answer. Each of `announced`
+/// (opened with `presence::open`, so its device on the list) lists its
+/// device too, hosting nothing or not.
+pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str, status: Option<&Status>) -> Vec<Host> {
     let device_of = |id: &str| chain.devices().iter().find(|d| d.kind == Kind::Device && d.id().to_string() == id);
     let mut out: Vec<Host> = Vec::new();
     for s in listed.iter().filter(|s| device_of(&s.signer).is_some()) {
@@ -62,7 +82,7 @@ pub fn hosts(listed: &[Listed], chain: &Chain, me: &str, status: Option<&Status>
         let at = match out.iter().position(|h| h.device == device) {
             Some(at) => at,
             None => {
-                out.push(Host { device: device.clone(), name: d.name.clone(), os: d.os.clone(), this_machine: device == me, hosting: false, sessions: 0, tailnet: None, peer: None });
+                out.push(Host { device: device.clone(), name: d.name.clone(), os: d.os.clone(), this_machine: device == me, hosting: false, sessions: 0, tailnet: None, peer: None, announced: None });
                 out.len() - 1
             }
         };
@@ -72,6 +92,14 @@ pub fn hosts(listed: &[Listed], chain: &Chain, me: &str, status: Option<&Status>
         // The newest session's node: the one it kept most recently.
         if h.tailnet.is_none() {
             h.tailnet = kept.and_then(|k| k.tailnet.clone());
+        }
+    }
+    for a in announced {
+        let device = &a.announcement.device;
+        let Some(d) = device_of(device) else { continue };
+        match out.iter_mut().find(|h| h.device == *device) {
+            Some(h) => h.announced = Some(a.clone()),
+            None => out.push(Host { device: device.clone(), name: d.name.clone(), os: d.os.clone(), this_machine: device == me, hosting: false, sessions: 0, tailnet: None, peer: None, announced: Some(a.clone()) }),
         }
     }
     for h in &mut out {
@@ -131,7 +159,7 @@ mod tests {
             listed(&laptop, Some((&recovery, None)), None),
             listed(&laptop, Some(("ffffffffffffffffffffffffffffffff", None)), None),
         ];
-        let got = hosts(&sessions, &chain, &laptop, None);
+        let got = hosts(&sessions, &[], &chain, &laptop, None);
         let rows: Vec<_> = got.iter().map(|h| (h.name.as_str(), h.sessions, h.hosting, h.this_machine)).collect();
         assert_eq!(rows, [("laptop", 1, true, true), ("server", 2, true, false)]);
         assert_eq!(got[1].tailnet, Some(node("srv", "100.64.0.2")), "the newest session's node");
@@ -145,8 +173,8 @@ mod tests {
     fn r_net_4_a_session_a_removed_device_signed_names_no_host() {
         let (chain, [laptop, server, _, gone]) = chain();
         let planted = listed(&gone, Some((&server, Some(node("evil", "100.64.6.6")))), None);
-        assert!(hosts(std::slice::from_ref(&planted), &chain, &laptop, None).is_empty());
-        let got = hosts(&[planted, listed(&laptop, Some((&server, Some(node("srv", "100.64.0.2")))), None)], &chain, &laptop, None);
+        assert!(hosts(std::slice::from_ref(&planted), &[], &chain, &laptop, None).is_empty());
+        let got = hosts(&[planted, listed(&laptop, Some((&server, Some(node("srv", "100.64.0.2")))), None)], &[], &chain, &laptop, None);
         assert_eq!(got[0].tailnet, Some(node("srv", "100.64.0.2")), "the planted node is never shown");
     }
 
@@ -157,7 +185,7 @@ mod tests {
     #[test]
     fn r_net_4_a_held_session_is_its_holders_and_its_node_only_its_own_claim() {
         let (chain, [laptop, server, ..]) = chain();
-        let got = hosts(&[listed(&laptop, Some((&laptop, Some(node("lap", "100.64.0.1")))), Some(&server))], &chain, &laptop, None);
+        let got = hosts(&[listed(&laptop, Some((&laptop, Some(node("lap", "100.64.0.1")))), Some(&server))], &[], &chain, &laptop, None);
         assert_eq!(got.iter().map(|h| (h.name.as_str(), h.hosting)).collect::<Vec<_>>(), [("server", true)]);
         assert_eq!(got[0].tailnet, None, "the laptop's node is not the server's");
     }
@@ -170,7 +198,7 @@ mod tests {
         let (chain, [laptop, server, ..]) = chain();
         let status: Status = serde_json::from_value(serde_json::json!({"BackendState": "Running", "Self": {"HostName": "laptop", "DNSName": "laptop.tail1.ts.net.", "TailscaleIPs": ["100.64.0.1"]},
             "Peer": {"k": {"HostName": "srv", "DNSName": "srv.tail1.ts.net.", "TailscaleIPs": ["100.64.0.2"], "Online": true}}})).unwrap();
-        let on = |t: Tailnet| hosts(&[listed(&laptop, Some((&server, Some(t))), None)], &chain, &laptop, Some(&status));
+        let on = |t: Tailnet| hosts(&[listed(&laptop, Some((&server, Some(t))), None)], &[], &chain, &laptop, Some(&status));
 
         let got = on(node("srv", "100.64.0.2"));
         assert!(got[0].direct() && !got[0].hosting, "{got:?}");
@@ -179,7 +207,26 @@ mod tests {
 
         let mut off = status.clone();
         off.peer.as_mut().unwrap().get_mut("k").unwrap().online = false;
-        let got = hosts(&[listed(&laptop, Some((&server, Some(node("srv", "100.64.0.2")))), None)], &chain, &laptop, Some(&off));
+        let got = hosts(&[listed(&laptop, Some((&server, Some(node("srv", "100.64.0.2")))), None)], &[], &chain, &laptop, Some(&off));
         assert!(got[0].peer.is_some() && !got[0].direct(), "on the tailnet, offline there");
+    }
+    fn announced(device: &str, online: bool) -> Announced {
+        let announcement = Announcement { device: device.into(), name: "claimed".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: Vec::new(), directories: vec!["/work".into()], sessions: Vec::new() };
+        Announced { online, updated_at: "2026-10-25T10:00:00Z".into(), announcement }
+    }
+
+    /// R-HOST-3, R-NET-4: a device that announced itself is listed though it
+    /// hosts nothing, by its list name; one that hosts carries its
+    /// announcement; a removed device's, the recovery device's and a
+    /// stranger's are never listed.
+    #[test]
+    fn r_host_3_a_device_that_announced_is_listed_though_it_hosts_nothing() {
+        let (chain, [laptop, server, recovery, gone]) = chain();
+        let sessions = [listed(&laptop, Some((&laptop, None)), Some(&laptop))];
+        let seen = [announced(&server, true), announced(&laptop, false), announced(&gone, true), announced(&recovery, true), announced("ffffffffffffffffffffffffffffffff", true)];
+        let got = hosts(&sessions, &seen, &chain, &laptop, None);
+        let rows: Vec<_> = got.iter().map(|h| (h.name.as_str(), h.sessions, h.hosting, h.announced.as_ref().map(|a| a.online))).collect();
+        assert_eq!(rows, [("laptop", 1, true, Some(false)), ("server", 0, false, Some(true))]);
+        assert_eq!(got[1].announced.as_ref().unwrap().announcement.directories, ["/work"]);
     }
 }

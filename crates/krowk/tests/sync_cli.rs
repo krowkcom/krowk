@@ -792,7 +792,9 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
 
     let human = b.command(&["hosts", "--format", "human"]).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
-    assert_eq!(human.trim(), "a  hosting  reachable directly  1 session", "{human}");
+    // A's daemon may have announced A by now: its lines follow, indented.
+    assert_eq!(human.lines().next(), Some("a  hosting  reachable directly  1 session"), "{human}");
+    assert!(human.lines().skip(1).all(|l| l.starts_with("  ")), "{human}");
 
     b.env = b_plain;
     let out = b.command(&["hosts", "--json"]).output().unwrap();
@@ -1086,4 +1088,47 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
         }
         assert_eq!(m.api.show_sync_session(&session).unwrap_err().status, 404, "the registry never heard of {session}");
     }
+}
+
+/// R-HOST-3, R-NET-4: A's host daemon runs with sync set up and no
+/// Tailscale anywhere; B's `krowk hosts --json` lists A as announced and
+/// online, with its instances and its trusted repository, and the text
+/// says so under A's line.
+#[test]
+fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
+    let w = World::new("announced");
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+    assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let (v, h) = loop {
+        let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
+            break (v, h);
+        }
+        assert!(Instant::now() < deadline, "B never saw A announced: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!((v["tailscale"].as_bool(), v["unopened"].as_u64()), (Some(false), Some(0)), "{v}");
+    assert_eq!((h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool()), (Some(true), Some(false), Some(false)), "online with no Tailscale: {h}");
+    assert!(h["lastSeen"].as_str().is_some_and(|s| !s.is_empty()) && h["version"].as_str().is_some_and(|s| !s.is_empty()), "{h}");
+    let anthropic = h["instances"].as_array().unwrap().iter().find(|i| i["kind"] == "anthropic-api").cloned().unwrap_or_default();
+    assert_eq!((anthropic["ready"].as_bool(), anthropic["state"].as_str()), (Some(true), Some("ready")), "{h}");
+    assert!(anthropic["models"].as_array().is_some_and(|m| !m.is_empty()), "{h}");
+    assert_eq!(h["directories"], serde_json::json!([a.repo]), "{h}");
+
+    let human = b.command(&["hosts", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let human = String::from_utf8_lossy(&human.stdout);
+    let mut lines = human.lines().skip_while(|l| !l.starts_with("a  "));
+    // Hosting or not: its daemon's automatic sync may have taken the turn's session up.
+    assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
+    assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
+    assert!(human.contains("  ready: anthropic (") && human.contains("  directories: "), "{human}");
 }
