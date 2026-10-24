@@ -1876,6 +1876,10 @@ impl<'h> Ui<'h> {
         if self.host.synced().is_none() {
             return false;
         }
+        if what.eq_ignore_ascii_case("/model") || what.eq_ignore_ascii_case("model") {
+            app.notice("this TUI has no /model for a session on another machine yet: `krowk sync attach --json` takes `/model INSTANCE/ID`, which the host checks as its own");
+            return true;
+        }
         app.notice(&format!("{what} is the host's to change: this session runs on another machine, and prompts from here run in its default mode (plan, if it is in plan)"));
         true
     }

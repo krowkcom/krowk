@@ -723,8 +723,8 @@ fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
 }
 
 /// A viewer's prompt runs under the session's own settings, never its own:
-/// the effort the session last ran on, the configured toolset and no
-/// budget of the viewer's choosing. A model it names is kept: the daemon
+/// its instance's default effort, the configured toolset and no budget of
+/// the viewer's choosing. A model it names is kept: the daemon
 /// checks it against this host's own instances and credentials as it
 /// checks a local switch, and refuses one that cannot run (R-SWITCH-4,
 /// R-CRED-1). Its permission mode is the one

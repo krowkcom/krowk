@@ -226,7 +226,7 @@ impl SyncLink {
             Command::Prompt { .. } | Command::Approve { .. } | Command::Interrupt { .. } | Command::Steer { .. } => {}
             // A turn a backend began by itself is the host's to run.
             Command::Continue { .. } => return Err(EngineError::new("nothing_pending", "the host runs the turns it begins")),
-            _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: a viewer prompts, steers, interrupts and answers approvals, and nothing else")),
+            _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: this TUI prompts, steers, interrupts and answers approvals, and nothing else")),
         }
         // The model this TUI last saw may be stale (a host's prompt on
         // another model logs no switch), and a model a prompt names now
