@@ -305,7 +305,7 @@ jobs:
 
       # The Release app as it ships: its executable and the whole bundle,
       # against their ceilings. A raise is a commit to budgets.json.
-      - name: "R-PERF-7: the Release app's binary and bundle size (gate)"
+      - name: "R-PERF-7, R-IOS-PERF: the Release app's binary and bundle size (gate)"
         run: apps/ios/scripts/budgets.sh size "$RUNNER_TEMP/ReleaseData/Build/Products/Release-iphoneos/Krowk.app"
 
       - name: Boot an iPhone simulator
@@ -359,7 +359,7 @@ jobs:
 
       # XCTMemoryMetric's peak physical memory over BudgetUITests' five
       # passes through 10,000 items, from the result bundle.
-      - name: "R-PERF-7: memory while scrolling 10,000 items (gate)"
+      - name: "R-PERF-7, R-IOS-PERF: memory while scrolling 10,000 items (gate)"
         if: ${{ !cancelled() && env.BUILT == '1' }}
         run: apps/ios/scripts/budgets.sh memory "$RUNNER_TEMP/Tests.xcresult"
 
@@ -367,7 +367,7 @@ jobs:
       # build's deliberate 250 ms sleep in each frame's apply
       # (KROWK_TEST_STALL_MS, which a Release build lacks: approvals.sh).
       # Passes only if the test fails, and on the stall.
-      - name: "R-PERF-7: a deliberate 250 ms stall fails the stall gate"
+      - name: "R-PERF-7, R-LAG-7: a deliberate 250 ms stall fails the stall gate"
         run: |
           set -o pipefail
           for attempt in 1 2 3; do

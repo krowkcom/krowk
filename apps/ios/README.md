@@ -646,6 +646,36 @@ opens that session (`App/NotificationTaps.swift`, KrowkKit's
   reads it: `scripts/approvals.sh` checks. Real APNs delivery to a phone
   is checked by hand (ticket 107).
 
+## Budgets
+
+R-PERF-7 (ticket 127): CI holds what a simulator measures honestly, and
+`apps/ios/budgets.json` holds the ceilings. The iOS workflow's `app` job
+fails when:
+
+- the Release `Krowk.app`'s executable (`binaryBytes`) or the whole bundle
+  (`appKilobytes`, `du -sk`) is over its ceiling (`scripts/budgets.sh
+  size`);
+- the peak physical memory over `BudgetUITests`' five passes through a
+  10,000-item session is over `memoryScrollMB` (`scripts/budgets.sh
+  memory`). A Debug build launched with `KROWK_FIXTURE=tenk` opens that
+  session (`TranscriptFixture`: answers, reasoning, tool outputs up to
+  64 KiB, from a fixed seed, no network), and its "Scroll through" takes
+  the list from top to bottom a screen a display frame;
+- the longest gap between display frames while `StallBudgetTests` replays
+  `AppTests/burst.stream` (20 s at 200 tokens a second, two 1 MiB tool
+  outputs; `scripts/burst-fixture.py` writes it) through the mailbox the
+  live path uses is over `stall.baselineMs × stall.factor`. A second run
+  with `KROWK_TEST_STALL_MS=250`, a Debug build's sleep in each frame's
+  apply, must fail it.
+
+A Release build has neither seam (`scripts/approvals.sh`). Raising a
+ceiling is a commit that changes its `max`, with the new measurement and
+its date in `why`. The launch (`BudgetUITests.testLaunch`), the
+frame-apply baseline, host-to-screen latency, a notification's cold launch
+and the stall test's longest gap are a trend, not a gate: the step summary
+and the `ios-perf` artifact (`ios-perf.json`) on every run. Launch and
+latency budgets are a phone's (Canon → The iPhone app → Budgets).
+
 ## Why the Xcode project is generated
 
 `Krowk.xcodeproj` is generated from `project.yml` and git ignores it. A
