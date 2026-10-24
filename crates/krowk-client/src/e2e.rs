@@ -492,6 +492,110 @@ fn open_vintage_v2(blob: &[u8], week: &str, keys: &UserKeys) -> Result<Vec<u8>, 
     cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
+/// The format byte of a record sealed to the person's devices.
+pub const PERSON_V1: u8 = 1;
+
+/// What a record sealed to the person's devices is, bound into both layers
+/// of its seal so a record of one kind never opens as another. An enum
+/// rather than bytes, so no caller invents a label.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Label {
+    /// A host's announcement of itself (`presence`).
+    Presence,
+}
+
+impl Label {
+    fn body(self) -> &'static [u8] {
+        match self {
+            Label::Presence => b"krowk/presence/v1",
+        }
+    }
+
+    fn key(self) -> &'static [u8] {
+        match self {
+            Label::Presence => b"krowk/presence/v1-key",
+        }
+    }
+}
+
+/// A record sealed to every device on the person's list (format 1):
+/// `version | suite | generation | key nonce | key sealed + tag | nonce |
+/// ciphertext + tag`. A vintage's construction (`seal_vintage`), with
+/// `binding` where the week was: a fresh key per record, wrapped under the
+/// user key of the generation the verified device list names current, so
+/// any of the person's devices opens it, and a device removed since holds
+/// no generation sealed after its removal.
+///
+/// Both layers bind the label (the key layer's with `-key` after it), the
+/// version, the suite, the generation, the user key's id and `binding` as
+/// associated data: a record moved to what another binding names, under
+/// another person's key, or with its generation changed, does not open.
+pub fn seal_to_person(keys: &UserKeys, current_generation: u32, label: Label, binding: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
+    let user = keys.newest();
+    if user.generation() < current_generation {
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again", user.generation())));
+    }
+    let head = [PERSON_V1, SUITE_XCHACHA20_POLY1305];
+    let generation = user.generation().to_be_bytes();
+    let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(random());
+    let key_nonce: [u8; NONCE] = random();
+    let key_aad = [label.key(), &head, &generation, &user.id().0, binding].concat();
+    let wrapped = cipher(user.as_bytes()).encrypt(&XNonce::from(key_nonce), Payload { msg: &key[..], aad: &key_aad }).expect("sealing 32 bytes cannot fail");
+    let nonce: [u8; NONCE] = random();
+    let aad = [label.body(), &head, &generation, &user.id().0, binding].concat();
+    let sealed = cipher(&key).encrypt(&XNonce::from(nonce), Payload { msg: plaintext, aad: &aad }).expect("a record is far below XChaCha's limit");
+    Ok([&head[..], &generation, &key_nonce, &wrapped, &nonce, &sealed].concat())
+}
+
+/// What `seal_to_person` adds to a plaintext: the head, the wrapped key and
+/// the body's nonce and tag.
+pub const PERSON_OVERHEAD: usize = 2 + 4 + NONCE + KEY + TAG + NONCE + TAG;
+
+/// The user key generation a record sealed by `seal_to_person` names, in
+/// the clear, so an opener can refuse one older than its device list's
+/// current generation before opening it: the construction is symmetric,
+/// and a device removed since still holds the older generations.
+pub fn person_generation(blob: &[u8]) -> Result<u32, Error> {
+    if let Some(&v) = blob.first().filter(|&&v| v > PERSON_V1) {
+        return Err(err(format!("the record is format {v}, newer than this krowk reads — upgrade krowk")));
+    }
+    if blob.len() < PERSON_OVERHEAD || blob[0] != PERSON_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(err("the record is not one this krowk reads"));
+    }
+    Ok(u32::from_be_bytes(blob[2..6].try_into().expect("four bytes")))
+}
+
+/// A record sealed by `seal_to_person`, opened under the user key of the
+/// generation it names. A refusal does not say which layer failed. It
+/// opens under any generation this device holds: a caller that must not
+/// take a record a removed device could have sealed holds it to the device
+/// list's current generation with `person_generation`.
+pub fn open_from_person(blob: &[u8], label: Label, binding: &[u8], keys: &UserKeys) -> Result<Vec<u8>, Error> {
+    let refused = || err("the record does not open with your user key: it was changed, or belongs to another device or person");
+    match blob.first() {
+        Some(&PERSON_V1) => {}
+        Some(&v) if v > PERSON_V1 => return Err(err(format!("the record is format {v}, newer than this krowk reads — upgrade krowk"))),
+        _ => return Err(refused()),
+    }
+    let body = 2 + 4 + NONCE + KEY + TAG;
+    if blob.len() < body + NONCE + TAG || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(refused());
+    }
+    let generation = u32::from_be_bytes(blob[2..6].try_into().expect("four bytes"));
+    let held = keys.newest().generation();
+    if generation == 0 || generation > held {
+        return Err(err(format!("the record is sealed under user key generation {generation}, which this device does not hold (it holds up to {held})")));
+    }
+    let user = keys.open(generation)?;
+    let key_nonce: [u8; NONCE] = blob[6..6 + NONCE].try_into().expect("24 bytes");
+    let key_aad = [label.key(), &blob[..2], &blob[2..6], &user.id().0, binding].concat();
+    let key = zeroize::Zeroizing::new(cipher(user.as_bytes()).decrypt(&XNonce::from(key_nonce), Payload { msg: &blob[6 + NONCE..body], aad: &key_aad }).map_err(|_| refused())?);
+    let key: zeroize::Zeroizing<[u8; KEY]> = zeroize::Zeroizing::new(key[..].try_into().map_err(|_| refused())?);
+    let nonce: [u8; NONCE] = blob[body..body + NONCE].try_into().expect("24 bytes");
+    let aad = [label.body(), &blob[..2], &blob[2..6], &user.id().0, binding].concat();
+    cipher(&key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[body + NONCE..], aad: &aad }).map_err(|_| refused())
+}
+
 /// The format byte of a sealed transport artifact.
 pub const TRANSPORT_V1: u8 = 1;
 
