@@ -212,6 +212,9 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         ("PUT" | "PATCH", ["v1", "key", "device"]) => devices::claim(a, req),
         // The device's own APNs token (R-IOS-12), signed by it.
         ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "push_token"]) => devices::push_token(a, req),
+        // The device's sealed announcement to the person's others (R-HOST-3),
+        // signed by it.
+        ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "presence"]) => devices::presence(a, req),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
         ("POST", ["v1", "cli", "authorizations"]) => {
@@ -269,7 +272,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The lease holder asking for the person's other devices to be rung
         // (R-IOS-12).
         ("POST", ["v1", "sessions", id, "notification"]) => sync::signed(a, req, |a, req, by| sync::notify(a, req, id, by)),
-        (_, ["_settings" | "_notifications" | "_push_tokens", ..]) => stand_in_route(a, req, &m, &segs),
+        (_, ["_settings" | "_notifications" | "_push_tokens" | "_presences", ..]) => stand_in_route(a, req, &m, &segs),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }
@@ -286,12 +289,14 @@ fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
         // over HTTP, to assert on. Neither ever shows a token.
         (_, ["_notifications"]) if get => sync::notifications_seen(a),
         (_, ["_push_tokens"]) if get => devices::push_tokens_seen(a),
+        // The presences as stored, bytes as hex (R-HOST-3).
+        (_, ["_presences"]) if get => devices::presences_seen(a),
         _ => no_such_endpoint(),
     }
 }
 
 /// `/v1/users/:user_id/…`: a person's device list, the user key wrapped to
-/// each device, and their one pairing. `:user_id` is the key's own person
+/// each device, their hosts' presences and their one pairing. `:user_id` is the key's own person
 /// (`GET /v1/key`'s `user_id`); any other is not there to be found.
 fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Resp {
     if auth::token(req).is_some_and(|t| store::person_for(&t) != user) {
@@ -303,6 +308,7 @@ fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Re
         ("POST", ["devices"]) => devices::post_devices(a, req),
         ("POST", ["devices", "reset"]) => devices::create(a, req, true),
         (_, ["devices", id, "key"]) if get => devices::user_key(a, req, id),
+        (_, ["presences"]) if get => devices::presences(a, req),
         ("POST", ["pairing"]) => pairings::open(a, req),
         (_, ["pairing"]) if get => pairings::read(a, req),
         ("DELETE", ["pairing"]) => pairings::destroy(a, req, &pairings::latest(a, req)),

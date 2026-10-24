@@ -205,6 +205,20 @@ pub struct SyncStore {
     /// `production`), set and cleared by the device itself. Dropped when the
     /// device is revoked or removed from its list.
     pub push_tokens: HashMap<String, (String, String)>,
+    /// Device id → its sealed announcement and times (R-HOST-3), published
+    /// and cleared by the device itself. Dropped when the device is revoked
+    /// or removed from its list.
+    pub presences: HashMap<String, Presence>,
+}
+
+/// A host's presence as the registry keeps it: the bytes, opaque, and when
+/// it was last refreshed and lapses. Nothing else: the row is the device,
+/// the bytes and the times (R-E2E-1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Presence {
+    pub sealed: Vec<u8>,
+    pub updated_at: Timestamp,
+    pub expires_at: Timestamp,
 }
 
 /// One notification a lease holder asked for: the session, the kind
@@ -861,8 +875,9 @@ pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
     let device = d.id.clone();
     let keys: Vec<String> = s.sync.bindings.iter().filter(|(_, bound)| **bound == device).map(|(key, _)| key.clone()).collect();
     s.sync.revoked_keys.extend(keys);
-    // Its push token goes with it (R-IOS-12).
+    // Its push token goes with it (R-IOS-12), and its presence (R-HOST-3).
     s.sync.push_tokens.remove(&device);
+    s.sync.presences.remove(&device);
     Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
 

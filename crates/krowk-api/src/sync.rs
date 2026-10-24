@@ -145,6 +145,55 @@ pub struct KeyWrap {
     pub wrapped_key: String,
 }
 
+/// A host's presence as the person's devices list it (R-HOST-3): the
+/// device, its announcement sealed to them (`krowk_client`'s host record),
+/// when it last refreshed — what "last seen" shows — and when it lapses.
+/// `online` is the registry's own clock against `expires_at`, so a skewed
+/// clock here does not decide it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct Presence {
+    #[serde(default, deserialize_with = "nullable")]
+    pub device: String,
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub sealed: Vec<u8>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub updated_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub online: bool,
+}
+
+/// What a publish answers: until when the presence holds. The answer has
+/// room for more (ticket 123's commands), ignored until known.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct PresencePut {
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PresencePutAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    presence: PresencePut,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PresencesAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    presences: Vec<Presence>,
+}
+
+/// Bytes from the hex the registry sends them as, either case; anything
+/// else is a malformed answer rather than empty bytes.
+fn hex_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+    let s: String = nullable(d)?;
+    if !s.len().is_multiple_of(2) {
+        return Err(serde::de::Error::custom("odd-length hex"));
+    }
+    (0..s.len()).step_by(2).map(|i| s.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()).ok_or_else(|| serde::de::Error::custom("not hex"))).collect()
+}
+
 /// The user key as the signing device can open it: every generation, and
 /// the ones wrapped to this device.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -661,6 +710,30 @@ impl Client {
     /// This device takes no more pushes. Ok also when it had no token.
     pub fn delete_push_token(&self) -> Result<(), Error> {
         self.call_as_device::<Value>("DELETE", "/key/device/push_token", None, ATTEMPTS, None).map(|_| ())
+    }
+
+    /// Publishes this device's sealed announcement (R-HOST-3), or refreshes
+    /// it, held for `ttl_seconds` (10 to 120; the registry refuses anything
+    /// else rather than clamp it). Signed by this device, which must be the
+    /// key's own; the registry carries the bytes and never opens them.
+    /// Retried: a refresh sent twice leaves the same state.
+    pub fn put_presence(&self, sealed: &[u8], ttl_seconds: u64) -> Result<PresencePut, Error> {
+        let body = json!({ "presence": { "sealed": crate::client::hex(sealed), "ttl": ttl_seconds } });
+        let (answer, _): (PresencePutAnswer, u16) = self.call_as_device("PUT", "/key/device/presence", Some(body), ATTEMPTS, None)?;
+        Ok(answer.presence)
+    }
+
+    /// This device is going away on purpose: its presence is cleared. Ok
+    /// also when it had none.
+    pub fn delete_presence(&self) -> Result<(), Error> {
+        self.call_as_device::<Value>("DELETE", "/key/device/presence", None, ATTEMPTS, None).map(|_| ())
+    }
+
+    /// The presences of the person's devices still on the list, expired ones
+    /// included, as offline. Any key of the person reads them, unsigned.
+    pub fn list_presences(&self) -> Result<Vec<Presence>, Error> {
+        let answer: PresencesAnswer = self.get(&format!("{}/presences", self.user_path()?))?;
+        Ok(answer.presences)
     }
 
     /// The user key's generations, and those wrapped to this device.

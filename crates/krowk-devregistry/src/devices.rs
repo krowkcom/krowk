@@ -279,6 +279,115 @@ pub fn push_tokens_seen(app: &App) -> Resp {
     Resp::json(200, &Json::map([("push_tokens", Json::Arr(held))]))
 }
 
+/// The registry's Presence::SEALED_BYTES and Presence::TTL, in seconds.
+const PRESENCE_SEALED_BYTES: std::ops::RangeInclusive<usize> = 1..=16 * 1024;
+const PRESENCE_TTL: std::ops::RangeInclusive<i64> = 10..=120;
+const DEFAULT_PRESENCE_TTL: i64 = 30;
+
+/// PUT|DELETE /v1/key/device/presence (the registry's
+/// Keys::Devices::PresencesController, R-HOST-3): the sealed announcement of
+/// the device the key speaks for, published and refreshed by that device
+/// itself, for `ttl` seconds from the stand-in's clock. Refused as the push
+/// token is: the key, the paid gate, the key's device active, a signature
+/// by that same device, then the keyed ceiling. Only `sealed` and `ttl` are
+/// read; a ttl out of range is refused, never clamped. A PUT answers the
+/// device and its times; a DELETE is 204 whether or not there was one.
+pub fn presence(app: &App, req: &mut Req) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let body = read_body(req)?;
+        let mut s = app.lock();
+        let now = s.now();
+        let who = caller_of(&s.sync, req)?;
+        let bound = key_device(&s.sync, &who)?;
+        let device = signed_device(&mut s.sync, req, &who, &body)?;
+        if device != bound {
+            return Err(error(403, "device_mismatch", &format!("this key speaks for device {bound} but the request is signed by device {device}"), None));
+        }
+        burst(&mut s.sync, &caller(req), "presences", now)?;
+        if req.method == "DELETE" {
+            s.sync.presences.remove(&device);
+            return Ok(Resp::empty(204));
+        }
+        // From the body only, never the query string.
+        let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
+        let given = v.get("presence").map(|m| m.value.clone()).filter(|v| matches!(v, Value::Obj(_))).unwrap_or(Value::Null);
+        let f = given.fields();
+        let sealed = match f.get_value("sealed") {
+            Some(Value::Str(h)) => unhex(h).ok_or_else(|| invalid("sealed", "must be hex"))?,
+            _ => return Err(invalid("sealed", "must be hex")),
+        };
+        if !PRESENCE_SEALED_BYTES.contains(&sealed.len()) {
+            return Err(invalid("sealed", &format!("must be at most {} bytes", PRESENCE_SEALED_BYTES.end())));
+        }
+        let ttl = match f.get_value("ttl") {
+            None => Some(DEFAULT_PRESENCE_TTL),
+            Some(Value::Num(n)) => n.parse().ok(),
+            Some(Value::Str(t)) => t.parse().ok(),
+            Some(_) => None,
+        };
+        let Some(ttl) = ttl.filter(|t| PRESENCE_TTL.contains(t)) else {
+            return Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", PRESENCE_TTL.start(), PRESENCE_TTL.end())));
+        };
+        let expires_at = now + jiff::SignedDuration::from_secs(ttl);
+        s.sync.presences.insert(device.clone(), crate::sync::Presence { sealed, updated_at: now, expires_at });
+        let answer = Json::map([("device", Json::str(device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
+        Ok(Resp::json(200, &Json::map([("presence", answer)])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// GET /v1/users/:user_id/presences (the registry's Users::PresencesController,
+/// R-HOST-3): the presences of the person's active devices, expired ones
+/// included, `online` by the stand-in's clock. Not signed, but the key's own
+/// device must be active, as every sync read but the few a new machine makes.
+pub fn presences(app: &App, req: &Req) -> Resp {
+    let run = || -> Result<Resp, Resp> {
+        let s = app.lock();
+        let now = s.now();
+        let who = caller_of(&s.sync, req)?;
+        key_device(&s.sync, &who)?;
+        let person = s.sync.people.get(&who.person).cloned().unwrap_or_default();
+        let mut listed: Vec<(&String, &crate::sync::Presence)> = person.devices.iter().filter(|d| d.active()).filter_map(|d| s.sync.presences.get_key_value(&d.id)).collect();
+        listed.sort_by_key(|(d, p)| (p.updated_at, (*d).clone()));
+        let listed = listed
+            .into_iter()
+            .map(|(d, p)| {
+                Json::map([
+                    ("device", Json::str(d)),
+                    ("sealed", Json::str(hex(&p.sealed))),
+                    ("updated_at", Json::str(rfc3339_nano(p.updated_at))),
+                    ("expires_at", Json::str(rfc3339_nano(p.expires_at))),
+                    ("online", Json::Raw((p.expires_at > now).to_string())),
+                ])
+            })
+            .collect();
+        Ok(Resp::json(200, &Json::map([("presences", Json::Arr(listed))])))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// `GET /_presences`: every presence the stand-in holds, as stored — the
+/// device, the bytes as hex and the times — for a test reaching it only
+/// over HTTP to see that nothing beside the sealed bytes was kept
+/// (R-HOST-3). Stand-in only: the real registry has no such read.
+pub fn presences_seen(app: &App) -> Resp {
+    let s = app.lock();
+    let mut held: Vec<(&String, &crate::sync::Presence)> = s.sync.presences.iter().collect();
+    held.sort_by_key(|(d, _)| (*d).clone());
+    let held = held
+        .into_iter()
+        .map(|(d, p)| {
+            Json::map([
+                ("device", Json::str(d)),
+                ("sealed", Json::str(hex(&p.sealed))),
+                ("updated_at", Json::str(rfc3339_nano(p.updated_at))),
+                ("expires_at", Json::str(rfc3339_nano(p.expires_at))),
+            ])
+        })
+        .collect();
+    Resp::json(200, &Json::map([("presences", Json::Arr(held))]))
+}
+
 fn no_device_list() -> Resp {
     error(409, "no_device_list", "you have no device list yet — set sync up with `krowk sync init`", None)
 }
@@ -584,13 +693,15 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     }
     // Commit: the person, every key bound to a device this post removed, and
     // at init the key doing it bound to the first device. A device removed
-    // or left behind by a start-over takes no more pushes (R-IOS-12).
+    // or left behind by a start-over takes no more pushes (R-IOS-12) and
+    // is no longer listed as a host (R-HOST-3).
     for (key, device) in &s.bindings {
         if revoke.contains(device) && !(spare && *key == caller.key) {
             s.revoked_keys.insert(key.clone());
         }
     }
     s.push_tokens.retain(|device, _| !revoke.contains(device));
+    s.presences.retain(|device, _| !revoke.contains(device));
     if init && person.epoch > 1 && s.people.get(&caller.person).is_some_and(|old| old.epoch < person.epoch) {
         for p in s.pairings.values_mut().filter(|p| p.person == caller.person) {
             p.state = crate::pairings::State::Dead;
