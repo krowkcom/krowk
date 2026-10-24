@@ -9,6 +9,7 @@ use jiff::{SignedDuration, Timestamp};
 use krowk_api::sync::ListPost;
 use krowk_api::Client;
 use krowk_client::device_chain::{Chain, Change, Kind, Subject};
+use krowk_client::user_key::UserKey;
 use krowk_client::e2e::{hex, DeviceKey, DeviceSigner, SigningKey};
 use serde_json::{json, Value};
 use std::io::{Read, Write};
@@ -62,6 +63,8 @@ struct Person {
     url: String,
     host: Machine,
     phone: Machine,
+    chain: Chain,
+    user: UserKey,
 }
 
 impl Person {
@@ -82,11 +85,11 @@ fn person() -> Person {
     let entries = |b: &[krowk_client::device_chain::SignedEntry]| b.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect();
     let init = ListPost { entries: entries(&start.entries), links: Vec::new(), wraps: vec![(host.id(), hex(&user.wrap_to(&host.device.public()).unwrap()))], start_over: false };
     host.client(&url).init_device_list(&init).unwrap();
-    let (_, added) = chain.batch(&user, vec![Change::Add(phone.subject("phone"))], host.device.id(), &host.signing(), T0 + 1).unwrap();
+    let (chain, added) = chain.batch(&user, vec![Change::Add(phone.subject("phone"))], host.device.id(), &host.signing(), T0 + 1).unwrap();
     let append = ListPost { entries: entries(&added.entries), links: Vec::new(), wraps: vec![(phone.id(), hex(&user.wrap_to(&phone.device.public()).unwrap()))], start_over: false };
     host.client(&url).append_device_list(&append).unwrap();
     phone.client(&url).claim_key_device().unwrap();
-    Person { addr: registry.addr(), _registry: registry, clock, url, host, phone }
+    Person { addr: registry.addr(), _registry: registry, clock, url, host, phone, chain, user: added.newest }
 }
 
 /// A stand-in-only call, over HTTP as another crate's test reaches it.
@@ -153,12 +156,13 @@ fn r_host_3_the_stand_in_keeps_only_the_device_the_bytes_and_the_times() {
     assert_eq!((row["device"].as_str(), row["sealed"].as_str()), (Some(p.host.id().as_str()), Some("abcd")));
     let mut keys: Vec<&String> = row.as_object().unwrap().keys().collect();
     keys.sort();
-    assert_eq!(keys, ["device", "expires_at", "sealed", "updated_at"]);
+    assert_eq!(keys, ["created_at", "device", "expires_at", "sealed", "updated_at"]);
 }
 
 /// R-HOST-3: only the device the key speaks for publishes or clears its
 /// presence: the phone's key signed by the host is `device_mismatch`, and the
-/// key alone, unsigned, is refused.
+/// key alone, unsigned, is refused — by the client before it sends, and by
+/// the stand-in when it is sent anyway.
 #[test]
 fn r_host_3_a_presence_signed_by_another_device_is_refused() {
     let p = person();
@@ -169,6 +173,10 @@ fn r_host_3_a_presence_signed_by_another_device_is_refused() {
     }
     let unsigned = Client::new(&p.url, &p.phone.key);
     assert_eq!(unsigned.put_presence(b"host", 30).unwrap_err().code(), "device_signature_missing");
+    let body = r#"{"presence":{"sealed":"ab"}}"#;
+    let request = format!("PUT /v1/key/device/presence HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", p.phone.key, body.len());
+    let answer = raw(p.addr, &request);
+    assert!(answer.starts_with("HTTP/1.1 401") && answer.contains("signature_required"), "{answer}");
     assert_eq!(stored(p.addr)["presences"][0]["sealed"], json!(hex(b"phone")));
 }
 
@@ -199,6 +207,26 @@ fn r_host_3_a_revoked_devices_presence_is_not_listed() {
     let request = format!("POST /_settings/devices/{}/revocation HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", p.phone.id(), p.host.key);
     let answer = raw(p.addr, &request);
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+    let listed = p.host.client(&p.url).list_presences().unwrap();
+    assert_eq!(listed.iter().map(|x| x.device.as_str()).collect::<Vec<_>>(), [p.host.id().as_str()]);
+    assert_eq!(stored(p.addr)["presences"].as_array().unwrap().len(), 1);
+}
+
+/// R-HOST-3: a device the chain removes is no longer listed as a host, its
+/// presence gone with it.
+#[test]
+fn r_host_3_a_removed_devices_presence_is_not_listed() {
+    let p = person();
+    p.phone.client(&p.url).put_presence(b"phone", 30).unwrap();
+    p.host.client(&p.url).put_presence(b"host", 30).unwrap();
+    let (_, removed) = p.chain.batch(&p.user, vec![Change::Remove(p.phone.subject("phone"))], p.host.device.id(), &p.host.signing(), T0 + 2).unwrap();
+    let post = ListPost {
+        entries: removed.entries.iter().map(|e| (hex(&e.bytes), hex(&e.signatures_bytes()))).collect(),
+        links: removed.links.iter().map(|l| hex(l)).collect(),
+        wraps: removed.wraps.iter().map(|(d, w)| (d.to_string(), hex(w))).collect(),
+        start_over: false,
+    };
+    p.host.client(&p.url).append_device_list(&post).unwrap();
     let listed = p.host.client(&p.url).list_presences().unwrap();
     assert_eq!(listed.iter().map(|x| x.device.as_str()).collect::<Vec<_>>(), [p.host.id().as_str()]);
     assert_eq!(stored(p.addr)["presences"].as_array().unwrap().len(), 1);

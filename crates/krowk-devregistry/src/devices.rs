@@ -279,8 +279,9 @@ pub fn push_tokens_seen(app: &App) -> Resp {
     Resp::json(200, &Json::map([("push_tokens", Json::Arr(held))]))
 }
 
-/// The registry's Presence::SEALED_BYTES and Presence::TTL, in seconds.
-const PRESENCE_SEALED_BYTES: std::ops::RangeInclusive<usize> = 1..=16 * 1024;
+/// The registry's Presence::SEALED_BYTES (at least one) and Presence::TTL,
+/// in seconds.
+const PRESENCE_SEALED_BYTES: usize = 16 * 1024;
 const PRESENCE_TTL: std::ops::RangeInclusive<i64> = 10..=120;
 const DEFAULT_PRESENCE_TTL: i64 = 30;
 
@@ -312,13 +313,12 @@ pub fn presence(app: &App, req: &mut Req) -> Resp {
         let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
         let given = v.get("presence").map(|m| m.value.clone()).filter(|v| matches!(v, Value::Obj(_))).unwrap_or(Value::Null);
         let f = given.fields();
+        // A string of hex, not a number that happens to read as one; blob
+        // refuses the empty one.
         let sealed = match f.get_value("sealed") {
-            Some(Value::Str(h)) => unhex(h).ok_or_else(|| invalid("sealed", "must be hex"))?,
+            Some(Value::Str(h)) => crate::sync::blob("sealed", h, None, Some(PRESENCE_SEALED_BYTES))?,
             _ => return Err(invalid("sealed", "must be hex")),
         };
-        if !PRESENCE_SEALED_BYTES.contains(&sealed.len()) {
-            return Err(invalid("sealed", &format!("must be at most {} bytes", PRESENCE_SEALED_BYTES.end())));
-        }
         let ttl = match f.get_value("ttl") {
             None => Some(DEFAULT_PRESENCE_TTL),
             Some(Value::Num(n)) => n.parse().ok(),
@@ -329,7 +329,8 @@ pub fn presence(app: &App, req: &mut Req) -> Resp {
             return Err(invalid("ttl", &format!("must be a whole number of seconds from {} to {}", PRESENCE_TTL.start(), PRESENCE_TTL.end())));
         };
         let expires_at = now + jiff::SignedDuration::from_secs(ttl);
-        s.sync.presences.insert(device.clone(), crate::sync::Presence { sealed, updated_at: now, expires_at });
+        let created_at = s.sync.presences.get(&device).map_or(now, |p| p.created_at);
+        s.sync.presences.insert(device.clone(), crate::sync::Presence { sealed, created_at, updated_at: now, expires_at });
         let answer = Json::map([("device", Json::str(device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
         Ok(Resp::json(200, &Json::map([("presence", answer)])))
     };
@@ -348,7 +349,8 @@ pub fn presences(app: &App, req: &Req) -> Resp {
         key_device(&s.sync, &who)?;
         let person = s.sync.people.get(&who.person).cloned().unwrap_or_default();
         let mut listed: Vec<(&String, &crate::sync::Presence)> = person.devices.iter().filter(|d| d.active()).filter_map(|d| s.sync.presences.get_key_value(&d.id)).collect();
-        listed.sort_by_key(|(d, p)| (p.updated_at, (*d).clone()));
+        // In the order they were first published, as the registry lists them.
+        listed.sort_by_key(|(d, p)| (p.created_at, (*d).clone()));
         let listed = listed
             .into_iter()
             .map(|(d, p)| {
@@ -380,6 +382,7 @@ pub fn presences_seen(app: &App) -> Resp {
             Json::map([
                 ("device", Json::str(d)),
                 ("sealed", Json::str(hex(&p.sealed))),
+                ("created_at", Json::str(rfc3339_nano(p.created_at))),
                 ("updated_at", Json::str(rfc3339_nano(p.updated_at))),
                 ("expires_at", Json::str(rfc3339_nano(p.expires_at))),
             ])

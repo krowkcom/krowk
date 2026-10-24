@@ -188,10 +188,10 @@ struct PresencesAnswer {
 /// else is a malformed answer rather than empty bytes.
 fn hex_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
     let s: String = nullable(d)?;
-    if !s.len().is_multiple_of(2) {
-        return Err(serde::de::Error::custom("odd-length hex"));
+    if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(serde::de::Error::custom("sealed is not hex"));
     }
-    (0..s.len()).step_by(2).map(|i| s.get(i..i + 2).and_then(|b| u8::from_str_radix(b, 16).ok()).ok_or_else(|| serde::de::Error::custom("not hex"))).collect()
+    Ok((0..s.len()).step_by(2).filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect())
 }
 
 /// The user key as the signing device can open it: every generation, and

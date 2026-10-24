@@ -217,6 +217,7 @@ pub struct SyncStore {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Presence {
     pub sealed: Vec<u8>,
+    pub created_at: Timestamp,
     pub updated_at: Timestamp,
     pub expires_at: Timestamp,
 }
@@ -335,7 +336,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 
 /// A hex field of a fixed size (or at most `max`), refused as the registry's
 /// Sync::Malformed is: `invalid`, naming the field.
-fn blob(field: &str, value: &str, bytes: Option<usize>, max: Option<usize>) -> Result<Vec<u8>, Resp> {
+pub fn blob(field: &str, value: &str, bytes: Option<usize>, max: Option<usize>) -> Result<Vec<u8>, Resp> {
     let raw = unhex(value).ok_or_else(|| invalid(field, "must be hex"))?;
     if let Some(n) = bytes
         && raw.len() != n
