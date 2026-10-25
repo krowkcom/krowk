@@ -105,10 +105,23 @@ public final class SessionListModel {
             repeating(every: Self.refreshPeriod) { await $0.refresh() },
             repeating(every: .seconds(60)) { $0.now = $0.clock() },
         ]
-        // The kept listing first, then the network's.
+        // The kept listing first, then the network's: one read, the one
+        // started before the screen (`readEarly`) if it still runs.
         Task {
             await prime()
-            await refresh()
+            if let reading { await reading.value } else { await refresh() }
+        }
+    }
+
+    /// Connect early (ticket 132, R-IOS-2): at launch and on each return to
+    /// the foreground, before any view appears, the kept listing is taken
+    /// and a read starts, unless one runs already. Never waits.
+    public func readEarly() {
+        guard gone == nil, reading == nil else { return }
+        asked += 1
+        reading = Task {
+            await prime()
+            await read()
         }
     }
 

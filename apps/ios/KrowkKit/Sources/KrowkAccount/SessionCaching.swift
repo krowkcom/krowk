@@ -160,6 +160,14 @@ public final class TranscriptCacheWriter: Sendable {
         }
     }
 
+    /// The batch waiting for its interval is written now: the app is going
+    /// to the background, where iOS may suspend or end it (ticket 132).
+    public func flush() {
+        held.withLock { held in
+            if held.scheduled { held.last?.cancel() }
+        }
+    }
+
     /// Once every write scheduled so far has run: what it couldn't write
     /// is still held.
     public func written() async {

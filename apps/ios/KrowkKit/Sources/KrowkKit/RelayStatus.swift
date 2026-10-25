@@ -112,10 +112,13 @@ public struct RelayStatusTracker: Equatable, Sendable {
         if case .retrying = status { status = .connecting }
     }
 
-    /// Opening the session failed, and is tried again at `at`.
+    /// Opening the session failed for want of the network (the registry,
+    /// which hands out the relay's tickets, out of reach: airplane mode, a
+    /// laptop's network down), and is tried again at `at`: the relay can't
+    /// be reached (ticket 132).
     public mutating func openFailed(_ detail: String, retryAt at: ContinuousClock.Instant) {
         guard !isEnded else { return }
-        status = .retrying(at: at, why: "couldn't open the session: \(detail)")
+        status = .retrying(at: at, why: RelayStatus.unreachable(detail).plainText)
     }
 
 
@@ -149,7 +152,9 @@ public struct RelayStatusTracker: Equatable, Sendable {
 public protocol LiveSession: AnyObject, Sendable {
     /// Joins, and keeps the session followed until `stop`. `status` is
     /// called on the main actor with every change, the first at once
-    /// (nothing, once stopped). Once only: a later call does nothing.
+    /// (nothing, once stopped). It joins once: a later call (the screen of
+    /// a session started before it, ticket 132) only replaces who hears
+    /// the status, told the current one at once.
     func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void)
     /// Drops the connection and every timer; nothing more is called.
     func stop()
@@ -159,7 +164,8 @@ public protocol LiveSession: AnyObject, Sendable {
     func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void)
     /// `path` is called on the main actor with the path the session comes
     /// by each time it changes (R-NET-2): `relay`, `direct over Tailscale`
-    /// or `direct over LAN`. Call it before `follow`.
+    /// or `direct over LAN`, and at once with the current one, if the
+    /// session was followed before. Call it before `follow`.
     func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void)
     /// Once per display frame, on the main thread: everything that arrived
     /// since the last, oldest first, as the transcript takes it. Takes a

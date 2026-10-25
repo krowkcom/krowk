@@ -52,6 +52,12 @@ import UIKit
 /// its instance's limit raises a banner over the composer, whose Continue
 /// switches to the instance the host offers and sends the turn's prompt
 /// again, when this phone sent it.
+///
+/// Honest staleness (R-IOS-7, ticket 132): with the host away — none on the
+/// session, or none a fresh listing named while the relay can't be reached
+/// (airplane mode, a cache-drawn row) — the offline notice says the
+/// transcript is as it was last seen, it stays scrollable and readable,
+/// and the composer queues a prompt for the host's return (R-HAND-4).
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
     public let row: SessionRow
     public let model: TranscriptModel
@@ -165,6 +171,20 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var landingWait: DispatchWorkItem?
     static let landingGrace: TimeInterval = 2
 
+    /// The host is away, as far as this phone can tell (R-IOS-7): no host
+    /// on the session, or none a fresh listing named (`row.live`) while
+    /// the relay can't be reached. What's shown is as it was last seen.
+    public private(set) var hostAway = false
+    /// The person tapped the offline notice away: it stays away until the
+    /// session is live again.
+    private var offlineDismissed = false
+    /// The session's "last seen" now, from the list it was opened from
+    /// (its clock ticks there); `row.lastSeen`, as opened, without one.
+    public var lastSeen: (@MainActor () -> String?)?
+    /// Told `true` as the screen appears and `false` as it is left: the
+    /// app keeps the session last open, which a launch connects before
+    /// any view appears (ticket 132, R-IOS-2).
+    public var onScreen: (@MainActor (_ shown: Bool) -> Void)?
     /// The person's hosts (ticket 135): the model picker lists the
     /// session's host's instances from them.
     private let hosts: (any HostSource)?
@@ -206,7 +226,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         // From now, before the view loads: the scene's foreground reaches
         // the connection before any view appears (R-IOS-2).
         if let session {
-            lifecycle.add(session) { [weak self] in
+            lifecycle.add(session, id: row.id) { [weak self] in
                 // Loaded only: before its view, nothing is drawn to apply to.
                 guard let self, self.isViewLoaded else { return }
                 self.frame()
@@ -450,6 +470,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     override public func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         syncApprovals()
+        onScreen?(true)
     }
 
     override public func viewWillDisappear(_ animated: Bool) {
@@ -479,6 +500,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         guard !left else { return }
         left = true
         Budgets.shared.sessionClosed()
+        onScreen?(false)
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         focusObserver = nil
         frames?.invalidate()
@@ -706,7 +728,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// and the bar.
     func updateComposer() {
         guard session != nil else { return }
-        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused)
+        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused, hostAway: hostAway)
         composerState = state
         composer.show(state)
     }
@@ -724,7 +746,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
         composer.text = ""
         sendBubble(command)
-        if UIAccessibility.isVoiceOverRunning, statusBar.status == .hostOffline {
+        if UIAccessibility.isVoiceOverRunning, hostAway {
             UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
         }
         return true
@@ -881,8 +903,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         modelButton.isHidden = line.isEmpty
         let refusal = model.switchRefusal.map { " \(SafeText.line($0[...], limit: 300)) " }
         if switchNote.text != refusal { switchNote.text = refusal }
-        switchNote.isHidden = refusal == nil
-        if refusal != nil { view.bringSubviewToFront(switchNote) }
+        // The offline notice in its place says more while the host is away.
+        switchNote.isHidden = refusal == nil || noticeShown == .hostOffline
+        if !switchNote.isHidden { view.bringSubviewToFront(switchNote) }
         if let offer = model.offer {
             offerLabel.text = offer.line
             offerContinue.isHidden = offer.again == nil
@@ -896,7 +919,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     }
 
     private var pickerSession: ModelPickerViewController.Session {
-        .init(current: model.currentModel, live: isLive, switching: model.switching, hostOffline: statusBar.status == .hostOffline, limits: model.limits)
+        .init(current: model.currentModel, live: isLive, switching: model.switching, hostOffline: hostAway, limits: model.limits)
     }
 
     /// The subtitle tapped: the picker of the host's instances, in a sheet.
@@ -1222,7 +1245,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             routedSheet = true
             syncApprovals()
         case .nothingWaiting: showNotice(landed, RouteLanding.nothingWaitingNotice)
-        case .hostOffline: showNotice(landed, RouteLanding.offlineNotice(lastSeen: row.lastSeen))
+        case .hostOffline: showNotice(landed, offlineNotice)
         case .shown: break
         }
     }
@@ -1288,7 +1311,26 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         ])
     }
 
-    @objc private func noticeTapped() { hideNotice() }
+    @objc private func noticeTapped() {
+        if noticeShown == .hostOffline { offlineDismissed = true }
+        hideNotice()
+        // A switch's refusal it covered shows again.
+        updateModel()
+    }
+
+    /// "The host is offline (last seen 12m ago): …", as of now.
+    private var offlineNotice: String {
+        RouteLanding.offlineNotice(lastSeen: lastSeen?() ?? row.lastSeen)
+    }
+
+    /// The relay out of reach: its join refused or unanswered, or the
+    /// session not opened for want of the network, and tried again.
+    private static func outOfReach(_ status: RelayStatus) -> Bool {
+        switch status {
+        case .unreachable, .retrying(_, _?): true
+        case .connecting, .live, .hostOffline, .reconnecting, .catchingUp, .retrying(_, nil), .ended: false
+        }
+    }
 
     // MARK: Following the end
 
@@ -1513,10 +1555,18 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if navigationController?.topViewController === self, viewIfLoaded?.window != nil, !parked {
             Budgets.shared.sessionStatus(status)
         }
-        model.setHostOffline(status == .hostOffline)
+        hostAway = status == .hostOffline || (!row.live && Self.outOfReach(status))
+        model.setHostOffline(hostAway, outOfReach: Self.outOfReach(status))
         approvals?.connected = status == .live || status == .catchingUp
-        if isLive, noticeShown == .hostOffline { hideNotice() }
+        if isLive {
+            offlineDismissed = false
+            if noticeShown == .hostOffline { hideNotice() }
+        }
         land()
+        // Away: said, whether or not a route waits to land (R-IOS-7).
+        if hostAway, noticeShown != .hostOffline, !offlineDismissed {
+            showNotice(.hostOffline, offlineNotice)
+        }
         if case .ended = status {
             if !model.attached {
                 stoppedEarly = true

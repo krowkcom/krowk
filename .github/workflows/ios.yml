@@ -176,8 +176,11 @@ jobs:
   # ApprovalScreenTests (ConnectionLifecycleTests among KrowkKit's),
   # CacheTests and CacheFirstTests (ticket 131: the list and a transcript
   # drawn from the cache with the registry down, then read on from the
-  # saved place and merged by event id), and KrowkCore's
-  # BindingsTests
+  # saved place and merged by event id), ConnectEarlyTests and
+  # OfflineUITests (ticket 132: the list's read and the last open
+  # session's connection start before any view, and with the registry and
+  # relay unreachable the cached session opens marked last seen, never
+  # live), and KrowkCore's BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). RemovalUITests and RemovalTests
   # (ticket 117: a phone host A removes says so, stops and resets to

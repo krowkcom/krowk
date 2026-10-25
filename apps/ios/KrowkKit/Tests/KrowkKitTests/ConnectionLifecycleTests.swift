@@ -91,7 +91,7 @@ struct ConnectionLifecycleTests {
         #expect(RelayStatus.retrying(at: now + .milliseconds(3200), why: nil).text(at: now) == "reconnecting in 4s")
         #expect(RelayStatus.retrying(at: now + .seconds(1), why: nil).text(at: now) == "reconnecting in 1s")
         #expect(RelayStatus.retrying(at: now, why: nil).text(at: now) == "reconnecting")
-        let why = "couldn't open the session: krowk's registry cannot be reached"
+        let why = "can't reach the relay: krowk's registry cannot be reached"
         #expect(RelayStatus.retrying(at: now + .seconds(2), why: why).text(at: now) == "\(why) — trying again in 2s")
         #expect(RelayStatus.retrying(at: now - .seconds(1), why: why).text(at: now) == "\(why) — trying again now")
 

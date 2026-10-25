@@ -323,6 +323,9 @@ public final class TranscriptModel {
     @ObservationIgnored private var bubblesChanged = false
     /// No host on the session: a queued bubble says it waits for one.
     @ObservationIgnored private var hostOffline = false
+    /// The relay can't be reached: a command not yet handed to the core
+    /// waits for the session to open, as a queued one does (ticket 132).
+    @ObservationIgnored private var outOfReach = false
     /// The turn running, from its `turn.started` (or an item started live
     /// in it) to its `turn.completed`: the composer offers Steer and Stop.
     @ObservationIgnored public private(set) var runningTurn: String?
@@ -517,10 +520,11 @@ public final class TranscriptModel {
 
     /// Whether the session has a host: a queued bubble says what it waits
     /// for.
-    public func setHostOffline(_ offline: Bool) {
-        guard offline != hostOffline else { return }
+    public func setHostOffline(_ offline: Bool, outOfReach: Bool = false) {
+        guard offline != hostOffline || outOfReach != self.outOfReach else { return }
         hostOffline = offline
-        for entry in commands.bubbles where entry.state == .queued { refresh(entry.token) }
+        self.outOfReach = outOfReach
+        for entry in commands.bubbles where entry.state == .queued || entry.state == .sending { refresh(entry.token) }
     }
 
     /// The connection stopped for good: what's still out is refused,
@@ -546,7 +550,9 @@ public final class TranscriptModel {
         guard let state = bubbles[token], let entry = commands.entry(token) else { return }
         let caption: String
         switch entry.state {
-        case .sending: caption = "sending…"
+        // Held for a session the network keeps from opening: it waits for
+        // the host as a queued one does (R-HAND-4, R-IOS-7).
+        case .sending: caption = hostOffline && outOfReach ? "queued — sends when your laptop is back" : "sending…"
         case .queued: caption = hostOffline ? "queued — sends when your laptop is back" : "queued…"
         case .settled: caption = ""
         case .refused(let why): caption = why
