@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app draws from its cache first.** At launch the session
+  list shows the sessions the phone kept, each "last seen" and never
+  live, before the registry answers; the fresh listing then replaces
+  them. Opening a session draws the newest 200 events the phone kept at
+  once and pages older ones in as you scroll up. The session is then read
+  on from where its last read stopped, only the chunks written since, and
+  followed live from the newest event the phone holds. An event the cache
+  and the network both bring is drawn once. The sessions above and below
+  the one you open are read ahead from the cache, so switching to them
+  draws at once. No spinner shows over cached content; the connection bar
+  says how the catch-up is going. The app library adds
+  `Viewer.openResumed` and `encodeReadPlace` / `decodeReadPlace` (no
+  version change).
+
 - **The iPhone app moves a session onto a direct path.** Once on the
   relay it races the host's tailnet address, MagicDNS name and LAN
   address over Network.framework, as the terminal does, and moves onto

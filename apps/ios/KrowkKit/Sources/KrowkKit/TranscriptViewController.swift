@@ -23,6 +23,14 @@ import UIKit
 /// a "↓ New" pill jumps back. The blocking reads behind it run on threads
 /// of their own (`LiveSession`).
 ///
+/// Cache first (R-IOS-1, R-IOS-3, ticket 131): with what the phone kept of
+/// the session (`kept`), its newest page is drawn before anything the
+/// session brings is applied — at once when it was prefetched, else as
+/// soon as it is read off the main thread — and older pages as the person
+/// scrolls up. Events the session then reads, catches up or logs live are
+/// merged by id, each drawn once. The connection bar is the only progress
+/// shown: no spinner or empty sentence while kept rows are on screen.
+///
 /// Under the transcript sits the composer (ticket 90): Send starts a turn,
 /// Steer adds to the running one, Stop interrupts it. What's typed shows
 /// at once as a bubble at the end (R-LAG-8), settled by the host's ack and
@@ -42,6 +50,18 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public let statusBar = RelayStatusBar()
     /// The session followed live, if the app gave one.
     let session: (any LiveSession)?
+    /// What the phone kept of the session, if the app gave it (ticket 131).
+    public let kept: (any KeptTranscript)?
+    /// The kept newest page is being read: what the session brings waits
+    /// in its mailbox, so it is merged under the kept rows, not above
+    /// them; and no spinner shows yet.
+    public private(set) var readingKept = false
+    /// Where the next older kept page ends, while there is one.
+    private var olderKept: Int?
+    /// An older kept page is being read.
+    private var pagingOlder = false
+    /// How long the session's updates wait for the kept page at most.
+    static let keptWait: Duration = .milliseconds(500)
     /// Opens a URL the person confirmed: `UIApplication.shared.open`.
     private let opener: @MainActor (URL) -> Void
 
@@ -134,8 +154,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var landingWait: DispatchWorkItem?
     static let landingGrace: TimeInterval = 2
 
-    public init(row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared) {
+    public init(
+        row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
+        kept: (any KeptTranscript)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
+    ) {
         self.row = row
+        self.kept = kept
         self.lifecycle = lifecycle
         self.session = session
         self.approvals = session == nil ? nil : approvals
@@ -336,6 +360,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         setUpApprovals()
         if noticeShown != nil { addNotice() }
         observeFocus()
+        drawKept()
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
         session?.onPath { [weak self] path in self?.statusBar.show(path: path) }
@@ -518,9 +543,70 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if case .ended = statusBar.status { true } else { false }
     }
 
-    /// One display frame: what the session brought, into the model.
+    /// One display frame: what the session brought, into the model; held
+    /// while the kept newest page is read.
     func frame(at now: TimeInterval = CACurrentMediaTime()) {
+        guard !readingKept else { return }
         driver?.tick(at: now)
+    }
+
+    // MARK: What the phone kept (ticket 131)
+
+    /// The kept newest page: drawn now when it is in memory, else read
+    /// off the main thread with the session's updates held for it (at
+    /// most `keptWait`: one that comes later goes above what is drawn).
+    private func drawKept() {
+        guard let kept else { return }
+        if let page = kept.ready() {
+            draw(page)
+            return
+        }
+        readingKept = true
+        Task { [weak self] in
+            let page = await kept.newest()
+            self?.keptRead(page)
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: Self.keptWait)
+            self?.keptRead(nil, late: true)
+        }
+    }
+
+    private func keptRead(_ page: KeptPage?, late: Bool = false) {
+        if !late, let page { draw(page) }
+        guard readingKept else { return }
+        readingKept = false
+        updateBody(attached: model.attached)
+        // What the session brought meanwhile, under the kept rows.
+        frame()
+        driver?.wake()
+    }
+
+    private func draw(_ page: KeptPage) {
+        olderKept = page.older
+        model.drawKept(page.events)
+        // The rows now, not on the observation's next turn.
+        if isViewLoaded, dataSource != nil { apply(rows: model.ids, attached: model.attached) }
+        pageOlderIfNeeded()
+    }
+
+    /// Within a screen of the top, an older kept page is read and drawn
+    /// above (R-IOS-3); the rows on screen stay where they are.
+    private func pageOlderIfNeeded() {
+        guard let kept, let older = olderKept, !pagingOlder, let collectionView else { return }
+        let fromTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
+        guard fromTop < collectionView.bounds.height else { return }
+        pagingOlder = true
+        Task { [weak self] in
+            let page = await kept.page(before: older)
+            guard let self else { return }
+            pagingOlder = false
+            guard let page else {
+                olderKept = nil
+                return
+            }
+            draw(page)
+        }
     }
 
     /// Inside the frame, after its apply: the streaming cells on screen
@@ -1012,6 +1098,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// nothing; VoiceOver's and the status bar's say so themselves
     /// (`personScrolled`, `scrollViewShouldScrollToTop`).
     public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        pageOlderIfNeeded()
         guard !scrollingItself, scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating else { return }
         follow(reachedEnd)
     }
@@ -1123,6 +1210,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             precondition(Set(rows).count == rows.count, "a transcript row twice")
             #endif
             let first = applied.isEmpty
+            // Rows added above (an older kept page): the row at the top of
+            // the screen stays where it is, unless the list follows the end.
+            let anchor = !first && !following && rows.first != applied.first ? topRow() : nil
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0])
             snapshot.appendItems(rows)
@@ -1139,14 +1229,34 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             snapshotApplies += 1
             applied = rows
             if first && !rows.isEmpty { scrollToEnd() }
+            if let anchor { keep(anchor) }
         }
         drewRows = drewRows || !rows.isEmpty
         updateBody(attached: attached)
     }
 
+    /// The row at the top of the screen, and how far below the top of the
+    /// visible content it starts.
+    private func topRow() -> (id: String, offset: CGFloat)? {
+        guard let collectionView, let path = collectionView.indexPathsForVisibleItems.min(),
+              let id = dataSource.itemIdentifier(for: path), let frame = collectionView.layoutAttributesForItem(at: path)?.frame else { return nil }
+        return (id, frame.minY - collectionView.contentOffset.y)
+    }
+
+    /// Scrolled so `anchor`'s row is where it was.
+    private func keep(_ anchor: (id: String, offset: CGFloat)) {
+        guard let collectionView, let path = dataSource.indexPath(for: anchor.id) else { return }
+        collectionView.layoutIfNeeded()
+        guard let frame = collectionView.layoutAttributesForItem(at: path)?.frame else { return }
+        scrollingItself = true
+        collectionView.contentOffset.y = frame.minY - anchor.offset
+        scrollingItself = false
+    }
+
     /// The empty body: an indicator while the session is read and nothing
-    /// is drawn; a sentence once it's read with nothing to draw, or stopped
-    /// before it was read.
+    /// is drawn (not while what the phone kept is still being read); a
+    /// sentence once it's read with nothing to draw, or stopped before it
+    /// was read.
     private func updateBody(attached: Bool) {
         if drewRows {
             spinner.stopAnimating()
@@ -1159,7 +1269,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             spinner.stopAnimating()
             emptyLabel.text = "This session couldn't be read. The bar above says why."
             emptyLabel.isHidden = false
-        } else if session != nil {
+        } else if session != nil, !readingKept {
             spinner.startAnimating()
             emptyLabel.isHidden = true
         }

@@ -213,6 +213,9 @@ public enum TranscriptPlacement: Sendable {
     /// applied: a catch-up, which brings events a gap left out after later
     /// ones were drawn. At the end when it wasn't.
     case afterParent
+    /// Above every row, in order: an older page of what the phone kept of
+    /// the session (R-IOS-3), paged in as the person scrolls up.
+    case top
 }
 
 /// What an item started live is, before any of it came (the generated
@@ -304,6 +307,12 @@ public final class TranscriptModel {
     @ObservationIgnored private var endedTurns: Set<String> = []
     /// The session as read at rest was applied (empty or not).
     public private(set) var attached = false
+    /// A page the phone kept of the session was drawn (`drawKept`): a
+    /// result whose call is older than it may still have its call paged
+    /// in, so none is let go at `attach`.
+    @ObservationIgnored private var keptDrawn = false
+    /// Where the next row of a `.top` page goes.
+    @ObservationIgnored private var topAt = 0
 
     @ObservationIgnored private var items: [String: ItemState] = [:]
     /// Every event applied, by id.
@@ -603,11 +612,22 @@ public final class TranscriptModel {
         transact {
             place(events, placement: .end)
             // A result read at rest without its call: its call is before the
-            // checkpoint, and never comes. A later call reusing the id is
-            // another call.
-            orphans = [:]
+            // checkpoint, and never comes (unless a kept page is older). A
+            // later call reusing the id is another call.
+            if !keptDrawn { orphans = [:] }
         }
         if !attached { attached = true }
+    }
+
+    /// A page of what the phone kept of the session (R-IOS-1, R-IOS-3),
+    /// oldest first, each event at most once: at the end while nothing is
+    /// drawn (the newest page, before the network says anything), else
+    /// above every row (an older page, or the newest one coming after the
+    /// session's own read). An event the session read at rest, caught up or
+    /// logged live is drawn once, whichever came first.
+    public func drawKept(_ events: [TranscriptEvent]) {
+        keptDrawn = true
+        transact { place(events, placement: rows.isEmpty ? .end : .top) }
     }
 
     /// `events`, in order, each at most once, their rows placed by
@@ -635,7 +655,7 @@ public final class TranscriptModel {
                 switch update {
                 case .attached(let events):
                     place(events, placement: .end)
-                    orphans = [:]
+                    if !keptDrawn { orphans = [:] }
                 case .logged(let events):
                     if let newest = events.compactMap(\.timeMs).max() { newestLiveMs = max(newestLiveMs ?? newest, newest) }
                     live = true
@@ -802,9 +822,10 @@ public final class TranscriptModel {
 
     private func place(_ events: [TranscriptEvent], placement: TranscriptPlacement) {
         placing = placement
+        topAt = working!.startIndex
         for event in events where event.sessionID == sessionID {
             guard seen.insert(event.id).inserted else { continue }
-            var at = working!.endIndex
+            var at = placement == .top ? topAt : working!.endIndex
             if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != working!.last {
                 at = above.isEmpty ? working!.startIndex : (working!.firstIndex(of: above).map { $0 + 1 } ?? working!.endIndex)
             }
@@ -812,6 +833,7 @@ public final class TranscriptModel {
             if let change = event.change, let row = take(change, event: event.id) {
                 working!.insert(row, at: at)
                 anchors[event.id] = row
+                if placement == .top { topAt += 1 }
             } else if let settledRow, working!.contains(settledRow) {
                 // A completion of a row drawn live: what follows it goes
                 // under that row, wherever the stream had put it.
@@ -820,6 +842,7 @@ public final class TranscriptModel {
                 anchors[event.id] = at == working!.startIndex ? "" : working![at - 1]
             }
             for (orphan, call) in adopted {
+                if let gone = working!.firstIndex(of: orphan), gone < topAt { topAt -= 1 }
                 working!.removeAll { $0 == orphan }
                 for (event, row) in anchors where row == orphan { anchors[event] = call }
             }
@@ -867,8 +890,9 @@ public final class TranscriptModel {
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
             calls[callID] = state
-            // Only a catch-up brings a call after its result (a gap).
-            if placing == .afterParent, let orphan = orphans.removeValue(forKey: callID) {
+            // Only a catch-up brings a call after its result (a gap), or
+            // an older page of what the phone kept.
+            if placing == .afterParent || placing == .top, let orphan = orphans.removeValue(forKey: callID) {
                 state.output = orphan.output
                 state.isError = orphan.isError
                 state.expanded = orphan.expanded
@@ -893,13 +917,15 @@ public final class TranscriptModel {
             if calls[callID] == nil { orphans[callID] = state }
             return row
         case .turnStarted(let turn):
-            if !endedTurns.contains(turn) { runningTurn = turn }
+            // An older page's turn is never the one running now.
+            if placing != .top, !endedTurns.contains(turn) { runningTurn = turn }
             return nil
         case .turnCompleted(let turn, let end):
             endedTurns.insert(turn)
             // The running turn's end (or one's while none was known to
-            // run), not an older turn's a catch-up brings late.
-            let current = runningTurn == nil || runningTurn == turn
+            // run), not an older turn's a catch-up or an older page brings
+            // late.
+            let current = placing != .top && (runningTurn == nil || runningTurn == turn)
             if runningTurn == turn { runningTurn = nil }
             // "stopping…" ends with the turn, if its ack hasn't come; a steer
             // it never read is refused.

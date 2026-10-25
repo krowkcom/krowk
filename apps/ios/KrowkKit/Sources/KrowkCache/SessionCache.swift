@@ -19,8 +19,9 @@ public struct CachedSession: SessionRecord, Hashable {
     /// When the listing that named it was read, in milliseconds since the
     /// epoch.
     public var listedAtMs: UInt64
-    /// The screen's saved read place (ticket 126), opaque here. `putIndex`
-    /// never writes it: a session listed again keeps its own.
+    /// Where the last read of it stopped (ticket 126), opaque here:
+    /// `putRead` writes it with the events read. `putIndex` never writes
+    /// it: a session listed again keeps its own.
     public var place: Data?
 
     public init(
@@ -65,7 +66,8 @@ public struct SessionCacheFailure: Error, CustomStringConvertible, Sendable {
 /// R-IOS-3): the index of every listed session, and the logged transcript
 /// of the 20 most recently updated, written as sessions sync, and where
 /// each viewer stood in its session (`cursors`), written with the events it
-/// names. Ticket 131 draws from it at launch.
+/// names. Ticket 131 draws from it at launch, and reads each session on
+/// from the place its last read stopped at (`putRead`).
 ///
 /// One SQLite file, `Library/Application Support/krowk-cache.sqlite`
 /// beside the install marker, through the system's SQLite (no package).
@@ -194,20 +196,7 @@ public actor SessionCache {
         let db = try opened()
         var placed = false
         try transaction(db) { () throws(SessionCacheFailure) in
-            if !events.isEmpty {
-                let last = try Statement(db, "SELECT MAX(ord) FROM events WHERE session_id = ?")
-                last.bind(1, session)
-                var ord = try last.step() ? (last.int(0).map { $0 + 1 } ?? 0) : 0
-                let insert = try Statement(db, "INSERT OR IGNORE INTO events(session_id, ord, event_id, json) VALUES (?, ?, ?, ?)")
-                for event in events {
-                    insert.bind(1, session)
-                    insert.bind(2, ord)
-                    insert.bind(3, event.id)
-                    insert.bind(4, event.json)
-                    try insert.run()
-                    if sqlite3_changes(db) > 0 { ord += 1 }
-                }
-            }
+            try insert(db, events, session: session)
             guard let cursor else { return }
             let held = try Statement(db, "SELECT 1 FROM events WHERE session_id = ? AND event_id = ?")
             for id in holding {
@@ -221,6 +210,57 @@ public actor SessionCache {
             placed = true
         }
         return placed
+    }
+
+    /// `events` after the session's last, in order; one already kept stays
+    /// where it was.
+    private func insert(_ db: OpaquePointer, _ events: [(id: String, json: String)], session: String) throws(SessionCacheFailure) {
+        guard !events.isEmpty else { return }
+        let last = try Statement(db, "SELECT MAX(ord) FROM events WHERE session_id = ?")
+        last.bind(1, session)
+        var ord = try last.step() ? (last.int(0).map { $0 + 1 } ?? 0) : 0
+        let insert = try Statement(db, "INSERT OR IGNORE INTO events(session_id, ord, event_id, json) VALUES (?, ?, ?, ?)")
+        for event in events {
+            insert.bind(1, session)
+            insert.bind(2, ord)
+            insert.bind(3, event.id)
+            insert.bind(4, event.json)
+            try insert.run()
+            if sqlite3_changes(db) > 0 { ord += 1 }
+        }
+    }
+
+    /// What a read of `session` from the registry brought (ticket 131):
+    /// its events, appended as `appendEvents` does, and the place the read
+    /// stopped at (krowk-ffi's `encodeReadPlace`, opaque here), in one
+    /// transaction, so a place kept never stands past an event the cache
+    /// does not hold. `replacing`, the session's events and cursor go
+    /// first: a read that started over (the session rolled back past what
+    /// the cache held). A session not in the index keeps no place.
+    public func putRead(session: String, _ events: [(id: String, json: String)], place: Data?, replacing: Bool = false) throws(SessionCacheFailure) {
+        let db = try opened()
+        try transaction(db) { () throws(SessionCacheFailure) in
+            if replacing {
+                for table in ["events", "cursors"] {
+                    let drop = try Statement(db, "DELETE FROM \(table) WHERE session_id = ?")
+                    drop.bind(1, session)
+                    try drop.run()
+                }
+            }
+            try insert(db, events, session: session)
+            let put = try Statement(db, "UPDATE sessions SET place = ? WHERE id = ?")
+            put.bind(1, place)
+            put.bind(2, session)
+            try put.run()
+        }
+    }
+
+    /// The place the last read of `session` stopped at (`putRead`), if any.
+    public func place(session: String) throws(SessionCacheFailure) -> Data? {
+        let db = try opened()
+        let row = try Statement(db, "SELECT place FROM sessions WHERE id = ?")
+        row.bind(1, session)
+        return try row.step() ? row.data(0) : nil
     }
 
     /// Where the viewer of `session` stands, as krowk-ffi's `encodeCursor`
@@ -263,8 +303,10 @@ public actor SessionCache {
         return out
     }
 
-    /// Drops the events (and cursors) of every session but the `keep`
-    /// with the newest `updatedMs`. The index stays whole.
+    /// Drops the events, cursors and read places of every session but the
+    /// `keep` with the newest `updatedMs`: a place over no events would
+    /// read on past a transcript the cache no longer holds. The index
+    /// stays whole.
     public func evict(keep: Int = SessionCache.transcripts) throws(SessionCacheFailure) {
         let db = try opened()
         try transaction(db) { () throws(SessionCacheFailure) in
@@ -275,6 +317,12 @@ public actor SessionCache {
                 drop.bind(1, max(keep, 0))
                 try drop.run()
             }
+            let forget = try Statement(db, """
+                UPDATE sessions SET place = NULL
+                WHERE place IS NOT NULL AND id NOT IN (SELECT id FROM sessions ORDER BY updated_ms DESC, id LIMIT ?)
+                """)
+            forget.bind(1, max(keep, 0))
+            try forget.run()
         }
     }
 
