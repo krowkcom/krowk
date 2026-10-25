@@ -31,9 +31,9 @@ const SEND_RETRIES: u32 = 3;
 /// a command within one 10 s refresh.
 const ANSWER_EVERY: Duration = Duration::from_millis(500);
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
-/// How long a take's answer is waited for: the host's own take waits up to
-/// six minutes for the session's holder to hand it over and apply its work.
-const TAKE_WAIT: Duration = Duration::from_secs(6 * 60 + 15);
+/// How long a take's answer is waited for: the host's own take is watched
+/// for up to six minutes, after one refresh (10 s) brings it the command.
+const TAKE_WAIT: Duration = Duration::from_secs(6 * 60 + 30);
 /// How often a cancelled take is looked for between asks.
 const CANCEL_EVERY: Duration = Duration::from_millis(100);
 /// How many sealed starts an account keeps for their retries.

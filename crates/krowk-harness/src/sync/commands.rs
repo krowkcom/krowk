@@ -261,7 +261,7 @@ pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> 
 
 /// A command, run: a start's answer told to `tell` once known, then held
 /// for the bridge (`hold`); a take's once it moved or was refused.
-fn run(me: &Commands, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
+fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
     let (HostCommand::Start { cwd, .. } | HostCommand::Take { cwd, .. }) = &command;
     let cwd = cwd.clone();
@@ -350,18 +350,22 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
 /// client of the daemon is held meanwhile, so it does not exit idle with
 /// the answer unsent. Past `TAKE_WAIT` the take is left to finish, never
 /// stopped: it may hold the session's lease by then.
-fn take(me: &Commands, c: &Config, o: &Options, host: &str, session: &str, cwd: &str, tell: &dyn Fn(HostAnswer)) {
+fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, cwd: &str, tell: &dyn Fn(HostAnswer)) {
     let Some(up) = &o.take else { return tell(HostAnswer::refused("take_unavailable", format!("{host} doesn't take sessions up from your other devices — upgrade krowk there"))) };
     if std::mem::replace(&mut me.lock().taking, true) {
         return tell(HostAnswer::refused("busy", format!("{host} is taking another session up — try again once it has")));
     }
-    struct Taking<'a>(&'a Commands);
-    impl Drop for Taking<'_> {
+    // Cleared however this ends, unless handed to the thread that waits
+    // for a take still running.
+    struct Taking(Option<Arc<Commands>>);
+    impl Drop for Taking {
         fn drop(&mut self) {
-            self.0.lock().taking = false;
+            if let Some(me) = self.0.take() {
+                me.lock().taking = false;
+            }
         }
     }
-    let _taking = Taking(me);
+    let mut taking = Taking(Some(me.clone()));
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
         return tell(HostAnswer::refused("host_failed", format!("{host} has no async runtime for the take — try again")));
     };
@@ -373,7 +377,7 @@ fn take(me: &Commands, c: &Config, o: &Options, host: &str, session: &str, cwd: 
         // Not a background client: the daemon stays up for the answer.
         let _held = Daemon::connect(&c.socket, Path::new(cwd), &c.version, false).await.ok();
         let moved = moved_line(session);
-        let read = || std::fs::read_to_string(&log).unwrap_or_default();
+        let read = || std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
         let has_moved = |out: &str| out.lines().any(|l| l.starts_with(&moved));
         let taken = || HostAnswer::Taken { session_id: session.to_string() };
         let until = Instant::now() + TAKE_WAIT;
@@ -401,11 +405,18 @@ fn take(me: &Commands, c: &Config, o: &Options, host: &str, session: &str, cwd: 
     let answer = answer.unwrap_or_else(|| {
         HostAnswer::refused("take_unfinished", format!("krowk sync take on {host} hasn't finished after {} minutes; it goes on, and the session may yet move — see {} there", TAKE_WAIT.as_secs() / 60, log.display()))
     });
+    let unfinished = matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_unfinished");
     if !matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_refused") {
         // Hosting the session now, or still taking it: left to run, and
-        // reaped once it ends.
-        let _ = std::thread::Builder::new().name("krowk-take".into()).spawn(move || child.wait());
+        // reaped once it ends. One still taking it is the take under way
+        // until then: another is `busy`.
+        let held = if unfinished { taking.0.take() } else { None };
+        let _ = std::thread::Builder::new().name("krowk-take".into()).spawn(move || {
+            let _ = child.wait();
+            drop(Taking(held));
+        });
     }
+    drop(taking);
     tell(answer)
 }
 

@@ -209,7 +209,10 @@ fn take_up(ctx: &Ctx) -> Option<krowk_harness::sync::announce::TakeUp> {
     let dir = krowk_api::home::dir(ctx.io.env).ok()?.join("takes");
     Some(Box::new(move |session: &str, cwd: &std::path::Path| {
         use std::os::unix::fs::DirBuilderExt;
+        use std::os::unix::fs::PermissionsExt;
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| format!("{} can't be made: {e}", dir.display()))?;
+        // Its own only, as made, even when it was made looser before.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| format!("{} can't be made private: {e}", dir.display()))?;
         let log = dir.join(format!("{session}.log"));
         // An earlier take's line that it moved is never read as this one's.
         match std::fs::remove_file(&log) {

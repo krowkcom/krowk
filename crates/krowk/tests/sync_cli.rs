@@ -1298,13 +1298,24 @@ struct Takes(String);
 impl Drop for Takes {
     fn drop(&mut self) {
         let want = format!("sync\0take\0{}\0", self.0);
-        for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
-            let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else { continue };
-            if std::fs::read(e.path().join("cmdline")).is_ok_and(|c| c.windows(want.len()).any(|w| w == want.as_bytes())) {
-                // SAFETY: a signal to a process this test started.
-                unsafe { libc::kill(pid, libc::SIGTERM) };
-            }
+        let running = || -> Vec<i32> {
+            std::fs::read_dir("/proc")
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter_map(|e| e.file_name().to_string_lossy().parse::<i32>().ok().filter(|_| std::fs::read(e.path().join("cmdline")).is_ok_and(|c| c.windows(want.len()).any(|w| w == want.as_bytes()))))
+                .collect()
+        };
+        // SAFETY: signals to processes this test started.
+        let signal = |sig| running().into_iter().for_each(|pid| {
+            unsafe { libc::kill(pid, sig) };
+        });
+        signal(libc::SIGTERM);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !running().is_empty() && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
         }
+        signal(libc::SIGKILL);
     }
 }
 
@@ -1314,14 +1325,16 @@ impl Drop for Takes {
 /// clone with `krowk sync host`. C, a third home that never hosts (as the
 /// phone), sees B announced.
 struct Moving {
+    // Dropped first, in this order: the take B ran, then the hosts, then
+    // the machines, whose drops stop their daemons for good.
+    _takes: Takes,
+    _serve: Running,
+    _host_a: Running,
     a: Machine,
     b: Machine,
     c: Machine,
     session: String,
     ids: [krowk_client::e2e::DeviceId; 3],
-    _serve: Running,
-    _host_a: Running,
-    _takes: Takes,
 }
 
 impl Moving {
@@ -1356,7 +1369,7 @@ impl Moving {
             assert!(Instant::now() < deadline, "B never announced itself: {}", std::fs::read_to_string(b.home.join(".krowk/host.log")).unwrap_or_default());
             std::thread::sleep(Duration::from_millis(250));
         }
-        Moving { a, b, c, session, ids, _serve: serve, _host_a: host_a, _takes: takes }
+        Moving { _takes: takes, _serve: serve, _host_a: host_a, a, b, c, session, ids }
     }
 
     /// C's take `n` of the session into B's `cwd`, sent through krowk-api

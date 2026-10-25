@@ -202,6 +202,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public let moveNote = UILabel()
     /// The Move to… sheet, while it's up.
     public private(set) var movePicker: UITableViewController?
+    /// What VoiceOver was last told of the move: each line once.
+    private var moveSaid: String?
 
     public init(
         row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
@@ -1020,9 +1022,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if moveNote.text != refusal { moveNote.text = refusal }
         moveNote.isHidden = refusal == nil
         if refusal != nil { view.bringSubviewToFront(moveNote) }
-        if UIAccessibility.isVoiceOverRunning, let said = line ?? mover.refusal {
+        let said = line ?? mover.refusal
+        if UIAccessibility.isVoiceOverRunning, let said, said != moveSaid {
             UIAccessibility.post(notification: .announcement, argument: said)
         }
+        moveSaid = said
     }
 
     /// Move to… chosen: the sheet of the person's other online hosts.
