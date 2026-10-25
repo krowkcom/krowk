@@ -784,6 +784,16 @@ impl ViewerCore {
         }
     }
 
+    /// A race cut short by the relay's connection ending, not lost: the
+    /// next one as soon as one may run, the backoff as it was.
+    pub fn race_cut_short(&mut self, now_ms: u64) {
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.reprobe_ms = now_ms;
+        }
+    }
+
     /// A race nobody won: the next one later, the wait doubled.
     pub fn probe_lost(&mut self, now_ms: u64) {
         if !self.ended {

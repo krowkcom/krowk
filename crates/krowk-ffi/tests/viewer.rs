@@ -719,32 +719,50 @@ fn r_net_2_r_ios_2_a_network_change_races_again_at_once_and_the_background_holds
     assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "backed off");
     assert!(p.viewer.network_changed(p.now).is_empty());
     assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "raced at once after the change");
-    let dialed = p.race_tickets(&race);
+    p.race_tickets(&race);
     let e = p.viewer.network_changed(p.now);
     assert_eq!(e.len(), 2, "the race on the old network dropped: {e:?}");
     assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "and run again at once");
-    let _ = dialed;
 
     let dialed = p.race_tickets(&race);
     let e = p.viewer.background(p.now);
     assert_eq!(e.len(), 2, "both candidates dropped: {e:?}");
     assert!(e.iter().all(|e| matches!(e, Effect::CloseCandidate { .. })));
     assert!(p.on(dialed[1].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty());
+    // A network change in the background makes a race due: none runs.
+    let _ = p.viewer.network_changed(p.now);
     for _ in 0..3 {
-        p.at(p.now + 20_000);
+        p.at(p.now + 1_000);
         let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
         assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "no race in the background");
     }
-    // A minute away: the relay's connection replaced, and once welcomed
-    // again the held race runs at once.
-    p.rest.clear();
+    // Back within 10 s, the connection kept: the held race runs at once.
     let e = p.viewer.foreground(p.now);
-    p.take(e);
+    assert!(!e.iter().any(|e| matches!(e, Effect::Close)), "kept: {e:?}");
+    let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
+    assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "the held race runs as the app comes forward");
+}
+
+/// R-NET-2: a network change on a direct path holds through its loss: the
+/// relay it falls back to is raced from as soon as it welcomes, not after
+/// the backoff.
+#[test]
+fn r_net_2_a_network_change_on_a_direct_path_races_from_the_relay_at_once() {
+    let (mut p, race) = Phone::racing();
+    let dialed = p.race_tickets(&race);
+    let direct = (1 << 40) + 1;
+    let (_, e) = p.candidate_joins(dialed[1].1, direct, true, LAN);
+    p.moved(dialed[1].1, direct, e);
+    p.welcome(Welcome::default());
+    p.frame();
+    p.take_rest();
+    let _ = p.viewer.network_changed(p.now);
+    p.closed();
     p.rest.retain(|e| matches!(e, Effect::NeedTicket { .. }));
     p.join(true, 0);
     p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
     p.frame();
-    assert!(p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "the held race runs as the app comes forward");
+    assert!(p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "raced from the relay at once");
 }
 
 /// R-IOS-2, R-NET-2: on a direct path, a return from 10 s or more away

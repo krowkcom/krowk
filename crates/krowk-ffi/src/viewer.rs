@@ -384,9 +384,6 @@ struct Inner {
     /// The relay's connection while the session moves off it, until the
     /// direct welcome: what it receives goes to `ViewerCore::leaving`.
     leaving: Option<u64>,
-    /// A race the core asked for in the background, held (the core thinks
-    /// it out) until the foreground runs it.
-    race_held: bool,
 }
 
 /// A race for a direct path: the candidates not yet handed a ticket, by
@@ -448,7 +445,7 @@ impl Viewer {
         }
         let at_rest = session.snapshot();
         let (core, first) = ViewerCore::new(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, now_ms);
-        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None, race_held: false };
+        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None };
         Ok(Arc::new(Viewer { id: VIEWERS.fetch_add(1, Ordering::Relaxed), inner: Mutex::new(inner) }))
     }
 
@@ -848,7 +845,6 @@ impl Inner {
     /// race out, or held, is let go uncounted, its candidates dropped.
     fn race_now(&mut self, now_ms: u64) -> Vec<Effect> {
         let out = self.race.take().map(|r| r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()).unwrap_or_default();
-        self.race_held = false;
         self.core.race_now(now_ms);
         out
     }
@@ -857,7 +853,6 @@ impl Inner {
     /// dropped, the core still thinking it out, so it asks for none more.
     fn hold_race(&mut self) -> Vec<Effect> {
         let Some(r) = self.race.take() else { return Vec::new() };
-        self.race_held = true;
         r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()
     }
 
@@ -929,10 +924,10 @@ impl Inner {
                         out.push(Effect::CloseLeaving);
                     }
                     // Every connection goes with the relay's: a race out is
-                    // cut short, uncounted, and run once joined again; one
-                    // held for the foreground stays held.
-                    if !self.race_held && self.race.is_some() {
-                        out.extend(self.race_now(now_ms));
+                    // cut short, uncounted, and run once joined again.
+                    if let Some(r) = self.race.take() {
+                        out.extend(r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }));
+                        self.core.race_cut_short(now_ms);
                     }
                     self.joining = None;
                     self.pending = Some(extra);
@@ -950,8 +945,9 @@ impl Inner {
                     out.extend(at.map(|at_ms| Effect::NeedTicket { at_ms }));
                 }
                 // Swift fetches one ticket for every candidate. Never in the
-                // background: held for the foreground.
-                core::Effect::Probe if self.sup.in_background() => self.race_held = true,
+                // background: held for the foreground, the core thinking it
+                // out so it asks for no other.
+                core::Effect::Probe if self.sup.in_background() => {}
                 core::Effect::Probe => {
                     out.extend(self.lose_race(now_ms));
                     let candidates = self.core.candidates().to_vec();
@@ -964,7 +960,6 @@ impl Inner {
                     }
                 }
                 core::Effect::End => {
-                    self.race_held = false;
                     self.pending = None;
                     self.joining = None;
                     self.connection = None;
