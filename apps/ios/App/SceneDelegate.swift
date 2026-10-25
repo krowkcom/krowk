@@ -250,8 +250,12 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `+` starts a session on one of the person's hosts (R-HOST-4); the
         // started one opens live as soon as the registry lists it.
         let newSessions = NewSessions(source: source, starting: StartingSessions(source: source)) { session, request in
-            // Its screen parked with commands out, if it was left so.
-            if let kept = parked.take(session) { return kept }
+            // Its screen parked with commands out, if it was left so; another
+            // session's early connection stops, as for a new screen.
+            if let kept = parked.take(session) {
+                _ = early.take(session)
+                return kept
+            }
             let place = SessionRowFormatter.basename(request.cwd)
             let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
             // New: the cache holds nothing of it yet.
@@ -262,7 +266,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // Its neighbours in the list, from the cache: a switch to one
             // draws from memory (R-IOS-3).
             shelf.prefetch(around: row.id, in: listed.map(\.id))
-            if let kept = parked.take(row.id) { return kept }
+            if let kept = parked.take(row.id) {
+                _ = early.take(row.id)
+                return kept
+            }
             // The listing's head, fresh or kept; the cache's place may hold
             // it to a later one. Read on from where the cache's last read
             // stopped, followed from the newest event it holds.

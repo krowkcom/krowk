@@ -401,15 +401,15 @@ public actor RelayConnection: LiveSession {
             switch event {
             case .foreground: run(viewer.foreground(nowMs: now))
             case .background:
-                // What the cache holds back for its next batch is written
-                // now, before iOS suspends or ends the app.
-                cache?.flush()
                 // A ticket asked for and not yet used is dropped (the
                 // viewer holds its join): the foreground asks afresh, so a
                 // fetch iOS suspended mid-call never holds the return up.
                 ticketAsk += 1
                 raceAsk += 1
                 run(viewer.background(nowMs: now))
+                // What the cache holds back for its next batch, this step's
+                // too, is written now, before iOS suspends or ends the app.
+                cache?.flush()
             case .wake: run(viewer.wake(nowMs: now))
             }
             return

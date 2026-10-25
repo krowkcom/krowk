@@ -89,8 +89,10 @@ public final class LiveSessions {
         let session = early.session
         // Ended (the session gone, access refused) before its screen came:
         // not followed any more; a screen made later opens it afresh.
-        session.follow { [weak self] status in
-            guard case .ended = status, let self, self.early?.session === session else { return }
+        // Weakly: the connection keeps its listener until a screen's
+        // replaces it, and must not keep itself.
+        session.follow { [weak self, weak session] status in
+            guard case .ended = status, let self, let session, self.early?.session === session else { return }
             self.early = nil
             earlyWait?.cancel()
             remove(session)
