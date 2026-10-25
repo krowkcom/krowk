@@ -126,6 +126,25 @@ struct ModelSwitchModelTests {
         #expect(logged.promptAgain == "Do the thing")
     }
 
+    @Test("R-INST-7: a limited turn's prompt caught up after its result still gives the offer Continue; Continue's prompt waiting for its switch counts as out, so a screen left meanwhile is kept")
+    func offerCaughtUpLate() throws {
+        let model = Self.model()
+        model.issue(.prompt("Late"))
+        model.apply(frame: [.result(session: Self.session, turn: "t2", offer: SwitchOfferInfo(from: Self.a, to: Self.b))])
+        #expect(model.offer?.again == nil, "its prompt hasn't come yet")
+        model.apply(frame: [.caughtUp([Self.event("e3", .userText(item: "u2", text: "Late", images: [], turn: "t2"), at: 3)])])
+        let offer = try #require(model.offer)
+        #expect(offer.again == "Late")
+        model.takeOffer()
+        let token = model.issue(.switchModel(offer.info.to))
+        model.prompt("Late", afterSwitch: token)
+        model.apply(frame: [.commandMinted(token: token, id: "d-1"), .commandAcked(id: "d-1", error: nil)])
+        #expect(model.commandsOut == 1, "the prompt still to send keeps a parked screen")
+        let logged = model.apply(frame: [.logged([Self.event("e4", .modelSwitched(model: Self.b.model, from: Self.a, to: Self.b), at: 4)])])
+        #expect(logged.promptAgain == "Late")
+        #expect(model.commandsOut == 0)
+    }
+
     @Test("R-INST-7: an offer for another device's turn only says the limit; a turn starting withdraws it; a refused Continue sends nothing")
     func offerElsewhere() {
         let model = Self.model()
@@ -226,5 +245,13 @@ struct ModelSwitchScreenTests {
         let (waiting, _) = ModelPickerViewController.sections(host: host, listed: true, failed: false, instances: instances, session: away)
         #expect(waiting.flatMap(\.choices).allSatisfy { !$0.enabled }, "switching waits for the live link")
         #expect(waiting.last?.footer == "Switching waits for the link to desktop.")
+
+        var busy = session
+        busy.switching = ModelSwitchModelTests.b
+        let (out, _) = ModelPickerViewController.sections(host: host, listed: true, failed: false, instances: instances, session: busy)
+        #expect(out.flatMap(\.choices).allSatisfy { !$0.enabled }, "one switch at a time")
+        #expect(out.last?.footer == "Switching to anthropic:personal/claude-sonnet-4-6…")
+        let (unread, _) = ModelPickerViewController.sections(host: nil, listed: false, failed: true, instances: [], session: session)
+        #expect(unread.first?.footer == "Your hosts couldn't be read just now: the model can be switched once they are.")
     }
 }

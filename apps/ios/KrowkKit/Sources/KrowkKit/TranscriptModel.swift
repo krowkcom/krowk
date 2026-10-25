@@ -402,8 +402,10 @@ public final class TranscriptModel {
     /// An interrupt is out: Stop reads "stopping…" until its ack or the
     /// turn's end.
     public var stopping: Bool { commands.stopping }
-    /// Commands the core holds unanswered.
-    public var commandsOut: Int { commands.out }
+    /// Commands the core holds unanswered, and Continue's prompt waiting
+    /// for its switch to be logged: a screen left meanwhile is parked, so
+    /// the prompt still goes.
+    public var commandsOut: Int { commands.out + (continuing == nil ? 0 : 1) }
     /// A bubble the host took whose logged item hasn't come yet.
     public var awaitingLog: Bool { commands.bubbles.contains { $0.state == .settled } }
 
@@ -437,7 +439,6 @@ public final class TranscriptModel {
             let token = commands.add(.switchModel, text: choice.name)
             switching = choice
             switchToken = token
-            switchAcked = false
             if switchRefusal != nil { switchRefusal = nil }
             if let continuing, continuing.token != token { self.continuing = nil }
             return token
@@ -652,7 +653,6 @@ public final class TranscriptModel {
     /// the host keeps it for after the turn, so it stays until then.
     public private(set) var switching: ModelChoice?
     @ObservationIgnored private var switchToken: UInt64?
-    @ObservationIgnored private var switchAcked = false
     /// The host's refusal of the last switch (R-SWITCH-4): its sentence,
     /// ending "— the session stays on <model>", until the next switch.
     public private(set) var switchRefusal: String?
@@ -691,10 +691,11 @@ public final class TranscriptModel {
     }
 
     /// Once the switch `token` is logged, `text` goes again as a new
-    /// prompt (`FrameApplied.promptAgain`): the offer's Continue. Not at
-    /// its ack: a switch the host takes while the limited turn still lets
-    /// go of the session waits for that turn's end, and a prompt sent
-    /// before it would run on the limited instance again.
+    /// prompt (`FrameApplied.promptAgain`): the offer's Continue. Not with
+    /// the switch, nor at its ack: the host's bridge runs each command a
+    /// viewer sends on a task of its own, so a prompt sent beside the
+    /// switch can start its turn before the switch is logged, on the
+    /// limited instance again.
     public func prompt(_ text: String, afterSwitch token: UInt64) {
         continuing = (token, text)
     }
@@ -721,7 +722,6 @@ public final class TranscriptModel {
         }
         if switching != nil { switching = nil }
         switchToken = nil
-        switchAcked = false
     }
 
     /// The host answered switch `token`: refused, it goes back, saying the
@@ -736,7 +736,6 @@ public final class TranscriptModel {
             applied.switchRefused = said
             return
         }
-        switchAcked = true
         if switching == currentModel, runningTurn == nil { endSwitch(settled: true) }
     }
 
@@ -745,6 +744,11 @@ public final class TranscriptModel {
         guard !asked.contains(where: { $0.turn == turn }) else { return }
         if asked.count == Self.askedKept { asked.removeFirst() }
         asked.append((turn, text))
+        // The limited turn's start caught up after its result: Continue
+        // now, if it was this phone's.
+        if let offer, offer.turn == turn, offer.again == nil, let again = prompt(of: turn) {
+            self.offer?.again = again
+        }
     }
 
     /// Turn `turn`'s prompt, when it is the last one this phone sent.

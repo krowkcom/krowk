@@ -19,8 +19,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   running turn that is when the turn ends. A refusal shows the host's
   sentence under the model, which stays as it was. With the host offline
   the picker offers nothing. A turn that hits its instance's limit shows
-  `<from> is at its limit — continue on <to>?` over the composer, and
-  **Continue** switches and sends your prompt again there. The phone
+  `<from> is at its limit — continue on <to>?` over the composer. When
+  the phone sent that turn's prompt, **Continue** switches and sends the
+  prompt again there. The phone
   never switches the mode, toolset, effort or budget.
 - **The iPhone app starts a session on one of your machines.** Sessions'
   `+` opens "New session": your hosts as they announce themselves, online

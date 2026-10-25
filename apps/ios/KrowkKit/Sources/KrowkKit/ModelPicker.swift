@@ -17,6 +17,8 @@ final class ModelPickerViewController: ChoiceListViewController {
     struct Session: Equatable {
         var current: ModelChoice?
         var live: Bool
+        /// A switch is out: the next waits for it.
+        var switching: ModelChoice? = nil
         var hostOffline: Bool
         var limits: [String: InstanceLimit]
     }
@@ -86,7 +88,7 @@ final class ModelPickerViewController: ChoiceListViewController {
         }
         let name = host.map { SafeText.clean($0.name) } ?? "This session's host"
         guard let host, host.online, !failed, !session.hostOffline else {
-            let why = failed && host?.online == true
+            let why = failed && !session.hostOffline && host?.online != false
                 ? "Your hosts couldn't be read just now: the model can be switched once they are."
                 : "\(name) is offline: the model can be switched once it's back."
             return ([Section(header: nil, footer: why, choices: [])], [])
@@ -102,7 +104,7 @@ final class ModelPickerViewController: ChoiceListViewController {
             if i.ready && !i.models.isEmpty {
                 choices = i.models.map { m in
                     let here = session.current == ModelChoice(instance: i.name, model: m)
-                    return Choice(title: SafeText.clean(m), detail: here ? "current" : nil, enabled: session.live && !here,
+                    return Choice(title: SafeText.clean(m), detail: here ? "current" : nil, enabled: session.live && session.switching == nil && !here,
                                   identifier: "switch-model-\(i.name)/\(m)", value: m)
                 }
             } else if i.ready {
@@ -115,6 +117,8 @@ final class ModelPickerViewController: ChoiceListViewController {
         }
         if sections.isEmpty {
             sections = [Section(header: nil, footer: "\(name) announces no instance.", choices: [])]
+        } else if let switching = session.switching {
+            sections[sections.count - 1].footer = "Switching to \(switching.shown)…"
         } else if !session.live {
             sections[sections.count - 1].footer = "Switching waits for the link to \(name)."
         }

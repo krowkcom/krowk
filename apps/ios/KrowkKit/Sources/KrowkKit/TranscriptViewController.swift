@@ -786,7 +786,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     }
 
     private var pickerSession: ModelPickerViewController.Session {
-        .init(current: model.currentModel, live: isLive && model.switching == nil, hostOffline: statusBar.status == .hostOffline, limits: model.limits)
+        .init(current: model.currentModel, live: isLive, switching: model.switching, hostOffline: statusBar.status == .hostOffline, limits: model.limits)
     }
 
     /// The subtitle tapped: the picker of the host's instances, in a sheet.
