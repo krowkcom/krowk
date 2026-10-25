@@ -217,7 +217,8 @@ fn take_up(ctx: &Ctx) -> Option<krowk_harness::sync::announce::TakeUp> {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("{} can't be replaced: {e}", log.display())),
         }
-        let child = daemon::spawn_detached_in(&exe, &["sync", "take", session], cwd, &log)?;
+        // Its error as JSON whatever the config says: the daemon reads the fix.
+        let child = daemon::spawn_detached_in(&exe, &["sync", "take", session, "--format", "json"], cwd, &log)?;
         Ok((child, log))
     }))
 }

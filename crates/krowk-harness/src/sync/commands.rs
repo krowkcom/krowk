@@ -392,7 +392,7 @@ fn take(me: &Commands, o: &Options, host: &str, session: &str, cwd: &str, tell: 
 /// as JSON (`{"ok": false, "error": {"fix": …}}`, as krowk writes one when
 /// its output is no terminal); else its last line.
 fn refusal(out: &str) -> Option<String> {
-    let fix = out.match_indices('{').filter(|(i, _)| *i == 0 || out[..*i].ends_with('\n')).map(|(i, _)| i).last().and_then(|i| {
+    let fix = out.match_indices('{').map(|(i, _)| i).rfind(|i| *i == 0 || out[..*i].ends_with('\n')).and_then(|i| {
         let v: serde_json::Value = serde_json::from_str(out[i..].trim()).ok()?;
         v["error"]["fix"].as_str().or_else(|| v["error"]["message"].as_str()).map(String::from)
     });
@@ -421,5 +421,25 @@ async fn hold<F: std::future::Future>(d: &Daemon, session: &str, rx: &mut tokio:
             Some(s) if s.running && s.answering < 2 => {}
             _ => return,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn r_hand_4_a_takes_refusal_is_its_last_errors_fix() {
+        // What `krowk sync take` writes when its output is no terminal: its
+        // lines on stderr, then the error as JSON.
+        let out = "krowk: asking the session's host to hand it over…\n{\n  \"ok\": false,\n  \"error\": {\n    \"error\": \"instance_missing\",\n    \"fix\": \"session s runs on the work-claude instance, which this machine does not have — the session stays where it is\",\n    \"retryable\": false\n  }\n}\n";
+        assert_eq!(refusal(out).as_deref(), Some("session s runs on the work-claude instance, which this machine does not have — the session stays where it is"));
+        assert_eq!(refusal("krowk: something went wrong\n\n").as_deref(), Some("something went wrong"));
+        assert_eq!(refusal(""), None);
+    }
+
+    #[test]
+    fn r_hand_4_the_moved_line_names_the_session() {
+        assert!(format!("{}, working in /w (branch b); hosting it until interrupted", moved_line("s1")).starts_with("krowk: session s1 moved here"));
     }
 }
