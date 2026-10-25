@@ -648,7 +648,9 @@ public final class TranscriptModel {
         keptDrawn = true
         drawingKept = true
         defer { drawingKept = false }
-        guard !rows.isEmpty else { return transact { place(events, placement: .end) } }
+        // Nothing the session read applied yet (rows or not): the newest
+        // page, read as the session at rest is.
+        guard !seen.isEmpty else { return transact { place(events, placement: .end) } }
         // Older than everything drawn: above it. Anything else (newer
         // events a late page holds, or ones that reached the cache late)
         // after the event before it.

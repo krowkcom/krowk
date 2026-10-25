@@ -100,10 +100,14 @@ struct KeptTranscriptModelTests {
     @Test("R-IOS-1: a kept page's turn end refuses nothing typed here")
     func testR_IOS_1_aKeptTurnEndRefusesNoBubble() {
         let model = TranscriptModel(sessionID: Self.s)
+        // A steer the host took, waiting for its turn to read it: a turn's
+        // end would refuse it.
+        model.apply(frame: [.started(session: Self.s, turn: "now", item: "i1", kind: .assistant)])
         let token = model.issue(.steer("typed"))
+        model.apply(frame: [.commandMinted(token: token, id: "d-1"), .commandSent(id: "d-1", queued: false), .commandAcked(id: "d-1", error: nil)])
+        #expect(model.item(TranscriptModel.bubbleID(token))?.caption == "", "settled")
         model.drawKept([TranscriptScreenTests.event("x1", .turnStarted(turn: "old")), TranscriptScreenTests.event("x2", .turnCompleted(turn: "old", end: .completed))])
         #expect(model.item(TranscriptModel.bubbleID(token))?.refused == false)
-        #expect(!model.isTurnRunning)
     }
 
     @Test("R-IOS-1: a kept page that comes after the session's read puts its newer events after theirs, and settles no bubble")
@@ -345,6 +349,12 @@ struct KeptPlaceTests {
         // A read that started before the eviction leaves none.
         try await cache.putRead(session: "s", SessionCacheTests.events(9..<10), place: again, held: "s-e9", from: again)
         #expect(try await cache.place(session: "s") == nil)
+        // A replacing read whose place was moved on meanwhile keeps none:
+        // the place moved on stood over the events it dropped.
+        try await cache.putRead(session: "s", SessionCacheTests.events(0..<1), place: place, held: "s-e0", from: nil)
+        try await cache.putRead(session: "s", SessionCacheTests.events(5..<6), place: again, held: "s-e5", from: stale, replacing: true)
+        #expect(try await cache.place(session: "s") == nil)
+        #expect(try await cache.events(session: "s", limit: 10).map(\.id) == ["s-e5"])
     }
 
     @Test("R-IOS-3: pages come in the log's order, by event id, whatever order the events reached the cache in")

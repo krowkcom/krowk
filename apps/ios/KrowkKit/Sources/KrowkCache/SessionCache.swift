@@ -240,7 +240,8 @@ public actor SessionCache {
     /// cache does not hold. The place is written only if the one kept is
     /// still `from`, the one the read started at; otherwise the one kept
     /// stays (none, when it was evicted meanwhile with its events; another
-    /// read's, which stands over its own). `replacing`, the session's events
+    /// read's, which stands over its own), unless `replacing` dropped the
+    /// events it stands over, when none is kept. `replacing`, the session's events
     /// and cursor go first: a read that started over (the session rolled
     /// back past what the cache held). A session not in the index keeps no
     /// place.
@@ -258,10 +259,13 @@ public actor SessionCache {
                 }
             }
             try insert(db, events, session: session)
-            guard kept == from else { return }
+            // Replaced, another read's place would stand over events just
+            // dropped: none is kept then.
+            guard kept == from || replacing else { return }
             let put = try Statement(db, "UPDATE sessions SET place = ?, place_held = ? WHERE id = ?")
-            put.bind(1, place)
-            put.bind(2, place == nil ? nil : held)
+            let fresh = kept == from ? place : nil
+            put.bind(1, fresh)
+            put.bind(2, fresh == nil ? nil : held)
             put.bind(3, session)
             try put.run()
         }
