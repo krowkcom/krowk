@@ -690,6 +690,7 @@ impl Hosting {
                 catalog: Box::new(|| None),
                 trusted,
                 mode_for: Box::new(|_| Ok(PermissionMode::Default)),
+                take: None,
             }),
         };
         auto::Supervisor::spawn(c, turns)

@@ -91,10 +91,19 @@ pub struct Options {
     /// with no `--permission-mode` resolves it. Never anything a command
     /// carries. Errors are `(code, message)`, and refuse the start.
     pub mode_for: ModeFor,
+    /// How this host takes up a session another holds, as a `take` command
+    /// asks (R-HAND-1, R-HAND-4): `krowk sync take <session>` run in the
+    /// directory, detached, as the target's own take. None takes none.
+    pub take: Option<TakeUp>,
 }
 
 /// The host's default permission mode for a directory.
 pub type ModeFor = Box<dyn Fn(&Path) -> Result<crate::protocol::PermissionMode, (String, String)> + Send + Sync>;
+
+/// Starts `krowk sync take <session>` in `cwd`, detached from the daemon
+/// (it hosts the session once moved, so outlives it), stdin closed, its
+/// stdout and stderr to a file of its own: the child, and that file.
+pub type TakeUp = Box<dyn Fn(&str, &Path) -> Result<(std::process::Child, std::path::PathBuf), String> + Send + Sync>;
 
 /// The models announced for an instance of `kind` under models.dev's
 /// `provider`: its own default first (`default`, else its kind's), then the

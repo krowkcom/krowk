@@ -206,6 +206,9 @@ public final class RelayStatusBar: UIView {
     public private(set) var status: RelayStatus = .connecting
     /// The path the session comes by, once the viewer said.
     public private(set) var path: String?
+    /// A move to another host (ticket 136): `moving to <host>…`, then
+    /// `moved to <host>`.
+    public private(set) var move: String?
 
     override public init(frame: CGRect) {
         super.init(frame: frame)
@@ -270,6 +273,13 @@ public final class RelayStatusBar: UIView {
         draw()
     }
 
+    /// A move under way or done (`SessionMove.barLine`); nil for none.
+    public func show(move: String?) {
+        guard move != self.move else { return }
+        self.move = move
+        draw()
+    }
+
     /// The countdown's timer, while a wait lasts.
     private var countdown: Timer?
 
@@ -288,8 +298,12 @@ public final class RelayStatusBar: UIView {
     private func draw() {
         let text = status.text
         let path = status == .live ? path : nil
-        label.text = path.map { "\(text) · \($0)" } ?? text
+        label.text = [text, path, move].compactMap(\.self).joined(separator: " · ")
         accessibilityLabel = text
-        accessibilityValue = path
+        accessibilityValue = [path, move].compactMap(\.self).joined(separator: ", ").nilIfEmpty
     }
+}
+
+private extension String {
+    var nilIfEmpty: String? { isEmpty ? nil : self }
 }

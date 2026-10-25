@@ -236,7 +236,14 @@ pub fn older(daemon: &str, mine: &str) -> bool {
 /// reader waits for an end that never comes.
 pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::process::Child, String> {
     // SAFETY: the closure does nothing.
-    unsafe { detached(program, args, log, || Ok(())) }
+    unsafe { detached(program, args, Path::new("/"), log, || Ok(())) }
+}
+
+/// `spawn_detached`, run in `cwd` rather than `/`: a `krowk sync take` a
+/// `take` command asks for, in the clone it takes the session into.
+pub fn spawn_detached_in(program: &Path, args: &[&str], cwd: &Path, log: &Path) -> Result<std::process::Child, String> {
+    // SAFETY: the closure does nothing.
+    unsafe { detached(program, args, cwd, log, || Ok(())) }
 }
 
 /// `spawn_detached`, with `first` run in the child before the descriptors
@@ -247,14 +254,14 @@ pub fn spawn_detached(program: &Path, args: &[&str], log: &Path) -> Result<std::
 ///
 /// `first` runs in the child between fork and exec: it may make only
 /// async-signal-safe calls, and must not allocate or take a lock.
-unsafe fn detached(program: &Path, args: &[&str], log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
+unsafe fn detached(program: &Path, args: &[&str], cwd: &Path, log: &Path, first: impl FnMut() -> std::io::Result<()> + Send + Sync + 'static) -> Result<std::process::Child, String> {
     use std::os::unix::fs::OpenOptionsExt;
     use std::os::unix::process::CommandExt;
     let out = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(log).map_err(|e| format!("{} cannot be opened: {e}", log.display()))?;
     let err = out.try_clone().map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(program);
-    // In `/`, so the daemon pins no directory or mount for its life.
-    cmd.args(args).current_dir("/").stdin(std::process::Stdio::null()).stdout(out).stderr(err);
+    // The daemon in `/`, so it pins no directory or mount for its life.
+    cmd.args(args).current_dir(cwd).stdin(std::process::Stdio::null()).stdout(out).stderr(err);
     // Read before the fork: sysconf is not async-signal-safe.
     // SAFETY: sysconf only reads a limit.
     let limit = unsafe { libc::sysconf(libc::_SC_OPEN_MAX) };
@@ -482,7 +489,7 @@ mod tests {
         // SAFETY: fcntl is async-signal-safe, on a descriptor the child has.
         let leave_open = move || if unsafe { libc::fcntl(fd, libc::F_SETFD, 0) } < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) };
         // SAFETY: `leave_open` makes one fcntl call.
-        let mut daemon = unsafe { detached(Path::new("/bin/sh"), &["-c", "sleep 30"], &log, leave_open) }.unwrap();
+        let mut daemon = unsafe { detached(Path::new("/bin/sh"), &["-c", "sleep 30"], Path::new("/"), &log, leave_open) }.unwrap();
         drop(write);
         let mut p = libc::pollfd { fd: read.as_raw_fd(), events: libc::POLLIN, revents: 0 };
         // SAFETY: one pollfd, for the length of the call.

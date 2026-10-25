@@ -581,7 +581,9 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // The log as the host left it, checkpoint and all.
     let events = read_log(&api).map_err(undo)?;
     handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| undo(fail("handoff_failed", e)))?;
-    let _ = writeln!(ctx.io.stderr, "krowk: session {session} moved here, working in {} (branch {}); hosting it until interrupted", applied.cwd.display(), applied.worktree.branch());
+    // Its start, `moved_line`, is what the host daemon's watcher of a take
+    // another device asked for reads as moved.
+    let _ = writeln!(ctx.io.stderr, "{}, working in {} (branch {}); hosting it until interrupted", krowk_harness::sync::commands::moved_line(&session), applied.cwd.display(), applied.worktree.branch());
     let _held = applied.held;
     host_loop(ctx, &session, &applied.cwd, Some(handed))
 }
@@ -721,6 +723,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = match answer {
         HostAnswer::Started { session_id } if krowk_harness::log::valid_id(&session_id) => session_id,
         HostAnswer::Started { session_id } => return Err(fail("bad_answer", format!("{name} started a session under {session_id:?}, which is not a session id"))),
+        HostAnswer::Taken { .. } => return Err(fail("bad_answer", format!("{name} answered the start as a move"))),
         // The host's words, sealed under a key every device of the person's
         // holds: said as text, under a code only of its own shape.
         HostAnswer::Refused { code, message } => return Err(fail(refusal_code(&code), super::sync::printable(&message))),

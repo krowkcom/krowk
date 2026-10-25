@@ -197,7 +197,7 @@ fn r_host_4_an_unknown_command_is_answered_unknown_command() {
 #[test]
 fn r_host_4_a_command_past_what_the_registry_carries_is_refused_on_seal() {
     let w = world();
-    let HostCommand::Start { cwd, model, .. } = start();
+    let HostCommand::Start { cwd, model, .. } = start() else { unreachable!() };
     let long = HostCommand::Start { cwd, model, prompt: "x".repeat(host_command::MAX_SEALED) };
     let e = host_command::seal_command(&long, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap_err();
     assert!(e.contains("shorten the prompt"), "{e}");
@@ -213,5 +213,30 @@ fn r_host_4_a_long_refusal_is_cut_to_fit_what_the_registry_carries() {
         assert!(sealed.len() <= host_command::MAX_ANSWER);
         let HostAnswer::Refused { code, message } = host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &chain(&w)).unwrap() else { panic!() };
         assert!(serde_json::to_string(&code).unwrap().len() <= host_command::MAX_CODE + 2 && serde_json::to_string(&message).unwrap().len() <= host_command::MAX_MESSAGE + 2 && message.ends_with('…'), "{} {}", code.len(), message.len());
+    }
+}
+
+/// R-HAND-4, R-HOST-4: a `take`, the phone asking a host to take a session
+/// up, opens on the host as sent, with unknown fields dropped; its `Taken`
+/// answer opens on the phone; and a session id that isn't one is refused
+/// before the host passes it anywhere.
+#[test]
+fn r_hand_4_a_take_and_its_answer_open_on_the_other_side() {
+    let w = world();
+    let c = chain(&w);
+    let take = HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/home/someone/clone".into() };
+    let sealed = host_command::seal_command(&take, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(take.clone()));
+    let taken = HostAnswer::Taken { session_id: "0190f3c2-0000-7000-8000-000000000001".into() };
+    let sealed = host_command::seal_answer(&taken, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+    assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), taken);
+
+    let seal = |json: &[u8]| e2e::seal_to_person(&keys(1), 1, Label::HostCommand, &host_command::binding(ID, &w.phone.id(), &w.host.id()), json).unwrap();
+    let open = |sealed: &[u8]| host_command::open_command(sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap();
+    let extra = br#"{"type":"take","sessionId":"0190f3c2-0000-7000-8000-000000000001","cwd":"/w","permissionMode":"unhinged"}"#;
+    assert_eq!(open(&seal(extra)), Ok(HostCommand::Take { session_id: "0190f3c2-0000-7000-8000-000000000001".into(), cwd: "/w".into() }));
+    for bad in [br#"{"type":"take","sessionId":"--help","cwd":"/w"}"#.as_slice(), br#"{"type":"take","cwd":"/w"}"#] {
+        let Err(HostAnswer::Refused { code, .. }) = open(&seal(bad)) else { panic!("opened") };
+        assert_eq!(code, "bad_command");
     }
 }

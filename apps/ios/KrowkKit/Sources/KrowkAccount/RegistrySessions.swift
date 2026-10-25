@@ -248,6 +248,9 @@ public final class RegistrySessions: SessionSource {
         return result.value!
     }
 
+    /// The account, if it has been opened: never opens it.
+    var openedAlready: Account? { account.withLock { $0 } }
+
     func opened() throws -> Account {
         if let account = account.withLock({ $0 }) { return account }
         let opened = try Account.open(api: api, storage: storage)

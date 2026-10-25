@@ -87,9 +87,10 @@ public enum StartOutcome: Sendable, Equatable {
     case refused(code: String, message: String)
 }
 
-/// The person's hosts, and a session started on one: KrowkAccount over
-/// krowk-ffi's `Account.listHosts`, `startSession` and `newCommandId`, a
-/// stub in the tests. Both calls block: never on the main thread.
+/// The person's hosts, a session started on one, and one moved to one:
+/// KrowkAccount over krowk-ffi's `Account.listHosts`, `startSession`,
+/// `takeSession` and `newCommandId`, a stub in the tests. `hosts`, `start`
+/// and `take` block: never on the main thread.
 public protocol HostSource: Sendable {
     /// One registry call.
     func hosts() throws -> HostListing
@@ -98,6 +99,21 @@ public protocol HostSource: Sendable {
     func start(_ request: StartRequest) -> StartOutcome
     /// A fresh command id, a random UUID.
     func newCommandID() -> String
+    /// Asks a host to take a session up (R-HAND-4, ticket 136) and waits
+    /// for its answer, up to six minutes: a failure of any kind comes back
+    /// `refused`, in words for the screen.
+    func take(_ request: MoveRequest) -> MoveOutcome
+    /// Ends every `take` wait at once, from any thread; the moves go on.
+    func cancelTake()
+}
+
+/// A source that moves nothing (a test's stub) refuses to.
+public extension HostSource {
+    func take(_ request: MoveRequest) -> MoveOutcome {
+        .refused(code: "unsupported", message: "Sessions can't be moved from here.")
+    }
+
+    func cancelTake() {}
 }
 
 // MARK: The host list

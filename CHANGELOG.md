@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app moves a session to another of your machines.** A
+  session's navigation bar menu has **Move to…**, which lists your other
+  online hosts and the directories each offers. Pick a host and a clone
+  of the session's repository there. The bar reads `moving to <host>…` at
+  once while the session carries on, then `moved to <host>`. That host
+  runs `krowk sync take` itself, so its own checks (the instance by name
+  and ready, a backend's repository trusted, the commit in the clone)
+  refuse before anything moves. A refusal shows the host's sentence and
+  the session stays where it was. Behind it is a new `take` host command,
+  which any of your devices can send. The host answers `busy` while
+  another take runs, and leaves the take hosting the session, its output
+  in `~/.krowk/takes/<session>.log`. The app library adds
+  `Account.takeSession`, `Account.cancelTake` and `TakeAnswer` (no
+  version change).
 - **The iPhone app connects before it draws, and says how old what it
   shows is.** At launch and each time it comes back to the foreground,
   before any screen appears, it starts reading the session list and
@@ -22,7 +36,6 @@ the versions are the `v*` tags a release is cut from. Entries land under
   is back. With no network at all, the list keeps the rows the phone
   cached and says it couldn't be read, and the bar says the relay can't
   be reached.
-
 - **The iPhone app switches a session's model.** A session's navigation
   bar shows the model it runs on, `<instance>/<id>`. Tap it to see the
   host's ready instances and their models, each instance with its limit

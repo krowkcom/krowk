@@ -154,6 +154,7 @@ mod viewer;
 pub use account::{Account, ListedDevice};
 pub use error::KrowkError;
 pub use hosts::{HostList, HostRecord, InstanceRecord, StartAnswer, new_command_id};
+pub use hosts::TakeAnswer;
 pub use pairing::{Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite};
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use protocol::encode_log_event;
