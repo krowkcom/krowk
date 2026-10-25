@@ -179,11 +179,14 @@ struct ModelSwitchScreenTests {
         defer { window.isHidden = true }
         window.rootViewController = UINavigationController(rootViewController: screen)
         window.makeKeyAndVisible()
+        // Loaded: the screen follows the session from its view's load.
+        window.layoutIfNeeded()
         session.bring([.attached([ModelSwitchModelTests.event("e1", .turnStarted(turn: "t1", model: ModelSwitchModelTests.a)),
                                   ModelSwitchModelTests.event("e2", .turnCompleted(turn: "t1", end: .completed))])])
         screen.frame()
         session.say(.live)
         for _ in 0..<200 where screen.statusBar.status != .live { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(screen.statusBar.status == .live)
         #expect(screen.modelButton.configuration?.title == "anthropic/claude-sonnet-4-6")
         #expect(screen.navigationItem.subtitleView === screen.modelButton)
 
@@ -209,8 +212,11 @@ struct ModelSwitchScreenTests {
         defer { window.isHidden = true }
         window.rootViewController = UINavigationController(rootViewController: screen)
         window.makeKeyAndVisible()
+        // Loaded: the screen follows the session from its view's load.
+        window.layoutIfNeeded()
         session.say(.hostOffline)
         for _ in 0..<200 where screen.statusBar.status != .hostOffline { try await Task.sleep(for: .milliseconds(10)) }
+        try #require(screen.statusBar.status == .hostOffline)
         #expect(!screen.switchModel(to: ModelSwitchModelTests.b))
         #expect(session.commands.withLock { $0 }.isEmpty)
     }
