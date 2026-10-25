@@ -1200,7 +1200,7 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     let session = started["sessionId"].as_str().unwrap().to_string();
     drop(view);
     let held = commands_held(&w);
-    assert_eq!((held.len(), held[0]["answered"].as_bool()), (1, Some(true)), "one command, answered: {held:?}");
+    assert_eq!(held.iter().map(|c| c["answered"].as_bool()).collect::<Vec<_>>(), [Some(true)], "one command, answered: {held:?}");
 
     let out = a.command(&["sync", "sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();

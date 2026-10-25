@@ -401,7 +401,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["sync", "take", ..] => synced::take(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
-        ["sync", "new", ..] => synced::new(ctx, rest(2)),
+        ["sync", "new", ..] => synced::new_session(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
@@ -632,7 +632,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         // `sync new` takes its own flags and those every command takes, no
         // other: no `--permission-mode` above all, since the host runs the
         // session in its own default mode (R-HOST-4).
-        let new = words.starts_with(&["sync", "new"]);
+        let new = cfg!(unix) && words.starts_with(&["sync", "new"]);
         if new {
             let own = catalog::catalog("").find(&["sync".into(), "new".into()]).map(|c| c.flags).unwrap_or_default();
             let takes = |name: &str| own.iter().chain(&catalog::global_flags()[..catalog::CORE_FLAGS]).any(|f| f.name == name);

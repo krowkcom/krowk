@@ -643,7 +643,7 @@ const APPEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// instance for are refused here, from its announcement, before anything is
 /// sent; the host checks again, and its own refusal is said the same way.
 /// The permission mode is the host's (`--permission-mode` is refused).
-pub(super) fn new(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     use krowk_client::host_command::{self, HostAnswer, HostCommand};
     let prompt = args.join(" ");
     let example = "e.g. krowk sync new --host desktop --cwd ~/code/app \"fix the tests\"";
@@ -689,6 +689,8 @@ pub(super) fn new(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
                 tries += 1;
                 std::thread::sleep(ANSWER_EVERY * tries);
             }
+            // The last try may have landed with its answer lost.
+            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sync sessions will list it", e.code()))),
             Err(e) => return Err(e),
         }
     }
@@ -712,7 +714,9 @@ pub(super) fn new(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let session = match answer {
         HostAnswer::Started { session_id } if krowk_harness::log::valid_id(&session_id) => session_id,
         HostAnswer::Started { session_id } => return Err(fail("bad_answer", format!("{name} started a session under {session_id:?}, which is not a session id"))),
-        HostAnswer::Refused { code, message } => return Err(fail(&code, message)),
+        // The host's words, sealed under a key every device of the person's
+        // holds: said as text, under a code only of its own shape.
+        HostAnswer::Refused { code, message } => return Err(fail(refusal_code(&code), super::sync::printable(&message))),
     };
     // Its host's automatic sync takes it up to the registry at its first
     // turn: a second or two.
@@ -729,6 +733,13 @@ pub(super) fn new(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let _ = writeln!(ctx.io.stderr, "krowk: {} started session {session}; following it", super::sync::printable(&name));
     attach(ctx, &[session])
+}
+
+/// A host's refusal code as it is reported, which picks the exit code: one
+/// of krowk's own shape, else `host_refused`.
+fn refusal_code(code: &str) -> &str {
+    let ours = !code.is_empty() && code.len() <= krowk_client::host_command::MAX_CODE && code.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_');
+    if ours { code } else { "host_refused" }
 }
 
 /// The machine `asked` names on the device list: by its name, in any case,
@@ -930,7 +941,8 @@ mod tests {
     }
 
     /// `--cwd` is the host's path: `~` expanded and made absolute, never
-    /// resolved. And a command id is a version 4 UUID.
+    /// resolved. A command id is a version 4 UUID, and a host's refusal code
+    /// is reported only in krowk's own shape.
     #[test]
     fn r_host_4_sync_new_asks_for_an_absolute_path_under_a_fresh_uuid() {
         let here = std::path::Path::new("/work/here");
@@ -944,6 +956,10 @@ mod tests {
         assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), [8, 4, 4, 4, 12], "{id}");
         assert!(parts[2].starts_with('4') && "89ab".contains(&parts[3][..1]) && id.chars().all(|c| c == '-' || c.is_ascii_hexdigit()), "{id}");
         assert_ne!(id, super::command_id());
+        assert_eq!(super::refusal_code("directory_not_offered"), "directory_not_offered");
+        for odd in ["", "Bad", "x\u{1b}[2J", &"x".repeat(65)] {
+            assert_eq!(super::refusal_code(odd), "host_refused", "{odd:?}");
+        }
     }
 
     /// The production registry's devices dial the hosted relay with no
