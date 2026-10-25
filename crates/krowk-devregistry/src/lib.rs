@@ -21,6 +21,7 @@
 
 mod artifacts;
 mod auth;
+mod commands;
 mod conn;
 mod devices;
 mod encode;
@@ -215,6 +216,9 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The device's sealed announcement to the person's others (R-HOST-3),
         // signed by it.
         ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "presence"]) => devices::presence(a, req),
+        // The host's answer to a command it was delivered (R-HOST-4), signed
+        // by it.
+        ("PUT" | "PATCH", ["v1", "key", "device", "commands", id]) => sync::signed(a, req, |a, req, by| commands::answer(a, req, id, by)),
         // The approval screen is served by this process and nothing else, so its
         // link names the request's own host, never --site.
         ("POST", ["v1", "cli", "authorizations"]) => {
@@ -296,7 +300,8 @@ fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
 }
 
 /// `/v1/users/:user_id/…`: a person's device list, the user key wrapped to
-/// each device, their hosts' presences and their one pairing. `:user_id` is
+/// each device and the commands sent to them, their hosts' presences and
+/// their one pairing. `:user_id` is
 /// the key's own person (`GET /v1/key`'s `user_id`); any other is not there
 /// to be found.
 fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Resp {
@@ -309,6 +314,10 @@ fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Re
         ("POST", ["devices"]) => devices::post_devices(a, req),
         ("POST", ["devices", "reset"]) => devices::create(a, req, true),
         (_, ["devices", id, "key"]) if get => devices::user_key(a, req, id),
+        // A sealed command for one of the person's hosts, and the sender's
+        // poll for its answer (R-HOST-4), signed by the sender.
+        ("POST", ["devices", target, "commands"]) => sync::signed(a, req, |a, req, by| commands::send(a, req, target, by)),
+        (_, ["devices", target, "commands", id]) if get => sync::signed(a, req, |a, req, by| commands::show(a, req, target, id, by)),
         (_, ["presences"]) if get => devices::presences(a, req),
         ("POST", ["pairing"]) => pairings::open(a, req),
         (_, ["pairing"]) if get => pairings::read(a, req),

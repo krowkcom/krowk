@@ -151,6 +151,13 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     client.delete_push_token().unwrap();
     client.put_presence(b"sealed", 30).unwrap();
     assert!(client.list_presences().unwrap()[0].online);
+    // A command the laptop sends itself, the one device it has: delivered in
+    // its refresh, answered, and the answer read back (R-HOST-4).
+    let command = "0190f3a8-7c1e-4a9b-8c2d-3e4f5a6b7c8d";
+    client.send_host_command(&device, command, b"sealed command").unwrap();
+    assert_eq!(client.put_presence(b"sealed", 30).unwrap().commands[0].id, command);
+    client.answer_host_command(command, b"sealed answer").unwrap();
+    assert_eq!(client.host_command(&device, command).unwrap().answer.as_deref(), Some(&b"sealed answer"[..]));
     client.delete_presence().unwrap();
     client.release_lease(id, &lease.token).unwrap();
 
@@ -193,6 +200,14 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         // lease and signed; the person's presences are read unsigned.
         "PUT /v1/key/device/presence +signed",
         "GET /v1/users/{slug}/presences",
+        // A sealed command for a host, under the target device: a POST of
+        // the client's id, delivered in the refresh, the host's answer a PUT
+        // under the key's device, and the sender's poll a signed GET
+        // (R-HOST-4).
+        "POST /v1/users/{slug}/devices/{device}/commands +signed",
+        "PUT /v1/key/device/presence +signed",
+        "PUT /v1/key/device/commands/{id} +signed",
+        "GET /v1/users/{slug}/devices/{device}/commands/{id} +signed",
         "DELETE /v1/key/device/presence +signed",
         "DELETE /v1/sessions/{id}/lease +signed",
     ];
@@ -318,7 +333,17 @@ fn wire_call(method: &str, path: &str, keyed: bool, signed: bool) -> Option<Stri
             let slug = ["art_", "aut_", "run_", "ws_", "dap_", "usr_"].iter().any(|p| seg.starts_with(p) && seg.len() > p.len());
             // A synced session is named by the UUID its client minted.
             let uuid = seg.len() == 36 && seg.bytes().filter(|b| *b == b'-').count() == 4;
-            if slug { "{slug}".to_string() } else if uuid { "{id}".to_string() } else { seg.to_string() }
+            // A device by its fingerprint, 32 hex digits.
+            let device = seg.len() == 32 && seg.bytes().all(|b| b.is_ascii_hexdigit());
+            if slug {
+                "{slug}".to_string()
+            } else if uuid {
+                "{id}".to_string()
+            } else if device {
+                "{device}".to_string()
+            } else {
+                seg.to_string()
+            }
         })
         .collect();
     Some(format!("{method} {}{}{}", slugged.join("/"), if keyed { " +key" } else { "" }, if signed { " +signed" } else { "" }))

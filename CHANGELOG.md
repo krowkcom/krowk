@@ -11,6 +11,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The registry can carry a sealed command to a host and its answer
+  back.** One of your devices can send another a command sealed to it,
+  under an id it makes up, so sending it again runs it once. The host
+  receives it in its next presence refresh, within about 10 seconds, until
+  it answers; only the sender reads the answer. A command lapses after 10
+  minutes. The registry holds only the sealed bytes, who sent them to whom,
+  and the times, and drops a device's commands when the device is revoked
+  or removed. Nothing sends one yet.
 - **`krowk hosts` shows every machine whose daemon is up, online or
   offline.** While sync is set up and automatic sync is on, the host daemon
   announces itself to your other devices every 10 seconds, sealed end to

@@ -292,7 +292,8 @@ const DEFAULT_PRESENCE_TTL: i64 = 30;
 /// token is: the key, the paid gate, the key's device active, a signature
 /// by that same device, then the keyed ceiling. Only `sealed` and `ttl` are
 /// read; a ttl out of range is refused, never clamped. A PUT answers the
-/// device and its times; a DELETE is 204 whether or not there was one.
+/// device and its times, and the commands waiting for it (R-HOST-4); a
+/// DELETE is 204 whether or not there was one.
 pub fn presence(app: &App, req: &mut Req) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let body = read_body(req)?;
@@ -322,8 +323,10 @@ pub fn presence(app: &App, req: &mut Req) -> Resp {
         let expires_at = now + crate::sync::ttl_within(&f, DEFAULT_PRESENCE_TTL, PRESENCE_TTL)?;
         let created_at = s.sync.presences.get(&device).map_or(now, |p| p.created_at);
         s.sync.presences.insert(device.clone(), crate::sync::Presence { sealed, created_at, updated_at: now, expires_at });
-        let answer = Json::map([("device", Json::str(device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
-        Ok(Resp::json(200, &Json::map([("presence", answer)])))
+        let answer = Json::map([("device", Json::str(&device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
+        // The commands waiting for the host ride along (R-HOST-4).
+        let commands = crate::commands::waiting(&s.sync, &device, now);
+        Ok(Resp::json(200, &Json::map([("presence", answer), ("commands", commands)])))
     };
     run().unwrap_or_else(|r| r)
 }
@@ -687,8 +690,8 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     }
     // Commit: the person, every key bound to a device this post removed, and
     // at init the key doing it bound to the first device. A device removed
-    // or left behind by a start-over takes no more pushes (R-IOS-12) and
-    // is no longer listed as a host (R-HOST-3).
+    // or left behind by a start-over takes no more pushes (R-IOS-12), is
+    // no longer listed as a host (R-HOST-3), and its commands go (R-HOST-4).
     for (key, device) in &s.bindings {
         if revoke.contains(device) && !(spare && *key == caller.key) {
             s.revoked_keys.insert(key.clone());
@@ -696,6 +699,7 @@ fn append(s: &mut SyncStore, caller: &Caller, p: Post, signer: Option<String>, i
     }
     s.push_tokens.retain(|device, _| !revoke.contains(device));
     s.presences.retain(|device, _| !revoke.contains(device));
+    crate::commands::drop_device(s, |d| revoke.iter().any(|r| r == d));
     if init && person.epoch > 1 && s.people.get(&caller.person).is_some_and(|old| old.epoch < person.epoch) {
         for p in s.pairings.values_mut().filter(|p| p.person == caller.person) {
             p.state = crate::pairings::State::Dead;

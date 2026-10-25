@@ -209,6 +209,24 @@ pub struct SyncStore {
     /// and cleared by the device itself. Dropped when the device is revoked
     /// or removed from its list.
     pub presences: HashMap<String, Presence>,
+    /// Command id → the command one of a person's devices sent another
+    /// (R-HOST-4). Dropped when either device is revoked or removed from
+    /// its list (`commands::drop_device`).
+    pub host_commands: HashMap<String, HostCommand>,
+}
+
+/// A command as the registry keeps it: the two devices, the bytes sealed to
+/// the target, the answer sealed to the sender once there is one, and the
+/// times. Nothing else (R-E2E-1).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HostCommand {
+    pub sender: String,
+    pub target: String,
+    pub sealed: Vec<u8>,
+    pub answer: Option<Vec<u8>>,
+    pub answered_at: Option<Timestamp>,
+    pub created_at: Timestamp,
+    pub expires_at: Timestamp,
 }
 
 /// A host's presence as the registry keeps it: the bytes, opaque, and when
@@ -882,9 +900,11 @@ pub fn revoke(app: &App, req: &Req, id: &str) -> Resp {
     let device = d.id.clone();
     let keys: Vec<String> = s.sync.bindings.iter().filter(|(_, bound)| **bound == device).map(|(key, _)| key.clone()).collect();
     s.sync.revoked_keys.extend(keys);
-    // Its push token goes with it (R-IOS-12), and its presence (R-HOST-3).
+    // Its push token goes with it (R-IOS-12), its presence (R-HOST-3) and
+    // its commands (R-HOST-4).
     s.sync.push_tokens.remove(&device);
     s.sync.presences.remove(&device);
+    crate::commands::drop_device(&mut s.sync, |d| d == device);
     Resp::json(200, &Json::map([("device", Json::str(device))]))
 }
 
