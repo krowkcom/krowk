@@ -130,7 +130,7 @@ fn r_host_4_a_command_is_sent_delivered_answered_and_read() {
         assert_eq!((c.id.as_str(), c.from.as_str(), c.sealed.as_slice()), (ID, p.phone.id().as_str(), &b"sealed command"[..]));
         assert!(c.created_at.parse::<Timestamp>().is_ok(), "{c:?}");
     }
-    assert_eq!(phone.host_command(&p.host.id(), ID).unwrap().answered, false);
+    assert!(!phone.host_command(&p.host.id(), ID).unwrap().answered);
 
     host.answer_host_command(ID, b"sealed answer").unwrap();
     // The same answer again is fine; another is refused, the first kept.
@@ -220,7 +220,7 @@ fn r_host_4_a_command_lapses_after_ten_minutes() {
     assert_eq!(host.put_presence(b"a", 30).unwrap().commands, vec![]);
     let e = host.answer_host_command(ID, b"late").unwrap_err();
     assert_eq!((e.code().as_str(), e.status), ("no_command", 404), "{e:?}");
-    assert_eq!(phone.host_command(&p.host.id(), ID).unwrap().answered, false);
+    assert!(!phone.host_command(&p.host.id(), ID).unwrap().answered);
 }
 
 /// R-HOST-4: a refresh carries at most sixteen commands, oldest first.
