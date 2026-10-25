@@ -21,7 +21,10 @@
 # runner), and <url>/<id>/turn-ended answers `ended` once that turn has
 # ended at the host, or `running` if it still runs 5 s later. The fleet
 # runs with --demo: its session is titled "A demo session", has a turn
-# with a tool call and its result, and holds an approval. The fleet
+# with a tool call and its result, and holds an approval. It runs with
+# --direct-lan too: each session's host offers its LAN listener on
+# 127.0.0.1, which the phone races and moves onto (R-NET-2), and a POST
+# to <url>/<id>/direct/close closes that listener, the LAN path lost. The fleet
 # binds 127.0.0.1 only; the simulator shares the Mac's loopback. Its log
 # is appended to $KROWK_FLEET_LOG (default target/fake-fleet.log), and its
 # last lines are shown if it fails to start.
@@ -88,7 +91,7 @@ echo "with-fleet: starting the fake fleets, $(date)" >>"$log"
 # The second, with no demo, is the removal tests' own: removing a phone
 # rotates host A's user key, which would stop the first fleet's hosts.
 set -m
-cargo run -q -p krowk-harness --example fake_fleet -- --demo <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
+cargo run -q -p krowk-harness --example fake_fleet -- --demo --direct-lan <"$fifo/stdin" >"$fifo/stdout" 2>>"$log" &
 fleet=$!
 cargo run -q -p krowk-harness --example fake_fleet -- --pair <"$fifo/stdin2" >"$fifo/stdout2" 2>>"$log" &
 fleet2=$!
