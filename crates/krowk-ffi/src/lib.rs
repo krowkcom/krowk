@@ -112,7 +112,7 @@
 //! Every type reachable from `StreamLine` and `Command` is
 //! `krowk_client::protocol`'s own, re-declared remote in `src/protocol.rs`;
 //! JSON crosses only at the edges, through [`decode_stream_line`],
-//! [`decode_log_event`] and [`encode_command`].
+//! [`decode_log_event`], [`encode_log_event`] and [`encode_command`].
 //!
 //! # Generating the Swift bindings
 //!
@@ -149,6 +149,7 @@ pub use account::{Account, ListedDevice};
 pub use error::KrowkError;
 pub use pairing::{Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite};
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+pub use protocol::encode_log_event;
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 // Its own line, so public-api.txt sees an addition and not a change.
 pub use sessions::ReadPlaceRecord;

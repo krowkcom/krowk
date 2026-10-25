@@ -34,6 +34,8 @@ targets:
         product: KrowkKeys
       - package: KrowkKit
         product: KrowkAccount
+      - package: KrowkKit
+        product: KrowkCache
       - package: KrowkCore
         product: Krowk
     settings:
@@ -82,6 +84,8 @@ targets:
         product: KrowkKit
       - package: KrowkKit
         product: KrowkAccount
+      - package: KrowkKit
+        product: KrowkCache
       - package: KrowkCore
         product: Krowk
     settings:

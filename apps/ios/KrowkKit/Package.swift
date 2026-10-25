@@ -13,6 +13,10 @@
 // Keychain refuses an unhosted test bundle (errSecMissingEntitlement), as
 // it has no application identifier.
 //
+// KrowkCache is the phone's on-device cache of the session index and the
+// recent transcripts (R-IOS-1, R-IOS-3): the system's SQLite, plain Swift
+// values and the events' JSON text, no bindings, so its tests are here.
+//
 // KrowkAccount is KrowkKit's sign-in, pairing, session list and live
 // relay connection (Network.framework) over the bindings
 // (R-IOS-9, R-E2E-3): the registry's browser sign-in, its key kept through
@@ -28,12 +32,14 @@ let package = Package(
         .library(name: "KrowkKit", targets: ["KrowkKit"]),
         .library(name: "KrowkKeys", targets: ["KrowkKeys"]),
         .library(name: "KrowkAccount", targets: ["KrowkAccount"]),
+        .library(name: "KrowkCache", targets: ["KrowkCache"]),
     ],
     dependencies: [.package(path: "../KrowkCore")],
     targets: [
         .target(name: "KrowkKit"),
-        .testTarget(name: "KrowkKitTests", dependencies: ["KrowkKit"]),
+        .testTarget(name: "KrowkKitTests", dependencies: ["KrowkKit", "KrowkCache"]),
+        .target(name: "KrowkCache", dependencies: ["KrowkKit"]),
         .target(name: "KrowkKeys", dependencies: [.product(name: "Krowk", package: "KrowkCore")]),
-        .target(name: "KrowkAccount", dependencies: ["KrowkKit", .product(name: "Krowk", package: "KrowkCore")]),
+        .target(name: "KrowkAccount", dependencies: ["KrowkKit", "KrowkCache", .product(name: "Krowk", package: "KrowkCore")]),
     ]
 )

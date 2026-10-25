@@ -115,6 +115,7 @@ extension HostedKeychain {
                 clearPushToken: { try await RegistryPushTokens(api: fleet.api, storage: storage).clear() },
                 forgetPush: {},
                 forgetKeys: { try storage.forgetAll() },
+                forgetCache: {},
                 log: { logged.append($0) }
             )
             try await reset.run()

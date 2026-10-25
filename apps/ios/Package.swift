@@ -2,7 +2,7 @@
 // The iPhone app for xtool (R-IOS-13), so Linux builds it with the
 // omarchy-apple-dev toolchain: `xtool dev build` here reads this and
 // xtool.yml. It compiles the very sources project.yml gives Xcode (App/,
-// KrowkKit, KrowkKeys and KrowkAccount, KrowkCore); keep the two in step,
+// KrowkKit, KrowkKeys, KrowkAccount and KrowkCache, KrowkCore); keep the two in step,
 // and keep this one thin. Swift 6 language mode, so strict concurrency is
 // complete. Zero third-party packages.
 import PackageDescription
@@ -25,6 +25,7 @@ let package = Package(
                 .product(name: "KrowkKit", package: "KrowkKit"),
                 .product(name: "KrowkKeys", package: "KrowkKit"),
                 .product(name: "KrowkAccount", package: "KrowkKit"),
+                .product(name: "KrowkCache", package: "KrowkKit"),
             ],
             path: "App",
             // ship.sh compiles the app icon from here with actool (README.md → Releasing to TestFlight).

@@ -80,16 +80,30 @@ struct DeviceGoneTests {
         #expect(source.calls.count == reads, "read again after the phone was found gone")
     }
 
-    @Test("R-E2E-3: the reset clears the push token first, then what push kept, then every key")
+    @Test("R-E2E-3, R-IOS-1: the reset clears the push token first, then what push kept, then every key, then the cache")
     func resetOrder() async throws {
         let steps = Box<[String]>([])
         let reset = PhoneReset(
             clearPushToken: { steps.value.append("clear the registry's token") },
             forgetPush: { steps.value.append("forget push") },
-            forgetKeys: { steps.value.append("forget the keys") }
+            forgetKeys: { steps.value.append("forget the keys") },
+            forgetCache: { steps.value.append("forget the cache") }
         )
         try await reset.run()
-        #expect(steps.value == ["clear the registry's token", "forget push", "forget the keys"])
+        #expect(steps.value == ["clear the registry's token", "forget push", "forget the keys", "forget the cache"])
+    }
+
+    @Test("R-IOS-1: a Keychain that refuses still leaves no cache behind")
+    func resetForgetsTheCacheWhenTheKeysFail() async throws {
+        struct Locked: Error {}
+        let steps = Box<[String]>([])
+        let reset = PhoneReset(
+            clearPushToken: {}, forgetPush: {},
+            forgetKeys: { throw Locked() },
+            forgetCache: { steps.value.append("forget the cache") }
+        )
+        await #expect(throws: Locked.self) { try await reset.run() }
+        #expect(steps.value == ["forget the cache"])
     }
 
     @Test("R-E2E-3: a push token the registry won't clear (it refuses a removed phone's key) doesn't stop the reset, and is logged")
@@ -101,6 +115,7 @@ struct DeviceGoneTests {
             clearPushToken: { throw Refused() },
             forgetPush: { steps.value.append("forget push") },
             forgetKeys: { steps.value.append("forget the keys") },
+            forgetCache: {},
             log: { logged.value.append($0) }
         )
         try await reset.run()
@@ -118,7 +133,8 @@ struct DeviceGoneTests {
             forgetKeys: {
                 if fail.value { throw Locked() }
                 forgotten.value += 1
-            }
+            },
+            forgetCache: {}
         )
         let done = Box(0)
         let model = DeviceGoneModel(gone: Self.removed, reset: reset, onReset: { done.value += 1 })
@@ -138,7 +154,7 @@ struct DeviceGoneTests {
     @Test("R-E2E-3: Check again goes back to Sessions when the phone is listed after all, and resets nothing either way")
     func checkAgain() async throws {
         let forgotten = Box(0)
-        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: { forgotten.value += 1 })
+        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: { forgotten.value += 1 }, forgetCache: {})
         let answer = Box<Standing>(.gone(Self.removed))
         let listed = Box(0)
         let model = DeviceGoneModel(
@@ -159,7 +175,7 @@ struct DeviceGoneTests {
 
     @Test("R-E2E-3: with no other device and no kit on the list it kept, the confirmation says the reset may lose every session")
     func onlyCopyWarns() async throws {
-        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: {})
+        let reset = PhoneReset(clearPushToken: {}, forgetPush: {}, forgetKeys: {}, forgetCache: {})
         let lone = DeviceGoneModel(gone: Self.removed, reset: reset, onlyCopy: { true }, onReset: {})
         try await until { lone.onlyCopy }
         #expect(lone.confirmation.contains("may hold the only copy of your keys"))

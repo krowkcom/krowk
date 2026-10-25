@@ -1,5 +1,6 @@
 import Foundation
 import Krowk
+import KrowkCache
 import KrowkKit
 import Synchronization
 
@@ -21,19 +22,32 @@ extension SessionSummary: SessionRecord {}
 /// for that reason. A list this phone won't trust (forked, shorter, one
 /// that starts elsewhere and doesn't verify) lists nothing either, and
 /// says so; it is no removal.
+///
+/// Each listing is written to `cache`, when there is one, as its index
+/// (ticket 129), off the calling thread.
 public final class RegistrySessions: SessionSource {
     public let api: String
     private let storage: any KeyStorage
     /// Opened on first use, off the main actor: opening reads the Keychain.
     private let account = Mutex<Account?>(nil)
     private let onGone: @Sendable (DeviceGone) -> Void
+    /// Where each listing is kept (R-IOS-1, R-IOS-3).
+    public let cache: SessionCache?
+    /// The last listing's write to `cache`.
+    private let caching = Mutex<Task<Void, Never>?>(nil)
 
     /// - Parameters:
     ///   - onGone: told, on whatever thread found it, each time a check
     ///     finds the phone gone; the app shows why, once.
-    public init(api: String, storage: any KeyStorage, onGone: @escaping @Sendable (DeviceGone) -> Void = { _ in }) {
+    ///   - cache: each listing's index goes there, and the transcripts of
+    ///     all but the 20 newest sessions go from it.
+    public init(
+        api: String, storage: any KeyStorage, cache: SessionCache? = nil,
+        onGone: @escaping @Sendable (DeviceGone) -> Void = { _ in }
+    ) {
         self.api = api
         self.storage = storage
+        self.cache = cache
         self.onGone = onGone
     }
 
@@ -52,6 +66,19 @@ public final class RegistrySessions: SessionSource {
             let list = try account.listSessions()
             let devices = (try? account.devices()) ?? []
             let names = Dictionary(devices.map { ($0.id, $0.name) }, uniquingKeysWith: { first, _ in first })
+            if let cache {
+                let sessions = list.sessions
+                let at = UInt64(Date.now.timeIntervalSince1970 * 1000)
+                // In the order the listings came back: each write waits
+                // for the one before.
+                caching.withLock { last in
+                    let previous = last
+                    last = Task.detached {
+                        await previous?.value
+                        await cache.record(sessions, listedAtMs: at)
+                    }
+                }
+            }
             return SessionListing(sessions: list.sessions, unreadable: Int(list.unreadable), deviceNames: names)
         } catch {
             throw SessionListFailure(error)

@@ -6,7 +6,7 @@
 //! follows: the change reaches the phone in the same PR (R-REPO-1). These
 //! are the real types, not mirrors; Swift gets them as generated enums and
 //! structs, and JSON only at the edges ([`decode_stream_line`],
-//! [`decode_log_event`], [`encode_command`]).
+//! [`decode_log_event`], [`encode_log_event`], [`encode_command`]).
 //!
 //! Two field types UniFFI has no word for cross as custom types:
 //! `serde_json::Value` (a tool's input, a provider blob's data) as its JSON
@@ -567,6 +567,14 @@ fn is_tag<T: serde::de::DeserializeOwned>(ty: &str) -> bool {
 #[uniffi::export]
 pub fn decode_log_event(json: String) -> Result<LogEvent, KrowkError> {
     serde_json::from_str(&json).map_err(decode_error("a log event"))
+}
+
+/// One line of a session's log as the log at rest holds it: its JSON
+/// text, which `decode_log_event` reads back. The phone's cache keeps
+/// events this way, so Swift never builds or parses their JSON.
+#[uniffi::export]
+pub fn encode_log_event(event: LogEvent) -> Result<String, KrowkError> {
+    serde_json::to_string(&event).map_err(|e| KrowkError::Internal { detail: format!("a log event did not encode: {e}") })
 }
 
 /// A command as the daemon reads it off the wire: its JSON text.
