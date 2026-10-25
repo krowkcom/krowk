@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk sync new` starts a session on another of your machines.**
+  `krowk sync new --host <name> --cwd <dir> [--model <instance>/<id>]
+  "<prompt>"` asks that machine's host daemon to start the session, waits
+  for its answer, then follows it as `krowk sync attach` does: the TUI on a
+  terminal, else stream-json, or with `--json`. `--host` is the machine's
+  name on your device list, in any case, or 8 or more characters of its
+  device id. A machine that is offline, a directory it does not offer, or a
+  model it has no ready instance for is refused at once, with the fix, and
+  nothing is sent. With no `--model`, its first ready instance's first model
+  runs. There is no `--permission-mode`: the host runs the session in its
+  own default mode. The prompt seals to at most 16 KiB.
 - **Another of your devices can start a session on a host.** A host's
   daemon now acts on a sealed start command delivered in its presence
   refresh: a new session in one of the repositories it announced, on a

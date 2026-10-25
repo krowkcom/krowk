@@ -174,3 +174,17 @@ fn is_uuid(s: &str) -> bool {
     let b = s.as_bytes();
     b.len() == 36 && b.iter().enumerate().all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { *c == b'-' } else { c.is_ascii_hexdigit() })
 }
+
+/// `GET /_host_commands`: every command held, by id, with its two devices
+/// and whether it is answered, never its bytes — for tests that reach the
+/// stand-in only over HTTP, to assert that nothing was sent. Stand-in only.
+pub fn commands_seen(app: &App) -> Resp {
+    let s = app.lock();
+    let mut held: Vec<(&String, &HostCommand)> = s.sync.host_commands.iter().collect();
+    held.sort_by_key(|(id, _)| (*id).clone());
+    let held = held
+        .into_iter()
+        .map(|(id, c)| Json::map([("id", Json::str(id)), ("sender", Json::str(&c.sender)), ("target", Json::str(&c.target)), ("answered", Json::Raw(c.answer.is_some().to_string()))]))
+        .collect();
+    Resp::json(200, &Json::map([("commands", Json::Arr(held))]))
+}
