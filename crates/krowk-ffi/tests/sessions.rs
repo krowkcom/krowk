@@ -304,11 +304,17 @@ fn r_perf_6_resume_refuses_an_index_older_than_its_place_and_a_fork() {
     let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
     let place = a.place().unwrap();
 
+    // An index behind the place while the registry still holds the place's
+    // chunk, as when a holder's index write failed: only behind.
     let old = store::Index { head: Some(a.heads[3]), ..index(&w, &h) };
-    let e = store::resume(&w.host, &h.keys, SESSION, old, place, None).unwrap_err();
+    assert!(store::resume(&w.host, &h.keys, SESSION, old.clone(), place, None).unwrap().events.is_empty());
+    // The registry no longer holds the place's chunk (another digest at its
+    // index stands in for a log restored to before it): rolled back.
+    let gone = ReadPlace { previous: [5; 32], head: store::Head { index: place.head.index, digest: [5; 32] }, ..place };
+    let e = store::resume(&w.host, &h.keys, SESSION, old, gone, None).unwrap_err();
     assert!(e.permanent && e.rolled_back, "{e:?}");
     let none = store::Index { head: None, ..index(&w, &h) };
-    assert!(store::resume(&w.host, &h.keys, SESSION, none, place, None).unwrap_err().rolled_back);
+    assert!(store::resume(&w.host, &h.keys, SESSION, none, gone, None).unwrap_err().rolled_back);
     // `known` still applies: another chunk at the head it names.
     let other = store::Head { index: place.head.index, digest: [7; 32] };
     assert!(store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, Some(other)).unwrap_err().rolled_back);
@@ -370,4 +376,21 @@ fn r_ios_1_a_newer_chunk_after_the_place_is_not_a_rollback() {
     w.host.put_chunk(SESSION, place.next, &newer, &h.token).unwrap();
     let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, None).unwrap_err();
     assert!(e.permanent && !e.rolled_back && e.detail.contains("upgrade krowk"), "{e:?}");
+}
+
+/// A chunk listed at another index than the one it opens at: the registry
+/// relabelling chunk 6 as chunk 7, so a head at 7 would seem reached with
+/// chunks 7 on hidden. Refused as a gap.
+#[test]
+fn r_perf_6_a_chunk_listed_at_another_index_than_its_own_is_refused() {
+    let w = World::new();
+    let h = chunked(&w, 6);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    let place = a.place().unwrap();
+    let mut sealer = e2e::ChunkSealer::new(&h.keys, krowk_client::sync::uuid(SESSION), place.next, place.previous, place.fence);
+    let sixth = sealer.seal(&serde_json::to_vec(&json!({"type": "events", "events": [event(SESSION, 7, "c7")]})).unwrap(), false).unwrap();
+    w.host.put_chunk(SESSION, place.next + 1, &sixth, &h.token).unwrap();
+    let relabelled = store::Head { index: place.next + 1, digest: e2e::chunk_digest(&sixth) };
+    let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, Some(relabelled)).unwrap_err();
+    assert!(e.rolled_back && e.detail.contains("a gap"), "{e:?}");
 }

@@ -440,17 +440,17 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
 /// only their events are in what it returns. They are held to the same
 /// chain (the first must follow `place`'s head), then to the index's head
 /// and to `known`. A chunk at `place.next` that does not follow it is
-/// another log, refused for good. So is an index older than `place` with no
-/// chunk after it served: the registry rolled back past what this device
-/// read. An index older than `place` with the log served on past it is
-/// only behind (a holder writes the chunk, then the index), and the chain
-/// from `place` binds what is read.
+/// another log, refused for good. An index older than `place` is only
+/// behind (a holder writes the chunk, then the index, and the index write
+/// can fail and be owed) while the registry still holds the place's own
+/// chunk, or serves the log on past it; when it holds neither, it rolled
+/// back past what this device read, refused for good.
 pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place: ReadPlace, known: Option<Head>) -> Result<Attached, ReadError> {
     place.check().map_err(ReadError::permanent)?;
     let behind = match index.head {
         Some(h) if h.index > place.head.index || h == place.head => None,
         Some(h) if h.index == place.head.index => return Err(ReadError::rolled_back(format!("the session's index names another chunk {} than the one this device read: the registry served another log", h.index))),
-        h => Some(format!("the session's index ends at chunk {}, where this device read to chunk {}, and the registry serves nothing after it: rolled back past what this device read, refused", h.map_or(-1, |h| h.index as i64), place.head.index)),
+        h => Some(format!("the session's index ends at chunk {}, where this device read to chunk {}, and the registry no longer holds that chunk: rolled back past what this device read, refused", h.map_or(-1, |h| h.index as i64), place.head.index)),
     };
     // Only what is read from here is held to a head: before it, the chain
     // this device read binds it.
@@ -458,7 +458,12 @@ pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place:
     let mut a = Attached { index, events: Vec::new(), head: Some(place.head), next: place.next, previous: place.previous, fence: place.fence, epoch: place.epoch, heads: vec![place.head] };
     catch_up(client, key, id, &mut a, sealed)?;
     if let Some(e) = behind.filter(|_| a.next == place.next) {
-        return Err(ReadError::rolled_back(e));
+        // Nothing after the place: the place's own chunk, as the registry
+        // lists it, says whether the index is behind or the log went back.
+        let listed = client.list_chunks(id, place.head.index.checked_sub(1), 1).map_err(ReadError::registry)?;
+        if !listed.chunks.first().is_some_and(|c| c.index == place.head.index && c.checksum == e2e::hex(&place.head.digest)) {
+            return Err(ReadError::rolled_back(e));
+        }
     }
     Head::at_least(&a.heads, known).map_err(ReadError::rolled_back)?;
     Ok(a)
