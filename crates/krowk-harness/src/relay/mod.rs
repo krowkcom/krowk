@@ -762,6 +762,7 @@ async fn close(ws: &mut Ws, r: &Refusal) {
 async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &tokio::sync::Notify) -> Option<(Ws, Key, DeviceId, u8, Join)> {
     use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
     let _ = stream.inner.set_nodelay(true);
+    let port = stream.inner.local_addr().ok().map(|a| a.port());
     let limits = &relay.config.limits;
     let config = WebSocketConfig::default().max_message_size(Some(limits.max_message)).max_frame_size(Some(limits.max_message));
     let seen: Rc<RefCell<Dialed>> = Rc::default();
@@ -809,7 +810,7 @@ async fn handshake(stream: Metered, relay: &Rc<Relay>, pending: u64, kill: &toki
     };
     let env = env.expect("checked with the ticket");
     relay.names(pending, (env, session), ticket.1.device, ticket.1.role, &ticket.1.workspace);
-    let result = challenge(&mut ws, relay, session, Some(env), &host, ticket, kill).await;
+    let result = challenge(&mut ws, relay, session, Some(env), &host, port, ticket, kill).await;
     let (device, role, join) = result?;
     Some((ws, (env, session), device, role, join))
 }
@@ -837,21 +838,36 @@ fn upgrade_ticket(relay: &Relay, session: [u8; 16], env: Option<Env>, hex: Optio
     Ok((hex.to_string(), t))
 }
 
+/// Whether a `Host` header names a port: `name:port`, `1.2.3.4:port` or
+/// `[v6]:port`.
+fn has_port(host: &str) -> bool {
+    host.rsplit_once(']').map_or(host, |(_, after)| after).contains(':')
+}
+
 /// A refusal before the join, recorded.
 async fn refused(ws: &mut Ws, env: Option<Env>, r: &Refusal) {
     record("join", env, None, r.code);
     close(ws, r).await;
 }
 
-/// The challenge, and the join that answers it.
-async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Option<Env>, host: &str, ticket: (String, krowk_client::relay_ticket::Ticket), kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
+/// The challenge, and the join that answers it. `port` is the one the
+/// connection came in on.
+#[allow(clippy::too_many_arguments)]
+async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Option<Env>, host: &str, port: Option<u16>, ticket: (String, krowk_client::relay_ticket::Ticket), kill: &tokio::sync::Notify) -> Option<(DeviceId, u8, Join)> {
     let limits = &relay.config.limits;
-    let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
     let removed = relay.removed.borrow().iter().filter_map(|o| e2e::canonical_origin(o)).collect::<Vec<_>>();
     let listed = relay.config.origins.iter().chain(relay.added.borrow().iter()).filter_map(|o| e2e::canonical_origin(o)).filter(|o| !removed.contains(o)).collect::<Vec<_>>();
     // A listener that ever published an origin holds to them, even with
     // every one let go: it never falls back to trusting `Host`.
     let published = !relay.config.origins.is_empty() || !relay.added.borrow().is_empty() || !relay.removed.borrow().is_empty();
+    // Network.framework's WebSocket sends `Host` without the port: a
+    // direct listener takes the one the connection came in on, which the
+    // phone dialed and signed. The origin must still be one it published.
+    let host = match port {
+        Some(p) if published && !has_port(host) => format!("{host}:{p}"),
+        _ => host.to_string(),
+    };
+    let given = relay.config.origin.clone().unwrap_or_else(|| format!("ws://{host}"));
     if published && !e2e::canonical_origin(&given).is_some_and(|o| listed.contains(&o)) {
         refused(ws, env, &refuse("bad_origin", format!("{given:?} is not an address this host published"), "dial one of the candidate addresses the host sent")).await;
         return None;
@@ -1503,7 +1519,20 @@ pub fn parse_uuid(s: &str) -> Option<[u8; 16]> {
 
 #[cfg(test)]
 mod tests {
-    use super::peer_bucket;
+    use super::{has_port, peer_bucket};
+
+    /// R-NET-2: a `Host` with its port is taken as it is; one without (as
+    /// Network.framework's WebSocket sends it) is given the port the
+    /// connection came in on, IPv6 brackets read right.
+    #[test]
+    fn r_net_2_a_host_header_names_its_port_or_does_not() {
+        for h in ["127.0.0.1:7791", "[::1]:7791", "mac.tail1.ts.net:7791"] {
+            assert!(has_port(h), "{h}");
+        }
+        for h in ["127.0.0.1", "[::1]", "[fd7a:115c::1]", "mac.tail1.ts.net", ""] {
+            assert!(!has_port(h), "{h}");
+        }
+    }
 
     /// R-RELAY-1: the pre-request cap counts an IPv6 peer by its /64 and an
     /// IPv4 one, v4-mapped included, by itself.

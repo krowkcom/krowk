@@ -199,7 +199,13 @@ extension HostedKeychain {
 
         @Test("R-OFF-2: sync resumes as connectivity returns: a link that keeps dropping backs off, and a usable network path joins it at once, not at its backoff")
         func pathWakes() async throws {
-            let (live, statuses) = try await Self.follow(try await Self.demo())
+            // A session whose direct listener is closed: every race loses
+            // and each drop is the relay's, on the backoff (a drop of a
+            // direct path joins the relay at once).
+            let phone = try await TestFleet.shared.paired()
+            let id = try await SessionListTests.control("", body: "Relay only")
+            #expect(try await SessionListTests.control("/\(id)/direct/close") == "closed")
+            let (live, statuses) = try await Self.follow(try await Self.open(id, phone: phone))
             defer { live.stop() }
             try await Self.wait(for: .live, on: live, within: .seconds(15))
             // Five drops in a row: 250 ms, 500 ms, 1 s, 2 s, 4 s of backoff,

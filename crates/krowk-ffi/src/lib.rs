@@ -156,7 +156,7 @@ pub use sessions::ReadPlaceRecord;
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
-pub use viewer::{ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{CandidateRecord, ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
 pub use viewer::{decode_cursor, encode_cursor};
 
 use krowk_client::pairing::PairingCode;
@@ -170,8 +170,9 @@ use krowk_client::pairing::PairingCode;
 /// `join_pairing` and `join_invite` take the os the phone runs, and
 /// `join_invite`'s `invite_mismatch` is `invite_other_account` or
 /// `invite_other_pairing`; 6: `ViewerUpdate` gains `Saved`, which a Swift
-/// switch over it must handle).
-pub const FFI_API_VERSION: u32 = 6;
+/// switch over it must handle; 7: the viewer's `Effect` gains the
+/// direct-path race, `Race` to `CloseLeaving`).
+pub const FFI_API_VERSION: u32 = 7;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

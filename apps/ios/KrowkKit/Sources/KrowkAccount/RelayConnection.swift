@@ -34,6 +34,18 @@ import os
 /// (`NWPathMonitor`, on this queue) and pull-to-refresh wake it — joining
 /// at once, replacing a silent or long-backgrounded connection, or probing
 /// a live one with a `ping`. Every join resumes at the core's cursor.
+///
+/// Direct paths (R-NET-2, ticket 133): once welcomed on the relay the
+/// viewer asks for a race of the welcome's candidates (the host's tailnet
+/// address, its MagicDNS name, its LAN address). This fetches one ticket
+/// and dials each candidate on a connection of its own beside the relay's;
+/// Rust times each join (3 s), picks the first that joins with the host
+/// there, says which connection is current from then (`moved`) and when
+/// the relay's goes (`closeLeaving`). A candidate's `ws://` is plain TCP:
+/// the host's direct listener admits by the ticket and the challenge
+/// signed over the address dialed, never by TLS. A LAN address needs the
+/// local network permission; denied, its connection waits and loses the
+/// race, and the session stays on the relay.
 public actor RelayConnection: LiveSession {
     /// The relay's largest message, its header and a 4 MiB batch
     /// (`krowk_harness::relay`'s `max_message`): anything larger fails the
@@ -53,6 +65,16 @@ public actor RelayConnection: LiveSession {
     /// dropped or ends.
     private var connection: NWConnection?
     private var current: UInt64?
+    /// The relay's connection while the session moves to a direct path,
+    /// until the direct welcome: read on, its number kept.
+    private var leaving: (connection: NWConnection, number: UInt64)?
+    /// Each candidate's connection racing for a direct path, by number.
+    private var candidates: [UInt64: NWConnection] = [:]
+    /// The `Race` acted on: a ticket fetched for an earlier one is dropped.
+    private var raceAsk: UInt64 = 0
+    /// The path the screen last heard, and who hears it.
+    private var sessionPath: String?
+    private var onPathChange: (@MainActor @Sendable (String) -> Void)?
     /// When the viewer next wants `tick`.
     private var wakeTimer: DispatchSourceTimer?
     /// The `NeedTicket` acted on: a later one replaces it, and a ticket
@@ -131,6 +153,12 @@ public actor RelayConnection: LiveSession {
     deinit {
         connection?.stateUpdateHandler = nil
         connection?.cancel()
+        leaving?.connection.stateUpdateHandler = nil
+        leaving?.connection.cancel()
+        for c in candidates.values {
+            c.stateUpdateHandler = nil
+            c.cancel()
+        }
         wakeTimer?.cancel()
         path?.cancel()
         // A retry of the open, if one waits, holds this weakly: it finds
@@ -140,8 +168,15 @@ public actor RelayConnection: LiveSession {
     /// The status as last published.
     public nonisolated var status: RelayStatus { shown.withLock { $0 } }
 
-    /// How many connections the viewer has dialed so far.
+    /// How many connections to the relay the viewer has dialed so far
+    /// (a race's candidates are not counted).
     public nonisolated var dials: Int { counts.withLock { $0 } }
+
+    /// The path the session comes by, as the viewer last said: `relay`,
+    /// `direct over Tailscale` or `direct over LAN`; nil before the first
+    /// welcome.
+    public nonisolated var shownPath: String? { paths_.withLock { $0 } }
+    private nonisolated let paths_ = OSAllocatedUnfairLock<String?>(initialState: nil)
 
     // MARK: LiveSession
 
@@ -151,6 +186,10 @@ public actor RelayConnection: LiveSession {
 
     public nonisolated func stop() {
         queue.async { self.assumeIsolated { $0.halt() } }
+    }
+
+    public nonisolated func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void) {
+        queue.async { self.assumeIsolated { $0.onPathChange = path } }
     }
 
     public nonisolated func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {
@@ -335,6 +374,7 @@ public actor RelayConnection: LiveSession {
                 // viewer holds its join): the foreground asks afresh, so a
                 // fetch iOS suspended mid-call never holds the return up.
                 ticketAsk += 1
+                raceAsk += 1
                 run(viewer.background(nowMs: now))
             case .wake: run(viewer.wake(nowMs: now))
             }
@@ -382,7 +422,10 @@ public actor RelayConnection: LiveSession {
     /// down): the connection woken. An unusable one does nothing: the
     /// socket says so itself, and nothing could be joined meanwhile.
     private func pathMoved(satisfied: Bool) {
-        if satisfied { lifecycle(.wake) }
+        guard satisfied else { return }
+        // Another network may reach the host directly: raced again now.
+        if !done, let viewer { run(viewer.networkChanged(nowMs: now())) }
+        lifecycle(.wake)
     }
 
     /// A command of the person's into the viewer: sent now, or queued in
@@ -459,6 +502,18 @@ public actor RelayConnection: LiveSession {
             case .close:
                 drop()
                 tracker.dropped()
+            case .race(let candidates):
+                race(candidates)
+            case .dialCandidate(let url, let ticket, let connection):
+                dialCandidate(url: url, ticket: ticket, number: connection)
+            case .sendOn(let connection, let bytes):
+                if let candidate = candidates[connection] { send(bytes, .binary, on: candidate) }
+            case .closeCandidate(let connection):
+                dropCandidate(connection)
+            case .moved(let connection):
+                moved(to: connection)
+            case .closeLeaving:
+                dropLeaving()
             case .show(let updates):
                 for update in updates {
                     switch update {
@@ -471,6 +526,7 @@ public actor RelayConnection: LiveSession {
                         settleGap()
                     case .caughtUp: tracker.caughtUp()
                     case .failed(let detail): failure = detail
+                    case .path(let path, _): showPath(path)
                     default: break
                     }
                 }
@@ -571,6 +627,15 @@ public actor RelayConnection: LiveSession {
         }
         counts.withLock { $0 += 1 }
         current = number
+        let connection = open(to, ticket: ticket, secure: secure, number: number)
+        self.connection = connection
+        connection.start(queue: queue)
+        receive(on: connection, number)
+    }
+
+    /// A WebSocket to `to`, the ticket in its upgrade's header, its state
+    /// reported as connection `number`'s. Not started.
+    private func open(_ to: URL, ticket: String, secure: Bool, number: UInt64) -> NWConnection {
         let parameters: NWParameters = secure ? .tls : .tcp
         let websocket = NWProtocolWebSocket.Options()
         websocket.autoReplyPing = true
@@ -581,9 +646,82 @@ public actor RelayConnection: LiveSession {
         connection.stateUpdateHandler = { [weak self] state in
             self?.assumeIsolated { $0.changed(state, number) }
         }
-        self.connection = connection
+        return connection
+    }
+
+    // MARK: Direct paths
+
+    /// `Race`: one ticket from the registry, off the queue, handed to the
+    /// viewer for every candidate; or the race lost when there's none.
+    private func race(_ candidates: [CandidateRecord]) {
+        raceAsk += 1
+        let ask = raceAsk
+        guard let session else { return }
+        offQueue(queue) { Result { try session.relayTicket() } } then: { me, fetched in
+            guard !me.done, ask == me.raceAsk, let viewer = me.viewer else { return }
+            switch fetched {
+            case .success(let ticket):
+                var effects: [Effect] = []
+                for candidate in candidates {
+                    effects += viewer.raceJoin(url: candidate.url, ticket: ticket, nowMs: me.now())
+                }
+                me.run(effects)
+            case .failure:
+                me.run(viewer.raceLost(nowMs: me.now()))
+            }
+        }
+    }
+
+    /// `DialCandidate`: a connection of its own beside the relay's. TLS
+    /// for `wss://`, plain TCP for `ws://`; anything else loses at once.
+    private func dialCandidate(url: String, ticket: String, number: UInt64) {
+        guard let viewer else { return }
+        guard let to = URL(string: url), let secure = Self.candidateSecure(to) else {
+            run(viewer.closed(connection: number, nowMs: now()))
+            return
+        }
+        let connection = open(to, ticket: ticket, secure: secure, number: number)
+        candidates[number] = connection
         connection.start(queue: queue)
         receive(on: connection, number)
+    }
+
+    /// `Moved`: the candidate is the current connection, and the relay's
+    /// the leaving one, read on until `closeLeaving`.
+    private func moved(to number: UInt64) {
+        guard let candidate = candidates.removeValue(forKey: number) else { return }
+        dropLeaving()
+        if let connection, let current { leaving = (connection, current) }
+        connection = candidate
+        current = number
+    }
+
+    private func dropCandidate(_ number: UInt64) {
+        guard let candidate = candidates.removeValue(forKey: number) else { return }
+        candidate.stateUpdateHandler = nil
+        candidate.cancel()
+    }
+
+    private func dropLeaving() {
+        guard let leaving else { return }
+        self.leaving = nil
+        leaving.connection.stateUpdateHandler = nil
+        leaving.connection.cancel()
+    }
+
+    /// `Update` path: kept for the tests, and to the screen when it moved.
+    private func showPath(_ shown: String) {
+        guard shown != sessionPath else { return }
+        sessionPath = shown
+        paths_.withLock { $0 = shown }
+        if let onPathChange {
+            DispatchQueue.main.async { MainActor.assumeIsolated { onPathChange(shown) } }
+        }
+    }
+
+    /// Whether a candidate's connection is still one this holds, by number.
+    private func holds(_ connection: NWConnection, _ number: UInt64) -> Bool {
+        (current == number && self.connection === connection) || (leaving?.number == number && leaving?.connection === connection) || candidates[number] === connection
     }
 
     private func changed(_ state: NWConnection.State, _ number: UInt64) {
@@ -608,7 +746,7 @@ public actor RelayConnection: LiveSession {
     }
 
     private func received(_ content: Data?, _ context: NWConnection.ContentContext?, _ isComplete: Bool, _ error: NWError?, _ connection: NWConnection, _ number: UInt64) {
-        guard !done, current == number, self.connection === connection, let viewer else { return }
+        guard !done, holds(connection, number), let viewer else { return }
         if error != nil {
             ended(number)
             return
@@ -643,21 +781,34 @@ public actor RelayConnection: LiveSession {
         @unknown default:
             break
         }
-        if !done, self.connection === connection { receive(on: connection, number) }
+        if !done, holds(connection, number) { receive(on: connection, number) }
     }
 
     /// Connection `number` ended or failed to open: the viewer hears it
-    /// once, if it is still the current one.
+    /// once, if it is still the current one, the leaving one or a
+    /// candidate's. Only the current one's end is the bar's.
     private func ended(_ number: UInt64) {
-        guard !done, current == number, let viewer else { return }
-        drop()
-        tracker.dropped()
+        guard !done, let viewer else { return }
+        if current == number {
+            drop()
+            tracker.dropped()
+        } else if leaving?.number == number {
+            dropLeaving()
+        } else if candidates[number] != nil {
+            dropCandidate(number)
+        } else {
+            return
+        }
         run(viewer.closed(connection: number, nowMs: now()))
     }
 
     private func send(_ content: Data, _ opcode: NWProtocolWebSocket.Opcode) {
         // With none open, dropped, as the viewer says.
         guard let connection else { return }
+        send(content, opcode, on: connection)
+    }
+
+    private func send(_ content: Data, _ opcode: NWProtocolWebSocket.Opcode, on connection: NWConnection) {
         let metadata = NWProtocolWebSocket.Metadata(opcode: opcode)
         let context = NWConnection.ContentContext(identifier: opcode == .binary ? "bin" : "text", metadata: [metadata])
         // A failed send fails the connection, which its state says.
@@ -685,6 +836,8 @@ public actor RelayConnection: LiveSession {
         guard !done else { return }
         done = true
         drop()
+        dropLeaving()
+        for number in Array(candidates.keys) { dropCandidate(number) }
         wakeTimer?.cancel()
         wakeTimer = nil
         path?.cancel()
@@ -741,6 +894,20 @@ public actor RelayConnection: LiveSession {
             if let host = url.host(percentEncoded: false)?.lowercased(), ["127.0.0.1", "::1", "[::1]", "localhost"].contains(host) { return false }
             #endif
             return nil
+        default: return nil
+        }
+    }
+
+    /// Whether a candidate's `url` may be dialed: `wss` over TLS, `ws` as
+    /// plain TCP (true, false), and nothing else (nil). The direct
+    /// listener admits by the ticket and the challenge signed over the
+    /// address dialed, so plain TCP on a tailnet or a LAN gives nobody a
+    /// way in; the welcome that named it is sealed to this phone.
+    public static func candidateSecure(_ url: URL) -> Bool? {
+        guard let host = url.host(percentEncoded: false), !host.isEmpty, url.user == nil else { return nil }
+        switch url.scheme?.lowercased() {
+        case "wss": return true
+        case "ws": return false
         default: return nil
         }
     }

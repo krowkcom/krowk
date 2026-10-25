@@ -291,6 +291,51 @@ fn streams(prompt: &str, lines_streamed: usize) {
     f.stop();
 }
 
+/// R-NET-2, R-IOS-15: with `--direct-lan` a session's welcome names its LAN
+/// listener on 127.0.0.1, and a viewer moves onto it; a join there whose
+/// `Host` has no port, as Network.framework's WebSocket sends it, is
+/// challenged over the port it came in on, which the phone signed; and
+/// `close_direct` (`POST /sessions/<id>/direct/close`) sends the viewer
+/// back to the relay.
+#[test]
+fn r_net_2_r_ios_15_a_direct_lan_fleet_moves_a_viewer_onto_its_loopback_listener_and_back() {
+    use futures_util::StreamExt;
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let f = fleet::start_with(false, true);
+    let id = f.hosting.host("direct").unwrap();
+    let b = fleet::Device::new("machine-b");
+    let (chain, batch) = f.chain.clone().batch(&f.user, vec![Change::Add(b.subject("machine-b"))], f.host.key.id(), &f.host.signing, fleet::T0 + 1).unwrap();
+    f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
+    b.client(&f.api).claim_key_device().unwrap();
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let mut v = rt.block_on(viewer::attach(o)).unwrap();
+    let direct = |u: &viewer::Update| match u {
+        viewer::Update::Path { path, via: Some(via) } if path == "direct over LAN" => Some(via.clone()),
+        _ => None,
+    };
+    let got = rt.block_on(until(&mut v, Duration::from_secs(15), |all| all.iter().any(|u| direct(u).is_some())));
+    let url = got.iter().find_map(direct).unwrap();
+    assert!(url.starts_with("ws://127.0.0.1:") && url != f.relay, "{url}");
+
+    let ticket = b.client(&f.api).relay_ticket(&id, &b.key.id().to_string(), &f.env).unwrap().relay_ticket;
+    let challenge = rt.block_on(async {
+        let mut req = format!("{url}/v1/relay/{id}?env=development").into_client_request().unwrap();
+        req.headers_mut().insert("host", "127.0.0.1".parse().unwrap());
+        req.headers_mut().insert("x-krowk-ticket", ticket.parse().unwrap());
+        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let first = tokio::time::timeout(Duration::from_secs(5), ws.next()).await.unwrap().unwrap().unwrap();
+        krowk_client::sync::join::read_control(&first.into_data()).unwrap()
+    });
+    assert_eq!(challenge["type"], "challenge", "{challenge}");
+    assert_eq!(challenge["relay"], url.as_str(), "over the port it came in on: {challenge}");
+
+    assert!(f.hosting.close_direct("no-such-session").is_err());
+    f.hosting.close_direct(&id).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(15), |all| all.iter().any(|u| matches!(u, viewer::Update::Path { path, via: None } if path == "relay"))));
+    f.stop();
+}
+
 // ------------------------------------------------- the process, pairing (ticket 76)
 
 /// A binary cargo built beside this test's, `target/<profile>/<rel>`: the

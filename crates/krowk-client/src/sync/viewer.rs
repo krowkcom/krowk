@@ -455,6 +455,10 @@ pub struct ViewerCore {
     // connection is still read meanwhile, and the one the session is on.
     candidates: Vec<Candidate>,
     probing: bool,
+    /// The next race is due as soon as one may run, whatever falls back
+    /// to the relay meanwhile: set by `race_now`, done with once a race
+    /// is asked for.
+    race_soon: bool,
     reprobe_ms: u64,
     backoff_ms: u64,
     moving: Option<Candidate>,
@@ -512,6 +516,7 @@ impl ViewerCore {
             last_ping_ms: now_ms,
             candidates: Vec::new(),
             probing: false,
+            race_soon: false,
             reprobe_ms: now_ms,
             backoff_ms: ms(REPROBE),
             moving: None,
@@ -763,6 +768,32 @@ impl ViewerCore {
         self.take()
     }
 
+    /// The next race as soon as one may run, its backoff started over:
+    /// the network changed (another Wi-Fi, a VPN up or down) or the app
+    /// came forward, so a phone that lost races on the café's network
+    /// finds the host as soon as it is home (R-NET-2, R-IOS-2). A race out
+    /// is let go uncounted (the caller drops its candidates), and the
+    /// reset holds through a fall back to the relay before the next race.
+    pub fn race_now(&mut self, now_ms: u64) {
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.race_soon = true;
+            self.reprobe_ms = now_ms;
+            self.backoff_ms = ms(REPROBE);
+        }
+    }
+
+    /// A race cut short by the relay's connection ending, not lost: the
+    /// next one as soon as one may run, the backoff as it was.
+    pub fn race_cut_short(&mut self, now_ms: u64) {
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.reprobe_ms = now_ms;
+        }
+    }
+
     /// A race nobody won: the next one later, the wait doubled.
     pub fn probe_lost(&mut self, now_ms: u64) {
         if !self.ended {
@@ -823,6 +854,7 @@ impl ViewerCore {
         }
         if self.may_probe() && now_ms >= self.reprobe_ms {
             self.probing = true;
+            self.race_soon = false;
             self.out.push(Effect::Probe);
         }
         self.take()
@@ -897,6 +929,10 @@ impl ViewerCore {
     }
 
     fn later(&mut self) {
+        if self.race_soon {
+            self.reprobe_ms = self.now_ms;
+            return;
+        }
         self.reprobe_ms = self.now_ms.saturating_add(self.backoff_ms);
         self.backoff_ms = self.backoff_ms.saturating_mul(2).min(ms(REPROBE_MAX));
     }

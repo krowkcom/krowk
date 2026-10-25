@@ -10,9 +10,18 @@
 //! Every method locks, calls, converts and returns: no thread, no runtime,
 //! no socket, no sleep, and the time is always the caller's `now_ms`. The
 //! one blocking call, [`Viewer::read_chunks`], copies what it needs under
-//! the lock and reads the registry after letting it go. Relay only: the
-//! direct paths (`Probe`, `Leave`, `move_to`) are not the phone's in M1,
-//! and a race the core asks for is lost at once, here.
+//! the lock and reads the registry after letting it go.
+//!
+//! Direct paths (R-NET-2, ticket 133): a race the core asks for is a
+//! `Race` naming the welcome's candidates. Swift fetches one ticket and
+//! hands it to `race_join` for each; each candidate is joined on a
+//! connection of its own, at the viewer's cursor, and given the core's
+//! `PROBE` (3 s, timed by `tick`) to join. The first that joins goes to
+//! `move_to` and the rest are dropped; with the host there it is the
+//! current connection from here (`Moved`), the relay's the leaving one
+//! until the direct welcome (`CloseLeaving`). A direct connection that ends
+//! joins the relay again at once, at the cursor. mDNS is never asked: the
+//! phone races only what the sealed welcome named.
 //!
 //! Each connection `Dial` asks for is numbered, and what Swift passes in
 //! names the connection it came from: anything from one this viewer has
@@ -33,6 +42,7 @@ use krowk_client::e2e::{self, RELAY_ROLE_VIEWER};
 use krowk_client::protocol::{Command, LogEvent, StreamLine};
 use krowk_client::sync::join::{self, Joining, Step};
 use krowk_client::sync::store::{self, Attached, Head, ReadError};
+use krowk_client::sync::Candidate;
 use krowk_client::sync::viewer::{self as core, Update, ViewerCore};
 use serde::Deserialize;
 use serde_json::Value;
@@ -46,6 +56,9 @@ use crate::supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 /// counts the connect on its own): past it the join failed, and is tried
 /// again.
 const JOIN_WAIT_MS: u64 = 10_000;
+
+/// How long each candidate of a race has to join: the core's `PROBE`.
+const PROBE_MS: u64 = core::PROBE.as_millis() as u64;
 
 /// What Swift does next, in the order given.
 #[derive(Clone, uniffi::Enum)]
@@ -78,9 +91,46 @@ pub enum Effect {
     /// it returns, failed or not. Until then the viewer holds the stream's
     /// batches.
     ReadChunks,
-    /// The viewer cannot go on; the `Show` before it says why. Drop the
-    /// connection and call nothing more.
+    /// The viewer cannot go on; the `Show` before it says why. Drop every
+    /// connection (the current, the leaving one, the candidates') and call
+    /// nothing more.
     End,
+    /// Race `candidates` for a direct path (R-NET-2): fetch one relay
+    /// ticket with `OpenedSession::relay_ticket`, off the main thread, and
+    /// hand it to `race_join` once for each candidate, or why it failed to
+    /// `race_lost`. The race's waits are the viewer's.
+    Race { candidates: Vec<CandidateRecord> },
+    /// As `Dial`, but beside the current connection, which stays: a
+    /// candidate's join. TLS for `wss://`; a candidate's `ws://` is plain
+    /// TCP, which the host's direct listener serves, admitting by the
+    /// ticket and the challenge signed over the address dialed.
+    DialCandidate { url: String, ticket: String, connection: u64 },
+    /// One binary message on candidate `connection`; with it gone, drop it.
+    SendOn { connection: u64, bytes: Vec<u8> },
+    /// Drop candidate `connection`: it lost the race, or took too long.
+    /// Anything more from it is ignored, its close included.
+    CloseCandidate { connection: u64 },
+    /// Candidate `connection` won: it is the current connection from here
+    /// (`Send`, `Ping` and `Close` go on it), and the one current until
+    /// now is the leaving one. Keep passing what that one receives to
+    /// `received`, until `CloseLeaving` or a `Close`.
+    Moved { connection: u64 },
+    /// Drop the leaving connection: the session moved to the direct path.
+    CloseLeaving,
+}
+
+/// One address the host may be reached at directly, as its welcome named
+/// it: `via` is `tailscale`, `magicdns` or `lan`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CandidateRecord {
+    pub url: String,
+    pub via: String,
+}
+
+impl From<Candidate> for CandidateRecord {
+    fn from(c: Candidate) -> Self {
+        CandidateRecord { url: c.url, via: c.via }
+    }
 }
 
 // By hand, so a `{:?}` of a `Dial` never logs the relay ticket.
@@ -95,6 +145,12 @@ impl fmt::Debug for Effect {
             Effect::Show { updates } => f.debug_struct("Show").field("updates", updates).finish(),
             Effect::ReadChunks => f.write_str("ReadChunks"),
             Effect::End => f.write_str("End"),
+            Effect::Race { candidates } => f.debug_struct("Race").field("candidates", candidates).finish(),
+            Effect::DialCandidate { url, connection, .. } => f.debug_struct("DialCandidate").field("url", url).field("ticket", &"…").field("connection", connection).finish(),
+            Effect::SendOn { connection, bytes } => f.debug_struct("SendOn").field("connection", connection).field("bytes", &bytes.len()).finish(),
+            Effect::CloseCandidate { connection } => f.debug_struct("CloseCandidate").field("connection", connection).finish(),
+            Effect::Moved { connection } => f.debug_struct("Moved").field("connection", connection).finish(),
+            Effect::CloseLeaving => f.write_str("CloseLeaving"),
         }
     }
 }
@@ -128,7 +184,8 @@ pub enum ViewerUpdate {
     /// Logged events the live stream did not bring: from the chunks or the
     /// host's catch-up.
     CaughtUp { events: Vec<LogEvent> },
-    /// The path the session comes by: `relay` on the phone.
+    /// The path the session comes by: `relay`, `direct over Tailscale` or
+    /// `direct over LAN`, and the address when direct.
     Path { path: String, via: Option<String> },
     /// The relay dropped a batch: the host is asked for what it held, and
     /// `CaughtUp` follows.
@@ -322,6 +379,28 @@ struct Inner {
     /// The next `Join` the core asks for replaces a connection now, on the
     /// supervisor's word, rather than backing off.
     replacing: bool,
+    /// The race for a direct path out, if any.
+    race: Option<Race>,
+    /// The relay's connection while the session moves off it, until the
+    /// direct welcome: what it receives goes to `ViewerCore::leaving`.
+    leaving: Option<u64>,
+}
+
+/// A race for a direct path: the candidates not yet handed a ticket, by
+/// when the ticket must come, and each candidate's join under way.
+struct Race {
+    untried: Vec<Candidate>,
+    extra: Value,
+    by: u64,
+    joins: Vec<RaceJoin>,
+}
+
+/// One candidate's join, on its own connection, and by when it must join.
+struct RaceJoin {
+    connection: u64,
+    candidate: Candidate,
+    joining: Joining,
+    by: u64,
 }
 
 /// What a viewer whose lock was poisoned says, every time. A panic aborts
@@ -366,7 +445,7 @@ impl Viewer {
         }
         let at_rest = session.snapshot();
         let (core, first) = ViewerCore::new(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, now_ms);
-        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false };
+        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None };
         Ok(Arc::new(Viewer { id: VIEWERS.fetch_add(1, Ordering::Relaxed), inner: Mutex::new(inner) }))
     }
 
@@ -423,12 +502,17 @@ impl Viewer {
         })
     }
 
-    /// A message `connection` received. Ignored unless it is the current
-    /// connection.
+    /// A message `connection` received: the current connection, the
+    /// leaving one or a candidate's. Ignored from any other.
     pub fn received(&self, connection: u64, frame: WsFrame, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             if i.connection != Some(connection) {
-                return Vec::new();
+                if i.leaving == Some(connection) {
+                    let WsFrame::Binary { bytes } = frame else { return Vec::new() };
+                    let out = i.core.leaving(&bytes, now_ms);
+                    return i.effects(out, now_ms);
+                }
+                return i.candidate_message(connection, frame, now_ms);
             }
             i.sup.with(|s| s.rules.heard(now_ms));
             if let Some((j, by)) = i.joining.as_mut() {
@@ -462,12 +546,19 @@ impl Viewer {
         })
     }
 
-    /// `connection` ended, or failed to open. Ignored unless it is the
-    /// current connection.
+    /// `connection` ended, or failed to open. The current one's end joins
+    /// again (at once, from a direct path); the leaving one's is let go; a
+    /// candidate's loses it the race. Ignored from any other.
     pub fn closed(&self, connection: u64, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             if i.connection != Some(connection) {
-                return Vec::new();
+                if i.leaving == Some(connection) {
+                    i.leaving = None;
+                    return Vec::new();
+                }
+                let Some(r) = i.race.as_mut() else { return Vec::new() };
+                r.joins.retain(|j| j.connection != connection);
+                return i.settle(now_ms);
             }
             i.connection = None;
             let out = match i.joining.take() {
@@ -488,6 +579,7 @@ impl Viewer {
                 let failed = i.core.join_failed(format!("the relay did not answer the join within {} seconds", JOIN_WAIT_MS / 1000), now_ms);
                 out = i.effects(failed, now_ms);
             }
+            out.extend(i.race_due(now_ms));
             // A wake's probe unanswered past its 5 s: replaced. The deadline
             // is done with either way, so one past is never asked again.
             if i.sup.with(|s| s.rules.take_probe_due(now_ms)) && i.link(now_ms) == LinkState::Up {
@@ -516,7 +608,8 @@ impl Viewer {
     /// lost from here is not joined again until `foreground`. A join
     /// waiting for its ticket (on the backoff, or being fetched) is held
     /// too: Swift drops the ticket it asked for, and `foreground` asks
-    /// afresh, so a fetch iOS suspended never holds the return up.
+    /// afresh, so a fetch iOS suspended never holds the return up. So is a
+    /// race: its candidates dropped, it runs once in the foreground.
     pub fn background(&self, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             i.sup.background(now_ms);
@@ -524,18 +617,32 @@ impl Viewer {
                 i.held = true;
                 i.ticket_at = None;
             }
-            Vec::new()
+            // No race in the background: the one out is held for the
+            // foreground, its candidates dropped.
+            i.hold_race()
         })
+    }
+
+    /// A network path became usable after a change (Wi-Fi to cellular, a
+    /// VPN up or down): off a direct path, the next race is due at once,
+    /// its backoff started over (R-NET-2). Call it before `wake`.
+    pub fn network_changed(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| i.race_now(now_ms))
     }
 
     /// The scene is coming forward: after 10 s or more away the
     /// connection is replaced at once, one lost meanwhile joined now, and
-    /// otherwise as `wake`.
+    /// otherwise as `wake`; the next race for a direct path is due at once.
     pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             let link = i.link(now_ms);
             let w = i.sup.foreground(now_ms, link);
-            i.act(w, now_ms)
+            let mut out = i.act(w, now_ms);
+            // Come forward, the direct paths are raced as soon as the relay
+            // has welcomed this viewer (R-IOS-2), a race held there with
+            // them.
+            out.extend(i.race_now(now_ms));
+            out
         })
     }
 
@@ -553,8 +660,44 @@ impl Viewer {
     pub fn next_wake_ms(&self) -> Option<u64> {
         let i = self.inner.lock().ok()?;
         let core = i.core.next_wake()?;
-        let at = i.joining.as_ref().map_or(core, |(_, by)| core.min(*by));
+        let mut at = i.joining.as_ref().map_or(core, |(_, by)| core.min(*by));
+        if let Some(r) = &i.race {
+            at = r.joins.iter().map(|j| j.by).chain((!r.untried.is_empty()).then_some(r.by)).fold(at, u64::min);
+        }
         Some(i.sup.with(|s| s.rules.next_wake()).map_or(at, |p| at.min(p)))
+    }
+
+    /// The ticket a `Race` asked for, for the candidate at `url`: its
+    /// `DialCandidate`, the join at the viewer's cursor that follows, and
+    /// `PROBE` to finish it. Nothing for a URL the race does not name, one
+    /// already handed a ticket, or a race over.
+    pub fn race_join(&self, url: String, ticket: String, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| {
+            if i.sup.in_background() {
+                return i.hold_race();
+            }
+            let Some(r) = i.race.as_mut() else { return Vec::new() };
+            let Some(k) = r.untried.iter().position(|c| c.url == url) else { return Vec::new() };
+            let c = r.untried.remove(k);
+            let o = &i.opened;
+            let id = o.id();
+            match Joining::new(&c.url, &id, o.env(), o.device(), RELAY_ROLE_VIEWER, r.extra.clone()) {
+                Ok(joining) => {
+                    let d = join::dial(&c.url, &id, o.env(), &ticket);
+                    i.dialed += 1;
+                    r.joins.push(RaceJoin { connection: i.dialed, candidate: c, joining, by: now_ms.saturating_add(PROBE_MS) });
+                    vec![Effect::DialCandidate { url: d.url, ticket: d.ticket, connection: i.dialed }]
+                }
+                Err(_) => i.settle(now_ms),
+            }
+        })
+    }
+
+    /// The ticket a `Race` asked for could not be had: the race is lost,
+    /// and the core races again later, backing off. Nothing with no race
+    /// out.
+    pub fn race_lost(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| i.lose_race(now_ms))
     }
 
     /// Reads the chunks the host wrote since the viewer's last read, up to
@@ -657,6 +800,94 @@ impl Inner {
         if !joins && self.connection.take().is_some() {
             out.push(Effect::Close);
         }
+        // A replaced link may be a changed network: raced again at once.
+        out.extend(self.race_now(now_ms));
+        out
+    }
+
+    /// A message on candidate `connection`: its join moved on, failed, or
+    /// done. The first to join is handed to `move_to`, and every other
+    /// candidate dropped.
+    fn candidate_message(&mut self, connection: u64, frame: WsFrame, now_ms: u64) -> Vec<Effect> {
+        let Some(r) = self.race.as_mut() else { return Vec::new() };
+        let Some(k) = r.joins.iter().position(|j| j.connection == connection) else { return Vec::new() };
+        let WsFrame::Binary { bytes } = frame else { return Vec::new() };
+        match r.joins[k].joining.message(self.opened.signing(), &bytes) {
+            Ok(Step::Wait) => Vec::new(),
+            Ok(Step::Send(bytes)) => vec![Effect::SendOn { connection, bytes }],
+            Ok(Step::Joined(joined)) => {
+                let Some(mut r) = self.race.take() else { return Vec::new() };
+                let won = r.joins.remove(k);
+                let mut out: Vec<Effect> = r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect();
+                let moved = self.core.move_to(won.candidate, &joined, now_ms);
+                // With the hello to send the candidate's connection is the
+                // current one; without it (no host there yet, a read out)
+                // the core races again later.
+                if moved.iter().any(|e| matches!(e, core::Effect::Send(_))) {
+                    self.leaving = self.connection.replace(connection);
+                    out.push(Effect::Moved { connection });
+                } else {
+                    out.push(Effect::CloseCandidate { connection });
+                }
+                out.extend(self.effects(moved, now_ms));
+                out
+            }
+            Err(_) => {
+                r.joins.remove(k);
+                let mut out = vec![Effect::CloseCandidate { connection }];
+                out.extend(self.settle(now_ms));
+                out
+            }
+        }
+    }
+
+    /// The next race as soon as one may run (`ViewerCore::race_now`): a
+    /// race out, or held, is let go uncounted, its candidates dropped.
+    fn race_now(&mut self, now_ms: u64) -> Vec<Effect> {
+        let out = self.race.take().map(|r| r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()).unwrap_or_default();
+        self.core.race_now(now_ms);
+        out
+    }
+
+    /// The race out, if any, held for the foreground: its candidates
+    /// dropped, the core still thinking it out, so it asks for none more.
+    fn hold_race(&mut self) -> Vec<Effect> {
+        let Some(r) = self.race.take() else { return Vec::new() };
+        r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()
+    }
+
+    /// A race with no candidate left to try or under way is lost.
+    fn settle(&mut self, now_ms: u64) -> Vec<Effect> {
+        if self.race.as_ref().is_some_and(|r| r.untried.is_empty() && r.joins.is_empty()) {
+            return self.lose_race(now_ms);
+        }
+        Vec::new()
+    }
+
+    /// The race out, if any, lost: every candidate's connection dropped,
+    /// and the next race later, the wait doubled.
+    fn lose_race(&mut self, now_ms: u64) -> Vec<Effect> {
+        let Some(r) = self.race.take() else { return Vec::new() };
+        self.core.probe_lost(now_ms);
+        r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()
+    }
+
+    /// The race's waits: a candidate not joined within `PROBE` is
+    /// dropped, and those never handed a ticket in time are let go.
+    fn race_due(&mut self, now_ms: u64) -> Vec<Effect> {
+        let Some(r) = self.race.as_mut() else { return Vec::new() };
+        if now_ms >= r.by {
+            r.untried.clear();
+        }
+        let mut out = Vec::new();
+        r.joins.retain(|j| {
+            let due = now_ms >= j.by;
+            if due {
+                out.push(Effect::CloseCandidate { connection: j.connection });
+            }
+            !due
+        });
+        out.extend(self.settle(now_ms));
         out
     }
 
@@ -689,6 +920,15 @@ impl Inner {
                     if self.connection.take().is_some() {
                         out.push(Effect::Close);
                     }
+                    if self.leaving.take().is_some() {
+                        out.push(Effect::CloseLeaving);
+                    }
+                    // Every connection goes with the relay's: a race out is
+                    // cut short, uncounted, and run once joined again.
+                    if let Some(r) = self.race.take() {
+                        out.extend(r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }));
+                        self.core.race_cut_short(now_ms);
+                    }
                     self.joining = None;
                     self.pending = Some(extra);
                     let replacing = std::mem::take(&mut self.replacing);
@@ -704,15 +944,27 @@ impl Inner {
                     self.ticket_at = at;
                     out.extend(at.map(|at_ms| Effect::NeedTicket { at_ms }));
                 }
-                // Relay only on the phone: a race for a direct path is lost
-                // as it is asked, and the core asks again later, backing off.
-                core::Effect::Probe => self.core.probe_lost(now_ms),
-                // Only a move to a direct path leaves a connection behind.
-                core::Effect::Leave => {}
+                // Swift fetches one ticket for every candidate. Never in the
+                // background: held for the foreground, the core thinking it
+                // out so it asks for no other.
+                core::Effect::Probe if self.sup.in_background() => {}
+                core::Effect::Probe => {
+                    out.extend(self.lose_race(now_ms));
+                    let candidates = self.core.candidates().to_vec();
+                    out.push(Effect::Race { candidates: candidates.iter().cloned().map(Into::into).collect() });
+                    self.race = Some(Race { untried: candidates, extra: self.core.cursor_extra(), by: now_ms.saturating_add(JOIN_WAIT_MS), joins: Vec::new() });
+                }
+                core::Effect::Leave => {
+                    if self.leaving.take().is_some() {
+                        out.push(Effect::CloseLeaving);
+                    }
+                }
                 core::Effect::End => {
                     self.pending = None;
                     self.joining = None;
                     self.connection = None;
+                    self.leaving = None;
+                    self.race = None;
                     self.held = false;
                     out.push(Effect::End);
                 }

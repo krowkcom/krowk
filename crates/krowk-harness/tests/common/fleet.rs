@@ -199,7 +199,7 @@ impl Fleet {
     }
 
     /// Stops the bridge and every session a test had hosted, waits for
-    /// them, and removes the scratch root.
+    /// them, closes every direct listener, and removes the scratch root.
     pub fn stop(self) {
         self.stop_host();
         let _ = self.bridge.join();
@@ -213,6 +213,14 @@ impl Fleet {
 /// waiting on an approval. Panics, saying what, if a
 /// piece does not come up.
 pub fn start(demo: bool) -> Fleet {
+    start_with(demo, false)
+}
+
+/// `start`, every bridge offering its LAN listener on 127.0.0.1 with
+/// `direct_lan` (`KROWK_DIRECT_LAN`, with no Tailscale on the machine): a
+/// welcome names `ws://127.0.0.1:<port>` as a `lan` candidate, which a
+/// viewer may dial because the welcome named loopback itself.
+pub fn start_with(demo: bool, direct_lan: bool) -> Fleet {
     let root = scratch::root("fleet");
     for d in ["home", "run", "repo/.git"] {
         std::fs::create_dir_all(root.join(d)).unwrap();
@@ -249,6 +257,8 @@ pub fn start(demo: bool) -> Fleet {
         tests: std::sync::Mutex::default(),
         started: std::sync::Condvar::new(),
         turns: Arc::default(),
+        direct_lan: direct_lan.then(|| root.join("no-tailscaled.sock")),
+        directs: std::sync::Mutex::default(),
     });
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
@@ -342,6 +352,11 @@ pub struct Hosting {
     tests: std::sync::Mutex<Tests>,
     started: std::sync::Condvar,
     turns: Turns,
+    /// With `--direct-lan`, where tailscaled is not (no Tailscale): every
+    /// bridge offers its LAN listener on 127.0.0.1.
+    direct_lan: Option<PathBuf>,
+    /// What stops each session's direct listener, by session.
+    directs: std::sync::Mutex<std::collections::HashMap<String, watch::Sender<bool>>>,
 }
 
 /// The sessions hosted for tests, by id; how many are still starting; and
@@ -428,11 +443,29 @@ impl Hosting {
         Ok(())
     }
 
+    /// Closes `session`'s direct listener (with `--direct-lan`), as a LAN
+    /// path lost would: its viewers there go back to the relay, and those
+    /// racing it later find nothing listening. The bridge, the relay and
+    /// the lease stay.
+    pub fn close_direct(&self, session: &str) -> Result<(), String> {
+        if self.direct_lan.is_none() {
+            return Err("the fleet offers no direct path: start it with --direct-lan".into());
+        }
+        let directs = self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let stop = directs.get(session).ok_or_else(|| format!("the fleet hosts no session {session}"))?;
+        let _ = stop.send(true);
+        Ok(())
+    }
+
     /// Stops the bridge of `session`, a test's own, which lets its lease
     /// go; returns once the registry shows no lease on it.
     pub fn release(&self, session: &str) -> Result<(), String> {
         let (stop, bridge) = self.tests.lock().unwrap().bridges.remove(session).ok_or_else(|| format!("the fleet hosts no test session {session}"))?;
         let _ = stop.send(true);
+        // Its direct listener goes with it; `host_again` starts another.
+        if let Some(direct) = self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session) {
+            let _ = direct.send(true);
+        }
         let _ = bridge.join();
         let api = self.host.client(&self.api);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -519,6 +552,9 @@ impl Hosting {
         for (_, bridge) in all {
             let _ = bridge.join();
         }
+        for (_, direct) in self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain() {
+            let _ = direct.send(true);
+        }
     }
 
     /// A prompt to host A's daemon, for the mock model.
@@ -565,7 +601,12 @@ impl Hosting {
             sessions: self.sessions.clone(),
             ttl: host::LEASE_TTL,
             keep: host::KEEP,
-            direct: None,
+            direct: self.direct_lan.as_ref().map(|socket| {
+                let (stop, stopped) = watch::channel(false);
+                self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session.into(), stop);
+                let lan_at: krowk_harness::sync::direct::LanAt = Arc::new(|| vec![std::net::Ipv4Addr::LOCALHOST.into()]);
+                krowk_harness::sync::direct::Config { socket: socket.clone().into(), roster: roster(), same_user: false, lan: true, lan_at: Some(lan_at), stop: Some(stopped) }
+            }),
             tailnet: None,
             handed: None,
             approval_wait: host::APPROVAL_WAIT,
@@ -604,11 +645,16 @@ fn drain() -> mpsc::Sender<StreamLine> {
 fn relay() -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let origin = format!("ws://{}", listener.local_addr().unwrap());
-    let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
-    let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
-    let config = krowk_harness::relay::Config { roster, origin: Some(origin.clone()), limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None };
+    let config = krowk_harness::relay::Config { roster: roster(), origin: Some(origin.clone()), limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None };
     std::thread::spawn(move || krowk_harness::relay::run(listener, config));
     origin
+}
+
+/// The stand-in registry's ticket key, as the relay and the direct
+/// listeners trust it.
+fn roster() -> krowk_harness::relay::Roster {
+    let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
+    krowk_harness::relay::Roster::parse(&roster).unwrap()
 }
 
 /// The environment host A's daemon reads: its home and runtime directory
