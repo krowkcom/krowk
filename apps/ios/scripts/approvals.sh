@@ -7,6 +7,8 @@
 #    refuses a rule for the project from one, so the app has no path that
 #    could send it. The generated bindings (KrowkCore/build) and build
 #    output aside.
+#    The new-session flow's sources (*NewSession*.swift) never name
+#    permissionMode either (R-HOST-4): the host's own settings apply.
 # 2. Given a built app: a Release build compiles only the LAContext owner
 #    check. The UI tests' stub and the launch argument that picks it are
 #    under #if DEBUG, so neither may be in any Mach-O file of a Release
@@ -36,6 +38,18 @@ if [ -n "$found" ]; then
   exit 1
 fi
 echo "R-IOS-11: no allowProject in apps/ios's sources"
+# R-HOST-4: the new-session flow (every *NewSession*.swift) never names a
+# permission mode outside a comment: a session the phone starts runs under
+# the host's own settings, and the start has no field for one.
+found=$(find "$ios" -name '*NewSession*.swift' -not -path '*/build/*' -not -path '*/.build/*' -not -path '*/xtool/*' -not -path '*/DerivedData/*' -print0 \
+  | xargs -0 -r grep -HniE 'permission_?mode' \
+  | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
+if [ -n "$found" ]; then
+  echo "R-HOST-4: the new-session sources name permissionMode outside a comment:" >&2
+  echo "$found" >&2
+  exit 1
+fi
+echo "R-HOST-4: no permissionMode in the new-session sources"
 
 [ "$#" -gt 0 ] || exit 0
 app=$1 kind=${2:-release}

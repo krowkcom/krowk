@@ -140,7 +140,7 @@ public final class RegistrySessions: SessionSource {
         }
     }
 
-    private func opened() throws -> Account {
+    func opened() throws -> Account {
         if let account = account.withLock({ $0 }) { return account }
         let opened = try Account.open(api: api, storage: storage)
         return account.withLock { kept in
