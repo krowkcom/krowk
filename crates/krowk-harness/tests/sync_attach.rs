@@ -4197,6 +4197,11 @@ async fn r_switch_4_a_model_a_cannot_run_is_refused_with_the_fix_and_nothing_sta
     let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
     assert_eq!(code, "no_instance");
     assert!(message.contains("nope"), "{message}");
+    // And what the daemon refuses of the prompt itself is its own refusal.
+    let id = command_id();
+    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &mock_model(&w), "   "));
+    let HostAnswer::Refused { code, .. } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
+    assert_eq!(code, "empty_prompt");
     assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
     auto.stop(Duration::from_secs(10)).await;
 }
@@ -4246,17 +4251,24 @@ async fn r_host_4_a_started_sessions_first_approval_waits_for_its_bridge() {
     send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &mock_model(&w), "make the file"));
     let by = Instant::now() + Duration::from_secs(20);
     let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
-    // The bridge alone follows it, once the start's client has gone.
-    let held = loop {
-        let status = w.daemon().await.status().await.unwrap();
-        let s = status.sessions.into_iter().find(|s| s.session_id == session_id);
-        // The test's own status client follows nothing.
-        if let Some(s) = s.filter(|s| s.clients == 1 && s.answering == 1) {
-            break s;
+    // The test's own status client follows nothing.
+    let followed = |clients: u32, answering: u32| {
+        let w = &w;
+        let session_id = session_id.clone();
+        async move {
+            loop {
+                let status = w.daemon().await.status().await.unwrap();
+                if let Some(s) = status.sessions.into_iter().find(|s| s.session_id == session_id && s.clients == clients && s.answering == answering) {
+                    return s;
+                }
+                assert!(Instant::now() < by, "{session_id} was never followed by {clients} clients, {answering} answering");
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
         }
-        assert!(Instant::now() < by, "the bridge never followed {session_id} alone");
-        tokio::time::sleep(Duration::from_millis(50)).await;
     };
+    // The start's client and the bridge, then the bridge alone.
+    followed(2, 2).await;
+    let held = followed(1, 1).await;
     assert!(held.running, "the turn ended: its approval was denied");
     assert!(!w.repo().join("approved.txt").exists());
     auto.stop(Duration::from_secs(10)).await;

@@ -10,9 +10,10 @@
 //! answered is answered the same again, and nothing runs. One being worked
 //! on, or whose answer is on its way, is skipped until it is done. One that
 //! does not open gets no answer (an answer would need a key the sender
-//! proved it holds) and is said once in host.log; it is tried again once
-//! the device list has been read again, since a device paired since, or a
-//! user key rotated since, is not yet on the list this host holds. Those
+//! proved it holds) and is said once in host.log; it is tried again a
+//! minute later, as the host reads its device list again each minute,
+//! since a device paired since, or a user key rotated since, is not yet on
+//! the list this host holds. Those
 //! are kept apart, `UNOPENED` at most, so bytes nobody can open never push
 //! an answered id out.
 //!
@@ -167,15 +168,17 @@ impl Commands {
                     me.lock().working.insert(id.clone());
                     let (me2, c2, id2, host) = (me.clone(), c.clone(), id.clone(), host.to_string());
                     let spawned = std::thread::Builder::new().name("krowk-host-command".into()).spawn(move || {
-                        let told = Mutex::new(false);
+                        let told = std::cell::Cell::new(false);
                         let tell = |answer: HostAnswer| {
-                            *told.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                            told.set(true);
                             finish(&me2, &c2, &id2, from, answer);
                         };
                         let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&c2, &host, command, &tell)));
-                        if ran.is_err() && !*told.lock().unwrap_or_else(|e| e.into_inner()) {
-                            tell(HostAnswer::refused("host_failed", "the host's start panicked — see host.log on it, and send the start again"));
+                        if ran.is_err() && !told.get() {
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's start panicked — see host.log on it, and send the start again"))));
                         }
+                        // However it ended, the id is no longer worked on.
+                        me2.lock().working.remove(&id2);
                     });
                     if spawned.is_err() {
                         // Not started: delivered again, it is tried again.
@@ -278,13 +281,16 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
     };
     // No deadline of its own: a refusal said while a turn may yet start
     // would have the sender start it again. A daemon that goes ends it.
+    let mut closed = false;
     let session = loop {
         tokio::select! {
-            // The turn's lines first: they all arrive before its end.
+            // The turn's lines first: they all arrive before its end. Their
+            // stream closes as the command is done, a refusal included, so
+            // the end is waited for then.
             biased;
-            line = rx.recv() => match line {
+            line = rx.recv(), if !closed => match line {
                 Some(l) => if let Some(s) = started(&l) { break s },
-                None => return tell(HostAnswer::refused("host_gone", "the host daemon closed the connection before the turn started — `krowk host status` there says whether it is up")),
+                None => closed = true,
             },
             done = &mut run => {
                 if let Some(s) = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|l| started(&l)) {
