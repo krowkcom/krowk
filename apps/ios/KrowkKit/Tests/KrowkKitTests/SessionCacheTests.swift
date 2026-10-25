@@ -46,9 +46,10 @@ struct SessionCacheTests {
         #expect(try await cache.events(session: "a", limit: 10).isEmpty)
         #expect(try await cache.events(session: "b", limit: 10).count == 3)
 
-        // A listing older than the last one written, arriving late, is dropped.
-        try await cache.putIndex([Self.session("c")], listedAtMs: 150)
-        #expect(try await cache.index().map(\.id) == ["b"])
+        // An empty digest is kept as one, not as none.
+        try await cache.putIndex([CachedSession(id: "c", title: "", cwd: "", updatedMs: 1, headIndex: 0, headDigest: Data())], listedAtMs: 300)
+        #expect(try await cache.index().first?.headDigest == Data())
+        #expect(try await cache.index().first?.headIndex == 0)
     }
 
     @Test("R-IOS-1: an event id appended twice is kept once, where it first was")

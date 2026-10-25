@@ -33,6 +33,8 @@ public final class RegistrySessions: SessionSource {
     private let onGone: @Sendable (DeviceGone) -> Void
     /// Where each listing is kept (R-IOS-1, R-IOS-3).
     public let cache: SessionCache?
+    /// The last listing's write to `cache`.
+    private let caching = Mutex<Task<Void, Never>?>(nil)
 
     /// - Parameters:
     ///   - onGone: told, on whatever thread found it, each time a check
@@ -67,7 +69,15 @@ public final class RegistrySessions: SessionSource {
             if let cache {
                 let sessions = list.sessions
                 let at = UInt64(Date.now.timeIntervalSince1970 * 1000)
-                Task.detached { await cache.record(sessions, listedAtMs: at) }
+                // In the order the listings came back: each write waits
+                // for the one before.
+                caching.withLock { last in
+                    let previous = last
+                    last = Task.detached {
+                        await previous?.value
+                        await cache.record(sessions, listedAtMs: at)
+                    }
+                }
             }
             return SessionListing(sessions: list.sessions, unreadable: Int(list.unreadable), deviceNames: names)
         } catch {

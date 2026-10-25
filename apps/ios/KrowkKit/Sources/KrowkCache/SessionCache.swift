@@ -98,8 +98,6 @@ public actor SessionCache {
     /// The open connection; closed when it goes.
     private var connection: Connection?
     private var forgotten = false
-    /// The newest listing written: an older one arriving late is dropped.
-    private var listedAtMs: UInt64?
 
     /// No I/O: the file opens on first use.
     public init(at url: URL = SessionCache.defaultURL) {
@@ -118,10 +116,8 @@ public actor SessionCache {
 
     /// Replaces the whole index with `sessions`, in one transaction: a
     /// session gone from the listing goes from the cache, with its events
-    /// and cursor. A session listed again keeps its saved place. A listing
-    /// older than one already written is dropped.
+    /// and cursor. A session listed again keeps its saved place.
     public func putIndex(_ sessions: [CachedSession], listedAtMs: UInt64) throws(SessionCacheFailure) {
-        if let newest = self.listedAtMs, listedAtMs < newest { return }
         let db = try opened()
         try transaction(db) { () throws(SessionCacheFailure) in
             try exec(db, "CREATE TEMP TABLE IF NOT EXISTS listed(id TEXT PRIMARY KEY)")
@@ -153,7 +149,6 @@ public actor SessionCache {
             try exec(db, "DELETE FROM sessions WHERE id NOT IN (SELECT id FROM temp.listed)")
             try exec(db, "DELETE FROM temp.listed")
         }
-        self.listedAtMs = listedAtMs
     }
 
     /// The index, most recently updated first.
@@ -311,6 +306,8 @@ public actor SessionCache {
             sqlite3_file_control(db, "main", SQLITE_FCNTL_PERSIST_WAL, &persist)
             try exec(db, "PRAGMA journal_mode = WAL")
             try exec(db, "PRAGMA foreign_keys = OFF")
+            // A temp table never spills to an unprotected file in tmp/.
+            try exec(db, "PRAGMA temp_store = MEMORY")
             let version = try Statement(db, "PRAGMA user_version")
             let found: Int32 = try version.step() ? Int32(truncatingIfNeeded: version.int(0) ?? 0) : 0
             switch found {
@@ -350,12 +347,19 @@ public actor SessionCache {
         }
     }
 
-    /// `.complete` and out of backups, the database and every side file
-    /// SQLite made beside it: set at each open, as a side file may be new.
+    /// Out of backups, the database and every side file SQLite made
+    /// beside it, and `.complete`, the database and its WAL, which hold
+    /// the content: set at each open, as a side file may be new. The
+    /// shared-memory index (`-shm`) keeps the class SQLite gives it: it
+    /// is mapped into memory, holds no content, and a mapping whose key
+    /// went at lock faults rather than fails.
     private func protect() throws(SessionCacheFailure) {
         for var file in Self.files(url) where FileManager.default.fileExists(atPath: file.path(percentEncoded: false)) {
             do {
-                try FileManager.default.setAttributes([.protectionKey: FileProtectionType.complete], ofItemAtPath: file.path(percentEncoded: false))
+                if !file.path(percentEncoded: false).hasSuffix("-shm") {
+                    try FileManager.default.setAttributes(
+                        [.protectionKey: FileProtectionType.complete], ofItemAtPath: file.path(percentEncoded: false))
+                }
                 var values = URLResourceValues()
                 values.isExcludedFromBackup = true
                 try file.setResourceValues(values)
@@ -365,8 +369,10 @@ public actor SessionCache {
         }
     }
 
-    /// Closes the connection; the next call opens it again.
-    func close() {
+    /// Closes the connection; the next call opens it again. The app calls
+    /// it as the phone locks (`protectedDataWillBecomeUnavailable`): no
+    /// connection is held over a file whose key went.
+    public func close() {
         connection = nil
     }
 
@@ -432,6 +438,8 @@ private final class Statement {
 
     func bind(_ at: Int32, _ value: Data?) {
         guard let value else { return _ = sqlite3_bind_null(statement, at) }
+        // An empty buffer has no base address, which would bind NULL.
+        guard !value.isEmpty else { return _ = sqlite3_bind_zeroblob(statement, at, 0) }
         value.withUnsafeBytes { bytes in
             _ = sqlite3_bind_blob(statement, at, bytes.baseAddress, Int32(bytes.count), transient)
         }
