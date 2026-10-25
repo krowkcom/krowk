@@ -166,13 +166,15 @@ struct HostAwayScreenTests {
         #expect(screen.composer.noteLabel.text?.hasPrefix("host offline") == true, "\(screen.composer.noteLabel.text ?? "")")
         screen.composer.text = "Run the tests when you're back"
         #expect(screen.sendTyped(), "no prompt queues with the host away")
-        // Held for the session's open: sending, until the core queues it.
+        // Held for the session's open, which the network keeps from
+        // happening: it waits for the host as a queued one does.
         let bubble = try #require(screen.model.ids.last)
-        #expect(screen.model.item(bubble)?.caption == "sending…")
+        #expect(screen.model.item(bubble)?.caption == "queued — sends when your laptop is back")
 
         session.say(.live)
         try await waitFor { screen.noticeShown == nil }
         #expect(!screen.hostAway)
+        #expect(screen.model.item(bubble)?.caption == "sending…")
     }
 
     @Test("R-IOS-7: a row a fresh listing named live, with the relay out of reach, is not called offline: the bar says why; no host on the session is, whatever the row said")

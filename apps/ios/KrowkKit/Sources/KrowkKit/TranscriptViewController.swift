@@ -903,8 +903,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         modelButton.isHidden = line.isEmpty
         let refusal = model.switchRefusal.map { " \(SafeText.line($0[...], limit: 300)) " }
         if switchNote.text != refusal { switchNote.text = refusal }
-        switchNote.isHidden = refusal == nil
-        if refusal != nil { view.bringSubviewToFront(switchNote) }
+        // The offline notice in its place says more while the host is away.
+        switchNote.isHidden = refusal == nil || noticeShown == .hostOffline
+        if !switchNote.isHidden { view.bringSubviewToFront(switchNote) }
         if let offer = model.offer {
             offerLabel.text = offer.line
             offerContinue.isHidden = offer.again == nil
@@ -1313,6 +1314,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     @objc private func noticeTapped() {
         if noticeShown == .hostOffline { offlineDismissed = true }
         hideNotice()
+        // A switch's refusal it covered shows again.
+        updateModel()
     }
 
     /// "The host is offline (last seen 12m ago): …", as of now.
@@ -1553,7 +1556,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             Budgets.shared.sessionStatus(status)
         }
         hostAway = status == .hostOffline || (!row.live && Self.outOfReach(status))
-        model.setHostOffline(hostAway)
+        model.setHostOffline(hostAway, outOfReach: Self.outOfReach(status))
         approvals?.connected = status == .live || status == .catchingUp
         if isLive {
             offlineDismissed = false
