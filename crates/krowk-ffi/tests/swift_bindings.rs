@@ -134,6 +134,7 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "typealias Usize = UInt64",
         "func decodeStreamLine(json: String) throws -> StreamLine",
         "func decodeLogEvent(json: String) throws -> LogEvent",
+        "func encodeLogEvent(event: LogEvent) throws -> String",
         "func encodeCommand(command: Command) throws -> String",
         // R-CLIENT-1: the live viewer, its inputs and the effects Swift
         // carries out; the socket and the timers are Swift's.

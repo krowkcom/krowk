@@ -10,7 +10,7 @@ use krowk_client::protocol::{
     LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, ProviderBlob, Question, QuestionAnswer, QuestionOption,
     RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
 };
-use krowk_ffi::{KrowkError, UniFfiTag, decode_log_event, decode_stream_line, encode_command};
+use krowk_ffi::{KrowkError, UniFfiTag, decode_log_event, decode_stream_line, encode_command, encode_log_event};
 use serde_json::json;
 use uniffi::{Lift, Lower};
 
@@ -327,6 +327,16 @@ fn r_proto_2_a_log_event_at_rest_decodes() {
     for body in log_bodies() {
         let ev = log_event(body);
         let json = serde_json::to_string(&ev).unwrap();
+        assert_eq!(decode_log_event(json.clone()).unwrap_or_else(|e| panic!("{json}: {e}")), ev);
+    }
+}
+
+#[test]
+fn r_proto_2_r_ios_1_a_log_event_encodes_to_its_text_at_rest_and_back() {
+    for body in log_bodies() {
+        let ev = through_ffi(log_event(body));
+        let json = encode_log_event(ev.clone()).unwrap();
+        assert_eq!(json, serde_json::to_string(&ev).unwrap(), "the log's own serialization");
         assert_eq!(decode_log_event(json.clone()).unwrap_or_else(|e| panic!("{json}: {e}")), ev);
     }
 }

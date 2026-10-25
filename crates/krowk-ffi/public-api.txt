@@ -581,6 +581,9 @@ pub fn decode_stream_line(json: String) -> Result<StreamLine, KrowkError> {}
 pub fn decode_log_event(json: String) -> Result<LogEvent, KrowkError> {}
 
 #[uniffi::export]
+pub fn encode_log_event(event: LogEvent) -> Result<String, KrowkError> {}
+
+#[uniffi::export]
 pub fn encode_command(command: Command) -> Result<String, KrowkError> {}
 
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
@@ -914,6 +917,8 @@ pub use pairing::{
 };
 
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
+
+pub use protocol::encode_log_event;
 
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 
