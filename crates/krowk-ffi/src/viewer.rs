@@ -91,8 +91,9 @@ pub enum Effect {
     /// it returns, failed or not. Until then the viewer holds the stream's
     /// batches.
     ReadChunks,
-    /// The viewer cannot go on; the `Show` before it says why. Drop the
-    /// connection and call nothing more.
+    /// The viewer cannot go on; the `Show` before it says why. Drop every
+    /// connection (the current, the leaving one, the candidates') and call
+    /// nothing more.
     End,
     /// Race `candidates` for a direct path (R-NET-2): fetch one relay
     /// ticket with `OpenedSession::relay_ticket`, off the main thread, and
@@ -115,7 +116,6 @@ pub enum Effect {
     /// `received`, until `CloseLeaving` or a `Close`.
     Moved { connection: u64 },
     /// Drop the leaving connection: the session moved to the direct path.
-    /// A `Close` drops it too.
     CloseLeaving,
 }
 
@@ -616,6 +616,18 @@ impl Viewer {
                 i.held = true;
                 i.ticket_at = None;
             }
+            // No race in the background: the one out is lost, and the
+            // core races again later, in the foreground.
+            i.lose_race(now_ms)
+        })
+    }
+
+    /// A network path became usable after a change (Wi-Fi to cellular, a
+    /// VPN up or down): off a direct path, the next race is due at once,
+    /// its backoff started over (R-NET-2). Call it before `wake`.
+    pub fn network_changed(&self, now_ms: u64) -> Vec<Effect> {
+        self.with(|i| {
+            i.core.network_changed(now_ms);
             Vec::new()
         })
     }
@@ -658,6 +670,9 @@ impl Viewer {
     /// already handed a ticket, or a race over.
     pub fn race_join(&self, url: String, ticket: String, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
+            if i.sup.in_background() {
+                return i.lose_race(now_ms);
+            }
             let Some(r) = i.race.as_mut() else { return Vec::new() };
             let Some(k) = r.untried.iter().position(|c| c.url == url) else { return Vec::new() };
             let c = r.untried.remove(k);
@@ -906,7 +921,9 @@ impl Inner {
                     self.ticket_at = at;
                     out.extend(at.map(|at_ms| Effect::NeedTicket { at_ms }));
                 }
-                // Swift fetches one ticket for every candidate.
+                // Swift fetches one ticket for every candidate. Never in the
+                // background: lost there, and raced again later.
+                core::Effect::Probe if self.sup.in_background() => self.core.probe_lost(now_ms),
                 core::Effect::Probe => {
                     out.extend(self.lose_race(now_ms));
                     let candidates = self.core.candidates().to_vec();

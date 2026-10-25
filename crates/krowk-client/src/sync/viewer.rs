@@ -763,6 +763,18 @@ impl ViewerCore {
         self.take()
     }
 
+    /// The network changed (another Wi-Fi, a VPN up or down): off a direct
+    /// path, the next race is due now and its backoff starts over, so a
+    /// phone that lost races on the café's network finds the host as soon
+    /// as it is home (R-NET-2).
+    pub fn network_changed(&mut self, now_ms: u64) {
+        if !self.ended && self.on.is_none() && self.moving.is_none() {
+            self.now_ms = now_ms;
+            self.reprobe_ms = now_ms;
+            self.backoff_ms = ms(REPROBE);
+        }
+    }
+
     /// A race nobody won: the next one later, the wait doubled.
     pub fn probe_lost(&mut self, now_ms: u64) {
         if !self.ended {

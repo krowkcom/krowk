@@ -191,7 +191,8 @@ public extension LiveSession {
 
 /// The bar under the navigation bar: the status in one line of footnote
 /// text on a tinted strip, with a dot whose colour says it at a glance.
-/// Live, it names the path beside it: `live · direct over LAN`.
+/// Live, it names the path beside it, `live · direct over LAN`; to
+/// VoiceOver the path is the bar's value, its label the status.
 public final class RelayStatusBar: UIView {
     let label = UILabel()
     let dot = UIView()
@@ -279,9 +280,10 @@ public final class RelayStatusBar: UIView {
     }
 
     private func draw() {
-        var text = status.text
-        if status == .live, let path { text += " · \(path)" }
-        label.text = text
+        let text = status.text
+        let path = status == .live ? path : nil
+        label.text = path.map { "\(text) · \($0)" } ?? text
         accessibilityLabel = text
+        accessibilityValue = path
     }
 }

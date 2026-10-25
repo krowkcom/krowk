@@ -936,6 +936,11 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
+    pub fn network_changed(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
     pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {}
 }
 

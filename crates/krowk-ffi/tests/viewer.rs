@@ -667,6 +667,69 @@ fn r_net_2_losing_the_direct_path_goes_back_to_the_relay_at_the_cursor() {
     assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Path { path, via: None } if path == "relay")), "{shown:?}");
 }
 
+/// R-NET-2: a race is let go with the relay's connection: a rejoin drops
+/// every candidate, and a refusal on one, or a ticket that never came,
+/// loses the race too; each time the next race is asked for later, never
+/// left stuck.
+#[test]
+fn r_net_2_a_race_ends_with_the_relay_s_connection_a_refusal_or_no_ticket() {
+    // The relay's connection ends mid-race.
+    let (mut p, race) = Phone::racing();
+    let dialed = p.race_tickets(&race);
+    let e = p.viewer.closed(p.conn, p.now);
+    let mut closed: Vec<u64> = e.iter().filter_map(|e| if let Effect::CloseCandidate { connection } = e { Some(*connection) } else { None }).collect();
+    closed.sort();
+    assert_eq!(closed, [dialed[0].1, dialed[1].1], "{e:?}");
+    assert!(e.iter().any(|e| matches!(e, Effect::NeedTicket { .. })), "{e:?}");
+    p.rest.clear();
+    p.take(e);
+    p.rest.retain(|e| matches!(e, Effect::NeedTicket { .. }));
+    p.join(true, 0);
+    p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
+    p.frame();
+    assert!(!p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "the next race later, not at once");
+    assert!(p.on(dialed[0].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty(), "a dropped candidate goes nowhere");
+
+    // A candidate refused, then the other: the race lost.
+    let (mut p, race) = Phone::racing();
+    let dialed = p.race_tickets(&race);
+    let refused = |p: &mut Phone, c: u64| p.on(c, json!({"type": "error", "code": "bad_ticket"}));
+    assert!(matches!(refused(&mut p, dialed[0].1).as_slice(), [Effect::CloseCandidate { connection }] if *connection == dialed[0].1));
+    assert!(matches!(refused(&mut p, dialed[1].1).as_slice(), [Effect::CloseCandidate { connection }] if *connection == dialed[1].1));
+    assert!(p.viewer.race_join(LAN.into(), "late".into(), p.now).is_empty(), "the race is over");
+
+    // No ticket within 10 s: the race let go.
+    let (mut p, _) = Phone::racing();
+    let t0 = p.now;
+    assert!(p.viewer.next_wake_ms().unwrap() <= t0 + 10_000, "the ticket's deadline");
+    p.at(t0 + 10_000);
+    let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
+    let _ = p.viewer.tick(p.now);
+    assert!(p.viewer.race_join(LAN.into(), "late".into(), p.now).is_empty(), "a ticket past its deadline dials nothing");
+}
+
+/// R-NET-2, R-IOS-2: a network change starts the next race at once, its
+/// backoff over; in the background no race runs, and one out is lost.
+#[test]
+fn r_net_2_r_ios_2_a_network_change_races_again_at_once_and_the_background_races_nothing() {
+    let (mut p, race) = Phone::racing();
+    assert!(p.viewer.race_lost(p.now).is_empty());
+    p.at(p.now + 1_000);
+    let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
+    assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "backed off");
+    assert!(p.viewer.network_changed(p.now).is_empty());
+    assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "raced at once after the change");
+
+    let dialed = p.race_tickets(&race);
+    let e = p.viewer.background(p.now);
+    assert_eq!(e.len(), 2, "both candidates dropped: {e:?}");
+    assert!(e.iter().all(|e| matches!(e, Effect::CloseCandidate { .. })));
+    assert!(p.on(dialed[1].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty());
+    p.viewer.network_changed(p.now);
+    p.at(p.now + 16);
+    assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "no race in the background");
+}
+
 /// R-CLIENT-1: a join the relay leaves unanswered — the connection open,
 /// no challenge — fails after ten seconds, said, and is asked for again;
 /// `next_wake_ms` says when, so Swift needs no timer of its own for it.

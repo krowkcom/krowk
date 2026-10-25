@@ -141,9 +141,11 @@ struct ConnectionLifecycleTests {
         // R-NET-2: live, the bar names the path the session comes by.
         bar.show(path: "direct over LAN")
         #expect(bar.label.text == "live · direct over LAN")
-        #expect(bar.accessibilityLabel == bar.label.text)
+        #expect(bar.accessibilityLabel == "live")
+        #expect(bar.accessibilityValue == "direct over LAN")
         bar.show(.reconnecting)
         #expect(bar.label.text == "reconnecting")
+        #expect(bar.accessibilityValue == nil)
         bar.show(path: "relay")
         bar.show(.live)
         #expect(bar.label.text == "live · relay")

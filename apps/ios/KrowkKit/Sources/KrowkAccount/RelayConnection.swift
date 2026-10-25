@@ -374,6 +374,7 @@ public actor RelayConnection: LiveSession {
                 // viewer holds its join): the foreground asks afresh, so a
                 // fetch iOS suspended mid-call never holds the return up.
                 ticketAsk += 1
+                raceAsk += 1
                 run(viewer.background(nowMs: now))
             case .wake: run(viewer.wake(nowMs: now))
             }
@@ -421,7 +422,10 @@ public actor RelayConnection: LiveSession {
     /// down): the connection woken. An unusable one does nothing: the
     /// socket says so itself, and nothing could be joined meanwhile.
     private func pathMoved(satisfied: Bool) {
-        if satisfied { lifecycle(.wake) }
+        guard satisfied else { return }
+        // Another network may reach the host directly: raced again now.
+        if !done, let viewer { run(viewer.networkChanged(nowMs: now())) }
+        lifecycle(.wake)
     }
 
     /// A command of the person's into the viewer: sent now, or queued in
