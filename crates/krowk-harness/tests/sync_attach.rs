@@ -17,6 +17,7 @@ mod scratch;
 
 use krowk_client::e2e::{self, DeviceKey, SessionKey, SigningKey};
 use krowk_client::device_chain::{Batch, Chain, Change, Kind, Subject};
+use krowk_client::host_command::{self, HostAnswer};
 use krowk_client::session_record;
 use krowk_client::user_key::{UserKey, UserKeys};
 
@@ -160,6 +161,9 @@ const HOLD_NOTIFY: u8 = 6;
 /// `push_unconfigured` — a registry without its APNs key — and every other
 /// request passes.
 const REFUSE_NOTIFY: u8 = 7;
+/// A registry proxy's mode: a host's answer to a command is refused 503,
+/// logged as `FAILED …`, and every other request passes.
+const FAIL_ANSWERS: u8 = 8;
 
 struct Device {
     key: DeviceKey,
@@ -688,6 +692,11 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                     }
                     let asked = String::from_utf8_lossy(&one[..one.windows(2).position(|w| w == b"\r\n").unwrap_or(0)]).to_string();
                     let notify = asked.starts_with("POST ") && asked.contains("/notification ");
+                    if m == FAIL_ANSWERS && asked.starts_with("PUT ") && asked.contains("/key/device/commands/") {
+                        log.lock().unwrap().push((format!("FAILED {asked}"), None));
+                        let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
+                        return;
+                    }
                     // What becomes of a notification is settled before it is
                     // logged as handed on, by the mode it came in under (or,
                     // held, the one that let it go): a test that sees it
@@ -713,6 +722,7 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                         let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
                     }
+
                     if m == FAIL_WRITES && (one.starts_with(b"POST ") || one.starts_with(b"PUT ")) {
                         let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                         return;
@@ -2795,6 +2805,7 @@ impl World {
             }),
             catalog: Box::new(move || Some(serde_json::to_vec(&catalog).unwrap())),
             trusted,
+            mode_for: Box::new(|_| Ok(PermissionMode::Default)),
         }
     }
 
@@ -4060,5 +4071,230 @@ async fn r_host_3_a_removed_device_stops_announcing() {
     }
     tokio::time::sleep(Duration::from_secs(1)).await;
     assert_eq!(asked.load(Ordering::SeqCst), 1, "asked again after its removal");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// A fresh command id: a random UUID, as a sender mints one.
+fn command_id() -> String {
+    let h = e2e::hex(&e2e::random::<16>());
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+/// `json` sealed by `from` for host `to` as command `id` under `keys` at
+/// `generation`, and sent through the registry as `from`.
+fn send_sealed(w: &World, from: &Device, to: &Device, id: &str, json: &serde_json::Value, keys: &UserKeys, generation: u32) -> krowk_api::sync::HostCommandState {
+    let binding = host_command::binding(id, &from.key.id(), &to.key.id());
+    let sealed = e2e::seal_to_person(keys, generation, e2e::Label::HostCommand, &binding, &serde_json::to_vec(json).unwrap()).unwrap();
+    w.as_device(from).send_host_command(&to.key.id().to_string(), id, &sealed).unwrap()
+}
+
+/// `send_sealed` under the keys every device holds.
+fn send_command(w: &World, from: &Device, to: &Device, id: &str, json: &serde_json::Value) -> krowk_api::sync::HostCommandState {
+    send_sealed(w, from, to, id, json, &w.keys(), w.chain().generation())
+}
+
+/// A start in `cwd` on `model`, as B writes it.
+fn start_json(cwd: &str, model: &krowk_harness::protocol::ModelRef, prompt: &str) -> serde_json::Value {
+    serde_json::json!({"type": "start", "cwd": cwd, "model": model, "prompt": prompt})
+}
+
+/// The mock's model on A's `anthropic` instance.
+fn mock_model(w: &World) -> krowk_harness::protocol::ModelRef {
+    Registry::resolve(&InstancesConfig::default(), &w.env()).parse_model("claude-sonnet-4-6").unwrap()
+}
+
+/// The world's repository, as A announces it.
+fn offered_dir(w: &World) -> String {
+    w.repo().canonicalize().unwrap().display().to_string()
+}
+
+/// B's command `id` to `host`, polled until answered, and the answer
+/// opened; panics at `by`.
+async fn answer_of(w: &World, b: &Device, host: &Device, id: &str, by: Instant) -> HostAnswer {
+    loop {
+        let state = w.as_device(b).host_command(&host.key.id().to_string(), id).unwrap();
+        if let Some(sealed) = state.answer {
+            return host_command::open_answer(&sealed, id, &host.key.id(), &b.key.id(), &w.keys(), &w.chain()).unwrap();
+        }
+        assert!(Instant::now() < by, "{} never answered command {id}", host.key.id());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// The sessions A's daemon holds.
+async fn daemon_sessions(w: &World) -> Vec<String> {
+    w.daemon().await.status().await.unwrap().sessions.into_iter().map(|s| s.session_id).collect()
+}
+
+/// `session`'s first turn on A, once logged: its directory, model and mode.
+async fn turn_started_on_a(w: &World, session: &str, by: Instant) -> (String, krowk_harness::protocol::ModelRef, PermissionMode) {
+    let path = log::sessions_dir(&w.env()).unwrap().join(session).join(log::EVENTS_FILE);
+    loop {
+        let events: Vec<krowk_harness::protocol::LogEvent> = std::fs::read_to_string(&path).unwrap_or_default().lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+        let cwd = events.iter().find_map(|e| if let LogBody::SessionStarted { cwd, .. } = &e.body { Some(cwd.clone()) } else { None });
+        let turn = events.iter().find_map(|e| if let LogBody::TurnStarted { model, permission_mode, .. } = &e.body { Some((model.clone(), *permission_mode)) } else { None });
+        if let (Some(cwd), Some((model, mode))) = (cwd, turn) {
+            return (cwd, model, mode);
+        }
+        assert!(Instant::now() < by, "{session}'s first turn was never logged at {}", path.display());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// R-HOST-4, R-SYNC-3: B sends A a start in A's trusted repository on the
+/// mock's model. B's poll gets `started` with the session's id; A's daemon
+/// holds the session, its first turn ran in that directory on that model,
+/// and auto-sync took it up, so B lists it.
+#[tokio::test]
+async fn r_host_4_a_start_from_b_runs_on_a_in_a_trusted_directory() {
+    let w = World::new("start-trusted");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+    let (id, cwd, model) = (command_id(), offered_dir(&w), mock_model(&w));
+    let sent = send_command(&w, &b, &a, &id, &start_json(&cwd, &model, "hello from b"));
+    assert!(!sent.answered);
+    let by = Instant::now() + Duration::from_secs(20);
+    let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
+    assert_eq!(daemon_sessions(&w).await, [session_id.clone()]);
+    let (ran_in, ran_on, _) = turn_started_on_a(&w, &session_id, by).await;
+    assert_eq!((ran_in.as_str(), &ran_on), (cwd.as_str(), &model));
+    w.listed_on(&b, &session_id, by).await;
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-4: a start in a directory A did not announce — A's home, which
+/// is not trusted — is refused with the fix, naming what A does offer, and
+/// nothing starts.
+#[tokio::test]
+async fn r_host_4_a_directory_a_did_not_offer_is_refused_and_nothing_starts() {
+    let w = World::new("start-offered");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let id = command_id();
+    let elsewhere = w.root.join("home").canonicalize().unwrap().display().to_string();
+    send_command(&w, &b, &a, &id, &start_json(&elsewhere, &mock_model(&w), "hello"));
+    let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
+    assert_eq!(code, "directory_not_offered");
+    assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: on start-host-a, run krowk there once and trust it")) && message.ends_with(&offered_dir(&w)), "{message}");
+    assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SWITCH-4, R-HOST-4: a start on a model A cannot run — an instance A
+/// does not have — is refused with the daemon's own code and fix, and
+/// nothing starts.
+#[tokio::test]
+async fn r_switch_4_a_model_a_cannot_run_is_refused_with_the_fix_and_nothing_starts() {
+    let w = World::new("start-model");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let id = command_id();
+    let nope = krowk_harness::protocol::ModelRef { instance: "nope".into(), model: "x".into() };
+    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &nope, "hello"));
+    let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
+    assert_eq!(code, "no_instance");
+    assert!(message.contains("nope"), "{message}");
+    assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-4: B's sealed start asks for `unhinged`, a toolset, an effort
+/// and a budget. The session runs in A's own default mode for the
+/// directory, `default`: the remote side picks the place, the model and the
+/// words, never the permissions.
+#[tokio::test]
+async fn r_host_4_the_session_runs_in_the_hosts_default_mode_whatever_the_command_says() {
+    let w = World::new("start-mode");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let id = command_id();
+    let mut json = start_json(&offered_dir(&w), &mock_model(&w), "hello");
+    json["permissionMode"] = "unhinged".into();
+    json["toolset"] = "grok".into();
+    json["effort"] = "max".into();
+    json["budget"] = serde_json::json!({"maxUsd": 1000});
+    send_command(&w, &b, &a, &id, &json);
+    let by = Instant::now() + Duration::from_secs(20);
+    let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
+    let (_, _, mode) = turn_started_on_a(&w, &session_id, by).await;
+    assert_eq!(mode, PermissionMode::Default);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-2, R-HOST-4: B sends the same start twice under one id, and A's
+/// answer is refused by the registry until A has had the command delivered
+/// again and answered it again from what it kept. One session starts, with
+/// one turn, and B reads that one answer.
+#[tokio::test]
+async fn r_sync_2_the_same_start_sent_twice_starts_one_session() {
+    let w = World::new("start-once");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    // A's publisher talks to the registry through A's proxy.
+    let mut o = w.announcer(&a, "home", "run");
+    let (api, user, chain, device) = (w.a_client(&a), w.user_key(), w.chain(), a.key.id());
+    o.keys = Box::new(move |_| Ok(announce::Announcer { api: api.clone(), keys: UserKeys::new(user.clone(), []).unwrap(), chain: chain.clone(), device }));
+    let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
+    w.reg_mode.store(FAIL_ANSWERS, Ordering::SeqCst);
+    let (id, json) = (command_id(), start_json(&offered_dir(&w), &mock_model(&w), "hello once"));
+    let sealed = e2e::seal_to_person(&w.keys(), 1, e2e::Label::HostCommand, &host_command::binding(&id, &b.key.id(), &a.key.id()), &serde_json::to_vec(&json).unwrap()).unwrap();
+    let to = a.key.id().to_string();
+    // Sent twice, as a sender's retry sends it: the registry's 200 with
+    // what it stored the second time.
+    let first = w.as_device(&b).send_host_command(&to, &id, &sealed).unwrap();
+    let again = w.as_device(&b).send_host_command(&to, &id, &sealed).unwrap();
+    assert_eq!((first.id.as_str(), again.id.as_str()), (id.as_str(), id.as_str()));
+    // More failed answers than one call's attempts: delivered again, and
+    // answered again.
+    let by = Instant::now() + Duration::from_secs(20);
+    let failed = || w.reg_log.lock().unwrap().iter().filter(|(l, _)| l.starts_with("FAILED ")).count();
+    while failed() <= 3 {
+        assert!(Instant::now() < by, "A answered {} times", failed());
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let started = daemon_sessions(&w).await;
+    assert_eq!(started.len(), 1, "{started:?}");
+    w.reg_mode.store(PASS, Ordering::SeqCst);
+    let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
+    assert_eq!(started, [session_id.clone()]);
+    turn_started_on_a(&w, &session_id, by).await;
+    assert_eq!(turns_logged(&w, &session_id), 1);
+    assert!(!first.answered);
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-4, R-NET-4: A's device list has B removed, though the registry
+/// still carries B's command. It does not open, gets no answer and starts
+/// nothing; C's command, sent after it and delivered with it, is answered.
+#[tokio::test]
+async fn r_host_4_a_command_from_a_device_removed_from_as_list_does_not_open_and_starts_nothing() {
+    let w = World::new("start-removed");
+    let (a, b, c) = (w.device("start-host-a"), w.device("start-b"), w.device("start-c"));
+    // A has removed B; the registry has not been told.
+    let removed = Subject { kind: Kind::Device, name: "start-b".into(), os: "linux".into(), device: b.key.public(), signing: b.signing.public() };
+    let (chain, batch) = w.chain().batch(&w.user_key(), vec![Change::Remove(removed)], a.key.id(), &a.signing, T0 + 2).unwrap();
+    let user = batch.newest;
+    let mut o = w.announcer(&a, "home", "run");
+    let (api, keys, list, device) = (w.as_device(&a), user.clone(), chain.clone(), a.key.id());
+    o.keys = Box::new(move |_| Ok(announce::Announcer { api: api.clone(), keys: UserKeys::new(keys.clone(), []).unwrap(), chain: list.clone(), device }));
+    let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
+    let (from_b, from_c) = (command_id(), command_id());
+    // B, removed, still holds generation 1, and seals under it.
+    send_command(&w, &b, &a, &from_b, &start_json(&offered_dir(&w), &mock_model(&w), "from b"));
+    let elsewhere = w.root.join("home").display().to_string();
+    send_sealed(&w, &c, &a, &from_c, &start_json(&elsewhere, &mock_model(&w), "from c"), &UserKeys::new(user.clone(), []).unwrap(), chain.generation());
+    let by = Instant::now() + Duration::from_secs(20);
+    let answered = loop {
+        let state = w.as_device(&c).host_command(&a.key.id().to_string(), &from_c).unwrap();
+        if let Some(sealed) = state.answer {
+            break host_command::open_answer(&sealed, &from_c, &a.key.id(), &c.key.id(), &UserKeys::new(user.clone(), []).unwrap(), &chain).unwrap();
+        }
+        assert!(Instant::now() < by, "C's command was never answered");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(matches!(&answered, HostAnswer::Refused { code, .. } if code == "directory_not_offered"), "{answered:?}");
+    let b_state = w.as_device(&b).host_command(&a.key.id().to_string(), &from_b).unwrap();
+    assert!(!b_state.answered && b_state.answer.is_none(), "B's command was answered: {b_state:?}");
+    assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
     auto.stop(Duration::from_secs(10)).await;
 }

@@ -67,6 +67,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
         }
         Err(trust::untrusted(root, "The host daemon asks nobody: run krowk there once on a terminal and answer its trust prompt, then send the prompt again."))
     });
+    // A session another device starts here runs in the mode `krowk -p`
+    // would with no `--permission-mode` (R-HOST-4): the most specific
+    // `defaultMode`, a repository's once it is trusted. No sandbox's
+    // upgrade: a remote start never runs looser than the default.
+    let mode_permissions = permissions.clone();
+    let mode_for: krowk_harness::sync::announce::ModeFor = Box::new(move |cwd: &std::path::Path| prompt::resolve_mode(None, &mode_permissions, cwd).map(|(m, _)| m).map_err(|e| (e.code(), e.fix())));
     let publisher = prompt::publisher(ctx);
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let credentials = super::providers::credentials_path()?;
@@ -104,7 +110,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     raise_open_files(OPEN_FILES);
     let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
     let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store), turns_rx);
+    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for), turns_rx);
     let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `krowk host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
@@ -147,8 +153,9 @@ fn raise_open_files(want: libc::rlim_t) {
 /// options built as `krowk sync host` builds them. And this host's
 /// announcement of itself (R-HOST-3): its instances checked as `krowk
 /// status` checks them, their models from the models.dev cache, and the
-/// repositories `trusted` lists.
-fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store) -> krowk_harness::sync::auto::Config {
+/// repositories `trusted` lists. The sessions another device starts here
+/// (R-HOST-4) run in `mode_for`'s mode.
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: krowk_harness::sync::announce::ModeFor) -> krowk_harness::sync::auto::Config {
     use krowk_harness::sync::{announce, auto};
     let (f, f2, f3, f4) = (ctx.f.clone(), ctx.f.clone(), ctx.f.clone(), ctx.f.clone());
     let env = krowk_api::home::process_env;
@@ -186,6 +193,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             instances: Box::new(move || own_ctx(&f4, |ctx| super::status::reports(ctx)).map(|(_, registry, reports)| (registry, reports)).unwrap_or_default()),
             catalog: Box::new(move || std::fs::read(crate::pricing::cache_path(&env)?).ok()),
             trusted,
+            mode_for,
         }),
     }
 }

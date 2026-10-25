@@ -23,6 +23,8 @@
 //!   that published it and checked against the device list.
 //! - `presence`: a host's announcement of itself — its instances, models,
 //!   directories and session ids — sealed to the person's devices.
+//! - `host_command`: a command one device sends a host (`start`), and the
+//!   host's answer, each sealed and bound to its id and both devices.
 //! - `protocol`: the typed commands, events and log lines every client
 //!   speaks, and the daemon's frame-envelope layout (`protocol::frame`).
 //! - `sync`: the wire and at-rest shapes of a synced session — a viewer's
@@ -34,6 +36,7 @@
 //! `docs/security/crypto.md` (R-OSS-1).
 
 pub mod e2e;
+pub mod host_command;
 pub mod keystore;
 pub mod pairing;
 pub mod pairing_join;
