@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk hosts` shows every machine whose daemon is up, online or
+  offline.** While sync is set up and automatic sync is on, the host daemon
+  announces itself to your other devices every 10 seconds, sealed end to
+  end, and takes the announcement down when it stops. `krowk hosts` now
+  lists each machine that announced, even one that hosts no synced session
+  or has no Tailscale: online, or when it was last seen, with its krowk
+  version, its ready instances and their models, and the repositories you
+  trusted there. `--json` gains `announced`, `lastSeen`, `version`,
+  `instances`, `directories` and `unopened`.
 - **The registry keeps each host's sealed announcement.** A host can now
   publish the announcement it seals to your devices, refresh it like a
   lease (10 to 120 seconds, 30 by default), and clear it going away; your

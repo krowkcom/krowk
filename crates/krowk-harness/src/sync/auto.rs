@@ -326,6 +326,10 @@ pub struct Config {
     /// kept by a viewer with no turn (`PARKED_RECHECK`; a test makes it
     /// short).
     pub parked_recheck: Duration,
+    /// The host's announcement of itself (R-HOST-3, `announce`): published
+    /// on a thread of its own while sync is set up and on. None announces
+    /// nothing.
+    pub announce: Option<super::announce::Options>,
 }
 
 /// How long automatic sync makes no sync call after the registry says the
@@ -385,6 +389,8 @@ pub struct Supervisor;
 /// waiting for them.
 pub struct Handle {
     stop: Option<oneshot::Sender<Duration>>,
+    /// The announcement's publisher, stopped with the supervisor.
+    presence: Arc<super::announce::Publisher>,
     /// Said (or dropped) as the supervisor's thread ends.
     done: std::sync::mpsc::Receiver<()>,
     thread: Option<std::thread::JoinHandle<()>>,
@@ -397,11 +403,17 @@ impl Supervisor {
     pub fn spawn(c: Config, turns: mpsc::UnboundedReceiver<TurnEvent>) -> Handle {
         let (stop, stop_rx) = oneshot::channel();
         let (done_tx, done) = std::sync::mpsc::channel();
+        let c = Arc::new(c);
+        // Its own thread, whose first tick looks whether sync is set up and
+        // on: never this one's, which may be the daemon's.
+        let presence = Arc::<super::announce::Publisher>::default();
+        super::announce::Publisher::ensure(&presence, &c);
+        let announcer = presence.clone();
         let thread = std::thread::Builder::new().name("krowk-sync".into()).spawn(move || {
             match tokio::runtime::Builder::new_current_thread().enable_all().build() {
                 Ok(rt) => {
                     let bridged = c.bridged.clone();
-                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(Sup::new(c).run(turns, stop_rx))));
+                    let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| rt.block_on(Sup::new(c, announcer).run(turns, stop_rx))));
                     // A check or build still on the blocking pool (a dead
                     // disk, a registry that never answers) is not waited for,
                     // even after a panic: a runtime merely dropped would.
@@ -422,7 +434,7 @@ impl Supervisor {
                 None
             }
         };
-        Handle { stop: Some(stop), done, thread }
+        Handle { stop: Some(stop), presence, done, thread }
     }
 }
 
@@ -431,9 +443,12 @@ impl Handle {
     /// (`Hosting::stop`) — and waits for them up to `grace`. A bridge still
     /// going then is left to the process's exit, its lease to lapse.
     pub fn stop(mut self, grace: Duration) {
+        let started = std::time::Instant::now();
         if let Some(tx) = self.stop.take() {
             let _ = tx.send(grace);
         }
+        // The announcement taken down beside the bridges, in the same grace.
+        self.presence.drop_clean();
         // `JoinHandle::join` has no timeout: the thread says it is done.
         // It waits `grace` for the bridges itself; a moment more for its end.
         match self.done.recv_timeout(grace + Duration::from_secs(1)) {
@@ -444,6 +459,22 @@ impl Handle {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => eprintln!("krowk: automatic sync did not stop in {}; leaving it", human(grace)),
         }
+        self.presence.wait((grace + Duration::from_secs(1)).saturating_sub(started.elapsed()));
+    }
+
+    /// Ends the announcement's publisher as a crash would, its announcement
+    /// left to lapse. For a test of what another device sees then.
+    #[doc(hidden)]
+    pub fn crash_presence(&self) {
+        self.presence.crash();
+    }
+}
+
+impl Drop for Handle {
+    /// Dropped rather than stopped: the publisher takes the announcement
+    /// down by itself, unwaited, as the bridges end.
+    fn drop(&mut self) {
+        self.presence.drop_clean();
     }
 }
 
@@ -837,6 +868,9 @@ struct Sup {
     /// viewer keeps, is read again `Config::parked_recheck` after, since no
     /// turn of its own will.
     rescanned_at: Instant,
+    /// The announcement's publisher: started again by a bridge's checks
+    /// passing, should sync have been set up or turned on since.
+    presence: Arc<super::announce::Publisher>,
 }
 
 /// Sessions whose last reason is remembered, past which the oldest are
@@ -921,10 +955,10 @@ fn for_how_long(d: Duration) -> String {
 }
 
 impl Sup {
-    fn new(c: Config) -> Sup {
+    fn new(c: Arc<Config>, presence: Arc<super::announce::Publisher>) -> Sup {
         let (viewers_tx, viewers) = mpsc::unbounded_channel();
         Sup {
-            c: Arc::new(c),
+            c,
             has: HashMap::new(),
             checks: JoinSet::new(),
             bridges: JoinSet::new(),
@@ -950,6 +984,7 @@ impl Sup {
             serial: 0,
             epoch: Instant::now(),
             rescanned_at: Instant::now(),
+            presence,
         }
     }
 
@@ -1125,6 +1160,7 @@ impl Sup {
                 self.start(session);
             }
             Ok((cwd, idle)) => {
+                super::announce::Publisher::ensure(&self.presence, &self.c);
                 self.said = None;
                 self.said_of.remove(&session);
                 self.idle = idle;
@@ -1814,6 +1850,7 @@ mod tests {
                 bridged: Arc::default(),
                 paid_pause: PAID_PAUSE,
                 parked_recheck: PARKED_RECHECK,
+                announce: None,
             };
             let (turns, rx) = mpsc::unbounded_channel();
             let h = Supervisor::spawn(c, rx);

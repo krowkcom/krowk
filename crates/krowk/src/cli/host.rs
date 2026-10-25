@@ -54,6 +54,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(std::path::PathBuf::from);
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
     let trusted_store = store.clone();
+    let announced_store = store.clone();
     // config.json's rules and hooks are read again for every turn: the
     // daemon outlives an edit of them, and a deny rule added since holds.
     let permissions = krowk_harness::permissions::Config { reread: true, ..prompt::permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| trusted_store.trusts(root)), true) };
@@ -103,7 +104,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     raise_open_files(OPEN_FILES);
     let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
     let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone()), turns_rx);
+    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store), turns_rx);
     let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `krowk host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
@@ -143,10 +144,13 @@ fn raise_open_files(want: libc::rlim_t) {
 /// The supervisor's config: the policy and whether sync is set up, read
 /// again for every session (an edit of config.json, a `krowk sync init`
 /// since the daemon started, holds at the next turn), and each bridge's
-/// options built as `krowk sync host` builds them.
-fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) -> krowk_harness::sync::auto::Config {
-    use krowk_harness::sync::auto;
-    let (f, f2) = (ctx.f.clone(), ctx.f.clone());
+/// options built as `krowk sync host` builds them. And this host's
+/// announcement of itself (R-HOST-3): its instances checked as `krowk
+/// status` checks them, their models from the models.dev cache, and the
+/// repositories `trusted` lists.
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store) -> krowk_harness::sync::auto::Config {
+    use krowk_harness::sync::{announce, auto};
+    let (f, f2, f3, f4) = (ctx.f.clone(), ctx.f.clone(), ctx.f.clone(), ctx.f.clone());
     let env = krowk_api::home::process_env;
     auto::Config {
         socket: socket.to_path_buf(),
@@ -173,6 +177,16 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         bridged,
         paid_pause: auto::PAID_PAUSE,
         parked_recheck: auto::PARKED_RECHECK,
+        announce: Some(announce::Options {
+            every: announce::EVERY,
+            ttl: announce::TTL,
+            online_since_ms: jiff::Timestamp::now().as_millisecond(),
+            keys: Box::new(move |fresh| own_ctx(&f3, |ctx| super::synced::announcer(ctx, fresh)).map_err(|e| (e.code(), announce::words(&e)))),
+            // An instance list that does not read announces none.
+            instances: Box::new(move || own_ctx(&f4, |ctx| super::status::reports(ctx)).map(|(_, registry, reports)| (registry, reports)).unwrap_or_default()),
+            catalog: Box::new(move || std::fs::read(crate::pricing::cache_path(&env)?).ok()),
+            trusted,
+        }),
     }
 }
 

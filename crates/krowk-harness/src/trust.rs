@@ -138,6 +138,21 @@ impl Store {
             && listed.mcp.get(&root.display().to_string()).cloned() == crate::mcp::project_digest(root)
     }
 
+    /// The listed repositories `trusts` still holds for, in the list's
+    /// order: what the host daemon announces it will start a session in
+    /// (R-HOST-3). Never the home directory or `/`; none when the file does
+    /// not read.
+    pub fn directories(&self) -> Vec<PathBuf> {
+        // One read of the file for all of them, as `trusts` reads it.
+        let Ok(listed) = self.read() else { return Vec::new() };
+        listed
+            .directories
+            .iter()
+            .map(PathBuf::from)
+            .filter(|d| unrecordable(d, self.home.as_deref()).is_none() && listed.mcp.get(&d.display().to_string()).cloned() == crate::mcp::project_digest(d))
+            .collect()
+    }
+
     /// What the list says of `root`'s MCP servers: `None` when `root` is not
     /// listed at all (trusted, if at all, by `--trust` or for this run), else
     /// the digest its `.mcp.json` servers were trusted with, if any.
@@ -251,6 +266,31 @@ mod tests {
         assert!(!store.trusts(&repo), "r_tool_3: a changed .mcp.json is asked about");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
         assert!(!store.trusts(&repo), "a file that cannot be read trusts nothing");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// R-HOST-3: the directories a host announces are the listed ones trust
+    /// still holds for — never the home directory or `/`, even written into
+    /// the file by hand, nor one whose `.mcp.json` changed since.
+    #[test]
+    fn r_host_3_directories_are_the_trusted_repositories_never_home_or_root() {
+        let base = std::env::temp_dir().join(format!("krowk-trust-dirs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        for d in ["a/.git", "b/.git", "home"] {
+            std::fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let (a, b, home) = (base.join("a").canonicalize().unwrap(), base.join("b").canonicalize().unwrap(), base.join("home").canonicalize().unwrap());
+        let store = Store::new(Some(base.join("config/trusted.json")), Some(home.clone()));
+        assert!(store.directories().is_empty(), "no file, nothing");
+        store.trust(&a).unwrap();
+        store.trust(&b).unwrap();
+        assert_eq!(store.directories(), [a.clone(), b.clone()]);
+        std::fs::write(b.join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "x"}}}"#).unwrap();
+        assert_eq!(store.directories(), std::slice::from_ref(&a), "b's servers changed since it was trusted");
+        std::fs::write(base.join("config/trusted.json"), serde_json::json!({"directories": [home, "/", a]}).to_string()).unwrap();
+        assert_eq!(store.directories(), [a], "home and / never count");
+        std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
+        assert!(store.directories().is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

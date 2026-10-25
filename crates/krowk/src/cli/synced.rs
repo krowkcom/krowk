@@ -201,32 +201,61 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<krowk_harness::r
     krowk_harness::relay::Roster::parse(text).ok()
 }
 
-/// `krowk hosts` (R-NET-4): the machines of yours that host synced
-/// sessions, from the registry's sessions and your device list, each
+/// `krowk hosts` (R-NET-4, R-HOST-3): the machines of yours that host
+/// synced sessions, from the registry's sessions and your device list, each
 /// marked hosting when it holds one's lease now and direct when the
 /// tailnet reaches it — no tag, and no step in the Tailscale admin
 /// console. Tailscale not answering here leaves the list whole, with no
-/// machine marked direct.
+/// machine marked direct. And every machine that announced itself, hosting
+/// or not: online or when it was last seen, its version, its instances and
+/// its directories. An announcement that does not open here is counted,
+/// never shown.
 pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
-    use krowk_harness::sync::tailscale;
+    use krowk_harness::sync::{hosts::Announced, tailscale};
     let k = keys(ctx)?;
     let api = signed(ctx, &k, "krowk hosts")?;
+    // A removed device is refused here (`device_revoked`), in the
+    // registry's own words. A registry that keeps no presences yet has
+    // none to list.
+    let presences = match api.list_presences() {
+        Ok(p) => p,
+        Err(e) if e.status == 404 => Vec::new(),
+        Err(e) => return Err(e),
+    };
     let (listed, _) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
+    let mut unopened = 0;
+    let announced: Vec<Announced> = presences
+        .into_iter()
+        .filter_map(|p| {
+            let opened = DeviceId::parse(&p.device).ok_or_else(|| "not a device id".to_string()).and_then(|d| krowk_client::presence::open(&p.sealed, &d, &k.user, &k.chain));
+            match opened {
+                Ok(announcement) => Some(Announced { online: p.online, updated_at: p.updated_at, announcement }),
+                Err(_) => {
+                    unopened += 1;
+                    None
+                }
+            }
+        })
+        .collect();
     let status = tailscale::status(&tailscale::socket(ctx.io.env)).ok().filter(|s| s.running());
-    let hosts = krowk_harness::sync::hosts::hosts(&listed, &k.chain, &k.device.to_string(), status.as_ref());
+    let hosts = krowk_harness::sync::hosts::hosts(&listed, &announced, &k.chain, &k.device.to_string(), status.as_ref());
     if ctx.format == crate::output::Format::Json {
         let rows: Vec<_> = hosts
             .iter()
             .map(|h| {
                 let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
-                // `online` keeps its meaning from before: on the tailnet,
-                // which this machine is whenever its Tailscale is up.
-                let online = if h.this_machine { status.is_some() } else { h.direct() };
-                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": online, "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips})
+                // On the tailnet — which this machine is whenever its
+                // Tailscale is up — or announced and not lapsed.
+                let tailnet = if h.this_machine { status.is_some() } else { h.direct() };
+                let a = h.announced.as_ref();
+                let instances: Vec<_> = a.map(|a| &a.announcement.instances[..]).unwrap_or_default().iter().map(|i| json!({"name": i.name, "kind": i.kind, "ready": i.ready, "state": i.state, "fix": i.fix, "models": i.models, "limit": i.limit})).collect();
+                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": tailnet || a.is_some_and(|a| a.online), "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips,
+                    "announced": a.is_some(), "lastSeen": a.map(|a| &a.updated_at), "version": a.map(|a| &a.announcement.version), "instances": instances, "directories": a.map(|a| &a.announcement.directories[..]).unwrap_or_default()})
             })
             .collect();
-        return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some()}).to_string());
+        return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
+    let now = jiff::Timestamp::now();
     for h in &hosts {
         let reach = match (&h.tailnet, &h.peer) {
             _ if h.this_machine => "this machine",
@@ -238,11 +267,78 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
         };
         let n = if h.sessions == 1 { "1 session".to_string() } else { format!("{} sessions", h.sessions) };
         let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {n}", super::sync::printable(&h.name), if h.hosting { "hosting" } else { "not hosting" }, reach);
+        if let Some(a) = &h.announced {
+            for line in announced_lines(a, now) {
+                let _ = writeln!(ctx.io.stdout, "  {}", super::sync::printable(&line));
+            }
+        }
+    }
+    if unopened > 0 {
+        let _ = writeln!(ctx.io.stdout, "{unopened} host{} announcement could not be opened on this machine", if unopened == 1 { "'s" } else { "s'" });
     }
     if hosts.is_empty() {
-        let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session yet — `krowk sync host <session>` on one hosts it");
+        let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
     }
     Ok(())
+}
+
+/// The lines under an announced host: online or when it was last seen,
+/// its ready instances with their first model, the others with their fix,
+/// and its directories, home as `~`.
+fn announced_lines(a: &krowk_harness::sync::hosts::Announced, now: jiff::Timestamp) -> Vec<String> {
+    let r = &a.announcement;
+    let mut out = vec![if a.online { format!("online · krowk {}", r.version) } else { format!("offline · last seen {}", ago(&a.updated_at, now)) }];
+    let ready: Vec<String> = r.instances.iter().filter(|i| i.ready).map(|i| match &i.models[..] {
+        [] => i.name.clone(),
+        [one] => format!("{} ({one})", i.name),
+        [first, ..] => format!("{} ({first}, …)", i.name),
+    }).collect();
+    if !ready.is_empty() {
+        out.push(format!("ready: {}", ready.join(", ")));
+    }
+    for i in r.instances.iter().filter(|i| !i.ready) {
+        out.push(match &i.fix {
+            Some(fix) => format!("not ready: {} — {fix}", i.name),
+            None => format!("not ready: {} ({})", i.name, i.state),
+        });
+    }
+    if !r.directories.is_empty() {
+        const SHOWN: usize = 3;
+        let mut dirs: Vec<String> = r.directories.iter().take(SHOWN).map(|d| home_as_tilde(d)).collect();
+        if r.directories.len() > SHOWN {
+            dirs.push("…".into());
+        }
+        out.push(format!("directories: {}", dirs.join(", ")));
+    }
+    out
+}
+
+/// A path on another machine with its home shown as `~`: `/home/<name>`,
+/// `/Users/<name>` or `/root`, the homes krowk's platforms make.
+fn home_as_tilde(path: &str) -> String {
+    let rest = |prefix: &str| path.strip_prefix(prefix).and_then(|r| match r.split_once('/') {
+        Some((name, rest)) if !name.is_empty() => Some(format!("~/{rest}")),
+        None if !r.is_empty() => Some("~".into()),
+        _ => None,
+    });
+    rest("/home/").or_else(|| rest("/Users/")).or_else(|| match path.strip_prefix("/root") {
+        Some("") => Some("~".into()),
+        Some(r) if r.starts_with('/') => Some(format!("~{r}")),
+        _ => None,
+    }).unwrap_or_else(|| path.to_string())
+}
+
+/// How long ago `at` (RFC 3339) was: `12m ago`; "a while ago" when it
+/// does not read.
+fn ago(at: &str, now: jiff::Timestamp) -> String {
+    let Ok(at) = at.parse::<jiff::Timestamp>() else { return "a while ago".into() };
+    let s = now.as_second().saturating_sub(at.as_second()).max(0);
+    match s {
+        0..60 => format!("{s}s ago"),
+        60..3600 => format!("{}m ago", s / 60),
+        3600..86400 => format!("{}h ago", s / 3600),
+        _ => format!("{}d ago", s / 86400),
+    }
 }
 
 fn one(args: &[String], what: &str) -> Result<String, Error> {
@@ -350,6 +446,19 @@ pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, hande
         stale: None,
         supervised: None,
     })
+}
+
+/// What the host daemon announces itself with (R-HOST-3): the keys the
+/// list leaves current — with `fresh`, the list brought up to date from the
+/// registry first, so a new user key is taken up — and the signed client.
+/// May ask the registry: never on the daemon's thread.
+pub(super) fn announcer(ctx: &mut Ctx, fresh: bool) -> Result<krowk_harness::sync::announce::Announcer, Error> {
+    if fresh {
+        current(ctx)?;
+    }
+    let k = keys(ctx)?;
+    let api = Arc::new(signed(ctx, &k, "automatic sync")?);
+    Ok(krowk_harness::sync::announce::Announcer { api, keys: k.user, chain: k.chain, device: k.device })
 }
 
 /// Whether sync is set up here, as the host daemon's automatic sync asks
@@ -549,6 +658,24 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
 #[cfg(test)]
 mod tests {
     use super::relay_for;
+
+    /// R-HOST-3: `krowk hosts` shows an announced host's state, its ready
+    /// instances with their first model, the others with their fix, and its
+    /// directories with the home as `~`.
+    #[test]
+    fn r_host_3_an_announced_host_is_shown_in_a_few_lines() {
+        use krowk_client::presence::{AnnouncedInstance, Announcement};
+        let inst = |name: &str, ready: bool, models: &[&str]| AnnouncedInstance { name: name.into(), kind: "k".into(), ready, state: if ready { "ready" } else { "key_not_set" }.into(), fix: (!ready).then(|| "set OPENAI_API_KEY".into()), models: models.iter().map(|m| m.to_string()).collect(), limit: None };
+        let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/krowk".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new() };
+        let mut a = krowk_harness::sync::hosts::Announced { online: true, updated_at: "2026-10-25T10:00:00Z".into(), announcement };
+        let now: jiff::Timestamp = "2026-10-25T10:12:30Z".parse().unwrap();
+        assert_eq!(super::announced_lines(&a, now), ["online · krowk 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/krowk, ~, /srv/x, …"]);
+        a.online = false;
+        assert_eq!(super::announced_lines(&a, now)[0], "offline · last seen 12m ago");
+        assert_eq!(super::home_as_tilde("/root/y"), "~/y");
+        assert_eq!(super::home_as_tilde("/home/"), "/home/");
+        assert_eq!(super::ago("not a time", now), "a while ago");
+    }
 
     /// The production registry's devices dial the hosted relay with no
     /// `KROWK_RELAY_URL`; a stand-in or custom registry keeps the local

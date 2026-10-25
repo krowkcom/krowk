@@ -29,7 +29,7 @@ use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, Command, Item, LiveEvent, LogBody, PermissionMode, StreamLine};
-use krowk_harness::sync::{auto, direct, host, viewer};
+use krowk_harness::sync::{announce, auto, direct, host, viewer};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -44,6 +44,9 @@ use tokio::sync::{mpsc, watch};
 /// it (R-E2E-1).
 const PROMPT_MARKER: &str = "plaintext-marker-prompt-6d1f";
 const ANSWER_MARKER: &str = "plaintext-marker-answer-93be";
+
+/// The one model the catalog a test's host announces with lists.
+const CATALOG_MODEL: &str = "claude-catalog-model-7f3a";
 
 /// A prompt A's `anthropic` instance answers with its rate limit.
 const LIMITED: &str = "past-the-limit-prompt";
@@ -2646,11 +2649,18 @@ struct AutoOpts {
     paid_pause: Duration,
     /// How often the policy is read again while sessions are parked.
     parked_recheck: Duration,
+    /// The machine announces itself (R-HOST-3), every 200 ms with the
+    /// registry's least TTL.
+    announce: bool,
+    /// The publisher's options, in place of `announce`'s.
+    announce_with: Option<announce::Options>,
+    /// The machine's home and runtime directory, under the world's root.
+    at: (&'static str, &'static str),
 }
 
 impl Default for AutoOpts {
     fn default() -> AutoOpts {
-        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK }
+        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK, announce: false, announce_with: None, at: ("home", "run") }
     }
 }
 
@@ -2690,12 +2700,13 @@ impl World {
 
     /// `auto`, as `o` says.
     fn auto_with(&self, a: &Device, o: AutoOpts) -> Auto {
-        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck } = o;
+        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, announce_with, at: (home, run) } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
-        let daemon = self.serve_hooked(self.env(), "home", InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
+        let daemon = self.serve_hooked(self.env_at(home, run), home, InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
         let built: Built = Arc::default();
-        let (seen, a2, api, relay, keys, chain, sessions) = (built.clone(), a.copy(), self.a_client(a), self.relay_a.clone(), self.user_key(), self.chain(), log::sessions_dir(&self.env()).unwrap());
+        let (seen, a2, api, relay, keys, chain, sessions) = (built.clone(), a.copy(), self.a_client(a), self.relay_a.clone(), self.user_key(), self.chain(), log::sessions_dir(&self.env_at(home, run)).unwrap());
+        let announce = announce_with.or_else(|| announce.then(|| self.announcer(a, home, run)));
         let first = AtomicBool::new(panic_first);
         let build: auto::Build = Box::new(move |session: &str, cwd: &Path| {
             seen.lock().unwrap().push((session.to_string(), Instant::now(), std::thread::current().name().map(String::from)));
@@ -2727,14 +2738,14 @@ impl World {
                 supervised: None,
             })
         });
-        let env = self.env();
+        let env = self.env_at(home, run);
         let checks = Arc::new(AtomicUsize::new(0));
         let counted = checks.clone();
         let c = auto::Config {
             socket: daemon::socket(&env).unwrap(),
             sessions: log::sessions_dir(&env).unwrap(),
             version: "test".into(),
-            krowk_home: Some(self.root.join("home/.krowk")),
+            krowk_home: Some(self.root.join(home).join(".krowk")),
             build,
             // The switch and the idle window as the environment says them.
             policy: Box::new(move || {
@@ -2753,8 +2764,66 @@ impl World {
             bridged: bridged.clone(),
             paid_pause,
             parked_recheck,
+            announce,
         };
         Auto { handle: Some(auto::Supervisor::spawn(c, turns_rx)), daemon: Some(daemon), bridged, built, turns, checks }
+    }
+
+    /// What machine `a`, its home `home`, announces itself with: its keys
+    /// as they are now and its own registry client, the instances its
+    /// environment resolves (`anthropic`, ready on the mock), a catalog
+    /// listing `CATALOG_MODEL`, and the world's repository, trusted.
+    fn announcer(&self, a: &Device, home: &str, run: &str) -> announce::Options {
+        let (api, device, user, chain) = (self.as_device(a), a.key.id(), self.user_key(), self.chain());
+        let env = self.env_at(home, run);
+        let krowk = self.root.join(home).join(".krowk");
+        std::fs::create_dir_all(&krowk).unwrap();
+        let trusted = krowk_harness::trust::Store::new(Some(krowk.join(krowk_harness::trust::FILE)), Some(self.root.join(home)));
+        trusted.trust(&self.repo().canonicalize().unwrap()).unwrap();
+        let catalog = serde_json::json!({"anthropic": {"models": {CATALOG_MODEL: {"family": "claude", "tool_call": true, "release_date": "2026-09-01"}}}});
+        announce::Options {
+            every: Duration::from_millis(200),
+            ttl: 10,
+            online_since_ms: 1_790_000_000_000,
+            keys: Box::new(move |_fresh| Ok(announce::Announcer { api: api.clone(), keys: UserKeys::new(user.clone(), []).unwrap(), chain: chain.clone(), device })),
+            instances: Box::new(move || {
+                let registry = Registry::resolve(&InstancesConfig::default(), &env);
+                let all: Vec<_> = registry.instances.values().collect();
+                let probe = krowk_harness::readiness::Probe::at(krowk.join("probe"));
+                let reports = krowk_harness::readiness::check_all(&all, &krowk.join("credentials.json"), &probe);
+                (registry, reports)
+            }),
+            catalog: Box::new(move || Some(serde_json::to_vec(&catalog).unwrap())),
+            trusted,
+        }
+    }
+
+    /// The announcements `b` lists, opened: each device's, or why it did not.
+    async fn announced(&self, b: &Device) -> Result<Vec<(krowk_api::sync::Presence, Result<krowk_client::presence::Announcement, String>)>, krowk_api::Error> {
+        let (api, keys, chain) = (self.as_device(b), self.keys(), self.chain());
+        tokio::task::spawn_blocking(move || {
+            let listed = api.list_presences()?;
+            Ok(listed.into_iter().map(|p| {
+                let opened = e2e::DeviceId::parse(&p.device).ok_or_else(|| "no device id".to_string()).and_then(|d| krowk_client::presence::open(&p.sealed, &d, &keys, &chain));
+                (p, opened)
+            }).collect())
+        })
+        .await
+        .unwrap()
+    }
+
+    /// Waits until `b` lists `of`'s announcement and it passes `want`, or
+    /// panics at `by`.
+    async fn announced_until(&self, b: &Device, of: &Device, by: Instant, want: impl Fn(&krowk_api::sync::Presence, &krowk_client::presence::Announcement) -> bool) -> (krowk_api::sync::Presence, krowk_client::presence::Announcement) {
+        let of = of.key.id().to_string();
+        loop {
+            let listed = self.announced(b).await;
+            if let Some((p, Ok(a))) = listed.as_ref().ok().and_then(|l| l.iter().find(|(p, a)| p.device == of && a.as_ref().is_ok_and(|a| want(p, a)))) {
+                return (p.clone(), a.clone());
+            }
+            assert!(Instant::now() < by, "B never saw {of}'s announcement as wanted: {listed:?}");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
     }
 
     /// Waits until B lists `session`, or panics at `by`.
@@ -3852,4 +3921,144 @@ async fn r_lag_9_fifty_auto_synced_sessions_leave_the_daemons_thread_on_time() {
     for s in &sessions {
         assert_eq!(leased(&w, s).await, Ok(false), "{s}'s lease given back");
     }
+}
+
+/// The stand-in's own read of every presence it holds, as stored: its
+/// response, bytes as hex (`GET /_presences`, stand-in only).
+fn presences_held(w: &World) -> String {
+    let mut c = TcpStream::connect(w.registry.addr()).unwrap();
+    write!(c, "GET /_presences HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n").unwrap();
+    let mut out = String::new();
+    c.read_to_string(&mut out).unwrap();
+    assert!(out.starts_with("HTTP/1.1 200"), "{out}");
+    out
+}
+
+/// R-HOST-3, R-NET-4: host A, sync set up and on, runs no session at all,
+/// and still B lists A's announcement and opens it: A online, its ready
+/// mock instance with its own default model first and the catalog's, its
+/// trusted repository, A's krowk version — and its name and OS the device
+/// list's. R-INST-6: an instance's limit rides along, none when the daemon
+/// has seen none.
+#[tokio::test]
+async fn r_host_3_a_daemon_with_no_synced_session_announces_itself() {
+    let w = World::new("presence-idle");
+    let (a, b) = (w.device("presence-host-a"), w.device("presence-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let (p, got) = w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+    assert_eq!((got.name.as_str(), got.os.as_str(), got.version.as_str(), got.online_since_ms), ("presence-host-a", "linux", "test", 1_790_000_000_000));
+    assert!(!p.updated_at.is_empty());
+    let anthropic = got.instances.iter().find(|i| i.kind == "anthropic-api").unwrap_or_else(|| panic!("{got:?}"));
+    assert!(anthropic.ready && anthropic.state == "ready" && anthropic.fix.is_none() && anthropic.limit.is_none(), "{anthropic:?}");
+    assert_eq!(anthropic.models, [krowk_harness::instances::default_model_of("anthropic-api").unwrap(), CATALOG_MODEL]);
+    assert!(got.instances.iter().filter(|i| !i.ready).all(|i| i.models.is_empty() && i.fix.is_some()), "{got:?}");
+    assert_eq!(got.directories, [w.repo().canonicalize().unwrap().display().to_string()]);
+    assert!(got.sessions.is_empty(), "no session");
+    assert!(auto.bridged.lock().unwrap().is_empty() && auto.built.lock().unwrap().is_empty(), "nothing was bridged");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-3, R-E2E-1: what the registry holds of A's announcement is
+/// sealed bytes. The stand-in's own view of what it stored — and the hex of
+/// it — holds neither A's name, the model it offers, nor its directory.
+#[tokio::test]
+async fn r_host_3_the_registry_holds_no_name_model_or_directory() {
+    let w = World::new("presence-blind");
+    let (a, b) = (w.device("presence-name-marker-c41f"), w.device("presence-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+    let held = presences_held(&w);
+    assert!(held.contains(&a.key.id().to_string()), "A's presence is held: {held}");
+    let directory = w.repo().canonicalize().unwrap().display().to_string();
+    for marker in ["presence-name-marker-c41f", CATALOG_MODEL, directory.as_str()] {
+        assert!(!held.contains(marker), "the registry holds {marker:?} in the clear");
+        assert!(!held.to_lowercase().contains(&e2e::hex(marker.as_bytes())), "the registry holds {marker:?} as hex");
+    }
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-3: a host that stops answering — its publisher gone without its
+/// take-down, as in a crash — is offline on B within 12 s at the least TTL
+/// (10 s; 30 s at the real one). One that stops cleanly takes its
+/// announcement down at once.
+#[tokio::test]
+async fn r_host_3_a_host_that_stops_answering_is_offline_within_30_seconds() {
+    assert_eq!((announce::EVERY, announce::TTL), (Duration::from_secs(10), 30));
+    let w = World::new("presence-gone");
+    let (a, b, c) = (w.device("presence-a"), w.device("presence-b"), w.device("presence-c"));
+    let mut clean = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let crashed = w.auto_with(&c, AutoOpts { announce: true, at: ("home-c", "run-c"), ..AutoOpts::default() });
+    let by = Instant::now() + Duration::from_secs(10);
+    w.announced_until(&b, &a, by, |p, _| p.online).await;
+    w.announced_until(&b, &c, by, |p, _| p.online).await;
+
+    clean.stop(Duration::from_secs(10)).await;
+    let listed = w.announced(&b).await.unwrap();
+    assert!(!listed.iter().any(|(p, _)| p.device == a.key.id().to_string()), "A's announcement went with its clean stop: {listed:?}");
+
+    crashed.handle.as_ref().unwrap().crash_presence();
+    let crashed_at = Instant::now();
+    let (p, _) = w.announced_until(&b, &c, crashed_at + Duration::from_secs(13), |p, _| !p.online).await;
+    assert!(crashed_at.elapsed() <= Duration::from_secs(12), "offline only after {:?}", crashed_at.elapsed());
+    assert!(!p.updated_at.is_empty(), "last seen");
+}
+
+/// R-HOST-3, R-NET-4: B published its announcement, then is removed from
+/// the device list. B's listing is refused, and A's lists A and not B.
+#[tokio::test]
+async fn r_host_3_a_removed_device_neither_sees_hosts_nor_is_listed() {
+    let w = World::new("presence-removed");
+    let (a, b) = (w.device("presence-a"), w.device("presence-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
+    let sealed = {
+        let record = krowk_client::presence::Announcement { device: b.key.id().to_string(), name: "presence-b".into(), os: "linux".into(), version: "test".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new() };
+        krowk_client::presence::seal(&record, &w.keys(), w.chain().generation(), &b.key.id()).unwrap()
+    };
+    w.as_device(&b).put_presence(&sealed, 30).unwrap();
+    w.announced_until(&b, &a, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+    w.announced_until(&a, &b, Instant::now() + Duration::from_secs(10), |p, _| p.online).await;
+
+    // B removed by A, which started the list.
+    let removed = Subject { kind: Kind::Device, name: "presence-b".into(), os: "linux".into(), device: b.key.public(), signing: b.signing.public() };
+    {
+        let mut list = w.list.lock().unwrap();
+        let (chain, user) = list.take().unwrap();
+        let (chain, batch) = chain.batch(&user, vec![Change::Remove(removed)], a.key.id(), &a.signing, T0 + 2).unwrap();
+        w.as_device(&a).append_device_list(&post(&batch)).unwrap();
+        *list = Some((chain, batch.newest));
+    }
+    // The stand-in revokes the key bound to a removed device with it, so
+    // it is refused as a key (401); a key still standing is refused as the
+    // device's (403 `device_revoked`).
+    let refused = w.announced(&b).await.unwrap_err();
+    assert!(matches!((refused.status, refused.code().as_str()), (401, "unauthorized") | (403, "device_revoked")), "{refused:?}");
+    let listed = w.announced(&a).await.unwrap();
+    let devices: Vec<_> = listed.iter().map(|(p, _)| p.device.clone()).collect();
+    assert!(devices.contains(&a.key.id().to_string()) && !devices.contains(&b.key.id().to_string()), "{devices:?}");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-3: a device the registry or its list says was removed stops
+/// announcing until its daemon starts again: its keys are asked for once,
+/// not every tick.
+#[tokio::test]
+async fn r_host_3_a_removed_device_stops_announcing() {
+    let w = World::new("presence-stops");
+    let a = w.device("presence-a");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut o = w.announcer(&a, "home", "run");
+    let n = asked.clone();
+    o.keys = Box::new(move |_| {
+        n.fetch_add(1, Ordering::SeqCst);
+        Err(("device_removed".into(), "this device was removed from your device list".into()))
+    });
+    let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while asked.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the publisher never asked for its keys");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "asked again after its removal");
+    auto.stop(Duration::from_secs(10)).await;
 }

@@ -7,6 +7,7 @@
 //! `krowk_client::relay_link`'s chains, so the relay and the registry only
 //! ever hold ciphertext (R-E2E-1).
 
+pub mod announce;
 pub mod auto;
 pub mod direct;
 pub mod handoff;
