@@ -180,11 +180,13 @@ struct StartingRowTests {
     func started() async throws {
         let source = StubHosts([], outcome: .started(sessionID: "s9"), gated: true)
         let starting = StartingSessions(source: source)
+        let list = SessionListViewController(model: SessionListModel(source: StubSource(.success(SessionListing(sessions: [], unreadable: 0)))), newSessions: NewSessions(source: source, starting: starting) { _, _ in UIViewController() })
+        // Told here rather than the list, which has no navigation to open
+        // the session in.
         var opened: [String] = []
         starting.started = { session, _ in opened.append(session) }
         starting.start(Self.request)
         #expect(starting.rows.map(\.state) == [.starting])
-        let list = SessionListViewController(model: SessionListModel(source: StubSource(.success(SessionListing(sessions: [], unreadable: 0)))), newSessions: NewSessions(source: source, starting: starting) { _, _ in UIViewController() })
         #expect(list.screen().starting.map(\.id) == ["start:c1"])
         source.release()
         let deadline = Date.now.addingTimeInterval(5)

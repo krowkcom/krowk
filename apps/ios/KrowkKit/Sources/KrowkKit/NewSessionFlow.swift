@@ -100,6 +100,10 @@ class ChoiceListViewController: UITableViewController {
         cell.accessoryType = choice.enabled ? .disclosureIndicator : .none
         cell.selectionStyle = choice.enabled ? .default : .none
         cell.accessibilityIdentifier = choice.identifier
+        // One element for VoiceOver (and the UI tests): the title, then the
+        // detail.
+        cell.isAccessibilityElement = true
+        cell.accessibilityLabel = [choice.title, choice.detail].compactMap { $0 }.joined(separator: ", ")
         cell.accessibilityTraits = choice.enabled ? .button : [.staticText, .notEnabled]
         return cell
     }
