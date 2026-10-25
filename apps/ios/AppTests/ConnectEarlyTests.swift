@@ -55,8 +55,8 @@ extension HostedKeychain {
             // The foreground iOS sends after the launch finds both under way.
             early.start()
             #expect(lifecycle.early?.session === live, "started twice")
-            try await RelayConnectionTests.wait(until: { live.status == .live }, within: .seconds(30), "the early connection never went live: \(live.status.text)")
-            try await RelayConnectionTests.wait(until: { list.listedAt != nil }, within: .seconds(30), "the list's read never landed")
+            try await LiveFollowTests.wait(until: { live.status == .live }, within: .seconds(30), "the early connection never went live: \(live.status.text)")
+            try await LiveFollowTests.wait(until: { list.listedAt != nil }, within: .seconds(30), "the list's read never landed")
             #expect(source.calls.lists == 1, "\(source.calls)")
             #expect(live.dials == 1)
 
