@@ -17,6 +17,7 @@
 //! pair_url=http://127.0.0.1:53013/pair
 //! sessions_url=http://127.0.0.1:53013/sessions
 //! devices_url=http://127.0.0.1:53013/devices
+//! hosts_url=http://127.0.0.1:53013/hosts
 //! ready
 //! ```
 //!
@@ -63,6 +64,16 @@
 //! list no longer names it (its keys refused, the user key rotated to the
 //! devices left). The running `devices add` is ended first, so the next
 //! pairing asks `pair_url` for a fresh code.
+//!
+//! Host A announces itself (R-HOST-3) as a daemon with automatic sync
+//! does, every 2 s: the mock model's instance ready, and one directory, a
+//! git repository the fleet made and host A's `trusted.json` lists. A
+//! phone that asks host A to start a session there (R-HOST-4) gets it, and
+//! automatic sync takes it up at its first turn. A POST to
+//! `hosts_url/offline` stops the announcement's refreshes, as a machine
+//! gone to sleep stops them, and replies `offline` once the registry lists
+//! host A offline (within about 10 s); `hosts_url/online` starts them
+//! again and replies `online` once it is listed so.
 //!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn
@@ -137,6 +148,7 @@ fn main() {
     }
     writeln!(out, "sessions_url={}/sessions", control.url).unwrap();
     writeln!(out, "devices_url={}/devices", control.url).unwrap();
+    writeln!(out, "hosts_url={}/hosts", control.url).unwrap();
     writeln!(out, "ready").unwrap();
     out.flush().unwrap();
     drop(out);
@@ -169,7 +181,8 @@ fn main() {
 /// a turn typed at host A in it, `POST /sessions/<id>/turn-ended`:
 /// `ended` once those turns have ended, or `running` after 5 s, and
 /// `POST /devices/remove` the device the body names removed from host A's
-/// list.
+/// list, and `POST /hosts/offline` and `POST /hosts/online` host A's
+/// announcement left to lapse and refreshed again.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
@@ -197,6 +210,8 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
     }
     match (seen.method.as_str(), seen.path.as_str(), release) {
         ("POST", "/pair", _) if pair => answered("POST /pair", pairer.lock().unwrap().pair()),
+        ("POST", "/hosts/offline", _) => answered("POST /hosts/offline", hosting.offline().map(|()| "offline".into())),
+        ("POST", "/hosts/online", _) => answered("POST /hosts/online", hosting.online().map(|()| "online".into())),
         ("POST", "/devices/remove", _) => {
             let name = seen.raw.trim();
             if name.is_empty() {
@@ -209,7 +224,7 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
             answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
         }
         ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
-        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended and POST /devices/remove"),
+        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended, POST /devices/remove, POST /hosts/offline and POST /hosts/online"),
     }
 }
 

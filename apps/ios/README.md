@@ -102,6 +102,12 @@ answers `started`: "Please stream a long answer" has the model make a
 `read` call, then stream 120 numbered lines at 200 tokens a second, the
 turn `LiveFollowTests` and the UI test follow live ("Please stream a very
 long answer" streams 300 lines, for a longer run by hand).
+Host A announces itself (R-HOST-3) every 2 s with the mock model's
+instance ready and one directory, a git repository the fleet made and
+trusts: a phone that starts a session there (R-HOST-4) gets it, and
+automatic sync takes it up at its first turn. A POST to
+`TEST_RUNNER_KROWK_HOSTS_URL`'s `/offline` lets host A's announcement
+lapse and answers `offline` once it is listed so; `/online` brings it back.
 A second fleet, with no demo, runs beside it for the tests that remove
 their phone from host A's devices (ticket 117), since a removal rotates
 host A's user key, which would stop the first fleet's hosts: its URLs are

@@ -605,3 +605,82 @@ fn r_ios_15_the_fake_fleet_refuses_to_start_without_krowk_bin() {
     assert!(out.stdout.is_empty(), "printed {:?}", String::from_utf8_lossy(&out.stdout));
     assert!(err.contains("KROWK_BIN") && err.contains("cargo build -p krowk --features harness"), "{err}");
 }
+
+/// R-HOST-3, R-HOST-4, R-IOS-7: the fleet's host announces itself — online,
+/// the mock model's instance ready, its one trusted repository — and a
+/// second device of the person's starts a session there through a sealed
+/// start: the host answers `started`, and automatic sync takes the session
+/// up so the second device lists it. A model it cannot run is refused with
+/// nothing started. Taken offline, its announcement lapses and is listed
+/// offline; back online, it is listed so again. What the phone's
+/// new-session tests rely on.
+#[test]
+fn r_host_4_a_second_device_starts_a_session_on_the_fleets_host_and_it_syncs() {
+    use krowk_client::host_command::{self, HostAnswer, HostCommand};
+    use krowk_client::protocol::ModelRef;
+    let f = fleet::start(false);
+    let b = fleet::Device::new("machine-b");
+    let (chain, batch) = f.chain.clone().batch(&f.user, vec![Change::Add(b.subject("machine-b"))], f.host.key.id(), &f.host.signing, fleet::T0 + 1).unwrap();
+    f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
+    let api = b.client(&f.api);
+    api.claim_key_device().unwrap();
+    let keys = UserKeys::new(f.user.clone(), []).unwrap();
+    let host = f.host.key.id();
+
+    // Announced: online, its repository, the mock model's instance ready.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let announced = loop {
+        let opened = api.list_presences().unwrap().into_iter().find(|p| p.device == host.to_string() && p.online).and_then(|p| krowk_client::presence::open(&p.sealed, &host, &keys, &chain).ok());
+        if let Some(a) = opened.filter(|a| !a.directories.is_empty()) {
+            break a;
+        }
+        assert!(Instant::now() < deadline, "host A never announced its repository");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let project = f.project.canonicalize().unwrap().display().to_string();
+    assert_eq!(announced.directories, [project.clone()], "only the project: the fleet's own repo is excluded from sync");
+    let ready = announced.instances.iter().find(|i| i.ready && !i.models.is_empty()).expect("an instance ready with a model");
+
+    let start = |model: ModelRef| {
+        let id = format!("0199c0de-0000-4000-8000-{:012x}", rand_id());
+        let c = HostCommand::Start { cwd: project.clone(), model, prompt: "Say hello".into() };
+        let sealed = host_command::seal_command(&c, &id, &b.key.id(), &host, &keys, chain.generation()).unwrap();
+        api.send_host_command(&host.to_string(), &id, &sealed).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let s = api.host_command(&host.to_string(), &id).unwrap();
+            if s.answered {
+                return host_command::open_answer(&s.answer.unwrap(), &id, &host, &b.key.id(), &keys, &chain).unwrap();
+            }
+            assert!(Instant::now() < deadline, "host A never answered");
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    };
+    let HostAnswer::Started { session_id } = start(ModelRef { instance: ready.name.clone(), model: ready.models[0].clone() }) else { panic!("host A refused the start") };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let (listed, _) = viewer::list(&api, &keys, &chain).unwrap();
+        if let Some(l) = listed.iter().find(|l| l.id == session_id) {
+            assert_eq!(l.index.cwd, project, "it runs in the project");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the started session never synced");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    match start(ModelRef { instance: "no-such-instance".into(), model: "x".into() }) {
+        HostAnswer::Refused { message, .. } => assert!(!message.is_empty()),
+        other => panic!("a model host A can't run started: {other:?}"),
+    }
+
+    f.hosting.offline().unwrap();
+    let p = api.list_presences().unwrap().into_iter().find(|p| p.device == host.to_string()).expect("still listed, offline");
+    assert!(!p.online);
+    f.hosting.online().unwrap();
+    f.stop();
+}
+
+/// A number no other start of this process's has.
+fn rand_id() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    N.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + u64::from(std::process::id()) * 1000
+}

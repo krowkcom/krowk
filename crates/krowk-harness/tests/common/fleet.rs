@@ -26,12 +26,13 @@ use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{Command, LiveEvent, PermissionMode, StreamLine};
-use krowk_harness::sync::host;
+use krowk_harness::sync::{announce, auto, host};
 use std::io::BufRead;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
@@ -70,6 +71,14 @@ const README: &str = "# The demo project\nA project the fake fleet made, for the
 const LOOKED: &str = "The README says this is the demo project.";
 const MADE: &str = "Done: approved.txt is in the project.";
 const DENIED: &str = "All right, I left the project as it was.";
+/// The README of the repository host A announces (ticket 134), where a
+/// phone starts a session of its own.
+const PROJECT_README: &str = "# The fleet's project\nA repository host A trusts, for a phone to start a session in.\n";
+/// How often host A refreshes its announcement, and the TTL it asks: a
+/// start a phone sends is seen within `ANNOUNCE_EVERY`, and a host taken
+/// offline (`Hosting::offline`) is listed so within `ANNOUNCE_TTL` seconds.
+const ANNOUNCE_EVERY: Duration = Duration::from_secs(2);
+const ANNOUNCE_TTL: u64 = 10;
 
 /// A device of the person's: its keys and the token that speaks for it.
 pub struct Device {
@@ -174,9 +183,16 @@ pub struct Fleet {
     pub chain: Chain,
     pub user: UserKey,
     pub root: PathBuf,
+    /// The repository host A trusts and announces (R-HOST-3): a session
+    /// another device starts runs here, and automatic sync takes it up.
+    pub project: PathBuf,
     /// Host A as the fleet's control uses it: a session of a test's own,
     /// hosted and let go.
     pub hosting: Arc<Hosting>,
+    /// Host A's automatic sync, beside its daemon: its announcement, the
+    /// starts other devices send it, and a bridge for each session a start
+    /// began.
+    supervisor: Option<auto::Handle>,
     stop: watch::Sender<bool>,
     bridge: std::thread::JoinHandle<()>,
     _registry: krowk_devregistry::Running,
@@ -200,10 +216,13 @@ impl Fleet {
 
     /// Stops the bridge and every session a test had hosted, waits for
     /// them, and removes the scratch root.
-    pub fn stop(self) {
+    pub fn stop(mut self) {
         self.stop_host();
         let _ = self.bridge.join();
         self.hosting.release_all();
+        if let Some(s) = self.supervisor.take() {
+            s.stop(Duration::from_secs(5));
+        }
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -214,10 +233,13 @@ impl Fleet {
 /// piece does not come up.
 pub fn start(demo: bool) -> Fleet {
     let root = scratch::root("fleet");
-    for d in ["home", "run", "repo/.git"] {
+    for d in ["home", "run", "repo/.git", "project"] {
         std::fs::create_dir_all(root.join(d)).unwrap();
     }
     std::fs::write(root.join("repo/README.md"), README).unwrap();
+    let project = root.join("project");
+    git_init(&project);
+    std::fs::write(project.join("README.md"), PROJECT_README).unwrap();
     let config = krowk_devregistry::Config { login_person: Some(TOKEN.into()), ..Default::default() };
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).expect("the stand-in registry starts");
     let api = format!("{}/v1", registry.url());
@@ -235,7 +257,9 @@ pub fn start(demo: bool) -> Fleet {
     store.save_user_keys(&UserKeys::new(user.clone(), []).unwrap()).expect("host A's home keeps the user key");
     store.save_device_list(&start.entries).expect("host A's home keeps the device list");
 
-    serve(&root, env.clone());
+    let (turns, turns_rx) = auto::turn_hook();
+    let bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>> = Arc::default();
+    serve(&root, env.clone(), turns, bridged.clone());
     let hosting = Arc::new(Hosting {
         api: api.clone(),
         relay: relay.clone(),
@@ -249,7 +273,9 @@ pub fn start(demo: bool) -> Fleet {
         tests: std::sync::Mutex::default(),
         started: std::sync::Condvar::new(),
         turns: Arc::default(),
+        offline: Arc::default(),
     });
+    let supervisor = hosting.supervise(&root, &project, turns_rx, bridged);
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
 
     // The first turn, then the bridge, on a runtime of their own thread.
@@ -287,7 +313,7 @@ pub fn start(demo: bool) -> Fleet {
     let approval = request.as_ref().map(|_| APPROVAL.to_string());
 
     let approve = format!("{}/_approve/cli/authorizations/{{code}}/approval", registry.url());
-    Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, hosting, stop, bridge, _registry: registry, _mock: m }
+    Fleet { api, relay, env: "development".into(), approve, session, approval, request, host: a, chain, user, root, project, hosting, supervisor: Some(supervisor), stop, bridge, _registry: registry, _mock: m }
 }
 
 /// A session of a test's still starting: counted down when dropped.
@@ -342,6 +368,8 @@ pub struct Hosting {
     tests: std::sync::Mutex<Tests>,
     started: std::sync::Condvar,
     turns: Turns,
+    /// Host A's announcement is not refreshed while set (`offline`).
+    offline: Arc<AtomicBool>,
 }
 
 /// The sessions hosted for tests, by id; how many are still starting; and
@@ -504,6 +532,123 @@ impl Hosting {
         Ok(still.get(session).is_none_or(|n| *n == 0))
     }
 
+    /// Host A's automatic sync (R-SYNC-3), as `krowk host serve` runs it
+    /// beside the daemon, and its announcement of itself (R-HOST-3): the
+    /// mock model's instance ready, and `project` the one directory, which
+    /// `trusted.json` in host A's home lists. The fleet's own sessions, in
+    /// `repo`, are excluded: the fleet bridges those itself. A session
+    /// another device starts (R-HOST-4) runs in `project` and is taken up
+    /// at its first turn.
+    fn supervise(&self, root: &Path, project: &Path, turns: mpsc::UnboundedReceiver<daemon::server::TurnEvent>, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) -> auto::Handle {
+        let krowk = root.join("home/.krowk");
+        let trusted = krowk_harness::trust::Store::new(Some(krowk.join(krowk_harness::trust::FILE)), Some(root.join("home")));
+        trusted.trust(&project.canonicalize().unwrap()).expect("host A's home trusts the fleet's project");
+        let excluded = serde_json::json!({"sync": {"exclude": [self.repo.display().to_string()]}});
+        let announcer = {
+            let (api, token, signing, device, krowk, offline) = (self.api.clone(), self.host.token.clone(), self.host.signing_copy(), self.host.key.id(), krowk.clone(), self.offline.clone());
+            move |_fresh: bool| -> Result<announce::Announcer, (String, String)> {
+                if offline.load(Ordering::SeqCst) {
+                    return Err(("fleet_offline".into(), "the fleet took host A offline (POST /hosts/offline)".into()));
+                }
+                let signer = e2e::DeviceSigner::new(device, SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared();
+                let api = Arc::new(krowk_api::Client::new(&api, &token).signed_by(signer));
+                let (keys, chain) = listed(&api, &krowk)?;
+                Ok(announce::Announcer { api, keys, chain, device })
+            }
+        };
+        let build: auto::Build = {
+            let (relay, api, token, signing, device, krowk, sessions) = (self.relay.clone(), self.api.clone(), self.host.token.clone(), self.host.signing_copy(), self.host.key.id(), krowk.clone(), self.sessions.clone());
+            Box::new(move |session: &str, cwd: &Path| {
+                let signer = e2e::DeviceSigner::new(device, SigningKey::from_secret(&*signing.secret_bytes()).unwrap()).shared();
+                let api = Arc::new(krowk_api::Client::new(&api, &token).signed_by(signer));
+                let (keys, chain) = listed(&api, &krowk)?;
+                Ok(host::Options {
+                    relay: relay.clone(),
+                    env: "development".into(),
+                    api,
+                    device,
+                    signing: SigningKey::from_secret(&*signing.secret_bytes()).unwrap(),
+                    keys,
+                    chain,
+                    session: session.into(),
+                    title: String::new(),
+                    cwd: cwd.display().to_string(),
+                    sessions: sessions.clone(),
+                    ttl: host::LEASE_TTL,
+                    keep: host::KEEP,
+                    direct: None,
+                    tailnet: None,
+                    handed: None,
+                    approval_wait: host::APPROVAL_WAIT,
+                    stale: None,
+                    supervised: None,
+                })
+            })
+        };
+        let env = self.env.clone();
+        let c = auto::Config {
+            socket: self.socket.clone(),
+            sessions: self.sessions.clone(),
+            version: "test".into(),
+            krowk_home: Some(krowk.clone()),
+            build,
+            policy: Box::new(move || auto::policy(&|_| String::new(), Some(&excluded))),
+            ready: Box::new(|| Ok(())),
+            bridged,
+            paid_pause: auto::PAID_PAUSE,
+            parked_recheck: auto::PARKED_RECHECK,
+            announce: Some(announce::Options {
+                every: ANNOUNCE_EVERY,
+                ttl: ANNOUNCE_TTL,
+                online_since_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
+                keys: Box::new(announcer),
+                instances: Box::new(move || {
+                    let registry = Registry::resolve(&InstancesConfig::default(), &*env);
+                    let all: Vec<_> = registry.instances.values().collect();
+                    let probe = krowk_harness::readiness::Probe::at(krowk.join("probe"));
+                    let reports = krowk_harness::readiness::check_all(&all, &krowk.join("credentials.json"), &probe);
+                    (registry, reports)
+                }),
+                catalog: Box::new(|| None),
+                trusted,
+                mode_for: Box::new(|_| Ok(PermissionMode::Default)),
+            }),
+        };
+        auto::Supervisor::spawn(c, turns)
+    }
+
+    /// Takes host A offline as a machine that went to sleep is (R-IOS-7):
+    /// its announcement is no longer refreshed and lapses, still listed,
+    /// offline, with when it was last seen. Its sessions, the registry and
+    /// the relay stay. Returns once the registry lists it offline.
+    pub fn offline(&self) -> Result<(), String> {
+        self.offline.store(true, Ordering::SeqCst);
+        self.announced(false, Duration::from_secs(ANNOUNCE_TTL + 20))
+    }
+
+    /// Host A announces itself again; returns once it is listed online.
+    pub fn online(&self) -> Result<(), String> {
+        self.offline.store(false, Ordering::SeqCst);
+        self.announced(true, Duration::from_secs(20))
+    }
+
+    /// Waits up to `most` until the registry lists host A's announcement
+    /// as `online` says.
+    fn announced(&self, online: bool, most: Duration) -> Result<(), String> {
+        let (api, me) = (self.host.client(&self.api), self.host.key.id().to_string());
+        let deadline = Instant::now() + most;
+        loop {
+            let listed = api.list_presences().map_err(|e| e.to_string())?;
+            if listed.iter().any(|p| p.device == me && p.online == online) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(format!("host A is not listed {} within {most:?}", if online { "online" } else { "offline" }));
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+
     /// Stops every test's session, and any that starts from now on.
     fn release_all(&self) {
         let all: Vec<Bridge> = {
@@ -583,6 +728,32 @@ impl Hosting {
     }
 }
 
+/// The device list the registry serves, verified from its first entry, and
+/// the user keys host A's home keeps: a device paired, or removed, since
+/// the fleet started is on it, or off it. Errors are `(code, message)`.
+fn listed(api: &krowk_api::Client, krowk: &Path) -> Result<(UserKeys, Chain), (String, String)> {
+    let failed = |e: String| ("list_unread".to_string(), e);
+    let list = api.device_list_all().map_err(|e| failed(e.to_string()))?;
+    let entries = list
+        .entries
+        .iter()
+        .map(|e| krowk_client::device_chain::SignedEntry::from_parts(e2e::unhex(&e.entry).ok_or("not hex")?, &e2e::unhex(&e.signatures).ok_or("not hex")?).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(failed)?;
+    let chain = Chain::verify(&entries, None).map_err(|e| failed(e.to_string()))?;
+    let keys = Keystore::new(krowk).user_keys().map_err(failed)?.ok_or_else(|| failed("host A's home keeps no user key".into()))?;
+    Ok((keys, chain))
+}
+
+/// `dir` made a git repository: `git init`, or, where git isn't, a `.git`
+/// of its own, which is all krowk looks for.
+fn git_init(dir: &Path) {
+    let made = Process::new("git").args(["init", "-q"]).current_dir(dir).stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
+    if !made {
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+    }
+}
+
 fn connect_error(e: daemon::client::ConnectError) -> String {
     match e {
         daemon::client::ConnectError::Absent => "nothing listens".into(),
@@ -624,8 +795,9 @@ fn env(root: &Path, model: &str) -> impl Fn(&str) -> String + Clone + Send + Syn
     }
 }
 
-/// Host A's daemon on a thread of its own, once it listens.
-fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static) {
+/// Host A's daemon on a thread of its own, once it listens, telling
+/// `turns` of each turn (automatic sync's hook).
+fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, turns: mpsc::UnboundedSender<daemon::server::TurnEvent>, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) {
     let socket = daemon::socket(&env).unwrap();
     let credentials = root.join("home/.krowk/credentials.json");
     let wait = socket.clone();
@@ -646,7 +818,7 @@ fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'stat
                 session: Default::default(),
             })
         });
-        server::run(server::Options { socket, idle: None, krowk_version: "test".into(), ..Default::default() }, factory)
+        server::run(server::Options { socket, idle: None, krowk_version: "test".into(), turns: Some(turns), bridged: Some(bridged), ..Default::default() }, factory)
     });
     let deadline = Instant::now() + Duration::from_secs(5);
     while std::os::unix::net::UnixStream::connect(&wait).is_err() {
