@@ -8,7 +8,10 @@
 //! And `krowk hosts` listing the machines that host, with no Tailscale tag
 //! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
 //! and opened in a TUI attached on a third machine, which reads its
-//! history there and stops it with `x` (R-SUB-12).
+//! history there and stops it with `x` (R-SUB-12). And `krowk sync new`
+//! from B starting a session on A's host daemon and following it, or
+//! refusing, with nothing sent, a host that is offline, a directory it did
+//! not offer and a model it cannot run (R-HOST-4).
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -266,7 +269,12 @@ impl Running {
     /// Reads stdout until a line passes `want`; with `refusing`, failing on
     /// a command A refused first.
     fn heard(&mut self, what: &str, refusing: bool, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        self.heard_within(what, refusing, Duration::from_secs(20), want)
+    }
+
+    /// `heard`, waiting up to `within`.
+    fn heard_within(&mut self, what: &str, refusing: bool, within: Duration, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + within;
         while Instant::now() < deadline {
             let Ok(l) = self.out.recv_timeout(Duration::from_millis(100)) else { continue };
             self.seen.push(l.clone());
@@ -276,7 +284,7 @@ impl Running {
                 return v;
             }
         }
-        panic!("no {what} within 20s: {:#?}\nstderr: {:?}", self.seen, self.err.try_iter().collect::<Vec<_>>());
+        panic!("no {what} within {within:?}: {:#?}\nstderr: {:?}", self.seen, self.err.try_iter().collect::<Vec<_>>());
     }
 
     /// Reads stderr until a line passes `want`.
@@ -1131,4 +1139,147 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
     assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
     assert!(human.contains("  ready: anthropic (") && human.contains("  directories: "), "{human}");
+}
+
+/// A with sync set up, its repository trusted and its host daemon kept up
+/// by `krowk host serve`, announced; and B, a second home on the same
+/// person's list, which has seen A's announcement.
+fn serving(w: &World) -> (Machine, Machine, Running) {
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    let serve = Running::spawn(a.command(&["host", "serve"]));
+    a_as_b_sees_it(&b, &a, |h| h["announced"] == true && h["online"] == true);
+    (a, b, serve)
+}
+
+/// A's row in B's `krowk hosts --json`, once it passes `want`.
+fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
+            return h.clone();
+        }
+        assert!(Instant::now() < deadline, "B never saw A as wanted: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// The commands the stand-in holds, by its own read.
+fn commands_held(w: &World) -> Vec<serde_json::Value> {
+    let url = format!("{}/_host_commands", w.api.trim_end_matches("/v1"));
+    let body = ureq::get(&url).call().unwrap().body_mut().read_to_string().unwrap();
+    serde_json::from_str::<serde_json::Value>(&body).unwrap()["commands"].as_array().cloned().unwrap()
+}
+
+/// `krowk sync new` on B, run to its end, refused: its stderr.
+fn sync_new_refused(w: &World, b: &Machine, args: &[&str]) -> String {
+    let out = b.command(&[&["sync", "new"], args].concat()).stdin(Stdio::null()).output().unwrap();
+    let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(!out.status.success(), "refused: {err}{}", String::from_utf8_lossy(&out.stdout));
+    assert_eq!(commands_held(w), Vec::<serde_json::Value>::new(), "nothing was sent: {err}");
+    err
+}
+
+/// R-HOST-4, R-SYNC-2: B starts a session on A with `krowk sync new` and
+/// follows it as stream-json; the turn runs on A, which holds it — `krowk
+/// sync sessions` on A lists it — and its lines reach B.
+#[test]
+fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
+    let w = World::new("new");
+    let (a, b, _serve) = serving(&w);
+    let repo = a.repo.display().to_string();
+    let mut view = Running::spawn(b.command(&["sync", "new", "--host", "A", "--cwd", &repo, "--json", "say hi"]));
+    view.said("the wait", |l| l == "krowk: asked a to start the session — waiting for it (up to 10 s)…");
+    // A's next refresh takes the command up, within 10 s, and its
+    // automatic sync the session; a loaded runner is given room for both.
+    let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
+    let h = a_as_b_sees_it(&b, &a, |h| h["announced"] == true);
+    let first = h["instances"].as_array().unwrap().iter().find(|i| i["ready"] == true && i["models"][0].is_string()).cloned().unwrap();
+    assert_eq!(started["model"], serde_json::json!({"instance": first["name"], "model": first["models"][0]}), "A's first ready model: {started}");
+    let answer = view.until("the answer", |v| v["type"] == "item.completed" && v["item"]["kind"] == "assistantText");
+    assert!(answer["item"]["text"].as_str().is_some_and(|t| t.contains(ANSWER)), "{answer}");
+    view.until("the turn's end", |v| v["type"] == "turn.completed");
+    let session = started["sessionId"].as_str().unwrap().to_string();
+    drop(view);
+    let held = commands_held(&w);
+    assert_eq!(held.iter().map(|c| c["answered"].as_bool()).collect::<Vec<_>>(), [Some(true)], "one command, answered: {held:?}");
+
+    let out = a.command(&["sync", "sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let listed = v["sessions"].as_array().unwrap().iter().find(|s| s["id"] == session.as_str()).cloned().unwrap_or_else(|| panic!("A lists {session}: {v}"));
+    assert_eq!(listed["cwd"], repo.as_str(), "{listed}");
+    // A has the log: the one writer (R-SYNC-2).
+    assert_eq!(a.session(), session);
+}
+
+/// R-HOST-4: A stopped cleanly takes its presence with it. B's `sync new`
+/// says A is offline and how to bring it up, and sends nothing.
+#[test]
+fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
+    let w = World::new("newoff");
+    let (a, b, mut serve) = serving(&w);
+    let stopped = a.command(&["host", "stop"]).stdin(Stdio::null()).output().unwrap();
+    assert!(stopped.status.success(), "{}", String::from_utf8_lossy(&stopped.stderr));
+    // Its presence goes as it exits, after `host stop` has returned.
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while serve.child.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "A's daemon never exited: {:?}", serve.stderr());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let presences = || ureq::get(&format!("{}/_presences", w.api.trim_end_matches("/v1"))).call().unwrap().body_mut().read_to_string().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while serde_json::from_str::<serde_json::Value>(&presences()).unwrap()["presences"] != serde_json::json!([]) {
+        assert!(Instant::now() < deadline, "A's presence stayed: {}", presences());
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
+    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk host enable"), "{err}");
+    let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
+    assert!(err.contains("no host named 'nobody' — krowk hosts lists yours"), "{err}");
+}
+
+/// R-HOST-4: a directory A did not announce — its home, untrusted — is
+/// refused from the announcement, naming what A does offer; nothing is sent.
+#[test]
+fn r_host_4_a_directory_a_did_not_offer_is_refused() {
+    let w = World::new("newdir");
+    let (a, b, _serve) = serving(&w);
+    let home = a.home.display().to_string();
+    let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &format!("{home}/"), "say hi"]);
+    assert!(err.contains(&format!("a does not offer {home}; it offers: {}", a.repo.display())), "{err}");
+}
+
+/// R-SWITCH-4, R-HOST-4: a model on an instance A does not have, or has
+/// and not ready, is refused with the fix A announced; nothing is sent.
+#[test]
+fn r_switch_4_a_model_a_cannot_run_is_refused_with_the_fix() {
+    let w = World::new("newmodel");
+    let (a, b, _serve) = serving(&w);
+    let repo = a.repo.display().to_string();
+    let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &repo, "--model", "nope/x", "say hi"]);
+    assert!(err.contains("a can't run nope/x: it has no instance nope — its instances: "), "{err}");
+    let h = a_as_b_sees_it(&b, &a, |h| h["announced"] == true);
+    let unready = h["instances"].as_array().unwrap().iter().find(|i| i["ready"] == false && i["fix"].is_string()).cloned().unwrap_or_else(|| panic!("A announces an instance that is not ready: {h}"));
+    let (name, fix) = (unready["name"].as_str().unwrap(), unready["fix"].as_str().unwrap());
+    let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &repo, "--model", &format!("{name}/some-model"), "say hi"]);
+    assert!(err.contains(&format!("a can't run {name}/some-model: {fix}")), "{err}");
+}
+
+/// R-HOST-4: the host picks the permissions. `sync new` has no
+/// `--permission-mode`, and refuses one as an unknown flag before it asks
+/// anything; its help offers none.
+#[test]
+fn r_host_4_sync_new_offers_no_permission_mode() {
+    let w = World::new("newmode");
+    let b = w.machine("b");
+    let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", "/x", "--permission-mode", "unhinged", "say hi"]);
+    assert!(err.contains("unknown flag --permission-mode for `krowk sync new`"), "{err}");
+    let help = b.command(&["help", "sync", "new"]).stdin(Stdio::null()).output().unwrap();
+    let help = String::from_utf8_lossy(&help.stdout);
+    assert!(help.contains("--host") && help.contains("--cwd") && help.contains("--model") && !help.lines().any(|l| l.trim_start().starts_with("--permission-mode")), "{help}");
 }

@@ -276,7 +276,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
         // The lease holder asking for the person's other devices to be rung
         // (R-IOS-12).
         ("POST", ["v1", "sessions", id, "notification"]) => sync::signed(a, req, |a, req, by| sync::notify(a, req, id, by)),
-        (_, ["_settings" | "_notifications" | "_push_tokens" | "_presences", ..]) => stand_in_route(a, req, &m, &segs),
+        (_, ["_settings" | "_notifications" | "_push_tokens" | "_presences" | "_host_commands", ..]) => stand_in_route(a, req, &m, &segs),
         (_, ["a", slug]) if get => page::artifact_page(a, req, slug),
         _ => no_such_endpoint(),
     }
@@ -295,6 +295,8 @@ fn stand_in_route(a: &App, req: &Req, m: &str, segs: &[&str]) -> Resp {
         (_, ["_push_tokens"]) if get => devices::push_tokens_seen(a),
         // The presences as stored, bytes as hex (R-HOST-3).
         (_, ["_presences"]) if get => devices::presences_seen(a),
+        // The commands held, with no bytes (R-HOST-4).
+        (_, ["_host_commands"]) if get => commands::commands_seen(a),
         _ => no_such_endpoint(),
     }
 }

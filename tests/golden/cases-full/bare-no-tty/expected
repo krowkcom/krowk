@@ -1345,6 +1345,38 @@ stdout:
           "name": "take",
           "usage": "krowk sync take SESSION",
           "summary": "Move a live session here, uncommitted work and all"
+        },
+        {
+          "name": "new",
+          "usage": "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "host",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
+            }
+          ]
         }
       ]
     },
@@ -2981,6 +3013,38 @@ tty:
           "name": "take",
           "usage": "krowk sync take SESSION",
           "summary": "Move a live session here, uncommitted work and all"
+        },
+        {
+          "name": "new",
+          "usage": "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "host",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
+            }
+          ]
         }
       ]
     },

@@ -88,6 +88,12 @@ pub struct Flags {
     /// `worktrees apply`: the checkout a worktree's changes go to.
     #[cfg(feature = "harness")]
     pub to: String,
+    /// `sync new`: the machine to start the session on, and its directory
+    /// there.
+    #[cfg(feature = "harness")]
+    pub host: String,
+    #[cfg(feature = "harness")]
+    pub cwd: String,
     /// `sync init`: replace a device list the person already has.
     #[cfg(feature = "harness")]
     pub start_over: bool,
@@ -318,6 +324,10 @@ impl Flags {
             "save" => text(&mut self.save),
             #[cfg(feature = "harness")]
             "to" => text(&mut self.to),
+            #[cfg(feature = "harness")]
+            "host" => text(&mut self.host),
+            #[cfg(feature = "harness")]
+            "cwd" => text(&mut self.cwd),
             #[cfg(feature = "harness")]
             "api-key-env" => text(&mut self.api_key_env),
             #[cfg(feature = "harness")]

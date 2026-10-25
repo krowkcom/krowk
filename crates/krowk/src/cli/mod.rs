@@ -400,6 +400,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["sync", "attach", ..] => synced::attach(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["sync", "take", ..] => synced::take(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sync", "new", ..] => synced::new_session(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
@@ -627,7 +629,26 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     ];
     #[cfg(feature = "harness")]
     {
+        // `sync new` takes its own flags and those every command takes, no
+        // other: no `--permission-mode` above all, since the host runs the
+        // session in its own default mode (R-HOST-4).
+        let new = cfg!(unix) && words.starts_with(&["sync", "new"]);
+        if new {
+            let own = catalog::catalog("").find(&["sync".into(), "new".into()]).map(|c| c.flags).unwrap_or_default();
+            let takes = |name: &str| own.iter().chain(&catalog::global_flags()[..catalog::CORE_FLAGS]).any(|f| f.name == name);
+            if let Some(name) = f.given.iter().find(|n| !takes(n)) {
+                return Err(fail("bad_flag", format!("unknown flag --{name} for `krowk sync new`, which takes --host, --cwd and --model; the host runs the session in its own default permission mode")));
+            }
+        }
+        for name in ["host", "cwd"] {
+            if f.given.contains(name) && !new {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk sync new`")));
+            }
+        }
         for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "trust", "daemon", "sandbox"] {
+            if name == "model" && new {
+                continue;
+            }
             if f.given.contains(name) && !f.print {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
             }

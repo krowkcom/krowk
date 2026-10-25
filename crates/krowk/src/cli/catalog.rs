@@ -617,6 +617,16 @@ fn sync_command() -> Command {
             cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
             #[cfg(unix)]
             cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
+            #[cfg(unix)]
+            Command {
+                args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
+                flags: vec![
+                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"),
+                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk hosts`)"),
+                    flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
+                ],
+                ..cmd("new", "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
+            },
         ],
         ..cmd("sync", "", "Sync sessions between your machines, end-to-end encrypted")
     }
@@ -965,6 +975,12 @@ Signs an instance out: SuperGrok's tokens are deleted, a subscription's own
 logout is run, and an API key's variable is named for you to unset.",
         #[cfg(feature = "harness")]
         "sync attach" => SYNC_ATTACH_ABOUT,
+        #[cfg(feature = "harness")]
+        "sync new" => "\
+Asks the machine to start the session, then follows it as `krowk sync attach`
+does. Nothing is sent to a machine that is offline, or for a directory or a
+model it does not offer; the machine checks again and runs it in its own
+default permission mode, so there is no --permission-mode here.",
         #[cfg(feature = "harness")]
         "providers add" => "\
 Also signs in to SuperGrok, or adds a Claude Code or Codex account (signed in
