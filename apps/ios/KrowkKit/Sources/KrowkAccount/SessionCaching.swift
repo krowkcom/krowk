@@ -31,8 +31,9 @@ extension SessionCache {
 /// queue; each event as krowk-ffi's `encodeLogEvent` writes it, so Swift
 /// never builds its JSON (R-PROTO-2). Under the screen's session, whatever
 /// session an event names (a subagent's lines are its transcript too). A
-/// cache: a write that fails (the phone locked) is dropped, and the
-/// network has it.
+/// batch that couldn't be written (the phone locked) is held and tried
+/// again with the next, so the transcript keeps no hole while the screen
+/// is open; one a forgotten cache refused is dropped.
 public final class TranscriptCacheWriter: Sendable {
     public let session: String
     private let cache: SessionCache
@@ -45,6 +46,8 @@ public final class TranscriptCacheWriter: Sendable {
         var last: Task<Void, Never>?
     }
     private let held = Mutex(Held())
+    /// The most events held for a write that keeps failing: the newest.
+    static let mostHeld = 10_000
 
     public init(session: String, cache: SessionCache, interval: Duration = .seconds(1)) {
         self.session = session
@@ -81,7 +84,13 @@ public final class TranscriptCacheWriter: Sendable {
                     return held.events
                 }
                 let rows = batch.compactMap { event in (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) } }
-                try? await cache.appendEvents(session: session, rows)
+                do throws(SessionCacheFailure) {
+                    try await cache.appendEvents(session: session, rows)
+                } catch where !error.forgotten {
+                    self.held.withLock { held in
+                        held.events = Array((batch + held.events).suffix(Self.mostHeld))
+                    }
+                } catch {}
             }
         }
     }

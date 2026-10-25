@@ -148,4 +148,14 @@ struct SessionCacheTests {
         await #expect(throws: SessionCacheFailure.self) { try await cache.appendEvents(session: "s", Self.events(0..<1)) }
         #expect(!FileManager.default.fileExists(atPath: url.path(percentEncoded: false)))
     }
+
+    @Test("R-IOS-1: locked, the cache lets its file go and opens nothing until unlocked; then it reads as before")
+    func testR_IOS_1_suspendedUntilUnlocked() async throws {
+        let cache = try await SessionCache.open(at: url)
+        try await cache.putIndex([Self.session("s")], listedAtMs: 1)
+        await cache.suspend()
+        await #expect(throws: SessionCacheFailure.self) { try await cache.index() }
+        await cache.resume()
+        #expect(try await cache.index().map(\.id) == ["s"])
+    }
 }

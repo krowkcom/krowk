@@ -321,22 +321,30 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         return PairingScreens.pairing(model, workspace: workspace)
     }
 
-    /// The phone is locking: the cache lets its file go.
+    /// The phone is locking: the cache lets its file go until it is
+    /// unlocked.
     static func phoneLocking() {
         let cache = cache
-        Task { await cache.close() }
+        Task { await cache.suspend() }
+    }
+
+    static func phoneUnlocked() {
+        let cache = cache
+        Task { await cache.resume() }
     }
 
     /// Deletes the cache's file; once it's gone a fresh cache takes its
     /// place, and what still holds the old one (a session screen's
-    /// writes) is refused. One that couldn't be deleted is tried again at
-    /// the next launch, which finds the phone signed out.
+    /// writes) is refused. One that couldn't be deleted stays refused
+    /// for the rest of the run, nothing reopening the file, and is tried
+    /// again at the next launch, which finds the phone signed out.
     private static func forgetCache() async {
         let forgotten = cache
         do {
             try await forgotten.forgetAll()
         } catch {
             Logger(subsystem: "com.krowk.app", category: "reset").error("the cache was not deleted: \(error.description, privacy: .public)")
+            return
         }
         if cache === forgotten { cache = SessionCache() }
     }

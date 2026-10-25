@@ -57,6 +57,8 @@ public struct SessionCacheFailure: Error, CustomStringConvertible, Sendable {
     /// database): it is deleted and started afresh. Anything else (the
     /// phone locked) may pass, and leaves the file alone.
     var unreadable = false
+    /// The cache was forgotten: nothing it is handed is ever written.
+    public internal(set) var forgotten = false
 }
 
 /// The phone's on-device cache of the person's sessions (R-IOS-1,
@@ -98,6 +100,9 @@ public actor SessionCache {
     /// The open connection; closed when it goes.
     private var connection: Connection?
     private var forgotten = false
+    /// The phone is locked (`suspend`): the file is not opened until
+    /// `resume`.
+    private var suspended = false
 
     /// No I/O: the file opens on first use.
     public init(at url: URL = SessionCache.defaultURL) {
@@ -263,7 +268,8 @@ public actor SessionCache {
     }
 
     private func opened() throws(SessionCacheFailure) -> OpaquePointer {
-        guard !forgotten else { throw SessionCacheFailure(description: "the cache was forgotten") }
+        guard !forgotten else { throw SessionCacheFailure(description: "the cache was forgotten", forgotten: true) }
+        guard !suspended else { throw SessionCacheFailure(description: "the phone is locked") }
         if let connection { return connection.db }
         do {
             connection = Connection(try connect())
@@ -308,6 +314,9 @@ public actor SessionCache {
             try exec(db, "PRAGMA foreign_keys = OFF")
             // A temp table never spills to an unprotected file in tmp/.
             try exec(db, "PRAGMA temp_store = MEMORY")
+            // A session gone from the listing, or evicted, leaves no
+            // content behind in free pages.
+            try exec(db, "PRAGMA secure_delete = ON")
             let version = try Statement(db, "PRAGMA user_version")
             let found: Int32 = try version.step() ? Int32(truncatingIfNeeded: version.int(0) ?? 0) : 0
             switch found {
@@ -369,10 +378,21 @@ public actor SessionCache {
         }
     }
 
-    /// Closes the connection; the next call opens it again. The app calls
-    /// it as the phone locks (`protectedDataWillBecomeUnavailable`): no
-    /// connection is held over a file whose key went.
-    public func close() {
+    /// The phone is locking (`protectedDataWillBecomeUnavailable`): the
+    /// connection is closed, and every call refused until `resume`, so
+    /// none is held over a file whose key went.
+    public func suspend() {
+        suspended = true
+        close()
+    }
+
+    /// The phone is unlocked again (`protectedDataDidBecomeAvailable`).
+    public func resume() {
+        suspended = false
+    }
+
+    /// Closes the connection; the next call opens it again.
+    func close() {
         connection = nil
     }
 

@@ -164,7 +164,7 @@ public struct PhoneReset: Sendable {
         clearPushToken: @escaping @Sendable () async throws -> Void,
         forgetPush: @escaping @MainActor @Sendable () -> Void,
         forgetKeys: @escaping @Sendable () throws -> Void,
-        forgetCache: @escaping @Sendable () async -> Void = {},
+        forgetCache: @escaping @Sendable () async -> Void,
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.clearPushToken = clearPushToken

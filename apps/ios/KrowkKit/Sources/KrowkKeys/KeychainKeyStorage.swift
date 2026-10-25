@@ -72,7 +72,9 @@ public final class KeychainKeyStorage: KeyStorage {
     /// `service` and `installMarker` are for tests, which keep a fixture's
     /// keys under a service of their own; the app keeps the defaults.
     /// `purging` names files an earlier install may have left beside the
-    /// marker (the session cache, ticket 129), deleted in the same purge.
+    /// marker (the session cache, ticket 129), deleted in the same purge:
+    /// one that can't be deleted fails the launch as the Keychain would,
+    /// rather than leave an earlier install's content readable.
     public init(
         service: String = KeychainKeyStorage.appService, installMarker: URL = KeychainKeyStorage.installMarker,
         purging: [URL] = []

@@ -43,9 +43,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
 
     /// The phone is locking: the session cache's file goes unreadable
     /// (`.complete`), so its connection is closed rather than held over
-    /// it; the next write after unlock opens it again (ticket 129).
+    /// it, and nothing opens it until the phone is unlocked (ticket 129).
     func applicationProtectedDataWillBecomeUnavailable(_ application: UIApplication) {
         SceneDelegate.phoneLocking()
+    }
+
+    func applicationProtectedDataDidBecomeAvailable(_ application: UIApplication) {
+        SceneDelegate.phoneUnlocked()
     }
 
     // The generated Info.plist declares a scene manifest without a
