@@ -284,8 +284,10 @@ unit = "bytes"
 # over 15.75 MiB (the sync waves since ticket 68; bench runs on release
 # only). The viewer's place moving only once a batch is shown, and `Saved`
 # naming it (no new crate: the shown counter, the place and its update)
-# adds 2,240 bytes: 16,542,504 (15.78 MiB). Raised 15.75 -> 16.00 MiB,
-# leaving 234,712.
+# measured 16,542,504 (15.78 MiB), 2,240 over main, and after its review
+# round 16,489,032 (15.73 MiB): the link's layout moves it by tens of KB.
+# Raised 15.75 -> 16.00 MiB, since main is over 15.75 without it, leaving
+# 288,184.
 max = { x86_64-linux = 16_777_216 }
 status = "enforced"
 
