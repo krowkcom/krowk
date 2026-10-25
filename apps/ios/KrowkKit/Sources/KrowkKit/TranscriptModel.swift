@@ -440,6 +440,7 @@ public final class TranscriptModel {
             switching = choice
             switchToken = token
             switchAcked = false
+            switchTurnEnded = false
             switchSince = [newestLiveMs, currentAtMs].compactMap { $0 }.max()
             if switchRefusal != nil { switchRefusal = nil }
             if let continuing, continuing.token != token { self.continuing = nil }
@@ -659,6 +660,11 @@ public final class TranscriptModel {
     /// it logs is the switch, or what replaced it (the host keeps one
     /// switch for after a running turn, the last asked for).
     @ObservationIgnored private var switchAcked = false
+    /// A turn ended since the host took it: the host runs a switch it kept
+    /// as that turn lets go, so a turn starting after is past it. One
+    /// starting before (registered at the host before its log said so)
+    /// isn't.
+    @ObservationIgnored private var switchTurnEnded = false
     /// The host's clock when the switch was asked for, as far as the
     /// screen knows it: a catch-up's line from before then is not its
     /// answer.
@@ -733,6 +739,7 @@ public final class TranscriptModel {
         if switching != nil { switching = nil }
         switchToken = nil
         switchAcked = false
+        switchTurnEnded = false
     }
 
     /// Whether a line logged at `time` can answer the switch out: not a
@@ -1087,16 +1094,18 @@ public final class TranscriptModel {
             if let model {
                 turnModels[turn] = model
                 current(model, at: time)
-                // On the model asked for, or, once the host took the switch,
-                // on what replaced it: either way it is over (Continue's
-                // prompt is not sent into a turn that runs).
-                if let switching, answersSwitch(at: time), switching == model || switchAcked { endSwitch() }
+                // On the model asked for, or, once the host took the switch
+                // and a turn ended since, on what replaced it: either way it
+                // is over (Continue's prompt is not sent into a turn that
+                // runs).
+                if let switching, answersSwitch(at: time), switching == model || (switchAcked && switchTurnEnded) { endSwitch() }
             }
             // Another turn starting withdraws the offer, as it happens.
             if live, let offer, offer.turn != turn { self.offer = nil }
             return nil
         case .turnCompleted(let turn, let end):
             endedTurns.insert(turn)
+            if switchAcked, answersSwitch(at: time) { switchTurnEnded = true }
             // The running turn's end (or one's while none was known to
             // run), not an older turn's a catch-up brings late.
             let current = runningTurn == nil || runningTurn == turn

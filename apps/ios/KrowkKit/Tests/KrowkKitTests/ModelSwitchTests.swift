@@ -167,6 +167,21 @@ struct ModelSwitchModelTests {
         #expect(model.commandsOut == 0, "nothing keeps a parked screen")
     }
 
+    @Test("R-LAG-8: a switch the host took while a turn was starting holds through that turn's start, and settles on model.switched after its end")
+    func ackedBeforeTheTurnsStart() {
+        let model = Self.model()
+        let token = model.issue(.switchModel(Self.b))
+        model.apply(frame: [.commandMinted(token: token, id: "d-1"), .commandAcked(id: "d-1", error: nil)])
+        model.apply(frame: [.logged([Self.event("e3", .turnStarted(turn: "t2", model: Self.a), at: 3)])])
+        #expect(model.switching == Self.b, "the turn the host had registered already")
+        model.apply(frame: [.logged([
+            Self.event("e4", .turnCompleted(turn: "t2", end: .completed), at: 4),
+            Self.event("e5", .modelSwitched(model: Self.b.model, from: Self.a, to: Self.b), at: 5),
+        ])])
+        #expect(model.switching == nil)
+        #expect(model.currentModel == Self.b)
+    }
+
     @Test("R-INST-7: an offer for another device's turn only says the limit; a turn starting withdraws it; a refused Continue sends nothing")
     func offerElsewhere() {
         let model = Self.model()
