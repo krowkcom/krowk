@@ -175,12 +175,16 @@ impl Account {
     /// stopped before (`OpenedSession::place`, kept with the events it
     /// read), and reads only the chunks after it: `events` are only those
     /// after `place`. Held to the same chain, then to the sealed index's
-    /// head and to `known`. An index older than `place` (the registry
-    /// rolled back past what this phone read), a chunk after it that does
-    /// not follow it (another log), and the checks `open_session` makes,
-    /// are refused as `session_rolled_back`. A `place` no reading stopped
-    /// at, or whose digests are not 32 bytes, is `InvalidInput`. Otherwise
-    /// as `open_session`. Blocking; call it off the main thread.
+    /// head and to `known`. Refused as `session_rolled_back`: an index
+    /// older than `place` (the registry rolled back past what this phone
+    /// read), a log short of the index's head or of `known` or holding
+    /// another chunk there, and — unlike `open_session`, where it is
+    /// `Internal` — a chunk after `place` that does not open where it was
+    /// served (another log). A `place` no reading stopped at, or whose
+    /// digests are not 32 bytes, is `InvalidInput`. Otherwise as
+    /// `open_session`. A `Viewer` opened on the session knows only the
+    /// events after `place`: the app hands it what it kept (ticket 131).
+    /// Blocking; call it off the main thread.
     pub fn resume_session(&self, id: String, place: ReadPlaceRecord, known: Option<HeadRecord>, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
         let place = ReadPlace::try_from(place)?;
         let known = known.map(Head::try_from).transpose()?;

@@ -311,7 +311,10 @@ fn r_perf_6_resume_refuses_an_index_older_than_its_place_and_a_fork() {
     w.host.put_chunk(SESSION, place.next, &forked, &h.token).unwrap();
     let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, None).unwrap_err();
     assert!(e.permanent && e.rolled_back, "{e:?}");
-    // From the checkpoint, the fork reads as its own log.
+    // And the phone calls it a rollback.
+    let record = ReadPlaceRecord { next: place.next, previous: place.previous.to_vec(), fence: place.fence, epoch: place.epoch, head: place.head.into() };
+    assert_eq!(refused(w.phone.resume_session(SESSION.into(), record, None, None)), "session_rolled_back");
+    // Read from chunk 0, the forked chunk does not follow either.
     assert!(store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).is_err());
 }
 

@@ -135,8 +135,10 @@ pub struct ReadError {
     pub permanent: bool,
     /// Permanent, and the log is not the one this device read or was told
     /// of: a prefix of it, an index older than its place, another chunk at
-    /// a head it knows, or a chunk that does not follow the one before it.
-    /// What the phone calls `session_rolled_back`.
+    /// a head it knows, or a chunk that does not open where it was served
+    /// for any reason but a newer format or a rotated key (one changed,
+    /// replayed, out of order, or not following the chunk before it). What
+    /// the phone calls `session_rolled_back`.
     pub rolled_back: bool,
 }
 
@@ -225,7 +227,18 @@ fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Op
             let sealed = sealed.map_err(ReadError::registry)?;
             // The registry checked its digest as read: what does not open is
             // sealed under a key this device lacks, or is another log.
-            let plain = reader.open(&sealed).map_err(|e| if e.0 == e2e::CHUNK_NOT_HERE { ReadError::rolled_back(format!("chunk {}: {e}", c.index)) } else { ReadError::permanent(e.to_string()) })?;
+            // What this build or this device's keys cannot open yet (a newer
+            // format, a key rotated since) is the same log; anything else
+            // that does not open where it was served — changed, replayed,
+            // reordered, after a gap or the final chunk, under a lower fence
+            // or epoch, or not following the chunk before — is not.
+            let plain = reader.open(&sealed).map_err(|e| {
+                if sealed.first().is_some_and(|&v| v > e2e::CHUNK_V2) || e.0.contains(e2e::ROTATED_SINCE_OPENED) {
+                    ReadError::permanent(e.to_string())
+                } else {
+                    ReadError::rolled_back(format!("chunk {}: {e}", c.index))
+                }
+            })?;
             let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| ReadError::permanent(format!("chunk {} holds no chunk this krowk reads: {e}", c.index)))?;
             let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
             last = Some(h);
@@ -427,7 +440,12 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
 /// `place.next` that does not follow it, another log.
 pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place: ReadPlace, known: Option<Head>) -> Result<Attached, ReadError> {
     place.check().map_err(ReadError::permanent)?;
-    Head::at_least(&Vec::from_iter(index.head), Some(place.head)).map_err(|e| ReadError::rolled_back(format!("the session's index is older than what this device read: {e}")))?;
+    match index.head {
+        Some(h) if h.index > place.head.index => {}
+        Some(h) if h == place.head => {}
+        Some(h) if h.index == place.head.index => return Err(ReadError::rolled_back(format!("the session's index names another chunk {} than the one this device read: the registry served another log", h.index))),
+        h => return Err(ReadError::rolled_back(format!("the session's index ends at chunk {}, where this device read to chunk {}: the registry rolled back past what it read, refused", h.map_or(-1, |h| h.index as i64), place.head.index))),
+    }
     let sealed = index.head;
     // Only what is read from here is held to a head: before it, the chain
     // this device read binds it.
