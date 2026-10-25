@@ -156,7 +156,8 @@ pub use sessions::ReadPlaceRecord;
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
-pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{decode_cursor, encode_cursor};
 
 use krowk_client::pairing::PairingCode;
 
@@ -168,8 +169,9 @@ use krowk_client::pairing::PairingCode;
 /// refuses a key the storage won't keep as `credentials_unwritable`; 5:
 /// `join_pairing` and `join_invite` take the os the phone runs, and
 /// `join_invite`'s `invite_mismatch` is `invite_other_account` or
-/// `invite_other_pairing`).
-pub const FFI_API_VERSION: u32 = 5;
+/// `invite_other_pairing`; 6: `ViewerUpdate` gains `Saved`, which a Swift
+/// switch over it must handle).
+pub const FFI_API_VERSION: u32 = 6;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

@@ -11,7 +11,7 @@ use krowk_client::protocol::{ApprovalRequest, Command, LiveEvent, StreamLine};
 use krowk_client::relay_link::{HostLink, Inbound};
 use krowk_client::sync::join::control;
 use krowk_client::sync::store::{Attached, ReadError};
-use krowk_client::sync::viewer::{Effect, Update, ViewerCore};
+use krowk_client::sync::viewer::{Cursor, Effect, Update, ViewerCore};
 use krowk_client::sync::{uuid, Answer, Candidate, ViewerFrame, Welcome};
 use serde_json::{json, Value};
 
@@ -43,8 +43,13 @@ struct Relay {
     host: HostLink,
     link: u64,
     now: u64,
-    /// Every `Show`, in order.
+    /// Every `Show`, in order, its `Saved` taken out (and one that held
+    /// nothing else left out).
     shown: Vec<Vec<Update>>,
+    /// Every `Show` as it came.
+    whole: Vec<Vec<Update>>,
+    /// The places the `Show`s ended with.
+    saved: Vec<Cursor>,
     /// The frames the host opened from the viewer, in order.
     frames: Vec<ViewerFrame>,
     /// The acks the viewer sent the relay, by `seq`.
@@ -61,7 +66,7 @@ impl Relay {
         let host = HostLink::new(&key, uuid(SESSION));
         let at_rest = Attached { events, ..Attached::default() };
         let (core, first) = ViewerCore::new(SessionKeys::from(key.clone()), SESSION, DeviceId([1; 16]), RELAY, at_rest, now);
-        let mut r = Relay { core, key, host, link: 0, now, shown: Vec::new(), frames: Vec::new(), acks: Vec::new(), rest: Vec::new() };
+        let mut r = Relay { core, key, host, link: 0, now, shown: Vec::new(), whole: Vec::new(), saved: Vec::new(), frames: Vec::new(), acks: Vec::new(), rest: Vec::new() };
         r.take(first);
         assert!(matches!(r.shown.as_slice(), [u] if matches!(u.as_slice(), [Update::Attached { .. }])), "{:?}", r.shown);
         assert!(matches!(r.rest.as_slice(), [Effect::Join { at_ms, extra }] if *at_ms == now && *extra == json!({})), "{:?}", r.rest);
@@ -74,7 +79,19 @@ impl Relay {
     fn take(&mut self, effects: Vec<Effect>) {
         for e in effects {
             match e {
-                Effect::Show(u) => self.shown.push(u),
+                Effect::Show(u) => {
+                    self.whole.push(u.clone());
+                    let mut rest = Vec::new();
+                    for u in u {
+                        match u {
+                            Update::Saved(c) => self.saved.push(c),
+                            u => rest.push(u),
+                        }
+                    }
+                    if !rest.is_empty() {
+                        self.shown.push(rest);
+                    }
+                }
                 Effect::Send(b) if b[1] == KIND_ACK => self.acks.push(u64::from_be_bytes(b[20..28].try_into().unwrap())),
                 Effect::Send(b) if b[1] == KIND_FRAME => match self.host.open(self.link, &b).expect("the host opens the viewer's frame") {
                     Inbound::Hello { .. } => {}
@@ -241,17 +258,20 @@ fn r_off_2_batches_between_the_welcome_and_the_read_are_held_then_applied() {
 
     r.read(Ok((vec![], Attached::default())));
     assert_eq!(catch_ups(&r.frames), [None], "the welcome's catch-up covers the gap: no second one");
-    assert_eq!(r.acks, [3]);
+    assert_eq!(r.acks, [0], "the cursor: the batches are not shown yet");
     r.at(32).tick();
+    assert_eq!(r.acks, [0, 3], "shown, then acked");
     let shown = r.updates();
     let lines = shown.iter().filter(|u| matches!(u, Update::Line(_))).count();
     assert_eq!((lines, shown.iter().filter(|u| matches!(u, Update::Gap)).count()), (2, 1), "{shown:?}");
 }
 
-/// R-LAG-4: the viewer acks the relay once four batches are applied, and
-/// the rest at the next tick.
+/// R-LAG-4, R-IOS-1: the relay ack never names a batch whose updates have
+/// not been shown. Four batches in one display frame are acked only as the
+/// `Show` holding their lines goes out, and then with the fourth; the next
+/// frame's at the next tick.
 #[test]
-fn r_lag_4_an_ack_after_four_batches_and_on_the_next_tick() {
+fn r_lag_4_the_ack_names_only_batches_shown() {
     let mut r = Relay::new(vec![], 0);
     r.live();
     r.acks.clear();
@@ -259,22 +279,29 @@ fn r_lag_4_an_ack_after_four_batches_and_on_the_next_tick() {
         let b = r.batch(vec![logged(n)], false);
         r.receive(&b);
     }
-    assert_eq!(r.acks, [4]);
+    assert!(r.acks.is_empty(), "applied, not shown: no ack yet");
+    assert_eq!(r.core.next_wake(), Some(16), "due at the next display frame");
+    let effects = r.core.tick(16);
+    let show = effects.iter().position(|e| matches!(e, Effect::Show(_))).expect("shown");
+    let ack = effects.iter().position(|e| matches!(e, Effect::Send(b) if b[1] == KIND_ACK)).expect("acked");
+    assert!(show < ack, "the Show before the ack: {effects:?}");
+    r.take(effects);
+    assert_eq!(r.acks, [4], "the fourth");
+    assert_eq!(r.shown[0].iter().filter(|u| matches!(u, Update::Line(_))).count(), 4);
     let b = r.batch(vec![logged(5)], false);
     r.receive(&b);
     assert_eq!(r.acks, [4], "not yet");
-    assert_eq!(r.core.next_wake(), Some(16), "due at the next display frame");
-    r.at(16).tick();
+    r.at(32).tick();
     assert_eq!(r.acks, [4, 5]);
-    r.at(40).tick();
+    r.at(56).tick();
     assert_eq!(r.acks, [4, 5], "once");
 
     // A batch with no lines leaves nothing to show: the ack alone is due,
     // at the next display frame.
     let b = r.batch(vec![], false);
-    r.at(45).receive(&b);
-    assert_eq!(r.core.next_wake(), Some(32), "a frame after the last show, at 16");
-    r.at(45).tick();
+    r.at(60).receive(&b);
+    assert_eq!(r.core.next_wake(), Some(48), "a frame after the last show, at 32: past, so at once");
+    r.at(60).tick();
     assert_eq!(r.acks, [4, 5, 6]);
     assert_eq!(r.core.next_wake(), Some(10_000), "the heartbeat next");
 }
@@ -1044,4 +1071,132 @@ fn r_client_3_r_net_2_a_failed_read_on_a_new_stream_or_a_direct_path_rejoins_whe
     assert_eq!(probes(&mut r), 0);
     r.at(10_120).tick();
     assert_eq!(probes(&mut r), 1, "10 s after the read failed");
+}
+
+/// The places the `Show`s since the last call ended with.
+fn places(r: &mut Relay) -> Vec<(u64, Option<String>)> {
+    std::mem::take(&mut r.saved).into_iter().map(|c| (c.after_seq, c.newest)).collect()
+}
+
+/// R-OFF-2, R-IOS-1: a batch that opens but does not parse is a gap — the
+/// stream's counter refuses it if it comes again — so it shows `Gap` and
+/// the host is asked for the events after the one before it. The cursor
+/// moves past it, so the next batch is no second gap.
+#[test]
+fn r_off_2_r_ios_1_a_batch_that_does_not_parse_is_a_gap() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.frames.clear();
+    let b1 = r.batch(vec![logged(1)], false);
+    let bad = r.host.batch(b"{\"lines\": [", false).unwrap();
+    let b3 = r.batch(vec![logged(3)], false);
+    r.receive(&b1);
+    r.receive(&bad);
+    assert_eq!(catch_ups(&r.frames), [Some(id(1))], "from the event before it");
+    r.receive(&b3);
+    assert_eq!(catch_ups(&r.frames), [Some(id(1))], "the next batch is no second gap");
+    r.at(16).tick();
+    let shown = r.updates();
+    assert_eq!(shown.iter().filter(|u| matches!(u, Update::Gap)).count(), 1, "{shown:?}");
+    assert_eq!(r.acks.last(), Some(&3));
+    let stream = krowk_client::e2e::hex(&r.host.stream());
+    assert_eq!(r.core.cursor_extra(), json!({"stream": stream, "afterSeq": 3}));
+}
+
+/// R-IOS-1: `Saved` ends each `Show` that moved the viewer's place, and
+/// names the stream, the last batch shown and the newest event shown. While
+/// a catch-up for a gap is out it names the event the catch-up asks from,
+/// so a place kept across launches never catches up from past the gap.
+#[test]
+fn r_ios_1_saved_ends_the_show_and_names_the_newest_event_shown() {
+    let mut r = Relay::new(vec![logged(0)], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.at(16).tick();
+    assert_eq!(places(&mut r), [(0, Some(id(0)))], "welcomed: where the relay stood, the newest held");
+    let stream = krowk_client::e2e::hex(&r.host.stream());
+
+    let (b1, b2) = (r.batch(vec![logged(1)], false), r.batch(vec![logged(2)], false));
+    r.receive(&b1);
+    r.receive(&b2);
+    r.whole.clear();
+    r.at(32).tick();
+    let show = r.whole.last().expect("a Show").clone();
+    assert!(matches!(show.last(), Some(Update::Saved(c)) if *c == Cursor { stream: stream.clone(), after_seq: 2, newest: Some(id(2)) }), "{show:?}");
+    assert_eq!(show.iter().filter(|u| matches!(u, Update::Saved(_))).count(), 1);
+    places(&mut r);
+
+    // A Show that moved nothing says no place.
+    r.command(stop(1));
+    r.at(48).tick();
+    assert!(r.saved.is_empty(), "{:?}", r.saved);
+
+    // Batch 3 dropped: until the catch-up is answered, the place is the
+    // event before the gap.
+    let (_b3, b4) = (r.batch(vec![logged(3)], false), r.batch(vec![logged(4)], false));
+    r.receive(&b4);
+    r.at(64).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(2)))]);
+    r.answer(&Answer::CatchUp { events: vec![serde_json::from_value(logged(3)).unwrap()], more: false });
+    r.at(80).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(4)))], "caught up: the newest held");
+
+    // A batch whose one line was seen already moves the batch, not the
+    // newest event.
+    let dup = r.batch(vec![logged(3)], false);
+    r.receive(&dup);
+    r.at(96).tick();
+    assert_eq!(places(&mut r), [(5, Some(id(4)))]);
+}
+
+/// R-IOS-1: a logged event this build cannot read (a newer host's event
+/// type) is skipped like any line it does not know, and the place never
+/// reaches past it: a relaunch on a build that reads it catches it up.
+#[test]
+fn r_ios_1_the_place_stays_before_a_logged_event_this_build_cannot_read() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    let future = json!({"id": id(2), "sessionId": "s", "timeMs": 0, "type": "session.someday", "what": 1});
+    let (b1, b2, b3) = (r.batch(vec![logged(1)], false), r.batch(vec![future, logged(3)], false), r.batch(vec![logged(4)], false));
+    r.receive(&b1);
+    r.receive(&b2);
+    r.receive(&b3);
+    r.at(16).tick();
+    let shown = r.updates();
+    assert_eq!(shown.iter().filter(|u| matches!(u, Update::Line(_))).count(), 3, "the rest shows: {shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::Gap)), "{shown:?}");
+    assert_eq!(places(&mut r).last(), Some(&(3, Some(id(1)))), "the event before the one it could not read");
+    let b5 = r.batch(vec![logged(5)], false);
+    r.receive(&b5);
+    r.at(32).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(1)))], "nor later");
+}
+
+/// R-IOS-1: a catch-up page holding a logged event this build cannot read
+/// still applies the rest, and the place holds from where the catch-up
+/// asked: never past the events the page brought.
+#[test]
+fn r_ios_1_a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.frames.clear();
+    let (b1, _b2, b3) = (r.batch(vec![logged(1)], false), r.batch(vec![logged(2)], false), r.batch(vec![logged(4)], false));
+    r.receive(&b1);
+    r.receive(&b3);
+    assert_eq!(catch_ups(&r.frames), [Some(id(1))]);
+    let future = json!({"id": id(3), "sessionId": "s", "timeMs": 0, "type": "session.someday"});
+    let page = serde_json::to_vec(&json!({"type": "catchUp", "events": [logged(2), future], "more": false})).unwrap();
+    let routed = r.host.to_viewer(r.link, &page, false).unwrap();
+    r.receive(&routed[HEADER..]);
+    r.at(16).tick();
+    let shown = r.updates();
+    assert!(shown.iter().any(|u| matches!(u, Update::CaughtUp(e) if e.iter().any(|e| e["id"] == id(2)))), "the rest applies: {shown:?}");
+    assert_eq!(places(&mut r).last(), Some(&(3, Some(id(1)))), "from where the catch-up asked");
+    let b4 = r.batch(vec![logged(5)], false);
+    r.receive(&b4);
+    r.at(32).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(1)))]);
 }

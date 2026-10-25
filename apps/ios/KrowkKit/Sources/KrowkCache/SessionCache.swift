@@ -63,8 +63,9 @@ public struct SessionCacheFailure: Error, CustomStringConvertible, Sendable {
 
 /// The phone's on-device cache of the person's sessions (R-IOS-1,
 /// R-IOS-3): the index of every listed session, and the logged transcript
-/// of the 20 most recently updated, written as sessions sync. Ticket 131
-/// draws from it at launch; ticket 130 fills `cursors`.
+/// of the 20 most recently updated, written as sessions sync, and where
+/// each viewer stood in its session (`cursors`), written with the events it
+/// names. Ticket 131 draws from it at launch.
 ///
 /// One SQLite file, `Library/Application Support/krowk-cache.sqlite`
 /// beside the install marker, through the system's SQLite (no package).
@@ -177,26 +178,72 @@ public actor SessionCache {
 
     // MARK: Transcripts
 
-    /// Appends `session`'s logged events, in order, in one transaction:
-    /// an event id already kept is kept once, where it was; the rest take
-    /// the places after the session's last.
-    public func appendEvents(session: String, _ events: [(id: String, json: String)]) throws(SessionCacheFailure) {
-        guard !events.isEmpty else { return }
+    /// Appends `session`'s logged events, in order, and with them, when
+    /// given, the viewer's place as of the last of them (`putCursor`), in
+    /// one transaction: a saved place never names an event the cache does
+    /// not hold. The place is written only if, with the events in, the
+    /// cache holds every id in `holding` (the event it names, and the first
+    /// its writer wrote: a session evicted meanwhile holds neither); false
+    /// when it was not. An event id already kept is kept once, where it
+    /// was; the rest take the places after the session's last.
+    @discardableResult
+    public func appendEvents(
+        session: String, _ events: [(id: String, json: String)], cursor: String? = nil, holding: [String] = []
+    ) throws(SessionCacheFailure) -> Bool {
+        guard !events.isEmpty || cursor != nil else { return false }
         let db = try opened()
+        var placed = false
         try transaction(db) { () throws(SessionCacheFailure) in
-            let last = try Statement(db, "SELECT MAX(ord) FROM events WHERE session_id = ?")
-            last.bind(1, session)
-            var ord = try last.step() ? (last.int(0).map { $0 + 1 } ?? 0) : 0
-            let insert = try Statement(db, "INSERT OR IGNORE INTO events(session_id, ord, event_id, json) VALUES (?, ?, ?, ?)")
-            for event in events {
-                insert.bind(1, session)
-                insert.bind(2, ord)
-                insert.bind(3, event.id)
-                insert.bind(4, event.json)
-                try insert.run()
-                if sqlite3_changes(db) > 0 { ord += 1 }
+            if !events.isEmpty {
+                let last = try Statement(db, "SELECT MAX(ord) FROM events WHERE session_id = ?")
+                last.bind(1, session)
+                var ord = try last.step() ? (last.int(0).map { $0 + 1 } ?? 0) : 0
+                let insert = try Statement(db, "INSERT OR IGNORE INTO events(session_id, ord, event_id, json) VALUES (?, ?, ?, ?)")
+                for event in events {
+                    insert.bind(1, session)
+                    insert.bind(2, ord)
+                    insert.bind(3, event.id)
+                    insert.bind(4, event.json)
+                    try insert.run()
+                    if sqlite3_changes(db) > 0 { ord += 1 }
+                }
             }
+            guard let cursor else { return }
+            let held = try Statement(db, "SELECT 1 FROM events WHERE session_id = ? AND event_id = ?")
+            for id in holding {
+                held.bind(1, session)
+                held.bind(2, id)
+                let found = try held.step()
+                held.reset()
+                guard found else { return }
+            }
+            try put(db, cursor: cursor, session: session)
+            placed = true
         }
+        return placed
+    }
+
+    /// Where the viewer of `session` stands, as krowk-ffi's `encodeCursor`
+    /// wrote it (Swift never builds or parses it, R-PROTO-2), replacing the
+    /// one kept. Only with the events it names: `appendEvents(cursor:)`.
+    public func putCursor(session: String, json: String) throws(SessionCacheFailure) {
+        let db = try opened()
+        try transaction(db) { () throws(SessionCacheFailure) in try put(db, cursor: json, session: session) }
+    }
+
+    /// The place kept for `session`, if any.
+    public func cursor(session: String) throws(SessionCacheFailure) -> String? {
+        let db = try opened()
+        let row = try Statement(db, "SELECT cursor FROM cursors WHERE session_id = ?")
+        row.bind(1, session)
+        return try row.step() ? row.text(0) : nil
+    }
+
+    private func put(_ db: OpaquePointer, cursor: String, session: String) throws(SessionCacheFailure) {
+        let upsert = try Statement(db, "INSERT INTO cursors(session_id, cursor) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET cursor = excluded.cursor")
+        upsert.bind(1, session)
+        upsert.bind(2, cursor)
+        try upsert.run()
     }
 
     /// Up to `limit` of `session`'s events before `ord` (all, when nil),
@@ -477,6 +524,12 @@ private final class Statement {
         case SQLITE_DONE: return false
         default: throw SessionCacheFailure(description: String(cString: sqlite3_errmsg(db)))
         }
+    }
+
+    /// Readies it to bind again, mid-result or not.
+    func reset() {
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
     }
 
     /// Runs it to its end, and readies it to bind again.

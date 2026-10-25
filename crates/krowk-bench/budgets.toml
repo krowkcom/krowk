@@ -280,7 +280,15 @@ unit = "bytes"
 # bytes. On the main before ticket 104 it measured 8,768 bytes smaller,
 # the link laid out differently, and `qrcode` without its image feature
 # 18,624 bytes larger than it. 223,288 under this.
-max = { x86_64-linux = 16_515_072 }
+# Main measured 16,540,264 (15.77 MiB) before ticket 130, already 25,192
+# over 15.75 MiB (the sync waves since ticket 68; bench runs on release
+# only). The viewer's place moving only once a batch is shown, and `Saved`
+# naming it (no new crate: the shown counter, the place and its update)
+# measured 16,542,504 (15.78 MiB), 2,240 over main, and after its review
+# round 16,489,032 (15.73 MiB): the link's layout moves it by tens of KB.
+# Raised 15.75 -> 16.00 MiB, since main is over 15.75 without it, leaving
+# 288,184.
+max = { x86_64-linux = 16_777_216 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---

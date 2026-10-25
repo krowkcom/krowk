@@ -292,6 +292,44 @@ fn r_client_1_welcome_line_and_a_gap_that_asks_for_a_catch_up() {
     assert_eq!(catch_ups(&p.frames), [Some(event(SESSION, 3, "")["id"].as_str().unwrap().to_owned())], "caught up from batch 1's event");
 }
 
+/// R-CLIENT-1, R-IOS-1: the place a frame moves the viewer to reaches
+/// Swift as that frame's last update, `Saved`: the stream, the last batch
+/// shown and the newest event shown, for the app to save with the frame's
+/// events in one write.
+#[test]
+fn r_client_1_r_ios_1_saved_reaches_swift_as_the_frames_last_update() {
+    let mut p = Phone::live();
+    p.answer(&Answer::CatchUp { events: vec![], more: false });
+    p.frame();
+    let b1 = p.batch(&[event(SESSION, 3, "three")]);
+    p.receive(&b1);
+    let shown = p.frame();
+    let newest = event(SESSION, 3, "")["id"].as_str().unwrap().to_owned();
+    match shown.as_slice() {
+        [.., ViewerUpdate::Line { .. }, ViewerUpdate::Saved { cursor }] => {
+            assert_eq!(cursor.stream, e2e::hex(&p.host.stream()));
+            assert_eq!(cursor.after_seq, 1);
+            assert_eq!(cursor.newest, Some(newest));
+        }
+        other => panic!("the line, then the place: {other:?}"),
+    }
+    assert_eq!(p.acks, [1], "acked as it was shown");
+}
+
+/// R-PROTO-2: the phone's cache keeps a place as the JSON `encode_cursor`
+/// writes, the keys a join resumes with, and `decode_cursor` reads it back.
+#[test]
+fn r_proto_2_a_cursor_round_trips_through_its_json() {
+    let c = krowk_ffi::CursorRecord { stream: "ab".repeat(16), after_seq: u64::MAX, newest: Some("01900000-0000-7000-8000-000000000001".into()) };
+    let json = krowk_ffi::encode_cursor(c.clone()).unwrap();
+    let v: Value = serde_json::from_str(&json).unwrap();
+    assert_eq!(v, json!({"stream": "ab".repeat(16), "afterSeq": u64::MAX, "newest": "01900000-0000-7000-8000-000000000001"}));
+    assert_eq!(krowk_ffi::decode_cursor(json).unwrap(), c);
+    let none = krowk_ffi::CursorRecord { newest: None, ..c };
+    assert_eq!(krowk_ffi::decode_cursor(krowk_ffi::encode_cursor(none.clone()).unwrap()).unwrap(), none);
+    assert!(krowk_ffi::decode_cursor("{}".into()).is_err());
+}
+
 /// R-HAND-4, R-IOS-5: with no host, a command shows at once as queued and
 /// nothing is sent; at the host's welcome it goes, and the host's ack
 /// shows. Its id is `<device>-<run id>-<counter>`, and one sent and not

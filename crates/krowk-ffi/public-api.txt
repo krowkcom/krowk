@@ -1,4 +1,4 @@
-FFI_API_VERSION = 5
+FFI_API_VERSION = 6
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -837,7 +837,21 @@ pub enum ViewerUpdate {
     Note { text: String },
     HandoffTaken,
     HandoffRefused { detail: String },
+    Saved { cursor: CursorRecord },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CursorRecord {
+    pub stream: String,
+    pub after_seq: u64,
+    pub newest: Option<String>,
+}
+
+#[uniffi::export]
+pub fn encode_cursor(cursor: CursorRecord) -> Result<String, KrowkError> {}
+
+#[uniffi::export]
+pub fn decode_cursor(json: String) -> Result<CursorRecord, KrowkError> {}
 
 #[derive(uniffi::Object)]
 pub struct ChunksRead {
@@ -955,7 +969,9 @@ pub use storage::KeyStorage;
 
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 
-pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
+
+pub use viewer::{decode_cursor, encode_cursor};
 
 pub const FFI_API_VERSION: u32 = _;
 
