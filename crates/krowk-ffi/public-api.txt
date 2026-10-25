@@ -601,6 +601,12 @@ pub struct ReadPlaceRecord {
     pub head: HeadRecord,
 }
 
+#[uniffi::export]
+pub fn encode_read_place(place: ReadPlaceRecord) -> Result<String, KrowkError> {}
+
+#[uniffi::export]
+pub fn decode_read_place(json: String) -> Result<ReadPlaceRecord, KrowkError> {}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SessionList {
     pub sessions: Vec<SessionSummary>,
@@ -896,6 +902,17 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
+    #[uniffi::constructor]
+    pub fn open_resumed(
+        session: Arc<OpenedSession>,
+        supervisor: Arc<ConnectionSupervisor>,
+        held: Option<String>,
+        now_ms: u64,
+    ) -> Result<Arc<Viewer>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Viewer {
     pub fn start(&self, now_ms: u64) -> Vec<Effect> {}
 }
 
@@ -989,6 +1006,8 @@ pub use protocol::encode_log_event;
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 
 pub use sessions::ReadPlaceRecord;
+
+pub use sessions::{decode_read_place, encode_read_place};
 
 pub use sign_in::{SignIn, SignedIn};
 

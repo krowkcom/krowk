@@ -82,7 +82,9 @@
 //! into an [`OpenedSession`], which reads on with `catch_up` and gets a
 //! relay ticket for the live viewer; [`Account::resume_session`] opens
 //! one from where a reading stopped (`OpenedSession::place`, a
-//! [`ReadPlaceRecord`] the app keeps) and reads only what came after it. Listing, opening, `catch_up` and the
+//! [`ReadPlaceRecord`] the app keeps, as the JSON text
+//! [`encode_read_place`] writes and [`decode_read_place`] reads back) and
+//! reads only what came after it. Listing, opening, `catch_up` and the
 //! ticket are blocking registry calls (rule 2); the getters never wait on
 //! the network. The session's keys, the device's signing key and the read
 //! position stay inside `OpenedSession`; Swift gets events, titles and
@@ -103,7 +105,10 @@
 //! dial, send, ping, close, show the [`ViewerUpdate`]s, read the chunks,
 //! end. Each dial is numbered and what comes from a connection names it,
 //! so a dropped one's late messages are ignored; the join's ten-second
-//! waits are `tick`'s too. Every rule of the viewer is Rust's; the
+//! waits are `tick`'s too. `Viewer::open_resumed` opens one on a session
+//! the app already holds up to an event (its cache's cursor, ticket 131),
+//! so the welcome's catch-up asks only for what came after. Every rule of
+//! the viewer is Rust's; the
 //! session's keys and the signing key stay inside. Relay only: a race for
 //! a direct path the core asks for is lost at once, here.
 //!
@@ -153,6 +158,7 @@ pub use protocol::encode_log_event;
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
 // Its own line, so public-api.txt sees an addition and not a change.
 pub use sessions::ReadPlaceRecord;
+pub use sessions::{decode_read_place, encode_read_place};
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
