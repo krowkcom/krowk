@@ -4156,7 +4156,7 @@ async fn r_host_4_a_start_from_b_runs_on_a_in_a_trusted_directory() {
     assert!(!sent.answered);
     let by = Instant::now() + Duration::from_secs(20);
     let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
-    assert_eq!(daemon_sessions(&w).await, [session_id.clone()]);
+    assert_eq!(daemon_sessions(&w).await, std::slice::from_ref(&session_id));
     let (ran_in, ran_on, _) = turn_started_on_a(&w, &session_id, by).await;
     assert_eq!((ran_in.as_str(), &ran_on), (cwd.as_str(), &model));
     w.listed_on(&b, &session_id, by).await;
@@ -4256,7 +4256,7 @@ async fn r_sync_2_the_same_start_sent_twice_starts_one_session() {
     assert_eq!(started.len(), 1, "{started:?}");
     w.reg_mode.store(PASS, Ordering::SeqCst);
     let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
-    assert_eq!(started, [session_id.clone()]);
+    assert_eq!(started, std::slice::from_ref(&session_id));
     turn_started_on_a(&w, &session_id, by).await;
     assert_eq!(turns_logged(&w, &session_id), 1);
     assert!(!first.answered);
