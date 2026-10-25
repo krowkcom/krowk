@@ -1,9 +1,9 @@
 //! A synced session at rest (engineering/harness.md → Sync): the shapes of
 //! its sealed index and of the chunks of its log, checkpoints among them,
 //! and reading them back on a device listing them (`list`) or attaching
-//! (`attach`, `catch_up`, the key and index openers), so no client
-//! reimplements the crypto (R-CLIENT-1). Writing them is the lease
-//! holder's, in the harness
+//! (`attach`, `catch_up`, `resume` from a kept place, the key and index
+//! openers), so no client reimplements the crypto (R-CLIENT-1). Writing
+//! them is the lease holder's, in the harness
 //! (`krowk_harness::sync::store::Writer`). Blocking: each read is a round
 //! trip through `krowk_api::Client`, so a phone calls these off its main
 //! thread.
@@ -133,15 +133,24 @@ pub struct ReadError {
     /// Anything else — the network, a registry error, a digest that did not
     /// match as read — is transient.
     pub permanent: bool,
+    /// Permanent, and the log is not the one this device read or was told
+    /// of: a prefix of it, an index older than its place, another chunk at
+    /// a head it knows, or a chunk that does not follow the one before it.
+    /// What the phone calls `session_rolled_back`.
+    pub rolled_back: bool,
 }
 
 impl ReadError {
     pub fn transient(detail: impl Into<String>) -> ReadError {
-        ReadError { detail: detail.into(), permanent: false }
+        ReadError { detail: detail.into(), permanent: false, rolled_back: false }
     }
 
     pub fn permanent(detail: impl Into<String>) -> ReadError {
-        ReadError { detail: detail.into(), permanent: true }
+        ReadError { detail: detail.into(), permanent: true, rolled_back: false }
+    }
+
+    pub fn rolled_back(detail: impl Into<String>) -> ReadError {
+        ReadError { detail: detail.into(), permanent: true, rolled_back: true }
     }
 
     /// A registry or storage call that failed: permanent only when the
@@ -216,7 +225,7 @@ fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Op
             let sealed = sealed.map_err(ReadError::registry)?;
             // The registry checked its digest as read: what does not open is
             // sealed under a key this device lacks, or is another log.
-            let plain = reader.open(&sealed).map_err(|e| ReadError::permanent(e.to_string()))?;
+            let plain = reader.open(&sealed).map_err(|e| if e.0 == e2e::CHUNK_NOT_HERE { ReadError::rolled_back(format!("chunk {}: {e}", c.index)) } else { ReadError::permanent(e.to_string()) })?;
             let chunk: Chunk = serde_json::from_slice(&plain).map_err(|e| ReadError::permanent(format!("chunk {} holds no chunk this krowk reads: {e}", c.index)))?;
             let h = Head { index: c.index, digest: e2e::chunk_digest(&sealed) };
             last = Some(h);
@@ -244,6 +253,40 @@ pub struct Attached {
     pub epoch: u32,
     /// Every chunk read, for holding the log to a head it was told of.
     pub heads: Vec<Head>,
+}
+
+impl Attached {
+    /// Where the reading stopped, to keep and `resume` from later; None
+    /// before any chunk was read.
+    pub fn place(&self) -> Option<ReadPlace> {
+        let head = self.head?;
+        Some(ReadPlace { next: self.next, previous: self.previous, fence: self.fence, epoch: self.epoch, head })
+    }
+}
+
+/// Where a device's reading of a session stopped (`Attached::place`): the
+/// next chunk's index, the digest it must bind, the fence and key epoch it
+/// may not go below, and the head read. Kept with what was read, it lets
+/// the next attach read only the chunks after it (`resume`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadPlace {
+    pub next: u64,
+    #[serde(with = "hex32")]
+    pub previous: [u8; 32],
+    pub fence: u64,
+    pub epoch: u32,
+    pub head: Head,
+}
+
+impl ReadPlace {
+    /// Refuses a place no reading stopped at: the head is the last chunk
+    /// read, so the next is the one after it and binds its digest.
+    pub fn check(&self) -> Result<(), String> {
+        if self.head.index.checked_add(1) != Some(self.next) || self.head.digest != self.previous {
+            return Err(format!("a read place at chunk {} with its head at chunk {} is not one a reading stopped at", self.next, self.head.index));
+        }
+        Ok(())
+    }
 }
 
 /// A session's keys, out of the session record: only a record signed by a
@@ -365,7 +408,7 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
     });
     a.heads = heads;
     let head = head?;
-    Head::at_least(&a.heads, known).map_err(ReadError::permanent)?;
+    Head::at_least(&a.heads, known).map_err(ReadError::rolled_back)?;
     a.head = head;
     a.next = reader.next();
     a.previous = reader.previous();
@@ -373,6 +416,25 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
     a.epoch = reader.epoch();
     a.events.extend(fresh.iter().cloned());
     Ok(fresh)
+}
+
+/// Attaches from `place`, where this device's reading stopped before,
+/// rather than from the checkpoint: only the chunks after it are read, and
+/// only their events are in what it returns. They are held to the same
+/// chain (the first must follow `place`'s head), then to the index's head
+/// and to `known`. An index older than `place` is a registry rolled back
+/// past what this device read, refused for good; so is a chunk at
+/// `place.next` that does not follow it, another log.
+pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place: ReadPlace, known: Option<Head>) -> Result<Attached, ReadError> {
+    place.check().map_err(ReadError::permanent)?;
+    Head::at_least(&Vec::from_iter(index.head), Some(place.head)).map_err(|e| ReadError::rolled_back(format!("the session's index is older than what this device read: {e}")))?;
+    let sealed = index.head;
+    // Only what is read from here is held to a head: before it, the chain
+    // this device read binds it.
+    let mut a = Attached { index, events: Vec::new(), head: Some(place.head), next: place.next, previous: place.previous, fence: place.fence, epoch: place.epoch, heads: vec![place.head] };
+    catch_up(client, key, id, &mut a, sealed)?;
+    Head::at_least(&a.heads, known).map_err(ReadError::rolled_back)?;
+    Ok(a)
 }
 
 mod hex32 {

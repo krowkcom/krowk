@@ -650,6 +650,10 @@ pub const CHUNK_OVERHEAD: usize = CHUNK_HEAD_V2 + NONCE + TAG;
 /// What a reader is told when a chunk names a key epoch newer than the
 /// ring it holds.
 pub const ROTATED_SINCE_OPENED: &str = "the session's key was rotated since it was opened";
+/// What a reader is told when a chunk does not open where it was served:
+/// not a chunk of the log as read so far (`sync::store` calls that a
+/// rollback).
+pub const CHUNK_NOT_HERE: &str = "the chunk does not open here: it was changed, belongs to another session, or does not follow the chunk before it";
 /// What chunk 0 binds as the chunk before it.
 pub const NO_PREVIOUS_CHUNK: [u8; 32] = [0; 32];
 
@@ -798,7 +802,7 @@ impl ChunkReader {
     }
 
     pub fn open(&mut self, blob: &[u8]) -> Result<Vec<u8>, Error> {
-        let refused = || err("the chunk does not open here: it was changed, belongs to another session, or does not follow the chunk before it");
+        let refused = || err(CHUNK_NOT_HERE);
         let head = match blob.first() {
             Some(&CHUNK_V1) => CHUNK_HEAD,
             Some(&CHUNK_V2) => CHUNK_HEAD_V2,
