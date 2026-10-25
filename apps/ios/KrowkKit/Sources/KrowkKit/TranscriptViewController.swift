@@ -52,6 +52,12 @@ import UIKit
 /// its instance's limit raises a banner over the composer, whose Continue
 /// switches to the instance the host offers and sends the turn's prompt
 /// again, when this phone sent it.
+///
+/// The navigation bar's menu has Move to… (ticket 136, R-HAND-4): the
+/// person's other online hosts and their directories. A pick asks that
+/// host to take the session up; the bar reads `moving to <host>…` at once
+/// (R-LAG-8) while the session goes on, then `moved to <host>`, or the
+/// host's refusal shows under it and the session stays.
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
     public let row: SessionRow
     public let model: TranscriptModel
@@ -186,6 +192,17 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// (an instance the host lacks, to see the host refuse it).
     public var pickerInstances: (@MainActor ([any AnnouncedInstance]) -> [any AnnouncedInstance])?
 
+    /// The session's move to another host (ticket 136), when the app gave
+    /// the hosts and a live session.
+    public let mover: SessionMove?
+    /// The navigation bar's menu: Move to….
+    public private(set) var menuItem: UIBarButtonItem?
+    /// The host's refusal of a move, under the bar until the next move or
+    /// a tap.
+    public let moveNote = UILabel()
+    /// The Move to… sheet, while it's up.
+    public private(set) var movePicker: UITableViewController?
+
     public init(
         row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
         kept: (any KeptTranscript)? = nil, hosts: (any HostSource)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
@@ -195,6 +212,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         self.lifecycle = lifecycle
         self.hosts = hosts
         self.session = session
+        self.mover = hosts.flatMap { session == nil ? nil : SessionMove(source: $0, holder: row.hostDevice) }
         self.approvals = session == nil ? nil : approvals
         let model = model ?? TranscriptModel(sessionID: row.id)
         self.model = model
@@ -392,6 +410,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
         setUpApprovals()
         setUpModel()
+        setUpMove()
         if noticeShown != nil { addNotice() }
         observeFocus()
         drawKept()
@@ -485,6 +504,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         frames = nil
         driver?.ticker = nil
         putSheetDown()
+        // A move waited on goes on on the host; this screen stops waiting.
+        mover?.stopWaiting()
         // A route lands on a screen in view, never on one parked, and
         // what it said goes with it.
         if noticeShown == .nothingWaiting { hideNotice() }
@@ -903,7 +924,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public func showModelPicker() {
         guard let hosts, session != nil, modelPicker == nil || modelPicker?.presentingViewController == nil else { return }
         let picker = ModelPickerViewController(
-            hosts: HostListModel(source: hosts), device: row.hostDevice, session: pickerSession, adjust: pickerInstances
+            hosts: HostListModel(source: hosts), device: mover?.holder ?? row.hostDevice, session: pickerSession, adjust: pickerInstances
         ) { [weak self] pick in
             self?.switchModel(to: pick)
         }
@@ -944,6 +965,88 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     @objc private func switchNoteTapped() {
         model.dismissSwitchRefusal()
         updateModel()
+    }
+
+    // MARK: Moving the session (ticket 136)
+
+    private func setUpMove() {
+        guard let mover else { return }
+        let move = UIAction(title: "Move to…", image: UIImage(systemName: "arrow.right.circle")) { [weak self] _ in self?.showMovePicker() }
+        move.accessibilityIdentifier = "session-move"
+        let item = UIBarButtonItem(title: "More", image: UIImage(systemName: "ellipsis.circle"), menu: UIMenu(children: [move]))
+        item.accessibilityIdentifier = "session-menu"
+        menuItem = item
+        showApprovalsButton()
+
+        moveNote.font = .preferredFont(forTextStyle: .footnote)
+        moveNote.adjustsFontForContentSizeCategory = true
+        moveNote.numberOfLines = 0
+        moveNote.textAlignment = .center
+        moveNote.textColor = .label
+        moveNote.backgroundColor = .secondarySystemBackground
+        moveNote.layer.cornerRadius = 10
+        moveNote.layer.masksToBounds = true
+        moveNote.isHidden = true
+        moveNote.accessibilityIdentifier = "move-refusal"
+        moveNote.accessibilityHint = "Hides this line"
+        moveNote.isUserInteractionEnabled = true
+        moveNote.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(moveNoteTapped)))
+        moveNote.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(moveNote)
+        NSLayoutConstraint.activate([
+            moveNote.topAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: 8),
+            moveNote.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            moveNote.widthAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.widthAnchor),
+        ])
+        observeMove(mover)
+    }
+
+    private func observeMove(_ mover: SessionMove) {
+        withObservationTracking {
+            updateMove(mover)
+        } onChange: { [weak self, weak mover] in
+            Task { @MainActor in
+                guard let self, let mover else { return }
+                self.observeMove(mover)
+            }
+        }
+    }
+
+    /// The bar's move line and the refusal under it, as the move stands.
+    private func updateMove(_ mover: SessionMove) {
+        let line = mover.barLine
+        statusBar.show(move: line)
+        let refusal = mover.refusal.map { " \(SafeText.line($0[...], limit: 300)) " }
+        if moveNote.text != refusal { moveNote.text = refusal }
+        moveNote.isHidden = refusal == nil
+        if refusal != nil { view.bringSubviewToFront(moveNote) }
+        if UIAccessibility.isVoiceOverRunning, let said = line ?? mover.refusal {
+            UIAccessibility.post(notification: .announcement, argument: said)
+        }
+    }
+
+    /// Move to… chosen: the sheet of the person's other online hosts.
+    public func showMovePicker() {
+        guard let hosts, let mover, !mover.isMoving, movePicker == nil || movePicker?.presentingViewController == nil else { return }
+        let picker = MovePickerViewController(hosts: HostListModel(source: hosts), holder: mover.holder) { [weak self] device, name, cwd in
+            self?.move(to: device, hostName: name, cwd: cwd)
+        }
+        movePicker = picker
+        let sheet = UINavigationController(rootViewController: picker)
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
+    }
+
+    /// A host and a directory picked (R-LAG-8): `moving to <host>…` now,
+    /// and the take asked of the host off the main thread. Whether it went.
+    @discardableResult
+    public func move(to device: String, hostName: String, cwd: String) -> Bool {
+        guard let hosts, let mover else { return false }
+        return mover.move(MoveRequest(id: hosts.newCommandID(), device: device, hostName: hostName, sessionID: row.id, cwd: cwd))
+    }
+
+    @objc private func moveNoteTapped() {
+        mover?.dismissRefusal()
     }
 
     // MARK: Approvals (ticket 91)
@@ -1050,11 +1153,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    /// The hand: how many wait, and a tap brings the sheet back.
+    /// The hand: how many wait, and a tap brings the sheet back. First on
+    /// the right, before the menu.
     private func showApprovalsButton() {
         let waiting = approvals?.waiting ?? 0
+        let menu = menuItem.map { [$0] } ?? []
         guard waiting > 0, approvalSheet == nil else {
-            if navigationItem.rightBarButtonItem != nil { navigationItem.rightBarButtonItem = nil }
+            if navigationItem.rightBarButtonItems ?? [] != menu { navigationItem.rightBarButtonItems = menu }
             return
         }
         let label = waiting == 1 ? "1 approval waiting" : "\(waiting) approvals waiting"
@@ -1067,7 +1172,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         item.accessibilityLabel = label
         item.accessibilityHint = "Shows the approval sheet"
         item.tintColor = .systemOrange
-        navigationItem.rightBarButtonItem = item
+        navigationItem.rightBarButtonItems = [item] + menu
     }
 
     /// Swiped down (or Escape): put away until a new request comes or the

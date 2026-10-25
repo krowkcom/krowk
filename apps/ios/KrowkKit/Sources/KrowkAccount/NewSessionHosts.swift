@@ -2,13 +2,15 @@ import Foundation
 import Krowk
 import KrowkKit
 
-// Starting a session from the phone (R-HOST-4, ticket 134) over krowk-ffi:
+// Starting a session from the phone (R-HOST-4, ticket 134), and moving one
+// to another host (R-HAND-4, ticket 136), over krowk-ffi:
 // the hosts from their sealed announcements (`Account.listHosts`, R-HOST-3),
 // a start sealed to the chosen host and its answer opened
 // (`Account.startSession`), under a command id Rust mints
 // (`newCommandId`). The start names the place, the model and the words; no
 // mode, budget, toolset or effort is sent, since the command has no field
-// for one.
+// for one. A move (`Account.takeSession`) names the session and the
+// directory only.
 
 /// The generated records are what the flow reads (R-PROTO-2): no Swift
 /// mirror.
@@ -62,6 +64,32 @@ extension RegistrySessions: HostSource {
 
     public func newCommandID() -> String {
         newCommandId()
+    }
+
+    /// Blocking, for up to six minutes and the sends, or until `cancelTake`:
+    /// never on the main thread. What fails is said in the screen's words:
+    /// the host's own refusal, or why it couldn't be asked.
+    public func take(_ r: MoveRequest) -> MoveOutcome {
+        dispatchPrecondition(condition: .notOnQueue(.main))
+        do {
+            switch try opened().takeSession(device: r.device, sessionId: r.sessionID, cwd: r.cwd, id: r.id) {
+            case .taken: return .taken
+            case .refused(let code, let message): return .refused(code: code, message: message)
+            }
+        } catch KrowkError.Network {
+            return .refused(code: "network", message: "krowk's registry couldn't be reached. The move may still reach \(r.hostName).")
+        } catch KrowkError.InvalidInput(let detail) {
+            return .refused(code: "invalid", message: detail)
+        } catch KrowkError.Refused(let code, let detail) {
+            return .refused(code: code, message: detail)
+        } catch {
+            return .refused(code: "failed", message: "The session couldn't be moved to \(r.hostName).")
+        }
+    }
+
+    /// Never blocks: an account not opened yet has no take to wait on.
+    public func cancelTake() {
+        openedAlready?.cancelTake()
     }
 
     /// Session `id`, just started on a host, opened to follow live:
