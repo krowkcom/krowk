@@ -8,19 +8,19 @@
 //! **The publisher** runs on a thread of its own, `krowk-presence`, beside
 //! the supervisor's list reader and never on the supervisor's runtime, which
 //! so gains no timer (R-PERF-2). It is started with the supervisor, and again
-//! by a bridge's checks passing, and ends at once when sync is not set up or
-//! automatic sync is off then: a machine that does not sync has no such
-//! thread, and makes no call (R-SYNC-1). Once it has run it reads the policy
-//! and the setup again each tick: off, it takes the announcement down and
-//! publishes nothing until on again. It refreshes every `EVERY` with a TTL of
+//! by a bridge's checks passing, and ends whenever sync is not set up here,
+//! its announcement taken down: a machine that does not sync has no such
+//! thread, and makes no call (R-SYNC-1). It reads the policy each tick:
+//! automatic sync off, it takes the announcement down and sends nothing
+//! until it is on again. It refreshes every `EVERY` with a TTL of
 //! `TTL`, and takes the announcement down as the supervisor stops. Like a
 //! bridge it is a background client of the daemon, so never keeps it up,
 //! and a daemon that has gone is not announced.
 //!
 //! A refusal is said once per error code in host.log and tried again the
 //! next tick: `sync_requires_paid_plan` pauses it as the supervisor pauses
-//! (`Config::paid_pause`, no call meanwhile), and `device_revoked` ends it
-//! until the daemon starts again.
+//! (`Config::paid_pause`, no call meanwhile), and this device's removal
+//! (`REVOKED`) ends it until the daemon starts again.
 
 use super::auto::Config;
 use crate::catalog;
@@ -128,7 +128,8 @@ pub fn instances(registry: &Registry, reports: &[Report], raw: Option<&[u8]>) ->
 /// names a thing with a character the record refuses is left out (a fix
 /// line has it replaced), the lists cut to their counts, and then, while
 /// the record is still too long, models, then directories, then sessions
-/// go, oldest first. Pure.
+/// go: the oldest-released model, the directory last on the list, the
+/// oldest session. Pure.
 pub fn fit(a: &mut Announcement) {
     let clean = |s: &str| !s.chars().any(refused_in_name);
     a.version = a.version.chars().map(|c| if refused_in_name(c) { ' ' } else { c }).collect();
@@ -180,6 +181,8 @@ pub(crate) struct Publisher(Mutex<Run>);
 struct Run {
     /// Its thread's: told how to end.
     stop: Option<Sender<End>>,
+    /// Set as it is told to end, read by a tick under way.
+    stopping: Arc<std::sync::atomic::AtomicBool>,
     /// Said (or dropped) as its thread ends.
     done: Option<Receiver<()>>,
     /// The registry refused this device as removed: never started again
@@ -207,9 +210,11 @@ impl Publisher {
         let (stop, stop_rx) = std::sync::mpsc::channel();
         let (done_tx, done) = std::sync::mpsc::channel();
         let (me2, c) = (me.clone(), c.clone());
+        run.stopping = Arc::default();
+        let stopping = run.stopping.clone();
         let spawned = std::thread::Builder::new().name("krowk-presence".into()).spawn(move || {
             let _done = done_tx;
-            let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx))).unwrap_or_else(|_| {
+            let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx, stopping))).unwrap_or_else(|_| {
                 eprintln!("krowk: this machine stopped announcing itself to your other devices: its publisher panicked");
                 false
             });
@@ -228,6 +233,7 @@ impl Publisher {
     fn end(&self, how: End) {
         let mut run = self.lock();
         run.closed = true;
+        run.stopping.store(true, std::sync::atomic::Ordering::SeqCst);
         if let Some(tx) = run.stop.take() {
             let _ = tx.send(how);
         }
@@ -272,23 +278,29 @@ struct Ticks {
     instances: Vec<AnnouncedInstance>,
     /// No call until then: the workspace has no paid plan.
     paused: Option<Instant>,
-    first: bool,
     daemon: Option<Daemon>,
+    /// Set as the publisher is told to end, so a tick under way puts nothing.
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Ticks {
+    fn stopping(&self) -> bool {
+        self.stop.load(std::sync::atomic::Ordering::SeqCst)
+    }
 }
 
 /// The thread: a tick, then a wait for the next or for the end. Answers
 /// whether the registry refused the device as removed.
-fn publish(c: &Arc<Config>, stop: &Receiver<End>) -> bool {
+fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomic::AtomicBool>) -> bool {
     let Some(o) = c.announce.as_ref() else { return false };
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
         eprintln!("krowk: this machine cannot announce itself to your other devices: no async runtime for it");
         return false;
     };
-    let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), paused: None, first: true, daemon: None };
+    let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), paused: None, daemon: None, stop: stopping };
     let mut last: Option<Announcer> = None;
     loop {
         let next = tick(c, o, &rt, &mut t, &mut last);
-        t.first = false;
         let wait = match next {
             Next::After(d) => d,
             Next::Over(revoked) => return revoked,
@@ -316,19 +328,32 @@ fn tick(c: &Config, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, la
         Ok(_) => Err("automatic sync is off".into()),
         Err(e) => Err(e),
     };
-    let Ok(policy) = policy else {
-        // Off, or not set up: taken down, and nothing until on again — or,
-        // never having run, no thread at all.
-        take_down(t, last);
-        return if t.first { Next::Over(false) } else { Next::After(o.every) };
+    let policy = match policy {
+        Ok(p) => p,
+        // Not set up here: taken down, and the thread ends — a machine
+        // that does not sync has none. A bridge's checks passing starts it
+        // again.
+        Err(_) if (c.ready)().is_err() => {
+            take_down(t, last);
+            return Next::Over(false);
+        }
+        // Set up, and off: taken down, and nothing sent until on again.
+        Err(_) => {
+            take_down(t, last);
+            return Next::After(o.every);
+        }
     };
     let fresh = t.fresh_at.is_none_or(|at| at.elapsed() >= FRESH_EVERY);
+    if fresh {
+        // Once a minute, whether it answers or not: a list that cannot be
+        // read is not asked for again every tick.
+        t.fresh_at = Some(Instant::now());
+    }
     let a = match (o.keys)(fresh) {
         Ok(a) => a,
         Err((code, message)) => return refused(c, o, t, &code, &message),
     };
-    if fresh {
-        t.fresh_at = Some(Instant::now());
+    if fresh || t.instances.is_empty() {
         let (registry, reports) = (o.instances)();
         t.instances = instances(&registry, &reports, (o.catalog)().as_deref());
     }
@@ -343,7 +368,13 @@ fn tick(c: &Config, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, la
     let directories = o.trusted.directories().into_iter().filter(|d| policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect();
     let mut record = Announcement { device: a.device.to_string(), name: me.name.clone(), os: me.os.clone(), version: c.version.clone(), online_since_ms: o.online_since_ms, instances: t.instances.clone(), directories, sessions };
     fit(&mut record);
-    let sent = presence::seal(&record, &a.keys, a.chain.generation(), &a.device).map_err(|e| ("announcement_unsealed".to_string(), e)).and_then(|sealed| a.api.put_presence(&sealed, o.ttl).map_err(|e| (e.code().to_string(), e.to_string())));
+    // Told to stop while it gathered: nothing more is put, so the stop's
+    // take-down is the last word.
+    if t.stopping() {
+        *last = Some(a);
+        return Next::After(Duration::ZERO);
+    }
+    let sent = presence::seal(&record, &a.keys, a.chain.generation(), &a.device).map_err(|e| ("announcement_unsealed".to_string(), e)).and_then(|sealed| a.api.put_presence(&sealed, o.ttl).map_err(|e| (e.code(), words(&e))));
     *last = Some(a);
     match sent {
         Ok(_) => {
@@ -362,7 +393,8 @@ fn daemon_sessions(c: &Config, rt: &tokio::runtime::Runtime, daemon: &mut Option
         if daemon.as_ref().is_none_or(Daemon::closed) {
             *daemon = Daemon::connect_as(&c.socket, Path::new("/"), &c.version, false, true).await.ok();
         }
-        let status = daemon.as_ref()?.status().await.ok();
+        // Its own process: an answer within seconds, or none this tick.
+        let status = tokio::time::timeout(DAEMON_WAIT * 3, daemon.as_ref()?.status()).await.ok().and_then(Result::ok);
         if status.is_none() {
             *daemon = None;
         }
@@ -377,6 +409,22 @@ fn take_down(t: &mut Ticks, last: &Option<Announcer>) {
     }
 }
 
+/// The codes that say this device may no longer act for the person: the
+/// registry's refusal of a removed device, the device list's own words for
+/// a removal or a list started over, and a key revoked with its device.
+const REVOKED: [&str; 4] = ["device_revoked", "device_removed", "device_list_reset", "unauthorized"];
+
+/// A registry error in a person's words: its message, and its fix.
+pub fn words(e: &krowk_api::Error) -> String {
+    let message = e.body.get("message").and_then(|m| m.as_str()).unwrap_or_default();
+    match (message, e.fix()) {
+        ("", f) if f.is_empty() => format!("the registry answered {}", e.status),
+        (m, f) if f.is_empty() => m.to_string(),
+        ("", f) => f,
+        (m, f) => format!("{m} — {f}"),
+    }
+}
+
 /// A refusal: said once per code, and what comes next for it.
 fn refused(c: &Config, o: &Options, t: &mut Ticks, code: &str, message: &str) -> Next {
     let next = match code {
@@ -384,7 +432,9 @@ fn refused(c: &Config, o: &Options, t: &mut Ticks, code: &str, message: &str) ->
             t.paused = Some(Instant::now() + c.paid_pause);
             Next::After(o.every)
         }
-        "device_revoked" => Next::Over(true),
+        // This device is off the list, or its key with it: it has nothing
+        // to announce as until the daemon starts again.
+        c if REVOKED.contains(&c) => Next::Over(true),
         _ => Next::After(o.every),
     };
     if t.said.insert(code.to_string()) {

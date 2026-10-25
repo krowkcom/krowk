@@ -2652,13 +2652,15 @@ struct AutoOpts {
     /// The machine announces itself (R-HOST-3), every 200 ms with the
     /// registry's least TTL.
     announce: bool,
+    /// The publisher's options, in place of `announce`'s.
+    announce_with: Option<announce::Options>,
     /// The machine's home and runtime directory, under the world's root.
     at: (&'static str, &'static str),
 }
 
 impl Default for AutoOpts {
     fn default() -> AutoOpts {
-        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK, announce: false, at: ("home", "run") }
+        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK, announce: false, announce_with: None, at: ("home", "run") }
     }
 }
 
@@ -2698,13 +2700,13 @@ impl World {
 
     /// `auto`, as `o` says.
     fn auto_with(&self, a: &Device, o: AutoOpts) -> Auto {
-        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, at: (home, run) } = o;
+        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, announce_with, at: (home, run) } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
         let daemon = self.serve_hooked(self.env_at(home, run), home, InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
         let built: Built = Arc::default();
         let (seen, a2, api, relay, keys, chain, sessions) = (built.clone(), a.copy(), self.a_client(a), self.relay_a.clone(), self.user_key(), self.chain(), log::sessions_dir(&self.env_at(home, run)).unwrap());
-        let announce = announce.then(|| self.announcer(a, home, run));
+        let announce = announce_with.or_else(|| announce.then(|| self.announcer(a, home, run)));
         let first = AtomicBool::new(panic_first);
         let build: auto::Build = Box::new(move |session: &str, cwd: &Path| {
             seen.lock().unwrap().push((session.to_string(), Instant::now(), std::thread::current().name().map(String::from)));
@@ -4033,5 +4035,30 @@ async fn r_host_3_a_removed_device_neither_sees_hosts_nor_is_listed() {
     let listed = w.announced(&a).await.unwrap();
     let devices: Vec<_> = listed.iter().map(|(p, _)| p.device.clone()).collect();
     assert!(devices.contains(&a.key.id().to_string()) && !devices.contains(&b.key.id().to_string()), "{devices:?}");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-3: a device the registry or its list says was removed stops
+/// announcing until its daemon starts again: its keys are asked for once,
+/// not every tick.
+#[tokio::test]
+async fn r_host_3_a_removed_device_stops_announcing() {
+    let w = World::new("presence-stops");
+    let a = w.device("presence-a");
+    let asked = Arc::new(AtomicUsize::new(0));
+    let mut o = w.announcer(&a, "home", "run");
+    let n = asked.clone();
+    o.keys = Box::new(move |_| {
+        n.fetch_add(1, Ordering::SeqCst);
+        Err(("device_removed".into(), "this device was removed from your device list".into()))
+    });
+    let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while asked.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < deadline, "the publisher never asked for its keys");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(asked.load(Ordering::SeqCst), 1, "asked again after its removal");
     auto.stop(Duration::from_secs(10)).await;
 }

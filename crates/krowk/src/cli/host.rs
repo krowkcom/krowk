@@ -181,7 +181,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             every: announce::EVERY,
             ttl: announce::TTL,
             online_since_ms: jiff::Timestamp::now().as_millisecond(),
-            keys: Box::new(move |fresh| own_ctx(&f3, |ctx| super::synced::announcer(ctx, fresh)).map_err(|e| (e.code(), e.fix()))),
+            keys: Box::new(move |fresh| own_ctx(&f3, |ctx| super::synced::announcer(ctx, fresh)).map_err(|e| (e.code(), announce::words(&e)))),
             // An instance list that does not read announces none.
             instances: Box::new(move || own_ctx(&f4, |ctx| super::status::reports(ctx)).map(|(_, registry, reports)| (registry, reports)).unwrap_or_default()),
             catalog: Box::new(move || std::fs::read(crate::pricing::cache_path(&env)?).ok()),

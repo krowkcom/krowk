@@ -143,8 +143,14 @@ impl Store {
     /// (R-HOST-3). Never the home directory or `/`; none when the file does
     /// not read.
     pub fn directories(&self) -> Vec<PathBuf> {
+        // One read of the file for all of them, as `trusts` reads it.
         let Ok(listed) = self.read() else { return Vec::new() };
-        listed.directories.iter().map(PathBuf::from).filter(|d| self.trusts(d)).collect()
+        listed
+            .directories
+            .iter()
+            .map(PathBuf::from)
+            .filter(|d| unrecordable(d, self.home.as_deref()).is_none() && listed.mcp.get(&d.display().to_string()).cloned() == crate::mcp::project_digest(d))
+            .collect()
     }
 
     /// What the list says of `root`'s MCP servers: `None` when `root` is not
