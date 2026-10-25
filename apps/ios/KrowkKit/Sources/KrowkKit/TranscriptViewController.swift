@@ -44,6 +44,14 @@ import UIKit
 /// navigation bar. An answer shows at once on the call's row ("allowed —
 /// sending…", R-LAG-8) and settles on the host's ack; one answered on
 /// another device first goes with a toast saying so.
+///
+/// The navigation bar's subtitle is the session's model (ticket 135): a tap
+/// opens the picker of its host's instances, and a pick shows `switching
+/// to <model>…` at once (R-LAG-8) until the host logs the switch, or puts
+/// the host's refusal under it and goes back (R-SWITCH-4). A turn that hit
+/// its instance's limit raises a banner over the composer, whose Continue
+/// switches to the instance the host offers and sends the turn's prompt
+/// again, when this phone sent it.
 public final class TranscriptViewController: UIViewController, UICollectionViewDelegate, UIAdaptivePresentationControllerDelegate {
     public let row: SessionRow
     public let model: TranscriptModel
@@ -157,13 +165,35 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var landingWait: DispatchWorkItem?
     static let landingGrace: TimeInterval = 2
 
+    /// The person's hosts (ticket 135): the model picker lists the
+    /// session's host's instances from them.
+    private let hosts: (any HostSource)?
+    /// The subtitle: the session's model, or `switching to <model>…`. A
+    /// tap opens the picker.
+    public let modelButton = UIButton(configuration: .plain())
+    /// The host's refusal of a switch, under the subtitle until the next
+    /// switch or a tap.
+    public let switchNote = UILabel()
+    /// The rate-limit offer over the composer: its line, and Continue
+    /// when this phone sent the limited turn's prompt.
+    public let offerBanner = UIView()
+    public let offerLabel = UILabel()
+    public let offerContinue = UIButton(configuration: .filled())
+    private let offerClose = UIButton(configuration: .plain())
+    /// The model picker, while it's up.
+    public private(set) var modelPicker: UITableViewController?
+    /// The tests' seam: the instances the picker shows, from the host's
+    /// (an instance the host lacks, to see the host refuse it).
+    public var pickerInstances: (@MainActor ([any AnnouncedInstance]) -> [any AnnouncedInstance])?
+
     public init(
         row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
-        kept: (any KeptTranscript)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
+        kept: (any KeptTranscript)? = nil, hosts: (any HostSource)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
     ) {
         self.row = row
         self.kept = kept
         self.lifecycle = lifecycle
+        self.hosts = hosts
         self.session = session
         self.approvals = session == nil ? nil : approvals
         let model = model ?? TranscriptModel(sessionID: row.id)
@@ -361,6 +391,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         }
 
         setUpApprovals()
+        setUpModel()
         if noticeShown != nil { addNotice() }
         observeFocus()
         drawKept()
@@ -657,6 +688,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if let why = done.stopRefused { stopRefused = why }
         if !done.ended.isEmpty { stopRefused = nil }
         for answer in done.approvalAnswers { approvals?.acked(answer.token, error: answer.error) }
+        // The offer's Continue: its switch taken, the prompt goes again.
+        if let again = done.promptAgain { sendBubble(.prompt(again)) }
+        if UIAccessibility.isVoiceOverRunning, let why = done.switchRefused {
+            UIAccessibility.post(notification: .announcement, argument: "The model wasn't switched: \(SafeText.line(why[...], limit: 200))")
+        }
+        updateModel()
         // A sheet that couldn't rise (another sheet was up) tries again.
         if approvalSheet == nil, approvals?.current != nil { syncApprovals() }
         updateComposer()
@@ -682,11 +719,21 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     @discardableResult
     public func sendTyped() -> Bool {
         updateComposer()
-        guard let session, composerState.canSend else { return false }
+        guard session != nil, composerState.canSend else { return false }
         let text = composer.text
         let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
-        let token = model.issue(command)
         composer.text = ""
+        sendBubble(command)
+        if UIAccessibility.isVoiceOverRunning, statusBar.status == .hostOffline {
+            UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
+        }
+        return true
+    }
+
+    /// A prompt or steer shown as a bubble now and handed to the core.
+    private func sendBubble(_ command: LiveCommand) {
+        guard let session else { return }
+        let token = model.issue(command)
         // The bubble's row now, not on the observation's next turn.
         apply(rows: model.ids, attached: model.attached)
         follow(true)
@@ -694,10 +741,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         scrollToEnd()
         session.send(command, token: token)
         updateComposer()
-        if UIAccessibility.isVoiceOverRunning, statusBar.status == .hostOffline {
-            UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
-        }
-        return true
+        // A prompt answers an offer with a no.
+        updateModel()
     }
 
     /// Stop, the button or ⌘.: "stopping…" now, the interrupt to the core;
@@ -738,6 +783,168 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     @objc private func keySend() { sendTyped() }
     @objc private func keyStop() { stopTurn() }
+
+    // MARK: The model (ticket 135)
+
+    private func setUpModel() {
+        guard session != nil else { return }
+        var button = UIButton.Configuration.plain()
+        button.contentInsets = .zero
+        button.titleLineBreakMode = .byTruncatingMiddle
+        button.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer {
+            var out = $0
+            out.font = .preferredFont(forTextStyle: .footnote)
+            return out
+        }
+        modelButton.configuration = button
+        modelButton.accessibilityIdentifier = "session-model"
+        modelButton.accessibilityHint = "Shows the models this session can switch to"
+        modelButton.addAction(UIAction { [weak self] _ in self?.showModelPicker() }, for: .primaryActionTriggered)
+        navigationItem.subtitleView = modelButton
+
+        switchNote.font = .preferredFont(forTextStyle: .footnote)
+        switchNote.adjustsFontForContentSizeCategory = true
+        switchNote.numberOfLines = 0
+        switchNote.textAlignment = .center
+        switchNote.textColor = .label
+        switchNote.backgroundColor = .secondarySystemBackground
+        switchNote.layer.cornerRadius = 10
+        switchNote.layer.masksToBounds = true
+        switchNote.isHidden = true
+        switchNote.accessibilityIdentifier = "switch-refusal"
+        switchNote.accessibilityHint = "Hides this line"
+        switchNote.isUserInteractionEnabled = true
+        switchNote.addGestureRecognizer(UITapGestureRecognizer(target: self, action: #selector(switchNoteTapped)))
+        switchNote.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(switchNote)
+
+        offerBanner.backgroundColor = .secondarySystemBackground
+        offerBanner.layer.cornerRadius = 12
+        offerBanner.layer.borderColor = UIColor.separator.cgColor
+        offerBanner.layer.borderWidth = 0.5
+        offerBanner.isHidden = true
+        offerBanner.accessibilityIdentifier = "switch-offer"
+        offerLabel.font = .preferredFont(forTextStyle: .footnote)
+        offerLabel.adjustsFontForContentSizeCategory = true
+        offerLabel.numberOfLines = 2
+        offerLabel.accessibilityIdentifier = "switch-offer-line"
+        var go = UIButton.Configuration.filled()
+        go.title = "Continue"
+        go.cornerStyle = .capsule
+        go.buttonSize = .small
+        offerContinue.configuration = go
+        offerContinue.accessibilityIdentifier = "switch-offer-continue"
+        offerContinue.addAction(UIAction { [weak self] _ in self?.continueOffer() }, for: .primaryActionTriggered)
+        var close = UIButton.Configuration.plain()
+        close.image = UIImage(systemName: "xmark")
+        close.buttonSize = .small
+        offerClose.configuration = close
+        offerClose.accessibilityLabel = "Dismiss"
+        offerClose.accessibilityIdentifier = "switch-offer-dismiss"
+        offerClose.addAction(UIAction { [weak self] _ in
+            self?.model.takeOffer()
+            self?.updateModel()
+        }, for: .primaryActionTriggered)
+        let row = UIStackView(arrangedSubviews: [offerLabel, offerContinue, offerClose])
+        row.axis = .horizontal
+        row.spacing = 8
+        row.alignment = .center
+        row.translatesAutoresizingMaskIntoConstraints = false
+        offerLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        offerBanner.addSubview(row)
+        offerBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(offerBanner)
+        NSLayoutConstraint.activate([
+            switchNote.topAnchor.constraint(equalTo: statusBar.bottomAnchor, constant: 8),
+            switchNote.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            switchNote.widthAnchor.constraint(lessThanOrEqualTo: view.layoutMarginsGuide.widthAnchor),
+            row.topAnchor.constraint(equalTo: offerBanner.topAnchor, constant: 8),
+            row.bottomAnchor.constraint(equalTo: offerBanner.bottomAnchor, constant: -8),
+            row.leadingAnchor.constraint(equalTo: offerBanner.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: offerBanner.trailingAnchor, constant: -4),
+            offerBanner.leadingAnchor.constraint(equalTo: view.layoutMarginsGuide.leadingAnchor),
+            offerBanner.trailingAnchor.constraint(equalTo: view.layoutMarginsGuide.trailingAnchor),
+            offerBanner.bottomAnchor.constraint(equalTo: composer.topAnchor, constant: -8),
+        ])
+        updateModel()
+    }
+
+    /// The subtitle, the refusal under it, the offer's banner and the
+    /// picker, as the model and the link stand.
+    func updateModel() {
+        guard session != nil, isViewLoaded else { return }
+        let line = model.modelLine
+        if modelButton.configuration?.title != line {
+            modelButton.configuration?.title = line
+            modelButton.accessibilityLabel = line.isEmpty ? "Model" : "Model: \(line)"
+        }
+        modelButton.isHidden = line.isEmpty
+        let refusal = model.switchRefusal.map { " \(SafeText.line($0[...], limit: 300)) " }
+        if switchNote.text != refusal { switchNote.text = refusal }
+        switchNote.isHidden = refusal == nil
+        if refusal != nil { view.bringSubviewToFront(switchNote) }
+        if let offer = model.offer {
+            offerLabel.text = offer.line
+            offerContinue.isHidden = offer.again == nil
+            offerContinue.isEnabled = isLive && model.switching == nil
+            offerBanner.isHidden = false
+            view.bringSubviewToFront(offerBanner)
+        } else {
+            offerBanner.isHidden = true
+        }
+        (modelPicker as? ModelPickerViewController)?.session = pickerSession
+    }
+
+    private var pickerSession: ModelPickerViewController.Session {
+        .init(current: model.currentModel, live: isLive, switching: model.switching, hostOffline: statusBar.status == .hostOffline, limits: model.limits)
+    }
+
+    /// The subtitle tapped: the picker of the host's instances, in a sheet.
+    public func showModelPicker() {
+        guard let hosts, session != nil, modelPicker == nil || modelPicker?.presentingViewController == nil else { return }
+        let picker = ModelPickerViewController(
+            hosts: HostListModel(source: hosts), device: row.hostDevice, session: pickerSession, adjust: pickerInstances
+        ) { [weak self] pick in
+            self?.switchModel(to: pick)
+        }
+        modelPicker = picker
+        let sheet = UINavigationController(rootViewController: picker)
+        sheet.sheetPresentationController?.detents = [.medium(), .large()]
+        present(sheet, animated: true)
+    }
+
+    /// A model picked (R-LAG-8): `switching to <model>…` now, the generated
+    /// `switchModel` to the core off the main thread, as the composer's
+    /// commands go. Only over a live link: never queued for a later host.
+    /// Whether it went.
+    @discardableResult
+    public func switchModel(to choice: ModelChoice) -> Bool {
+        guard let session, isLive, model.switching == nil, choice != model.currentModel else { return false }
+        let token = model.issue(.switchModel(choice))
+        session.send(.switchModel(choice), token: token)
+        updateModel()
+        if UIAccessibility.isVoiceOverRunning {
+            UIAccessibility.post(notification: .announcement, argument: "switching to \(choice.shown)")
+        }
+        return true
+    }
+
+    /// The offer's Continue: the switch to the instance offered, and, once
+    /// the host takes it, the limited turn's prompt again as a new prompt
+    /// with no model (as the terminal's `/switch` does).
+    public func continueOffer() {
+        guard let session, isLive, model.switching == nil, let offer = model.offer, let again = offer.again else { return }
+        model.takeOffer()
+        let token = model.issue(.switchModel(offer.info.to))
+        model.prompt(again, afterSwitch: token)
+        session.send(.switchModel(offer.info.to), token: token)
+        updateModel()
+    }
+
+    @objc private func switchNoteTapped() {
+        model.dismissSwitchRefusal()
+        updateModel()
+    }
 
     // MARK: Approvals (ticket 91)
 
@@ -1327,6 +1534,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             settleParked()
         }
         updateComposer()
+        updateModel()
     }
 
     /// The last row at the bottom of the screen. The rows' heights are

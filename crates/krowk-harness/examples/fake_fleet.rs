@@ -84,6 +84,15 @@
 //! them and replies `held` at once, so a start sent meanwhile waits for
 //! `hosts_url/online`.
 //!
+//! Host A has two instances ready on the mock model (ticket 135):
+//! `anthropic` and `anthropic:personal`, under keys of their own, so a
+//! phone can switch a session between them. Each answer says how near its
+//! limit the instance is (85% used on `anthropic`, a warning; 10% on
+//! `anthropic:personal`). A POST to `hosts_url/limit` replies `limited`,
+//! and the next turn on `anthropic` hits its limit: every attempt of its
+//! call answers 429 with `retry-after: 0`, and the turn ends with an offer
+//! to continue on `anthropic:personal`.
+//!
 //! The session has a first turn ("Say hello" and a short answer). `--demo`,
 //! for screenshots and App Review, gives it a readable title, a second turn
 //! with a tool call that runs at once (a `read` of the project's README),
@@ -192,9 +201,10 @@ fn main() {
 /// `ended` once those turns have ended, or `running` after 5 s,
 /// `POST /sessions/<id>/direct/close` its direct listener closed (with
 /// `--direct-lan`), `POST /devices/remove` the device the body names
-/// removed from host A's list, and `POST /hosts/offline`, `POST
+/// removed from host A's list, `POST /hosts/offline`, `POST
 /// /hosts/hold` and `POST /hosts/online` host A's announcement left to
-/// lapse, held, and refreshed again.
+/// lapse, held, and refreshed again, and `POST /hosts/limit` the next turn
+/// on `anthropic` at its limit.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
@@ -232,6 +242,10 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
             text(200, "held")
         }
         ("POST", "/hosts/online", _) => answered("POST /hosts/online", hosting.online().map(|()| "online".into())),
+        ("POST", "/hosts/limit", _) => {
+            hosting.limit();
+            text(200, "limited")
+        }
         ("POST", "/devices/remove", _) => {
             let name = seen.raw.trim();
             if name.is_empty() {
@@ -244,7 +258,7 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
             answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
         }
         ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
-        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended, POST /sessions/<id>/direct/close, POST /devices/remove, POST /hosts/offline, POST /hosts/hold and POST /hosts/online"),
+        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended, POST /sessions/<id>/direct/close, POST /devices/remove, POST /hosts/offline, POST /hosts/hold, POST /hosts/online and POST /hosts/limit"),
     }
 }
 

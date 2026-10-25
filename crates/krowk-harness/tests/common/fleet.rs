@@ -23,7 +23,7 @@ use krowk_client::session_record;
 use krowk_client::user_key::{UserKey, UserKeys};
 use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
-use krowk_harness::instances::{InstancesConfig, Registry};
+use krowk_harness::instances::{InstanceKind, InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{Command, LiveEvent, PermissionMode, StreamLine};
 use krowk_harness::sync::{announce, auto, host};
@@ -32,7 +32,7 @@ use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::{Command as Process, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, watch};
 
@@ -59,6 +59,14 @@ pub const VERY_LONG_LINES: usize = 300;
 pub const STREAM_LONGER: &str = "toolu_01StreamLonger";
 /// What a test types to have the model stream its long answer.
 pub const LONG: &str = "Please stream a long answer";
+/// Host A's second instance (ticket 135): another Anthropic API key on the
+/// same mock model, ready beside `anthropic`, for a phone to switch a
+/// session to, and the instance a limit on `anthropic` offers.
+pub const PERSONAL: &str = "anthropic:personal";
+/// The keys the mock tells the two instances apart by.
+const KEY: &str = "sk-test";
+const PERSONAL_KEY: &str = "sk-personal";
+const PERSONAL_KEY_ENV: &str = "KROWK_FLEET_PERSONAL_KEY";
 /// The session's title: a readable one for the demo.
 const TITLE: &str = "fake fleet";
 const DEMO_TITLE: &str = "A demo session";
@@ -131,7 +139,7 @@ pub fn post(b: &Batch) -> krowk_api::sync::ListPost {
 /// call and then `LONG_LINES` numbered lines, one word-sized delta every
 /// 5 ms (200 tokens a second, as R-LAG-7's phone budget assumes) —
 /// `VERY_LONG_LINES` for "stream a very long answer".
-fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
+fn model(body: &serde_json::Value) -> mock::Reply {
     let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
     let result = last["content"].as_array().and_then(|c| c.iter().find(|b| b["type"] == "tool_result").cloned());
     let text = if let Some(r) = result {
@@ -158,6 +166,32 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
         ANSWER
     };
     mock::Reply::paced(mock::text_stream(text), Duration::from_millis(20))
+}
+
+/// The mock model as host A's instances reach it (ticket 135): while
+/// `limited` counts, a call on `anthropic`'s key answers 429 with
+/// `retry-after: 0`, one per attempt the native engine makes
+/// (`http::ATTEMPTS`), so the turn fails on its limit and the host offers
+/// `PERSONAL`. Every other answer says how near its limit each instance is
+/// (R-INST-6): `anthropic` 85% used, a warning; `PERSONAL` 10%.
+fn answer(seen: &mock::Seen, limited: &AtomicUsize) -> mock::Reply {
+    let key = seen.header("x-api-key").unwrap_or_default();
+    if key == KEY && limited.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+        let refused = serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}});
+        return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &refused) };
+    }
+    let mut reply = model(&seen.body);
+    let remaining = if key == PERSONAL_KEY { "900" } else { "150" };
+    reply.headers.push(("anthropic-ratelimit-tokens-limit".into(), "1000".into()));
+    reply.headers.push(("anthropic-ratelimit-tokens-remaining".into(), remaining.into()));
+    reply
+}
+
+/// Host A's instances: Anthropic's from the environment, on the mock, and
+/// `PERSONAL` beside it on the same mock under a key of its own.
+fn instances(model: &str) -> InstancesConfig {
+    let personal = InstanceKind::AnthropicApi { api_key_env: Some(PERSONAL_KEY_ENV.into()), base_url: Some(model.into()), thinking: None, max_tokens: None, effort: None };
+    InstancesConfig { instances: [(PERSONAL.to_string(), personal)].into_iter().collect(), ..Default::default() }
 }
 
 /// A running fleet. Dropping it without `stop` stops the registry and
@@ -252,8 +286,13 @@ pub fn start_with(demo: bool, direct_lan: bool) -> Fleet {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).expect("the stand-in registry starts");
     let api = format!("{}/v1", registry.url());
     let relay = relay();
-    let m = mock::serve(model);
+    let limited: Arc<AtomicUsize> = Arc::default();
+    let m = {
+        let limited = limited.clone();
+        mock::serve_seen(move |seen, _| answer(seen, &limited))
+    };
     let env = env(&root, &m.url);
+    let instances = instances(&m.url);
 
     // Host A starts the person's device list, its keys, the user key and
     // the list kept in its home as `sync init` keeps them.
@@ -267,7 +306,7 @@ pub fn start_with(demo: bool, direct_lan: bool) -> Fleet {
 
     let (turns, turns_rx) = auto::turn_hook();
     let bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>> = Arc::default();
-    serve(&root, env.clone(), turns, bridged.clone());
+    serve(&root, env.clone(), instances.clone(), turns, bridged.clone());
     let hosting = Arc::new(Hosting {
         api: api.clone(),
         relay: relay.clone(),
@@ -284,6 +323,8 @@ pub fn start_with(demo: bool, direct_lan: bool) -> Fleet {
         offline: Arc::default(),
         direct_lan: direct_lan.then(|| root.join("no-tailscaled.sock")),
         directs: std::sync::Mutex::default(),
+        instances,
+        limited,
     });
     let supervisor = hosting.supervise(&root, &project, turns_rx, bridged);
     let (socket, repo) = (hosting.socket.clone(), hosting.repo.clone());
@@ -385,6 +426,10 @@ pub struct Hosting {
     direct_lan: Option<PathBuf>,
     /// What stops each session's direct listener, by session.
     directs: std::sync::Mutex<std::collections::HashMap<String, watch::Sender<bool>>>,
+    /// Host A's instances, as its daemon and its announcement resolve them.
+    instances: InstancesConfig,
+    /// The calls on `anthropic` still to answer 429 (`limit`).
+    limited: Arc<AtomicUsize>,
 }
 
 /// The sessions hosted for tests, by id; how many are still starting; and
@@ -618,7 +663,7 @@ impl Hosting {
                 })
             })
         };
-        let env = self.env.clone();
+        let (env, cfg) = (self.env.clone(), self.instances.clone());
         let c = auto::Config {
             socket: self.socket.clone(),
             sessions: self.sessions.clone(),
@@ -636,7 +681,7 @@ impl Hosting {
                 online_since_ms: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as i64),
                 keys: Box::new(announcer),
                 instances: Box::new(move || {
-                    let registry = Registry::resolve(&InstancesConfig::default(), &*env);
+                    let registry = Registry::resolve(&cfg, &*env);
                     let all: Vec<_> = registry.instances.values().collect();
                     let probe = krowk_harness::readiness::Probe::at(krowk.join("probe"));
                     let reports = krowk_harness::readiness::check_all(&all, &krowk.join("credentials.json"), &probe);
@@ -666,6 +711,14 @@ impl Hosting {
     /// refresh.
     pub fn hold(&self) {
         self.offline.store(true, Ordering::SeqCst);
+    }
+
+    /// The next turn on `anthropic` hits its limit (R-INST-7): the mock
+    /// answers its calls 429 with `retry-after: 0`, every attempt of one
+    /// call, and the turn ends failed with an offer of `PERSONAL`. Later
+    /// calls answer as before.
+    pub fn limit(&self) {
+        self.limited.store(krowk_harness::http::ATTEMPTS as usize, Ordering::SeqCst);
     }
 
     /// Host A announces itself again; returns once it is listed online.
@@ -713,7 +766,7 @@ impl Hosting {
 
     /// A prompt to host A's daemon, for the mock model.
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
-        let model = Registry::resolve(&InstancesConfig::default(), &*self.env).parse_model("claude-sonnet-4-6").unwrap();
+        let model = Registry::resolve(&self.instances, &*self.env).parse_model("claude-sonnet-4-6").unwrap();
         Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
     }
 
@@ -844,7 +897,8 @@ fn env(root: &Path, model: &str) -> impl Fn(&str) -> String + Clone + Send + Syn
     move |k| match k {
         "HOME" => root.join("home").display().to_string(),
         "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
-        "ANTHROPIC_API_KEY" => "sk-test".into(),
+        "ANTHROPIC_API_KEY" => KEY.into(),
+        PERSONAL_KEY_ENV => PERSONAL_KEY.into(),
         "ANTHROPIC_BASE_URL" => url.clone(),
         _ => String::new(),
     }
@@ -852,7 +906,7 @@ fn env(root: &Path, model: &str) -> impl Fn(&str) -> String + Clone + Send + Syn
 
 /// Host A's daemon on a thread of its own, once it listens, telling
 /// `turns` of each turn (automatic sync's hook).
-fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, turns: mpsc::UnboundedSender<daemon::server::TurnEvent>, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) {
+fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'static, instances: InstancesConfig, turns: mpsc::UnboundedSender<daemon::server::TurnEvent>, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>) {
     let socket = daemon::socket(&env).unwrap();
     let credentials = root.join("home/.krowk/credentials.json");
     let wait = socket.clone();
@@ -861,7 +915,7 @@ fn serve(root: &Path, env: impl Fn(&str) -> String + Clone + Send + Sync + 'stat
             Ok(HostConfig {
                 sessions_dir: log::sessions_dir(&env).unwrap(),
                 cwd: cwd.to_path_buf(),
-                registry: Registry::resolve(&InstancesConfig::default(), &env),
+                registry: Registry::resolve(&instances, &env),
                 krowk_version: "test".into(),
                 pricer: Arc::new(|_, _, _| None),
                 catalog: Arc::new(|_, _| None),

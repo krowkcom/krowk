@@ -216,7 +216,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let live = RelayConnection(
                 resuming: opening, approvals: approvals,
                 standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
-            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: kept)
+            // Its model switches among its host's instances (ticket 135).
+            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: kept, hosts: source)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
             screen.restore(parked.takeRefusals(row.id))
@@ -228,7 +229,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // Its screen parked with commands out, if it was left so.
             if let kept = parked.take(session) { return kept }
             let place = SessionRowFormatter.basename(request.cwd)
-            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
+            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place, hostDevice: request.device)
             // New: the cache holds nothing of it yet.
             return transcript(row, nil) { SessionOpening(session: try source.openStartedSession(id: session)) }
         }

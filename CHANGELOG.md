@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app switches a session's model.** A session's navigation
+  bar shows the model it runs on, `<instance>/<id>`. Tap it to see the
+  host's ready instances and their models, each instance with its limit
+  (one not ready is greyed with its fix). A pick reads `switching to
+  <model>…` at once and settles once the host has switched; during a
+  running turn that is when the turn ends. A refusal shows the host's
+  sentence under the model, which stays as it was. With the host offline
+  the picker offers nothing. A turn that hits its instance's limit shows
+  `<from> is at its limit — continue on <to>?` over the composer. When
+  the phone sent that turn's prompt, **Continue** switches and sends the
+  prompt again there. The phone never switches the mode, toolset,
+  effort or budget.
 - **The iPhone app draws from its cache first.** At launch the session
   list shows the sessions the phone kept, each "last seen" and never
   live, before the registry answers; the fresh listing then replaces
