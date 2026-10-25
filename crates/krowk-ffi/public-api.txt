@@ -1,4 +1,4 @@
-FFI_API_VERSION = 6
+FFI_API_VERSION = 7
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -815,6 +815,18 @@ pub enum Effect {
     Show { updates: Vec<ViewerUpdate> },
     ReadChunks,
     End,
+    Race { candidates: Vec<CandidateRecord> },
+    DialCandidate { url: String, ticket: String, connection: u64 },
+    SendOn { connection: u64, bytes: Vec<u8> },
+    CloseCandidate { connection: u64 },
+    Moved { connection: u64 },
+    CloseLeaving,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CandidateRecord {
+    pub url: String,
+    pub via: String,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -939,6 +951,16 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
+    pub fn race_join(&self, url: String, ticket: String, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn race_lost(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
     pub fn read_chunks(&self) -> Arc<ChunksRead> {}
 }
 
@@ -969,7 +991,9 @@ pub use storage::KeyStorage;
 
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 
-pub use viewer::{ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{
+    CandidateRecord, ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame,
+};
 
 pub use viewer::{decode_cursor, encode_cursor};
 

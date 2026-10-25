@@ -20,7 +20,7 @@ use krowk_client::protocol::{Command, LogBody, StreamLine};
 use krowk_client::relay_link::{HostLink, Inbound};
 use krowk_client::sync::join::{control, read_control};
 use krowk_client::sync::{Answer, Candidate, ViewerFrame, Welcome, uuid};
-use krowk_ffi::{Effect, OpenedSession, Viewer, ViewerUpdate, WsFrame};
+use krowk_ffi::{CandidateRecord, Effect, OpenedSession, Viewer, ViewerUpdate, WsFrame};
 use serde_json::{Value, json};
 
 const SESSION: &str = "01a0ec7b-3333-7000-8000-000000000080";
@@ -453,27 +453,218 @@ fn r_client_1_read_chunks_brings_what_was_written_since() {
     assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Host { present: true })), "the welcome acted on after the read");
 }
 
-/// R-CLIENT-1: the phone is relay only. A welcome naming direct paths
-/// makes the core ask for a race, which the viewer loses at once: no
-/// effect for Swift, and the next wake is in the future, not a busy loop.
-#[test]
-fn r_client_1_a_race_for_a_direct_path_is_lost_at_once_on_the_phone() {
-    let mut p = Phone::new();
-    p.start();
-    p.join(true, 0);
-    p.welcome(Welcome { candidates: vec![Candidate { url: "ws://100.64.0.1:7791".into(), via: "tailscale".into() }], ..Welcome::default() });
-    p.take_rest();
-    assert!(p.viewer.next_wake_ms().unwrap() < 10_000, "a race is due");
-    for at in [10_000, 30_000, 70_000] {
-        p.at(at);
-        // The relay's pong: the link lives.
-        assert!(p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, at).is_empty());
-        let e = p.viewer.tick(at);
-        p.take(e);
-        assert!(p.take_rest().iter().all(|e| matches!(e, Effect::Ping)), "nothing Swift must race");
-        let next = p.viewer.next_wake_ms().unwrap();
-        assert!(next > at, "the next race backed off, not due at once: {next} at {at}");
+const TAILNET: &str = "ws://100.64.0.1:7791";
+const LAN: &str = "ws://192.168.1.9:7791";
+
+fn candidates() -> Vec<Candidate> {
+    vec![Candidate { url: TAILNET.into(), via: "tailscale".into() }, Candidate { url: LAN.into(), via: "lan".into() }]
+}
+
+impl Phone {
+    /// Live on the relay, welcomed with `candidates()`, and the race the
+    /// next frame asks for, taken.
+    fn racing() -> (Phone, Vec<CandidateRecord>) {
+        let mut p = Phone::new();
+        p.start();
+        p.join(true, 0);
+        p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
+        p.frame();
+        (p.frames, p.acks, p.hellos) = (Vec::new(), Vec::new(), 0);
+        let mut race = None;
+        for e in p.take_rest() {
+            match e {
+                Effect::Race { candidates } => race = Some(candidates),
+                Effect::Ping => {}
+                other => panic!("only the race: {other:?}"),
+            }
+        }
+        (p, race.expect("a race, once welcomed with candidates"))
     }
+
+    /// The race's one ticket handed to every candidate: each one's dial,
+    /// its connection by URL.
+    fn race_tickets(&mut self, race: &[CandidateRecord]) -> Vec<(String, u64)> {
+        let mut dialed = Vec::new();
+        for c in race {
+            match self.viewer.race_join(c.url.clone(), "race-ticket".into(), self.now).as_slice() {
+                [Effect::DialCandidate { url, ticket, connection }] => {
+                    assert_eq!(url, &format!("{}/v1/relay/{SESSION}?env=development", c.url));
+                    assert_eq!(ticket, "race-ticket");
+                    assert_ne!(*connection, self.conn, "a connection of its own");
+                    dialed.push((c.url.clone(), *connection));
+                }
+                other => panic!("a candidate's dial: {other:?}"),
+            }
+        }
+        dialed
+    }
+
+    /// A control message on candidate `connection`: what the viewer said.
+    fn on(&mut self, connection: u64, v: Value) -> Vec<Effect> {
+        self.viewer.received(connection, WsFrame::Binary { bytes: control(&v) }, self.now)
+    }
+
+    /// Candidate `connection` joined as the direct listener answers, on
+    /// direct link `link`, after its challenge: the join it sent, and what
+    /// the viewer said to `joined`.
+    fn candidate_joins(&mut self, connection: u64, link: u64, host: bool, url: &str) -> (Value, Vec<Effect>) {
+        let join = match self.on(connection, json!({"type": "challenge", "version": 1, "nonce": e2e::hex(&NONCE), "relay": url, "session": SESSION})).as_slice() {
+            [Effect::SendOn { connection: on, bytes }] if *on == connection => read_control(bytes).unwrap(),
+            other => panic!("the challenge answered on the candidate's connection: {other:?}"),
+        };
+        let e = self.on(connection, json!({"type": "joined", "link": link, "host": host, "seq": 0}));
+        (join, e)
+    }
+
+    /// Moved onto candidate `connection`, direct link `link`: the frames
+    /// sent from here are read as the host reads that link's, and the
+    /// drops and the move itself let go.
+    fn moved(&mut self, connection: u64, link: u64, e: Vec<Effect>) {
+        self.conn = connection;
+        self.link = link;
+        self.take(e);
+        self.rest.clear();
+    }
+}
+
+/// R-NET-2: a welcome naming direct paths makes the viewer ask Swift to
+/// race them, the candidates and how each is reached passed through; one
+/// ticket joins each on a connection of its own, at the viewer's cursor,
+/// and a second ticket for one, or one for an address the race does not
+/// name, dials nothing.
+#[test]
+fn r_net_2_a_welcome_s_candidates_are_raced_each_on_its_own_connection() {
+    let (mut p, race) = Phone::racing();
+    assert_eq!(race, [CandidateRecord { url: TAILNET.into(), via: "tailscale".into() }, CandidateRecord { url: LAN.into(), via: "lan".into() }]);
+    let dialed = p.race_tickets(&race);
+    assert_ne!(dialed[0].1, dialed[1].1);
+    assert!(p.viewer.race_join(LAN.into(), "again".into(), p.now).is_empty(), "one join per candidate");
+    assert!(p.viewer.race_join("ws://10.0.0.9:7791".into(), "t".into(), p.now).is_empty(), "only what the welcome named");
+    let (join, e) = p.candidate_joins(dialed[1].1, 1 << 40, false, LAN);
+    assert_eq!(join["role"], "viewer");
+    let device = e2e::DeviceId::parse(join["device"].as_str().unwrap()).unwrap();
+    let signing = Keystore::with(Arc::new(Bridge(p.world.storage.clone()))).signing_key().unwrap();
+    let sig = e2e::unhex(join["signature"].as_str().unwrap()).unwrap();
+    signing.public().verify_relay_join(&sig, RELAY_ROLE_VIEWER, &uuid(SESSION), &NONCE, &device, LAN).expect("signed over the candidate dialed");
+    // Joined with no host there: no move, every candidate dropped.
+    let mut closed: Vec<u64> = e.iter().map(|e| if let Effect::CloseCandidate { connection } = e { *connection } else { panic!("only drops: {e:?}") }).collect();
+    closed.sort();
+    assert_eq!(closed, [dialed[0].1, dialed[1].1]);
+}
+
+/// R-NET-2: the first candidate to join with the host there moves the
+/// session: the other is dropped, the winner is the current connection
+/// and says hello there, the relay's is read on as the leaving one, and
+/// the direct welcome drops it and shows the path.
+#[test]
+fn r_net_2_a_candidate_that_joins_with_the_host_moves_the_session() {
+    let (mut p, race) = Phone::racing();
+    let relay = p.conn;
+    let dialed = p.race_tickets(&race);
+    let (lan, tailnet) = (dialed[1].1, dialed[0].1);
+    let direct = (1 << 40) + 1;
+    let (_, e) = p.candidate_joins(lan, direct, true, LAN);
+    match e.as_slice() {
+        [Effect::CloseCandidate { connection: dropped }, Effect::Moved { connection: won }, Effect::Send { .. }] => {
+            assert_eq!((*dropped, *won), (tailnet, lan));
+        }
+        other => panic!("the other dropped, then moved, then the hello: {other:?}"),
+    }
+    p.moved(lan, direct, e);
+    assert_eq!(p.hellos, 1, "hello on the direct link");
+    // The tailnet candidate answering late is ignored.
+    assert!(p.on(tailnet, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty());
+
+    // A batch on the leaving relay connection, before the direct welcome:
+    // held, and shown once the welcome is acted on.
+    let b1 = p.batch(&[event(SESSION, 3, "three")]);
+    let e = p.viewer.received(relay, WsFrame::Binary { bytes: b1 }, p.now);
+    p.take(e);
+    let w = Welcome::default();
+    let routed = p.host.welcome(p.link, &serde_json::to_vec(&w).unwrap()).unwrap();
+    p.receive(&routed[HEADER..]);
+    let rest = p.take_rest();
+    assert!(matches!(rest.as_slice(), [Effect::CloseLeaving, Effect::ReadChunks]), "the relay's connection dropped at the direct welcome: {rest:?}");
+    let read = p.viewer.read_chunks();
+    let e = p.viewer.chunks_read(read, p.now);
+    p.take(e);
+    let shown = p.frame();
+    assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Path { path, via: Some(via) } if path == "direct over LAN" && via == LAN)), "{shown:?}");
+    assert_eq!(line_runs(&shown), ["three"]);
+    // Nothing more from the relay's connection, which is gone.
+    let b2 = p.batch(&[event(SESSION, 4, "four")]);
+    assert!(p.viewer.received(relay, WsFrame::Binary { bytes: b2 }, p.now).is_empty());
+}
+
+/// R-NET-2: a candidate that has not joined within `PROBE` (3 s, Rust's
+/// clock, no Swift timer) is dropped and the race is lost: the next one
+/// is asked for after the backoff, 10 s then 20 s, never at once. A
+/// ticket that could not be had loses it too.
+#[test]
+fn r_net_2_a_candidate_past_three_seconds_is_dropped_and_the_race_lost() {
+    let (mut p, race) = Phone::racing();
+    let t0 = p.now;
+    let dialed = p.race_tickets(&race);
+    assert!(p.viewer.next_wake_ms().unwrap() <= t0 + 3_000, "the candidates' deadline");
+    p.at(t0 + 2_999);
+    let e = p.viewer.tick(p.now);
+    assert!(!e.iter().any(|e| matches!(e, Effect::CloseCandidate { .. })), "still within its 3 s: {e:?}");
+    p.at(t0 + 3_000);
+    let mut closed: Vec<u64> = p.viewer.tick(p.now).into_iter().filter_map(|e| if let Effect::CloseCandidate { connection } = e { Some(connection) } else { None }).collect();
+    closed.sort();
+    assert_eq!(closed, [dialed[0].1, dialed[1].1], "both dropped past PROBE");
+    // A late join on a dropped candidate goes nowhere.
+    assert!(p.on(dialed[0].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty());
+
+    let races = |p: &mut Phone, until: u64| -> Vec<u64> {
+        let mut at = Vec::new();
+        while p.now < until {
+            p.now += 500;
+            // The relay's pong: the link lives.
+            let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
+            for e in p.viewer.tick(p.now) {
+                if matches!(e, Effect::Race { .. }) {
+                    at.push(p.now);
+                    assert!(p.viewer.race_lost(p.now).is_empty());
+                }
+            }
+        }
+        at
+    };
+    let at = races(&mut p, t0 + 35_000);
+    assert_eq!(at.len(), 2, "lost, then raced again after 10 s and 20 s: {at:?}");
+    assert!(at[0] >= t0 + 13_000 && at[1] >= at[0] + 20_000, "{at:?}");
+}
+
+/// R-NET-2: the direct connection ending joins the relay again at once,
+/// at the viewer's cursor, and a batch the relay sends again from there is
+/// never shown twice.
+#[test]
+fn r_net_2_losing_the_direct_path_goes_back_to_the_relay_at_the_cursor() {
+    let (mut p, race) = Phone::racing();
+    let dialed = p.race_tickets(&race);
+    let direct = (1 << 40) + 1;
+    let (_, e) = p.candidate_joins(dialed[1].1, direct, true, LAN);
+    p.moved(dialed[1].1, direct, e);
+    p.welcome(Welcome::default());
+    p.frame();
+    let b1 = p.batch(&[event(SESSION, 3, "three")]);
+    p.receive(&b1);
+    assert_eq!(line_runs(&p.frame()), ["three"]);
+
+    p.closed();
+    assert!(matches!(p.rest.as_slice(), [Effect::NeedTicket { at_ms }] if *at_ms <= p.now), "the relay at once: {:?}", p.rest);
+    let join = p.join(true, 0);
+    assert_eq!(join["stream"], e2e::hex(&p.host.stream()), "{join}");
+    assert_eq!(join["afterSeq"], 1, "from the cursor: {join}");
+    p.welcome(Welcome::default());
+    // The relay sends batch 1 again, then batch 2.
+    let b2 = p.batch(&[event(SESSION, 4, "four")]);
+    p.receive(&b1);
+    p.receive(&b2);
+    let shown = p.frame();
+    assert_eq!(line_runs(&shown), ["four"], "batch 1 not shown twice: {shown:?}");
+    assert!(shown.iter().any(|u| matches!(u, ViewerUpdate::Path { path, via: None } if path == "relay")), "{shown:?}");
 }
 
 /// R-CLIENT-1: a join the relay leaves unanswered — the connection open,
