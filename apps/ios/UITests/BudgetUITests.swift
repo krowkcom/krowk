@@ -109,8 +109,10 @@ final class BudgetUITests: XCTestCase {
             // (a steer, while a turn runs, waits for the host).
             let enabled = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: send)
             XCTAssertEqual(XCTWaiter().wait(for: [enabled], timeout: 60), .completed, "Send never took taps")
+            // The pending bubble's label reads the prompt; once logged, its
+            // text view ("Your prompt") holds it as its value.
             let bubble = app.collectionViews["transcript"].descendants(matching: .any)
-                .matching(NSPredicate(format: "label CONTAINS %@", prompt)).firstMatch
+                .matching(NSPredicate(format: "label == %@ OR value == %@", prompt, prompt)).firstMatch
             startMeasuring()
             send.tap()
             if !bubble.waitForExistence(timeout: 10) { Screenshots.tree(of: app) }
