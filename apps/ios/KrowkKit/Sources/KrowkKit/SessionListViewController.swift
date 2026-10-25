@@ -14,6 +14,10 @@ public final class SessionListViewController: UIViewController, UICollectionView
     /// second and applied only when it changed.
     struct Screen: Equatable {
         enum Status: Equatable {
+            /// The phone's kept listing is being read (ticket 131): nothing
+            /// is drawn yet, not even a spinner, so the first snapshot is
+            /// the kept rows when there are any.
+            case priming
             /// The first read is running.
             case loading
             /// No session: the empty sentence.
@@ -209,12 +213,18 @@ public final class SessionListViewController: UIViewController, UICollectionView
         withObservationTracking {
             screen()
         } onChange: { [weak self] in
-            Task { @MainActor in self?.throttle.trigger() }
+            Task { @MainActor in
+                guard let self else { return }
+                // The first snapshot as soon as the kept listing is read,
+                // not a throttle's wait after it.
+                if self.throttle.current?.status == .priming { self.throttle.rebuild() } else { self.throttle.trigger() }
+            }
         }
     }
 
     /// The screen the model calls for now.
     func screen() -> Screen {
+        guard model.primed || model.listing != nil else { return Screen(rows: [], status: .priming) }
         let listed = Set(model.listing?.sessions.map(\.id) ?? [])
         // A started session's row gives way to the session's own once listed.
         let starting = (newSessions?.starting.rows ?? []).filter { if case .started(let id) = $0.state { !listed.contains(id) } else { true } }
@@ -232,9 +242,11 @@ public final class SessionListViewController: UIViewController, UICollectionView
         return Screen(rows: rows, status: rows.isEmpty && unreadable == nil && starting.isEmpty ? .empty : .listed, starting: starting, unreadable: unreadable, stale: stale)
     }
 
-    /// Applies `screen`: the first listing without animation, later ones
-    /// animated in under 200 ms without holding up a touch.
+    /// Applies `screen`: the first listing without animation (the kept
+    /// one, R-IOS-1, else the first read), later ones animated in under
+    /// 200 ms without holding up a touch.
     private func apply(_ screen: Screen, animated: Bool) {
+        if screen.status == .priming { return }
         let previous = rows
         let previousStarts = startingRows
         rows = Dictionary(screen.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
@@ -269,6 +281,8 @@ public final class SessionListViewController: UIViewController, UICollectionView
         }
 
         switch screen.status {
+        case .priming:
+            break
         case .loading:
             spinner.startAnimating()
             emptyLabel.isHidden = true
@@ -287,8 +301,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
         case .listed:
             spinner.stopAnimating()
             emptyLabel.isHidden = true
-            // The launch's budget ends at the first listing applied
-            // (ticket 128); later ones change nothing.
+            // The launch's budget ends at the first listing applied, the
+            // kept one when the phone has one (tickets 128, 131); later
+            // ones change nothing.
             Budgets.shared.listShown()
         }
     }

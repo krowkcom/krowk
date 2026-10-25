@@ -485,8 +485,17 @@ impl ViewerCore {
     /// what the chunks hold, as a display frame shown at `now_ms`, and
     /// joins the relay now.
     pub fn new(key: SessionKeys, session: &str, device: DeviceId, relay: &str, at_rest: Attached, now_ms: u64) -> (ViewerCore, Vec<Effect>) {
+        ViewerCore::resumed(key, session, device, relay, at_rest, None, now_ms)
+    }
+
+    /// `new`, for a viewer whose app already holds the session up to event
+    /// `held` with every event before it (its cache's `Cursor::newest`,
+    /// ticket 131): `at_rest` is only what came after the place the app
+    /// read to (`store::resume`), so the welcome's catch-up asks the host
+    /// only for events after the newer of `held` and what `at_rest` holds.
+    pub fn resumed(key: SessionKeys, session: &str, device: DeviceId, relay: &str, at_rest: Attached, held: Option<String>, now_ms: u64) -> (ViewerCore, Vec<Effect>) {
         let seen: HashSet<String> = at_rest.events.iter().filter_map(|e| e["id"].as_str().map(String::from)).collect();
-        let mut last_id = None;
+        let mut last_id = held;
         for id in &seen {
             newest(&mut last_id, id);
         }

@@ -23,8 +23,8 @@ apps/ios/
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
-                     NotificationRoutingTests, RemovalTests, CacheTests, ModelSwitchTests,
-                     and the TestFleet fixture
+                     NotificationRoutingTests, RemovalTests, CacheTests,
+                     CacheFirstTests, ModelSwitchTests, and the TestFleet fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
                      PairingUITests, NotificationUITests, RemovalUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
@@ -351,8 +351,34 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
   open session screen appends its logged events (what it opened on, each
   catch-up, each logged line, never a live delta), batched at most once a
   second, as krowk-ffi's `encodeLogEvent` JSON. A reset, a sign-out and
-  the first launch after an install delete it. Nothing draws from it yet
-  (ticket 131).
+  the first launch after an install delete it.
+- **Cache first** (ticket 131, R-IOS-1, R-IOS-3). The list's first
+  snapshot is the cache's index, read off the main actor before any
+  network read and applied without animation; its rows say "last seen",
+  never live (only a fresh listing names a lease). The network's listing
+  then replaces them, animated. Opening a session draws the newest 200
+  events the cache kept, in the log's order (by event id, UUIDv7, not the
+  order they reached the cache), decoded off the main thread, before
+  anything the connection brings, which waits in its mailbox meanwhile
+  (at most 500 ms). Older pages come in above as the person scrolls up.
+  Off the main thread, the session is then read on from the place the
+  cache kept (`Account.resumeSession`, only the chunks after it;
+  `openSession` without one). A resume refused as `session_rolled_back`
+  reads afresh, replaces the session's cached events, and the screen's
+  rows start over. The events read and the new place (with the newest
+  event the cache then holds) are written in one transaction, off the
+  open's thread; the place only if the one kept is still the one the read
+  started from (otherwise the one kept stays: none after an eviction). The viewer starts at
+  the newest event the cache holds with every one before it (its
+  cursor's, else the last read's: `Viewer.openResumed`), so the welcome's
+  catch-up asks only for what came after. Everything is merged by event
+  id: an event drawn from the cache is never drawn again, and one a read
+  brings that is older than everything drawn goes above it. The sessions
+  above and below the one opened have their newest pages read ahead from
+  the cache, so switching draws from memory (and the page is read again,
+  in case it moved on). The connection bar is the only progress shown: no
+  spinner or empty sentence over kept rows. The cache's schema is version
+  2 (`place_held`); a version 1 file is taken up, not started afresh.
 
 ## Removed from your devices
 
@@ -714,8 +740,9 @@ fails when:
 
 A Release build has neither seam (`scripts/approvals.sh`). Raising a
 ceiling is a commit that changes its `max`, with the new measurement and
-its date in `why`. The launch (`BudgetUITests.testLaunch`), the
-frame-apply baseline, host-to-screen latency, a notification's cold launch,
+its date in `why`. The launch (`BudgetUITests.testLaunch`), a paired
+launch to the cached list (`testR_IOS_1_launchToCachedList`,
+`cachedLaunchMs`, ticket 131), the frame-apply baseline, host-to-screen latency, a notification's cold launch,
 the most updates `LiveFollowTests` had waiting for a frame and the stall
 test's longest gap are a trend, not a gate: the step summary
 and the `ios-perf` artifact (`ios-perf.json`) on every run. Launch and
@@ -741,7 +768,7 @@ content and no id (`KrowkKit/Sources/KrowkKit/Budgets.swift`).
 
 | Name | From | To | Budget |
 | --- | --- | --- | --- |
-| `launch.cachedList` | the process's start, by the kernel (`kinfo_proc`'s `p_starttime`), so the time before `main` counts; the interval itself from `willFinishLaunchingWithOptions`. A prewarmed process (iOS started it ahead of the tap) counts from `willFinishLaunchingWithOptions` | the first listing applied on Sessions (from the cache once ticket 131 lands; the network until then). Once per process, and only when Sessions is the first screen and lists before the app leaves the foreground or a read fails | < 400 ms |
+| `launch.cachedList` | the process's start, by the kernel (`kinfo_proc`'s `p_starttime`), so the time before `main` counts; the interval itself from `willFinishLaunchingWithOptions`. A prewarmed process (iOS started it ahead of the tap) counts from `willFinishLaunchingWithOptions` | the first listing applied on Sessions: the cache's when it keeps one (ticket 131), else the network's. Once per process, and only when Sessions is the first screen and lists before the app leaves the foreground or a read fails | < 400 ms |
 | `foreground.caughtUp` | `sceneWillEnterForeground`, after 10 s away or more (less is a wake, not measured) | the open session's bar reading `live` again after `connecting`, `reconnecting` or `catching up…` (before or after the return); with no session open, the list's first read that started after it landing. Given up, not logged, when the host is offline, the connection ends, that read fails, it takes over 10 s, or a session is opened or closed meanwhile | < 300 ms on a LAN, < 800 ms through the relay |
 | `tap.optimistic` | Send's touch-up | the next display frame after the bubble's row was applied: its cell is in the committed layer tree | < 16 ms |
 | `key.glyph` | `textViewDidChange` in the composer, one keystroke in ten | the next display frame | < 16 ms |

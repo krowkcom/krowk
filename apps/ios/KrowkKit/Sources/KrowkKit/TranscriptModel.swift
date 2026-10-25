@@ -219,6 +219,10 @@ public enum TranscriptPlacement: Sendable {
     /// applied: a catch-up, which brings events a gap left out after later
     /// ones were drawn. At the end when it wasn't.
     case afterParent
+    /// Above every row, in order: events older than everything drawn (an
+    /// older page of what the phone kept of the session, R-IOS-3, or a read
+    /// that reaches further back than it).
+    case top
 }
 
 /// What an item started live is, before any of it came (the generated
@@ -262,6 +266,10 @@ public enum TranscriptUpdate: Equatable, Sendable {
     case result(session: String, turn: String, offer: SwitchOfferInfo?)
     /// `limits`: how near its limit `instance` is (R-INST-6).
     case limits(session: String, instance: String, limit: InstanceLimit)
+    /// The session was read afresh under the screen (ticket 131: rolled
+    /// back past what the phone kept): its rows go, and what comes next
+    /// draws them again. What was typed here stays.
+    case restarted
 }
 
 /// What a frame's apply did that the screen draws at once, inside the
@@ -285,6 +293,8 @@ public struct FrameApplied {
     /// The switch an offer's Continue sent was taken: the limited turn's
     /// prompt, to send again now as a new prompt.
     public var promptAgain: String?
+    /// The rows went (`restarted`): what the phone kept no longer holds.
+    public var restarted = false
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -321,6 +331,22 @@ public final class TranscriptModel {
     @ObservationIgnored private var endedTurns: Set<String> = []
     /// The session as read at rest was applied (empty or not).
     public private(set) var attached = false
+    /// A page the phone kept of the session was drawn (`drawKept`): a
+    /// result whose call is older than it may still have its call paged
+    /// in, so none is let go at `attach`; and what the session reads that
+    /// is older than everything drawn goes above it.
+    @ObservationIgnored private var keptDrawn = false
+    /// Where the next row of a `.top` page goes.
+    @ObservationIgnored private var topAt = 0
+    /// The oldest event applied, by id (UUIDv7: the log's order).
+    @ObservationIgnored private var oldestApplied: String?
+    /// What `place` applies is history the phone kept, drawn above or
+    /// among later rows: it sets no turn running, ends none, and settles no
+    /// bubble.
+    @ObservationIgnored private var history = false
+    /// What `place` applies is a page the phone kept, the newest included:
+    /// its turn ends refuse nothing typed here.
+    @ObservationIgnored private var drawingKept = false
 
     @ObservationIgnored private var items: [String: ItemState] = [:]
     /// Every event applied, by id.
@@ -722,9 +748,10 @@ public final class TranscriptModel {
     }
 
     private func current(_ model: ModelChoice, at time: Int64?) {
-        // A catch-up brings what a gap left out, after later lines: one
-        // the host logged before what set the model doesn't move it.
-        if placing == .afterParent, let time, let currentAtMs, time < currentAtMs { return }
+        // A catch-up brings what a gap left out, after later lines, and a
+        // kept page older ones: one the host logged before what set the
+        // model doesn't move it.
+        if placing != .end || history, let time, let currentAtMs, time < currentAtMs { return }
         if currentModel != model { currentModel = model }
         if let time { currentAtMs = max(currentAtMs ?? time, time) }
     }
@@ -745,7 +772,9 @@ public final class TranscriptModel {
     /// Whether a line logged at `time` can answer the switch out: not a
     /// catch-up's from before it was asked for.
     private func answersSwitch(at time: Int64?) -> Bool {
-        guard placing == .afterParent, let time, let switchSince else { return true }
+        // A page the phone kept is from before any switch it asks now.
+        if history { return false }
+        guard placing != .end, let time, let switchSince else { return true }
         return time > switchSince
     }
 
@@ -787,13 +816,72 @@ public final class TranscriptModel {
     /// The session as read at rest: its events applied, and `attached` set.
     public func attach(_ events: [TranscriptEvent]) {
         transact {
-            place(events, placement: .end)
+            placeAround(events, else: .end)
             // A result read at rest without its call: its call is before the
-            // checkpoint, and never comes. A later call reusing the id is
-            // another call.
-            orphans = [:]
+            // checkpoint, and never comes (unless a kept page is older). A
+            // later call reusing the id is another call.
+            if !keptDrawn { orphans = [:] }
         }
         if !attached { attached = true }
+    }
+
+    /// A page of what the phone kept of the session (R-IOS-1, R-IOS-3),
+    /// oldest first, each event at most once: at the end while nothing is
+    /// drawn (the newest page, before the network says anything, read as
+    /// the session at rest is), else as history — its events older than
+    /// everything drawn above it, the rest after the event before each.
+    /// An event the session read at rest, caught up or logged live is
+    /// drawn once, whichever came first; one of these older than every
+    /// kept row goes above them.
+    public func drawKept(_ events: [TranscriptEvent]) {
+        keptDrawn = true
+        drawingKept = true
+        defer { drawingKept = false }
+        // Nothing the session read applied yet (rows or not): the newest
+        // page, read as the session at rest is.
+        guard !seen.isEmpty else { return transact { place(events, placement: .end) } }
+        // Older than everything drawn: above it. Anything else (newer
+        // events a late page holds, or ones that reached the cache late)
+        // after the event before it.
+        history = true
+        defer { history = false }
+        transact { placeAround(events, else: .afterParent) }
+    }
+
+    /// `events` older than everything applied (once something the phone
+    /// kept is drawn) above every row; the rest by `placement`.
+    private func placeAround(_ events: [TranscriptEvent], else placement: TranscriptPlacement) {
+        guard keptDrawn || history, let floor = oldestApplied else { return place(events, placement: placement) }
+        let older = events.filter { $0.id < floor }
+        if !older.isEmpty { place(older, placement: .top) }
+        place(older.isEmpty ? events : events.filter { $0.id >= floor }, placement: placement)
+    }
+
+    /// The session's rows and what they were drawn from go (`restarted`);
+    /// the bubbles stay.
+    private func restart() {
+        working = []
+        items = [:]
+        seen = []
+        calls = [:]
+        anchors = [:]
+        orphans = [:]
+        adopted = []
+        endedTurns = []
+        runningTurn = nil
+        streaming = [:]
+        unshown = []
+        running = [:]
+        unsettled = []
+        settledRow = nil
+        lastNotice = nil
+        keptDrawn = false
+        oldestApplied = nil
+        // Read afresh: what sets the model comes again.
+        currentAtMs = nil
+        approvalRows = [:]
+        unplacedMarks = []
+        attached = false
     }
 
     /// `events`, in order, each at most once, their rows placed by
@@ -820,15 +908,15 @@ public final class TranscriptModel {
                 flush(&deltas, into: &applied)
                 switch update {
                 case .attached(let events):
-                    place(events, placement: .end)
-                    orphans = [:]
+                    placeAround(events, else: .end)
+                    if !keptDrawn { orphans = [:] }
                 case .logged(let events):
                     if let newest = events.compactMap(\.timeMs).max() { newestLiveMs = max(newestLiveMs ?? newest, newest) }
                     live = true
                     place(events, placement: .end)
                     live = false
                 case .caughtUp(let events):
-                    place(events, placement: .afterParent)
+                    placeAround(events, else: .afterParent)
                 case .started(let session, let turn, let item, let kind):
                     if session == sessionID { start("item:\(item)", turn: turn, kind: kind) }
                 case .notice(let session, let text):
@@ -851,6 +939,9 @@ public final class TranscriptModel {
                 case .limits(let session, let instance, let limit):
                     guard session == sessionID, limits[instance] != limit else { continue }
                     limits[instance] = limit
+                case .restarted:
+                    restart()
+                    applied.restarted = true
                 }
             }
             flush(&deltas, into: &applied)
@@ -998,9 +1089,11 @@ public final class TranscriptModel {
 
     private func place(_ events: [TranscriptEvent], placement: TranscriptPlacement) {
         placing = placement
+        topAt = working!.startIndex
         for event in events where event.sessionID == sessionID {
             guard seen.insert(event.id).inserted else { continue }
-            var at = working!.endIndex
+            if oldestApplied.map({ event.id < $0 }) ?? true { oldestApplied = event.id }
+            var at = placement == .top ? topAt : working!.endIndex
             if placement == .afterParent, let parent = event.parentID, let above = anchors[parent], above != working!.last {
                 at = above.isEmpty ? working!.startIndex : (working!.firstIndex(of: above).map { $0 + 1 } ?? working!.endIndex)
             }
@@ -1008,6 +1101,7 @@ public final class TranscriptModel {
             if let change = event.change, let row = take(change, event: event.id, at: event.timeMs) {
                 working!.insert(row, at: at)
                 anchors[event.id] = row
+                if placement == .top { topAt += 1 }
             } else if let settledRow, working!.contains(settledRow) {
                 // A completion of a row drawn live: what follows it goes
                 // under that row, wherever the stream had put it.
@@ -1016,6 +1110,7 @@ public final class TranscriptModel {
                 anchors[event.id] = at == working!.startIndex ? "" : working![at - 1]
             }
             for (orphan, call) in adopted {
+                if let gone = working!.firstIndex(of: orphan), gone < topAt { topAt -= 1 }
                 working!.removeAll { $0 == orphan }
                 for (event, row) in anchors where row == orphan { anchors[event] = call }
             }
@@ -1028,9 +1123,9 @@ public final class TranscriptModel {
         switch change {
         case .userText(let item, let text, let images, let turn):
             if let turn { keepPrompt(turn, text) }
-            // Logged live or caught up (never read at rest): the oldest
-            // bubble typed with this text gives way to it (ticket 90).
-            if live || placing == .afterParent, let token = commands.logged(text) { dropBubble(token) }
+            // Logged live or caught up (never read at rest, nor kept): the
+            // oldest bubble typed with this text gives way to it (ticket 90).
+            if live || placing == .afterParent, !history, let token = commands.logged(text) { dropBubble(token) }
             // An image's bytes are never drawn: "[Image #N]", which the text
             // names it by; one the text doesn't name is added.
             let missing = images.filter { !text.contains("[Image #\($0)]") }.map { "[Image #\($0)]" }
@@ -1064,8 +1159,9 @@ public final class TranscriptModel {
             let state = ItemState(id: "item:\(item)", kind: .tool, toolName: name, toolInput: input)
             guard let row = add(state) else { return nil }
             calls[callID] = state
-            // Only a catch-up brings a call after its result (a gap).
-            if placing == .afterParent, let orphan = orphans.removeValue(forKey: callID) {
+            // Only a catch-up brings a call after its result (a gap), or
+            // something older than what is drawn.
+            if placing == .afterParent || placing == .top, let orphan = orphans.removeValue(forKey: callID) {
                 state.output = orphan.output
                 state.isError = orphan.isError
                 state.expanded = orphan.expanded
@@ -1090,7 +1186,8 @@ public final class TranscriptModel {
             if calls[callID] == nil { orphans[callID] = state }
             return row
         case .turnStarted(let turn, let model):
-            if !endedTurns.contains(turn) { runningTurn = turn }
+            // A kept page's turn is never the one running now.
+            if !history, !endedTurns.contains(turn) { runningTurn = turn }
             if let model {
                 turnModels[turn] = model
                 current(model, at: time)
@@ -1107,12 +1204,14 @@ public final class TranscriptModel {
             endedTurns.insert(turn)
             if switchAcked, answersSwitch(at: time) { switchTurnEnded = true }
             // The running turn's end (or one's while none was known to
-            // run), not an older turn's a catch-up brings late.
-            let current = runningTurn == nil || runningTurn == turn
+            // run), not an older turn's a catch-up or a kept page brings
+            // late.
+            let current = !history && (runningTurn == nil || runningTurn == turn)
             if runningTurn == turn { runningTurn = nil }
             // "stopping…" ends with the turn, if its ack hasn't come; a steer
-            // it never read is refused.
-            if current {
+            // it never read is refused. Not by a kept page: what it holds
+            // ended before anything typed here.
+            if current, !drawingKept {
                 for token in commands.turnEnded() {
                     refresh(token)
                     if let state = bubbles[token] { refusedNow.append(state) }

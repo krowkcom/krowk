@@ -12,7 +12,8 @@ import QuartzCore
 ///
 /// - `launch.cachedList`: the process's start (the kernel's, so the time
 ///   before `main` counts) to the session list's first listing applied on
-///   screen. Once per process, and only when Sessions is the first screen
+///   screen: the one the cache kept, when it keeps one (ticket 131), else
+///   the network's. Once per process, and only when Sessions is the first screen
 ///   and lists before the app leaves the foreground or a read fails. A
 ///   prewarmed process (iOS started it ahead of the tap) counts from
 ///   `willFinishLaunching` instead.

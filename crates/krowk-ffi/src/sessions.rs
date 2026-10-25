@@ -87,6 +87,25 @@ impl TryFrom<ReadPlaceRecord> for ReadPlace {
     }
 }
 
+/// A read place as JSON text (`ReadPlace`'s own form, its digests in hex),
+/// which `decode_read_place` reads back: what the phone's cache keeps with
+/// the events read (ticket 131), so Swift never builds or parses it. A
+/// place no reading stopped at is `InvalidInput`.
+#[uniffi::export]
+pub fn encode_read_place(place: ReadPlaceRecord) -> Result<String, KrowkError> {
+    let place = ReadPlace::try_from(place)?;
+    serde_json::to_string(&place).map_err(|e| KrowkError::Internal { detail: format!("a read place did not encode: {e}") })
+}
+
+/// A read place from the JSON text `encode_read_place` wrote; one this
+/// build doesn't read, or no reading stopped at, is `Decode`.
+#[uniffi::export]
+pub fn decode_read_place(json: String) -> Result<ReadPlaceRecord, KrowkError> {
+    let place = serde_json::from_str::<ReadPlace>(&json).map_err(|e| KrowkError::Decode { detail: format!("that is not a read place this build understands: {e}") })?;
+    place.check().map_err(|detail| KrowkError::Decode { detail })?;
+    Ok(place.into())
+}
+
 /// The sessions this phone can open, newest first, and how many more it
 /// cannot open yet: sealed under a user key it does not hold, or recorded
 /// by a device its device list never held.

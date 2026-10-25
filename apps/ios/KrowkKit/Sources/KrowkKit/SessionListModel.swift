@@ -10,14 +10,23 @@ import Observation
 /// while its lease is unexpired, and a host renews it every 20 s on a 60 s
 /// TTL. A listing older than the last refresh (one that failed), or older
 /// than a lease's TTL (the app was away), shows no session live.
+///
+/// Cache first (R-IOS-1, ticket 131): before its first read the model
+/// takes what the phone kept of the last listing (`kept`), off the main
+/// actor, and the screen's first snapshot waits for it. Kept rows show
+/// "last seen", never live: only a fresh listing says a lease is held.
 @MainActor
 @Observable
 public final class SessionListModel {
     /// The latest listing that succeeded; nil until one has.
     public private(set) var listing: SessionListing?
     /// When the read that gave it started, by `clock`: a lease it shows
-    /// was unexpired no later than then.
+    /// was unexpired no later than then. Nil while the listing is the one
+    /// the phone kept.
     public private(set) var listedAt: Date?
+    /// The phone's kept listing was read (applied, or there was none): the
+    /// screen draws from here on. True from the start with nothing kept.
+    public private(set) var primed: Bool
     /// Why the last refresh failed; nil once one succeeds.
     public private(set) var failure: SessionListFailure?
     /// The phone is no longer on the person's devices: set by the read
@@ -40,6 +49,9 @@ public final class SessionListModel {
     @ObservationIgnored public var landed: (@MainActor (_ started: Date, _ succeeded: Bool) -> Void)?
 
     private let source: any SessionSource
+    /// What the phone kept of the last listing, if anything.
+    private let kept: (@Sendable () async -> SessionListing?)?
+    private var priming: Task<Void, Never>?
     private let clock: @Sendable () -> Date
     private let log: @MainActor (String) -> Void
 
@@ -54,10 +66,17 @@ public final class SessionListModel {
     private var expiry: Task<Void, Never>?
 
     /// - Parameters:
+    ///   - kept: what the phone kept of the last listing (the cache's
+    ///     index), read off the main actor; nil when it keeps none.
     ///   - log: told the kind of a failure, never a session's id, title or
     ///     the core's words.
-    public init(source: any SessionSource, clock: @escaping @Sendable () -> Date = { Date() }, log: @escaping @MainActor (String) -> Void = { _ in }) {
+    public init(
+        source: any SessionSource, kept: (@Sendable () async -> SessionListing?)? = nil,
+        clock: @escaping @Sendable () -> Date = { Date() }, log: @escaping @MainActor (String) -> Void = { _ in }
+    ) {
         self.source = source
+        self.kept = kept
+        primed = kept == nil
         self.clock = clock
         self.log = log
         self.now = clock()
@@ -66,6 +85,7 @@ public final class SessionListModel {
     /// Whether a live mark may be shown now: the listing is the latest
     /// refresh's, and younger than a lease's TTL.
     public var liveTrusted: Bool {
+        // A kept listing has no `listedAt`: never live.
         guard let listedAt, failure == nil else { return false }
         return now.timeIntervalSince(listedAt) < Self.leaseTTL
     }
@@ -85,7 +105,26 @@ public final class SessionListModel {
             repeating(every: Self.refreshPeriod) { await $0.refresh() },
             repeating(every: .seconds(60)) { $0.now = $0.clock() },
         ]
-        Task { await refresh() }
+        // The kept listing first, then the network's.
+        Task {
+            await prime()
+            await refresh()
+        }
+    }
+
+    /// The listing the phone kept, taken once, unless a read already
+    /// listed: returns once it was (at once after the first time). Its rows
+    /// are the first the screen draws, before any read starts.
+    public func prime() async {
+        if let priming { return await priming.value }
+        guard let kept, !primed else { return }
+        let task = Task {
+            let found = await kept()
+            if listing == nil, let found { listing = found.deduplicated() }
+            primed = true
+        }
+        priming = task
+        await task.value
     }
 
     /// Off screen, or the app in the background: nothing runs.
@@ -118,13 +157,14 @@ public final class SessionListModel {
     /// A route from a notification waits on this before it looks for its
     /// session (ticket 106); one that fails is tried once more.
     public func settled() async {
-        guard listing == nil else { return }
+        // The kept listing is not one: it may lack a session since synced.
+        guard listedAt == nil else { return }
         if let reading {
             await reading.value
         }
         // Never read, or the last read failed (the registry briefly out of
         // reach as the app launched): one more try.
-        if listing == nil { await refresh() }
+        if listedAt == nil { await refresh() }
     }
 
     /// Reads until no refresh asked for is left unread.
@@ -147,6 +187,7 @@ public final class SessionListModel {
             case .success(let listing):
                 self.listing = listing.deduplicated()
                 listedAt = started
+                primed = true
                 failure = nil
                 // Only on screen: appearing arms it again.
                 if !timers.isEmpty { expire(at: started.addingTimeInterval(Self.leaseTTL)) }

@@ -21,8 +21,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   the picker offers nothing. A turn that hits its instance's limit shows
   `<from> is at its limit — continue on <to>?` over the composer. When
   the phone sent that turn's prompt, **Continue** switches and sends the
-  prompt again there. The phone
-  never switches the mode, toolset, effort or budget.
+  prompt again there. The phone never switches the mode, toolset,
+  effort or budget.
+- **The iPhone app draws from its cache first.** At launch the session
+  list shows the sessions the phone kept, each "last seen" and never
+  live, before the registry answers; the fresh listing then replaces
+  them. Opening a session draws the newest 200 events the phone kept at
+  once and pages older ones in as you scroll up. The session is then read
+  on from where its last read stopped, only the chunks written since, and
+  followed live from the newest event the phone holds. An event the cache
+  and the network both bring is drawn once. The sessions above and below
+  the one you open are read ahead from the cache, so switching to them
+  draws at once. No spinner shows over cached content; the connection bar
+  says how the catch-up is going. The app library adds
+  `Viewer.openResumed` and `encodeReadPlace` / `decodeReadPlace` (no
+  version change).
+
 - **The iPhone app starts a session on one of your machines.** Sessions'
   `+` opens "New session": your hosts as they announce themselves, online
   first (one offline is greyed with when it was last seen and can't be

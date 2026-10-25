@@ -291,7 +291,7 @@ extension HostedKeychain {
             #expect(waits.contains("couldn't open the session: krowk's registry cannot be reached"), "\(statuses.all())")
 
             // Refused (not the network): stopped, as before.
-            let refused = RelayConnection { throw KrowkError.Refused(code: "not_found", detail: "no such session") }
+            let refused = RelayConnection(opening: { throw KrowkError.Refused(code: "not_found", detail: "no such session") })
             refused.follow { _ in }
             defer { refused.stop() }
             try await Self.wait(until: { if case .ended = refused.status { true } else { false } }, within: .seconds(5), "\(refused.status.text)")
