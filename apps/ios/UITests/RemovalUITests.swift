@@ -50,22 +50,14 @@ final class RemovalUITests: XCTestCase {
         app.launch()
 
         // Sign in and pair, as PairingUITests does.
-        let signIn = app.buttons["sign-in"]
-        XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
-        signIn.tap()
-        let code = try XCTUnwrap(FleetUI.signInCode(in: app), "no sign-in code shown")
-        XCTAssertTrue(FleetUI.allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
-        let (approved, why) = try await FleetUI.request("\(site)/_approve/cli/authorizations/\(code)/approval")
-        XCTAssertEqual(approved, 200, why)
+        try await FleetUI.signIn(app, api: api)
         let field = app.textFields["pairing-code"]
-        if !field.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        if !FleetUI.answering(until: field, timeout: 30) { Screenshots.tree(of: app) }
         XCTAssertTrue(field.exists, "no pairing screen 30 s after approving")
         let tokensBefore = try await NotificationPrompt.registered(site: site)
         let (status, fresh) = try await FleetUI.request(try FleetUI.env("KROWK_REMOVAL_PAIR_URL"))
         XCTAssertEqual(status, 200, fresh)
-        field.tap()
-        field.typeText(String(fresh.dropLast()))
-        app.typeText(String(fresh.suffix(1)))
+        FleetUI.typeCode(fresh, in: app)
         let done = app.staticTexts["pairing-done"]
         if !done.waitForExistence(timeout: 90) { Screenshots.tree(of: app) }
         XCTAssertTrue(done.exists, "not paired 90 s after the code")
@@ -86,9 +78,9 @@ final class RemovalUITests: XCTestCase {
         }
         let phone = try XCTUnwrap(device, "no push token registered for the new phone within 60 s")
 
-        app.buttons["pairing-continue"].tap()
         let list = app.collectionViews["sessions-list"]
-        XCTAssertTrue(list.waitForExistence(timeout: 10), "Continue did not open Sessions")
+        if !FleetUI.tap(app.buttons["pairing-continue"], until: list, timeout: 30) { Screenshots.tree(of: app) }
+        XCTAssertTrue(list.exists, "Continue did not open Sessions")
         XCTAssertFalse(app.staticTexts["pairing-kit"].exists)
 
         // Once: a relaunch opens Sessions, with no reminder.
