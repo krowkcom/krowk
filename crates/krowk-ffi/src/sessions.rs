@@ -256,7 +256,7 @@ impl Account {
 
     /// The user keys and the device list this phone holds; `not_paired`
     /// until it holds both.
-    fn paired(&self) -> Result<(krowk_client::user_key::UserKeys, krowk_client::device_chain::Chain), KrowkError> {
+    pub(crate) fn paired(&self) -> Result<(krowk_client::user_key::UserKeys, krowk_client::device_chain::Chain), KrowkError> {
         let keys = self.keystore.user_keys().map_err(internal)?;
         let chain = self.keystore.device_list().map_err(internal)?;
         match (keys, chain) {

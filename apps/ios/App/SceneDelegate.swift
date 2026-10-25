@@ -206,29 +206,43 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let parked = parkedScreens
         // Allowing a call asks for Face ID first (R-IOS-11).
         let owner = OwnerChecks.make()
-        return SessionListViewController(model: model) { [weak model] row in
+        // A session's transcript, followed live through the relay while its
+        // screen is open, opened by `opening`, drawn first from what the
+        // cache kept of it, if anything (ticket 131).
+        let transcript = { @MainActor (row: SessionRow, kept: (any KeptTranscript)?, opening: @escaping @Sendable () throws -> SessionOpening) -> UIViewController in
+            // Its approvals rise in a sheet over the transcript (R-PERM-2).
+            let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
+            // Its logged events are kept as they come (ticket 129).
+            let live = RelayConnection(
+                resuming: opening, approvals: approvals,
+                standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
+            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: kept)
+            screen.parking = parked
+            // What an earlier screen of it had refused, with "Edit and resend".
+            screen.restore(parked.takeRefusals(row.id))
+            return screen
+        }
+        // `+` starts a session on one of the person's hosts (R-HOST-4); the
+        // started one opens live as soon as the registry lists it.
+        let newSessions = NewSessions(source: source, starting: StartingSessions(source: source)) { session, request in
+            // Its screen parked with commands out, if it was left so.
+            if let kept = parked.take(session) { return kept }
+            let place = SessionRowFormatter.basename(request.cwd)
+            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
+            // New: the cache holds nothing of it yet.
+            return transcript(row, nil) { SessionOpening(session: try source.openStartedSession(id: session)) }
+        }
+        return SessionListViewController(model: model, newSessions: newSessions) { [weak model] row in
             let listed = model?.listing?.sessions ?? []
             // Its neighbours in the list, from the cache: a switch to one
             // draws from memory (R-IOS-3).
             shelf.prefetch(around: row.id, in: listed.map(\.id))
             if let kept = parked.take(row.id) { return kept }
             // The listing's head, fresh or kept; the cache's place may hold
-            // it to a later one (`RegistrySessions.resume`).
+            // it to a later one. Read on from where the cache's last read
+            // stopped, followed from the newest event it holds.
             let known = listed.first { $0.id == row.id }.flatMap(listedHead)
-            // Its approvals rise in a sheet over the transcript (R-PERM-2).
-            let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
-            // Read on from where the cache's last read stopped, followed
-            // from the newest event it holds (ticket 131); its logged
-            // events are kept as they come (ticket 129).
-            let live = RelayConnection(
-                resuming: { try source.resume(id: row.id, known: known) }, approvals: approvals,
-                standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
-            // Drawn first from what the cache kept of it.
-            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: shelf.transcript(row.id))
-            screen.parking = parked
-            // What an earlier screen of it had refused, with "Edit and resend".
-            screen.restore(parked.takeRefusals(row.id))
-            return screen
+            return transcript(row, shelf.transcript(row.id)) { try source.resume(id: row.id, known: known) }
         }
     }
 

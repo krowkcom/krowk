@@ -75,6 +75,62 @@ pub enum KrowkError {
     Decode { detail: String },
 }
 
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HostList {
+    pub hosts: Vec<HostRecord>,
+    pub unreadable: u32,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct HostRecord {
+    pub device: String,
+    pub name: String,
+    pub os: String,
+    pub online: bool,
+    pub last_seen_ms: u64,
+    pub version: String,
+    pub instances: Vec<InstanceRecord>,
+    pub directories: Vec<String>,
+    pub sessions: Vec<String>,
+}
+
+#[derive(Debug, Clone, uniffi::Record)]
+pub struct InstanceRecord {
+    pub name: String,
+    pub kind: String,
+    pub ready: bool,
+    pub state: String,
+    pub fix: Option<String>,
+    pub models: Vec<String>,
+    pub limit: Option<LimitStatus>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum StartAnswer {
+    Started { session_id: String },
+    Refused { code: String, message: String },
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn list_hosts(&self) -> Result<HostList, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn start_session(
+        &self,
+        device: String,
+        cwd: String,
+        model: ModelRef,
+        prompt: String,
+        id: String,
+    ) -> Result<StartAnswer, KrowkError> {}
+}
+
+#[uniffi::export]
+pub fn new_command_id() -> String {}
+
 pub struct RegistryMailbox {
     // opaque: private fields
 }
@@ -994,6 +1050,8 @@ impl Viewer {
 pub use account::{Account, ListedDevice};
 
 pub use error::KrowkError;
+
+pub use hosts::{HostList, HostRecord, InstanceRecord, StartAnswer, new_command_id};
 
 pub use pairing::{
     Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite,

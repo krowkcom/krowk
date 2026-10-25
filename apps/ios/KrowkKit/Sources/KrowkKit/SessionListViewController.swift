@@ -6,7 +6,9 @@ import UIKit
 /// in a diffable data source over a plain list. A session is `● live`
 /// only while a host holds its lease; otherwise "last seen". Sessions
 /// this phone can't open are counted in the footer, never shown. The list
-/// never offers to take or host a session (R-HAND-4).
+/// never offers to take or host a session (R-HAND-4). With `newSessions`,
+/// its `+` starts one on a host (R-HOST-4): the start shows at once as a
+/// row at the top, `starting on <host>…`, until the host answers (R-LAG-8).
 public final class SessionListViewController: UIViewController, UICollectionViewDelegate {
     /// What the screen shows, rebuilt from the model at most 10 times a
     /// second and applied only when it changed.
@@ -27,6 +29,8 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
         var rows: [SessionRow]
         var status: Status
+        /// The starts under way or refused, newest first, above the rows.
+        var starting: [StartingRow] = []
         /// "2 sessions can't be opened on this iPhone.", or nil.
         var unreadable: String?
         /// A refresh failed after a listing: the rows are the last ones read.
@@ -39,12 +43,16 @@ public final class SessionListViewController: UIViewController, UICollectionView
     private let formatter = SessionRowFormatter()
     /// What tapping a row pushes: its transcript.
     private let open: @MainActor (SessionRow) -> UIViewController
+    /// Starting a session on a host: none when nil.
+    public let newSessions: NewSessions?
 
     private(set) var collectionView: UICollectionView!
     private(set) var dataSource: UICollectionViewDiffableDataSource<Int, String>!
     private(set) var throttle: SnapshotThrottle<Screen>!
     /// The rows applied, by id: what each cell shows.
     private var rows: [String: SessionRow] = [:]
+    /// The starts applied, by row id.
+    private var startingRows: [String: StartingRow] = [:]
     /// The footer's lines, as last applied.
     private var footerLines: [String] = []
     let emptyLabel = UILabel()
@@ -54,8 +62,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
     /// to a later one.
     private var routes = 0
 
-    public init(model: SessionListModel, open: (@MainActor (SessionRow) -> UIViewController)? = nil) {
+    public init(model: SessionListModel, newSessions: NewSessions? = nil, open: (@MainActor (SessionRow) -> UIViewController)? = nil) {
         self.model = model
+        self.newSessions = newSessions
         self.open = open ?? { TranscriptViewController(row: $0) }
         super.init(nibName: nil, bundle: nil)
         // Back in the foreground with no session open over this list, its
@@ -66,6 +75,13 @@ public final class SessionListViewController: UIViewController, UICollectionView
         }
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
+        if let newSessions {
+            let add = UIBarButtonItem(systemItem: .add, primaryAction: UIAction { [weak self] _ in self?.newSession() })
+            add.accessibilityIdentifier = "new-session-open"
+            add.accessibilityLabel = "New session"
+            navigationItem.rightBarButtonItem = add
+            newSessions.starting.started = { [weak self] session, request in self?.started(session, request) }
+        }
     }
 
     @available(*, unavailable)
@@ -96,6 +112,10 @@ public final class SessionListViewController: UIViewController, UICollectionView
         collectionView.refreshControl = refresh
 
         let cell = UICollectionView.CellRegistration<UICollectionViewListCell, String> { [weak self] cell, _, id in
+            if let start = self?.startingRows[id] {
+                self?.configure(cell, starting: start)
+                return
+            }
             guard let row = self?.rows[id] else { return }
             Self.configure(cell, with: row)
         }
@@ -167,7 +187,21 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     public func collectionView(_ collectionView: UICollectionView, didSelectItemAt indexPath: IndexPath) {
         collectionView.deselectItem(at: indexPath, animated: true)
-        guard let id = dataSource.itemIdentifier(for: indexPath), let row = rows[id] else { return }
+        guard let id = dataSource.itemIdentifier(for: indexPath) else { return }
+        if let start = startingRows[id] {
+            switch start.state {
+            case .refused: editAndRetry(id)
+            case .started(let session):
+                if let open = openScreen(of: session.lowercased()) {
+                    _ = reveal(open)
+                } else if let newSessions {
+                    navigationController?.pushViewController(newSessions.open(session, start.request), animated: true)
+                }
+            case .starting: break
+            }
+            return
+        }
+        guard let row = rows[id] else { return }
         navigationController?.pushViewController(open(row), animated: true)
     }
 
@@ -191,8 +225,11 @@ public final class SessionListViewController: UIViewController, UICollectionView
     /// The screen the model calls for now.
     func screen() -> Screen {
         guard model.primed || model.listing != nil else { return Screen(rows: [], status: .priming) }
+        let listed = Set(model.listing?.sessions.map(\.id) ?? [])
+        // A started session's row gives way to the session's own once listed.
+        let starting = (newSessions?.starting.rows ?? []).filter { if case .started(let id) = $0.state { !listed.contains(id) } else { true } }
         guard let listing = model.listing else {
-            return Screen(rows: [], status: model.failure.map { .failed($0.sentence + " Pull down to try again.") } ?? .loading)
+            return Screen(rows: [], status: model.failure.map { .failed($0.sentence + " Pull down to try again.") } ?? .loading, starting: starting)
         }
         let trusted = model.liveTrusted
         let rows = listing.sessions.map { session in
@@ -202,7 +239,7 @@ public final class SessionListViewController: UIViewController, UICollectionView
             ? "\(listing.unreadable) session\(listing.unreadable == 1 ? "" : "s") can't be opened on this iPhone."
             : nil
         let stale = model.failure.map { "\($0.sentence) This is the list as last read; no session shows as live until it's read again." }
-        return Screen(rows: rows, status: rows.isEmpty && unreadable == nil ? .empty : .listed, unreadable: unreadable, stale: stale)
+        return Screen(rows: rows, status: rows.isEmpty && unreadable == nil && starting.isEmpty ? .empty : .listed, starting: starting, unreadable: unreadable, stale: stale)
     }
 
     /// Applies `screen`: the first listing without animation (the kept
@@ -211,7 +248,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
     private func apply(_ screen: Screen, animated: Bool) {
         if screen.status == .priming { return }
         let previous = rows
+        let previousStarts = startingRows
         rows = Dictionary(screen.rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        startingRows = Dictionary(screen.starting.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         // Set before the layout reads it: whether there is a footer.
         let lines = [screen.stale, screen.unreadable].compactMap { $0 }
         let footerChanged = lines != footerLines
@@ -219,8 +258,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
         var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
         snapshot.appendSections([0])
-        snapshot.appendItems(screen.rows.map(\.id))
+        snapshot.appendItems(screen.starting.map(\.id) + screen.rows.map(\.id))
         snapshot.reconfigureItems(screen.rows.filter { row in previous[row.id].map { $0 != row } ?? false }.map(\.id))
+        snapshot.reconfigureItems(screen.starting.filter { start in previousStarts[start.id].map { $0 != start } ?? false }.map(\.id))
         if animated {
             UIView.animate(withDuration: 0.15, delay: 0, options: [.allowUserInteraction, .beginFromCurrentState]) {
                 self.dataSource.apply(snapshot, animatingDifferences: true)
@@ -279,6 +319,87 @@ public final class SessionListViewController: UIViewController, UICollectionView
         }
     }
 
+    // MARK: Starting a session (ticket 134)
+
+    /// The new-session flow, in a sheet; for Edit and retry, filled in
+    /// from the refused row `retrying`, which its Start replaces.
+    func newSession(retrying: StartingRow? = nil) {
+        guard let newSessions, presentedViewController == nil else { return }
+        let starting = newSessions.starting
+        let flow = NewSessionFlow.make(source: newSessions.source, prefill: retrying?.request) { request in
+            starting.start(request, replacing: retrying?.id)
+        }
+        present(flow, animated: true)
+    }
+
+    /// The host started `session`: its row gives way to the session's, and
+    /// its transcript opens live, unless the person has gone elsewhere.
+    private func started(_ session: String, _ request: StartRequest) {
+        // Automatic sync takes it up at its first turn: read until it's
+        // listed, for up to 10 s, rather than wait for the next timed read.
+        let model = model
+        let starting = newSessions?.starting
+        Task {
+            let deadline = Date.now.addingTimeInterval(10)
+            repeat {
+                await model.refresh()
+                if model.listing?.sessions.contains(where: { $0.id == session }) == true { break }
+                try? await Task.sleep(for: .milliseconds(500))
+            } while Date.now < deadline
+            starting?.listed(session)
+        }
+        guard let newSessions, let navigation = navigationController, navigation.topViewController === self, presentedViewController == nil else { return }
+        navigation.pushViewController(newSessions.open(session, request), animated: true)
+    }
+
+    /// The refused start `id`'s flow opened again, filled in; Start sends
+    /// it as a new command, under a new id.
+    func editAndRetry(_ id: String) {
+        guard let newSessions, presentedViewController == nil, let request = newSessions.starting.refused(id) else { return }
+        newSession(retrying: StartingRow(request: request, state: .refused("")))
+    }
+
+    private func configure(_ cell: UICollectionViewListCell, starting start: StartingRow) {
+        var content = UIListContentConfiguration.subtitleCell()
+        let host = SafeText.clean(start.request.hostName)
+        let place = NewSessionText.homeAsTilde(SafeText.clean(start.request.cwd))
+        content.secondaryTextProperties.color = .secondaryLabel
+        switch start.state {
+        case .starting:
+            content.text = "starting on \(host)…"
+            content.secondaryText = place
+            let spinner = UIActivityIndicatorView(style: .medium)
+            spinner.startAnimating()
+            cell.accessories = [.customView(configuration: .init(customView: spinner, placement: .trailing()))]
+            cell.accessibilityLabel = "starting on \(host), \(place)"
+            cell.accessibilityCustomActions = nil
+        case .started:
+            content.text = "started on \(host)"
+            content.secondaryText = place
+            cell.accessories = [.disclosureIndicator()]
+            cell.accessibilityLabel = "started on \(host), \(place)"
+            cell.accessibilityCustomActions = nil
+        case .refused(let message):
+            content.text = message
+            content.textProperties.numberOfLines = 0
+            content.secondaryText = "\(host) · \(place) · didn't start"
+            let retry = UIButton(configuration: .borderless(), primaryAction: UIAction(title: "Edit and retry") { [weak self] _ in
+                self?.editAndRetry(start.id)
+            })
+            retry.accessibilityIdentifier = "starting-retry"
+            cell.accessories = [.customView(configuration: .init(customView: retry, placement: .trailing()))]
+            cell.accessibilityLabel = "\(message), \(host), didn't start"
+            cell.accessibilityCustomActions = [UIAccessibilityCustomAction(name: "Edit and retry") { [weak self] _ in
+                self?.editAndRetry(start.id)
+                return true
+            }]
+        }
+        cell.contentConfiguration = content
+        cell.accessibilityIdentifier = "starting-\(start.request.id)"
+        cell.isAccessibilityElement = true
+        cell.accessibilityTraits = .button
+    }
+
     private static func configure(_ cell: UICollectionViewListCell, with row: SessionRow) {
         var content = UIListContentConfiguration.subtitleCell()
         content.text = row.title
@@ -295,6 +416,7 @@ public final class SessionListViewController: UIViewController, UICollectionView
         }
         cell.contentConfiguration = content
         cell.accessories = [.disclosureIndicator()]
+        cell.accessibilityCustomActions = nil
         cell.accessibilityIdentifier = "session-\(row.id)"
         // One element for VoiceOver: the title, the place, and live as a word.
         cell.isAccessibilityElement = true
