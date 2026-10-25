@@ -40,6 +40,16 @@ public final class FrameDriver {
 
     nonisolated static let signposter = OSSignposter(subsystem: "com.krowk.app", category: "transcript")
 
+    #if DEBUG
+    /// A deliberate stall, for proving the stall budget bites (R-PERF-7,
+    /// ticket 127): a DEBUG build launched with `KROWK_TEST_STALL_MS`
+    /// sleeps that long on the main thread in every frame that applies
+    /// something. CI runs StallBudgetTests with 250 and passes only if
+    /// they fail. Not in a Release build (scripts/approvals.sh).
+    nonisolated static let testStall: TimeInterval? = ProcessInfo.processInfo.environment["KROWK_TEST_STALL_MS"]
+        .flatMap(Double.init).flatMap { $0 > 0 ? $0 / 1000 : nil }
+    #endif
+
     let session: any LiveSession
     let model: TranscriptModel
     /// The display link, once the screen has one.
@@ -97,6 +107,9 @@ public final class FrameDriver {
         quietSince = nil
         let signposter = Self.signposter
         let interval = signposter.beginInterval("krowk.frame.apply", id: signposter.makeSignpostID(), "\(taken.count) updates")
+        #if DEBUG
+        if let stall = Self.testStall { Thread.sleep(forTimeInterval: stall) }
+        #endif
         let done = model.apply(frame: taken)
         applied?(done)
         signposter.endInterval("krowk.frame.apply", interval)

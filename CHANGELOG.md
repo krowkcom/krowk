@@ -24,6 +24,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ids of its sessions, is sealed under your user key and bound to the device
   it is about. The registry sees only its length, padded to whole
   kilobytes. Nothing publishes one yet.
+- **The iPhone app's size, memory and main-thread stalls are held in CI.**
+  A pull request that grows the Release app or its executable past its
+  ceiling, scrolls a 10,000-item session over its memory ceiling, or
+  stalls the main thread for more than twice a stored baseline while a
+  burst streams in fails the iOS workflow; the ceilings live in
+  `apps/ios/budgets.json`, and raising one is a commit with a new
+  measurement. Launch and latency are recorded on every run as a trend,
+  not a gate. The new stall gate found one: an answer whose last words
+  arrived in the same frame as its end was drawn again whole, a
+  quarter-second freeze on the simulator; it now keeps the text it
+  streamed. Nothing changes for CLI users.
 - **An iPhone you remove from your devices says so, and can be reset.**
   After `krowk devices remove <iphone>` (or a list started over with
   `krowk sync init --start-over`), the app replaces its screens with "This

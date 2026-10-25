@@ -144,7 +144,8 @@ struct FrameApplyTests {
         #expect(cell.text.blocks.map(\.view) == blocks.map(\.view))
         #expect(cell.text.drawnText == whole)
 
-        // A completion that differs (a gap lost some): one view, whole.
+        // A completion that differs (a gap lost some of the middle): one
+        // view, whole.
         let (session2, screen2, window2, cell2) = try await streaming("Start\n")
         defer { window2.isHidden = true }
         for _ in 0..<40 {
@@ -152,12 +153,33 @@ struct FrameApplyTests {
             screen2.frame()
         }
         #expect(!cell2.text.blocks.isEmpty)
-        let other = whole + " and an end the stream lost"
+        let other = "Start\n" + "a line the stream lost\n" + String(repeating: line, count: 40) + "and more"
         session2.bring([.logged([Self.event("e10", .assistantText(item: "a2", text: other), parent: "e6")])])
         screen2.frame()
         try await waitFor { cell2.streamed == nil }
         #expect(cell2.text.blocks.isEmpty)
         #expect(cell2.textView.view.text == other)
+    }
+
+    @Test("R-LAG-7, R-PERF-7: an answer whose last deltas come in the frame that completes it keeps its blocks: the new text appended, nothing drawn again in one view")
+    func lastDeltasWithTheCompletion() async throws {
+        let (session, screen, window, cell) = try await streaming("Start\n")
+        defer { window.isHidden = true }
+        let line = String(repeating: "word ", count: 20) + "\n"
+        for _ in 0..<40 {
+            session.bring([Self.delta("a2", line)])
+            screen.frame()
+        }
+        let blocks = cell.text.blocks
+        #expect(blocks.count >= 2)
+        let whole = "Start\n" + String(repeating: line, count: 42) + "the end"
+        // One frame: the last deltas, then the logged completion.
+        session.bring([Self.delta("a2", line), Self.delta("a2", line), Self.delta("a2", "the end"),
+                       .logged([Self.event("e10", .assistantText(item: "a2", text: whole), parent: "e6")])])
+        screen.frame()
+        try await waitFor { cell.streamed == nil }
+        #expect(Array(cell.text.blocks.map(\.view).prefix(blocks.count)) == blocks.map(\.view), "drawn again in one view")
+        #expect(cell.text.drawnText == whole)
     }
 
     @Test("R-LAG-7: an unbroken run (no space, no line break) is cut into blocks too, between two characters, nothing lost")
