@@ -62,6 +62,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ids of its sessions, is sealed under your user key and bound to the device
   it is about. The registry sees only its length, padded to whole
   kilobytes. Nothing publishes one yet.
+- **The iPhone app keeps your session list and recent transcripts on the
+  phone.** As sessions sync, the app writes the index of every listed
+  session, and the logged transcript of the 20 most recently updated, to
+  an SQLite file in its container (`krowk-cache.sqlite`): readable only
+  while the phone is unlocked, never in a backup, holding no key.
+  Resetting a removed phone, signing out and reinstalling delete it. The
+  app doesn't draw from it yet; a later change opens on it. krowk-ffi
+  gains `encode_log_event`, a log event as its JSON text. Nothing changes
+  for CLI users.
 - **The iPhone app measures its own launch, return, tap and keystroke
   times.** Every build, the App Store's included, logs one line per
   measurement (`budget launch.cachedList 312.4 ms`) and a matching

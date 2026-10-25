@@ -80,16 +80,30 @@ struct DeviceGoneTests {
         #expect(source.calls.count == reads, "read again after the phone was found gone")
     }
 
-    @Test("R-E2E-3: the reset clears the push token first, then what push kept, then every key")
+    @Test("R-E2E-3, R-IOS-1: the reset clears the push token first, then what push kept, then every key, then the cache")
     func resetOrder() async throws {
         let steps = Box<[String]>([])
         let reset = PhoneReset(
             clearPushToken: { steps.value.append("clear the registry's token") },
             forgetPush: { steps.value.append("forget push") },
-            forgetKeys: { steps.value.append("forget the keys") }
+            forgetKeys: { steps.value.append("forget the keys") },
+            forgetCache: { steps.value.append("forget the cache") }
         )
         try await reset.run()
-        #expect(steps.value == ["clear the registry's token", "forget push", "forget the keys"])
+        #expect(steps.value == ["clear the registry's token", "forget push", "forget the keys", "forget the cache"])
+    }
+
+    @Test("R-IOS-1: a Keychain that refuses still leaves no cache behind")
+    func resetForgetsTheCacheWhenTheKeysFail() async throws {
+        struct Locked: Error {}
+        let steps = Box<[String]>([])
+        let reset = PhoneReset(
+            clearPushToken: {}, forgetPush: {},
+            forgetKeys: { throw Locked() },
+            forgetCache: { steps.value.append("forget the cache") }
+        )
+        await #expect(throws: Locked.self) { try await reset.run() }
+        #expect(steps.value == ["forget the cache"])
     }
 
     @Test("R-E2E-3: a push token the registry won't clear (it refuses a removed phone's key) doesn't stop the reset, and is logged")

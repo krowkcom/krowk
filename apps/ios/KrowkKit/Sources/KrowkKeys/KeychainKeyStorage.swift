@@ -71,13 +71,16 @@ public final class KeychainKeyStorage: KeyStorage {
     ///
     /// `service` and `installMarker` are for tests, which keep a fixture's
     /// keys under a service of their own; the app keeps the defaults.
+    /// `purging` names files an earlier install may have left beside the
+    /// marker (the session cache, ticket 129), deleted in the same purge.
     public init(
-        service: String = KeychainKeyStorage.appService, installMarker: URL = KeychainKeyStorage.installMarker
+        service: String = KeychainKeyStorage.appService, installMarker: URL = KeychainKeyStorage.installMarker,
+        purging: [URL] = []
     ) throws(KrowkError) {
         let keychain = Keychain(service: service)
         items = keychain
         wrappingKey = try opening.withLock { _ throws(KrowkError) -> any WrappingKey in
-            try Self.purgeIfFirstLaunch(installMarker, keychain)
+            try Self.purgeIfFirstLaunch(installMarker, keychain, files: purging)
             do throws(WrappingKeyFailure) {
                 return try WrappingKeys.loadOrCreate(keychain)
             } catch .noSecureEnclave {
@@ -90,15 +93,25 @@ public final class KeychainKeyStorage: KeyStorage {
         }
     }
 
-    /// Deletes every item under the service (`com.krowk.keys`) unless the
-    /// marker says this install already did, then writes the marker. The purge comes first:
-    /// a launch that dies between the two purges again, which loses
-    /// nothing, since no key was made in between.
-    private static func purgeIfFirstLaunch(_ marker: URL, _ keychain: Keychain) throws(KrowkError) {
+    /// Deletes every item under the service (`com.krowk.keys`), and
+    /// `files`, unless the marker says this install already did, then
+    /// writes the marker. The purge comes first: a launch that dies
+    /// between the two purges again, which loses nothing, since no key was
+    /// made in between.
+    private static func purgeIfFirstLaunch(_ marker: URL, _ keychain: Keychain, files: [URL]) throws(KrowkError) {
         guard !FileManager.default.fileExists(atPath: marker.path(percentEncoded: false)) else { return }
         do throws(KeychainFailure) { try keychain.removeAll() } catch {
             log.error("first-launch purge failed: OSStatus \(error.status, privacy: .public)")
             throw .Internal(detail: error.description)
+        }
+        for file in files {
+            do {
+                try FileManager.default.removeItem(at: file)
+            } catch CocoaError.fileNoSuchFile {
+            } catch {
+                log.error("first-launch purge failed: a file an earlier install left was not deleted")
+                throw .Internal(detail: "could not delete what an earlier install left: \(error.localizedDescription)")
+            }
         }
         do {
             try FileManager.default.createDirectory(at: marker.deletingLastPathComponent(), withIntermediateDirectories: true)

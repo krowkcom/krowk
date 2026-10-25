@@ -15,14 +15,15 @@ apps/ios/
   KrowkKit/          local package: views and models (KrowkKit), the Keychain key
                      storage (KrowkKeys), sign-in, pairing, the session
                      list, the relay connection and the transcript's
-                     events over the bindings (KrowkAccount), and
+                     events over the bindings (KrowkAccount), the
+                     on-device session cache (KrowkCache), and
                      KrowkKit's tests
   KrowkCore/         local package: the Rust core's XCFramework and bindings (make ios-core)
   AppTests/          unit tests hosted in the app: KeychainKeyStorageTests, SignInTests,
                      PairingTests, SessionListTests, RelayConnectionTests,
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
-                     NotificationRoutingTests, RemovalTests, and the TestFleet
+                     NotificationRoutingTests, RemovalTests, CacheTests, and the TestFleet
                      fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
                      PairingUITests, NotificationUITests, RemovalUITests
@@ -328,6 +329,17 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
 - A tap opens the session's transcript (below), followed live through the
   relay while it's open. The list never offers to take or
   host a session (R-HAND-4).
+- **The cache** (ticket 129, R-IOS-1). `KrowkCache.SessionCache`, an actor
+  on a queue of its own over the system's SQLite, keeps
+  `Library/Application Support/krowk-cache.sqlite` (WAL, `.complete` file
+  protection, excluded from backups; a `user_version` this build doesn't
+  know starts it empty). Each listing replaces its index, and the
+  transcripts of all but the 20 most recently updated sessions go; each
+  open session screen appends its logged events (what it opened on, each
+  catch-up, each logged line, never a live delta), batched at most once a
+  second, as krowk-ffi's `encodeLogEvent` JSON. A reset, a sign-out and
+  the first launch after an install delete it. Nothing draws from it yet
+  (ticket 131).
 
 ## Removed from your devices
 

@@ -143,12 +143,14 @@ public final class StandingWatch {
 /// failure here is logged and the reset goes on), then what this phone
 /// keeps about push forgotten and iOS's registration dropped, then every
 /// key forgotten — the device's keys, the user keys, the device list, the
-/// API key and the Secure Enclave wrapping key that sealed them — so the
-/// next launch is a fresh install's: sign-in, and a new device to pair.
+/// API key and the Secure Enclave wrapping key that sealed them — then the
+/// cache of sessions and transcripts deleted (ticket 129), so the next
+/// launch is a fresh install's: sign-in, and a new device to pair.
 public struct PhoneReset: Sendable {
     private let clearPushToken: @Sendable () async throws -> Void
     private let forgetPush: @MainActor @Sendable () -> Void
     private let forgetKeys: @Sendable () throws -> Void
+    private let forgetCache: @Sendable () async -> Void
     private let log: @Sendable (String) -> Void
 
     /// - Parameters:
@@ -156,21 +158,26 @@ public struct PhoneReset: Sendable {
     ///   - forgetPush: `PushRegistration.signedOut` and iOS's
     ///     `unregisterForRemoteNotifications`.
     ///   - forgetKeys: every Keychain item the app keeps, deleted; blocking.
+    ///   - forgetCache: `SessionCache.forgetAll`, the file deleted.
     ///   - log: a failure's kind and the core's words; never a key.
     public init(
         clearPushToken: @escaping @Sendable () async throws -> Void,
         forgetPush: @escaping @MainActor @Sendable () -> Void,
         forgetKeys: @escaping @Sendable () throws -> Void,
+        forgetCache: @escaping @Sendable () async -> Void = {},
         log: @escaping @Sendable (String) -> Void = { _ in }
     ) {
         self.clearPushToken = clearPushToken
         self.forgetPush = forgetPush
         self.forgetKeys = forgetKeys
+        self.forgetCache = forgetCache
         self.log = log
     }
 
     /// Runs the reset. Throws only when the keys couldn't be forgotten
-    /// (the Keychain refused), and then it may be run again.
+    /// (the Keychain refused), and then it may be run again. The cache
+    /// goes after the keys either way: decrypted content never outlasts
+    /// a reset that was asked for.
     public func run() async throws {
         do {
             try await clearPushToken()
@@ -180,6 +187,7 @@ public struct PhoneReset: Sendable {
         await forgetPush()
         let forgetKeys = forgetKeys
         let forgotten = await blocking { Result { try forgetKeys() } }
+        await forgetCache()
         try forgotten.get()
     }
 }

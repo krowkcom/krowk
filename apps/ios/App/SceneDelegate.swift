@@ -1,5 +1,6 @@
 import Krowk
 import KrowkAccount
+import KrowkCache
 import KrowkKeys
 import KrowkKit
 import UIKit
@@ -17,6 +18,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// while the app hosts unit tests: nil means no keys, never a reason
     /// to keep them anywhere else.
     private(set) static var keys: KeychainKeyStorage?
+
+    /// The on-device cache of the person's sessions (ticket 129), written
+    /// as they sync: each listing's index, each open session's logged
+    /// events. Forgotten on reset, sign-out and the first launch after an
+    /// install; a forgotten one refuses every call, and a fresh one takes
+    /// its place.
+    private static var cache = SessionCache()
 
     /// Whether the window shows a screen of the app's, not why it can't.
     private var opened = false
@@ -115,7 +123,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                     try? FileManager.default.removeItem(at: KeychainKeyStorage.installMarker)
                 }
                 #endif
-                Self.keys = try KeychainKeyStorage()
+                // The first launch after an install starts with no cache.
+                Self.keys = try KeychainKeyStorage(purging: SessionCache.files())
             }
             root = try screen()
             opened = true
@@ -143,6 +152,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // phone registers afresh.
             Self.push = nil
             PushRegistration.signedOut()
+            // So is the cache: decrypted content outlasts no account.
+            Task { await Self.forgetCache() }
             return signIn(api: api, keys: keys)
         case .signedIn(let workspace): return pairing(api: api, keys: keys, workspace: workspace)
         case .paired:
@@ -162,7 +173,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // This list's own watch, never a later pairing's: a check this
         // account makes late reports to the watch it was made with.
         let ref = WatchRef()
-        let source = RegistrySessions(api: api, storage: keys, onGone: { gone in
+        let cache = Self.cache
+        let source = RegistrySessions(api: api, storage: keys, cache: cache, onGone: { gone in
             Task { @MainActor in ref.watch?.report(gone) }
         })
         let watch = StandingWatch(check: { source.standing() }) { [weak self] gone in
@@ -189,9 +201,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
             // Its approvals rise in a sheet over the transcript (R-PERM-2).
             let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
+            // Its logged events are kept as they come (ticket 129).
             let live = RelayConnection(
                 opening: { try source.openSession(id: row.id, known: known) }, approvals: approvals,
-                standing: { source.standing() })
+                standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
             let screen = TranscriptViewController(row: row, session: live, approvals: approvals)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
@@ -236,6 +249,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 Task { try? await UNUserNotificationCenter.current().setBadgeCount(0) }
             },
             forgetKeys: { try keys.forgetAll() },
+            forgetCache: { await Self.forgetCache() },
             // A failure's kind and the core's words; never a key.
             log: { log.error("\($0, privacy: .public)") }
         )
@@ -305,6 +319,18 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         )
         return PairingScreens.pairing(model, workspace: workspace)
+    }
+
+    /// Deletes the cache's file; a fresh cache takes its place, and what
+    /// still holds the old one (a session screen's writes) is refused.
+    private static func forgetCache() async {
+        let forgotten = cache
+        cache = SessionCache()
+        do {
+            try await forgotten.forgetAll()
+        } catch {
+            Logger(subsystem: "com.krowk.app", category: "reset").error("the cache was not deleted: \(error.description, privacy: .public)")
+        }
     }
 
     /// The push registration, made on first use, signing through the

@@ -106,21 +106,25 @@ public actor RelayConnection: LiveSession {
     /// Whether the phone is gone from the person's devices (ticket 117),
     /// asked when the registry refuses a relay ticket: blocking.
     private let standing: (@Sendable () -> DeviceGone?)?
+    /// Where the session's logged events are kept (ticket 129).
+    private nonisolated let cache: TranscriptCacheWriter?
 
     /// `opening` opens the session to follow (`Account.openSession`), and
     /// blocks; it runs once, on a thread of its own, as `follow` starts.
     /// `standing` (`RegistrySessions.standing`) is asked, off the queue,
     /// when the registry refuses a relay ticket: a phone gone from the
     /// person's devices stops here, joining nothing more, rather than ask
-    /// again on the backoff.
+    /// again on the backoff. `cache` keeps every logged event the viewer
+    /// shows: what the session opened on, each catch-up, each logged line.
     public init(
         opening: @escaping @Sendable () throws -> OpenedSession, approvals: any ApprovalSink = NoApprovals(),
-        standing: (@Sendable () -> DeviceGone?)? = nil
+        standing: (@Sendable () -> DeviceGone?)? = nil, cache: TranscriptCacheWriter? = nil
     ) {
         self.queue = DispatchSerialQueue(label: "krowk.relay")
         self.open = opening
         self.approvals = approvals
         self.standing = standing
+        self.cache = cache
     }
 
     /// One never stopped (its screen let go of it) still closes its socket.
@@ -470,6 +474,7 @@ public actor RelayConnection: LiveSession {
                     default: break
                     }
                 }
+                cache?.add(updates)
                 mailbox.post(posting(updates))
             case .readChunks:
                 offQueue(queue) { viewer.readChunks() } then: { me, read in

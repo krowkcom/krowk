@@ -198,6 +198,22 @@ extension HostedKeychain {
             #expect(FileManager.default.fileExists(atPath: reinstalled.path(percentEncoded: false)))
         }
 
+        @Test("R-IOS-1, R-IOS-8: the first launch after an install deletes the session cache an earlier one left, in the same purge; a later launch keeps it")
+        func firstLaunchPurgesTheCache() throws {
+            let cache = URL.temporaryDirectory.appending(path: "krowk-cache-\(UUID().uuidString).sqlite")
+            let side = URL(filePath: cache.path(percentEncoded: false) + "-wal")
+            for file in [cache, side] { try Data("left".utf8).write(to: file) }
+            let reinstalled = Self.freshMarker()
+            _ = try KeychainKeyStorage(installMarker: reinstalled, purging: [cache, side])
+            #expect(!FileManager.default.fileExists(atPath: cache.path(percentEncoded: false)))
+            #expect(!FileManager.default.fileExists(atPath: side.path(percentEncoded: false)))
+
+            try Data("kept".utf8).write(to: cache)
+            defer { try? FileManager.default.removeItem(at: cache) }
+            _ = try KeychainKeyStorage(installMarker: reinstalled, purging: [cache, side])
+            #expect(FileManager.default.fileExists(atPath: cache.path(percentEncoded: false)))
+        }
+
         @Test("R-IOS-8: slots left without their wrapping key, which can never open, are cleared when a new key is made")
         func orphanedSlotsAreCleared() throws {
             try storage.write(slot: "device.json", bytes: Self.random(64))
