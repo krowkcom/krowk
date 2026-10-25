@@ -1,9 +1,10 @@
 //! The commands another of the person's devices sends this host (R-HOST-4;
 //! engineering/harness.md → Sync → Starting a session from another device),
 //! delivered in each presence refresh's answer (`announce`) until the host
-//! answers. Today only `start`: a session in a directory this host
-//! announced, on a model it has ready, in the host's own default
-//! permission mode for that directory, whatever the command says.
+//! answers: `start`, a session in a directory this host announced, on a
+//! model it has ready, in the host's own default permission mode for that
+//! directory, whatever the command says; and `take`, a session another host
+//! holds moved here (R-HAND-1, R-HAND-4).
 //!
 //! **Once.** The last `KEEP` ids answered are kept with the sealed answer
 //! given, as the bridge keeps its command ids: a delivered id already
@@ -28,6 +29,16 @@
 //! approvals (or `HOLD` has passed, or the turn is over): a request asked
 //! with no answering client following is denied at once. Then it goes, and
 //! the turn runs on in the daemon.
+//!
+//! **Take.** The directory checked as for a start, then `krowk sync take
+//! <session>` run there (`Options::take`), detached, as the person would run
+//! it on this machine: this host is still the one that asks for the session,
+//! and the take's own checks — the instance by name and ready, a backend's
+//! repository trusted, the clone having the commit — refuse before anything
+//! moves. Its output is read until it says the session moved here
+//! (`moved_line`), when the answer is `taken` and the take is left running,
+//! hosting the session as it does on a terminal; or until it ends, when its
+//! last line, the refusal, is the answer. One at a time: another is `busy`.
 
 use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
@@ -54,6 +65,19 @@ const HOLD: Duration = Duration::from_secs(60);
 /// How often a held client asks the daemon whether the bridge is there.
 const HOLD_EVERY: Duration = Duration::from_millis(200);
 
+/// How long a take is waited for: its own wait for the session's host to
+/// hand it over (five minutes), and a minute for the rest.
+pub const TAKE_WAIT: Duration = Duration::from_secs(6 * 60);
+
+/// How often a take's output is read.
+const TAKE_EVERY: Duration = Duration::from_millis(200);
+
+/// The start of the line `krowk sync take` says once the session moved
+/// here, and before it hosts it: how the take's watcher knows.
+pub fn moved_line(session: &str) -> String {
+    format!("krowk: session {session} moved here")
+}
+
 /// What is kept of a command answered.
 enum Kept {
     /// Answered, not yet sealed: the keys were not to hand.
@@ -76,6 +100,8 @@ struct State {
     unopened: HashMap<String, Instant>,
     /// Ids a thread is working on, or sending the answer to, now.
     working: HashSet<String>,
+    /// A take runs.
+    taking: bool,
 }
 
 impl State {
@@ -173,9 +199,9 @@ impl Commands {
                             told.set(true);
                             finish(&me2, &c2, &id2, from, answer);
                         };
-                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&c2, &host, command, &tell)));
+                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, command, &tell)));
                         if ran.is_err() && !told.get() {
-                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's start panicked — see host.log on it, and send the start again"))));
+                            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's command panicked — see host.log on it, and send it again"))));
                         }
                         // However it ended, the id is no longer worked on.
                         me2.lock().working.remove(&id2);
@@ -195,7 +221,8 @@ impl Commands {
 fn finish(me: &Arc<Commands>, c: &Config, id: &str, from: DeviceId, answer: HostAnswer) {
     match &answer {
         HostAnswer::Started { session_id } => eprintln!("krowk: device {from} started session {session_id} on this machine"),
-        HostAnswer::Refused { code, message } => eprintln!("krowk: device {from} asked this machine to start a session, refused: {} ({})", message.escape_debug(), code.escape_debug()),
+        HostAnswer::Taken { session_id } => eprintln!("krowk: device {from} moved session {session_id} to this machine"),
+        HostAnswer::Refused { code, message } => eprintln!("krowk: device {from} asked something of this machine, refused: {} ({})", message.escape_debug(), code.escape_debug()),
     }
     let a = c.announce.as_ref().and_then(|o| (o.keys)(false).ok());
     let sealed = {
@@ -230,11 +257,12 @@ pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> 
     o.trusted.directories().into_iter().filter(|d| policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
 }
 
-/// A start, run: its answer told to `tell` once known, then held for the
-/// bridge (`hold`).
-fn run(c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
+/// A command, run: a start's answer told to `tell` once known, then held
+/// for the bridge (`hold`); a take's once it moved or was refused.
+fn run(me: &Commands, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
-    let HostCommand::Start { cwd, model, prompt } = command;
+    let (HostCommand::Start { cwd, .. } | HostCommand::Take { cwd, .. }) = &command;
+    let cwd = cwd.clone();
     let policy = match (c.policy)() {
         Ok(p) if p.on => p,
         Ok(_) => return tell(HostAnswer::refused("sync_off", format!("automatic sync is off on {host} — turn it on there to start sessions from your other devices"))),
@@ -245,6 +273,11 @@ fn run(c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) 
         let pick = if offered.is_empty() { "it offers none yet".to_string() } else { format!("pick one of: {}", offered.join(", ")) };
         return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: on {host}, run krowk there once and trust it, or {pick}")));
     }
+    let (model, prompt) = match command {
+        HostCommand::Start { model, prompt, .. } => (model, prompt),
+        HostCommand::Take { session_id, .. } if crate::log::valid_id(&session_id) => return take(me, o, host, &session_id, &cwd, tell),
+        HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
+    };
     // The host's own default for the directory, never what the command
     // carried, and never a mode that asks nobody.
     let mode = match (o.mode_for)(Path::new(&cwd)) {
@@ -308,6 +341,62 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
     // queues this client's lines meanwhile.
     tell(HostAnswer::Started { session_id: session.clone() });
     hold(&d, &session, &mut rx, run).await;
+}
+
+/// A take, run (R-HAND-1, R-HAND-4): `krowk sync take` started in `cwd`
+/// and watched until it says the session moved here, or ends refused, or
+/// `TAKE_WAIT` has passed.
+fn take(me: &Commands, o: &Options, host: &str, session: &str, cwd: &str, tell: &dyn Fn(HostAnswer)) {
+    let Some(up) = &o.take else { return tell(HostAnswer::refused("take_unavailable", format!("{host} doesn't take sessions up from your other devices — upgrade krowk there"))) };
+    if std::mem::replace(&mut me.lock().taking, true) {
+        return tell(HostAnswer::refused("busy", format!("{host} is taking another session up — try again once it has")));
+    }
+    struct Taking<'a>(&'a Commands);
+    impl Drop for Taking<'_> {
+        fn drop(&mut self) {
+            self.0.lock().taking = false;
+        }
+    }
+    let _taking = Taking(me);
+    let (mut child, log) = match up(session, Path::new(cwd)) {
+        Ok(started) => started,
+        Err(e) => return tell(HostAnswer::refused("host_failed", format!("{host} couldn't run krowk sync take: {e}"))),
+    };
+    let moved = moved_line(session);
+    let read = || std::fs::read_to_string(&log).unwrap_or_default();
+    let has_moved = |out: &str| out.lines().any(|l| l.starts_with(&moved));
+    let until = Instant::now() + TAKE_WAIT;
+    loop {
+        if has_moved(&read()) {
+            // It hosts the session now: left to run, and reaped once it ends.
+            let _ = std::thread::Builder::new().name("krowk-take".into()).spawn(move || child.wait());
+            return tell(HostAnswer::Taken { session_id: session.to_string() });
+        }
+        if let Ok(Some(status)) = child.try_wait() {
+            let out = read();
+            if has_moved(&out) {
+                return tell(HostAnswer::Taken { session_id: session.to_string() });
+            }
+            return tell(HostAnswer::refused("take_refused", refusal(&out).unwrap_or_else(|| format!("krowk sync take on {host} ended ({status}) and said nothing — the session stays on its host"))));
+        }
+        if Instant::now() >= until {
+            let _ = child.kill();
+            let _ = child.wait();
+            return tell(HostAnswer::refused("take_refused", format!("krowk sync take on {host} didn't finish within {} minutes and was stopped — see {} there", TAKE_WAIT.as_secs() / 60, log.display())));
+        }
+        std::thread::sleep(TAKE_EVERY);
+    }
+}
+
+/// What a take that ended refused with: the fix of the error it wrote last,
+/// as JSON (`{"ok": false, "error": {"fix": …}}`, as krowk writes one when
+/// its output is no terminal); else its last line.
+fn refusal(out: &str) -> Option<String> {
+    let fix = out.match_indices('{').filter(|(i, _)| *i == 0 || out[..*i].ends_with('\n')).map(|(i, _)| i).last().and_then(|i| {
+        let v: serde_json::Value = serde_json::from_str(out[i..].trim()).ok()?;
+        v["error"]["fix"].as_str().or_else(|| v["error"]["message"].as_str()).map(String::from)
+    });
+    fix.or_else(|| out.lines().map(str::trim).rfind(|l| !l.is_empty()).map(|l| l.strip_prefix("krowk: ").unwrap_or(l).to_string()))
 }
 
 /// Stays, following the session, until another client answers its

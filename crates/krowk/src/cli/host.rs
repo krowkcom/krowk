@@ -194,8 +194,32 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             catalog: Box::new(move || std::fs::read(crate::pricing::cache_path(&env)?).ok()),
             trusted,
             mode_for,
+            take: take_up(ctx),
         }),
     }
+}
+
+/// How the daemon runs a take another device asks for (R-HAND-4): this
+/// very binary's `krowk sync take <session>` in the clone, detached, as the
+/// person would run it here, its output to `takes/<session>.log` under
+/// krowk's home, made afresh for each take. None when either can't be
+/// found: this host then takes none.
+fn take_up(ctx: &Ctx) -> Option<krowk_harness::sync::announce::TakeUp> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = krowk_api::home::dir(ctx.io.env).ok()?.join("takes");
+    Some(Box::new(move |session: &str, cwd: &std::path::Path| {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir).map_err(|e| format!("{} can't be made: {e}", dir.display()))?;
+        let log = dir.join(format!("{session}.log"));
+        // An earlier take's line that it moved is never read as this one's.
+        match std::fs::remove_file(&log) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("{} can't be replaced: {e}", log.display())),
+        }
+        let child = daemon::spawn_detached_in(&exe, &["sync", "take", session], cwd, &log)?;
+        Ok((child, log))
+    }))
 }
 
 /// `body` run with a context of its own, for a call off the command's own

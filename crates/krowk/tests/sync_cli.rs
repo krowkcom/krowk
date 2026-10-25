@@ -1283,3 +1283,108 @@ fn r_host_4_sync_new_offers_no_permission_mode() {
     let help = String::from_utf8_lossy(&help.stdout);
     assert!(help.contains("--host") && help.contains("--cwd") && help.contains("--model") && !help.lines().any(|l| l.trim_start().starts_with("--permission-mode")), "{help}");
 }
+
+/// `git args…` in `dir`, which must succeed.
+fn git(dir: &std::path::Path, args: &[&str]) {
+    let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "init.defaultBranch=main"]).args(args).current_dir(dir).env_remove("GIT_DIR").output().unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Kills every `krowk sync take <session>` still running: the take a host
+/// ran for a `take` command hosts the session until stopped, detached from
+/// the daemon that started it.
+struct Takes(String);
+
+impl Drop for Takes {
+    fn drop(&mut self) {
+        let want = format!("sync\0take\0{}\0", self.0);
+        for e in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+            let Ok(pid) = e.file_name().to_string_lossy().parse::<i32>() else { continue };
+            if std::fs::read(e.path().join("cmdline")).is_ok_and(|c| c.windows(want.len()).any(|w| w == want.as_bytes())) {
+                // SAFETY: a signal to a process this test started.
+                unsafe { libc::kill(pid, libc::SIGTERM) };
+            }
+        }
+    }
+}
+
+/// R-HAND-4, R-HAND-1, R-SYNC-2, R-CRED-1, R-HOST-4: C, a third device that
+/// never hosts (as the phone), moves A's session to B. A directory B does
+/// not offer is refused first, and nothing moves. Then a `take` into B's
+/// clone of the session's repository: B runs `krowk sync take` itself —
+/// its checks that the session can run there, its instance ready, first —
+/// and answers `taken`; the lease is B's, B's log has `session.moved`, and
+/// the next prompt, sent from C, runs on B.
+#[test]
+fn r_hand_4_a_third_device_moves_a_session_from_a_to_b() {
+    let w = World::new("take");
+    let a = w.machine("a");
+    let mut b = w.machine("b");
+    let c = w.machine("c");
+    // One repository with a commit, cloned to A and to B.
+    let origin = w.root.join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    git(&origin, &["init", "-q"]);
+    std::fs::write(origin.join("README.md"), "one\n").unwrap();
+    git(&origin, &["add", "README.md"]);
+    git(&origin, &["commit", "-q", "-m", "one"]);
+    for m in [&a, &b] {
+        std::fs::remove_dir_all(&m.repo).unwrap();
+        git(&w.root, &["clone", "-q", &origin.display().to_string(), &m.repo.display().to_string()]);
+    }
+    // B's host daemon kept up, offering its clone.
+    b.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    b.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
+    let _serve = Running::spawn(b.command(&["host", "serve"]));
+    let (_host_a, session) = hosted(&w, &a);
+    let _takes = Takes(session.clone());
+    let device = |m: &Machine| Keystore::new(&m.home.join(".krowk")).device().unwrap().unwrap().id();
+    let (a_id, b_id, c_id) = (device(&a), device(&b), device(&c));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !c.api.list_presences().unwrap_or_default().iter().any(|p| p.device == b_id.to_string() && p.online) {
+        assert!(Instant::now() < deadline, "B never announced itself: {}", std::fs::read_to_string(b.home.join(".krowk/host.log")).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(250));
+    }
+
+    // C sends B a take, and reads B's answer, as the phone does.
+    let ks = Keystore::new(&c.home.join(".krowk"));
+    let (keys, chain) = (ks.user_keys().unwrap().unwrap(), w.people.lock().unwrap().chain().clone());
+    let ask = |n: u32, cwd: &std::path::Path| {
+        let id = format!("0190f3c1-8a2b-4c4d-9e5f-{n:012x}");
+        let take = krowk_client::host_command::HostCommand::Take { session_id: session.clone(), cwd: cwd.display().to_string() };
+        let sealed = krowk_client::host_command::seal_command(&take, &id, &c_id, &b_id, &keys, chain.generation()).unwrap();
+        c.api.send_host_command(&b_id.to_string(), &id, &sealed).unwrap();
+        // B sees it at its next refresh, within 10 s, and the take waits on
+        // A's handoff: a loaded runner is given room for both.
+        let deadline = Instant::now() + Duration::from_secs(120);
+        loop {
+            if let Some(sealed) = c.api.host_command(&b_id.to_string(), &id).unwrap().answer {
+                return krowk_client::host_command::open_answer(&sealed, &id, &b_id, &c_id, &keys, &chain).unwrap();
+            }
+            assert!(Instant::now() < deadline, "B never answered: {}", std::fs::read_to_string(b.home.join(".krowk/host.log")).unwrap_or_default());
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    };
+    use krowk_client::host_command::HostAnswer;
+
+    let refused = ask(1, &b.home);
+    assert!(matches!(&refused, HostAnswer::Refused { code, .. } if code == "directory_not_offered"), "{refused:?}");
+    assert_eq!(a_lease(&c, &session), Some(a_id.to_string()), "nothing moved");
+
+    let taken = ask(2, &b.repo);
+    assert_eq!(taken, HostAnswer::Taken { session_id: session.clone() }, "B's take.log: {}", std::fs::read_to_string(b.home.join(format!(".krowk/takes/{session}.log"))).unwrap_or_default());
+    assert_eq!(a_lease(&c, &session), Some(b_id.to_string()), "the lease is B's (R-SYNC-2)");
+    let b_log = || std::fs::read_to_string(b.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
+    assert!(b_log().contains("\"session.moved\""), "B's log has session.moved: {}", b_log());
+
+    // The next prompt, from C, runs on B.
+    let mut view = Running::spawn(c.command(&["sync", "attach", &session, "--json"]));
+    view.heard_within("the host", true, Duration::from_secs(60), |v| v["type"] == "sync.host" && v["present"] == true);
+    view.type_line("hello from c on b");
+    let result = view.heard_within("the turn's end", true, Duration::from_secs(60), |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!(result["status"], "completed", "{result}");
+    assert!(b_log().contains("hello from c on b"), "the turn ran on B: {}", b_log());
+    let a_log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap_or_default();
+    assert!(!a_log.contains("hello from c on b"), "and not on A");
+}

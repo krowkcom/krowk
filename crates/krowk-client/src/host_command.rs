@@ -1,6 +1,8 @@
 //! A command one of the person's devices sends a host, and the host's
-//! answer (R-HOST-4): today only `start`, a session in a directory the host
-//! announced, on a model it has ready. The registry carries both as bytes
+//! answer (R-HOST-4): `start`, a session in a directory the host announced,
+//! on a model it has ready; and `take`, a session another host holds moved
+//! to this one, into a clone of its repository in a directory it announced
+//! (R-HAND-1), so a device that never hosts can move one. The registry carries both as bytes
 //! (`krowk_api` `send_host_command`, `answer_host_command`), so each is
 //! sealed to the person's devices (`e2e::seal_to_person`) and bound to the
 //! command's id and the two devices: one moved to another id, or to another
@@ -8,6 +10,7 @@
 //!
 //! Pure code: the host that runs a command is krowk-harness's presence
 //! thread, and the clients that send one are `krowk sync new` and the phone.
+//! A `take` runs there as `krowk sync take` runs: the target still asks.
 
 use crate::device_chain::{Chain, Kind};
 use crate::e2e::{self, DeviceId, Label};
@@ -40,7 +43,14 @@ pub enum HostCommand {
     /// A new session in `cwd`, one of the directories the host announced,
     /// its first turn `prompt` on `model`.
     Start { cwd: String, model: ModelRef, prompt: String },
+    /// Session `session_id`, held by another host, moved here into `cwd`,
+    /// one of the directories the host announced and a clone of the
+    /// session's repository: what `krowk sync take` there does.
+    Take { session_id: String, cwd: String },
 }
+
+/// The command types a host runs.
+const KNOWN: [&str; 2] = ["start", "take"];
 
 /// The host's answer to a command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -48,7 +58,9 @@ pub enum HostCommand {
 pub enum HostAnswer {
     /// The session started: its first turn runs on the host.
     Started { session_id: String },
-    /// Nothing started. `message` is the fix line.
+    /// The session moved here: this host holds it now.
+    Taken { session_id: String },
+    /// Nothing started, or nothing moved. `message` is the fix line.
     Refused { code: String, message: String },
 }
 
@@ -68,8 +80,9 @@ pub fn binding(id: &str, from: &DeviceId, to: &DeviceId) -> Vec<u8> {
 /// `c` sealed by `me` to the person's devices, for `to` to open, under
 /// `id`: a fresh random UUID of the sender's, which the registry keys it by.
 pub fn seal_command(c: &HostCommand, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
-    let HostCommand::Start { prompt, .. } = c;
-    if prompt.len() > MAX_PROMPT {
+    if let HostCommand::Start { prompt, .. } = c
+        && prompt.len() > MAX_PROMPT
+    {
         return Err(format!("the prompt is {} bytes, more than a host takes ({MAX_PROMPT})", prompt.len()));
     }
     let json = serde_json::to_vec(c).map_err(|e| format!("the command does not encode: {e}"))?;
@@ -94,17 +107,24 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
     // a registry that carries more meets the host's own limit.
     let json = open(sealed, MAX_PROMPT + MAX_SEALED, Label::HostCommand, &binding(id, from, me), from, keys, chain, "command")?;
     let typed: serde_json::Value = serde_json::from_slice(&json).map_err(|_| format!("the command from {from} is not JSON"))?;
-    let kind = typed.get("type").and_then(|t| t.as_str()).unwrap_or_default();
-    if kind != "start" {
+    let kind = typed.get("type").and_then(|t| t.as_str()).unwrap_or_default().to_string();
+    if !KNOWN.contains(&kind.as_str()) {
         return Ok(Err(HostAnswer::refused("unknown_command", format!("this host does not know the command {kind:?} — upgrade krowk on it"))));
     }
     let c: HostCommand = match serde_json::from_value(typed) {
         Ok(c) => c,
-        Err(e) => return Ok(Err(HostAnswer::refused("bad_command", format!("the start command does not read: {}", e.to_string().escape_debug())))),
+        Err(e) => return Ok(Err(HostAnswer::refused("bad_command", format!("the {kind} command does not read: {}", e.to_string().escape_debug())))),
     };
-    let HostCommand::Start { prompt, .. } = &c;
-    if prompt.len() > MAX_PROMPT {
+    if let HostCommand::Start { prompt, .. } = &c
+        && prompt.len() > MAX_PROMPT
+    {
         return Ok(Err(HostAnswer::refused("prompt_too_long", format!("the prompt is {} bytes, more than this host takes ({MAX_PROMPT}) — send a shorter one", prompt.len()))));
+    }
+    // Passed on as an argument: only ever a session id.
+    if let HostCommand::Take { session_id, .. } = &c
+        && !session_id_shaped(session_id)
+    {
+        return Ok(Err(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))));
     }
     Ok(Ok(c))
 }
@@ -115,7 +135,7 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
 pub fn seal_answer(a: &HostAnswer, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
     let a = match a {
         HostAnswer::Refused { code, message } => HostAnswer::Refused { code: cut(code, MAX_CODE), message: cut(message, MAX_MESSAGE) },
-        started => started.clone(),
+        done => done.clone(),
     };
     let json = serde_json::to_vec(&a).map_err(|e| format!("the answer does not encode: {e}"))?;
     let sealed = e2e::seal_to_person(keys, current_generation, Label::HostAnswer, &binding(id, me, to), &json).map_err(|e| e.0)?;
@@ -150,6 +170,11 @@ fn open(sealed: &[u8], most: usize, label: Label, binding: &[u8], from: &DeviceI
         return Err(format!("the {what} from {from} is sealed under user key generation {generation}, older than the generation {} your device list names current", chain.generation()));
     }
     e2e::open_from_person(sealed, label, binding, keys).map_err(|e| e.0)
+}
+
+/// Whether `s` is a session id as text: 8-4-4-4-12 hex digits.
+pub fn session_id_shaped(s: &str) -> bool {
+    s.len() == 36 && s.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() })
 }
 
 /// `s` cut so that it takes at most `most` bytes as JSON, escapes

@@ -2839,6 +2839,7 @@ impl World {
             catalog: Box::new(move || Some(serde_json::to_vec(&catalog).unwrap())),
             trusted,
             mode_for: Box::new(|_| Ok(PermissionMode::Default)),
+            take: None,
         }
     }
 
