@@ -606,9 +606,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private func pageOlderIfNeeded() {
         guard let kept, let older = olderKept, !pagingOlder, let collectionView, drewRows else { return }
         // Only as the person scrolls (not the list settling at the end as
-        // it opens), or while what is drawn doesn't fill the screen.
+        // it opens), or while what is laid out doesn't fill the screen.
         let scrolling = collectionView.isTracking || collectionView.isDragging || collectionView.isDecelerating
-        guard scrolling || collectionView.contentSize.height <= collectionView.bounds.height else { return }
+        let content = collectionView.contentSize.height
+        guard scrolling || (content > 0 && content <= collectionView.bounds.height) else { return }
         let fromTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         guard fromTop < collectionView.bounds.height else { return }
         pagingOlder = true

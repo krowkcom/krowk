@@ -192,10 +192,15 @@ struct KeptListingTests {
         let clock = clock
         let model = SessionListModel(source: source, kept: { kept }, clock: { clock.now })
         let screen = SessionListViewController(model: model)
-        let window = UIWindow(frame: CGRect(x: 0, y: 0, width: 390, height: 844))
-        window.rootViewController = UINavigationController(rootViewController: screen)
-        window.makeKeyAndVisible()
-        defer { window.isHidden = true }
+        screen.loadViewIfNeeded()
+        #expect(screen.dataSource.snapshot().itemIdentifiers.isEmpty, "a snapshot before the kept listing was read")
+        // On screen: the kept listing, then the read.
+        screen.beginAppearanceTransition(true, animated: false)
+        screen.endAppearanceTransition()
+        defer {
+            screen.beginAppearanceTransition(false, animated: false)
+            screen.endAppearanceTransition()
+        }
         try await waitFor { screen.dataSource.snapshot().itemIdentifiers == ["a"] }
         #expect(!screen.spinner.isAnimating)
         #expect(screen.screen().rows.allSatisfy { !$0.live && $0.detail.contains("last seen") })
