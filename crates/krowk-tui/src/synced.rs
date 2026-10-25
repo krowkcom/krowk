@@ -334,7 +334,8 @@ impl Pump {
                 }
             }
             Update::Acked { id, error } => self.acked(id, error),
-            Update::Gap => {}
+            // The terminal keeps no place across runs.
+            Update::Gap | Update::Saved(_) => {}
             Update::Note(n) => {
                 let _ = self.events.send(Event::Note(n));
             }
