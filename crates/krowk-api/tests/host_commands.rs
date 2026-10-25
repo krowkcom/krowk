@@ -238,7 +238,8 @@ fn r_host_4_a_refresh_carries_at_most_sixteen_oldest_first() {
     assert_eq!(delivered, oldest_first);
 }
 
-/// R-HOST-4: a device the dashboard revokes takes its commands with it.
+/// R-HOST-4: a device the dashboard revokes takes its commands with it,
+/// sent and received.
 #[test]
 fn r_host_4_a_revoked_devices_commands_go() {
     let p = person();
@@ -252,6 +253,17 @@ fn r_host_4_a_revoked_devices_commands_go() {
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
     let left: Vec<String> = host.put_presence(b"a", 30).unwrap().commands.into_iter().map(|c| c.id).collect();
     assert_eq!(left, [from_laptop]);
+
+    // Revoking a target: what was sent it is not there to poll, and nothing
+    // more is sent it.
+    let to_laptop = "4f9e8d7c-6b5a-4938-8271-605f4e3d2c1b";
+    host.send_host_command(&p.laptop.id(), to_laptop, b"for the laptop").unwrap();
+    let request = format!("POST /_settings/devices/{}/revocation HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", p.laptop.id(), p.host.key);
+    assert!(raw(p.addr, &request).starts_with("HTTP/1.1 200"));
+    for e in [host.host_command(&p.laptop.id(), to_laptop).unwrap_err(), host.send_host_command(&p.laptop.id(), to_laptop, b"again").unwrap_err()] {
+        assert_eq!((e.code().as_str(), e.status), ("no_device", 404), "{e:?}");
+    }
+    assert_eq!(host.put_presence(b"a", 30).unwrap().commands, vec![], "the laptop's own command went with it");
 }
 
 /// R-HOST-4: a device the chain removes takes its commands with it.
