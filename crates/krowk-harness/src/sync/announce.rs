@@ -305,7 +305,9 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
             Next::After(d) => d,
             Next::Over(revoked) => return revoked,
         };
-        match stop.recv_timeout(wait) {
+        // Told to stop during the tick: the word is on its way.
+        let told = if t.stopping() { stop.recv().map_err(|_| RecvTimeoutError::Disconnected) } else { stop.recv_timeout(wait) };
+        match told {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(End::Crash) => return false,
             Ok(End::Clean) | Err(RecvTimeoutError::Disconnected) => {
@@ -410,9 +412,14 @@ fn take_down(t: &mut Ticks, last: &Option<Announcer>) {
 }
 
 /// The codes that say this device may no longer act for the person: the
-/// registry's refusal of a removed device, the device list's own words for
-/// a removal or a list started over, and a key revoked with its device.
-const REVOKED: [&str; 4] = ["device_revoked", "device_removed", "device_list_reset", "unauthorized"];
+/// registry's refusal of a removed device, and the device list's own words
+/// for a removal or a list started over.
+const REVOKED: [&str; 3] = ["device_revoked", "device_removed", "device_list_reset"];
+
+/// How long a key the registry refuses (`unauthorized`) is left before it
+/// is tried again: a key revoked with its device, or one rotated, which a
+/// `krowk login` mends with no restart.
+pub const UNAUTHORIZED_PAUSE: Duration = Duration::from_secs(5 * 60);
 
 /// A registry error in a person's words: its message, and its fix.
 pub fn words(e: &krowk_api::Error) -> String {
@@ -432,6 +439,10 @@ fn refused(c: &Config, o: &Options, t: &mut Ticks, code: &str, message: &str) ->
             t.paused = Some(Instant::now() + c.paid_pause);
             Next::After(o.every)
         }
+        "unauthorized" => {
+            t.paused = Some(Instant::now() + UNAUTHORIZED_PAUSE);
+            Next::After(o.every)
+        }
         // This device is off the list, or its key with it: it has nothing
         // to announce as until the daemon starts again.
         c if REVOKED.contains(&c) => Next::Over(true),
@@ -441,6 +452,7 @@ fn refused(c: &Config, o: &Options, t: &mut Ticks, code: &str, message: &str) ->
         let then = match next {
             Next::Over(_) => "it stops announcing until the host daemon starts again".to_string(),
             _ if code == "sync_requires_paid_plan" => "it tries again in an hour".to_string(),
+            _ if code == "unauthorized" => "it tries again in five minutes".to_string(),
             _ => "it tries again shortly".to_string(),
         };
         eprintln!("krowk: this machine could not announce itself to your other devices: {message} ({code}); {then}");
