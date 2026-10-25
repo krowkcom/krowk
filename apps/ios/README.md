@@ -700,14 +700,15 @@ content and no id (`KrowkKit/Sources/KrowkKit/Budgets.swift`).
 
 | Name | From | To | Budget |
 | --- | --- | --- | --- |
-| `launch.cachedList` | the process's start, by the kernel (`kinfo_proc`'s `p_starttime`), so the time before `main` counts; the interval itself from `willFinishLaunchingWithOptions` | the first listing applied on Sessions (from the cache once ticket 131 lands; the network until then). Once per process, and only when Sessions is the first screen | < 400 ms |
-| `foreground.caughtUp` | `sceneWillEnterForeground`, after 10 s away or more (less is a wake, not measured) | the open session's bar reading `live` again after `connecting`, `reconnecting` or `catching up…`; with no session open, the list's first read landing | < 300 ms on a LAN, < 800 ms through the relay |
+| `launch.cachedList` | the process's start, by the kernel (`kinfo_proc`'s `p_starttime`), so the time before `main` counts; the interval itself from `willFinishLaunchingWithOptions`. A prewarmed process (iOS started it ahead of the tap) counts from `willFinishLaunchingWithOptions` | the first listing applied on Sessions (from the cache once ticket 131 lands; the network until then). Once per process, and only when Sessions is the first screen and lists before the app leaves the foreground or a read fails | < 400 ms |
+| `foreground.caughtUp` | `sceneWillEnterForeground`, after 10 s away or more (less is a wake, not measured) | the open session's bar reading `live` again after `connecting`, `reconnecting` or `catching up…` (before or after the return); with no session open, the list's first read that started after it landing. A session whose host is offline isn't measured | < 300 ms on a LAN, < 800 ms through the relay |
 | `tap.optimistic` | Send's touch-up | the next display frame after the bubble's row was applied: its cell is in the committed layer tree | < 16 ms |
 | `key.glyph` | `textViewDidChange` in the composer, one keystroke in ten | the next display frame | < 16 ms |
 
 The budgets are Canon's (The iPhone app → Budgets). A foreground given up
 (the app went back to the background first) or a tap that showed no bubble
-logs nothing. Recording them on a phone is ticket 54; CI shows the
+logs nothing; Instruments still shows its interval, its end marked
+"given up". Recording them on a phone is ticket 54; CI shows the
 `launch.cachedList` and `tap.optimistic` intervals fire on the simulator
 (`BudgetUITests`), whose numbers are no phone's.
 

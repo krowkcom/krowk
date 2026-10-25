@@ -12,7 +12,10 @@ import QuartzCore
 ///
 /// - `launch.cachedList`: the process's start (the kernel's, so the time
 ///   before `main` counts) to the session list's first listing applied on
-///   screen. Once per process, and only when Sessions is the first screen.
+///   screen. Once per process, and only when Sessions is the first screen
+///   and lists before the app leaves the foreground or a read fails. A
+///   prewarmed process (iOS started it ahead of the tap) counts from
+///   `willFinishLaunching` instead.
 /// - `foreground.caughtUp`: `sceneWillEnterForeground` to the open
 ///   session's bar reading live again, or with none open, the list's first
 ///   read landing. Not after less than 10 s away: that's a wake.
@@ -78,6 +81,13 @@ public final class Budgets {
     /// Since the foreground began, the open session's bar read something
     /// other than live: its next live is the catch-up.
     private var foregroundLeftLive = false
+    /// What the open session's bar last read, live or not, foreground or
+    /// not: one that dropped while the app was away publishes nothing
+    /// more until it's live again.
+    private var sessionLive: Bool?
+    /// When the foreground under way began, by the wall clock: a list read
+    /// that started before it (in flight as the app left) is not it.
+    private var foregroundSince: Date?
     /// When the app went to the background, on `clock`.
     private var backgroundedAt: TimeInterval?
     private var keystrokes = 0
@@ -94,9 +104,12 @@ public final class Budgets {
     /// and paused between, or a test's.
     var ticker: (any FrameTicker)?
 
-    /// Intervals begun and ended (given up included), by measurement.
+    #if DEBUG
+    /// Intervals begun and ended (given up included), by measurement: the
+    /// tests' count.
     private(set) var begun: [Measure: Int] = [:]
     private(set) var ended: [Measure: Int] = [:]
+    #endif
 
     init(
         clock: @escaping @MainActor () -> TimeInterval = { Double(clock_gettime_nsec_np(CLOCK_MONOTONIC)) / 1e9 },
@@ -139,9 +152,11 @@ public final class Budgets {
 
     // MARK: foreground.caughtUp
 
-    /// `sceneDidEnterBackground`.
+    /// `sceneDidEnterBackground`: whatever is under way is given up, a
+    /// launch not yet listed included.
     public func wentToBackground() {
         backgroundedAt = clock()
+        launchAbandoned()
         if let open = foreground { abandon(.foregroundCaughtUp, open) }
         foreground = nil
         if let open = tap { abandon(.tapOptimistic, open) }
@@ -158,13 +173,16 @@ public final class Budgets {
         guard let away = backgroundedAt, foreground == nil else { return }
         let now = clock()
         guard now - away >= Self.foregroundAfter else { return }
-        foregroundLeftLive = false
+        // A bar that dropped while away reads live next, once caught up.
+        foregroundLeftLive = sessionLive == false
+        foregroundSince = Date()
         foreground = begin(.foregroundCaughtUp, at: now)
     }
 
     /// The open session's bar, on screen: live again after it wasn't since
     /// the foreground (connecting, reconnecting, catching up…) is caught up.
     func sessionStatus(live: Bool) {
+        sessionLive = live
         guard let open = foreground else { return }
         guard live else {
             foregroundLeftLive = true
@@ -175,9 +193,10 @@ public final class Budgets {
         end(.foregroundCaughtUp, open)
     }
 
-    /// The session list, with no session open over it, read.
-    func listRead() {
-        guard let open = foreground else { return }
+    /// The session list, with no session open over it, read by a read
+    /// that started at `startedAt`.
+    func listRead(startedAt: Date) {
+        guard let open = foreground, let since = foregroundSince, startedAt >= since else { return }
         foreground = nil
         end(.foregroundCaughtUp, open)
     }
@@ -241,20 +260,27 @@ public final class Budgets {
     // MARK: Intervals
 
     private func begin(_ measure: Measure, at start: TimeInterval) -> Open {
+        #if DEBUG
         begun[measure, default: 0] += 1
+        #endif
         let signposter = Self.signposter
         return Open(state: signposter.beginInterval(measure.signpost, id: signposter.makeSignpostID()), start: start)
     }
 
     private func end(_ measure: Measure, _ open: Open) {
+        #if DEBUG
         ended[measure, default: 0] += 1
+        #endif
         Self.signposter.endInterval(measure.signpost, open.state)
         record(measure, (clock() - open.start) * 1000)
     }
 
-    /// Ended with no number: nothing is logged.
+    /// Ended with no number: nothing is logged. Instruments still shows
+    /// the interval, its end marked "given up".
     private func abandon(_ measure: Measure, _ open: Open) {
+        #if DEBUG
         ended[measure, default: 0] += 1
+        #endif
         Self.signposter.endInterval(measure.signpost, open.state, "given up")
     }
 
@@ -265,8 +291,11 @@ public final class Budgets {
     }
 
     /// When the kernel started this process (`kinfo_proc.kp_proc.p_starttime`),
-    /// in seconds since 1970.
+    /// in seconds since 1970. Nil for a prewarmed one: iOS may start it
+    /// minutes before the person taps, so its start says nothing about
+    /// the launch.
     nonisolated static func kernelProcessStart() -> TimeInterval? {
+        guard ProcessInfo.processInfo.environment["ActivePrewarm"] != "1" else { return nil }
         var info = kinfo_proc()
         var size = MemoryLayout<kinfo_proc>.stride
         var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()]

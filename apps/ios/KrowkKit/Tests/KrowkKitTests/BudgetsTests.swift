@@ -23,11 +23,12 @@ struct BudgetsTests {
         rig.budgets.listShown()
         #expect(rig.recorded.count == 1)
         #expect(rig.recorded.first?.0 == .launchCachedList)
-        #expect(abs((rig.recorded.first?.1 ?? 0) - 350) < 1, "the time before main counts")
+        // The wall clock moved a little between the rig and the launch.
+        #expect(abs((rig.recorded.first?.1 ?? 0) - 350) < 50, "the time before main counts")
         rig.expectBalanced()
     }
 
-    @Test("R-IOS-PERF: a launch whose first screen isn't Sessions measures nothing, then or later")
+    @Test("R-IOS-PERF: a launch whose first screen isn't Sessions, or that leaves the foreground before it lists, measures nothing, then or later")
     func launchAbandoned() {
         let rig = Rig()
         rig.budgets.launchBegan()
@@ -38,6 +39,26 @@ struct BudgetsTests {
         #expect(rig.recorded.isEmpty)
         #expect(rig.budgets.begun[.launchCachedList] == 1)
         rig.expectBalanced()
+
+        let away = Rig()
+        away.budgets.launchBegan()
+        away.budgets.wentToBackground()
+        away.advance(45)
+        away.budgets.cameForward()
+        away.budgets.listShown()
+        away.budgets.listRead(startedAt: Date())
+        #expect(away.recorded.map(\.0) == [.foregroundCaughtUp], "the return is measured, the launch isn't")
+        away.expectBalanced()
+    }
+
+    @Test("R-IOS-PERF: a prewarmed process's launch counts from willFinishLaunching")
+    func prewarmed() {
+        let rig = Rig(processAge: nil)
+        rig.budgets.launchBegan()
+        rig.advance(0.12)
+        rig.budgets.listShown()
+        #expect(rig.recorded.count == 1)
+        #expect(abs((rig.recorded.first?.1 ?? 0) - 120) < 0.01)
     }
 
     @Test("R-IOS-PERF: foreground.caughtUp ends at the open session's bar live again, after 10 s away or more")
@@ -55,7 +76,7 @@ struct BudgetsTests {
         rig.budgets.cameForward()
         rig.budgets.sessionStatus(live: false)
         rig.budgets.sessionStatus(live: true)
-        rig.budgets.listRead()
+        rig.budgets.listRead(startedAt: Date())
         #expect(rig.recorded.isEmpty)
 
         // Away a minute: the bar still reading live is the old connection's,
@@ -74,6 +95,36 @@ struct BudgetsTests {
         rig.expectBalanced()
     }
 
+    @Test("R-IOS-PERF: a bar that dropped while the app was away publishes only live on the return: that live is the catch-up")
+    func droppedWhileAway() {
+        let rig = Rig()
+        rig.budgets.sessionStatus(live: true)
+        rig.budgets.wentToBackground()
+        rig.budgets.sessionStatus(live: false)
+        rig.advance(20)
+        rig.budgets.cameForward()
+        rig.advance(0.4)
+        rig.budgets.sessionStatus(live: true)
+        #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
+        #expect(abs((rig.recorded.first?.1 ?? 0) - 400) < 1)
+        rig.expectBalanced()
+    }
+
+    @Test("R-IOS-PERF: a list read that started before the foreground (in flight as the app left) doesn't end it")
+    func staleListRead() {
+        let rig = Rig()
+        let before = Date()
+        rig.budgets.wentToBackground()
+        rig.advance(15)
+        rig.budgets.cameForward()
+        rig.budgets.listRead(startedAt: before.addingTimeInterval(-1))
+        #expect(rig.recorded.isEmpty)
+        rig.advance(0.08)
+        rig.budgets.listRead(startedAt: Date())
+        #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
+        rig.expectBalanced()
+    }
+
     @Test("R-IOS-PERF: with no session open, the list's first read landing ends foreground.caughtUp; back in the background first, it's given up")
     func foregroundOnTheList() {
         let rig = Rig()
@@ -81,15 +132,15 @@ struct BudgetsTests {
         rig.advance(10)
         rig.budgets.cameForward()
         rig.advance(0.05)
-        rig.budgets.listRead()
-        rig.budgets.listRead()
+        rig.budgets.listRead(startedAt: Date())
+        rig.budgets.listRead(startedAt: Date())
         #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
 
         rig.budgets.wentToBackground()
         rig.advance(30)
         rig.budgets.cameForward()
         rig.budgets.wentToBackground()
-        rig.budgets.listRead()
+        rig.budgets.listRead(startedAt: Date())
         #expect(rig.recorded.count == 1)
         #expect(rig.budgets.begun[.foregroundCaughtUp] == 2)
         rig.expectBalanced()
@@ -165,11 +216,13 @@ private final class Rig {
     let ticker = PausedTicker()
     var budgets: Budgets!
 
-    init(processAge: TimeInterval = 0) {
+    /// `processAge`: how long before the rig the process started; nil
+    /// for a start not known (a prewarmed process).
+    init(processAge: TimeInterval? = 0) {
         let wall = Date().timeIntervalSince1970
         budgets = Budgets(
             clock: { [unowned self] in now },
-            processStart: { wall - processAge },
+            processStart: { processAge.map { wall - $0 } },
             record: { [unowned self] in recorded.append(($0, $1)) }
         )
         budgets.ticker = ticker

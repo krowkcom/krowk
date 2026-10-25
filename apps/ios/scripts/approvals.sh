@@ -59,8 +59,7 @@ while IFS= read -r -d '' file; do
   if grep -aqE 'KROWK_FIXTURE|0192f0a0-0000-7000-8000-00000000127f|FixtureScroller' "$file"; then fixture=1; echo "the 10,000-item fixture is in $file"; fi
   if grep -aq 0192f0a0-0000-7000-8000-00000000127f "$file"; then fixtureID=1; fi
   if grep -aq FixtureScroller "$file"; then scroller=1; fi
-  # Two of the four intervals' names: the others are short enough to be
-  # kept inline.
+  # Two of the four intervals' names, as the signposts keep them.
   if grep -aq launch.cachedList "$file" && grep -aq foreground.caughtUp "$file"; then budgets=1; fi
   if grep -qE '/LocalAuthentication\.framework/' <<<"$used"; then auth=1; fi
 done < <(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) -print0)

@@ -56,9 +56,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
         super.init(nibName: nil, bundle: nil)
         // Back in the foreground with no session open over this list, its
         // first read landing is the app caught up (ticket 128).
-        model.listed = { [weak self] in
+        model.listed = { [weak self] started in
             guard let self, navigationController?.topViewController === self, viewIfLoaded?.window != nil else { return }
-            Budgets.shared.listRead()
+            Budgets.shared.listRead(startedAt: started)
         }
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
@@ -241,6 +241,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
             spinner.stopAnimating()
             emptyLabel.text = sentence
             emptyLabel.isHidden = false
+            // A launch whose first read failed lists on a later one: not
+            // a launch to the cached list (ticket 128).
+            Budgets.shared.launchAbandoned()
         case .listed:
             spinner.stopAnimating()
             emptyLabel.isHidden = true
