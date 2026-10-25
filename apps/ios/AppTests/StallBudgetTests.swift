@@ -46,6 +46,11 @@ final class StallBudgetTests: XCTestCase {
         defer { gaps.stop() }
         try await Self.wait(until: { gaps.frames >= 30 }, within: .seconds(10), "the display link never ran")
         gaps.reset()
+        // What the main thread did, piece by piece (a DEBUG build's
+        // FrameCosts): where the longest gap went.
+        let costs = Costs()
+        FrameCosts.record = { costs.add($0, $1, $2) }
+        defer { FrameCosts.record = nil }
 
         replay.play(lines)
         try await Self.wait(until: { replay.done && screen.model.ids.last == "turn:t1" }, within: .seconds(90),
@@ -57,8 +62,9 @@ final class StallBudgetTests: XCTestCase {
         let during = replay.applied.withLock { $0 }
             .filter { $0.at >= gaps.longestEnd - gaps.longest - 0.001 && $0.at <= gaps.longestEnd }
             .map(\.what).joined(separator: "; ")
-        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f); applied in it: %@",
-                          longest, frames, lines.count, limit, baseline, factor, during.isEmpty ? "nothing" : during)
+        let spent = costs.within(gaps.longestEnd - gaps.longest, gaps.longestEnd)
+        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f); applied in it: %@; spent in it: %@",
+                          longest, frames, lines.count, limit, baseline, factor, during.isEmpty ? "nothing" : during, spent.isEmpty ? "nothing measured" : spent)
         print(text)
         let attachment = XCTAttachment(string: text)
         attachment.name = "krowk main-thread stall"
@@ -115,6 +121,25 @@ final class StallBudgetTests: XCTestCase {
 
     struct Failure: Error, CustomStringConvertible {
         let description: String
+    }
+}
+
+/// The pieces of main-thread time FrameCosts reports.
+@MainActor
+final class Costs {
+    private var pieces: [(what: String, took: CFTimeInterval, end: CFTimeInterval)] = []
+
+    func add(_ what: String, _ took: CFTimeInterval, _ end: CFTimeInterval) {
+        pieces.append((what, took, end))
+    }
+
+    /// Those that ended between `start` and `end`, by name: their total
+    /// and how many, longest first ("layout 182.4 ms ×2, …"). A layout
+    /// pass holds the sizing done inside it, so the two overlap.
+    func within(_ start: CFTimeInterval, _ end: CFTimeInterval) -> String {
+        let inside = pieces.filter { $0.end > start - 0.001 && $0.end <= end + 0.001 }
+        let byName = Dictionary(grouping: inside, by: { $0.what }).map { ($0.key, $0.value.reduce(0) { $0 + $1.took }, $0.value.count) }
+        return byName.sorted { $0.1 > $1.1 }.map { String(format: "%@ %.1f ms ×%d", $0.0, $0.1 * 1000, $0.2) }.joined(separator: ", ")
     }
 }
 

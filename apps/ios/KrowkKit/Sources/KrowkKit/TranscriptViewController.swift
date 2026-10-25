@@ -1113,7 +1113,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             // Not animated: the first load, and (until ticket 89 decides how
             // live rows arrive) every one after. A row's own changes are its
             // cell's, which observes it: nothing is reloaded.
+            #if DEBUG
+            let applying = FrameCosts.start()
+            #endif
             dataSource.apply(snapshot, animatingDifferences: false)
+            #if DEBUG
+            FrameCosts.end("snapshot", applying)
+            #endif
             snapshotApplies += 1
             applied = rows
             if first && !rows.isEmpty { scrollToEnd() }
@@ -1290,6 +1296,10 @@ final class TranscriptCollectionView: UICollectionView {
     }
 
     override func layoutSubviews() {
+        #if DEBUG
+        let laying = FrameCosts.start()
+        defer { FrameCosts.end("layout", laying) }
+        #endif
         super.layoutSubviews()
         afterLayout?()
     }

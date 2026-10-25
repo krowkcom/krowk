@@ -407,6 +407,10 @@ final class TranscriptTextCell: TranscriptCell {
     }
 
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        #if DEBUG
+        let sizing = FrameCosts.start()
+        defer { FrameCosts.end("size text", sizing) }
+        #endif
         sizeText(toFit: attributes.size.width)
         return super.preferredLayoutAttributesFitting(attributes)
     }
