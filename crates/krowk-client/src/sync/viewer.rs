@@ -260,12 +260,14 @@ pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mu
     // relay's count at the join: either way the batch must be the next.
     let gap = (skipped || seq != *applied + 1).then(|| before.clone());
     let Ok(batch) = serde_json::from_slice::<Lines>(&body) else {
+        if end {
+            frame.push(Update::Host(false));
+        }
         *applied = seq;
         return Some(before);
     };
     for raw in batch.lines {
-        // A logged event has an id and a time; a live frame neither.
-        let id = raw["id"].as_str().filter(|_| raw["timeMs"].is_number()).map(String::from);
+        let id = logged_id(&raw);
         let Ok(line) = serde_json::from_value::<StreamLine>(raw) else {
             if let Some(id) = id
                 && !seen.contains(&id)
@@ -304,6 +306,20 @@ pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mu
 #[derive(serde::Deserialize)]
 struct Lines {
     lines: Vec<serde_json::Value>,
+}
+
+/// A page of a catch-up as it came: `Answer::CatchUp`, read when one of its
+/// events is one this build cannot read, so the rest still apply.
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum RawAnswer {
+    CatchUp { events: Vec<serde_json::Value>, more: bool },
+}
+
+/// A logged event's id: a logged event has an id and a time, a live frame
+/// neither.
+fn logged_id(v: &serde_json::Value) -> Option<String> {
+    v["id"].as_str().filter(|_| v["timeMs"].is_number()).map(String::from)
 }
 
 /// What the caller of a `ViewerCore` does next, in the order given.
@@ -904,8 +920,13 @@ impl ViewerCore {
     /// the one before a logged event this build could not read.
     fn place(&self) -> Option<Cursor> {
         let (stream, after_seq) = self.cursor()?;
-        let newest = [self.catch_ups.outstanding(), self.left_out.as_ref()].into_iter().flatten().fold(&self.last_id, |n, a| if no_newer(a, n) { a } else { n });
-        Some(Cursor { stream: e2e::hex(&stream), after_seq, newest: newest.clone() })
+        Some(Cursor { stream: e2e::hex(&stream), after_seq, newest: self.place_newest().clone() })
+    }
+
+    /// The oldest of the newest event held, a catch-up still out and the
+    /// event before one this build could not read.
+    fn place_newest(&self) -> &Option<String> {
+        [self.catch_ups.outstanding(), self.left_out.as_ref()].into_iter().flatten().fold(&self.last_id, |n, a| if no_newer(a, n) { a } else { n })
     }
 
     fn welcomed(&self) -> bool {
@@ -1157,16 +1178,32 @@ impl ViewerCore {
             Ok(Answer::Handoff { id, handed, error }) => self.frame.extend(self.book.handoff_answered(&id, handed, error)),
             Ok(Answer::CatchUp { events, more }) => {
                 let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
-                let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
-                if !fresh.is_empty() {
-                    self.frame.push(Update::CaughtUp(fresh));
-                }
-                // The last page: a gap it did not cover is asked now.
-                if !more && let Some(after) = self.catch_ups.done() {
-                    self.ask_catch_up(after);
+                self.caught_up_page(events, more);
+            }
+            // A page holding an event this build cannot read (a newer
+            // host's): the rest of it applies, and the place holds from
+            // where the catch-up asked, before it.
+            Err(_) => {
+                if let Ok(RawAnswer::CatchUp { events, more }) = serde_json::from_slice(body) {
+                    let unread = events.iter().any(|e| serde_json::from_value::<crate::protocol::LogEvent>(e.clone()).is_err() && logged_id(e).is_some_and(|id| !self.seen.contains(&id)));
+                    if unread && self.left_out.is_none() {
+                        self.left_out = Some(self.place_newest().clone());
+                    }
+                    self.caught_up_page(events.into_iter().filter(|e| logged_id(e).is_some()).collect(), more);
                 }
             }
-            Err(_) => {}
+        }
+    }
+
+    /// A page of the catch-up in flight: what it holds not seen yet shown,
+    /// and on the last page, a gap it did not cover asked now.
+    fn caught_up_page(&mut self, events: Vec<serde_json::Value>, more: bool) {
+        let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
+        if !fresh.is_empty() {
+            self.frame.push(Update::CaughtUp(fresh));
+        }
+        if !more && let Some(after) = self.catch_ups.done() {
+            self.ask_catch_up(after);
         }
     }
 

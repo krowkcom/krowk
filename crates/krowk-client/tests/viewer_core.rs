@@ -1173,3 +1173,30 @@ fn r_ios_1_the_place_stays_before_a_logged_event_this_build_cannot_read() {
     r.at(32).tick();
     assert_eq!(places(&mut r), [(4, Some(id(1)))], "nor later");
 }
+
+/// R-IOS-1: a catch-up page holding a logged event this build cannot read
+/// still applies the rest, and the place holds from where the catch-up
+/// asked: never past the events the page brought.
+#[test]
+fn r_ios_1_a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.frames.clear();
+    let (b1, _b2, b3) = (r.batch(vec![logged(1)], false), r.batch(vec![logged(2)], false), r.batch(vec![logged(4)], false));
+    r.receive(&b1);
+    r.receive(&b3);
+    assert_eq!(catch_ups(&r.frames), [Some(id(1))]);
+    let future = json!({"id": id(3), "sessionId": "s", "timeMs": 0, "type": "session.someday"});
+    let page = serde_json::to_vec(&json!({"type": "catchUp", "events": [logged(2), future], "more": false})).unwrap();
+    let routed = r.host.to_viewer(r.link, &page, false).unwrap();
+    r.receive(&routed[HEADER..]);
+    r.at(16).tick();
+    let shown = r.updates();
+    assert!(shown.iter().any(|u| matches!(u, Update::CaughtUp(e) if e.iter().any(|e| e["id"] == id(2)))), "the rest applies: {shown:?}");
+    assert_eq!(places(&mut r).last(), Some(&(3, Some(id(1)))), "from where the catch-up asked");
+    let b4 = r.batch(vec![logged(5)], false);
+    r.receive(&b4);
+    r.at(32).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(1)))]);
+}
