@@ -390,6 +390,10 @@ final class TranscriptTextCell: TranscriptCell {
         // Whole: drawn once more, in one view, with its links (a URL may
         // have been cut between two deltas, so none is tappable while it
         // streams).
+        #if DEBUG
+        let redrawing = FrameCosts.start()
+        defer { FrameCosts.end("text drawn whole \(drawn.length)", redrawing) }
+        #endif
         text.end()
         shown = drawn
         textView.attributedText = drawn
