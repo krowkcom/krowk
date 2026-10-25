@@ -188,7 +188,11 @@ public final class SessionListViewController: UIViewController, UICollectionView
             switch start.state {
             case .refused: editAndRetry(id)
             case .started(let session):
-                if let newSessions { navigationController?.pushViewController(newSessions.open(session, start.request), animated: true) }
+                if let open = openScreen(of: session.lowercased()) {
+                    _ = reveal(open)
+                } else if let newSessions {
+                    navigationController?.pushViewController(newSessions.open(session, start.request), animated: true)
+                }
             case .starting: break
             }
             return

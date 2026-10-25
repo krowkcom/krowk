@@ -216,6 +216,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // `+` starts a session on one of the person's hosts (R-HOST-4); the
         // started one opens live as soon as the registry lists it.
         let newSessions = NewSessions(source: source, starting: StartingSessions(source: source)) { session, request in
+            // Its screen parked with commands out, if it was left so.
+            if let kept = parked.take(session) { return kept }
             let place = SessionRowFormatter.basename(request.cwd)
             let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
             return transcript(row) { try source.openStartedSession(id: session) }
