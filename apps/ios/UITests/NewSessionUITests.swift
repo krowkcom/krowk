@@ -28,8 +28,9 @@ final class NewSessionUITests: XCTestCase {
         let host = app.tables["new-session-hosts"].cells["host-host-a"]
         if !host.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
         XCTAssertTrue(host.exists, "host-a is not listed")
-        let online = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "krowk "), object: host)
-        XCTAssertEqual(XCTWaiter().wait(for: [online], timeout: 30), .completed, "host-a is not online: \(host.label)")
+        let listedOnline = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label CONTAINS %@", "krowk "), object: host)
+        let shownOnline = await XCTWaiter().fulfillment(of: [listedOnline], timeout: 30)
+        XCTAssertEqual(shownOnline, .completed, "host-a is not online: \(host.label)")
         Screenshots.keep("new-session-hosts", in: app)
         host.tap()
 
@@ -49,7 +50,7 @@ final class NewSessionUITests: XCTestCase {
         let focused = { (prompt.value(forKey: "hasKeyboardFocus") as? Bool) == true }
         for _ in 0..<3 where !focused() {
             prompt.tap()
-            _ = XCTWaiter().wait(for: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: prompt)], timeout: 5)
+            _ = await XCTWaiter().fulfillment(of: [XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: prompt)], timeout: 5)
         }
         prompt.typeText("Say hello from the phone")
         let start = app.navigationBars.buttons["new-session-start"]
@@ -68,8 +69,8 @@ final class NewSessionUITests: XCTestCase {
         if !starting.waitForExistence(timeout: 10) { Screenshots.tree(of: app) }
         let shown = starting.exists
         Screenshots.keep("new-session-starting", in: app)
-        let (online, reply) = try await FleetUI.request("\(hosts)/online")
-        XCTAssertEqual(online, 200, reply)
+        let (released, reply) = try await FleetUI.request("\(hosts)/online")
+        XCTAssertEqual(released, 200, reply)
         XCTAssertTrue(shown, "no starting on host-a… row")
 
         // Started: the session opens, and its first turn's answer shows.
