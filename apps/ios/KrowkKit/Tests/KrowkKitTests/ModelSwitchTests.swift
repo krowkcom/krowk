@@ -237,7 +237,7 @@ struct ModelSwitchScreenTests {
         var offline = host
         offline.online = false
         let (none, _) = ModelPickerViewController.sections(host: offline, listed: true, failed: false, instances: instances, session: session)
-        #expect(none.allSatisfy(\.choices.isEmpty))
+        #expect(none.allSatisfy { $0.choices.isEmpty })
         #expect(none.first?.footer == "desktop is offline: the model can be switched once it's back.")
 
         var away = session
