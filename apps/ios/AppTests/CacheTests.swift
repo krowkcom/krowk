@@ -127,6 +127,26 @@ extension HostedKeychain {
             #expect(try await cache.cursor(session: session).map { try decodeCursor(json: $0) } == place(1), "no place past what was left out")
         }
 
+        @Test("R-IOS-1: a session evicted while its screen is open keeps no place: what the cache holds of it is a tail")
+        func testR_IOS_1_noPlaceAfterEviction() async throws {
+            let url = URL.temporaryDirectory.appending(path: "krowk-cache-hosted/\(UUID().uuidString)/krowk-cache.sqlite")
+            let cache = try await SessionCache.open(at: url)
+            defer { Task { try? await cache.forgetAll() } }
+            let (events, session) = try await MainActor.run { (try TranscriptModelTests.events(), TranscriptModelTests.session) }
+            let writer = TranscriptCacheWriter(session: session, cache: cache, interval: .milliseconds(10))
+            let place = { (n: Int) in CursorRecord(stream: String(repeating: "ab", count: 16), afterSeq: UInt64(n), newest: events[n - 1].id) }
+
+            writer.add(Array(events.prefix(2)).map { ViewerUpdate.line(line: .log($0)) } + [.saved(cursor: place(2))])
+            await writer.written()
+            #expect(try await cache.cursor(session: session) != nil)
+            try await cache.evict(keep: 0)
+            writer.add([.line(line: .log(events[2])), .saved(cursor: place(3))])
+            await writer.written()
+            writer.add([.saved(cursor: place(3))])
+            await writer.written()
+            #expect(try await cache.cursor(session: session) == nil, "a place over a tail")
+        }
+
         @Test("R-IOS-1: a session of the fleet's followed through a turn: the cache's cursor names the newest event the cache holds, and never one it doesn't")
         func testR_IOS_1_theCursorNamesTheNewestEventHeld() async throws {
             let phone = try await TestFleet.shared.paired()

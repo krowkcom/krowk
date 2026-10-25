@@ -39,9 +39,10 @@ extension SessionCache {
 /// is written in the same transaction as every event held up to it, so the
 /// cache's cursor never names an event it does not hold. Once an event was
 /// left out — one this build could not decode (the frame's `failed` says
-/// so) or encode, or events held for a write that kept failing were let
-/// go — no place is written again: the transcript has a hole a place after
-/// it would skip.
+/// so) or encode, events held for a write that kept failing were let go,
+/// or the session's events were evicted while the screen was open — no
+/// place is written again: the transcript has a hole a place after it
+/// would skip.
 public final class TranscriptCacheWriter: Sendable {
     public let session: String
     private let cache: SessionCache
@@ -50,8 +51,12 @@ public final class TranscriptCacheWriter: Sendable {
         var events: [LogEvent] = []
         /// A batch that couldn't be written, encoded: first in the next.
         var unwritten: [(id: String, json: String)] = []
-        /// The newest place, encoded, to write with the events before it.
-        var cursor: String?
+        /// The newest place, encoded, and the event it names, to write with
+        /// the events before it.
+        var cursor: (json: String, newest: String?)?
+        /// The first event this writer wrote: gone from the cache, the
+        /// session was evicted under it.
+        var first: String?
         /// An event was left out: no place is written again.
         var holed = false
         var scheduled = false
@@ -74,14 +79,14 @@ public final class TranscriptCacheWriter: Sendable {
     /// left events out (ones this build cannot decode), or ends the viewer:
     /// either way no place is written from it on.
     public func add(_ updates: [ViewerUpdate]) {
-        var cursor: String?
+        var cursor: (json: String, newest: String?)?
         var holed = false
         let events = updates.flatMap { update -> [LogEvent] in
             switch update {
             case .attached(let events, _), .caughtUp(let events): return events
             case .line(.log(let event)): return [event]
             case .saved(let saved):
-                cursor = (try? encodeCursor(cursor: saved)) ?? cursor
+                cursor = (try? encodeCursor(cursor: saved)).map { (json: $0, newest: saved.newest) } ?? cursor
                 return []
             case .failed:
                 holed = true
@@ -97,7 +102,7 @@ public final class TranscriptCacheWriter: Sendable {
     /// else came meanwhile. With none, a batch still held from a failed
     /// write is tried again: the viewer showing anything at all (it does
     /// on every join) is a moment to.
-    public func add(events: [LogEvent], cursor: String? = nil) {
+    public func add(events: [LogEvent], cursor: (json: String, newest: String?)? = nil) {
         held.withLock { held in
             held.events += events
             if let cursor, !held.holed { held.cursor = cursor }
@@ -107,14 +112,14 @@ public final class TranscriptCacheWriter: Sendable {
             held.last = Task.detached { [self] in
                 await previous?.value
                 try? await Task.sleep(for: interval)
-                let (unwritten, batch, saved) = self.held.withLock { held in
+                let (unwritten, batch, saved, first) = self.held.withLock { held in
                     held.scheduled = false
                     defer {
                         held.events = []
                         held.unwritten = []
                         held.cursor = nil
                     }
-                    return (held.unwritten, held.events, held.cursor)
+                    return (held.unwritten, held.events, held.cursor, held.first)
                 }
                 let encoded = batch.compactMap { event in
                     (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) }
@@ -126,8 +131,19 @@ public final class TranscriptCacheWriter: Sendable {
                     self.held.withLock { $0.holed = true; $0.cursor = nil }
                 }
                 let rows = unwritten + encoded
+                let since = first ?? rows.first?.id
                 do throws(SessionCacheFailure) {
-                    try await cache.appendEvents(session: session, rows, cursor: cursor)
+                    let holding = [since, cursor?.newest].compactMap { $0 }
+                    let placed = try await cache.appendEvents(session: session, rows, cursor: cursor?.json, holding: holding)
+                    self.held.withLock { held in
+                        held.first = since
+                        if cursor != nil, !placed {
+                            // Evicted under the open screen: what the cache
+                            // holds of it is a tail.
+                            held.holed = true
+                            held.cursor = nil
+                        }
+                    }
                 } catch where !error.forgotten {
                     self.held.withLock { held in
                         let kept = rows + held.unwritten

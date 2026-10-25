@@ -1149,3 +1149,27 @@ fn r_ios_1_saved_ends_the_show_and_names_the_newest_event_shown() {
     r.at(96).tick();
     assert_eq!(places(&mut r), [(5, Some(id(4)))]);
 }
+
+/// R-IOS-1: a logged event this build cannot read (a newer host's event
+/// type) is skipped like any line it does not know, and the place never
+/// reaches past it: a relaunch on a build that reads it catches it up.
+#[test]
+fn r_ios_1_the_place_stays_before_a_logged_event_this_build_cannot_read() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    let future = json!({"id": id(2), "sessionId": "s", "timeMs": 0, "type": "session.someday", "what": 1});
+    let (b1, b2, b3) = (r.batch(vec![logged(1)], false), r.batch(vec![future, logged(3)], false), r.batch(vec![logged(4)], false));
+    r.receive(&b1);
+    r.receive(&b2);
+    r.receive(&b3);
+    r.at(16).tick();
+    let shown = r.updates();
+    assert_eq!(shown.iter().filter(|u| matches!(u, Update::Line(_))).count(), 3, "the rest shows: {shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::Gap)), "{shown:?}");
+    assert_eq!(places(&mut r).last(), Some(&(3, Some(id(1)))), "the event before the one it could not read");
+    let b5 = r.batch(vec![logged(5)], false);
+    r.receive(&b5);
+    r.at(32).tick();
+    assert_eq!(places(&mut r), [(4, Some(id(1)))], "nor later");
+}

@@ -86,6 +86,21 @@ struct SessionCacheTests {
         #expect(try await cache.cursor(session: "s") == nil)
     }
 
+    @Test("R-IOS-1: a place is written only while the cache holds the events it is held to: none for a session evicted under it")
+    func testR_IOS_1_aCursorNeedsItsEventsHeld() async throws {
+        let cache = try await SessionCache.open(at: url)
+        try await cache.putIndex([Self.session("s")], listedAtMs: 1)
+        #expect(try await cache.appendEvents(session: "s", Self.events(0..<3), cursor: "one", holding: ["s-e0", "s-e2"]))
+        #expect(try await cache.cursor(session: "s") == "one")
+        // Evicted, then written on from where the screen was: a tail.
+        try await cache.evict(keep: 0)
+        #expect(try await cache.appendEvents(session: "s", Self.events(3..<5), cursor: "two", holding: ["s-e0", "s-e4"]) == false)
+        #expect(try await cache.cursor(session: "s") == nil, "a place over a tail")
+        #expect(try await cache.events(session: "s", limit: 10).count == 2, "the events still go in")
+        #expect(try await cache.appendEvents(session: "s", [], cursor: "three", holding: ["s-e9"]) == false)
+        #expect(try await cache.cursor(session: "s") == nil)
+    }
+
     @Test("R-IOS-1: events and the place they come with are one write: when the place is refused, the events are not kept either")
     func testR_IOS_1_eventsAndCursorAreOneTransaction() async throws {
         let cache = try await SessionCache.open(at: url)

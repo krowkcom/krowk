@@ -181,13 +181,18 @@ public actor SessionCache {
     /// Appends `session`'s logged events, in order, and with them, when
     /// given, the viewer's place as of the last of them (`putCursor`), in
     /// one transaction: a saved place never names an event the cache does
-    /// not hold. An event id already kept is kept once, where it was; the
-    /// rest take the places after the session's last.
+    /// not hold. The place is written only if, with the events in, the
+    /// cache holds every id in `holding` (the event it names, and the first
+    /// its writer wrote: a session evicted meanwhile holds neither); false
+    /// when it was not. An event id already kept is kept once, where it
+    /// was; the rest take the places after the session's last.
+    @discardableResult
     public func appendEvents(
-        session: String, _ events: [(id: String, json: String)], cursor: String? = nil
-    ) throws(SessionCacheFailure) {
-        guard !events.isEmpty || cursor != nil else { return }
+        session: String, _ events: [(id: String, json: String)], cursor: String? = nil, holding: [String] = []
+    ) throws(SessionCacheFailure) -> Bool {
+        guard !events.isEmpty || cursor != nil else { return false }
         let db = try opened()
+        var placed = false
         try transaction(db) { () throws(SessionCacheFailure) in
             if !events.isEmpty {
                 let last = try Statement(db, "SELECT MAX(ord) FROM events WHERE session_id = ?")
@@ -203,8 +208,19 @@ public actor SessionCache {
                     if sqlite3_changes(db) > 0 { ord += 1 }
                 }
             }
-            if let cursor { try put(db, cursor: cursor, session: session) }
+            guard let cursor else { return }
+            let held = try Statement(db, "SELECT 1 FROM events WHERE session_id = ? AND event_id = ?")
+            for id in holding {
+                held.bind(1, session)
+                held.bind(2, id)
+                let found = try held.step()
+                held.reset()
+                guard found else { return }
+            }
+            try put(db, cursor: cursor, session: session)
+            placed = true
         }
+        return placed
     }
 
     /// Where the viewer of `session` stands, as krowk-ffi's `encodeCursor`
@@ -508,6 +524,12 @@ private final class Statement {
         case SQLITE_DONE: return false
         default: throw SessionCacheFailure(description: String(cString: sqlite3_errmsg(db)))
         }
+    }
+
+    /// Readies it to bind again, mid-result or not.
+    func reset() {
+        sqlite3_reset(statement)
+        sqlite3_clear_bindings(statement)
     }
 
     /// Runs it to its end, and readies it to bind again.
