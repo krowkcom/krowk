@@ -663,7 +663,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = signed(ctx, &k, "krowk sync new")?;
     let host = find_host(&k.chain, &asked)?;
-    let (to, name) = (host.id(), host.name.clone());
+    let (to, name, now) = (host.id(), host.name.clone(), jiff::Timestamp::now());
     let presences = match api.list_presences() {
         Ok(p) => p,
         Err(e) if e.status == 404 => Vec::new(),
@@ -671,16 +671,23 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     };
     let announced = match presences.into_iter().find(|p| p.device.eq_ignore_ascii_case(&to.to_string())) {
         None => None,
-        Some(p) => {
-            let announcement = krowk_client::presence::open(&p.sealed, &to, &k.user, &k.chain).map_err(|e| fail("host_unreadable", format!("{name}'s announcement does not open on this machine ({e}) — `krowk sync status` checks this machine's keys")))?;
-            Some(krowk_harness::sync::hosts::Announced { online: p.online, updated_at: p.updated_at, announcement })
-        }
+        Some(p) => match krowk_client::presence::open(&p.sealed, &to, &k.user, &k.chain) {
+            Ok(announcement) => Some(krowk_harness::sync::hosts::Announced { online: p.online, updated_at: p.updated_at, announcement }),
+            // Offline is what matters then, whatever its last words were
+            // sealed under.
+            Err(_) if !p.online => return Err(offline(&name, &format!("last seen {}", ago(&p.updated_at, now)))),
+            Err(e) => return Err(fail("host_unreadable", format!("{name}'s announcement does not open on this machine ({e}) — `krowk sync status` here, and on {name}, checks each one's keys"))),
+        },
     };
-    let model = startable(&name, announced.as_ref(), &cwd, &ctx.f.model, jiff::Timestamp::now())?;
+    let model = startable(&name, announced.as_ref(), &cwd, &ctx.f.model, now)?;
 
     let id = command_id();
     let start = HostCommand::Start { cwd, model, prompt };
-    let sealed = host_command::seal_command(&start, &id, &k.device, &to, &k.user, k.chain.generation()).map_err(|e| fail("prompt_too_long", e))?;
+    let sealed = host_command::seal_command(&start, &id, &k.device, &to, &k.user, k.chain.generation()).map_err(|e| {
+        // Only the two bounds say how long; anything else is the seal's own.
+        let long = e.starts_with("the prompt is") || e.starts_with("the command seals to");
+        fail(if long { "prompt_too_long" } else { "seal_failed" }, e)
+    })?;
     let mut tries = 0;
     loop {
         match api.send_host_command(&to.to_string(), &id, &sealed) {
@@ -768,10 +775,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
     let shown = super::sync::printable(name);
     let a = match announced {
         Some(a) if a.online => &a.announcement,
-        _ => {
-            let seen = announced.map_or_else(|| "not announced".to_string(), |a| format!("last seen {}", ago(&a.updated_at, now)));
-            return Err(fail("host_offline", format!("{shown} is offline ({seen}): start krowk there, or krowk host enable")));
-        }
+        _ => return Err(offline(name, &announced.map_or_else(|| "not announced".to_string(), |a| format!("last seen {}", ago(&a.updated_at, now))))),
     };
     if !a.directories.iter().any(|d| d == cwd) {
         let offers = if a.directories.is_empty() { "none yet — run krowk in a repository there once and trust it".to_string() } else { a.directories.join(", ") };
@@ -803,6 +807,11 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
         }
     };
     Err(fail("model_not_ready", super::sync::printable(&format!("{shown} can't run {model}: {fix}"))))
+}
+
+/// The refusal of a host that is offline, `seen` saying since when.
+fn offline(name: &str, seen: &str) -> Error {
+    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk host enable", super::sync::printable(name)))
 }
 
 /// `dir` as the host is asked for it: `~` expanded to `home`, made absolute

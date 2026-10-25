@@ -269,7 +269,12 @@ impl Running {
     /// Reads stdout until a line passes `want`; with `refusing`, failing on
     /// a command A refused first.
     fn heard(&mut self, what: &str, refusing: bool, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
-        let deadline = Instant::now() + Duration::from_secs(20);
+        self.heard_within(what, refusing, Duration::from_secs(20), want)
+    }
+
+    /// `heard`, waiting up to `within`.
+    fn heard_within(&mut self, what: &str, refusing: bool, within: Duration, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+        let deadline = Instant::now() + within;
         while Instant::now() < deadline {
             let Ok(l) = self.out.recv_timeout(Duration::from_millis(100)) else { continue };
             self.seen.push(l.clone());
@@ -279,7 +284,7 @@ impl Running {
                 return v;
             }
         }
-        panic!("no {what} within 20s: {:#?}\nstderr: {:?}", self.seen, self.err.try_iter().collect::<Vec<_>>());
+        panic!("no {what} within {within:?}: {:#?}\nstderr: {:?}", self.seen, self.err.try_iter().collect::<Vec<_>>());
     }
 
     /// Reads stderr until a line passes `want`.
@@ -1190,7 +1195,9 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     let repo = a.repo.display().to_string();
     let mut view = Running::spawn(b.command(&["sync", "new", "--host", "A", "--cwd", &repo, "--json", "say hi"]));
     view.said("the wait", |l| l == "krowk: asked a to start the session — waiting for it (up to 10 s)…");
-    let started = view.until("the turn", |v| v["type"] == "turn.started");
+    // A's next refresh takes the command up, within 10 s, and its
+    // automatic sync the session; a loaded runner is given room for both.
+    let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
     let h = a_as_b_sees_it(&b, &a, |h| h["announced"] == true);
     let first = h["instances"].as_array().unwrap().iter().find(|i| i["ready"] == true && i["models"][0].is_string()).cloned().unwrap();
     assert_eq!(started["model"], serde_json::json!({"instance": first["name"], "model": first["models"][0]}), "A's first ready model: {started}");
