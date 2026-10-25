@@ -40,7 +40,10 @@ final class OfflineUITests: XCTestCase {
         if !answered.waitForExistence(timeout: 120) { Screenshots.tree(of: app) }
         XCTAssertTrue(answered.exists, "the turn's answer never showed")
         XCTAssertTrue(asked.exists, "the turn's prompt never showed")
-        // Terminated with the session open: it is the one last open.
+        // To the background, where the cache writes what it held back,
+        // then terminated with the session open: it is the one last open.
+        XCUIDevice.shared.press(.home)
+        _ = app.wait(for: .runningBackgroundSuspended, timeout: 30)
         app.terminate()
 
         // Offline: nothing listens on the registry or the relay.
@@ -57,16 +60,25 @@ final class OfflineUITests: XCTestCase {
         XCTAssertTrue(row.exists, "the session was not drawn from the cache")
         XCTAssertTrue(row.label.contains("last seen"), row.label)
         XCTAssertFalse(row.label.contains("live"), row.label)
-        let footer = offline.collectionViews["sessions-list"].staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "couldn't be reached")).firstMatch
-        if !footer.waitForExistence(timeout: 60) { Screenshots.tree(of: offline) }
+        // Under the last row: the fleet's other tests' sessions are listed
+        // too, so it may be below the screen.
+        let list = offline.collectionViews["sessions-list"]
+        let footer = list.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "couldn't be reached")).firstMatch
+        for _ in 0..<15 where !footer.waitForExistence(timeout: 4) {
+            list.swipeUp()
+        }
+        if !footer.exists { Screenshots.tree(of: offline) }
         XCTAssertTrue(footer.exists, "the footer never said the list couldn't be read")
         XCTAssertTrue(footer.label.contains("no session shows as live"), footer.label)
         XCTAssertFalse(offline.activityIndicators["sessions-loading"].exists, "a spinner over the cached list")
-        XCTAssertFalse(row.label.contains("live"), "live with the registry out of reach: \(row.label)")
         Screenshots.keep("offline-sessions", in: offline)
 
-        // Opened: the cached turn under the offline notice, the bar saying
+        // Back up to the row, then opened: the cached turn under the offline notice, the bar saying
         // the relay can't be reached, and no spinner.
+        for _ in 0..<15 where !row.isHittable {
+            list.swipeDown()
+        }
+        XCTAssertFalse(row.label.contains("live"), "live with the registry out of reach: \(row.label)")
         row.tap()
         let cached = offline.collectionViews["transcript"].descendants(matching: .any)
             .matching(NSPredicate(format: "label == %@ OR value == %@", prompt, prompt)).firstMatch

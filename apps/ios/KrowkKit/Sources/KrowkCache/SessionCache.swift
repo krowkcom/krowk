@@ -166,10 +166,15 @@ public actor SessionCache {
 
     /// The index, most recently updated first.
     public func index() throws(SessionCacheFailure) -> [CachedSession] {
-        let db = try opened()
+        try sessions(try opened(), "")
+    }
+
+    /// The index's rows `filter` (an SQL `WHERE`, or none) keeps, most
+    /// recently updated first.
+    private func sessions(_ db: OpaquePointer, _ filter: String) throws(SessionCacheFailure) -> [CachedSession] {
         let rows = try Statement(db, """
             SELECT id, title, cwd, updated_ms, head_index, head_digest, hosted_by, host_device, listed_at_ms, place
-            FROM sessions ORDER BY updated_ms DESC, id
+            FROM sessions \(filter) ORDER BY updated_ms DESC, id
             """)
         var out: [CachedSession] = []
         while try rows.step() {
@@ -396,17 +401,26 @@ public actor SessionCache {
 
     /// The session last open, as the index keeps it; nil when none is.
     public func lastOpen() throws(SessionCacheFailure) -> CachedSession? {
-        let db = try opened()
-        let row = try Statement(db, "SELECT session_id FROM last_open WHERE slot = 0")
-        guard try row.step(), let id = row.text(0) else { return nil }
-        return try index().first { $0.id == id }
+        try sessions(try opened(), "WHERE id = (SELECT session_id FROM last_open WHERE slot = 0)").first
     }
 
     /// `lastOpen`, read now on the cache's queue, blocking the caller: the
     /// scene delegate's, before any view appears (R-IOS-2). One indexed
-    /// row; nil when the cache can't be read (the phone locked).
+    /// row; nil when the cache can't be read (the phone locked). Never
+    /// from the cache's queue.
     public nonisolated func lastOpenNow() -> CachedSession? {
         queue.sync { assumeIsolated { try? $0.lastOpen() } }
+    }
+
+    /// `resume`, now, blocking the caller: an unlock heard as the app comes
+    /// forward is in before the early start reads the cache.
+    public nonisolated func resumeNow() {
+        queue.sync { assumeIsolated { $0.resume() } }
+    }
+
+    /// `suspend`, now, blocking the caller: in order with `resumeNow`.
+    public nonisolated func suspendNow() {
+        queue.sync { assumeIsolated { $0.suspend() } }
     }
 
     // MARK: Forgetting

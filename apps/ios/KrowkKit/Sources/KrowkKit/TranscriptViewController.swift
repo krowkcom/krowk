@@ -1354,8 +1354,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             if noticeShown == .hostOffline { hideNotice() }
         }
         land()
-        // Away with no route to land: said all the same (R-IOS-7).
-        if hostAway, landing == nil, noticeShown != .hostOffline, !offlineDismissed {
+        // Away: said, whether or not a route waits to land (R-IOS-7).
+        if hostAway, noticeShown != .hostOffline, !offlineDismissed {
             showNotice(.hostOffline, offlineNotice)
         }
         if case .ended = status {

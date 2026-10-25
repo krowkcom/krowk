@@ -384,13 +384,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The phone is locking: the cache lets its file go until it is
     /// unlocked.
     static func phoneLocking() {
-        let cache = cache
-        Task { await cache.suspend() }
+        cache.suspendNow()
     }
 
+    /// The phone is unlocked: at once, as the lock was, so the two stay in
+    /// order and a foreground's early start that follows reads the cache.
     static func phoneUnlocked() {
-        let cache = cache
-        Task { await cache.resume() }
+        cache.resumeNow()
     }
 
     /// Deletes the cache's file; once it's gone a fresh cache takes its

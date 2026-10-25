@@ -13,8 +13,9 @@ import Foundation
 /// of the session last open (`startEarly`). That one is held strongly, as
 /// no screen holds it yet, until the session's screen is made and takes it
 /// (`takeEarly`), so it is never joined twice; one whose screen doesn't
-/// come within `earlyFor` (the person opened nothing, or another session)
-/// is stopped, so nothing piles up in its mailbox unread.
+/// come within `earlyFor` of the launch or the last foreground (the person
+/// opened nothing, or another session) is stopped, so nothing piles up in
+/// its mailbox unread, and one that ended (the session gone) is let go.
 @MainActor
 public final class LiveSessions {
     public static let shared = LiveSessions()
@@ -46,6 +47,8 @@ public final class LiveSessions {
 
     /// The connection started early, until a screen takes it.
     public private(set) var early: Early?
+    /// Its wait for a screen, restarted at each foreground.
+    private var earlyWait: Task<Void, Never>?
 
     /// The app is in the background (from `didEnterBackground` to
     /// `willEnterForeground`): a screen applies what comes at once, as its
@@ -83,15 +86,30 @@ public final class LiveSessions {
         if let previous = self.early { stopEarly(previous) }
         self.early = early
         add(early.session, id: early.id)
-        early.session.follow { _ in }
         let session = early.session
-        Task { [weak self, earlyFor] in
+        // Ended (the session gone, access refused) before its screen came:
+        // not followed any more; a screen made later opens it afresh.
+        session.follow { [weak self] status in
+            guard case .ended = status, let self, self.early?.session === session else { return }
+            self.early = nil
+            earlyWait?.cancel()
+            remove(session)
+        }
+        waitForScreen()
+        return true
+    }
+
+    /// The early one is stopped `earlyFor` from now unless a screen takes
+    /// it first.
+    private func waitForScreen() {
+        earlyWait?.cancel()
+        guard let session = early?.session else { return }
+        earlyWait = Task { [weak self, earlyFor] in
             try? await Task.sleep(for: earlyFor)
-            guard let self, let still = self.early, still.session === session else { return }
+            guard !Task.isCancelled, let self, let still = self.early, still.session === session else { return }
             self.early = nil
             stopEarly(still)
         }
-        return true
     }
 
     /// The connection started early for session `id`, for its screen to
@@ -100,6 +118,7 @@ public final class LiveSessions {
     public func takeEarly(_ id: String) -> Early? {
         guard let early else { return nil }
         self.early = nil
+        earlyWait?.cancel()
         guard early.id == id else {
             stopEarly(early)
             return nil
@@ -132,6 +151,8 @@ public final class LiveSessions {
     public func willEnterForeground() {
         inBackground = false
         for s in sessions { s.foreground() }
+        // Time away doesn't count against the early one's wait.
+        if early != nil { waitForScreen() }
     }
 
     /// The scene became active.
@@ -158,6 +179,7 @@ public final class LiveSessions {
         for s in sessions { s.stop() }
         held = [:]
         early = nil
+        earlyWait?.cancel()
     }
 }
 

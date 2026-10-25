@@ -285,11 +285,14 @@ public actor RelayConnection: LiveSession {
     // MARK: Driving the viewer
 
     private func start(_ status: (@MainActor @Sendable (RelayStatus) -> Void)?) {
+        // Started before its screen (ticket 132): the screen hears where
+        // it stands now, ended too, and nothing joins again.
+        if started {
+            onStatus = status
+            return publish()
+        }
         guard !done else { return }
         onStatus = status
-        // Started before its screen (ticket 132): the screen hears where
-        // it stands now, and nothing joins again.
-        guard !started else { return publish() }
         started = true
         publish()
         watchPath()
@@ -398,6 +401,9 @@ public actor RelayConnection: LiveSession {
             switch event {
             case .foreground: run(viewer.foreground(nowMs: now))
             case .background:
+                // What the cache holds back for its next batch is written
+                // now, before iOS suspends or ends the app.
+                cache?.flush()
                 // A ticket asked for and not yet used is dropped (the
                 // viewer holds its join): the foreground asks afresh, so a
                 // fetch iOS suspended mid-call never holds the return up.

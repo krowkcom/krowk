@@ -55,6 +55,16 @@ struct ConnectEarlyLifecycleTests {
         #expect(lifecycle.early == nil)
         #expect(!lifecycle.follows("a"))
 
+        // Ended before its screen came (the session gone): let go, and a
+        // later start makes a new one.
+        let lifecycleEnded = LiveSessions(earlyFor: .seconds(60))
+        let ended = StubSession()
+        lifecycleEnded.startEarly(LiveSessions.Early(id: "a", session: ended))
+        ended.say(.ended("no such session"))
+        try await waitFor { lifecycleEnded.early == nil }
+        #expect(!lifecycleEnded.follows("a"))
+        #expect(lifecycleEnded.startEarly(LiveSessions.Early(id: "a", session: StubSession())))
+
         let gone = StubSession()
         let shared = LiveSessions(earlyFor: .seconds(60))
         shared.startEarly(LiveSessions.Early(id: "a", session: gone))
