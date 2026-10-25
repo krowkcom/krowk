@@ -62,6 +62,9 @@ pub struct Announcer {
     pub device: DeviceId,
 }
 
+/// Builds an `Announcer`, the list brought up to date first when asked.
+pub type Keys = Box<dyn Fn(bool) -> Result<Announcer, (String, String)> + Send + Sync>;
+
 /// What the publisher needs from its owner.
 pub struct Options {
     /// How often it refreshes (`EVERY`; a test makes it short).
@@ -73,7 +76,7 @@ pub struct Options {
     /// The keys, list, device and client, built as a bridge's are; with
     /// `true`, the device list brought up to date from the registry first.
     /// Blocking. Errors are `(code, message)`.
-    pub keys: Box<dyn Fn(bool) -> Result<Announcer, (String, String)> + Send + Sync>,
+    pub keys: Keys,
     /// This host's instances and each one's readiness, as `krowk status`
     /// checks them. Blocking: a vendor's login may be asked.
     pub instances: Box<dyn Fn() -> (Registry, Vec<Report>) + Send + Sync>,
@@ -294,11 +297,7 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>) -> bool {
             Err(RecvTimeoutError::Timeout) => {}
             Ok(End::Crash) => return false,
             Ok(End::Clean) | Err(RecvTimeoutError::Disconnected) => {
-                if t.published {
-                    if let Some(a) = &last {
-                        let _ = a.api.delete_presence();
-                    }
-                }
+                take_down(&mut t, &last);
                 return false;
             }
         }
@@ -373,10 +372,8 @@ fn daemon_sessions(c: &Config, rt: &tokio::runtime::Runtime, daemon: &mut Option
 
 /// The announcement taken down, if one is up.
 fn take_down(t: &mut Ticks, last: &Option<Announcer>) {
-    if std::mem::take(&mut t.published) {
-        if let Some(a) = last {
-            let _ = a.api.delete_presence();
-        }
+    if let (true, Some(a)) = (std::mem::take(&mut t.published), last) {
+        let _ = a.api.delete_presence();
     }
 }
 

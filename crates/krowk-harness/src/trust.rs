@@ -280,7 +280,7 @@ mod tests {
         store.trust(&b).unwrap();
         assert_eq!(store.directories(), [a.clone(), b.clone()]);
         std::fs::write(b.join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "x"}}}"#).unwrap();
-        assert_eq!(store.directories(), [a.clone()], "b's servers changed since it was trusted");
+        assert_eq!(store.directories(), std::slice::from_ref(&a), "b's servers changed since it was trusted");
         std::fs::write(base.join("config/trusted.json"), serde_json::json!({"directories": [home, "/", a]}).to_string()).unwrap();
         assert_eq!(store.directories(), [a], "home and / never count");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();

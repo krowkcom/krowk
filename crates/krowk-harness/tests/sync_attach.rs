@@ -2816,10 +2816,8 @@ impl World {
         let of = of.key.id().to_string();
         loop {
             let listed = self.announced(b).await;
-            if let Ok(l) = &listed {
-                if let Some((p, Ok(a))) = l.iter().find(|(p, a)| p.device == of && a.as_ref().is_ok_and(|a| want(p, a))) {
-                    return (p.clone(), a.clone());
-                }
+            if let Some((p, Ok(a))) = listed.as_ref().ok().and_then(|l| l.iter().find(|(p, a)| p.device == of && a.as_ref().is_ok_and(|a| want(p, a)))) {
+                return (p.clone(), a.clone());
             }
             assert!(Instant::now() < by, "B never saw {of}'s announcement as wanted: {listed:?}");
             tokio::time::sleep(Duration::from_millis(100)).await;
