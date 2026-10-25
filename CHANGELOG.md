@@ -19,7 +19,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   asks for the local network permission the first time it tries a LAN
   address. A host's direct listener now accepts a join whose `Host`
   header has no port, as the phone's WebSocket sends it. The app
-  library's viewer API is version 6 (`Race`, `race_join`, `race_lost`).
+  library's viewer API is version 7 (`Race`, `race_join`, `race_lost`).
 
 - **A synced session can be read on from where a device stopped.**
   krowk-client's `store::resume` and the app library's
