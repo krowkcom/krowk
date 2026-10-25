@@ -284,6 +284,9 @@ public struct NewSessions {
 public struct StartingRow: Hashable, Sendable {
     public enum State: Hashable, Sendable {
         case starting
+        /// The host started session `id`: the row stays until Sessions
+        /// lists it.
+        case started(String)
         /// The host's words, or why it couldn't be asked.
         case refused(String)
     }
@@ -303,7 +306,8 @@ public struct StartingRow: Hashable, Sendable {
 
 /// The starts this phone has asked for: each shows at once, runs in a
 /// detached task off the main thread, and is replaced by its session once
-/// the host answers `started`, or by the host's words once it refuses.
+/// the host answers `started` and Sessions lists it (`listed`), or by the
+/// host's words once it refuses.
 @MainActor
 @Observable
 public final class StartingSessions {
@@ -335,6 +339,12 @@ public final class StartingSessions {
         }
     }
 
+    /// The row of the start that made `session` goes: Sessions lists the
+    /// session now, or has stopped waiting for it.
+    public func listed(_ session: String) {
+        rows.removeAll { $0.state == .started(session) }
+    }
+
     /// The refused start `id`'s request, to be edited and sent again as a
     /// new command (`start(_:replacing:)`). The row stays until then: an
     /// edit given up leaves it as it was.
@@ -347,7 +357,7 @@ public final class StartingSessions {
         guard let i = rows.firstIndex(where: { $0.request.id == request.id }) else { return }
         switch outcome {
         case .started(let session):
-            rows.remove(at: i)
+            rows[i].state = .started(session)
             started?(session, request)
         case .refused(_, let message):
             rows[i].state = .refused(SafeText.clean(message))

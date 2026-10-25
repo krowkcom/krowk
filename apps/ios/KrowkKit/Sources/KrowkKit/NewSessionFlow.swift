@@ -362,7 +362,7 @@ final class PromptStepViewController: UIViewController, UITextViewDelegate {
     private var prompt: String { textView.text.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private func updateStart() {
-        navigationItem.rightBarButtonItem?.isEnabled = !prompt.isEmpty && textView.text.utf8.count <= Self.maxBytes
+        navigationItem.rightBarButtonItem?.isEnabled = !sent && !prompt.isEmpty && textView.text.utf8.count <= Self.maxBytes
     }
 
     /// The request, under a fresh command id: each Start is a new command.
@@ -370,8 +370,14 @@ final class PromptStepViewController: UIViewController, UITextViewDelegate {
         StartRequest(id: source.newCommandID(), device: draft.device, hostName: draft.hostName, cwd: draft.cwd, instance: draft.instance, model: draft.model, prompt: textView.text)
     }
 
+    /// Start was tapped: once, however many taps reach it before the sheet
+    /// has closed.
+    private var sent = false
+
     func start() {
-        guard !prompt.isEmpty else { return }
+        guard !prompt.isEmpty, !sent else { return }
+        sent = true
+        navigationItem.rightBarButtonItem?.isEnabled = false
         onStart(request())
         (navigationController ?? self).dismiss(animated: true)
     }

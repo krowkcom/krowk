@@ -48,7 +48,8 @@ extension HostedKeychain {
             #expect(first.request == request)
 
             try await LiveFollowTests.wait(until: { opened.screen != nil }, within: .seconds(60), "the start never opened its session: \(starting.rows)")
-            #expect(starting.rows.isEmpty, "the row gave way to the session")
+            // The row gives way to the session once Sessions lists it.
+            try await LiveFollowTests.wait(until: { starting.rows.isEmpty }, within: .seconds(15), "the row never gave way to the session: \(starting.rows)")
             let screen = try #require(opened.screen)
             let model = screen.model
             try await LiveFollowTests.wait(until: {
@@ -61,8 +62,8 @@ extension HostedKeychain {
             let phone = try await TestFleet.shared.paired()
             let source = RegistrySessions(api: phone.api, storage: phone.storage)
             _ = try await Self.host(source, online: true)
-            #expect(try await Self.hostsControl("/offline") == "offline")
             do {
+                #expect(try await Self.hostsControl("/offline") == "offline")
                 let host = try await Self.host(source, online: false)
                 // The host step, on screen, reading the hosts itself.
                 let flow = NewSessionFlow.make(source: source) { _ in Issue.record("nothing starts") }

@@ -152,7 +152,7 @@ struct DirectoryAndModelTests {
         #expect(sections[1].choices.map(\.enabled) == [false])
     }
 
-    @Test("R-HOST-4: Start sends the place, the model and the words under a fresh id each time, and closes")
+    @Test("R-HOST-4: Start sends the place, the model and the words under a fresh id, once however many taps reach it")
     func start() {
         var sent: [StartRequest] = []
         let draft = NewSessionFlow.Draft(device: "a1", hostName: "desktop", cwd: "/home/ann/code/app", instance: "anthropic", model: "claude-sonnet-4-6")
@@ -160,10 +160,14 @@ struct DirectoryAndModelTests {
         step.loadViewIfNeeded()
         step.start()
         step.start()
-        #expect(sent.count == 2)
-        #expect(sent.map(\.prompt) == ["fix the tests", "fix the tests"])
+        #expect(sent.count == 1)
+        #expect(sent.map(\.prompt) == ["fix the tests"])
         #expect(sent[0].cwd == "/home/ann/code/app" && sent[0].instance == "anthropic" && sent[0].model == "claude-sonnet-4-6")
-        #expect(sent[0].id != sent[1].id, "a retry is a new command")
+        let again = PromptStepViewController(draft: draft, text: "fix the tests", source: StubHosts([]), onStart: { sent.append($0) })
+        again.loadViewIfNeeded()
+        again.start()
+        #expect(sent.count == 2)
+        #expect(sent[0].id != sent[1].id, "each Start is a new command")
     }
 }
 
@@ -186,6 +190,8 @@ struct StartingRowTests {
         let deadline = Date.now.addingTimeInterval(5)
         while opened.isEmpty && Date.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(opened == ["s9"])
+        #expect(starting.rows.map(\.state) == [.started("s9")], "kept until Sessions lists it")
+        starting.listed("s9")
         #expect(starting.rows.isEmpty)
         #expect(source.started.map(\.1) == [false], "the start ran off the main thread")
     }

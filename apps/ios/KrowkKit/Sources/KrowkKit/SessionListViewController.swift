@@ -185,7 +185,12 @@ public final class SessionListViewController: UIViewController, UICollectionView
         collectionView.deselectItem(at: indexPath, animated: true)
         guard let id = dataSource.itemIdentifier(for: indexPath) else { return }
         if let start = startingRows[id] {
-            if case .refused = start.state { editAndRetry(id) }
+            switch start.state {
+            case .refused: editAndRetry(id)
+            case .started(let session):
+                if let newSessions { navigationController?.pushViewController(newSessions.open(session, start.request), animated: true) }
+            case .starting: break
+            }
             return
         }
         guard let row = rows[id] else { return }
@@ -206,7 +211,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     /// The screen the model calls for now.
     func screen() -> Screen {
-        let starting = newSessions?.starting.rows ?? []
+        let listed = Set(model.listing?.sessions.map(\.id) ?? [])
+        // A started session's row gives way to the session's own once listed.
+        let starting = (newSessions?.starting.rows ?? []).filter { if case .started(let id) = $0.state { !listed.contains(id) } else { true } }
         guard let listing = model.listing else {
             return Screen(rows: [], status: model.failure.map { .failed($0.sentence + " Pull down to try again.") } ?? .loading, starting: starting)
         }
@@ -312,13 +319,15 @@ public final class SessionListViewController: UIViewController, UICollectionView
         // Automatic sync takes it up at its first turn: read until it's
         // listed, for up to 10 s, rather than wait for the next timed read.
         let model = model
+        let starting = newSessions?.starting
         Task {
             let deadline = Date.now.addingTimeInterval(10)
             repeat {
                 await model.refresh()
-                if model.listing?.sessions.contains(where: { $0.id == session }) == true { return }
+                if model.listing?.sessions.contains(where: { $0.id == session }) == true { break }
                 try? await Task.sleep(for: .milliseconds(500))
             } while Date.now < deadline
+            starting?.listed(session)
         }
         guard let newSessions, let navigation = navigationController, navigation.topViewController === self, presentedViewController == nil else { return }
         navigation.pushViewController(newSessions.open(session, request), animated: true)
@@ -344,6 +353,12 @@ public final class SessionListViewController: UIViewController, UICollectionView
             spinner.startAnimating()
             cell.accessories = [.customView(configuration: .init(customView: spinner, placement: .trailing()))]
             cell.accessibilityLabel = "starting on \(host), \(place)"
+            cell.accessibilityCustomActions = nil
+        case .started:
+            content.text = "started on \(host)"
+            content.secondaryText = place
+            cell.accessories = [.disclosureIndicator()]
+            cell.accessibilityLabel = "started on \(host), \(place)"
             cell.accessibilityCustomActions = nil
         case .refused(let message):
             content.text = message

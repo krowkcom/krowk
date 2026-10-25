@@ -193,6 +193,8 @@ impl Account {
         if !uuid_shaped(&id) {
             return Err(KrowkError::InvalidInput { detail: format!("{id:?} is not a command id — mint one with newCommandId()") });
         }
+        // As the registry keeps it, and the seal binds it.
+        let id = id.to_ascii_lowercase();
         let host = chain
             .devices()
             .iter()
@@ -200,13 +202,17 @@ impl Account {
             .ok_or_else(|| KrowkError::Refused { code: "no_host".into(), detail: "that host is not one of your computers".into() })?;
         let name = host.name.clone();
         let start = HostCommand::Start { cwd, model, prompt };
-        let kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner).get(&id, &to, &start)?;
-        let sealed = match kept {
-            Some(sealed) => sealed,
-            None => {
-                let sealed = host_command::seal_command(&start, &id, &self.device, &to, &keys, chain.generation()).map_err(|detail| KrowkError::InvalidInput { detail })?;
-                self.starts.lock().unwrap_or_else(PoisonError::into_inner).keep(id.clone(), to, start, sealed.clone());
-                sealed
+        // Held from the look to the keep, so two calls under one new id
+        // seal it once.
+        let sealed = {
+            let mut starts = self.starts.lock().unwrap_or_else(PoisonError::into_inner);
+            match starts.get(&id, &to, &start)? {
+                Some(sealed) => sealed,
+                None => {
+                    let sealed = host_command::seal_command(&start, &id, &self.device, &to, &keys, chain.generation()).map_err(|detail| KrowkError::InvalidInput { detail })?;
+                    starts.keep(id.clone(), to, start, sealed.clone());
+                    sealed
+                }
             }
         };
         let to_hex = to.to_string();
