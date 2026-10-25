@@ -486,7 +486,7 @@ public final class TranscriptModel {
     public func setHostOffline(_ offline: Bool) {
         guard offline != hostOffline else { return }
         hostOffline = offline
-        for entry in commands.bubbles where entry.state == .queued || entry.state == .sending { refresh(entry.token) }
+        for entry in commands.bubbles where entry.state == .queued { refresh(entry.token) }
     }
 
     /// The connection stopped for good: what's still out is refused,
@@ -509,9 +509,7 @@ public final class TranscriptModel {
         guard let state = bubbles[token], let entry = commands.entry(token) else { return }
         let caption: String
         switch entry.state {
-        // Away, a prompt waits for the host as a queued one does, whether
-        // or not it has reached the relay yet (R-HAND-4, R-IOS-7).
-        case .sending: caption = hostOffline ? "queued — sends when your laptop is back" : "sending…"
+        case .sending: caption = "sending…"
         case .queued: caption = hostOffline ? "queued — sends when your laptop is back" : "queued…"
         case .settled: caption = ""
         case .refused(let why): caption = why

@@ -63,13 +63,16 @@ final class OfflineUITests: XCTestCase {
         // Under the last row: the fleet's other tests' sessions are listed
         // too, so it may be below the screen.
         let list = offline.collectionViews["sessions-list"]
-        let footer = list.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "couldn't be reached")).firstMatch
+        // The registry out of reach reads "krowk's registry couldn't be
+        // reached." or, from the listing's own read, "Your sessions
+        // couldn't be listed."; either way the rows are as last read.
+        let footer = list.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "no session shows as live until it's read again")).firstMatch
         for _ in 0..<15 where !footer.waitForExistence(timeout: 4) {
             list.swipeUp()
         }
         if !footer.exists { Screenshots.tree(of: offline) }
         XCTAssertTrue(footer.exists, "the footer never said the list couldn't be read")
-        XCTAssertTrue(footer.label.contains("no session shows as live"), footer.label)
+        XCTAssertTrue(footer.label.contains("couldn't be"), footer.label)
         XCTAssertFalse(offline.activityIndicators["sessions-loading"].exists, "a spinner over the cached list")
         Screenshots.keep("offline-sessions", in: offline)
 
