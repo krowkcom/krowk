@@ -15,8 +15,10 @@
 #                                      the trend, failing nothing: the
 #                                      launch, the frame-apply baseline,
 #                                      host-to-screen latency, a
-#                                      notification's cold launch and the
-#                                      longest frame gap in a burst
+#                                      notification's cold launch, the
+#                                      most updates a live follow had
+#                                      waiting and the longest frame gap
+#                                      in a burst
 #
 # The main-thread stall gate is StallBudgetTests' own, against `stall`.
 # With IOS_PERF set, each adds what it measured to that JSON file (CI's
@@ -90,12 +92,13 @@ case ${1:-} in
     apply=$(lines 'krowk\.frame\.apply baseline.*|Test Case .*testFrameApplyBaseline.*measured.*')
     latency=$(lines 'krowk host→screen latency.*')
     cold=$(lines 'krowk notification cold launch.*')
+    follow=$(lines 'krowk live follow:.*')
     # In run order, not sorted: a gate run again reports its last.
     stall=$({ [ -f "$log" ] && grep -oE 'krowk main-thread stall:.*' "$log" || true; } | jq -R . | jq -s .)
     stallMs=$(jq -r '.[-1] // "" | capture("frames (?<ms>[0-9.]+) ms") | .ms // empty' <<<"$stall" || true)
     record "$(jq -n --argjson launch "$launch" --argjson apply "$apply" --argjson latency "$latency" --argjson cold "$cold" \
-      --argjson stall "$stall" --arg stallMs "${stallMs:-}" \
-      '{launchMs: $launch, frameApply: $apply, hostToScreen: $latency, notificationColdLaunch: $cold,
+      --argjson follow "$follow" --argjson stall "$stall" --arg stallMs "${stallMs:-}" \
+      '{launchMs: $launch, frameApply: $apply, hostToScreen: $latency, notificationColdLaunch: $cold, liveFollow: $follow,
         stall: $stall, stallMs: (if $stallMs == "" then null else ($stallMs | tonumber) end)}')"
     echo "### iPhone app budgets and trend (R-PERF-7; the simulator, not a phone)"
     echo '```'
@@ -103,7 +106,7 @@ case ${1:-} in
       jq -r '"binary: \(.binaryBytes // "—") bytes; app: \(.appKilobytes // "—") KB; memory scrolling 10k items: \(.memoryScrollMB // "—") MB (gates)",
         "launch: \(.launchMs // "—") ms; longest frame gap in a burst: \(.stallMs // "—") ms (trend)"' "$IOS_PERF"
     fi
-    jq -nr --argjson a "$apply" --argjson b "$latency" --argjson c "$cold" --argjson d "$stall" '$a + $b + $c + $d | .[]'
+    jq -nr --argjson a "$apply" --argjson b "$latency" --argjson c "$cold" --argjson e "$follow" --argjson d "$stall" '$a + $b + $c + $e + $d | .[]'
     echo '```'
     ;;
   *)
