@@ -7,6 +7,16 @@ import UserNotifications
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    /// The launch's budget (ticket 128) starts as early as the app's code
+    /// runs; its number counts from the kernel's start of the process.
+    func application(
+        _ application: UIApplication,
+        willFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    ) -> Bool {
+        Budgets.shared.launchBegan()
+        return true
+    }
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?

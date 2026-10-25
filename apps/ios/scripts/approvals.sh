@@ -17,7 +17,9 @@
 #    and the budgets' seams (ticket 127, R-PERF-7): the deliberate stall,
 #    KROWK_TEST_STALL_MS, the 10,000-item fixture, KROWK_FIXTURE, and the
 #    stall test's breakdown of the main thread's time, FrameCosts (ticket
-#    140), found by the name of the piece a whole redraw records.
+#    140), found by the name of the piece a whole redraw records. The
+#    phone's own budgets (ticket 128, R-IOS-PERF) are the other way about:
+#    their signposts must be in every build, Release included.
 #
 #   apps/ios/scripts/approvals.sh [path/to/Krowk.app release|debug]
 #
@@ -41,7 +43,7 @@ app=$1 kind=${2:-release}
 libs() {
   if command -v otool >/dev/null; then otool -L "$1" 2>/dev/null; else llvm-objdump --macho --dylibs-used "$1" 2>/dev/null; fi
 }
-stub=0 auth=0 checked=0 apns=0 tap=0 stall=0 fixture=0 fixtureID=0 scroller=0 costs=0
+stub=0 auth=0 checked=0 apns=0 tap=0 stall=0 fixture=0 fixtureID=0 scroller=0 costs=0 budgets=0
 while IFS= read -r -d '' file; do
   used=$(libs "$file") || continue
   [ -n "$used" ] || continue
@@ -57,10 +59,14 @@ while IFS= read -r -d '' file; do
   if grep -aqE 'KROWK_FIXTURE|0192f0a0-0000-7000-8000-00000000127f|FixtureScroller' "$file"; then fixture=1; echo "the 10,000-item fixture is in $file"; fi
   if grep -aq 0192f0a0-0000-7000-8000-00000000127f "$file"; then fixtureID=1; fi
   if grep -aq FixtureScroller "$file"; then scroller=1; fi
+  # Two of the four intervals' names, as the signposts keep them.
+  if grep -aq launch.cachedList "$file" && grep -aq foreground.caughtUp "$file"; then budgets=1; fi
   if grep -qE '/LocalAuthentication\.framework/' <<<"$used"; then auth=1; fi
 done < <(find "$app" -type f \( -perm -u+x -o -name '*.dylib' \) -print0)
 [ "$checked" -gt 0 ] || { echo "approvals.sh: no Mach-O file in $app" >&2; exit 2; }
 [ "$auth" = 1 ] || { echo "R-IOS-11: $(basename "$app") does not link LocalAuthentication" >&2; exit 1; }
+[ "$budgets" = 1 ] || { echo "R-IOS-PERF: $(basename "$app") ($kind) does not measure its budgets (no launch.cachedList and foreground.caughtUp signposts)" >&2; exit 1; }
+echo "R-IOS-PERF: the $kind build measures its budgets"
 case $kind in
   release)
     [ "$stub" = 0 ] || { echo "R-IOS-11: a Release build has the owner check's stub" >&2; exit 1; }
