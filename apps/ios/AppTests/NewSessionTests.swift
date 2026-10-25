@@ -30,7 +30,9 @@ extension HostedKeychain {
             let source = RegistrySessions(api: phone.api, storage: phone.storage)
             let host = try await Self.host(source, online: true)
             let listing = try await blockingCall { try source.hosts() }
-            #expect(!listing.hosts.contains { $0.device == phone.account.deviceId() }, "R-HAND-4: this phone is never a host")
+            let me = phone.account.deviceId()
+            let listsMe = listing.hosts.contains { $0.device == me }
+            #expect(!listsMe, "R-HAND-4: this phone is never a host")
             let project = try #require(host.directories.first { $0.hasSuffix("/project") }, "no project in \(host.directories)")
             let instance = try #require(host.announcedInstances.first { $0.ready && !$0.models.isEmpty }, "no instance ready")
 

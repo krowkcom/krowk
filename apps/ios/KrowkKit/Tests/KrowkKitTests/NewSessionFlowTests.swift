@@ -147,7 +147,7 @@ struct DirectoryAndModelTests {
         ])
         #expect(sections.map(\.header) == ["anthropic · warning: 82% used", "openai"])
         #expect(sections[0].choices.map(\.title) == ["a", "b"])
-        #expect(sections[0].choices.allSatisfy(\.enabled))
+        #expect(sections[0].choices.map(\.enabled) == [true, true])
         #expect(sections[1].choices.map(\.detail) == ["set OPENAI_API_KEY"])
         #expect(sections[1].choices.map(\.enabled) == [false])
     }
