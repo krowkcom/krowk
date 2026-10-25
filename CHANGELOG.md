@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A synced session can be read on from where a device stopped.**
+  krowk-client's `store::resume` and the app library's
+  `Account.resumeSession` open a session from a kept read place
+  (`OpenedSession.place()`) and read only the chunks written after it,
+  rather than the whole log from its checkpoint. The chunks are held to the
+  same chain. A chunk that does not follow the place, or an index older
+  than it when the registry no longer holds the place's chunk, is refused
+  as a rollback. The iPhone app does not keep a place
+  yet.
 - **`krowk sync new` starts a session on another of your machines.**
   `krowk sync new --host <name> --cwd <dir> [--model <instance>/<id>]
   "<prompt>"` asks that machine's host daemon to start the session, waits

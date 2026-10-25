@@ -493,3 +493,15 @@ unit = "ms"
 max = 500
 runs = 11
 status = "enforced"
+
+[[budget]]
+id = "remote.resume"
+req = "R-PERF-6"
+what = "Attach on a remote device from where its last reading stopped"
+unit = "ms"
+# The sealed index and the five chunks after a kept place (store::resume),
+# from the stand-in registry over loopback HTTP: what a phone holding the
+# session's events in its cache reads (R-IOS-1).
+max = 500
+runs = 11
+status = "enforced"

@@ -340,6 +340,7 @@ mod tests {
             "tui.redraw_fps",
             "session.replay_rss",
             "remote.attach",
+            "remote.resume",
         ] {
             assert_eq!(find(id).status, Status::Enforced, "{id} is measurable now, so it is enforced");
         }

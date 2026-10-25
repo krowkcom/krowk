@@ -16,7 +16,7 @@ use krowk_api::Client;
 use krowk_client::e2e::{DeviceId, SessionKeys, SigningKey};
 use krowk_client::protocol::LogEvent;
 use krowk_client::session_record::Signer;
-use krowk_client::sync::store::{self, Attached, Head, Listed};
+use krowk_client::sync::store::{self, Attached, Head, Listed, ReadError, ReadPlace};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -53,6 +53,37 @@ impl TryFrom<HeadRecord> for Head {
         let digest = <[u8; 32]>::try_from(h.digest.as_slice())
             .map_err(|_| KrowkError::InvalidInput { detail: format!("a head's digest is 32 bytes, not {}", h.digest.len()) })?;
         Ok(Head { index: h.index, digest })
+    }
+}
+
+/// Where the phone's reading of a session stopped (`OpenedSession::place`):
+/// the next chunk's index, the digest it must bind (32 bytes), the lease
+/// fence and key epoch it may not go below, and the head read. Kept with
+/// the events read, it is what `resume_session` reads on from.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReadPlaceRecord {
+    pub next: u64,
+    pub previous: Vec<u8>,
+    pub fence: u64,
+    pub epoch: u32,
+    pub head: HeadRecord,
+}
+
+impl From<ReadPlace> for ReadPlaceRecord {
+    fn from(p: ReadPlace) -> ReadPlaceRecord {
+        ReadPlaceRecord { next: p.next, previous: p.previous.to_vec(), fence: p.fence, epoch: p.epoch, head: p.head.into() }
+    }
+}
+
+impl TryFrom<ReadPlaceRecord> for ReadPlace {
+    type Error = KrowkError;
+
+    fn try_from(p: ReadPlaceRecord) -> Result<ReadPlace, KrowkError> {
+        let previous = <[u8; 32]>::try_from(p.previous.as_slice())
+            .map_err(|_| KrowkError::InvalidInput { detail: format!("a read place's previous digest is 32 bytes, not {}", p.previous.len()) })?;
+        let place = ReadPlace { next: p.next, previous, fence: p.fence, epoch: p.epoch, head: p.head.try_into()? };
+        place.check().map_err(|detail| KrowkError::InvalidInput { detail })?;
+        Ok(place)
     }
 }
 
@@ -134,23 +165,36 @@ impl Account {
         // same two checks `attach` makes, in the same order.
         let sealed_head = index.head;
         let mut attached = store::attach(&self.client, &key, &id, store::Index { head: None, ..index }, None).map_err(internal)?;
-        let rolled_back = |detail: String| KrowkError::Refused { code: "session_rolled_back".into(), detail };
         Head::at_least(&attached.heads, sealed_head).map_err(rolled_back)?;
         Head::at_least(&attached.heads, known).map_err(rolled_back)?;
         attached.index.head = sealed_head;
-        let signing = self.keystore.signing_key().map_err(internal)?;
-        Ok(Arc::new(OpenedSession {
-            id,
-            keys: key,
-            title: attached.index.title.clone(),
-            reading: Mutex::new(()),
-            attached: Mutex::new(attached),
-            client: Arc::clone(&self.client),
-            device: self.device,
-            signing,
-            relay: self.relay_url(relay_override),
-            env: self.relay_env(),
-        }))
+        self.opened(id, key, attached, relay_override)
+    }
+
+    /// Opens session `id` from `place`, where this phone's reading of it
+    /// stopped before (`OpenedSession::place`, kept with the events it
+    /// read), and reads only the chunks after it: `events` are only those
+    /// after `place`. Held to the same chain, then to the sealed index's
+    /// head and to `known`. Refused as `session_rolled_back`: an index
+    /// older than `place` when the registry no longer holds the place's
+    /// chunk (it rolled back past what this phone read), a log short of the index's head or of `known` or holding
+    /// another chunk there, and — unlike `open_session`, where it is
+    /// `Internal` — a chunk after `place` that does not open where it was
+    /// served (another log). A `place` no reading stopped at, or whose
+    /// digests are not 32 bytes, is `InvalidInput`. Otherwise as
+    /// `open_session`. A `Viewer` opened on the session knows only the
+    /// events after `place`: the app hands it what it kept (ticket 131).
+    /// Blocking; call it off the main thread.
+    pub fn resume_session(&self, id: String, place: ReadPlaceRecord, known: Option<HeadRecord>, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
+        let place = ReadPlace::try_from(place)?;
+        let known = known.map(Head::try_from).transpose()?;
+        let (keys, chain) = self.paired()?;
+        let full = self.client.show_sync_session(&id)?;
+        let unreadable = |detail: String| KrowkError::Refused { code: "session_unreadable".into(), detail };
+        let key = store::open_session_key(&full, &id, &keys, &chain, Signer::EverHeld).map_err(unreadable)?;
+        let index = store::open_index(&key, &id, &full.sealed_index).map_err(unreadable)?;
+        let attached = store::resume(&self.client, &key, &id, index, place, known).map_err(read_failed)?;
+        self.opened(id, key, attached, relay_override)
     }
 
     /// The relay the phone joins sessions through: `relay_override` when it
@@ -175,6 +219,22 @@ impl Account {
 }
 
 impl Account {
+    fn opened(&self, id: String, keys: SessionKeys, attached: Attached, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
+        let signing = self.keystore.signing_key().map_err(internal)?;
+        Ok(Arc::new(OpenedSession {
+            id,
+            keys,
+            title: attached.index.title.clone(),
+            reading: Mutex::new(()),
+            attached: Mutex::new(attached),
+            client: Arc::clone(&self.client),
+            device: self.device,
+            signing,
+            relay: self.relay_url(relay_override),
+            env: self.relay_env(),
+        }))
+    }
+
     /// The user keys and the device list this phone holds; `not_paired`
     /// until it holds both.
     fn paired(&self) -> Result<(krowk_client::user_key::UserKeys, krowk_client::device_chain::Chain), KrowkError> {
@@ -227,7 +287,15 @@ impl OpenedSession {
         self.attached().head.map(Into::into)
     }
 
-    /// Every event read so far, from the checkpoint on, in order: each
+    /// Where the reading stopped: what to keep with the events read and
+    /// pass to `resume_session` next time, so only what came after is
+    /// read. None for a log with no chunk. Never waits on the network.
+    pub fn place(&self) -> Option<ReadPlaceRecord> {
+        self.attached().place().map(Into::into)
+    }
+
+    /// Every event read so far, from the checkpoint on (from the place, for
+    /// a session `resume_session` opened), in order: each
     /// decoded again on every call, so the app keeps what it shows. One
     /// that this build cannot decode — a newer host's — is a `Decode`
     /// error, not dropped. Never waits on the network.
@@ -328,6 +396,16 @@ impl OpenedSession {
     pub(crate) fn attached(&self) -> MutexGuard<'_, Attached> {
         self.attached.lock().unwrap_or_else(PoisonError::into_inner)
     }
+}
+
+fn rolled_back(detail: String) -> KrowkError {
+    KrowkError::Refused { code: "session_rolled_back".into(), detail }
+}
+
+/// A read at rest that failed: `session_rolled_back` when the log is not
+/// the one this phone read or was told of, else `Internal`.
+fn read_failed(e: ReadError) -> KrowkError {
+    if e.rolled_back { rolled_back(e.detail) } else { internal(e.detail) }
 }
 
 /// The log's events, the first of them the `from`th read since the

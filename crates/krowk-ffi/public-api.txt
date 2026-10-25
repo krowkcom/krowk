@@ -589,6 +589,15 @@ pub struct HeadRecord {
     pub digest: Vec<u8>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct ReadPlaceRecord {
+    pub next: u64,
+    pub previous: Vec<u8>,
+    pub fence: u64,
+    pub epoch: u32,
+    pub head: HeadRecord,
+}
+
 #[derive(Debug, Clone, uniffi::Record)]
 pub struct SessionList {
     pub sessions: Vec<SessionSummary>,
@@ -623,6 +632,17 @@ impl Account {
 
 #[uniffi::export]
 impl Account {
+    pub fn resume_session(
+        &self,
+        id: String,
+        place: ReadPlaceRecord,
+        known: Option<HeadRecord>,
+        relay_override: Option<String>,
+    ) -> Result<Arc<OpenedSession>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
     pub fn relay_url(&self, relay_override: Option<String>) -> String {}
 }
 
@@ -649,6 +669,11 @@ impl OpenedSession {
 #[uniffi::export]
 impl OpenedSession {
     pub fn head(&self) -> Option<HeadRecord> {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
+    pub fn place(&self) -> Option<ReadPlaceRecord> {}
 }
 
 #[uniffi::export]
@@ -916,6 +941,8 @@ pub use pairing::{
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
+
+pub use sessions::ReadPlaceRecord;
 
 pub use sign_in::{SignIn, SignedIn};
 

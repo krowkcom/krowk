@@ -1,6 +1,7 @@
 //! R-IOS-3, R-CLIENT-1, R-PERF-6: a paired phone lists the person's synced
 //! sessions from their sealed indexes and opens one from its latest
-//! checkpoint, all in krowk-client behind `Account`, never in Swift.
+//! checkpoint, or from the place its last reading stopped (R-IOS-1), all
+//! in krowk-client behind `Account`, never in Swift.
 //! Against the stand-in registry, with a host that writes the session at
 //! rest through the harness's own writer, and the phone on the device list
 //! the host started.
@@ -14,7 +15,8 @@ use std::sync::{Arc, Mutex};
 use common::*;
 use krowk_client::e2e::{self, DeviceKey, SigningKey};
 use krowk_client::keystore::Keystore;
-use krowk_ffi::{Account, HeadRecord, KrowkError};
+use krowk_client::sync::store::{self, ReadPlace};
+use krowk_ffi::{Account, HeadRecord, KrowkError, ReadPlaceRecord};
 use serde_json::json;
 
 
@@ -220,4 +222,175 @@ fn r_perf_6_open_session_starts_at_the_checkpoint_never_at_chunk_0() {
     assert!(!listings.is_empty(), "{sent}");
     assert!(listings[0].contains("after=0"), "the first listing starts after chunk 0, at the checkpoint (chunk 1): {listings:#?}");
     assert!(listings.iter().all(|l| l.contains("after=")), "no listing from the start of the log: {listings:#?}");
+}
+
+/// A session of event chunks only, one event each, run `c1`, `c2`…: chunk
+/// index `n - 1` holds `c{n}`.
+fn chunked(w: &World, n: u32) -> Hosted {
+    let (key, wrapped, index) = w.record(SESSION, "t", (w.host_device.id(), &w.host_signing));
+    let keys = e2e::SessionKeys::from(key);
+    let lease = w.host.acquire_lease(SESSION, &w.host_device.id().to_string(), 60, "development").unwrap();
+    let writer = krowk_harness::sync::store::Writer::take_up(w.host.clone(), keys.clone(), SESSION, wrapped.clone(), index, lease.fence).unwrap();
+    let mut h = Hosted { writer, token: lease.token, keys, wrapped };
+    more(&mut h, 1..=n);
+    h
+}
+
+fn more(h: &mut Hosted, chunks: std::ops::RangeInclusive<u32>) {
+    for c in chunks {
+        h.write(&[event(SESSION, c, &format!("c{c}"))]);
+    }
+}
+
+/// The session's sealed index, as the registry serves it now.
+fn index(w: &World, h: &Hosted) -> store::Index {
+    store::open_index(&h.keys, SESSION, &w.host.show_sync_session(SESSION).unwrap().sealed_index).unwrap()
+}
+
+fn run_names(events: &[serde_json::Value]) -> Vec<String> {
+    events.iter().map(|e| e["run"].as_str().unwrap().to_string()).collect()
+}
+
+/// Ticket 126: a device that kept where its reading stopped reads only the
+/// chunks after it on its next attach, not the log from the checkpoint
+/// (R-PERF-6, R-IOS-1: catch up from what the phone saw).
+#[test]
+fn r_perf_6_resume_from_a_place_reads_only_the_chunks_after_it() {
+    let w = World::new();
+    let mut h = chunked(&w, 6);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    assert_eq!(run_names(&a.events), ["c1", "c2", "c3", "c4", "c5", "c6"]);
+    let place = a.place().expect("chunks were read");
+    assert_eq!((place.next, place.head), (6, a.head.unwrap()));
+    // Kept on disk as JSON, as the phone's cache keeps it.
+    let place: ReadPlace = serde_json::from_str(&serde_json::to_string(&place).unwrap()).unwrap();
+
+    more(&mut h, 7..=10);
+    let r = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, a.head).unwrap();
+    assert_eq!(run_names(&r.events), ["c7", "c8", "c9", "c10"], "only what came after the place");
+    assert_eq!(r.head, h.writer.head());
+    assert_eq!(r.place().unwrap().next, 10);
+
+    // Nothing written since: nothing read.
+    let again = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), r.place().unwrap(), None).unwrap();
+    assert!(again.events.is_empty());
+    assert_eq!(again.head, r.head);
+
+    // An index behind the place, as between a holder's chunk and its index
+    // write, with the log served on past the place: only behind, read.
+    let behind = store::Index { head: Some(a.heads[3]), ..index(&w, &h) };
+    let r = store::resume(&w.host, &h.keys, SESSION, behind, place, None).unwrap();
+    assert_eq!(run_names(&r.events), ["c7", "c8", "c9", "c10"]);
+}
+
+#[test]
+fn r_ios_1_a_read_place_round_trips_through_serde() {
+    let place = ReadPlace { next: 7, previous: [3; 32], fence: 2, epoch: 1, head: store::Head { index: 6, digest: [3; 32] } };
+    let json = serde_json::to_value(place).unwrap();
+    assert_eq!(json["previous"], serde_json::json!(e2e::hex(&[3; 32])));
+    assert_eq!(serde_json::from_value::<ReadPlace>(json).unwrap(), place);
+    assert!(place.check().is_ok());
+    assert!(ReadPlace { next: 8, ..place }.check().is_err(), "the next chunk is the one after the head");
+    assert!(ReadPlace { previous: [4; 32], ..place }.check().is_err(), "the next chunk binds the head's digest");
+}
+
+/// An index older than the place — the registry rolled back past what this
+/// device read — and a chunk after the place that does not follow it are
+/// refused for good, as a rollback.
+#[test]
+fn r_perf_6_resume_refuses_an_index_older_than_its_place_and_a_fork() {
+    let w = World::new();
+    let h = chunked(&w, 6);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    let place = a.place().unwrap();
+
+    // An index behind the place while the registry still holds the place's
+    // chunk, as when a holder's index write failed: only behind.
+    let old = store::Index { head: Some(a.heads[3]), ..index(&w, &h) };
+    assert!(store::resume(&w.host, &h.keys, SESSION, old.clone(), place, None).unwrap().events.is_empty());
+    // The registry no longer holds the place's chunk (another digest at its
+    // index stands in for a log restored to before it): rolled back.
+    let gone = ReadPlace { previous: [5; 32], head: store::Head { index: place.head.index, digest: [5; 32] }, ..place };
+    let e = store::resume(&w.host, &h.keys, SESSION, old, gone, None).unwrap_err();
+    assert!(e.permanent && e.rolled_back, "{e:?}");
+    let none = store::Index { head: None, ..index(&w, &h) };
+    assert!(store::resume(&w.host, &h.keys, SESSION, none, gone, None).unwrap_err().rolled_back);
+    // `known` still applies: another chunk at the head it names.
+    let other = store::Head { index: place.head.index, digest: [7; 32] };
+    assert!(store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, Some(other)).unwrap_err().rolled_back);
+
+    // Chunk 7 sealed onto another chunk 6 than the one this device read.
+    let mut sealer = e2e::ChunkSealer::new(&h.keys, krowk_client::sync::uuid(SESSION), place.next, [1; 32], place.fence);
+    let forked = sealer.seal(&serde_json::to_vec(&json!({"type": "events", "events": [event(SESSION, 7, "forked")]})).unwrap(), false).unwrap();
+    w.host.put_chunk(SESSION, place.next, &forked, &h.token).unwrap();
+    let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, None).unwrap_err();
+    assert!(e.permanent && e.rolled_back, "{e:?}");
+    // And the phone calls it a rollback.
+    let record = ReadPlaceRecord { next: place.next, previous: place.previous.to_vec(), fence: place.fence, epoch: place.epoch, head: place.head.into() };
+    assert_eq!(refused(w.phone.resume_session(SESSION.into(), record, None, None)), "session_rolled_back");
+    // Read from chunk 0, the forked chunk does not follow either.
+    assert!(store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).is_err());
+}
+
+/// The phone keeps `place` and opens the session from it next time: only
+/// the new events, the same as a `catch_up` on the session it kept open.
+#[test]
+fn r_ios_1_resume_session_reads_only_the_events_after_the_place() {
+    let w = World::new();
+    let mut host = w.host_session(SESSION, "fix the build", &[event(SESSION, 1, "before")], &[event(SESSION, 2, "after")]);
+    let opened = w.phone.open_session(SESSION.into(), None, None).unwrap();
+    let place = opened.place().expect("a place");
+    assert_eq!(place.head, opened.head().unwrap());
+
+    host.write(&[event(SESSION, 3, "later"), event(SESSION, 4, "latest")]);
+    host.write(&[event(SESSION, 5, "last")]);
+    let resumed = w.phone.resume_session(SESSION.into(), place.clone(), opened.head(), None).unwrap();
+    assert_eq!(resumed.title(), "fix the build");
+    assert_eq!(runs(&resumed.events().unwrap()), ["later", "latest", "last"]);
+    assert_eq!(runs(&opened.catch_up().unwrap()), runs(&resumed.events().unwrap()), "what a catch-up reads");
+    assert_eq!(resumed.head(), opened.head());
+    assert_eq!(resumed.place(), opened.place());
+    assert!(resumed.catch_up().unwrap().is_empty());
+
+    // A place past the log served, and one no reading stopped at.
+    let ahead = ReadPlaceRecord { next: 9, previous: vec![7; 32], head: HeadRecord { index: 8, digest: vec![7; 32] }, ..place.clone() };
+    assert_eq!(refused(w.phone.resume_session(SESSION.into(), ahead, None, None)), "session_rolled_back");
+    let short = ReadPlaceRecord { previous: vec![7; 31], ..place.clone() };
+    assert!(matches!(w.phone.resume_session(SESSION.into(), short, None, None), Err(KrowkError::InvalidInput { .. })));
+    let skewed = ReadPlaceRecord { next: place.next + 1, ..place.clone() };
+    assert!(matches!(w.phone.resume_session(SESSION.into(), skewed, None, None), Err(KrowkError::InvalidInput { .. })));
+}
+
+/// A chunk after the place that this build cannot open yet, a newer
+/// format's, is refused for good but is no rollback: the app may need
+/// updating.
+#[test]
+fn r_ios_1_a_newer_chunk_after_the_place_is_not_a_rollback() {
+    let w = World::new();
+    let h = chunked(&w, 3);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    let place = a.place().unwrap();
+    let mut sealer = e2e::ChunkSealer::new(&h.keys, krowk_client::sync::uuid(SESSION), place.next, place.previous, place.fence);
+    let mut newer = sealer.seal(b"{}", false).unwrap();
+    newer[0] = e2e::CHUNK_V2 + 1;
+    w.host.put_chunk(SESSION, place.next, &newer, &h.token).unwrap();
+    let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, None).unwrap_err();
+    assert!(e.permanent && !e.rolled_back && e.detail.contains("upgrade krowk"), "{e:?}");
+}
+
+/// A chunk listed at another index than the one it opens at: the registry
+/// relabelling chunk 6 as chunk 7, so a head at 7 would seem reached with
+/// chunks 7 on hidden. Refused as a gap.
+#[test]
+fn r_perf_6_a_chunk_listed_at_another_index_than_its_own_is_refused() {
+    let w = World::new();
+    let h = chunked(&w, 6);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    let place = a.place().unwrap();
+    let mut sealer = e2e::ChunkSealer::new(&h.keys, krowk_client::sync::uuid(SESSION), place.next, place.previous, place.fence);
+    let sixth = sealer.seal(&serde_json::to_vec(&json!({"type": "events", "events": [event(SESSION, 7, "c7")]})).unwrap(), false).unwrap();
+    w.host.put_chunk(SESSION, place.next + 1, &sixth, &h.token).unwrap();
+    let relabelled = store::Head { index: place.next + 1, digest: e2e::chunk_digest(&sixth) };
+    let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, Some(relabelled)).unwrap_err();
+    assert!(e.rolled_back && e.detail.contains("a gap"), "{e:?}");
 }

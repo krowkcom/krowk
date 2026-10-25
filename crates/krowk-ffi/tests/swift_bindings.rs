@@ -103,6 +103,10 @@ fn r_proto_2_r_ffi_3_swift_bindings_generate_from_the_host_build() {
         "struct Joined",
         "var deviceName: String",
         "func parsePairingInvite(uri: String) -> PairingInvite?",
+        // R-IOS-1: a session opened again from where its reading stopped.
+        "func resumeSession(id: String, place: ReadPlaceRecord, known: HeadRecord?, relayOverride: String?) throws -> OpenedSession",
+        "func place() -> ReadPlaceRecord?",
+        "struct ReadPlaceRecord",
         "struct PairingInvite",
         "case Refused(code: String, detail: String)",
         "case Network(detail: String)",

@@ -80,7 +80,9 @@
 //! sealed indexes, each record checked against the device list the phone
 //! holds; [`Account::open_session`] opens one from its latest checkpoint
 //! into an [`OpenedSession`], which reads on with `catch_up` and gets a
-//! relay ticket for the live viewer. Listing, opening, `catch_up` and the
+//! relay ticket for the live viewer; [`Account::resume_session`] opens
+//! one from where a reading stopped (`OpenedSession::place`, a
+//! [`ReadPlaceRecord`] the app keeps) and reads only what came after it. Listing, opening, `catch_up` and the
 //! ticket are blocking registry calls (rule 2); the getters never wait on
 //! the network. The session's keys, the device's signing key and the read
 //! position stay inside `OpenedSession`; Swift gets events, titles and
@@ -148,6 +150,8 @@ pub use error::KrowkError;
 pub use pairing::{Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite};
 pub use protocol::{decode_log_event, decode_stream_line, encode_command};
 pub use sessions::{HeadRecord, OpenedSession, SessionList, SessionSummary};
+// Its own line, so public-api.txt sees an addition and not a change.
+pub use sessions::ReadPlaceRecord;
 pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
