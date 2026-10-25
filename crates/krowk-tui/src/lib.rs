@@ -724,9 +724,10 @@ struct Ui<'h> {
     /// model is not one — it was krowk's pick, not the person's.
     chosen: Option<ModelRef>,
     /// `model` was picked at this terminal — `--model`, `/model`, a route
-    /// — and no turn has started on it yet: the next prompt names it. Else
-    /// a prompt names none and runs where the session is, which another
-    /// client may have moved it to between turns.
+    /// — and no turn this TUI prompted has started on it yet, or a turn a
+    /// backend began by itself ran elsewhere: the next prompt names it.
+    /// Else a prompt names none and runs where the session is, which
+    /// another client may have moved it to between turns.
     named: bool,
     /// The model being routed at start (`Options::route`).
     routing: Option<RouteFuture<'h>>,
@@ -1380,7 +1381,7 @@ impl<'h> Ui<'h> {
             self.prompted_turn = Some(turn_id.clone());
         }
         app.on_line(line);
-        self.follow(app, true);
+        self.follow(app, !self.continuing);
         self.follow_the_agent(app);
         self.flush_requests(app).await;
     }
@@ -1399,7 +1400,7 @@ impl<'h> Ui<'h> {
                 app.on_line(&line);
             }
         }
-        self.follow(app, true);
+        self.follow(app, !continued);
         self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
@@ -1619,17 +1620,21 @@ impl<'h> Ui<'h> {
         term.frame(&lines, &rows, caret)
     }
 
-    /// Where the session is, as the stream says — `own`, of this TUI's
-    /// turn, else of another client's: the model a turn started on, though
-    /// another client moved it there, but for one picked here since this
-    /// TUI's turn was sent; then a switch — a rollover, a failed switch
-    /// going back, one asked for during the turn.
-    fn follow(&mut self, app: &mut App, own: bool) {
-        if let Some(m) = app.started_on.take()
-            && !(std::mem::take(&mut self.named) && own)
-        {
-            self.retarget(&m);
-            self.model = Some(m);
+    /// Where the session is, as the stream says. The model a `prompted`
+    /// turn started on, though another client moved the session there —
+    /// but for one picked here since that turn was sent. A turn a backend
+    /// began by itself runs where that backend last ran, not where the
+    /// session is: the next prompt names the model this TUI had. Then a
+    /// switch — a rollover, a failed switch going back, one asked for
+    /// during the turn.
+    fn follow(&mut self, app: &mut App, prompted: bool) {
+        if let Some(m) = app.started_on.take() {
+            if !prompted {
+                self.named |= self.model.as_ref().is_some_and(|had| *had != m);
+            } else if !std::mem::take(&mut self.named) {
+                self.retarget(&m);
+                self.model = Some(m);
+            }
         }
         if let Some(m) = app.switched.take() {
             self.retarget(&m);

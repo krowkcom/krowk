@@ -239,7 +239,12 @@ fn switch_kept_by_the_next_prompt(daemon: bool) {
     assert!(b.wait_for("now on anthropic:personal/claude-sonnet-4-6", secs(10)).is_some(), "{:?}", b.text());
     a.write(b"and again\r");
     assert!(a.wait_for("on the other one", secs(10)).is_some(), "A's next prompt ran where B moved the session: {:?}", a.text());
-    assert!(a.wait_for("tokens", secs(10)).is_some(), "{:?}", a.text());
+    // Its own footer, not the first turn's.
+    let deadline = Instant::now() + secs(10);
+    while a.text().matches("tokens").count() < 2 {
+        assert!(Instant::now() < deadline, "A's second turn never ended: {:?}", a.text());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let log = std::fs::read_to_string(d.sandbox.root.join("home/.krowk/sessions").join(&session).join("events.jsonl")).unwrap();
     let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let of = |kind: &str| events.iter().filter(|e| e["type"] == kind).cloned().collect::<Vec<_>>();
