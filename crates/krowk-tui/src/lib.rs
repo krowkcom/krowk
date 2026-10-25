@@ -1093,6 +1093,23 @@ async fn recv_auth(rx: &mut Option<mpsc::UnboundedReceiver<connect::Msg>>) -> Op
     }
 }
 
+/// Whose turn a stream line is of, for the model it started on (`follow`).
+#[derive(Clone, Copy)]
+enum Turn {
+    /// One this TUI prompted, or one another client prompted it follows.
+    Prompted,
+    /// One a backend began by itself, which this TUI runs (`continue`).
+    Continued,
+    /// Another client's, seen between this TUI's turns.
+    Watched,
+}
+
+impl Turn {
+    fn of(continued: bool) -> Turn {
+        if continued { Turn::Continued } else { Turn::Prompted }
+    }
+}
+
 /// The next frame the host sent between turns; one missed while the loop
 /// was busy is only a list that a later frame repeats whole.
 async fn watched(rx: &mut broadcast::Receiver<StreamLine>) -> StreamLine {
@@ -1381,7 +1398,7 @@ impl<'h> Ui<'h> {
             self.prompted_turn = Some(turn_id.clone());
         }
         app.on_line(line);
-        self.follow(app, !self.continuing);
+        self.follow(app, Turn::of(self.continuing));
         self.follow_the_agent(app);
         self.flush_requests(app).await;
     }
@@ -1400,7 +1417,7 @@ impl<'h> Ui<'h> {
                 app.on_line(&line);
             }
         }
-        self.follow(app, !continued);
+        self.follow(app, Turn::of(continued));
         self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
@@ -1620,20 +1637,24 @@ impl<'h> Ui<'h> {
         term.frame(&lines, &rows, caret)
     }
 
-    /// Where the session is, as the stream says. The model a `prompted`
-    /// turn started on, though another client moved the session there —
-    /// but for one picked here since that turn was sent. A turn a backend
-    /// began by itself runs where that backend last ran, not where the
-    /// session is: the next prompt names the model this TUI had. Then a
-    /// switch — a rollover, a failed switch going back, one asked for
-    /// during the turn.
-    fn follow(&mut self, app: &mut App, prompted: bool) {
+    /// Where the session is, as the stream says. The model a turn started
+    /// on, though another client moved the session there: this TUI's
+    /// prompt's, but for one picked here since it was sent, or another
+    /// client's, which came after it. A turn a backend began by itself,
+    /// which this TUI runs (`continued`), runs where that backend last ran,
+    /// not where the session is: the next prompt names the model this TUI
+    /// had. Then a switch — a rollover, a failed switch going back, one
+    /// asked for during the turn.
+    fn follow(&mut self, app: &mut App, turn: Turn) {
         if let Some(m) = app.started_on.take() {
-            if !prompted {
-                self.named |= self.model.as_ref().is_some_and(|had| *had != m);
-            } else if !std::mem::take(&mut self.named) {
-                self.retarget(&m);
-                self.model = Some(m);
+            match turn {
+                Turn::Continued => self.named |= self.model.as_ref().is_some_and(|had| *had != m),
+                Turn::Prompted if std::mem::take(&mut self.named) => {}
+                Turn::Prompted | Turn::Watched => {
+                    self.named = false;
+                    self.retarget(&m);
+                    self.model = Some(m);
+                }
             }
         }
         if let Some(m) = app.switched.take() {
@@ -1888,7 +1909,7 @@ impl<'h> Ui<'h> {
             self.last_prompt.clear();
         }
         app.on_line(line);
-        self.follow(app, false);
+        self.follow(app, Turn::Watched);
         self.go_on(app);
     }
 
@@ -2044,9 +2065,10 @@ impl<'h> Ui<'h> {
         app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
         let images = app.images_for(&text);
-        // A session's own model, unless one was picked here: a switch
-        // another client made since this TUI's last turn is kept.
-        let model = if self.named || app.session_id.is_none() { self.model.clone() } else { None };
+        // The session's own model once it has run a turn, unless one was
+        // picked here: a switch another client made since this TUI's last
+        // turn is kept.
+        let model = if self.named || app.used.is_empty() { self.model.clone() } else { None };
         let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).

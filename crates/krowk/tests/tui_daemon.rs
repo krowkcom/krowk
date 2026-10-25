@@ -237,20 +237,24 @@ fn switch_kept_by_the_next_prompt(daemon: bool) {
     assert!(b.wait_for("on the first one", secs(10)).is_some(), "{:?}", b.text());
     b.write(b"/model anthropic:personal/claude-sonnet-4-6\r");
     assert!(b.wait_for("now on anthropic:personal/claude-sonnet-4-6", secs(10)).is_some(), "{:?}", b.text());
+    let log = d.sandbox.root.join("home/.krowk/sessions").join(&session).join("events.jsonl");
+    let of = |kind: &str| std::fs::read_to_string(&log).unwrap().lines().map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()).filter(|e| e["type"] == kind).collect::<Vec<_>>();
+    let ended = |n: usize, t: &pty::Pty| {
+        let deadline = Instant::now() + secs(10);
+        while of("turn.completed").len() < n {
+            assert!(Instant::now() < deadline, "turn {n} never ended: {:?}", t.text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    // B's own prompt too, which a TUI on the daemon sees run.
+    b.write(b"from b\r");
+    ended(2, &b);
     a.write(b"and again\r");
+    ended(3, &a);
     assert!(a.wait_for("on the other one", secs(10)).is_some(), "A's next prompt ran where B moved the session: {:?}", a.text());
-    // Its own footer, not the first turn's.
-    let deadline = Instant::now() + secs(10);
-    while a.text().matches("tokens").count() < 2 {
-        assert!(Instant::now() < deadline, "A's second turn never ended: {:?}", a.text());
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    let log = std::fs::read_to_string(d.sandbox.root.join("home/.krowk/sessions").join(&session).join("events.jsonl")).unwrap();
-    let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
-    let of = |kind: &str| events.iter().filter(|e| e["type"] == kind).cloned().collect::<Vec<_>>();
     let (switched, turns) = (of("model.switched"), of("turn.started"));
     assert_eq!(switched.len(), 1, "B's switch alone, never one back: {switched:?}");
-    assert_eq!(turns.iter().map(|t| t["model"]["instance"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["anthropic", "anthropic:personal"], "{turns:?}");
+    assert_eq!(turns.iter().map(|t| t["model"]["instance"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["anthropic", "anthropic:personal", "anthropic:personal"], "{turns:?}");
     for t in [&mut a, &mut b] {
         t.write(b"\x04\x04");
         assert!(t.wait(secs(10)).is_some());
