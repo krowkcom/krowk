@@ -202,7 +202,18 @@ public final class SessionListViewController: UIViewController, UICollectionView
             return
         }
         guard let row = rows[id] else { return }
-        navigationController?.pushViewController(open(row), animated: true)
+        navigationController?.pushViewController(opened(row), animated: true)
+    }
+
+    /// Session `row`'s screen, as `open` makes it: a transcript reads its
+    /// "last seen" from this list, whose clock ticks each minute (R-IOS-7).
+    private func opened(_ row: SessionRow) -> UIViewController {
+        let screen = open(row)
+        if let transcript = screen as? TranscriptViewController, transcript.lastSeen == nil {
+            let id = row.id.lowercased()
+            transcript.lastSeen = { [weak self] in self?.row(id)?.lastSeen }
+        }
+        return screen
     }
 
     // MARK: Building and applying
@@ -460,7 +471,7 @@ extension SessionListViewController: RouteNavigator {
         await Self.dismissPresented(over: navigation)
         guard this == routes, navigation.view.window != nil else { return nil }
         navigation.popToViewController(self, animated: false)
-        let screen = open(row)
+        let screen = opened(row)
         navigation.pushViewController(screen, animated: false)
         return screen as? any RoutedScreen
     }

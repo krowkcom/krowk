@@ -68,7 +68,8 @@ public struct SessionCacheFailure: Error, CustomStringConvertible, Sendable {
 /// of the 20 most recently updated, written as sessions sync, and where
 /// each viewer stood in its session (`cursors`), written with the events it
 /// names. Ticket 131 draws from it at launch, and reads each session on
-/// from the place its last read stopped at (`putRead`).
+/// from the place its last read stopped at (`putRead`); ticket 132 connects
+/// the session last open (`lastOpen`) before any view appears.
 ///
 /// One SQLite file, `Library/Application Support/krowk-cache.sqlite`
 /// beside the install marker, through the system's SQLite (no package).
@@ -95,9 +96,10 @@ public actor SessionCache {
     /// How many sessions keep their transcripts (`evict`).
     public static let transcripts = 20
 
-    /// The schema this build writes. Version 1 (ticket 129) is taken up:
-    /// it lacks only `place_held`.
-    static let schemaVersion: Int32 = 2
+    /// The schema this build writes. Versions 1 (ticket 129) and 2 (ticket
+    /// 131) are taken up: 1 lacks `place_held` and `last_open`, 2 only
+    /// `last_open`.
+    static let schemaVersion: Int32 = 3
 
     public let url: URL
     private let queue: DispatchSerialQueue
@@ -157,6 +159,7 @@ public actor SessionCache {
             try exec(db, "DELETE FROM events WHERE session_id NOT IN (SELECT id FROM temp.listed)")
             try exec(db, "DELETE FROM cursors WHERE session_id NOT IN (SELECT id FROM temp.listed)")
             try exec(db, "DELETE FROM sessions WHERE id NOT IN (SELECT id FROM temp.listed)")
+            try exec(db, "DELETE FROM last_open WHERE session_id NOT IN (SELECT id FROM temp.listed)")
             try exec(db, "DELETE FROM temp.listed")
         }
     }
@@ -367,6 +370,45 @@ public actor SessionCache {
         }
     }
 
+    // MARK: The session last open (ticket 132)
+
+    /// Session `id`'s transcript is on screen: it is the one a launch, or a
+    /// return to the foreground, connects before any view appears
+    /// (R-IOS-2). Only a session in the index is kept.
+    public func putLastOpen(_ id: String) throws(SessionCacheFailure) {
+        let db = try opened()
+        let put = try Statement(db, """
+            INSERT INTO last_open(slot, session_id) SELECT 0, id FROM sessions WHERE id = ?
+            ON CONFLICT(slot) DO UPDATE SET session_id = excluded.session_id
+            """)
+        put.bind(1, id)
+        try put.run()
+    }
+
+    /// Session `id`'s transcript was left: none is open, unless another
+    /// has been since.
+    public func clearLastOpen(_ id: String) throws(SessionCacheFailure) {
+        let db = try opened()
+        let clear = try Statement(db, "DELETE FROM last_open WHERE session_id = ?")
+        clear.bind(1, id)
+        try clear.run()
+    }
+
+    /// The session last open, as the index keeps it; nil when none is.
+    public func lastOpen() throws(SessionCacheFailure) -> CachedSession? {
+        let db = try opened()
+        let row = try Statement(db, "SELECT session_id FROM last_open WHERE slot = 0")
+        guard try row.step(), let id = row.text(0) else { return nil }
+        return try index().first { $0.id == id }
+    }
+
+    /// `lastOpen`, read now on the cache's queue, blocking the caller: the
+    /// scene delegate's, before any view appears (R-IOS-2). One indexed
+    /// row; nil when the cache can't be read (the phone locked).
+    public nonisolated func lastOpenNow() -> CachedSession? {
+        queue.sync { assumeIsolated { try? $0.lastOpen() } }
+    }
+
     // MARK: Forgetting
 
     /// Closes the cache and deletes its file: the reset of a removed
@@ -463,9 +505,10 @@ public actor SessionCache {
             switch found {
             case Self.schemaVersion: break
             case 0: try create(db)
-            case 1:
+            case 1, 2:
                 try transaction(db) { () throws(SessionCacheFailure) in
-                    try exec(db, "ALTER TABLE sessions ADD COLUMN place_held TEXT")
+                    if found == 1 { try exec(db, "ALTER TABLE sessions ADD COLUMN place_held TEXT") }
+                    try exec(db, Self.lastOpenTable)
                     try exec(db, "PRAGMA user_version = \(Self.schemaVersion)")
                 }
             default:
@@ -498,9 +541,13 @@ public actor SessionCache {
                 """)
             try exec(db, "CREATE INDEX IF NOT EXISTS events_by_ord ON events(session_id, ord)")
             try exec(db, "CREATE TABLE IF NOT EXISTS cursors(session_id TEXT PRIMARY KEY, cursor BLOB)")
+            try exec(db, Self.lastOpenTable)
             try exec(db, "PRAGMA user_version = \(Self.schemaVersion)")
         }
     }
+
+    /// One row at most: the session whose transcript is on screen.
+    private static let lastOpenTable = "CREATE TABLE IF NOT EXISTS last_open(slot INTEGER PRIMARY KEY CHECK (slot = 0), session_id TEXT NOT NULL)"
 
     /// Out of backups, the database and every side file SQLite made
     /// beside it, and `.complete`, the database and its WAL, which hold

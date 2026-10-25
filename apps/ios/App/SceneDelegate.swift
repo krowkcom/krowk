@@ -46,6 +46,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// before pairing, and once it found the phone gone.
     private var watch: StandingWatch?
 
+    /// The paired phone's session list's early start (ticket 132, R-IOS-2):
+    /// its read and the last open session's connection, before any view
+    /// appears. Nil before pairing.
+    private var early: ConnectEarly?
+
     func scene(
         _ scene: UIScene,
         willConnectTo session: UISceneSession,
@@ -70,7 +75,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// A failure that may pass (the phone was locked when the scene
     /// connected) is tried again when the app comes forward. First, before
     /// any view appears, every session followed live checks its connection
-    /// (R-IOS-2, ticket 86).
+    /// (R-IOS-2, ticket 86), and the list's read and the last open
+    /// session's connection start (ticket 132; at launch `showRoot` started
+    /// them, before making the list, and this finds them under way).
     func sceneWillEnterForeground(_ scene: UIScene) {
         // A removal while the app was away is heard now, not a minute on;
         // a session joining again meanwhile asks for itself (a refused
@@ -81,6 +88,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // The unlock may have come while the app was suspended, unheard.
         if UIApplication.shared.isProtectedDataAvailable { Self.phoneUnlocked() }
         LiveSessions.shared.willEnterForeground()
+        early?.start()
         if !opened { showRoot() }
         // Each time the app comes forward, a cold launch too (iOS calls
         // this after `willConnectTo`), the token is kept current and a
@@ -197,26 +205,43 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             // A failure's kind only: never a session's id, title or cwd.
             log: { log.error("\($0, privacy: .public)") }
         )
+        // Allowing a call asks for Face ID first (R-IOS-11).
+        let owner = OwnerChecks.make()
         // Newest pages read ahead from the cache, never the network.
         let shelf = KeptTranscripts(cache: cache)
+        // A session's connection, followed live through the relay, read on
+        // from the cache's place and held to the head its listing named;
+        // its logged events kept as they come (ticket 129), its approvals
+        // for the sheet over its transcript (R-PERM-2).
+        let connection = { @MainActor (id: String, opening: @escaping @Sendable () throws -> SessionOpening) -> LiveSessions.Early in
+            let approvals = ApprovalQueue(sessionID: id, ownerCheck: owner)
+            let live = RelayConnection(
+                resuming: opening, approvals: approvals,
+                standing: { source.standing() }, cache: TranscriptCacheWriter(session: id, cache: cache))
+            return LiveSessions.Early(id: id, session: live, approvals: approvals)
+        }
+        // Connect early (ticket 132, R-IOS-2): the list's read and the last
+        // open session's connection, now, before the list is made; again
+        // on each return to the foreground.
+        let early = ConnectEarly(cache: cache, list: model) { id, known in
+            connection(id) { try source.resume(id: id, known: known) }
+        }
+        self.early = early
+        early.start()
         // A tapped session opens on its transcript, followed live through
         // the relay while its screen is open, held to the head its listing
         // named. One left with commands still out (a prompt queued for a
         // sleeping laptop) is kept, still followed, and opens as it was.
         let parked = parkedScreens
-        // Allowing a call asks for Face ID first (R-IOS-11).
-        let owner = OwnerChecks.make()
         // A session's transcript, followed live through the relay while its
         // screen is open, opened by `opening`, drawn first from what the
-        // cache kept of it, if anything (ticket 131).
+        // cache kept of it, if anything (ticket 131). The connection started
+        // early for it, if one was (ticket 132), not a second.
         let transcript = { @MainActor (row: SessionRow, kept: (any KeptTranscript)?, opening: @escaping @Sendable () throws -> SessionOpening) -> UIViewController in
-            // Its approvals rise in a sheet over the transcript (R-PERM-2).
-            let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
-            // Its logged events are kept as they come (ticket 129).
-            let live = RelayConnection(
-                resuming: opening, approvals: approvals,
-                standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
-            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: kept)
+            let live = early.take(row.id) ?? connection(row.id, opening)
+            let screen = TranscriptViewController(row: row, session: live.session, approvals: live.approvals, kept: kept)
+            // The session last open, kept for the next launch's early start.
+            screen.onScreen = { [id = row.id] in early.onScreen(id, $0) }
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
             screen.restore(parked.takeRefusals(row.id))
@@ -253,6 +278,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// kept, the Secure Enclave wrapping key included, and opens sign-in
     /// as a fresh install would.
     private func deviceGone(_ gone: DeviceGone, api: String, keys: KeychainKeyStorage, source: RegistrySessions) {
+        early = nil
         LiveSessions.shared.stopAll()
         parkedScreens.letGoAll()
         // Nothing re-registers for push meanwhile, a call already queued
@@ -295,6 +321,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 guard let self else { return }
                 log.notice("this iPhone was reset")
                 watch = nil
+                early = nil
                 Self.keys = nil
                 opened = false
                 showRoot()

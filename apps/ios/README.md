@@ -24,9 +24,10 @@ apps/ios/
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
                      NotificationRoutingTests, RemovalTests, CacheTests,
-                     CacheFirstTests, and the TestFleet fixture
+                     CacheFirstTests, ConnectEarlyTests, and the TestFleet fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
-                     PairingUITests, NotificationUITests, RemovalUITests
+                     PairingUITests, NotificationUITests, RemovalUITests,
+                     OfflineUITests
   scripts/           with-fleet.sh: runs a command against the fake fleet;
                      no-web.sh: no web view, no remote image (R-IOS-10);
                      approvals.sh: no allowProject, and only LAContext's owner
@@ -60,13 +61,14 @@ apps/ios/scripts/with-fleet.sh xcodebuild test -project apps/ios/Krowk.xcodeproj
 
 `xcrun simctl list devices available` lists the simulators and their udids.
 The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
-`SignInUITests`, `PairingUITests`, `NotificationUITests` and
-`RemovalUITests`, the app-hosted
+`SignInUITests`, `PairingUITests`, `NotificationUITests`,
+`RemovalUITests` and `OfflineUITests`, the app-hosted
 `KeychainKeyStorageTests`, `SignInTests`, `PairingTests`,
 `SessionListTests`, `RelayConnectionTests`, `TranscriptModelTests`,
 `TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
 `ApprovalMappingTests`, `ApprovalScreenTests`,
-`NotificationRoutingTests` and `RemovalTests` (target
+`NotificationRoutingTests`, `RemovalTests`, `CacheTests`,
+`CacheFirstTests` and `ConnectEarlyTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
