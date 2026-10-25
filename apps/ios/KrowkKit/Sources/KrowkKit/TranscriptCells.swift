@@ -607,12 +607,24 @@ final class TranscriptToolCell: TranscriptCell {
     }
 
     override func prepareForReuse() {
+        #if DEBUG
+        let reusing = FrameCosts.start()
+        defer { FrameCosts.end("reuse tool", reusing) }
+        #endif
         super.prepareForReuse()
         shownBody = nil
         shownExpanded = nil
         output.end()
         body.attributedText = nil
     }
+
+    #if DEBUG
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        let sizing = FrameCosts.start()
+        defer { FrameCosts.end("size tool", sizing) }
+        return super.preferredLayoutAttributesFitting(attributes)
+    }
+    #endif
 }
 
 /// The tappable top of a tool or reasoning row: one element for VoiceOver,

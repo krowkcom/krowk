@@ -133,13 +133,14 @@ final class Costs {
         pieces.append((what, took, end))
     }
 
-    /// Those that ended between `start` and `end`, by name: their total
-    /// and how many, longest first ("layout 182.4 ms ×2, …"). A layout
-    /// pass holds the sizing done inside it, so the two overlap.
+    /// Those that ended between `start` and `end`, by name: their total,
+    /// how many and the longest, longest total first ("layout 182.4 ms ×2
+    /// (≤ 120.1), …"). A piece holds what ran inside it (a snapshot's
+    /// layout pass, a layout's sizing), so they overlap.
     func within(_ start: CFTimeInterval, _ end: CFTimeInterval) -> String {
         let inside = pieces.filter { $0.end > start - 0.001 && $0.end <= end + 0.001 }
-        let byName = Dictionary(grouping: inside, by: { $0.what }).map { ($0.key, $0.value.reduce(0) { $0 + $1.took }, $0.value.count) }
-        return byName.sorted { $0.1 > $1.1 }.map { String(format: "%@ %.1f ms ×%d", $0.0, $0.1 * 1000, $0.2) }.joined(separator: ", ")
+        let byName = Dictionary(grouping: inside, by: { $0.what }).map { ($0.key, $0.value.reduce(0) { $0 + $1.took }, $0.value.count, $0.value.map { $0.took }.max() ?? 0) }
+        return byName.sorted { $0.1 > $1.1 }.map { String(format: "%@ %.1f ms ×%d (≤ %.1f)", $0.0, $0.1 * 1000, $0.2, $0.3 * 1000) }.joined(separator: ", ")
     }
 }
 

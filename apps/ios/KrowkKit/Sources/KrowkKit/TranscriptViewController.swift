@@ -195,11 +195,19 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let open: @MainActor (URL) -> Void = { [weak self] in self?.confirm($0) }
         let text = UICollectionView.CellRegistration<TranscriptTextCell, String> { [weak self] cell, _, id in
             guard let state = self?.model.item(id) else { return }
+            #if DEBUG
+            let configuring = FrameCosts.start()
+            defer { FrameCosts.end("configure text", configuring) }
+            #endif
             cell.openLink = open
             cell.show(state)
         }
         let tool = UICollectionView.CellRegistration<TranscriptToolCell, String> { [weak self] cell, _, id in
             guard let state = self?.model.item(id) else { return }
+            #if DEBUG
+            let configuring = FrameCosts.start()
+            defer { FrameCosts.end("configure tool", configuring) }
+            #endif
             cell.openLink = open
             cell.toggle = { [weak self] in self?.toggle(id) }
             cell.show(state)
@@ -1118,7 +1126,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             #endif
             dataSource.apply(snapshot, animatingDifferences: false)
             #if DEBUG
-            FrameCosts.end("snapshot", applying)
+            FrameCosts.end("snapshot \(applied.count)→\(rows.count) rows", applying)
             #endif
             snapshotApplies += 1
             applied = rows
