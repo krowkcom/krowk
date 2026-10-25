@@ -102,7 +102,7 @@ fn r_host_3_a_published_presence_lists_online_with_its_directories_and_ready_mod
     let ready = &h.instances[0];
     assert!(ready.ready);
     assert_eq!(ready.models, ["claude-sonnet-4-6", "claude-opus-4-1"]);
-    assert_eq!(ready.limit.as_ref().map(|l| (l.status.clone(), l.used_percent)), Some((LimitState::Warning, Some(82.0))));
+    assert_eq!(ready.limit.as_ref().map(|l| (l.status, l.used_percent)), Some((LimitState::Warning, Some(82.0))));
     let unready = &h.instances[1];
     assert!(!unready.ready);
     assert_eq!(unready.fix.as_deref(), Some("set OPENAI_API_KEY"));
@@ -233,8 +233,14 @@ fn r_host_4_the_same_id_again_is_the_same_command() {
     let start = || w.phone.start_session(w.host_device.id().to_string(), "/home/ann/code/app".into(), model.clone(), "hi".into(), id.clone());
     assert_eq!(start().unwrap(), StartAnswer::Started { session_id: session.into() });
     host.join().unwrap();
-    // A retry of the same start, with no host now: the stored answer.
+    // A retry of the same start, with no host now: the very bytes sent
+    // again, which the registry takes as the same command, and its answer.
     assert_eq!(start().unwrap(), StartAnswer::Started { session_id: session.into() });
+    // The id is that start's: another under it is refused, nothing sent.
+    match w.phone.start_session(w.host_device.id().to_string(), "/home/ann/code/app".into(), model.clone(), "something else".into(), id.clone()) {
+        Err(KrowkError::InvalidInput { detail }) => assert!(detail.contains("another start"), "{detail}"),
+        other => panic!("{other:?}"),
+    }
 }
 
 #[test]
@@ -246,10 +252,12 @@ fn r_host_4_what_is_no_start_is_refused_before_anything_is_sent() {
     assert!(invalid(w.phone.start_session("not a device".into(), "/a".into(), model.clone(), "hi".into(), new_command_id())));
     assert!(invalid(w.phone.start_session(host.clone(), "/a".into(), model.clone(), "hi".into(), "not-a-uuid".into())));
     assert!(invalid(w.phone.start_session(host, "/a".into(), model.clone(), "x".repeat(300 * 1024), new_command_id())));
-    let stranger = DeviceKey::generate().id().to_string();
-    match w.phone.start_session(stranger, "/a".into(), model, "hi".into(), new_command_id()) {
-        Err(KrowkError::Refused { code, .. }) => assert_eq!(code, "no_host"),
-        other => panic!("{other:?}"),
+    // A device not on the list, and this phone itself (R-HAND-4): no host.
+    for to in [DeviceKey::generate().id().to_string(), w.phone.device_id()] {
+        match w.phone.start_session(to, "/a".into(), model.clone(), "hi".into(), new_command_id()) {
+            Err(KrowkError::Refused { code, .. }) => assert_eq!(code, "no_host"),
+            other => panic!("{other:?}"),
+        }
     }
 }
 

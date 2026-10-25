@@ -110,8 +110,8 @@ extension HostedKeychain {
             }
             #expect(!message.isEmpty)
             #expect(opened.screen == nil, "nothing started")
-            // Edit and retry takes the row back to be sent as a new command.
-            #expect(starting.takeForRetry("start:\(request.id)") == request)
+            // Edit and retry reads the row back, to be sent as a new command.
+            #expect(starting.refused("start:\(request.id)") == request)
         }
 
         /// Sessions with `+`, in a window of its own, over `source`: its

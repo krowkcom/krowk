@@ -107,7 +107,9 @@ struct HostStepTests {
         let screen = HostStepViewController(model: HostListModel(source: source), source: source, onStart: { _ in })
         screen.loadViewIfNeeded()
         await screen.model.refresh()
-        try? await Task.sleep(for: .milliseconds(50))
+        // The rows follow the model a main-actor turn later.
+        let deadline = Date.now.addingTimeInterval(5)
+        while screen.choosable("host-laptop") == nil && Date.now < deadline { await Task.yield() }
         #expect(screen.choosable("host-desktop") == true)
         #expect(screen.choosable("host-laptop") == false)
     }
@@ -188,7 +190,7 @@ struct StartingRowTests {
         #expect(source.started.map(\.1) == [false], "the start ran off the main thread")
     }
 
-    @Test("R-HOST-4: a refusal turns the row into the host's words, and Edit and retry takes it back to be sent anew")
+    @Test("R-HOST-4: a refusal turns the row into the host's words; Edit and retry keeps it until the edit is sent, as a new command that replaces it")
     func refused() async throws {
         let source = StubHosts([], outcome: .refused(code: "model_not_ready", message: "openai isn't ready — set OPENAI_API_KEY"))
         let starting = StartingSessions(source: source)
@@ -196,7 +198,11 @@ struct StartingRowTests {
         let deadline = Date.now.addingTimeInterval(5)
         while starting.rows.first?.state == .starting && Date.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         #expect(starting.rows.map(\.state) == [.refused("openai isn't ready — set OPENAI_API_KEY")])
-        #expect(starting.takeForRetry("start:c1") == Self.request)
-        #expect(starting.rows.isEmpty)
+        #expect(starting.refused("start:c1") == Self.request)
+        #expect(starting.rows.count == 1, "kept until the edit is sent")
+        var again = Self.request
+        again.id = "c2"
+        starting.start(again, replacing: "start:c1")
+        #expect(starting.rows.map(\.id) == ["start:c2"])
     }
 }

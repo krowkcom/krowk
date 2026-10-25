@@ -70,13 +70,12 @@ extension RegistrySessions: HostSource {
     public func openStartedSession(id: String) throws -> OpenedSession {
         dispatchPrecondition(condition: .notOnQueue(.main))
         let deadline = Date.now.addingTimeInterval(10)
-        while Date.now < deadline {
+        while true {
             do {
-                return try opened().openSession(id: id, known: nil, relayOverride: RelayConnection.relayOverride())
-            } catch KrowkError.Refused(code: "not_found", _) {
+                return try openSession(id: id, known: nil)
+            } catch KrowkError.Refused(code: "not_found", _) where Date.now < deadline {
                 Thread.sleep(forTimeInterval: 0.5)
             }
         }
-        return try openSession(id: id, known: nil)
     }
 }

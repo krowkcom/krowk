@@ -638,7 +638,7 @@ fn r_host_4_a_second_device_starts_a_session_on_the_fleets_host_and_it_syncs() {
         std::thread::sleep(Duration::from_millis(100));
     };
     let project = f.project.canonicalize().unwrap().display().to_string();
-    assert_eq!(announced.directories, [project.clone()], "only the project: the fleet's own repo is excluded from sync");
+    assert_eq!(announced.directories, std::slice::from_ref(&project), "only the project: the fleet's own repo is excluded from sync");
     let ready = announced.instances.iter().find(|i| i.ready && !i.models.is_empty()).expect("an instance ready with a model");
 
     let start = |model: ModelRef| {

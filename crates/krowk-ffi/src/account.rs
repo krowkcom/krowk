@@ -29,6 +29,9 @@ pub struct Account {
     /// The join under way, by its cancel flag (`join_pairing`): one at a
     /// time.
     pub(crate) pairing: Mutex<Option<Arc<AtomicBool>>>,
+    /// The starts this account sealed lately, by command id, so a retry of
+    /// one sends the very bytes again (`start_session`).
+    pub(crate) starts: Mutex<crate::hosts::Sealed>,
     workspace: String,
     workspace_name: String,
 }
@@ -55,6 +58,7 @@ impl Account {
             device: device_id,
             storage,
             pairing: Mutex::new(None),
+            starts: Mutex::default(),
             workspace: creds.workspace.clone(),
             workspace_name: creds.workspace_name.clone(),
         }))

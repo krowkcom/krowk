@@ -107,7 +107,8 @@ instance ready and one directory, a git repository the fleet made and
 trusts: a phone that starts a session there (R-HOST-4) gets it, and
 automatic sync takes it up at its first turn. A POST to
 `TEST_RUNNER_KROWK_HOSTS_URL`'s `/offline` lets host A's announcement
-lapse and answers `offline` once it is listed so; `/online` brings it back.
+lapse and answers `offline` once it is listed so; `/hold` holds its
+refreshes, so a start waits; `/online` brings it back.
 A second fleet, with no demo, runs beside it for the tests that remove
 their phone from host A's devices (ticket 117), since a removal rotates
 host A's user key, which would stop the first fleet's hosts: its URLs are

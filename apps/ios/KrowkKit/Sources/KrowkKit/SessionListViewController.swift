@@ -295,13 +295,13 @@ public final class SessionListViewController: UIViewController, UICollectionView
 
     // MARK: Starting a session (ticket 134)
 
-    /// The new-session flow, in a sheet; filled in from `prefill` for Edit
-    /// and retry.
-    func newSession(prefill: StartRequest? = nil) {
+    /// The new-session flow, in a sheet; for Edit and retry, filled in
+    /// from the refused row `retrying`, which its Start replaces.
+    func newSession(retrying: StartingRow? = nil) {
         guard let newSessions, presentedViewController == nil else { return }
         let starting = newSessions.starting
-        let flow = NewSessionFlow.make(source: newSessions.source, prefill: prefill) { request in
-            starting.start(request)
+        let flow = NewSessionFlow.make(source: newSessions.source, prefill: retrying?.request) { request in
+            starting.start(request, replacing: retrying?.id)
         }
         present(flow, animated: true)
     }
@@ -309,8 +309,17 @@ public final class SessionListViewController: UIViewController, UICollectionView
     /// The host started `session`: its row gives way to the session's, and
     /// its transcript opens live, unless the person has gone elsewhere.
     private func started(_ session: String, _ request: StartRequest) {
+        // Automatic sync takes it up at its first turn: read until it's
+        // listed, for up to 10 s, rather than wait for the next timed read.
         let model = model
-        Task { await model.refresh() }
+        Task {
+            let deadline = Date.now.addingTimeInterval(10)
+            repeat {
+                await model.refresh()
+                if model.listing?.sessions.contains(where: { $0.id == session }) == true { return }
+                try? await Task.sleep(for: .milliseconds(500))
+            } while Date.now < deadline
+        }
         guard let newSessions, let navigation = navigationController, navigation.topViewController === self, presentedViewController == nil else { return }
         navigation.pushViewController(newSessions.open(session, request), animated: true)
     }
@@ -318,8 +327,8 @@ public final class SessionListViewController: UIViewController, UICollectionView
     /// The refused start `id`'s flow opened again, filled in; Start sends
     /// it as a new command, under a new id.
     func editAndRetry(_ id: String) {
-        guard let newSessions, presentedViewController == nil, let request = newSessions.starting.takeForRetry(id) else { return }
-        newSession(prefill: request)
+        guard let newSessions, presentedViewController == nil, let request = newSessions.starting.refused(id) else { return }
+        newSession(retrying: StartingRow(request: request, state: .refused("")))
     }
 
     private func configure(_ cell: UICollectionViewListCell, starting start: StartingRow) {

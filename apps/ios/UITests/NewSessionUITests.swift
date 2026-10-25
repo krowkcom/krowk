@@ -3,8 +3,9 @@
 // session"; the person picks host-a (online, its krowk version), the
 // fleet's repository, the mock model's instance, types a prompt and taps
 // Start. The sheet closes at once and the row reads `starting on host-a…`
-// (R-LAG-8); once the host answers, the session's transcript opens and
-// shows the model's answer.
+// (R-LAG-8), held there while the fleet holds host A's refreshes
+// (KROWK_HOSTS_URL/hold); once the host answers, the session's transcript
+// opens and shows the model's answer.
 import XCTest
 
 final class NewSessionUITests: XCTestCase {
@@ -53,12 +54,23 @@ final class NewSessionUITests: XCTestCase {
         prompt.typeText("Say hello from the phone")
         let start = app.navigationBars.buttons["new-session-start"]
         XCTAssertTrue(start.isEnabled, "Start doesn't take taps")
+        // Host A's refreshes held, so the start waits for the test to look
+        // at its row rather than race the host's answer.
+        let hosts = try FleetUI.env("KROWK_HOSTS_URL")
+        // Never left held for the tests after this one, however this ends.
+        addTeardownBlock { _ = try? await FleetUI.request("\(hosts)/online") }
+        let (held, said) = try await FleetUI.request("\(hosts)/hold")
+        XCTAssertEqual(held, 200, said)
         start.tap()
 
         // R-LAG-8: the sheet closes at once and the row says so.
         let starting = app.collectionViews["sessions-list"].cells.matching(NSPredicate(format: "label BEGINSWITH %@", "starting on host-a")).firstMatch
         if !starting.waitForExistence(timeout: 10) { Screenshots.tree(of: app) }
-        XCTAssertTrue(starting.exists, "no starting on host-a… row")
+        let shown = starting.exists
+        Screenshots.keep("new-session-starting", in: app)
+        let (online, reply) = try await FleetUI.request("\(hosts)/online")
+        XCTAssertEqual(online, 200, reply)
+        XCTAssertTrue(shown, "no starting on host-a… row")
 
         // Started: the session opens, and its first turn's answer shows.
         let answer = app.collectionViews["transcript"].descendants(matching: .any)

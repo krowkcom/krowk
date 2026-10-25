@@ -323,9 +323,10 @@ public final class StartingSessions {
         source.newCommandID()
     }
 
-    /// Shows `request` as starting and sends it.
-    public func start(_ request: StartRequest) {
-        rows.removeAll { $0.request.id == request.id }
+    /// Shows `request` as starting and sends it; the refused row
+    /// `replacing` (Edit and retry) goes as it does.
+    public func start(_ request: StartRequest, replacing: String? = nil) {
+        rows.removeAll { $0.request.id == request.id || $0.id == replacing }
         rows.insert(StartingRow(request: request, state: .starting), at: 0)
         let source = source
         Task.detached { [weak self] in
@@ -334,11 +335,12 @@ public final class StartingSessions {
         }
     }
 
-    /// The refused start `id`, taken off the list to be edited and sent
-    /// again as a new command.
-    public func takeForRetry(_ id: String) -> StartRequest? {
-        guard let i = rows.firstIndex(where: { $0.id == id }) else { return nil }
-        return rows.remove(at: i).request
+    /// The refused start `id`'s request, to be edited and sent again as a
+    /// new command (`start(_:replacing:)`). The row stays until then: an
+    /// edit given up leaves it as it was.
+    public func refused(_ id: String) -> StartRequest? {
+        guard let row = rows.first(where: { $0.id == id }), case .refused = row.state else { return nil }
+        return row.request
     }
 
     private func answered(_ request: StartRequest, _ outcome: StartOutcome) {

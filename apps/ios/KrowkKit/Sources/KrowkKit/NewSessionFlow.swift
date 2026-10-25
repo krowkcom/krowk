@@ -271,6 +271,9 @@ final class ModelStepViewController: ChoiceListViewController {
                     Choice(title: SafeText.clean(m), detail: nil, enabled: true, identifier: "model-\(i.name)/\(m)", value: m)
                 })
             }
+            if i.ready {
+                return Section(header: header, footer: nil, choices: [Choice(title: "No model announced", detail: nil, enabled: false, identifier: "model-\(i.name)-none", value: "")])
+            }
             let fix = i.fix.map(SafeText.clean) ?? "not ready"
             return Section(header: header, footer: nil, choices: [Choice(title: "Not ready", detail: fix, enabled: false, identifier: "model-\(i.name)-unready", value: "")])
         }

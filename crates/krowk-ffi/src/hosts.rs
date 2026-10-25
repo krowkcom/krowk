@@ -10,6 +10,7 @@
 //! permission mode, toolset, effort or budget: the command has no such
 //! field, and the host runs the session in its own default mode.
 
+use std::sync::PoisonError;
 use std::time::{Duration, Instant};
 
 use krowk_client::e2e::DeviceId;
@@ -28,6 +29,34 @@ const SEND_RETRIES: u32 = 3;
 /// a command within one 10 s refresh.
 const ANSWER_EVERY: Duration = Duration::from_millis(500);
 const ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How many sealed starts an account keeps for their retries.
+const KEPT_STARTS: usize = 16;
+
+/// The starts an account sealed lately: the command id, the host it is to,
+/// the command and its sealed bytes. A seal is never the same bytes twice,
+/// and the registry takes an id again only with the same bytes, so a retry
+/// of a start re-sends what was sealed for it.
+#[derive(Default)]
+pub(crate) struct Sealed(std::collections::VecDeque<(String, DeviceId, HostCommand, Vec<u8>)>);
+
+impl Sealed {
+    /// The bytes sealed for `id`, when it was this command to this host;
+    /// `Err` when the id was used for another.
+    fn get(&self, id: &str, to: &DeviceId, command: &HostCommand) -> Result<Option<Vec<u8>>, KrowkError> {
+        match self.0.iter().find(|(i, ..)| i == id) {
+            None => Ok(None),
+            Some((_, t, c, sealed)) if t == to && c == command => Ok(Some(sealed.clone())),
+            Some(_) => Err(KrowkError::InvalidInput { detail: format!("command id {id} was used for another start — mint a new one with newCommandId()") }),
+        }
+    }
+
+    fn keep(&mut self, id: String, to: DeviceId, command: HostCommand, sealed: Vec<u8>) {
+        if self.0.len() >= KEPT_STARTS {
+            self.0.pop_front();
+        }
+        self.0.push_back((id, to, command, sealed));
+    }
+}
 
 /// The hosts whose announcements this phone opened, online first and then
 /// by name, and how many more it could not open: sealed under a user key
@@ -142,17 +171,20 @@ impl Account {
     /// directories it announced, its first turn `prompt` on `model`
     /// (R-HOST-4), as `krowk sync new` does: the start sealed to the
     /// person's devices under `id` (`new_command_id`, minted once per tap
-    /// and passed again on every retry of that start, which then waits for
-    /// the answer to the start already sent), sent — again with
-    /// the same id and bytes after a transport failure, up to three times
-    /// — and the host's answer asked for every 500 ms for up to 30 s.
+    /// and passed again on every retry of that start: this account sends
+    /// the bytes it sealed for it again), sent — again with the same id
+    /// and bytes after a transport failure, up to three times — and the
+    /// host's answer asked for every 500 ms for up to 30 s.
     /// A host that hasn't answered by then is `Refused` as `no_answer`; it
     /// may still start the session. The host runs it in its own default
     /// permission mode: the start names none.
     ///
-    /// `InvalidInput` for a device or id that is not one, or a prompt too
-    /// long to send; `Refused` as `no_host` for a device not on the list
-    /// this phone holds; `Network` when the start could not be sent, which
+    /// `InvalidInput` for a device or id that is not one, an id this
+    /// account used for another start, or a prompt too long to send;
+    /// `Refused` as `no_host` for a device not on the list this phone
+    /// holds, or this phone itself, which never hosts; `command_id_taken`
+    /// for an id the registry holds other bytes under (another run of the
+    /// app's); `Network` when the start could not be sent, which
     /// may still have reached the host. Blocking, for up to 30 s and the
     /// sends: never on the main thread.
     pub fn start_session(&self, device: String, cwd: String, model: ModelRef, prompt: String, id: String) -> Result<StartAnswer, KrowkError> {
@@ -164,20 +196,24 @@ impl Account {
         let host = chain
             .devices()
             .iter()
-            .find(|d| d.id() == to && d.kind == krowk_client::device_chain::Kind::Device)
-            .ok_or_else(|| KrowkError::Refused { code: "no_host".into(), detail: "that host is not on your devices".into() })?;
+            .find(|d| d.id() == to && d.kind == krowk_client::device_chain::Kind::Device && to != self.device)
+            .ok_or_else(|| KrowkError::Refused { code: "no_host".into(), detail: "that host is not one of your computers".into() })?;
         let name = host.name.clone();
         let start = HostCommand::Start { cwd, model, prompt };
-        let sealed = host_command::seal_command(&start, &id, &self.device, &to, &keys, chain.generation()).map_err(|detail| KrowkError::InvalidInput { detail })?;
+        let kept = self.starts.lock().unwrap_or_else(PoisonError::into_inner).get(&id, &to, &start)?;
+        let sealed = match kept {
+            Some(sealed) => sealed,
+            None => {
+                let sealed = host_command::seal_command(&start, &id, &self.device, &to, &keys, chain.generation()).map_err(|detail| KrowkError::InvalidInput { detail })?;
+                self.starts.lock().unwrap_or_else(PoisonError::into_inner).keep(id.clone(), to, start, sealed.clone());
+                sealed
+            }
+        };
         let to_hex = to.to_string();
         let mut tries = 0;
         loop {
             match self.client.send_host_command(&to_hex, &id, &sealed) {
                 Ok(_) => break,
-                // A seal is never the same bytes twice: an earlier call
-                // with this id (Swift's retry of the same start) landed,
-                // and its answer is what is waited for.
-                Err(e) if e.code() == "command_id_taken" => break,
                 Err(e) if transient(&e) && tries < SEND_RETRIES => {
                     tries += 1;
                     std::thread::sleep(ANSWER_EVERY * tries);

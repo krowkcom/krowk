@@ -626,6 +626,15 @@ impl Hosting {
         self.announced(false, Duration::from_secs(ANNOUNCE_TTL + 20))
     }
 
+    /// Holds host A's refreshes, so a start sent now is not delivered
+    /// until `online`: a test sees its phone's `starting on host-a…` row
+    /// for as long as it likes. Returns at once; the announcement stays
+    /// listed online until it lapses, `ANNOUNCE_TTL` seconds after the last
+    /// refresh.
+    pub fn hold(&self) {
+        self.offline.store(true, Ordering::SeqCst);
+    }
+
     /// Host A announces itself again; returns once it is listed online.
     pub fn online(&self) -> Result<(), String> {
         self.offline.store(false, Ordering::SeqCst);

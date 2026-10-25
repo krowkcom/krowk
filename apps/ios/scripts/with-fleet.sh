@@ -23,7 +23,8 @@
 # announces itself with one trusted repository and the mock model ready
 # (R-HOST-3), and starts a session a phone asks for there (R-HOST-4); a
 # POST to KROWK_HOSTS_URL/offline lets its announcement lapse, replying
-# once it is listed offline, and KROWK_HOSTS_URL/online brings it back. The fleet
+# once it is listed offline, KROWK_HOSTS_URL/hold holds its refreshes so a
+# start waits, and KROWK_HOSTS_URL/online brings it back. The fleet
 # runs with --demo: its session is titled "A demo session", has a turn
 # with a tool call and its result, and holds an approval. The fleet
 # binds 127.0.0.1 only; the simulator shares the Mac's loopback. Its log
