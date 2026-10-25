@@ -164,10 +164,42 @@ pub struct Presence {
     pub online: bool,
 }
 
-/// What a publish answers: until when the presence holds. The answer has
-/// room for more (ticket 123's commands), ignored until known.
-#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+/// What a publish answers: until when the presence holds, and the commands
+/// waiting for this device (R-HOST-4), oldest first and at most 16. A
+/// command is delivered on every refresh until it is answered, so the host
+/// de-duplicates by id. The answer has room for more, ignored until known.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PresencePut {
+    pub expires_at: String,
+    pub commands: Vec<DeliveredCommand>,
+}
+
+/// A command another of the person's devices sent this one (R-HOST-4): its
+/// id, the sender's fingerprint, the bytes sealed to this device and when
+/// it was sent. What it says is the host's to open (ticket 124).
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DeliveredCommand {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub from: String,
+    #[serde(default, deserialize_with = "hex_bytes")]
+    pub sealed: Vec<u8>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub created_at: String,
+}
+
+/// A command as its sender sees it: whether the host has answered, the
+/// answer sealed to the sender when it has, and when the command lapses,
+/// ten minutes after it was sent.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct HostCommandState {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub answered: bool,
+    #[serde(default, deserialize_with = "opt_hex_bytes")]
+    pub answer: Option<Vec<u8>>,
     #[serde(default, deserialize_with = "nullable")]
     pub expires_at: String,
 }
@@ -175,7 +207,21 @@ pub struct PresencePut {
 #[derive(Debug, Clone, Default, Deserialize)]
 struct PresencePutAnswer {
     #[serde(default, deserialize_with = "nullable")]
-    presence: PresencePut,
+    presence: PresenceTimes,
+    #[serde(default, deserialize_with = "nullable")]
+    commands: Vec<DeliveredCommand>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PresenceTimes {
+    #[serde(default, deserialize_with = "nullable")]
+    expires_at: String,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct HostCommandAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    command: HostCommandState,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -188,9 +234,17 @@ struct PresencesAnswer {
 /// not is a malformed answer; a `sealed` that is absent reads as no bytes,
 /// which nothing opens.
 fn hex_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
-    let s: String = nullable(d)?;
+    unhex(&nullable::<D, String>(d)?)
+}
+
+/// As `hex_bytes`, where null or absent is none rather than no bytes.
+fn opt_hex_bytes<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<u8>>, D::Error> {
+    Option::<String>::deserialize(d)?.map(|s| unhex(&s)).transpose()
+}
+
+fn unhex<E: serde::de::Error>(s: &str) -> Result<Vec<u8>, E> {
     if !s.len().is_multiple_of(2) || !s.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err(serde::de::Error::custom("sealed is not hex"));
+        return Err(E::custom("sealed bytes are not hex"));
     }
     Ok((0..s.len()).step_by(2).filter_map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok()).collect())
 }
@@ -721,7 +775,40 @@ impl Client {
     pub fn put_presence(&self, sealed: &[u8], ttl_seconds: u64) -> Result<PresencePut, Error> {
         let body = json!({ "presence": { "sealed": crate::client::hex(sealed), "ttl": ttl_seconds } });
         let (answer, _): (PresencePutAnswer, u16) = self.call_as_device("PUT", "/key/device/presence", Some(body), ATTEMPTS, None)?;
-        Ok(answer.presence)
+        Ok(PresencePut { expires_at: answer.presence.expires_at, commands: answer.commands })
+    }
+
+    /// Sends `device`, another of the person's devices, a command sealed to
+    /// it (R-HOST-4), delivered in that device's next presence refresh.
+    /// `id` is the caller's, a random UUID: the same id and bytes again is
+    /// the same command, answered 200 with what was stored, and other bytes
+    /// under it are `command_id_taken`. Sent once; a retry is the caller's
+    /// to make, with the same id. A device not on the person's list, or
+    /// revoked, is `no_device`.
+    pub fn send_host_command(&self, device: &str, id: &str, sealed: &[u8]) -> Result<HostCommandState, Error> {
+        let body = json!({ "command": { "id": id, "sealed": crate::client::hex(sealed) } });
+        let path = format!("{}/devices/{}/commands", self.user_path()?, slug_path(device));
+        let (answer, _): (HostCommandAnswer, u16) = self.call_as_device("POST", &path, Some(body), 1, None)?;
+        Ok(answer.command)
+    }
+
+    /// A command this device sent `device`, as the sender polls it: answered
+    /// or not, and the answer sealed back to this device. Read by the sender
+    /// alone; anyone else, and a command past the registry's grace, is
+    /// `no_command`.
+    pub fn host_command(&self, device: &str, id: &str) -> Result<HostCommandState, Error> {
+        let path = format!("{}/devices/{}/commands/{}", self.user_path()?, slug_path(device), slug_path(id));
+        Ok(self.get_as_device::<HostCommandAnswer>(&path)?.command)
+    }
+
+    /// This device's answer to a command it was delivered, sealed to the
+    /// sender. The first answer is kept: the same one again is Ok, so it is
+    /// retried, and another is `command_answered`. A command not addressed
+    /// to this device, or lapsed, is `no_command`.
+    pub fn answer_host_command(&self, id: &str, answer: &[u8]) -> Result<(), Error> {
+        let body = json!({ "command": { "answer": crate::client::hex(answer) } });
+        let path = format!("/key/device/commands/{}", slug_path(id));
+        self.call_as_device::<Value>("PUT", &path, Some(body), ATTEMPTS, None).map(|_| ())
     }
 
     /// This device is going away on purpose: its presence is cleared. Ok
