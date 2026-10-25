@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Another of your devices can start a session on a host.** A host's
+  daemon now acts on a sealed start command delivered in its presence
+  refresh: a new session in one of the repositories it announced, on a
+  model it has ready, its first turn the prompt sent. A directory it does
+  not offer, or a model it cannot run, is refused with the fix and starts
+  nothing. The session runs in the host's own default permission mode for
+  that directory, whatever the command asks, and automatic sync takes it
+  up at its first turn, so your other devices list it within seconds. A
+  command sent twice under one id starts one session. Nothing sends one
+  yet: `krowk sync new` and the phone come next.
 - **The registry can carry a sealed command to a host and its answer
   back.** One of your devices can send another a command sealed to it,
   under an id it makes up, so sending it again runs it once. The host

@@ -23,6 +23,7 @@
 //! (`REVOKED`) ends it until the daemon starts again.
 
 use super::auto::Config;
+use super::commands::{offered, Commands};
 use crate::catalog;
 use crate::daemon::client::Client as Daemon;
 use crate::instances::{default_model_of, Registry};
@@ -85,7 +86,15 @@ pub struct Options {
     /// The trusted repositories: the directories announced, less those the
     /// policy opts out.
     pub trusted: trust::Store,
+    /// The permission mode a session another device starts here runs in
+    /// (R-HOST-4): the host's own default for the directory, as `krowk -p`
+    /// with no `--permission-mode` resolves it. Never anything a command
+    /// carries. Errors are `(code, message)`, and refuse the start.
+    pub mode_for: ModeFor,
 }
+
+/// The host's default permission mode for a directory.
+pub type ModeFor = Box<dyn Fn(&Path) -> Result<crate::protocol::PermissionMode, (String, String)> + Send + Sync>;
 
 /// The models announced for an instance of `kind` under models.dev's
 /// `provider`: its own default first (`default`, else its kind's), then the
@@ -190,6 +199,8 @@ struct Run {
     revoked: bool,
     /// The supervisor is stopping: nothing starts again.
     closed: bool,
+    /// The commands taken, kept across the publisher's runs.
+    commands: Arc<Commands>,
 }
 
 impl Publisher {
@@ -209,12 +220,12 @@ impl Publisher {
         }
         let (stop, stop_rx) = std::sync::mpsc::channel();
         let (done_tx, done) = std::sync::mpsc::channel();
-        let (me2, c) = (me.clone(), c.clone());
+        let (me2, c, commands) = (me.clone(), c.clone(), run.commands.clone());
         run.stopping = Arc::default();
         let stopping = run.stopping.clone();
         let spawned = std::thread::Builder::new().name("krowk-presence".into()).spawn(move || {
             let _done = done_tx;
-            let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx, stopping))).unwrap_or_else(|_| {
+            let revoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| publish(&c, &stop_rx, stopping, &commands))).unwrap_or_else(|_| {
                 eprintln!("krowk: this machine stopped announcing itself to your other devices: its publisher panicked");
                 false
             });
@@ -291,7 +302,7 @@ impl Ticks {
 
 /// The thread: a tick, then a wait for the next or for the end. Answers
 /// whether the registry refused the device as removed.
-fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomic::AtomicBool>) -> bool {
+fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomic::AtomicBool>, commands: &Arc<Commands>) -> bool {
     let Some(o) = c.announce.as_ref() else { return false };
     let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else {
         eprintln!("krowk: this machine cannot announce itself to your other devices: no async runtime for it");
@@ -300,7 +311,7 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
     let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), paused: None, daemon: None, stop: stopping };
     let mut last: Option<Announcer> = None;
     loop {
-        let next = tick(c, o, &rt, &mut t, &mut last);
+        let next = tick(c, o, &rt, &mut t, &mut last, commands);
         let wait = match next {
             Next::After(d) => d,
             Next::Over(revoked) => return revoked,
@@ -319,8 +330,8 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
 }
 
 /// One refresh: the policy and the setup read, the record gathered, sealed
-/// and sent.
-fn tick(c: &Config, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, last: &mut Option<Announcer>) -> Next {
+/// and sent, and the commands its answer carries taken (`commands`).
+fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, last: &mut Option<Announcer>, commands: &Arc<Commands>) -> Next {
     if t.paused.is_some_and(|until| Instant::now() < until) {
         return Next::After(o.every);
     }
@@ -367,7 +378,7 @@ fn tick(c: &Config, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, la
         *last = Some(a);
         return Next::After(o.every.min(DAEMON_WAIT));
     };
-    let directories = o.trusted.directories().into_iter().filter(|d| policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect();
+    let directories = offered(c, o, &policy);
     let mut record = Announcement { device: a.device.to_string(), name: me.name.clone(), os: me.os.clone(), version: c.version.clone(), online_since_ms: o.online_since_ms, instances: t.instances.clone(), directories, sessions };
     fit(&mut record);
     // Told to stop while it gathered: nothing more is put, so the stop's
@@ -377,6 +388,11 @@ fn tick(c: &Config, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Ticks, la
         return Next::After(Duration::ZERO);
     }
     let sent = presence::seal(&record, &a.keys, a.chain.generation(), &a.device).map_err(|e| ("announcement_unsealed".to_string(), e)).and_then(|sealed| a.api.put_presence(&sealed, o.ttl).map_err(|e| (e.code(), words(&e))));
+    if let Ok(put) = &sent
+        && !put.commands.is_empty()
+    {
+        Commands::take(commands, c, &a, &record.name, put.commands.clone());
+    }
     *last = Some(a);
     match sent {
         Ok(_) => {

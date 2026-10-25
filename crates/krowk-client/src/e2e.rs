@@ -502,18 +502,26 @@ pub const PERSON_V1: u8 = 1;
 pub enum Label {
     /// A host's announcement of itself (`presence`).
     Presence,
+    /// A command one device sends a host (`host_command`).
+    HostCommand,
+    /// The host's answer to it.
+    HostAnswer,
 }
 
 impl Label {
     fn body(self) -> &'static [u8] {
         match self {
             Label::Presence => b"krowk/presence/v1",
+            Label::HostCommand => b"krowk/host-command/v1",
+            Label::HostAnswer => b"krowk/host-answer/v1",
         }
     }
 
     fn key(self) -> &'static [u8] {
         match self {
             Label::Presence => b"krowk/presence/v1-key",
+            Label::HostCommand => b"krowk/host-command/v1-key",
+            Label::HostAnswer => b"krowk/host-answer/v1-key",
         }
     }
 }

@@ -9,6 +9,7 @@
 
 pub mod announce;
 pub mod auto;
+pub mod commands;
 pub mod direct;
 pub mod handoff;
 pub mod host;
