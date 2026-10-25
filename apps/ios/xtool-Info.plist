@@ -40,5 +40,8 @@
 	<!-- Face ID before an allow from the phone runs a command (R-IOS-11). -->
 	<key>NSFaceIDUsageDescription</key>
 	<string>Confirm it's you before krowk runs a command on your computer.</string>
+	<!-- Racing a session's LAN address (R-NET-2). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>krowk connects straight to your computer when it's on the same network.</string>
 </dict>
 </plist>

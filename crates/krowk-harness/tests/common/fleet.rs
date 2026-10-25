@@ -199,7 +199,7 @@ impl Fleet {
     }
 
     /// Stops the bridge and every session a test had hosted, waits for
-    /// them, and removes the scratch root.
+    /// them, closes every direct listener, and removes the scratch root.
     pub fn stop(self) {
         self.stop_host();
         let _ = self.bridge.join();
@@ -462,6 +462,10 @@ impl Hosting {
     pub fn release(&self, session: &str) -> Result<(), String> {
         let (stop, bridge) = self.tests.lock().unwrap().bridges.remove(session).ok_or_else(|| format!("the fleet hosts no test session {session}"))?;
         let _ = stop.send(true);
+        // Its direct listener goes with it; `host_again` starts another.
+        if let Some(direct) = self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(session) {
+            let _ = direct.send(true);
+        }
         let _ = bridge.join();
         let api = self.host.client(&self.api);
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -547,6 +551,9 @@ impl Hosting {
         }
         for (_, bridge) in all {
             let _ = bridge.join();
+        }
+        for (_, direct) in self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain() {
+            let _ = direct.send(true);
         }
     }
 

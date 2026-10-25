@@ -338,6 +338,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         observeFocus()
         observeModel()
         driver?.applied = { [weak self] done in self?.drawFrame(done) }
+        session?.onPath { [weak self] path in self?.statusBar.show(path: path) }
         session?.follow { [weak self] status in self?.relay(status) }
         session?.onUpdates { [weak self] in self?.woken() }
         updateComposer()

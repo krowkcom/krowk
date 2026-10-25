@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app moves a session onto a direct path.** Once on the
+  relay it races the host's tailnet address, MagicDNS name and LAN
+  address over Network.framework, as the terminal does, and moves onto
+  the first that joins; the bar reads `live · direct over LAN` (or
+  `Tailscale`), and back to `live · relay` if that path goes. The app
+  asks for the local network permission the first time it tries a LAN
+  address. A host's direct listener now accepts a join whose `Host`
+  header has no port, as the phone's WebSocket sends it. The app
+  library's viewer API is version 6 (`Race`, `race_join`, `race_lost`).
+
 - **A synced session can be read on from where a device stopped.**
   krowk-client's `store::resume` and the app library's
   `Account.resumeSession` open a session from a kept read place

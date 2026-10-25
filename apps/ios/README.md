@@ -414,6 +414,22 @@ to join again and from which cursor (on its `ConnectionSupervisor`'s
 backoff after a drop or a refusal, below; on a host's presence notice).
 Swift never builds or parses those messages.
 
+- **Direct paths** (R-NET-2, ticket 133): once welcomed on the relay,
+  the viewer races the welcome's candidates (the host's tailnet address,
+  its MagicDNS name, its LAN address). Rust decides: one ticket for all
+  of them, 3 s for each to join, the first that joins with the host there
+  wins, and the rest are dropped. Swift dials each on an `NWConnection` of
+  its own beside the relay's: TLS for `wss://`, plain TCP for a
+  candidate's `ws://`, which the direct listener admits by the ticket and
+  the challenge signed over the address dialed. The relay's connection is
+  read on until the direct welcome, then dropped. A direct connection
+  that ends joins the relay again at once, at the cursor. The bar reads
+  `live · relay`, `live · direct over LAN` or `live · direct over
+  Tailscale`. A LAN address needs the local network permission
+  (`NSLocalNetworkUsageDescription`); denied, that candidate loses and
+  the session stays on the relay. No mDNS: the phone races only what the
+  sealed welcome named. The tailnet path is checked on a phone in ticket
+  54.
 - **The socket** is Network.framework only: an `NWConnection` to the join
   URL with `NWProtocolWebSocket` (pings auto-answered, messages up to the
   relay's 4 MiB batch and its header) over `NWParameters.tls` for `wss`,
@@ -425,9 +441,9 @@ Swift never builds or parses those messages.
   hosted one does, `krowk relay serve` does with `--origin` (which it
   requires off loopback), and the fake fleet's relay is started with the
   origin it prints. Without that a join on a non-default port fails
-  `bad_signature`, the refusal naming the origin the relay checked. Network.framework isn't subject to App Transport
-  Security, and loopback needs no local network permission, so the
-  Info.plist gains nothing. Each binary message goes to `received`, a
+  `bad_signature`, the refusal naming the origin the relay checked. A
+  host's direct listener takes the port the connection came in on.
+  Network.framework isn't subject to App Transport Security. Each binary message goes to `received`, a
   text or pong one only says the link lives, a ping is answered by
   Network.framework and not fed in, and the next is read once the last
   was fed: one at a time, so a fast relay waits in the socket, not in

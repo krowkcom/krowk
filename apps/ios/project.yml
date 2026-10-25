@@ -67,6 +67,10 @@ targets:
         # Asked before an allow from the phone runs a command (R-IOS-11);
         # without it, LAContext's evaluatePolicy ends the app.
         INFOPLIST_KEY_NSFaceIDUsageDescription: "Confirm it's you before krowk runs a command on your computer."
+        # Asked the first time the phone races a session's LAN address
+        # (R-NET-2); denied, that candidate just loses and the session
+        # stays on the relay.
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "krowk connects straight to your computer when it's on the same network."
         # ITSAppUsesNonExemptEncryption is deliberately absent: the export
         # compliance answer is the person's (README.md → Export compliance).
   # Unit tests hosted in the app, for what needs its entitlements: the
