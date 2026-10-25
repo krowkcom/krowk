@@ -201,6 +201,56 @@ fn r_proto_1_two_tuis_on_one_session_show_the_same_reply() {
     }
 }
 
+/// R-SWITCH-4: a `/model` another terminal gives the session between the
+/// first TUI's turns is kept by that TUI's next prompt — it runs on the
+/// model the session moved to, and nothing switches it back: with both in
+/// the host daemon, and with each running its sessions itself, the second
+/// one's switch only in the log, as a `krowk sync host` logs a viewer's.
+#[test]
+fn r_switch_4_a_switch_another_client_made_between_turns_is_kept_by_the_next_prompt() {
+    switch_kept_by_the_next_prompt(true);
+    switch_kept_by_the_next_prompt(false);
+}
+
+fn switch_kept_by_the_next_prompt(daemon: bool) {
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream("on the first one"), Duration::from_millis(5)));
+    let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream("on the other one"), Duration::from_millis(5)));
+    let d = Daemon::new(if daemon { "kept" } else { "keptlocal" });
+    let config = serde_json::json!({"tui": {"screen": "inline"}, "instances": {"anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": other.url}}});
+    std::fs::write(d.sandbox.root.join("home/.krowk/config.json"), config.to_string()).unwrap();
+    let krowk = |args: &[&str]| match daemon {
+        true => d.command(&m.url, args),
+        false => {
+            let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+            c.args(args).env_clear().envs(d.sandbox.env(&m.url)).current_dir(d.sandbox.root.join("repo"));
+            c
+        }
+    };
+    let secs = Duration::from_secs;
+    let mut a = pty::Pty::spawn(krowk(&["--model", "anthropic/claude-sonnet-4-6"]), 100, 30);
+    assert!(a.wait_for(" help", secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"hello\r");
+    assert!(a.wait_for("on the first one", secs(10)).is_some(), "{:?}", a.text());
+    assert!(a.wait_for("tokens", secs(10)).is_some(), "{:?}", a.text());
+    let session = d.session();
+    let mut b = pty::Pty::spawn(krowk(&["--resume", &session]), 100, 30);
+    assert!(b.wait_for("on the first one", secs(10)).is_some(), "{:?}", b.text());
+    b.write(b"/model anthropic:personal/claude-sonnet-4-6\r");
+    assert!(b.wait_for("now on anthropic:personal/claude-sonnet-4-6", secs(10)).is_some(), "{:?}", b.text());
+    a.write(b"and again\r");
+    assert!(a.wait_for("on the other one", secs(10)).is_some(), "A's next prompt ran where B moved the session: {:?}", a.text());
+    assert!(a.wait_for("tokens", secs(10)).is_some(), "{:?}", a.text());
+    let log = std::fs::read_to_string(d.sandbox.root.join("home/.krowk/sessions").join(&session).join("events.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    let of = |kind: &str| events.iter().filter(|e| e["type"] == kind).cloned().collect::<Vec<_>>();
+    let (switched, turns) = (of("model.switched"), of("turn.started"));
+    assert_eq!(switched.len(), 1, "B's switch alone, never one back: {switched:?}");
+    assert_eq!(turns.iter().map(|t| t["model"]["instance"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["anthropic", "anthropic:personal"], "{turns:?}");
+    for t in [&mut a, &mut b] {
+        t.write(b"\x04\x04");
+        assert!(t.wait(secs(10)).is_some());
+    }
+}
 
 /// R-LAG-9, R-TUI-1: the 10k-token answer of `tui.rs`, with the session in
 /// the host daemon — where each event's append and each context record go

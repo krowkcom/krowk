@@ -598,6 +598,7 @@ async fn session(opts: Options) -> Outcome {
         watch: host.watch(),
         sync_events: host.synced().and_then(|s| s.events()),
         live: live.clone(),
+        named: opts.model.is_some(),
         model: opts.model,
         chosen: opts.chosen,
         routing,
@@ -722,6 +723,11 @@ struct Ui<'h> {
     /// session's own, what a bare `/model` id stays beside. A routed
     /// model is not one — it was krowk's pick, not the person's.
     chosen: Option<ModelRef>,
+    /// `model` was picked at this terminal — `--model`, `/model`, a route
+    /// — and no turn has started on it yet: the next prompt names it. Else
+    /// a prompt names none and runs where the session is, which another
+    /// client may have moved it to between turns.
+    named: bool,
     /// The model being routed at start (`Options::route`).
     routing: Option<RouteFuture<'h>>,
     /// A `/model <id>` being routed: the loop goes on — keys, signals,
@@ -1374,7 +1380,7 @@ impl<'h> Ui<'h> {
             self.prompted_turn = Some(turn_id.clone());
         }
         app.on_line(line);
-        self.follow(app);
+        self.follow(app, true);
         self.follow_the_agent(app);
         self.flush_requests(app).await;
     }
@@ -1393,7 +1399,7 @@ impl<'h> Ui<'h> {
                 app.on_line(&line);
             }
         }
-        self.follow(app);
+        self.follow(app, true);
         self.let_go_background(app);
         if let (Some(project), Some(id)) = (&self.project, &app.session_id) {
             let (project, id) = (project.clone(), id.clone());
@@ -1613,9 +1619,18 @@ impl<'h> Ui<'h> {
         term.frame(&lines, &rows, caret)
     }
 
-    /// A switch the stream brought — a rollover, a failed switch going
-    /// back — is where the next prompt goes.
-    fn follow(&mut self, app: &mut App) {
+    /// Where the session is, as the stream says — `own`, of this TUI's
+    /// turn, else of another client's: the model a turn started on, though
+    /// another client moved it there, but for one picked here since this
+    /// TUI's turn was sent; then a switch — a rollover, a failed switch
+    /// going back, one asked for during the turn.
+    fn follow(&mut self, app: &mut App, own: bool) {
+        if let Some(m) = app.started_on.take()
+            && !(std::mem::take(&mut self.named) && own)
+        {
+            self.retarget(&m);
+            self.model = Some(m);
+        }
         if let Some(m) = app.switched.take() {
             self.retarget(&m);
             self.model = Some(m);
@@ -1655,6 +1670,7 @@ impl<'h> Ui<'h> {
                 self.retarget(&m);
                 self.model = Some(m.clone());
                 self.chosen = Some(m.clone());
+                self.named = true;
                 if self.needs_trust.as_ref().is_some_and(|(n, _)| *n != m) {
                     self.needs_trust = None;
                     app.trust_question = None;
@@ -1775,6 +1791,7 @@ impl<'h> Ui<'h> {
         }
         self.retarget(&m);
         self.model = Some(m.clone());
+        self.named = true;
         app.header_model(&m, self.effort_label.as_deref());
         app.model = Some(m.clone());
         if self.owe_trust(app, &m) {
@@ -1866,6 +1883,7 @@ impl<'h> Ui<'h> {
             self.last_prompt.clear();
         }
         app.on_line(line);
+        self.follow(app, false);
         self.go_on(app);
     }
 
@@ -2021,7 +2039,10 @@ impl<'h> Ui<'h> {
         app.echo(&text);
         let (tx, rx) = mpsc::channel(1024);
         let images = app.images_for(&text);
-        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model: self.model.clone(), permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
+        // A session's own model, unless one was picked here: a switch
+        // another client made since this TUI's last turn is kept.
+        let model = if self.named || app.session_id.is_none() { self.model.clone() } else { None };
+        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
         // This client's own turn of the session: it follows it from here
@@ -3099,6 +3120,7 @@ impl<'h> Ui<'h> {
         if let Some(m) = m {
             self.retarget(&m);
             self.model = Some(m);
+            self.named = false;
         }
         app.model = self.model.clone();
     }
@@ -3373,6 +3395,7 @@ impl<'h> Ui<'h> {
         self.retarget(&m);
         self.model = Some(m.clone());
         self.chosen = Some(m.clone());
+        self.named = true;
         app.model = Some(m.clone());
         self.needs_trust = None;
         app.trust_question = None;

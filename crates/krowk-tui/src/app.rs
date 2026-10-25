@@ -998,6 +998,9 @@ pub struct App {
     /// A `model.switched` the stream brought — a rollover, a switch that
     /// went back — for the client to follow with its next prompt.
     pub switched: Option<ModelRef>,
+    /// The model a live turn started on: where the session is, whichever
+    /// client last moved it, for the client to follow.
+    pub started_on: Option<ModelRef>,
     /// The models this session has run on, oldest first: the picker's top.
     pub used: Vec<ModelRef>,
     /// The picker's rows and the one chosen.
@@ -1124,6 +1127,7 @@ impl App {
             offer: None,
             trust_question: None,
             switched: None,
+            started_on: None,
             used: Vec::new(),
             picks: Vec::new(),
             pick_at: 0,
@@ -1491,7 +1495,7 @@ impl App {
             }
         };
         let offer = self.offer.as_mut().map(|o| [&mut o.from.instance, &mut o.to.instance]).into_iter().flatten();
-        for i in [self.model.as_mut().map(|m| &mut m.instance), self.switched.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten().chain(offer) {
+        for i in [self.model.as_mut().map(|m| &mut m.instance), self.switched.as_mut().map(|m| &mut m.instance), self.started_on.as_mut().map(|m| &mut m.instance), self.turn_instance.as_mut(), self.billing.as_mut().map(|(i, _)| i)].into_iter().flatten().chain(offer) {
             on(i);
         }
         // Two old names of one instance: an offer never stays on the
@@ -2448,6 +2452,9 @@ impl App {
                 self.follow.turn_started();
                 self.session_id = Some(ev.session_id.clone());
                 self.model = Some(model.clone());
+                if live {
+                    self.started_on = Some(model.clone());
+                }
                 self.instances.entry(model.instance.clone()).or_default().turns += 1;
                 self.turn_instance = Some(model.instance.clone());
                 if !self.used.contains(model) {
@@ -3649,6 +3656,7 @@ impl App {
         self.turn_instance = None;
         self.offer = None;
         self.switched = None;
+        self.started_on = None;
         self.used.clear();
         self.dirty = true;
     }

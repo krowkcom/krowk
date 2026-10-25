@@ -472,6 +472,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A model switch made from another terminal or device is kept.** When
+  a second terminal's `/model`, or a phone or other device synced to the
+  session, moved it to another model between your turns, the TUI that
+  started the session ran its next prompt on the old model, undoing the
+  switch without saying so. Its next prompt now runs on the model the
+  session is on, unless you picked one in that TUI since its last turn.
 - **Narrowing the terminal while an answer streams no longer leaves a
   piece of it behind.** In the inline screen (`tui.screen: inline`), a
   window made narrower just as a frame was on its way to the terminal
