@@ -245,7 +245,9 @@ public actor SessionCache {
     /// on it: the first launch after an install purges what an earlier
     /// one left. Missing files are no failure.
     public nonisolated static func forgetFiles(at url: URL = SessionCache.defaultURL) throws(SessionCacheFailure) {
-        for file in files(url) {
+        // The side files first: a WAL left beside no database would be
+        // taken up by the next one made there.
+        for file in files(url).reversed() {
             do {
                 try FileManager.default.removeItem(at: file)
             } catch CocoaError.fileNoSuchFile {
@@ -317,6 +319,9 @@ public actor SessionCache {
             // A session gone from the listing, or evicted, leaves no
             // content behind in free pages.
             try exec(db, "PRAGMA secure_delete = ON")
+            // Nor in old frames of the WAL, which is kept between
+            // connections: cut back each time it starts over.
+            try exec(db, "PRAGMA journal_size_limit = 0")
             let version = try Statement(db, "PRAGMA user_version")
             let found: Int32 = try version.step() ? Int32(truncatingIfNeeded: version.int(0) ?? 0) : 0
             switch found {

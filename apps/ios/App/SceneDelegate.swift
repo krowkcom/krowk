@@ -78,6 +78,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Its budget first: from here to caught up (ticket 128).
         Budgets.shared.cameForward()
         watch?.start()
+        // The unlock may have come while the app was suspended, unheard.
+        if UIApplication.shared.isProtectedDataAvailable { Self.phoneUnlocked() }
         LiveSessions.shared.willEnterForeground()
         if !opened { showRoot() }
         // Each time the app comes forward, a cold launch too (iOS calls

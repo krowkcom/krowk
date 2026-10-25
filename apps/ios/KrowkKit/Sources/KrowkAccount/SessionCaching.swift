@@ -40,6 +40,8 @@ public final class TranscriptCacheWriter: Sendable {
     private let interval: Duration
     private struct Held {
         var events: [LogEvent] = []
+        /// A batch that couldn't be written, encoded: first in the next.
+        var unwritten: [(id: String, json: String)] = []
         var scheduled = false
         /// The write last scheduled: the next waits for it, so batches
         /// land in order.
@@ -67,35 +69,42 @@ public final class TranscriptCacheWriter: Sendable {
     }
 
     /// Logged events, in order: written within `interval`, with whatever
-    /// else came meanwhile.
+    /// else came meanwhile. With none, a batch still held from a failed
+    /// write is tried again: the viewer showing anything at all (it does
+    /// on every join) is a moment to.
     public func add(events: [LogEvent]) {
-        guard !events.isEmpty else { return }
         held.withLock { held in
             held.events += events
-            guard !held.scheduled else { return }
+            guard !held.events.isEmpty || !held.unwritten.isEmpty, !held.scheduled else { return }
             held.scheduled = true
             let previous = held.last
             held.last = Task.detached { [self] in
                 await previous?.value
                 try? await Task.sleep(for: interval)
-                let batch = self.held.withLock { held in
+                let (unwritten, batch) = self.held.withLock { held in
                     held.scheduled = false
-                    defer { held.events = [] }
-                    return held.events
+                    defer {
+                        held.events = []
+                        held.unwritten = []
+                    }
+                    return (held.unwritten, held.events)
                 }
-                let rows = batch.compactMap { event in (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) } }
+                let rows = unwritten + batch.compactMap { event in
+                    (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) }
+                }
                 do throws(SessionCacheFailure) {
                     try await cache.appendEvents(session: session, rows)
                 } catch where !error.forgotten {
                     self.held.withLock { held in
-                        held.events = Array((batch + held.events).suffix(Self.mostHeld))
+                        held.unwritten = Array((rows + held.unwritten).suffix(Self.mostHeld))
                     }
                 } catch {}
             }
         }
     }
 
-    /// Once every event added so far is written (or dropped).
+    /// Once every write scheduled so far has run: what it couldn't write
+    /// is still held.
     public func written() async {
         while let last = held.withLock({ $0.last }) {
             await last.value

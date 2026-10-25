@@ -61,6 +61,29 @@ extension HostedKeychain {
             #expect(!FileManager.default.fileExists(atPath: url.path(percentEncoded: false)))
         }
 
+        @Test("R-IOS-1: events the cache refused while the phone was locked are held, and written in order with what comes after unlock")
+        func testR_IOS_1_aLockedBatchIsWrittenAfterUnlock() async throws {
+            let url = URL.temporaryDirectory.appending(path: "krowk-cache-hosted/\(UUID().uuidString)/krowk-cache.sqlite")
+            let cache = try await SessionCache.open(at: url)
+            defer { Task { try? await cache.forgetAll() } }
+            let (events, session) = try await MainActor.run { (try TranscriptModelTests.events(), TranscriptModelTests.session) }
+            let writer = TranscriptCacheWriter(session: session, cache: cache, interval: .milliseconds(10))
+
+            await cache.suspend()
+            writer.add(events: Array(events.prefix(3)))
+            await writer.written()
+            await cache.resume()
+            #expect(try await cache.events(session: session, limit: 100).isEmpty, "written while locked")
+            // Unlocked: a frame with no logged event retries what's held.
+            writer.add(events: [])
+            await writer.written()
+            #expect(try await cache.events(session: session, limit: 100).count == 3)
+            writer.add(events: Array(events.dropFirst(3)))
+            await writer.written()
+            let kept = try await cache.events(session: session, limit: 100)
+            #expect(kept.reversed().map(\.id) == events.map(\.id))
+        }
+
         /// Polls `done` every 50 ms until it holds, or fails at `limit`.
         static func wait(within limit: Duration, _ why: String, until done: () async throws -> Bool) async throws {
             let deadline = ContinuousClock.now + limit
