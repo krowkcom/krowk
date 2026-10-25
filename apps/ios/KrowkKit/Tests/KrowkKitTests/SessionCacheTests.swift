@@ -122,18 +122,24 @@ struct SessionCacheTests {
         #expect(try await SessionCache.open(at: url).index().isEmpty)
     }
 
-    @Test("R-IOS-1, R-E2E-1: the file has .complete protection and is excluded from backup")
+    @Test("R-IOS-1, R-E2E-1: the file has .complete protection (on a device; the simulator has none) and is excluded from backup")
     func testR_IOS_1_fileIsProtectedAndNotBackedUp() async throws {
         let cache = try await SessionCache.open(at: url)
         try await cache.putIndex([Self.session("s")], listedAtMs: 1)
-        let values = try url.resourceValues(forKeys: [.fileProtectionKey, .isExcludedFromBackupKey])
-        #expect(values.isExcludedFromBackup == true)
-        #expect(values.fileProtection == .complete)
-        // The WAL beside it too.
+        // The database, and the WAL beside it.
         let wal = try #require(SessionCache.files(url).first { $0.path().hasSuffix("-wal") })
-        let walValues = try wal.resourceValues(forKeys: [.fileProtectionKey, .isExcludedFromBackupKey])
-        #expect(walValues.isExcludedFromBackup == true)
-        #expect(walValues.fileProtection == .complete)
+        for file in [url, wal] {
+            let values = try file.resourceValues(forKeys: [.fileProtectionKey, .isExcludedFromBackupKey])
+            #expect(values.isExcludedFromBackup == true, "\(file.lastPathComponent)")
+            #if targetEnvironment(simulator)
+            // The simulator has no Data Protection: whatever class is set,
+            // it reads back its own default. A device reads `.complete`
+            // (ticket 107's real-device checks).
+            #expect(values.fileProtection != nil && values.fileProtection != URLFileProtection.none, "\(file.lastPathComponent)")
+            #else
+            #expect(values.fileProtection == .complete, "\(file.lastPathComponent)")
+            #endif
+        }
     }
 
     @Test("R-IOS-1: forgetAll removes the file, and nothing writes it again")
