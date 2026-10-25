@@ -55,6 +55,23 @@ pub enum Update {
     /// The host's answer to a handoff this viewer asked for (R-HAND-1):
     /// what this device takes the session up with, or why it stays.
     Handoff(Result<super::Handed, String>),
+    /// Where this viewer stands as of the `Show` it ends, the last update
+    /// of one that moved it: what a device keeping its place across
+    /// launches saves with the events that `Show` holds, in one write.
+    Saved(Cursor),
+}
+
+/// A viewer's place (engineering/harness.md → Sync cursors): the stream,
+/// the last batch of it applied and shown, and the newest logged event the
+/// viewer holds every event up to — older than the newest held while a
+/// catch-up for a gap is still out, so a place kept across launches never
+/// catches up from past a gap.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cursor {
+    pub stream: String,
+    pub after_seq: u64,
+    pub newest: Option<String>,
 }
 
 /// The last-applied-batch ack a viewer sends the relay (relay.md → Flow
@@ -66,8 +83,10 @@ pub fn ack(session: &[u8; 16], seq: u64) -> Vec<u8> {
     b
 }
 
-/// A viewer acks at least every this many batches, well inside the relay's
-/// window of 16, and at the next display frame after any it applied.
+/// A viewer acks at least every this many batches shown, well inside the
+/// relay's window of 16, and at the next display frame after any it
+/// applied. A frame holding more than the window's batches holds the relay
+/// back until it is shown: flow control, not a stall.
 pub const ACK_EVERY: u64 = 4;
 const _: () = assert!(ACK_EVERY < 16, "inside the relay's window of 16");
 
@@ -104,8 +123,11 @@ pub fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, la
         .into_iter()
         .filter(|e| {
             let Some(i) = e["id"].as_str() else { return false };
+            if !seen.insert(i.to_string()) {
+                return false;
+            }
             newest(last, i);
-            seen.insert(i.to_string())
+            true
         })
         .collect()
 }
@@ -183,6 +205,15 @@ impl CatchUps {
         }
     }
 
+    /// The oldest `after` asked and not yet answered, or owed: every event
+    /// after it may not be held yet.
+    pub fn outstanding(&self) -> Option<&Option<String>> {
+        match (&self.in_flight, &self.owed) {
+            (Some(a), Some(b)) => Some(if no_newer(a, b) { a } else { b }),
+            (a, b) => a.as_ref().or(b.as_ref()),
+        }
+    }
+
     #[cfg(test)]
     fn in_flight(&self) -> bool {
         self.in_flight.is_some()
@@ -210,26 +241,31 @@ pub fn replay(l: &mut ViewerLink, held: Vec<Vec<u8>>, seen: &mut HashSet<String>
     first
 }
 
-/// One stream batch: its lines, the log's events among them once each.
-/// Answers, when it skipped past a batch this viewer never opened, the
-/// newest event held *before* it: what the catch-up asks from, since this
-/// batch's own events are newer than the ones the gap swallowed.
+/// One stream batch: its lines, the log's events among them once each,
+/// and `applied` moved to it once they are in `frame`. Answers, when it
+/// skipped past a batch this viewer never opened, the newest event held
+/// *before* it: what the catch-up asks from, since this batch's own events
+/// are newer than the ones the gap swallowed. A batch that opens but does
+/// not parse is a gap too: its stream's counter refuses it if it comes
+/// again, so a catch-up is all that brings its events.
 pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
     let before = last.clone();
     let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return None };
     let seq = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
     // Against the last batch opened, or — the first since joining — the
     // relay's count at the join: either way the batch must be the next.
-    let gap = (skipped || seq != *applied + 1).then_some(before);
-    *applied = seq;
-    let Ok(batch) = serde_json::from_slice::<Batch>(&body) else { return gap };
+    let gap = (skipped || seq != *applied + 1).then(|| before.clone());
+    let Ok(batch) = serde_json::from_slice::<Batch>(&body) else {
+        *applied = seq;
+        return Some(before);
+    };
     for line in batch.lines {
         match &line {
             StreamLine::Log(e) => {
-                newest(last, &e.id);
                 if !seen.insert(e.id.clone()) {
                     continue;
                 }
+                newest(last, &e.id);
             }
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) if !asked.insert(r.request_id.clone()) => continue,
             StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => {
@@ -244,6 +280,7 @@ pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mu
     if end {
         frame.push(Update::Host(false));
     }
+    *applied = seq;
     gap
 }
 
@@ -255,7 +292,8 @@ pub enum Effect {
     /// The text message `ping` on the current connection.
     Ping,
     /// Updates for the screen: at most one `Show` per `FRAME` (R-LAG-7),
-    /// but for the last one, which says `Failed` before `End`.
+    /// but for the last one, which says `Failed` before `End`. One that
+    /// moved the viewer's place ends with `Saved`.
     Show(Vec<Update>),
     /// Read the chunks written since `attached()` (`store::catch_up` on a
     /// clone of it, blocking, off the main thread), up to `want` when
@@ -382,9 +420,13 @@ pub struct ViewerCore {
     moving_until_ms: u64,
     leaving: bool,
     on: Option<Candidate>,
-    /// The last stream batch applied, and the last acked to the relay.
+    /// The last stream batch applied, the last whose updates went out in a
+    /// `Show`, and the last acked to the relay: only a batch shown is.
     applied: u64,
+    shown: u64,
     acked: u64,
+    /// The place the last `Saved` named.
+    saved: Option<Cursor>,
     catch_ups: CatchUps,
     reading: Option<Reading>,
     waiting: VecDeque<Input>,
@@ -435,7 +477,9 @@ impl ViewerCore {
             leaving: false,
             on: None,
             applied: 0,
+            shown: 0,
             acked: 0,
+            saved: None,
             catch_ups: CatchUps::default(),
             reading: None,
             waiting: VecDeque::new(),
@@ -481,7 +525,7 @@ impl ViewerCore {
             return None;
         }
         let mut at = self.last_ping_ms.saturating_add(ms(PING));
-        if !self.frame.is_empty() || (self.applied > self.acked && self.connected) {
+        if !self.frame.is_empty() || (self.applied > self.acked && self.connected) || self.place() != self.saved {
             at = at.min(self.shown_ms.saturating_add(ms(FRAME)));
         }
         if self.moving.is_some() && self.reading.is_none() {
@@ -532,7 +576,7 @@ impl ViewerCore {
             Some((_, n)) => n,
             None => joined["seq"].as_u64().unwrap_or(0),
         };
-        self.acked = self.applied;
+        (self.shown, self.acked) = (self.applied, self.applied);
         self.link = Some(l);
         if !self.host {
             self.frame.push(Update::Host(false));
@@ -686,24 +730,39 @@ impl ViewerCore {
         }
     }
 
-    /// The time passing: the batches applied acked, the frame shown if a
-    /// display frame has passed since the last, a heartbeat every `PING`
-    /// (or, with no word for `DEAD`, the relay joined again), a move whose
-    /// welcome is late given up, and a race started when one is due.
+    /// The time passing: the frame shown if a display frame has passed
+    /// since the last, ending with the place when it moved, the batches
+    /// shown acked, a heartbeat every `PING` (or, with no word for `DEAD`,
+    /// the relay joined again), a move whose welcome is late given up, and
+    /// a race started when one is due.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Effect> {
         if self.ended {
             return Vec::new();
         }
         self.now_ms = now_ms;
-        if self.applied > self.acked && self.connected {
-            self.acked = self.applied;
-            self.out.push(Effect::Send(ack(&self.raw, self.applied)));
-        }
         // Never two `Show`s inside one display frame, however often the
         // caller ticks (R-LAG-7).
-        if !self.frame.is_empty() && now_ms >= self.shown_ms.saturating_add(ms(FRAME)) {
-            self.shown_ms = now_ms;
-            self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+        if now_ms >= self.shown_ms.saturating_add(ms(FRAME)) {
+            let place = self.place();
+            if place != self.saved
+                && let Some(c) = place.clone()
+            {
+                self.frame.push(Update::Saved(c));
+            }
+            self.saved = place;
+            if !self.frame.is_empty() {
+                self.shown_ms = now_ms;
+                self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+            }
+        }
+        // With nothing waiting to be shown, every batch applied has been:
+        // one whose lines were all seen before showed nothing.
+        if self.frame.is_empty() {
+            self.shown = self.applied;
+        }
+        if self.shown > self.acked && self.connected {
+            self.acked = self.shown;
+            self.out.push(Effect::Send(ack(&self.raw, self.shown)));
         }
         if now_ms >= self.last_ping_ms.saturating_add(ms(PING)) {
             self.last_ping_ms = now_ms;
@@ -812,6 +871,17 @@ impl ViewerCore {
             Some(c) => Some(c),
             None => self.resume,
         }
+    }
+
+    /// Where this viewer stands, as `Saved` names it: the cursor, and the
+    /// newest event held, or the oldest a catch-up still out asks from.
+    fn place(&self) -> Option<Cursor> {
+        let (stream, after_seq) = self.cursor()?;
+        let newest = match self.catch_ups.outstanding() {
+            Some(after) if no_newer(after, &self.last_id) => after.clone(),
+            _ => self.last_id.clone(),
+        };
+        Some(Cursor { stream: e2e::hex(&stream), after_seq, newest })
     }
 
     fn welcomed(&self) -> bool {
@@ -957,10 +1027,10 @@ impl ViewerCore {
         } else if let Some((_, have)) = l.cursor() && seq_of(b) <= have {
             // A batch this viewer opened already, by the other uplink: acked
             // all the same, as a direct listener counts its window in what
-            // it sent.
+            // it sent — up to the last shown, and the rest once it is.
             if self.connected {
-                self.acked = self.acked.max(have);
-                self.out.push(Effect::Send(ack(&self.raw, have)));
+                self.acked = self.acked.max(self.shown);
+                self.out.push(Effect::Send(ack(&self.raw, self.shown)));
             }
         } else {
             let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
@@ -970,9 +1040,11 @@ impl ViewerCore {
             if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
                 self.ask_catch_up(after);
             }
-            if self.applied >= self.acked + ACK_EVERY && self.connected {
-                self.acked = self.applied;
-                self.out.push(Effect::Send(ack(&self.raw, self.applied)));
+            // Only what a `Show` handed the screen is acked: the rest at
+            // the frame that shows it.
+            if self.shown >= self.acked + ACK_EVERY && self.connected {
+                self.acked = self.shown;
+                self.out.push(Effect::Send(ack(&self.raw, self.shown)));
             }
         }
     }
@@ -1039,12 +1111,11 @@ impl ViewerCore {
             self.ask_catch_up(after);
         }
         // What was held may all have been batches opened already: acked all
-        // the same, or a direct listener, its window full, sends no more.
-        if let Some((_, have)) = self.link.as_ref().and_then(|l| l.cursor())
-            && self.connected
-        {
-            self.acked = self.acked.max(have);
-            self.out.push(Effect::Send(ack(&self.raw, have)));
+        // the same, up to the last shown, or a direct listener, its window
+        // full, sends no more. What is not shown yet is acked once it is.
+        if self.link.as_ref().and_then(|l| l.cursor()).is_some() && self.connected {
+            self.acked = self.acked.max(self.shown);
+            self.out.push(Effect::Send(ack(&self.raw, self.shown)));
         }
     }
 
@@ -1235,6 +1306,21 @@ mod tests {
         assert_eq!(shown(vec![requested("r1")]), Vec::<String>::new());
         assert_eq!(shown(vec![result.clone()]), ["result"]);
         assert_eq!(shown(vec![requested("r1"), requested("r1")]), ["asked r1"], "the turn ended: shown again, once");
+    }
+
+    /// R-IOS-1: an event seen before does not move the newest event held,
+    /// even one newer than it: the place names only what was applied.
+    #[test]
+    fn r_ios_1_a_duplicate_event_does_not_move_newest() {
+        let (mut link, [b1, b2, _]) = three_batches();
+        let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::from([id(2)]), Some(id(0)), HashSet::new(), Vec::new(), 0);
+        apply(&mut link, &b1, &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!(last, Some(id(1)));
+        apply(&mut link, &b2, &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        assert_eq!((last, applied, frame.len()), (Some(id(1)), 2, 1), "batch 2 applied, its seen event neither shown nor newest");
+        let mut last = Some(id(0));
+        assert!(fresh_only(vec![logged(2)], &mut seen, &mut last).is_empty());
+        assert_eq!(last, Some(id(0)), "nor in a catch-up");
     }
 
     /// R-OFF-2: batches 1 and 3 held for a welcome whose catch-up went out

@@ -146,6 +146,27 @@ pub enum ViewerUpdate {
     HandoffTaken,
     /// A handoff to this device was refused, and why.
     HandoffRefused { detail: String },
+    /// Where the viewer stands as of this frame, its last update when the
+    /// frame moved it: saved with the frame's logged events in one write,
+    /// so the place never names an event the cache does not hold. Nothing
+    /// on screen changes.
+    Saved { cursor: CursorRecord },
+}
+
+/// A viewer's place: the stream (hex), the last batch of it shown, and the
+/// newest logged event held with every one before it.
+/// `krowk_client::sync::viewer::Cursor`.
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CursorRecord {
+    pub stream: String,
+    pub after_seq: u64,
+    pub newest: Option<String>,
+}
+
+impl From<core::Cursor> for CursorRecord {
+    fn from(c: core::Cursor) -> CursorRecord {
+        CursorRecord { stream: c.stream, after_seq: c.after_seq, newest: c.newest }
+    }
 }
 
 /// The updates one core `Update` crosses as: one, and a `Failed` after it
@@ -209,6 +230,10 @@ fn updates(u: Update, out: &mut Vec<ViewerUpdate>) {
         }
         Update::Handoff(Err(detail)) => {
             out.push(ViewerUpdate::HandoffRefused { detail });
+            None
+        }
+        Update::Saved(c) => {
+            out.push(ViewerUpdate::Saved { cursor: c.into() });
             None
         }
     };
