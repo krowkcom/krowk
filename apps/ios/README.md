@@ -354,8 +354,8 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
   reads afresh, replaces the session's cached events, and the screen's
   rows start over. The events read and the new place (with the newest
   event the cache then holds) are written in one transaction, off the
-  open's thread, and only if the place kept is still the one the read
-  started from (an eviction meanwhile leaves none). The viewer starts at
+  open's thread; the place only if the one kept is still the one the read
+  started from (otherwise the one kept stays: none after an eviction). The viewer starts at
   the newest event the cache holds with every one before it (its
   cursor's, else the last read's: `Viewer.openResumed`), so the welcome's
   catch-up asks only for what came after. Everything is merged by event

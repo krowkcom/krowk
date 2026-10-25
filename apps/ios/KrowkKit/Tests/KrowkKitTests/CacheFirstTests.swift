@@ -97,6 +97,15 @@ struct KeptTranscriptModelTests {
         #expect(caught.ids == ["item:u1", "item:r1", "item:u2", "item:r2", "item:u3"])
     }
 
+    @Test("R-IOS-1: a kept page's turn end refuses nothing typed here")
+    func testR_IOS_1_aKeptTurnEndRefusesNoBubble() {
+        let model = TranscriptModel(sessionID: Self.s)
+        let token = model.issue(.steer("typed"))
+        model.drawKept([TranscriptScreenTests.event("x1", .turnStarted(turn: "old")), TranscriptScreenTests.event("x2", .turnCompleted(turn: "old", end: .completed))])
+        #expect(model.item(TranscriptModel.bubbleID(token))?.refused == false)
+        #expect(!model.isTurnRunning)
+    }
+
     @Test("R-IOS-1: a kept page that comes after the session's read puts its newer events after theirs, and settles no bubble")
     func testR_IOS_1_aLatePageMergesAsHistory() {
         let model = TranscriptModel(sessionID: Self.s)
@@ -311,16 +320,17 @@ struct KeptPlaceTests {
         try await cache.putIndex([SessionCacheTests.session("s", updatedMs: 3), SessionCacheTests.session("t", updatedMs: 1)], listedAtMs: 2)
         #expect(try await cache.place(session: "s")?.place == place)
 
-        // A read that started at another place than the one kept (evicted
-        // and read afresh meanwhile) keeps its events but no place.
+        // A read that started at another place than the one kept (another
+        // read moved it on meanwhile) keeps its events, and the place kept
+        // stays.
         let stale = Data(#"{"next":5}"#.utf8)
         try await cache.putRead(session: "s", SessionCacheTests.events(3..<4), place: stale, held: "s-e3", from: Data(#"{"next":0}"#.utf8))
-        #expect(try await cache.place(session: "s") == nil)
+        #expect(try await cache.place(session: "s")?.place == place)
         #expect(try await cache.events(session: "s", limit: 10).count == 4)
 
         try await cache.putCursor(session: "s", json: "{}")
         let again = Data(#"{"next":9}"#.utf8)
-        try await cache.putRead(session: "s", SessionCacheTests.events(7..<9), place: again, held: "s-e8", from: nil, replacing: true)
+        try await cache.putRead(session: "s", SessionCacheTests.events(7..<9), place: again, held: "s-e8", from: place, replacing: true)
         #expect(try await cache.events(session: "s", limit: 10).map(\.id) == ["s-e8", "s-e7"])
         #expect(try await cache.cursor(session: "s") == nil)
         #expect(try await cache.place(session: "s")?.place == again)
@@ -332,6 +342,9 @@ struct KeptPlaceTests {
         try await cache.evict(keep: 0)
         #expect(try await cache.place(session: "s") == nil, "a place over no events")
         #expect(try await cache.index().map(\.id) == ["s", "t"])
+        // A read that started before the eviction leaves none.
+        try await cache.putRead(session: "s", SessionCacheTests.events(9..<10), place: again, held: "s-e9", from: again)
+        #expect(try await cache.place(session: "s") == nil)
     }
 
     @Test("R-IOS-3: pages come in the log's order, by event id, whatever order the events reached the cache in")

@@ -238,8 +238,9 @@ public actor SessionCache {
     /// the newest event the cache then holds with every one before it, in
     /// one transaction, so a place kept never stands past an event the
     /// cache does not hold. The place is written only if the one kept is
-    /// still `from`, the one the read started at: one evicted meanwhile
-    /// (its events with it) leaves none. `replacing`, the session's events
+    /// still `from`, the one the read started at; otherwise the one kept
+    /// stays (none, when it was evicted meanwhile with its events; another
+    /// read's, which stands over its own). `replacing`, the session's events
     /// and cursor go first: a read that started over (the session rolled
     /// back past what the cache held). A session not in the index keeps no
     /// place.
@@ -257,10 +258,10 @@ public actor SessionCache {
                 }
             }
             try insert(db, events, session: session)
-            let fresh = kept == from && place != nil
+            guard kept == from else { return }
             let put = try Statement(db, "UPDATE sessions SET place = ?, place_held = ? WHERE id = ?")
-            put.bind(1, fresh ? place : nil)
-            put.bind(2, fresh ? held : nil)
+            put.bind(1, place)
+            put.bind(2, place == nil ? nil : held)
             put.bind(3, session)
             try put.run()
         }

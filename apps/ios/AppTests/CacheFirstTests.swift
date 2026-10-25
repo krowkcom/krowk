@@ -58,7 +58,7 @@ extension HostedKeychain {
             SessionRow(id: id, title: title, detail: "", live: false, accessibilityLabel: title)
         }
 
-        @Test("R-IOS-1, R-IOS-3: listed and opened once, a new list and transcript with the registry unreachable draw from the cache, with no registry call, no spinner and nothing live")
+        @Test("R-IOS-1, R-IOS-3: listed and opened once, a new list and transcript with the registry unreachable draw from the cache, making no registry call to draw, with no spinner and nothing live")
         func testR_IOS_1_theListAndTranscriptDrawFromTheCacheWithTheNetworkDown() async throws {
             let phone = try await TestFleet.shared.paired()
             let cache = Self.cache()

@@ -60,6 +60,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var olderKept: String?
     /// An older kept page is being read.
     private var pagingOlder = false
+    /// Bumped when the session is read afresh (`restarted`): a kept page
+    /// read before it is no longer the session's, and is dropped.
+    private var keptGeneration = 0
     /// How long the session's updates wait for the kept page at most.
     static let keptWait: Duration = .milliseconds(500)
     /// Opens a URL the person confirmed: `UIApplication.shared.open`.
@@ -559,18 +562,20 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// since it was read ahead: what that adds is merged.
     private func drawKept() {
         guard let kept else { return }
+        let generation = keptGeneration
         if let page = kept.ready() {
             draw(page)
             Task { [weak self] in
-                guard let page = await kept.newest() else { return }
-                self?.draw(page, older: false)
+                guard let page = await kept.newest(), let self, generation == keptGeneration else { return }
+                draw(page, older: false)
             }
             return
         }
         readingKept = true
         Task { [weak self] in
             let page = await kept.newest()
-            self?.keptRead(page)
+            guard let self else { return }
+            keptRead(generation == keptGeneration ? page : nil)
         }
         Task { [weak self] in
             try? await Task.sleep(for: Self.keptWait)
@@ -607,9 +612,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let fromTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         guard fromTop < collectionView.bounds.height else { return }
         pagingOlder = true
+        let generation = keptGeneration
         Task { [weak self] in
             let page = await kept.page(before: older)
-            guard let self else { return }
+            guard let self, generation == keptGeneration else { return }
             pagingOlder = false
             guard let page else {
                 olderKept = nil
@@ -624,8 +630,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// shows if something came while scrolled up; VoiceOver hears a turn
     /// end (never each word).
     private func drawFrame(_ done: FrameApplied) {
-        // The session was read afresh: what the phone kept is not it.
-        if done.restarted { olderKept = nil }
+        // The session was read afresh: what the phone kept is not it, and
+        // a read of it still out is dropped.
+        if done.restarted {
+            olderKept = nil
+            pagingOlder = false
+            keptGeneration += 1
+        }
         // A collapsed "Thought" draws none of its text.
         let drawn = done.grown.filter { $0.kind != .reasoning || $0.expanded }
         for state in drawn {

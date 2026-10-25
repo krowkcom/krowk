@@ -327,6 +327,9 @@ public final class TranscriptModel {
     /// among later rows: it sets no turn running, ends none, and settles no
     /// bubble.
     @ObservationIgnored private var history = false
+    /// What `place` applies is a page the phone kept, the newest included:
+    /// its turn ends refuse nothing typed here.
+    @ObservationIgnored private var drawingKept = false
 
     @ObservationIgnored private var items: [String: ItemState] = [:]
     /// Every event applied, by id.
@@ -643,6 +646,8 @@ public final class TranscriptModel {
     /// kept row goes above them.
     public func drawKept(_ events: [TranscriptEvent]) {
         keptDrawn = true
+        drawingKept = true
+        defer { drawingKept = false }
         guard !rows.isEmpty else { return transact { place(events, placement: .end) } }
         // Older than everything drawn: above it. Anything else (newer
         // events a late page holds, or ones that reached the cache late)
@@ -988,8 +993,9 @@ public final class TranscriptModel {
             let current = !history && (runningTurn == nil || runningTurn == turn)
             if runningTurn == turn { runningTurn = nil }
             // "stopping…" ends with the turn, if its ack hasn't come; a steer
-            // it never read is refused.
-            if current {
+            // it never read is refused. Not by a kept page: what it holds
+            // ended before anything typed here.
+            if current, !drawingKept {
                 for token in commands.turnEnded() {
                     refresh(token)
                     if let state = bubbles[token] { refusedNow.append(state) }

@@ -103,7 +103,8 @@ final class BudgetUITests: XCTestCase {
         let demo = FleetUI.listed("A demo session", in: app)
         let options = XCTMeasureOptions()
         options.iterationCount = 3
-        measure(metrics: [XCTApplicationLaunchMetric()], options: options) {
+        // To the app taking input, not its first frame: the list is up.
+        measure(metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)], options: options) {
             app.launch()
             if !demo.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
             XCTAssertTrue(demo.exists, "a paired launch never drew the demo session's row")
