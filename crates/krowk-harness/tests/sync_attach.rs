@@ -722,7 +722,6 @@ fn registry_proxy(to: SocketAddr, mode: Arc<AtomicU8>, log: RegLog, timed: RegTi
                         let _ = write!(c, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len());
                         return;
                     }
-
                     if m == FAIL_WRITES && (one.starts_with(b"POST ") || one.starts_with(b"PUT ")) {
                         let _ = c.write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{}");
                         return;
@@ -2666,11 +2665,13 @@ struct AutoOpts {
     announce_with: Option<announce::Options>,
     /// The machine's home and runtime directory, under the world's root.
     at: (&'static str, &'static str),
+    /// How long each `build` takes first, as one asking a far registry does.
+    slow_build: Duration,
 }
 
 impl Default for AutoOpts {
     fn default() -> AutoOpts {
-        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK, announce: false, announce_with: None, at: ("home", "run") }
+        AutoOpts { panic_first: false, idle: None, on: Arc::new(AtomicBool::new(true)), refuse: None, paid_pause: auto::PAID_PAUSE, parked_recheck: auto::PARKED_RECHECK, announce: false, announce_with: None, at: ("home", "run"), slow_build: Duration::ZERO }
     }
 }
 
@@ -2710,7 +2711,7 @@ impl World {
 
     /// `auto`, as `o` says.
     fn auto_with(&self, a: &Device, o: AutoOpts) -> Auto {
-        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, announce_with, at: (home, run) } = o;
+        let AutoOpts { panic_first, idle, on, refuse, paid_pause, parked_recheck, announce, announce_with, at: (home, run), slow_build } = o;
         let (turns, turns_rx) = mpsc::unbounded_channel();
         let bridged: Arc<Mutex<BTreeSet<String>>> = Arc::default();
         let daemon = self.serve_hooked(self.env_at(home, run), home, InstancesConfig::default(), Some(turns.clone()), Some(bridged.clone()));
@@ -2723,6 +2724,7 @@ impl World {
             if first.swap(false, Ordering::SeqCst) {
                 panic!("the test's build panics, once");
             }
+            std::thread::sleep(slow_build);
             if let Some(no) = &refuse {
                 return Err(no.clone());
             }
@@ -4202,23 +4204,61 @@ async fn r_switch_4_a_model_a_cannot_run_is_refused_with_the_fix_and_nothing_sta
 /// R-HOST-4: B's sealed start asks for `unhinged`, a toolset, an effort
 /// and a budget. The session runs in A's own default mode for the
 /// directory, `default`: the remote side picks the place, the model and the
-/// words, never the permissions.
+/// words, never the permissions. A's default is what A's settings say —
+/// `plan`, when they say so — and a default that asks nobody is `default`
+/// for a remote start.
 #[tokio::test]
 async fn r_host_4_the_session_runs_in_the_hosts_default_mode_whatever_the_command_says() {
     let w = World::new("start-mode");
     let (a, b) = (w.device("start-host-a"), w.device("start-b"));
-    let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
-    let id = command_id();
+    let hosts = Arc::new(Mutex::new(PermissionMode::Default));
+    let mut o = w.announcer(&a, "home", "run");
+    let said = hosts.clone();
+    o.mode_for = Box::new(move |_| Ok(*said.lock().unwrap()));
+    let mut auto = w.auto_with(&a, AutoOpts { announce_with: Some(o), ..AutoOpts::default() });
     let mut json = start_json(&offered_dir(&w), &mock_model(&w), "hello");
     json["permissionMode"] = "unhinged".into();
     json["toolset"] = "grok".into();
     json["effort"] = "max".into();
     json["budget"] = serde_json::json!({"maxUsd": 1000});
-    send_command(&w, &b, &a, &id, &json);
+    let by = Instant::now() + Duration::from_secs(30);
+    for (default, ran) in [(PermissionMode::Default, PermissionMode::Default), (PermissionMode::Plan, PermissionMode::Plan), (PermissionMode::Unhinged, PermissionMode::Default)] {
+        *hosts.lock().unwrap() = default;
+        let id = command_id();
+        send_command(&w, &b, &a, &id, &json);
+        let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
+        let (_, _, mode) = turn_started_on_a(&w, &session_id, by).await;
+        assert_eq!(mode, ran, "A's default {default:?}");
+    }
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-HOST-4, R-PERM-2: a started session's first turn asks an approval at
+/// once, a second before its bridge is built. It is not denied for want of
+/// an answering client: the start's own client stays until the session's
+/// bridge follows it, and the request waits for the person's devices.
+#[tokio::test]
+async fn r_host_4_a_started_sessions_first_approval_waits_for_its_bridge() {
+    let w = World::new("start-approval");
+    let (a, b) = (w.device("start-host-a"), w.device("start-b"));
+    let mut auto = w.auto_with(&a, AutoOpts { announce: true, slow_build: Duration::from_secs(1), ..AutoOpts::default() });
+    let id = command_id();
+    send_command(&w, &b, &a, &id, &start_json(&offered_dir(&w), &mock_model(&w), "make the file"));
     let by = Instant::now() + Duration::from_secs(20);
     let HostAnswer::Started { session_id } = answer_of(&w, &b, &a, &id, by).await else { panic!("refused") };
-    let (_, _, mode) = turn_started_on_a(&w, &session_id, by).await;
-    assert_eq!(mode, PermissionMode::Default);
+    // The bridge alone follows it, once the start's client has gone.
+    let held = loop {
+        let status = w.daemon().await.status().await.unwrap();
+        let s = status.sessions.into_iter().find(|s| s.session_id == session_id);
+        // The test's own status client follows nothing.
+        if let Some(s) = s.filter(|s| s.clients == 1 && s.answering == 1) {
+            break s;
+        }
+        assert!(Instant::now() < by, "the bridge never followed {session_id} alone");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    assert!(held.running, "the turn ended: its approval was denied");
+    assert!(!w.repo().join("approved.txt").exists());
     auto.stop(Duration::from_secs(10)).await;
 }
 
@@ -4265,7 +4305,8 @@ async fn r_sync_2_the_same_start_sent_twice_starts_one_session() {
 
 /// R-HOST-4, R-NET-4: A's device list has B removed, though the registry
 /// still carries B's command. It does not open, gets no answer and starts
-/// nothing; C's command, sent after it and delivered with it, is answered.
+/// nothing; C's start, sent after it and delivered with it, runs — and
+/// three refreshes later still nothing of B's has.
 #[tokio::test]
 async fn r_host_4_a_command_from_a_device_removed_from_as_list_does_not_open_and_starts_nothing() {
     let w = World::new("start-removed");
@@ -4281,8 +4322,7 @@ async fn r_host_4_a_command_from_a_device_removed_from_as_list_does_not_open_and
     let (from_b, from_c) = (command_id(), command_id());
     // B, removed, still holds generation 1, and seals under it.
     send_command(&w, &b, &a, &from_b, &start_json(&offered_dir(&w), &mock_model(&w), "from b"));
-    let elsewhere = w.root.join("home").display().to_string();
-    send_sealed(&w, &c, &a, &from_c, &start_json(&elsewhere, &mock_model(&w), "from c"), &UserKeys::new(user.clone(), []).unwrap(), chain.generation());
+    send_sealed(&w, &c, &a, &from_c, &start_json(&offered_dir(&w), &mock_model(&w), "from c"), &UserKeys::new(user.clone(), []).unwrap(), chain.generation());
     let by = Instant::now() + Duration::from_secs(20);
     let answered = loop {
         let state = w.as_device(&c).host_command(&a.key.id().to_string(), &from_c).unwrap();
@@ -4292,9 +4332,21 @@ async fn r_host_4_a_command_from_a_device_removed_from_as_list_does_not_open_and
         assert!(Instant::now() < by, "C's command was never answered");
         tokio::time::sleep(Duration::from_millis(50)).await;
     };
-    assert!(matches!(&answered, HostAnswer::Refused { code, .. } if code == "directory_not_offered"), "{answered:?}");
+    let HostAnswer::Started { session_id } = answered else { panic!("{answered:?}") };
+    let refreshed = |n: usize| {
+        let api = w.as_device(&c);
+        let me = a.key.id().to_string();
+        let mut seen = BTreeSet::new();
+        while seen.len() <= n {
+            let p = api.list_presences().unwrap().into_iter().find(|p| p.device == me).expect("A is listed");
+            seen.insert(p.updated_at);
+            assert!(Instant::now() < by, "A stopped refreshing");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    refreshed(3);
     let b_state = w.as_device(&b).host_command(&a.key.id().to_string(), &from_b).unwrap();
     assert!(!b_state.answered && b_state.answer.is_none(), "B's command was answered: {b_state:?}");
-    assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
+    assert_eq!(daemon_sessions(&w).await, [session_id], "C's alone started");
     auto.stop(Duration::from_secs(10)).await;
 }

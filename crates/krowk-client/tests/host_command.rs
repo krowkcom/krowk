@@ -206,9 +206,12 @@ fn r_host_4_a_command_past_what_the_registry_carries_is_refused_on_seal() {
 #[test]
 fn r_host_4_a_long_refusal_is_cut_to_fit_what_the_registry_carries() {
     let w = world();
-    let long = HostAnswer::refused(&"c".repeat(200), "é".repeat(host_command::MAX_ANSWER));
-    let sealed = host_command::seal_answer(&long, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
-    assert!(sealed.len() <= host_command::MAX_ANSWER);
-    let HostAnswer::Refused { code, message } = host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &chain(&w)).unwrap() else { panic!() };
-    assert!(code.len() <= host_command::MAX_CODE && message.len() <= host_command::MAX_MESSAGE && message.ends_with('…'), "{code} {}", message.len());
+    // Plain, wide, and what JSON escapes six times over: each fits.
+    for message in ["é".repeat(host_command::MAX_ANSWER), "\"".repeat(host_command::MAX_ANSWER), "\u{1b}".repeat(host_command::MAX_ANSWER)] {
+        let long = HostAnswer::refused(&"\u{7}".repeat(200), message);
+        let sealed = host_command::seal_answer(&long, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+        assert!(sealed.len() <= host_command::MAX_ANSWER);
+        let HostAnswer::Refused { code, message } = host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &chain(&w)).unwrap() else { panic!() };
+        assert!(serde_json::to_string(&code).unwrap().len() <= host_command::MAX_CODE + 2 && serde_json::to_string(&message).unwrap().len() <= host_command::MAX_MESSAGE + 2 && message.ends_with('…'), "{} {}", code.len(), message.len());
+    }
 }

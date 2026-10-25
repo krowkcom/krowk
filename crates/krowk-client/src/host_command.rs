@@ -110,8 +110,8 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
 }
 
 /// `a`, `me`'s answer to the command `id` from `to`, sealed for `to`. A
-/// refusal's code and message are cut to `MAX_CODE` and `MAX_MESSAGE`, so
-/// it always fits what the registry takes.
+/// refusal's code and message are cut to `MAX_CODE` and `MAX_MESSAGE` bytes
+/// of JSON, so it always fits what the registry takes.
 pub fn seal_answer(a: &HostAnswer, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
     let a = match a {
         HostAnswer::Refused { code, message } => HostAnswer::Refused { code: cut(code, MAX_CODE), message: cut(message, MAX_MESSAGE) },
@@ -152,14 +152,18 @@ fn open(sealed: &[u8], most: usize, label: Label, binding: &[u8], from: &DeviceI
     e2e::open_from_person(sealed, label, binding, keys).map_err(|e| e.0)
 }
 
-/// `s` cut to at most `most` bytes, on a character boundary.
+/// `s` cut so that it takes at most `most` bytes as JSON, escapes
+/// included, on a character boundary, with `…` after what is left.
 fn cut(s: &str, most: usize) -> String {
-    if s.len() <= most {
+    let encoded = |c: char| serde_json::to_string(&c).map_or(6, |j| j.len() - 2);
+    if s.chars().map(encoded).sum::<usize>() <= most {
         return s.to_string();
     }
-    let mut end = most.saturating_sub('…'.len_utf8());
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    format!("{}…", &s[..end])
+    let room = most.saturating_sub('…'.len_utf8());
+    let mut used = 0;
+    let kept: String = s.chars().take_while(|&c| {
+        used += encoded(c);
+        used <= room
+    }).collect();
+    kept + "…"
 }
