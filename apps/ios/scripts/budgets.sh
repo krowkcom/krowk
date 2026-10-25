@@ -13,7 +13,8 @@
 #                                      (memoryScrollMB)
 #   budgets.sh perf <test.log> <Tests.xcresult>
 #                                      the trend, failing nothing: the
-#                                      launch, the frame-apply baseline,
+#                                      launch, a paired launch to the
+#                                      cached list, the frame-apply baseline,
 #                                      host-to-screen latency, a
 #                                      notification's cold launch, the
 #                                      most updates a live follow had
@@ -88,6 +89,14 @@ case ${1:-} in
           | .. | objects | select(has("measurements") and ((.identifier // "") + (.displayName // "") | test("AppLaunch|Launch"; "i")))
           | .measurements[] | (if type == "object" then .value // .doubleValue else . end)] | sort | if length == 0 then null else .[length / 2 | floor] * 1000 | round end' || echo null)
     fi
+    # The same, for a paired launch to the cached list (ticket 131).
+    cached=null
+    if [ -d "$result" ]; then
+      cached=$(xcrun xcresulttool get test-results metrics --path "$result" | jq '
+        [.[] | select((.testIdentifier // .testIdentifierURL // "" | tostring) | test("BudgetUITests.*testR_IOS_1_launchToCachedList"))
+          | .. | objects | select(has("measurements") and ((.identifier // "") + (.displayName // "") | test("AppLaunch|Launch"; "i")))
+          | .measurements[] | (if type == "object" then .value // .doubleValue else . end)] | sort | if length == 0 then null else .[length / 2 | floor] * 1000 | round end' || echo null)
+    fi
     lines() { { [ -f "$log" ] && grep -oE "$1" "$log" || true; } | sort -u | jq -R . | jq -s .; }
     apply=$(lines 'krowk\.frame\.apply baseline.*|Test Case .*testFrameApplyBaseline.*measured.*')
     latency=$(lines 'krowk host→screen latency.*')
@@ -96,15 +105,15 @@ case ${1:-} in
     # In run order, not sorted: a gate run again reports its last.
     stall=$({ [ -f "$log" ] && grep -oE 'krowk main-thread stall:.*' "$log" || true; } | jq -R . | jq -s .)
     stallMs=$(jq -r '.[-1] // "" | capture("frames (?<ms>[0-9.]+) ms") | .ms // empty' <<<"$stall" || true)
-    record "$(jq -n --argjson launch "$launch" --argjson apply "$apply" --argjson latency "$latency" --argjson cold "$cold" \
+    record "$(jq -n --argjson launch "$launch" --argjson cached "$cached" --argjson apply "$apply" --argjson latency "$latency" --argjson cold "$cold" \
       --argjson follow "$follow" --argjson stall "$stall" --arg stallMs "${stallMs:-}" \
-      '{launchMs: $launch, frameApply: $apply, hostToScreen: $latency, notificationColdLaunch: $cold, liveFollow: $follow,
+      '{launchMs: $launch, cachedLaunchMs: $cached, frameApply: $apply, hostToScreen: $latency, notificationColdLaunch: $cold, liveFollow: $follow,
         stall: $stall, stallMs: (if $stallMs == "" then null else ($stallMs | tonumber) end)}')"
     echo "### iPhone app budgets and trend (R-PERF-7; the simulator, not a phone)"
     echo '```'
     if [ -n "${IOS_PERF:-}" ] && [ -s "$IOS_PERF" ]; then
       jq -r '"binary: \(.binaryBytes // "—") bytes; app: \(.appKilobytes // "—") KB; memory scrolling 10k items: \(.memoryScrollMB // "—") MB (gates)",
-        "launch: \(.launchMs // "—") ms; longest frame gap in a burst: \(.stallMs // "—") ms (trend)"' "$IOS_PERF"
+        "launch: \(.launchMs // "—") ms; a paired launch to the cached list: \(.cachedLaunchMs // "—") ms; longest frame gap in a burst: \(.stallMs // "—") ms (trend)"' "$IOS_PERF"
     fi
     jq -nr --argjson a "$apply" --argjson b "$latency" --argjson c "$cold" --argjson e "$follow" --argjson d "$stall" '$a + $b + $c + $e + $d | .[]'
     echo '```'

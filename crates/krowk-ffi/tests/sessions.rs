@@ -294,6 +294,21 @@ fn r_ios_1_a_read_place_round_trips_through_serde() {
     assert!(ReadPlace { previous: [4; 32], ..place }.check().is_err(), "the next chunk binds the head's digest");
 }
 
+/// R-IOS-1 (ticket 131): the phone's cache keeps a place as the JSON text
+/// `encode_read_place` writes, and reads it back with `decode_read_place`;
+/// a place no reading stopped at goes in or comes out as neither.
+#[test]
+fn r_ios_1_a_read_place_round_trips_through_the_cache_text() {
+    let place = ReadPlaceRecord { next: 7, previous: vec![3; 32], fence: 2, epoch: 1, head: HeadRecord { index: 6, digest: vec![3; 32] } };
+    let json = krowk_ffi::encode_read_place(place.clone()).unwrap();
+    assert_eq!(krowk_ffi::decode_read_place(json.clone()).unwrap(), place);
+    assert!(matches!(krowk_ffi::encode_read_place(ReadPlaceRecord { next: 8, ..place.clone() }), Err(KrowkError::InvalidInput { .. })));
+    let skewed = json.replace("\"next\":7", "\"next\":9");
+    assert_ne!(skewed, json);
+    assert!(matches!(krowk_ffi::decode_read_place(skewed), Err(KrowkError::Decode { .. })));
+    assert!(matches!(krowk_ffi::decode_read_place("{}".into()), Err(KrowkError::Decode { .. })));
+}
+
 /// An index older than the place — the registry rolled back past what this
 /// device read — and a chunk after the place that does not follow it are
 /// refused for good, as a rollback.

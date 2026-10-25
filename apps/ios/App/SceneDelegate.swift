@@ -166,7 +166,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     /// "Sessions" (R-IOS-3, R-IOS-7): the paired phone's first screen, the
-    /// person's synced sessions listed off the main thread.
+    /// person's synced sessions listed off the main thread. Cache first
+    /// (R-IOS-1, ticket 131): the rows the cache kept are its first
+    /// snapshot, "last seen" and never live, and a session opens on what
+    /// the cache kept of it, then reads on from where its last read
+    /// stopped.
     private func sessions(api: String, keys: KeychainKeyStorage) -> UIViewController {
         let log = Logger(subsystem: "com.krowk.app", category: "sessions")
         // Every listing checks the phone is still on the person's devices,
@@ -188,9 +192,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         watch.start()
         let model = SessionListModel(
             source: source,
+            // Off the main actor, on the cache's queue; before any read.
+            kept: { await cache.listing() },
             // A failure's kind only: never a session's id, title or cwd.
             log: { log.error("\($0, privacy: .public)") }
         )
+        // Newest pages read ahead from the cache, never the network.
+        let shelf = KeptTranscripts(cache: cache)
         // A tapped session opens on its transcript, followed live through
         // the relay while its screen is open, held to the head its listing
         // named. One left with commands still out (a prompt queued for a
@@ -199,15 +207,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Allowing a call asks for Face ID first (R-IOS-11).
         let owner = OwnerChecks.make()
         // A session's transcript, followed live through the relay while its
-        // screen is open, opened by `opening`.
-        let transcript = { @MainActor (row: SessionRow, opening: @escaping @Sendable () throws -> OpenedSession) -> UIViewController in
+        // screen is open, opened by `opening`, drawn first from what the
+        // cache kept of it, if anything (ticket 131).
+        let transcript = { @MainActor (row: SessionRow, kept: (any KeptTranscript)?, opening: @escaping @Sendable () throws -> SessionOpening) -> UIViewController in
             // Its approvals rise in a sheet over the transcript (R-PERM-2).
             let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
             // Its logged events are kept as they come (ticket 129).
             let live = RelayConnection(
-                opening: opening, approvals: approvals,
+                resuming: opening, approvals: approvals,
                 standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
-            let screen = TranscriptViewController(row: row, session: live, approvals: approvals)
+            let screen = TranscriptViewController(row: row, session: live, approvals: approvals, kept: kept)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
             screen.restore(parked.takeRefusals(row.id))
@@ -220,12 +229,20 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             if let kept = parked.take(session) { return kept }
             let place = SessionRowFormatter.basename(request.cwd)
             let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
-            return transcript(row) { try source.openStartedSession(id: session) }
+            // New: the cache holds nothing of it yet.
+            return transcript(row, nil) { SessionOpening(session: try source.openStartedSession(id: session)) }
         }
         return SessionListViewController(model: model, newSessions: newSessions) { [weak model] row in
+            let listed = model?.listing?.sessions ?? []
+            // Its neighbours in the list, from the cache: a switch to one
+            // draws from memory (R-IOS-3).
+            shelf.prefetch(around: row.id, in: listed.map(\.id))
             if let kept = parked.take(row.id) { return kept }
-            let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
-            return transcript(row) { try source.openSession(id: row.id, known: known) }
+            // The listing's head, fresh or kept; the cache's place may hold
+            // it to a later one. Read on from where the cache's last read
+            // stopped, followed from the newest event it holds.
+            let known = listed.first { $0.id == row.id }.flatMap(listedHead)
+            return transcript(row, shelf.transcript(row.id)) { try source.resume(id: row.id, known: known) }
         }
     }
 

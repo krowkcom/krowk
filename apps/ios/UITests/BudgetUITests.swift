@@ -16,6 +16,10 @@
 // `tap.optimistic` over prompts typed and sent in a session. Their numbers
 // are a simulator's; a phone's are read from its log (README.md → Reading
 // the budgets on a phone, ticket 54).
+//
+// R-IOS-1 (ticket 131): XCTApplicationLaunchMetric over launches of a
+// paired phone whose cache a first launch filled, recorded as
+// `cachedLaunchMs`, a trend that gates nothing.
 import XCTest
 
 final class BudgetUITests: XCTestCase {
@@ -76,6 +80,43 @@ final class BudgetUITests: XCTestCase {
             XCTAssertTrue(demo.exists, "a paired launch never listed the demo session")
             app.terminate()
         }
+    }
+
+    /// R-IOS-1 (ticket 131): a paired phone's launch to Sessions once a
+    /// first launch listed and filled the cache, its rows drawn from it.
+    /// XCTApplicationLaunchMetric's, recorded on the simulator
+    /// (`cachedLaunchMs`, scripts/budgets.sh perf), gating nothing: the
+    /// phone's own figure is `launch.cachedList`'s signpost (ticket 54).
+    @MainActor
+    func testR_IOS_1_launchToCachedList() async throws {
+        addTeardownBlock { @MainActor in FleetUI.forgetTheKeys() }
+        let paired = try await FleetUI.pairedApp(.light)
+        // The first launch lists, and the list is kept.
+        let listed = FleetUI.listed("A demo session", in: paired)
+        if !listed.waitForExistence(timeout: 60) { Screenshots.tree(of: paired) }
+        XCTAssertTrue(listed.exists, "the first launch never listed the demo session")
+        paired.terminate()
+        let app = XCUIApplication()
+        app.launchEnvironment["KROWK_API_URL"] = try FleetUI.env("KROWK_API_URL")
+        app.launchEnvironment["KROWK_RELAY_URL"] = try FleetUI.env("KROWK_RELAY_URL")
+        app.launchEnvironment["KROWK_APPEARANCE"] = "light"
+        let demo = FleetUI.listed("A demo session", in: app)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        // To the app taking input, not its first frame: the list is up.
+        measure(metrics: [XCTApplicationLaunchMetric(waitUntilResponsive: true)], options: options) {
+            app.launch()
+            if !demo.waitForExistence(timeout: 60) { Screenshots.tree(of: app) }
+            XCTAssertTrue(demo.exists, "a paired launch never drew the demo session's row")
+            app.terminate()
+        }
+        // Drawn from the cache: with the registry unreachable the row
+        // still shows.
+        app.launchEnvironment["KROWK_API_URL"] = "http://127.0.0.1:9/v1"
+        app.launch()
+        if !demo.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        XCTAssertTrue(demo.exists, "the list was not drawn from the cache")
+        app.terminate()
     }
 
     /// In a session of the test's own, each prompt typed and sent shows

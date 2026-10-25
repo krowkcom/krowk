@@ -173,7 +173,10 @@ jobs:
   # RelayConnectionTests (with ticket 86's background, network-change and
   # connect-early checks), TranscriptModelTests, TranscriptTests,
   # LiveFollowTests, ComposerTests, ApprovalMappingTests and
-  # ApprovalScreenTests (ConnectionLifecycleTests among KrowkKit's), and KrowkCore's
+  # ApprovalScreenTests (ConnectionLifecycleTests among KrowkKit's),
+  # CacheTests and CacheFirstTests (ticket 131: the list and a transcript
+  # drawn from the cache with the registry down, then read on from the
+  # saved place and merged by event id), and KrowkCore's
   # BindingsTests
   # on an iPhone simulator, against the fake fleet
   # (apps/ios/scripts/with-fleet.sh). RemovalUITests and RemovalTests

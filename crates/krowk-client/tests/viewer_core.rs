@@ -1200,3 +1200,26 @@ fn r_ios_1_a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest
     r.at(32).tick();
     assert_eq!(places(&mut r), [(4, Some(id(1)))]);
 }
+
+/// R-IOS-1 (ticket 131): a viewer opened from the place the app read to,
+/// its cache holding the session up to an event, asks the host at the
+/// welcome only for what came after that event — or after the newest the
+/// chunks read since held, when that is newer. With nothing held, from the
+/// start.
+#[test]
+fn r_ios_1_a_resumed_viewers_catch_up_starts_after_the_cached_newest() {
+    for (at_rest, newest, after) in [(vec![], Some(id(5)), Some(id(5))), (vec![logged(7)], Some(id(5)), Some(id(7))), (vec![logged(3)], Some(id(5)), Some(id(5))), (vec![], None, None)] {
+        let key = SessionKey::generate();
+        let host = HostLink::new(&key, uuid(SESSION));
+        let at_rest = Attached { events: at_rest, ..Attached::default() };
+        let (core, first) = ViewerCore::resumed(SessionKeys::from(key.clone()), SESSION, DeviceId([1; 16]), RELAY, at_rest, newest.clone(), 0);
+        let mut r = Relay { core, key, host, link: 0, now: 0, shown: Vec::new(), whole: Vec::new(), saved: Vec::new(), frames: Vec::new(), acks: Vec::new(), rest: Vec::new() };
+        r.take(first);
+        r.rest.clear();
+        r.joined(true, 0);
+        r.welcome_with(Welcome::default());
+        assert!(r.take_rest().iter().any(|e| matches!(e, Effect::ReadChunks { want: None })));
+        r.read(Ok((vec![], Attached::default())));
+        assert_eq!(catch_ups(&r.frames), std::slice::from_ref(&after), "held up to {newest:?}");
+    }
+}

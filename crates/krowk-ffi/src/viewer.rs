@@ -439,12 +439,24 @@ impl Viewer {
     /// opened the session under, so a backoff begun while opening goes on.
     #[uniffi::constructor]
     pub fn open_supervised(session: Arc<OpenedSession>, supervisor: Arc<ConnectionSupervisor>, now_ms: u64) -> Result<Arc<Viewer>, KrowkError> {
+        Viewer::open_resumed(session, supervisor, None, now_ms)
+    }
+
+    /// `open_supervised`, for a session the app already holds up to event
+    /// `held` with every event before it (its cache's `CursorRecord.newest`,
+    /// ticket 131). A session `Account::resume_session` opened knows only
+    /// the events after the place it read on from, so the viewer is told:
+    /// the welcome's catch-up asks the host only for what came after the
+    /// newer of `held` and the events the session read. None is
+    /// `open_supervised`.
+    #[uniffi::constructor]
+    pub fn open_resumed(session: Arc<OpenedSession>, supervisor: Arc<ConnectionSupervisor>, held: Option<String>, now_ms: u64) -> Result<Arc<Viewer>, KrowkError> {
         let relay = session.relay().trim_end_matches('/');
         if e2e::canonical_origin(relay).is_none() {
             return Err(KrowkError::InvalidInput { detail: format!("{relay} is not a relay address — it is ws:// or wss:// and a host") });
         }
         let at_rest = session.snapshot();
-        let (core, first) = ViewerCore::new(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, now_ms);
+        let (core, first) = ViewerCore::resumed(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, held, now_ms);
         let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None };
         Ok(Arc::new(Viewer { id: VIEWERS.fetch_add(1, Ordering::Relaxed), inner: Mutex::new(inner) }))
     }

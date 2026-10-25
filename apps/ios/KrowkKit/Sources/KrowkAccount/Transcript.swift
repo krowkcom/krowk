@@ -102,6 +102,10 @@ extension TranscriptUpdate {
                 flush()
                 out.append(.commandUnsent(token: token, why: why))
                 continue
+            case .restarted:
+                flush()
+                out.append(.restarted)
+                continue
             }
             if case .line(.log(let event)) = update {
                 ended(event, approvals: approvals)
@@ -186,6 +190,9 @@ public enum MailboxItem: Sendable {
     case viewer(ViewerUpdate)
     case minted(token: UInt64, id: String)
     case unsent(token: UInt64, why: String)
+    /// The session was read afresh, what the phone kept of it replaced
+    /// (ticket 131): the screen's rows start over.
+    case restarted
 }
 
 extension LiveCommand {
