@@ -847,12 +847,18 @@ fn viewer_proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, mode: Arc<AtomicU8>, 
 
 /// Reads updates until `done` says so, or panics after `wait`. Every frame
 /// handed on is timed, for R-LAG-7.
-async fn until(v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Instant>, mut done: impl FnMut(&viewer::Update) -> bool) -> Vec<viewer::Update> {
+async fn until(v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Instant>, done: impl FnMut(&viewer::Update) -> bool) -> Vec<viewer::Update> {
+    until_or(v, wait, frames, done, String::new).await
+}
+
+/// As `until`, a timeout saying `why` too: what the run left behind, for
+/// a wait that stalls only now and then.
+async fn until_or(v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Instant>, mut done: impl FnMut(&viewer::Update) -> bool, why: impl Fn() -> String) -> Vec<viewer::Update> {
     let deadline = Instant::now() + wait;
     let mut all = Vec::new();
     loop {
-        let left = deadline.checked_duration_since(Instant::now()).unwrap_or_else(|| panic!("timed out; saw {all:#?}"));
-        let batch = tokio::time::timeout(left, v.updates.recv()).await.unwrap_or_else(|_| panic!("timed out; saw {all:#?}")).expect("the viewer runs");
+        let left = deadline.checked_duration_since(Instant::now()).unwrap_or_else(|| panic!("timed out; saw {all:#?}{}", why()));
+        let batch = tokio::time::timeout(left, v.updates.recv()).await.unwrap_or_else(|_| panic!("timed out; saw {all:#?}{}", why())).expect("the viewer runs");
         frames.push(Instant::now());
         let hit = batch.iter().any(&mut done);
         all.extend(batch);
@@ -2419,13 +2425,19 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
     let other = d.execute(ask(None, "another session"), tx).await.unwrap().unwrap().session_id;
     let (_stop, _cp, _bridge) = w.bridge(&a, &session, w.daemon().await);
     w.synced(&session).await;
-    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    // B's registry calls through a proxy that times them, as A's are: a
+    // wait that stalls says which of either side's calls it was on.
+    let mut o = w.viewer(&b, &session);
+    o.api = Arc::new(krowk_api::Client::new(&w.reg_a, &b.token).signed_by(signer(&b)));
+    let mut v = viewer::attach(o).await.unwrap();
     let mut frames = Vec::new();
     until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    let started = Instant::now();
+    let why = || stalled(&w, &session, started);
 
     v.commands.send(ask(Some(&session), "run two agents")).unwrap();
     let asked = |u: &viewer::Update| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))));
-    let got = until(&mut v, Duration::from_secs(20), &mut frames, asked).await;
+    let got = until_or(&mut v, Duration::from_secs(20), &mut frames, asked, why).await;
     let req = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
     assert_ne!(req.session_id, session, "the agent's own session asks");
     let parent = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
@@ -2433,7 +2445,7 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
 
     let mut ack = async |c: Command| {
         v.commands.send(c).unwrap();
-        let got = until(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
+        let got = until_or(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. }), why).await;
         got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
     };
     let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
@@ -2442,9 +2454,28 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
         assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
     }
     assert_eq!(ack(answer(&req.session_id)).await, None, "the session's own child's approval is answered");
-    until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    until_or(&mut v, Duration::from_secs(20), &mut frames, result_of, why).await;
     let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
     assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
+}
+
+/// What a Claude Code run left behind, for a wait on it that timed out:
+/// how far the fake `claude` got, the last of A's log of `session`, the
+/// batches the relay handed B, and every registry call either side made
+/// since `since`, with its answer (one still out is not there yet).
+fn stalled(w: &World, session: &str, since: Instant) -> String {
+    let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap_or_default();
+    let fake: Vec<String> = fake.lines().rev().take(30).map(|l| l.chars().take(200).collect()).collect::<Vec<_>>().into_iter().rev().collect();
+    let log = std::fs::read_to_string(log::sessions_dir(&w.env()).unwrap().join(session).join(log::EVENTS_FILE)).unwrap_or_default();
+    let kinds: Vec<String> = log.lines().rev().take(12).filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).map(|e| e["type"].as_str().unwrap_or("?").to_string()).collect::<Vec<_>>().into_iter().rev().collect();
+    let calls: Vec<String> = w.reg_times.lock().unwrap().iter().filter(|(at, _, _)| *at >= since).map(|(at, line, status)| format!("{:>6} ms {status} {line}", at.duration_since(since).as_millis())).collect();
+    format!(
+        "\n{} ms since the prompt; the relay handed B {} batches\nA's log ends {kinds:?}\nregistry calls since the prompt:\n  {}\nthe fake claude's log ends:\n  {}",
+        since.elapsed().as_millis(),
+        w.b_batches.load(Ordering::SeqCst),
+        calls.join("\n  "),
+        fake.join("\n  ")
+    )
 }
 
 /// R-SUB-12, R-SUB-10: a viewer stops one of a Claude Code session's
