@@ -1042,7 +1042,10 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     @discardableResult
     public func move(to device: String, hostName: String, cwd: String) -> Bool {
         guard let hosts, let mover else { return false }
-        return mover.move(MoveRequest(id: hosts.newCommandID(), device: device, hostName: hostName, sessionID: row.id, cwd: cwd))
+        guard mover.move(MoveRequest(id: hosts.newCommandID(), device: device, hostName: hostName, sessionID: row.id, cwd: cwd)) else { return false }
+        // Now, not at the next turn of the main actor (R-LAG-8).
+        updateMove(mover)
+        return true
     }
 
     @objc private func moveNoteTapped() {

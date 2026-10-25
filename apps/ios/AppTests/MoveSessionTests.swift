@@ -67,12 +67,12 @@ extension HostedKeychain {
             ComposerTests.keep("move-moving", window)
 
             // The fleet's host runs no take: it refuses, in its own words.
-            try await LiveFollowTests.wait(until: { mover.refusal != nil }, within: .seconds(60), "host A never answered: \(String(describing: mover.state))")
+            // Shown once the screen has heard it: the note up, the bar's line gone.
+            try await LiveFollowTests.wait(until: { mover.refusal != nil && !screen.moveNote.isHidden && screen.statusBar.move == nil }, within: .seconds(60),
+                                           "host A's refusal never shown: \(String(describing: mover.state))")
             let said = try #require(mover.refusal)
             #expect(said.contains(host.name), "\(said)")
-            #expect(!screen.moveNote.isHidden)
             #expect(screen.moveNote.text?.contains(said) == true)
-            #expect(screen.statusBar.move == nil)
             #expect(mover.holder == Self.elsewhere, "the session stays where it was")
             #expect(screen.isLive)
             ComposerTests.keep("move-refused", window)

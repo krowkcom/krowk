@@ -129,9 +129,10 @@ pub enum TakeAnswer {
     /// The host took the session up: it holds it now.
     Taken { session_id: String },
     /// Nothing moved: `message` is the host's refusal, its take's own
-    /// sentence. As `no_answer`, it didn't answer in time; as `cancelled`,
-    /// this phone stopped waiting (`cancel_take`). The move may still
-    /// happen then.
+    /// sentence. As `take_unfinished`, the host's take was still running
+    /// after six minutes; as `no_answer`, the host didn't answer in time; as
+    /// `cancelled`, this phone stopped waiting (`cancel_take`). The move may
+    /// still happen after any of those three.
     Refused { code: String, message: String },
 }
 
@@ -208,12 +209,12 @@ impl Account {
     /// sends: never on the main thread.
     pub fn start_session(&self, device: String, cwd: String, model: ModelRef, prompt: String, id: String) -> Result<StartAnswer, KrowkError> {
         let start = HostCommand::Start { cwd, model, prompt };
-        let answer = self.ask(&device, &id, start, "start", ANSWER_WAIT, None)?;
+        let answer = self.ask(&device, &id, start, "start", "start the session", ANSWER_WAIT, None)?;
         Ok(match answer {
-            Asked::Answer(HostAnswer::Started { session_id }) if uuid_shaped(&session_id) => StartAnswer::Started { session_id },
-            Asked::Answer(HostAnswer::Started { session_id }) => return Err(internal(format!("the host started a session under {:?}, which is not a session id", session_id))),
-            Asked::Answer(HostAnswer::Taken { .. }) => return Err(internal("the host answered a start as a move".into())),
-            Asked::Answer(HostAnswer::Refused { code, message }) => StartAnswer::Refused { code, message },
+            Asked::Answer(HostAnswer::Started { session_id }, _) if uuid_shaped(&session_id) => StartAnswer::Started { session_id },
+            Asked::Answer(HostAnswer::Started { session_id }, name) => return Err(internal(format!("{name} started a session under {:?}, which is not a session id", session_id))),
+            Asked::Answer(HostAnswer::Taken { .. }, name) => return Err(internal(format!("{name} answered the start as a move"))),
+            Asked::Answer(HostAnswer::Refused { code, message }, _) => StartAnswer::Refused { code, message },
             Asked::NoAnswer(name) => StartAnswer::Refused { code: "no_answer".into(), message: format!("{name} didn't answer within 30 s — it may still start the session") },
             Asked::Cancelled(_) => unreachable!("a start is never cancelled"),
         })
@@ -241,12 +242,12 @@ impl Account {
         }
         let since = self.take_cancels.load(Ordering::SeqCst);
         let take = HostCommand::Take { session_id: session_id.clone(), cwd };
-        let answer = self.ask(&device, &id, take, "move", TAKE_WAIT, Some(since))?;
+        let answer = self.ask(&device, &id, take, "move", "take the session up", TAKE_WAIT, Some(since))?;
         Ok(match answer {
-            Asked::Answer(HostAnswer::Taken { session_id: taken }) if taken == session_id => TakeAnswer::Taken { session_id },
-            Asked::Answer(HostAnswer::Taken { session_id: taken }) => return Err(internal(format!("the host took up {taken:?}, not the session asked for"))),
-            Asked::Answer(HostAnswer::Started { .. }) => return Err(internal("the host answered a move as a start".into())),
-            Asked::Answer(HostAnswer::Refused { code, message }) => TakeAnswer::Refused { code, message },
+            Asked::Answer(HostAnswer::Taken { session_id: taken }, _) if taken == session_id => TakeAnswer::Taken { session_id },
+            Asked::Answer(HostAnswer::Taken { session_id: taken }, name) => return Err(internal(format!("{name} took up {taken:?}, not the session asked for"))),
+            Asked::Answer(HostAnswer::Started { .. }, name) => return Err(internal(format!("{name} answered the move as a start"))),
+            Asked::Answer(HostAnswer::Refused { code, message }, _) => TakeAnswer::Refused { code, message },
             Asked::NoAnswer(name) => TakeAnswer::Refused { code: "no_answer".into(), message: format!("{name} didn't answer within {} minutes — the session may still move", TAKE_WAIT.as_secs() / 60) },
             Asked::Cancelled(name) => TakeAnswer::Refused { code: "cancelled".into(), message: format!("stopped waiting for {name} — the session may still move") },
         })
@@ -262,7 +263,8 @@ impl Account {
 
 /// How asking a host came out.
 enum Asked {
-    Answer(HostAnswer),
+    /// The host's answer, and its name.
+    Answer(HostAnswer, String),
     /// No answer within the wait: the host's name.
     NoAnswer(String),
     /// `cancel_take` was called: the host's name.
@@ -270,11 +272,12 @@ enum Asked {
 }
 
 impl Account {
-    /// `command`, a `what`, sealed to host `device` under `id` and sent —
+    /// `command`, a `what` that has the host `does`, sealed to host `device` under `id` and sent —
     /// again with the same id and bytes after a transport failure, up to
     /// three times — then its answer asked for every 500 ms for up to
     /// `wait`; with `cancels`, until `cancel_take` counts past it.
-    fn ask(&self, device: &str, id: &str, command: HostCommand, what: &str, wait: Duration, cancels: Option<u64>) -> Result<Asked, KrowkError> {
+    #[allow(clippy::too_many_arguments)]
+    fn ask(&self, device: &str, id: &str, command: HostCommand, what: &str, does: &str, wait: Duration, cancels: Option<u64>) -> Result<Asked, KrowkError> {
         let (keys, chain) = self.paired()?;
         let to = DeviceId::parse(device).ok_or_else(|| KrowkError::InvalidInput { detail: format!("{device:?} is not a device id") })?;
         if !uuid_shaped(id) {
@@ -326,7 +329,7 @@ impl Account {
                 }
                 // The last try may have landed with its answer lost.
                 Err(e) if transient(&e) => {
-                    return Err(KrowkError::Network { detail: format!("the {what} could not be sent to {name} — it may still have reached it") });
+                    return Err(KrowkError::Network { detail: format!("the {what} could not be sent to {name} — it may still have reached it and {does}") });
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -339,7 +342,7 @@ impl Account {
             match self.client.host_command(&to_hex, &id) {
                 Ok(s) if s.answered => {
                     let Some(sealed) = s.answer else { return Err(internal(format!("{name} answered with nothing this phone reads"))) };
-                    return Ok(Asked::Answer(host_command::open_answer(&sealed, &id, &to, &self.device, &keys, &chain).map_err(internal)?));
+                    return Ok(Asked::Answer(host_command::open_answer(&sealed, &id, &to, &self.device, &keys, &chain).map_err(internal)?, name));
                 }
                 Ok(_) => {}
                 Err(e) if transient(&e) => {}

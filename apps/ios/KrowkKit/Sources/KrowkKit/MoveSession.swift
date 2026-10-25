@@ -1,4 +1,5 @@
 import Observation
+import Synchronization
 import UIKit
 
 // Moving a session to another of the person's hosts from the phone
@@ -56,6 +57,9 @@ public final class SessionMove {
     public private(set) var holder: String?
 
     private let source: any HostSource
+    /// The wait under way's end, asked for before its thread may have
+    /// started: that thread then doesn't wait at all.
+    private var ending: MoveEnding?
 
     public init(source: any HostSource, holder: String?) {
         self.source = source
@@ -85,9 +89,12 @@ public final class SessionMove {
     public func move(_ request: MoveRequest) -> Bool {
         guard !isMoving, request.device != holder else { return false }
         state = .moving(host: request.hostName)
-        let source = source
+        let (source, ending) = (source, MoveEnding())
+        self.ending = ending
         Task {
-            let outcome = await blocking { source.take(request) }
+            let outcome = await blocking {
+                ending.asked.withLock { $0 } ? .refused(code: "cancelled", message: "") : source.take(request)
+            }
             switch outcome {
             case .taken:
                 state = .moved(host: request.hostName)
@@ -108,8 +115,14 @@ public final class SessionMove {
     /// The screen went: the wait ends, and the move goes on on the host.
     public func stopWaiting() {
         guard isMoving else { return }
+        ending?.asked.withLock { $0 = true }
         source.cancelTake()
     }
+}
+
+/// Whether a move's wait was asked to end.
+final class MoveEnding: Sendable {
+    let asked = Mutex(false)
 }
 
 /// The Move to… sheet (R-HAND-4): the person's online hosts but the one
