@@ -54,6 +54,12 @@ public final class SessionListViewController: UIViewController, UICollectionView
         self.model = model
         self.open = open ?? { TranscriptViewController(row: $0) }
         super.init(nibName: nil, bundle: nil)
+        // Back in the foreground with no session open over this list, its
+        // first read landing is the app caught up (ticket 128).
+        model.listed = { [weak self] in
+            guard let self, navigationController?.topViewController === self, viewIfLoaded?.window != nil else { return }
+            Budgets.shared.listRead()
+        }
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always
     }
@@ -230,6 +236,7 @@ public final class SessionListViewController: UIViewController, UICollectionView
             spinner.stopAnimating()
             emptyLabel.text = Self.emptySentence
             emptyLabel.isHidden = false
+            Budgets.shared.listShown()
         case .failed(let sentence):
             spinner.stopAnimating()
             emptyLabel.text = sentence
@@ -237,6 +244,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
         case .listed:
             spinner.stopAnimating()
             emptyLabel.isHidden = true
+            // The launch's budget ends at the first listing applied
+            // (ticket 128); later ones change nothing.
+            Budgets.shared.listShown()
         }
     }
 

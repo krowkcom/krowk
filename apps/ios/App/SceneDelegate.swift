@@ -67,6 +67,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // A removal while the app was away is heard now, not a minute on;
         // a session joining again meanwhile asks for itself (a refused
         // ticket is checked).
+        // Its budget first: from here to caught up (ticket 128).
+        Budgets.shared.cameForward()
         watch?.start()
         LiveSessions.shared.willEnterForeground()
         if !opened { showRoot() }
@@ -86,6 +88,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// and a lost one waits for the foreground: push covers a finished
     /// turn and an approval meanwhile.
     func sceneDidEnterBackground(_ scene: UIScene) {
+        Budgets.shared.wentToBackground()
         LiveSessions.shared.didEnterBackground()
         watch?.stop()
     }
@@ -366,6 +369,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let navigation = UINavigationController(rootViewController: root)
         navigation.navigationBar.prefersLargeTitles = true
         window?.rootViewController = navigation
+        // A launch measures to the cached list only when Sessions is the
+        // first screen (ticket 128); any later one changes nothing.
+        if !(root is SessionListViewController) { Budgets.shared.launchAbandoned() }
         // A tapped alert's session opens from the paired phone's list,
         // held until it's up; signing in or pairing, routes are dropped. A
         // key failure that may pass (locked) keeps one held for the next

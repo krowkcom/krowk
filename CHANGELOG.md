@@ -51,6 +51,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ids of its sessions, is sealed under your user key and bound to the device
   it is about. The registry sees only its length, padded to whole
   kilobytes. Nothing publishes one yet.
+- **The iPhone app measures its own launch, return, tap and keystroke
+  times.** Every build, the App Store's included, logs one line per
+  measurement (`budget launch.cachedList 312.4 ms`) and a matching
+  signpost interval: launch to the cached session list, foreground to
+  caught up, Send to its bubble, and one keystroke in ten to its glyph.
+  Anyone holding the phone can read them in Console.app or with
+  `idevicesyslog -m "budget "`, without Xcode; `apps/ios/README.md` says
+  how, and what each is held to. Nothing about your sessions is logged.
 - **The iPhone app's size, memory and main-thread stalls are held in CI.**
   A pull request that grows the Release app or its executable past its
   ceiling, scrolls a 10,000-item session over its memory ceiling, or

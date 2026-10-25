@@ -73,7 +73,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
     private var measured: (length: Int, width: CGFloat)?
     /// Typed, or the text set: the screen works the buttons out again.
     var changed: (@MainActor () -> Void)?
-    var send: (@MainActor () -> Void)?
+    /// Sends what's typed; whether a bubble showed for it.
+    var send: (@MainActor () -> Bool)?
     var stop: (@MainActor () -> Void)?
 
     /// How many lines it grows to before it scrolls.
@@ -112,7 +113,14 @@ public final class ComposerView: UIView, UITextViewDelegate {
         send.cornerStyle = .capsule
         sendButton.configuration = send
         sendButton.accessibilityIdentifier = "composer-send"
-        sendButton.addAction(UIAction { [weak self] _ in self?.send?() }, for: .primaryActionTriggered)
+        // The tap's budget (ticket 128): from the touch-up to the frame
+        // after its bubble was applied; given up if none was.
+        sendButton.addAction(UIAction { [weak self] _ in
+            let budgets = Budgets.shared
+            budgets.tapped()
+            if self?.send?() == true { budgets.bubbleShown() }
+            budgets.tapSettled()
+        }, for: .primaryActionTriggered)
 
         var stop = UIButton.Configuration.tinted()
         stop.title = "Stop"
@@ -208,6 +216,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
     }
 
     public func textViewDidChange(_ textView: UITextView) {
+        // One keystroke in ten, to the next display frame (ticket 128).
+        Budgets.shared.keystroke()
         textChanged()
     }
 

@@ -190,7 +190,10 @@ jobs:
   # fail it) — and a trend that fails nothing: the launch, the frame-apply
   # baseline, host-to-screen latency, a notification's cold launch and the
   # most updates a live follow had waiting, in the step summary and the
-  # ios-perf.json artifact on every run.
+  # ios-perf.json artifact on every run. R-IOS-PERF, R-LAG-8 (ticket 128):
+  # the phone's own budgets, as signposts in every build (BudgetsTests;
+  # approvals.sh finds them in the Release app), and BudgetUITests'
+  # XCTOSSignpostMetric shows launch.cachedList and tap.optimistic fire.
   app:
     needs: [key, bindings]
     # Also when bindings was skipped on a cache hit.
@@ -295,7 +298,7 @@ jobs:
       # person runs: the UI tests' stub and the launch argument that picks
       # it are under #if DEBUG, so a Release build has neither, and links
       # LocalAuthentication. And no source names allowProject.
-      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and none of the budgets' seams"
+      - name: "R-IOS-11, R-IOS-12, R-PERF-7, R-IOS-PERF: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and none of the budgets' seams, and measures the phone's budgets"
         run: |
           xcodebuild build -quiet -skipPackagePluginValidation \
             -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
@@ -334,7 +337,7 @@ jobs:
       # to the tests (TEST_RUNNER_KROWK_API_URL) and stops it after. Retried
       # only when the simulator failed to start the test runner, a known
       # flake; any other failure fails at once.
-      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2, R-PERF-7: the scheme's tests on the simulator, against the fake fleet (StallBudgetTests apart: the stall gate below)"
+      - name: "R-CLIENT-1, R-CLIENT-2, R-IOS-13, R-IOS-8, R-IOS-9, R-CRED-1, R-E2E-3, R-HAND-4, R-IOS-3, R-IOS-7, R-PROTO-2, R-IOS-1, R-LAG-9, R-IOS-10, R-LAG-7, R-PERF-4, R-LAG-8, R-IOS-5, R-PERM-2, R-IOS-11, R-IOS-12, R-IOS-2, R-OFF-2, R-PERF-7, R-IOS-PERF: the scheme's tests on the simulator, against the fake fleet (StallBudgetTests apart: the stall gate below)"
         run: |
           set -o pipefail
           for attempt in 1 2 3 4; do

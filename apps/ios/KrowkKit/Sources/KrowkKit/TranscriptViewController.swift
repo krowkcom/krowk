@@ -293,7 +293,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             ])
             bottom = composer.topAnchor
             composer.changed = { [weak self] in self?.updateComposer() }
-            composer.send = { [weak self] in self?.sendTyped() }
+            composer.send = { [weak self] in self?.sendTyped() ?? false }
             composer.stop = { [weak self] in self?.stopTurn() }
         } else {
             bottom = view.bottomAnchor
@@ -562,10 +562,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// Send (or Steer, while a turn runs), the button or ⌘↵: the bubble
     /// shows now, in this run-loop turn, before the command crosses into
     /// the core off the main thread (R-LAG-8). The text field empties and
-    /// keeps its focus; nothing waits on the send.
-    public func sendTyped() {
+    /// keeps its focus; nothing waits on the send. Whether a bubble showed
+    /// (the tap's budget, ticket 128).
+    @discardableResult
+    public func sendTyped() -> Bool {
         updateComposer()
-        guard let session, composerState.canSend else { return }
+        guard let session, composerState.canSend else { return false }
         let text = composer.text
         let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
         let token = model.issue(command)
@@ -580,6 +582,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         if UIAccessibility.isVoiceOverRunning, statusBar.status == .hostOffline {
             UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
         }
+        return true
     }
 
     /// Stop, the button or ⌘.: "stopping…" now, the interrupt to the core;
@@ -1159,6 +1162,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     private func relay(_ status: RelayStatus) {
         statusBar.show(status)
+        // The foreground's budget (ticket 128): the open session's bar
+        // live again is the app caught up. Not a screen covered or parked.
+        if navigationController?.topViewController === self, viewIfLoaded?.window != nil, !parked {
+            Budgets.shared.sessionStatus(live: status == .live)
+        }
         model.setHostOffline(status == .hostOffline)
         approvals?.connected = status == .live || status == .catchingUp
         if isLive, noticeShown == .hostOffline { hideNotice() }

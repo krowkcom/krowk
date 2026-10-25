@@ -34,6 +34,10 @@ public final class SessionListModel {
     /// A lease's TTL: no listing older than this shows a session live.
     public static let leaseTTL: TimeInterval = 60
 
+    /// Called on each read that succeeded, after its listing is kept: the
+    /// screen's foreground budget (ticket 128). Not observed.
+    @ObservationIgnored public var listed: (@MainActor () -> Void)?
+
     private let source: any SessionSource
     private let clock: @Sendable () -> Date
     private let log: @MainActor (String) -> Void
@@ -145,6 +149,7 @@ public final class SessionListModel {
                 failure = nil
                 // Only on screen: appearing arms it again.
                 if !timers.isEmpty { expire(at: started.addingTimeInterval(Self.leaseTTL)) }
+                listed?()
             case .failure(.gone(let found)):
                 // Stops here: no timer, no retry. The app shows why.
                 log("listing sessions failed: \(found.kind)")
