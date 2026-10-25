@@ -196,12 +196,6 @@ jobs:
     # Also when bindings was skipped on a cache hit.
     if: ${{ !failure() && !cancelled() }}
     runs-on: macos-26
-    # TEMPORARY (ticket 140): three runs of the whole job, the proof the
-    # flaky iOS tests are fixed. Removed before merge.
-    strategy:
-      fail-fast: false
-      matrix:
-        run: [1, 2, 3]
     # The fleet's first build on a cold cache is most of it; the budgets'
     # passes through 10,000 items and the stall gate's second run add a
     # few minutes.
@@ -450,7 +444,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: ios-perf-${{ matrix.run }}
+          name: ios-perf
           path: ${{ runner.temp }}/ios-perf.json
           if-no-files-found: warn
 
@@ -478,7 +472,7 @@ jobs:
         if: ${{ !cancelled() && env.BUILT == '1' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: krowk-ios-screenshots-${{ matrix.run }}
+          name: krowk-ios-screenshots
           path: ${{ runner.temp }}/screenshots/krowk-*.png
           if-no-files-found: warn
 
@@ -499,7 +493,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: Krowk-iOS-xcresult-${{ matrix.run }}
+          name: Krowk-iOS-xcresult
           path: ${{ runner.temp }}/Tests.xcresult
           if-no-files-found: ignore
 
@@ -565,6 +559,6 @@ jobs:
         if: ${{ !cancelled() && steps.shot.outcome != 'skipped' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: krowk-ios-screenshot-${{ matrix.run }}
+          name: krowk-ios-screenshot
           path: ${{ runner.temp }}/krowk-launch-*.png
           if-no-files-found: warn
