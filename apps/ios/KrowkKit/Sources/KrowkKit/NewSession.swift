@@ -89,7 +89,8 @@ public enum StartOutcome: Sendable, Equatable {
 
 /// The person's hosts, a session started on one, and one moved to one:
 /// KrowkAccount over krowk-ffi's `Account.listHosts`, `startSession`,
-/// `takeSession` and `newCommandId`, a stub in the tests. Both calls block: never on the main thread.
+/// `takeSession` and `newCommandId`, a stub in the tests. `hosts`, `start`
+/// and `take` block: never on the main thread.
 public protocol HostSource: Sendable {
     /// One registry call.
     func hosts() throws -> HostListing

@@ -228,8 +228,9 @@ impl Account {
     /// there before anything moves, and its refusal comes back as it said
     /// it. The command is sealed and sent as `start_session`'s is, under
     /// `id` (`new_command_id`, once per tap, passed again on a retry), and
-    /// the answer asked for every 500 ms for up to six minutes, or until
-    /// `cancel_take` is called from another thread, which ends this wait
+    /// the answer asked for every 500 ms for up to six and a half minutes
+    /// (the host watches its take for six), or until `cancel_take` is called
+    /// from another thread, which ends this wait
     /// within a moment and not the take on the host.
     ///
     /// `Taken` once the host holds it. `Refused` with the host's code and

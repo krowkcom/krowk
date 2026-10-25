@@ -373,21 +373,28 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
         Ok(started) => started,
         Err(e) => return tell(HostAnswer::refused("host_failed", format!("{host} couldn't run krowk sync take: {e}"))),
     };
-    let answer = rt.block_on(async {
-        // Not a background client: the daemon stays up for the answer.
-        let _held = Daemon::connect(&c.socket, Path::new(cwd), &c.version, false).await.ok();
-        let moved = moved_line(session);
-        let read = || std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-        let has_moved = |out: &str| out.lines().any(|l| l.starts_with(&moved));
+    let moved = moved_line(session);
+    let read = {
+        let log = log.clone();
+        move || std::fs::read(&log).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+    };
+    let has_moved = {
+        let moved = moved.clone();
+        move |out: &str| out.lines().any(|l| l.starts_with(&moved))
+    };
+    let (answer, held) = rt.block_on(async {
+        // Not a background client: the daemon stays up until the answer is
+        // sent.
+        let held = Daemon::connect(&c.socket, Path::new(cwd), &c.version, false).await.ok();
         let taken = || HostAnswer::Taken { session_id: session.to_string() };
         let until = Instant::now() + TAKE_WAIT;
-        loop {
+        let answer = loop {
             if has_moved(&read()) {
-                return Some(taken());
+                break Some(taken());
             }
             if let Ok(Some(status)) = child.try_wait() {
                 let out = read();
-                return Some(match refusal(&out) {
+                break Some(match refusal(&out) {
                     _ if has_moved(&out) => taken(),
                     // The same take asked again (a daemon restarted under
                     // it): it moved here the first time.
@@ -397,10 +404,11 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
                 });
             }
             if Instant::now() >= until {
-                return None;
+                break None;
             }
             tokio::time::sleep(TAKE_EVERY).await;
-        }
+        };
+        (answer, held)
     });
     let answer = answer.unwrap_or_else(|| {
         HostAnswer::refused("take_unfinished", format!("krowk sync take on {host} hasn't finished after {} minutes; it goes on, and the session may yet move — see {} there", TAKE_WAIT.as_secs() / 60, log.display()))
@@ -408,16 +416,20 @@ fn take(me: &Arc<Commands>, c: &Config, o: &Options, host: &str, session: &str, 
     let unfinished = matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_unfinished");
     if !matches!(answer, HostAnswer::Refused { ref code, .. } if code == "take_refused") {
         // Hosting the session now, or still taking it: left to run, and
-        // reaped once it ends. One still taking it is the take under way
-        // until then: another is `busy`.
-        let held = if unfinished { taking.0.take() } else { None };
+        // reaped once it ends. One still taking it stays the take under way
+        // — another is `busy` — until it moves the session or ends.
+        let still = Taking(if unfinished { taking.0.take() } else { None });
         let _ = std::thread::Builder::new().name("krowk-take".into()).spawn(move || {
+            while still.0.is_some() && !has_moved(&read()) && matches!(child.try_wait(), Ok(None)) {
+                std::thread::sleep(TAKE_EVERY);
+            }
+            drop(still);
             let _ = child.wait();
-            drop(Taking(held));
         });
     }
     drop(taking);
-    tell(answer)
+    tell(answer);
+    drop(held);
 }
 
 /// What a take that ended refused with, as `(code, fix)`: the error it
