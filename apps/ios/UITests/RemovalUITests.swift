@@ -50,6 +50,7 @@ final class RemovalUITests: XCTestCase {
         app.launch()
 
         // Sign in and pair, as PairingUITests does.
+        let signIn = app.buttons["sign-in"]
         try await FleetUI.signIn(app, api: api)
         let field = app.textFields["pairing-code"]
         if !FleetUI.answering(until: field, timeout: 30) { Screenshots.tree(of: app) }
