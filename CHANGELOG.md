@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app switches a session's model.** A session's navigation
+  bar shows the model it runs on, `<instance>/<id>`. Tap it to see the
+  host's ready instances and their models, each instance with its limit
+  (one not ready is greyed with its fix). A pick reads `switching to
+  <model>…` at once and settles once the host has switched; during a
+  running turn that is when the turn ends. A refusal shows the host's
+  sentence under the model, which stays as it was. With the host offline
+  the picker offers nothing. A turn that hits its instance's limit shows
+  `<from> is at its limit — continue on <to>?` over the composer, and
+  **Continue** switches and sends your prompt again there. The phone
+  never switches the mode, toolset, effort or budget.
 - **The iPhone app starts a session on one of your machines.** Sessions'
   `+` opens "New session": your hosts as they announce themselves, online
   first (one offline is greyed with when it was last seen and can't be

@@ -24,7 +24,10 @@
 # (R-HOST-3), and starts a session a phone asks for there (R-HOST-4); a
 # POST to KROWK_HOSTS_URL/offline lets its announcement lapse, replying
 # once it is listed offline, KROWK_HOSTS_URL/hold holds its refreshes so a
-# start waits, and KROWK_HOSTS_URL/online brings it back. The fleet
+# start waits, and KROWK_HOSTS_URL/online brings it back; host A has two
+# instances ready on the mock model, anthropic and anthropic:personal, and
+# KROWK_HOSTS_URL/limit has the next turn on anthropic hit its limit (429),
+# so the host offers anthropic:personal. The fleet
 # runs with --demo: its session is titled "A demo session", has a turn
 # with a tool call and its result, and holds an approval. It runs with
 # --direct-lan too: each session's host offers its LAN listener on

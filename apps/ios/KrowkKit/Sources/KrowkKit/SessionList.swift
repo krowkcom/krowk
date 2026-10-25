@@ -14,6 +14,13 @@ public protocol SessionRecord: Sendable {
     /// The device id holding the session's lease, hosting it now, when one
     /// does: the registry names it only while the lease is unexpired.
     var hostedBy: String? { get }
+    /// The device id that last took the session up, from its index: whose
+    /// instances its model picker lists (ticket 135).
+    var hostDevice: String? { get }
+}
+
+public extension SessionRecord {
+    var hostDevice: String? { nil }
 }
 
 /// What one listing read: the sessions this phone can open, newest first,
@@ -108,14 +115,19 @@ public struct SessionRow: Hashable, Sendable {
     /// "last seen 12m ago", from when its host last wrote it, live or not:
     /// what a session opened with its host away says (R-IOS-7).
     public let lastSeen: String?
+    /// The session's host, by device id: the lease's holder, else the
+    /// device that last took it up. Its instances are what the model
+    /// picker offers (ticket 135); nil when neither is known.
+    public let hostDevice: String?
 
-    public init(id: String, title: String, detail: String, live: Bool, accessibilityLabel: String, lastSeen: String? = nil) {
+    public init(id: String, title: String, detail: String, live: Bool, accessibilityLabel: String, lastSeen: String? = nil, hostDevice: String? = nil) {
         self.id = id
         self.title = title
         self.detail = detail
         self.live = live
         self.accessibilityLabel = accessibilityLabel
         self.lastSeen = lastSeen
+        self.hostDevice = hostDevice
     }
 }
 
@@ -164,7 +176,7 @@ public final class SessionRowFormatter {
         return SessionRow(
             id: session.id, title: title, detail: place.isEmpty ? status : "\(place) · \(status)", live: live,
             accessibilityLabel: [title, place == title ? "" : place, said].filter { !$0.isEmpty }.joined(separator: ", "),
-            lastSeen: seen)
+            lastSeen: seen, hostDevice: session.hostedBy ?? session.hostDevice)
     }
 
     /// "12m ago", "3h ago"; "just now" under a minute, and for a time

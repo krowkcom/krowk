@@ -173,16 +173,22 @@ public enum TurnEnd: Equatable, Sendable {
 /// reads it from the generated `LogEvent` (KrowkAccount; R-PROTO-2): the
 /// events a transcript draws, and nothing for the rest.
 public enum TranscriptChange: Equatable, Sendable {
-    case userText(item: String, text: String, images: [UInt32])
+    /// A prompt or steer, with its turn: the first of a turn is its prompt,
+    /// which a rate-limit offer sends again (ticket 135).
+    case userText(item: String, text: String, images: [UInt32], turn: String? = nil)
     case assistantText(item: String, text: String)
     case reasoning(item: String, text: String)
     case toolCall(item: String, callID: String, name: String, input: String)
     case toolResult(item: String, callID: String, output: String, isError: Bool)
     /// `turn.started`: a turn runs until its `turn.completed` (the
-    /// composer's Steer and Stop, ticket 90). Draws nothing.
-    case turnStarted(turn: String)
+    /// composer's Steer and Stop, ticket 90), on `model`: the session's
+    /// current model from then (ticket 135). Draws nothing.
+    case turnStarted(turn: String, model: ModelChoice? = nil)
     case turnCompleted(turn: String, end: TurnEnd)
-    case modelSwitched(model: String)
+    /// `model.switched`: "Now on <model>", and the session's current model
+    /// from then is `to`. `failed`: a switch that couldn't run its turn,
+    /// back to the model before (R-SWITCH-4), from `from`.
+    case modelSwitched(model: String, from: ModelChoice? = nil, to: ModelChoice? = nil, failed: Bool = false)
 }
 
 /// One logged event as the transcript takes it: its id, the event before
@@ -251,6 +257,11 @@ public enum TranscriptUpdate: Equatable, Sendable {
     case commandSent(id: String, queued: Bool)
     /// `Update.acked`: the host took it, or refused it saying why.
     case commandAcked(id: String, error: String?)
+    /// `result`: the run's end of turn `turn`, with the host's offer of
+    /// another instance when its own hit its limit (R-INST-7, ticket 135).
+    case result(session: String, turn: String, offer: SwitchOfferInfo?)
+    /// `limits`: how near its limit `instance` is (R-INST-6).
+    case limits(session: String, instance: String, limit: InstanceLimit)
 }
 
 /// What a frame's apply did that the screen draws at once, inside the
@@ -268,6 +279,12 @@ public struct FrameApplied {
     /// Approval answers the host acked (`error` nil) or refused, or that
     /// never reached the core, in order: for the approval queue.
     public var approvalAnswers: [(token: UInt64, error: String?)] = []
+    /// The host refused the phone's model switch, or it never went: why
+    /// (ticket 135).
+    public var switchRefused: String?
+    /// The switch an offer's Continue sent was taken: the limited turn's
+    /// prompt, to send again now as a new prompt.
+    public var promptAgain: String?
 }
 
 /// A session's transcript (ticket 88): its rows in order, by id, and one
@@ -407,10 +424,23 @@ public final class TranscriptModel {
     public func issue(_ command: LiveCommand) -> UInt64 {
         let token: UInt64
         switch command {
-        case .prompt(let text): token = commands.add(.prompt, text: text)
+        case .prompt(let text):
+            token = commands.add(.prompt, text: text)
+            // A prompt of the person's own answers an offer with a no, and
+            // is the one a later offer sends again.
+            lastPrompt = text
+            if offer != nil { offer = nil }
         case .steer(let text): token = commands.add(.steer, text: text)
         case .interrupt: return commands.add(.interrupt)
         case .approve: return commands.add(.approve)
+        case .switchModel(let choice):
+            let token = commands.add(.switchModel, text: choice.name)
+            switching = choice
+            switchToken = token
+            switchAcked = false
+            if switchRefusal != nil { switchRefusal = nil }
+            if let continuing, continuing.token != token { self.continuing = nil }
+            return token
         }
         let state = ItemState(id: Self.bubbleID(token), kind: .pending, text: commands.entry(token)?.text ?? "")
         bubbles[token] = state
@@ -467,6 +497,9 @@ public final class TranscriptModel {
     /// saying so. The bubbles refused.
     @discardableResult
     public func connectionEnded() -> [ItemState] {
+        // A switch still out goes with the connection: what the host took
+        // is in its log, read when the session opens again.
+        if switching != nil { endSwitch() }
         let changed = commands.connectionEnded()
         for token in changed { refresh(token) }
         return changed.compactMap { bubbles[$0] }
@@ -507,6 +540,11 @@ public final class TranscriptModel {
             let answer = commands.entry(token)?.kind == .approve
             commands.unsent(token, why: why)
             if answer { applied.approvalAnswers.append((token, why)) }
+            if token == switchToken {
+                endSwitch()
+                switchRefusal = why
+                applied.switchRefused = why
+            }
             refresh(token)
             if let state = bubbles[token], state.refused { applied.refused.append(state) }
         case .commandSent(let id, let queued):
@@ -529,6 +567,8 @@ public final class TranscriptModel {
                 applied.stopRefused = error
             case .approval(let token, let error)?:
                 applied.approvalAnswers.append((token, error))
+            case .switched(let token, let error)?:
+                answeredSwitch(token, error: error, into: &applied)
             case .interrupt?, nil:
                 break
             }
@@ -598,6 +638,122 @@ public final class TranscriptModel {
         }
     }
 
+    // MARK: The model (ticket 135)
+
+    /// The model the session runs on: the newest of its log's
+    /// `turn.started` models and `model.switched` targets, as applied. Nil
+    /// until one is.
+    public private(set) var currentModel: ModelChoice?
+    /// When the host logged what set it: a catch-up's older line doesn't
+    /// move it back.
+    @ObservationIgnored private var currentAtMs: Int64?
+    /// A switch this phone asked for (R-LAG-8): shown at once, until the
+    /// host refuses it or its `model.switched` comes. During a running turn
+    /// the host keeps it for after the turn, so it stays until then.
+    public private(set) var switching: ModelChoice?
+    @ObservationIgnored private var switchToken: UInt64?
+    @ObservationIgnored private var switchAcked = false
+    /// The host's refusal of the last switch (R-SWITCH-4): its sentence,
+    /// ending "— the session stays on <model>", until the next switch.
+    public private(set) var switchRefusal: String?
+    /// The host's offer, when the session's last turn hit its instance's
+    /// limit (R-INST-7): withdrawn by another turn or a prompt typed here.
+    public private(set) var offer: HeldOffer?
+    /// Continue's switch, and the prompt it sends again once the host
+    /// takes the switch.
+    @ObservationIgnored private var continuing: (token: UInt64, text: String)?
+    /// Continue's prompt, its switch settled in the frame being applied.
+    @ObservationIgnored private var againNow: String?
+    /// The last prompt this phone sent, and the latest turns' prompts: the
+    /// limited turn was this phone's when its prompt is that one.
+    @ObservationIgnored private var lastPrompt: String?
+    @ObservationIgnored private var asked: [(turn: String, text: String)] = []
+    /// Turns whose prompts `asked` keeps: enough for a catch-up that comes
+    /// after the result of the turn it brings the start of.
+    static let askedKept = 8
+    /// Each instance's limit, as the session's `limits` lines last said
+    /// (R-INST-6).
+    public private(set) var limits: [String: InstanceLimit] = [:]
+    @ObservationIgnored private var turnModels: [String: ModelChoice] = [:]
+
+    /// The navigation bar's subtitle: `switching to <model>…`, or the
+    /// current model.
+    public var modelLine: String { ModelLine.text(current: currentModel, switching: switching) }
+
+    /// The model turn `turn` started on, if its start was applied.
+    public func model(ofTurn turn: String) -> ModelChoice? { turnModels[turn] }
+
+    /// The offer taken (Continue) or put away: it goes.
+    @discardableResult
+    public func takeOffer() -> HeldOffer? {
+        defer { if offer != nil { offer = nil } }
+        return offer
+    }
+
+    /// Once the switch `token` is logged, `text` goes again as a new
+    /// prompt (`FrameApplied.promptAgain`): the offer's Continue. Not at
+    /// its ack: a switch the host takes while the limited turn still lets
+    /// go of the session waits for that turn's end, and a prompt sent
+    /// before it would run on the limited instance again.
+    public func prompt(_ text: String, afterSwitch token: UInt64) {
+        continuing = (token, text)
+    }
+
+    /// The refusal under the subtitle, put away.
+    public func dismissSwitchRefusal() {
+        if switchRefusal != nil { switchRefusal = nil }
+    }
+
+    private func current(_ model: ModelChoice, at time: Int64?) {
+        // A catch-up brings what a gap left out, after later lines: one
+        // the host logged before what set the model doesn't move it.
+        if placing == .afterParent, let time, let currentAtMs, time < currentAtMs { return }
+        if currentModel != model { currentModel = model }
+        if let time { currentAtMs = max(currentAtMs ?? time, time) }
+    }
+
+    /// The switch out ends: `settled` by its `model.switched` (Continue's
+    /// prompt goes now), or refused or lost (it never goes).
+    private func endSwitch(settled: Bool = false) {
+        if let continuing, continuing.token == switchToken || switchToken == nil {
+            if settled { againNow = continuing.text }
+            self.continuing = nil
+        }
+        if switching != nil { switching = nil }
+        switchToken = nil
+        switchAcked = false
+    }
+
+    /// The host answered switch `token`: refused, it goes back, saying the
+    /// host's sentence; taken, it waits for its `model.switched` (none
+    /// comes for the model it is on already, so that one settles now).
+    private func answeredSwitch(_ token: UInt64, error: String?, into applied: inout FrameApplied) {
+        guard token == switchToken else { return }
+        if let error {
+            endSwitch()
+            let said = PendingCommands.refusal(error)
+            switchRefusal = said
+            applied.switchRefused = said
+            return
+        }
+        switchAcked = true
+        if switching == currentModel, runningTurn == nil { endSwitch(settled: true) }
+    }
+
+    /// The first text of turn `turn`, its prompt, kept.
+    private func keepPrompt(_ turn: String, _ text: String) {
+        guard !asked.contains(where: { $0.turn == turn }) else { return }
+        if asked.count == Self.askedKept { asked.removeFirst() }
+        asked.append((turn, text))
+    }
+
+    /// Turn `turn`'s prompt, when it is the last one this phone sent.
+    private func prompt(of turn: String) -> String? {
+        guard let lastPrompt, let text = asked.first(where: { $0.turn == turn })?.text,
+              PendingCommands.trimmed(text) == PendingCommands.trimmed(lastPrompt) else { return nil }
+        return lastPrompt
+    }
+
     /// The session as read at rest: its events applied, and `attached` set.
     public func attach(_ events: [TranscriptEvent]) {
         transact {
@@ -657,6 +813,14 @@ public final class TranscriptModel {
                     break
                 case .commandMinted, .commandUnsent, .commandSent, .commandAcked:
                     command(update, into: &applied)
+                case .result(let session, let turn, let offer):
+                    guard session == sessionID else { continue }
+                    // A result of the session's own turn replaces the offer.
+                    let held = offer.map { HeldOffer(turn: turn, info: $0, again: prompt(of: turn)) }
+                    if self.offer != held { self.offer = held }
+                case .limits(let session, let instance, let limit):
+                    guard session == sessionID, limits[instance] != limit else { continue }
+                    limits[instance] = limit
                 }
             }
             flush(&deltas, into: &applied)
@@ -666,6 +830,8 @@ public final class TranscriptModel {
         ended = []
         applied.refused += refusedNow
         refusedNow = []
+        applied.promptAgain = againNow
+        againNow = nil
         placeMarks()
         return applied
     }
@@ -809,7 +975,7 @@ public final class TranscriptModel {
                 at = above.isEmpty ? working!.startIndex : (working!.firstIndex(of: above).map { $0 + 1 } ?? working!.endIndex)
             }
             settledRow = nil
-            if let change = event.change, let row = take(change, event: event.id) {
+            if let change = event.change, let row = take(change, event: event.id, at: event.timeMs) {
                 working!.insert(row, at: at)
                 anchors[event.id] = row
             } else if let settledRow, working!.contains(settledRow) {
@@ -828,9 +994,10 @@ public final class TranscriptModel {
     }
 
     /// `change` applied: the id of the row it adds, if it adds one.
-    private func take(_ change: TranscriptChange, event: String) -> String? {
+    private func take(_ change: TranscriptChange, event: String, at time: Int64?) -> String? {
         switch change {
-        case .userText(let item, let text, let images):
+        case .userText(let item, let text, let images, let turn):
+            if let turn { keepPrompt(turn, text) }
             // Logged live or caught up (never read at rest): the oldest
             // bubble typed with this text gives way to it (ticket 90).
             if live || placing == .afterParent, let token = commands.logged(text) { dropBubble(token) }
@@ -892,8 +1059,15 @@ public final class TranscriptModel {
             guard let row = add(state) else { return nil }
             if calls[callID] == nil { orphans[callID] = state }
             return row
-        case .turnStarted(let turn):
+        case .turnStarted(let turn, let model):
             if !endedTurns.contains(turn) { runningTurn = turn }
+            if let model {
+                turnModels[turn] = model
+                current(model, at: time)
+                if switching == model { endSwitch() }
+            }
+            // Another turn starting withdraws the offer, as it happens.
+            if live, let offer, offer.turn != turn { self.offer = nil }
             return nil
         case .turnCompleted(let turn, let end):
             endedTurns.insert(turn)
@@ -915,7 +1089,13 @@ public final class TranscriptModel {
             guard let row = add(state) else { return nil }
             if live { ended.append(state) }
             return row
-        case .modelSwitched(let model):
+        case .modelSwitched(let model, let from, let to, let failed):
+            if let to {
+                current(to, at: time)
+                // The switch asked for here, logged; or, failed once it
+                // ran, logged back (R-SWITCH-4).
+                if let switching, switching == to || (failed && from == switching) { endSwitch(settled: !failed) }
+            }
             return add(ItemState(id: "switch:\(event)", kind: .mark, text: "Now on \(model)"))
         }
     }

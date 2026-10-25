@@ -1,12 +1,14 @@
 import Foundation
 
 /// What the phone says to a session it follows: the three commands M1's
-/// composer sends (ticket 90), and the answer to an approval (ticket 91).
-/// KrowkAccount builds the generated `Command` from it (R-CLIENT-1: never
-/// the wire JSON here), for this session, with no model, toolset, effort
-/// or budget and the default permission mode; the host's bridge runs a
-/// remote prompt under the session's own settings anyway. An answer names
-/// its request's own session.
+/// composer sends (ticket 90), the answer to an approval (ticket 91), and a
+/// switch of the session's model (ticket 135). KrowkAccount builds the
+/// generated `Command` from it (R-CLIENT-1: never the wire JSON here), for
+/// this session, with no model, toolset, effort or budget and the default
+/// permission mode; the host's bridge runs a remote prompt under the
+/// session's own settings anyway. An answer names its request's own
+/// session. Never a mode, toolset, effort or budget: a remote client may
+/// switch the model, nothing else.
 public enum LiveCommand: Equatable, Sendable {
     /// A new turn, with this text.
     case prompt(String)
@@ -17,6 +19,9 @@ public enum LiveCommand: Equatable, Sendable {
     /// An approval answered: allowed once or for the session, or denied
     /// (with the answers to its questions).
     case approve(ApprovalReply)
+    /// The session's next turns on this model, which the host checks as it
+    /// checks a local switch (ticket 118).
+    case switchModel(ModelChoice)
 }
 
 /// The composer's commands as the screen shows them until the session's
@@ -42,6 +47,9 @@ public struct PendingCommands: Equatable, Sendable {
         /// An approval's answer: no bubble; its ack goes to the approval
         /// queue (`Answered.approval`).
         case approve
+        /// A model switch: no bubble; its ack settles or refuses the
+        /// screen's `switching to …` (`Answered.switched`).
+        case switchModel
     }
 
     public enum State: Equatable, Sendable {
@@ -114,6 +122,8 @@ public struct PendingCommands: Equatable, Sendable {
         /// An approval's answer acked and gone: `error` when the host
         /// refused it.
         case approval(token: UInt64, error: String?)
+        /// A model switch acked and gone: `error` when the host refused it.
+        case switched(token: UInt64, error: String?)
     }
 
     /// `Update.acked`. An id with no entry here (its bubble already gave
@@ -130,6 +140,10 @@ public struct PendingCommands: Equatable, Sendable {
         if entry.kind == .approve {
             entries.remove(at: at)
             return .approval(token: entry.token, error: error)
+        }
+        if entry.kind == .switchModel {
+            entries.remove(at: at)
+            return .switched(token: entry.token, error: error)
         }
         guard entry.isOut else { return nil }
         if let error {
