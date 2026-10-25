@@ -13,7 +13,7 @@
 use super::commands::CommandBook;
 use super::join::read_control;
 use super::store::{Attached, Head, ReadError};
-use super::{Answer, Batch, Candidate, ViewerFrame, Welcome, DEAD, FRAME, PING};
+use super::{Answer, Candidate, ViewerFrame, Welcome, DEAD, FRAME, PING};
 use crate::e2e::{self, DeviceId, SessionKeys};
 use crate::protocol::frame::{HEADER, KIND_ACK, KIND_BATCH, KIND_RELAY};
 use crate::protocol::{Command, LiveEvent, StreamLine};
@@ -55,6 +55,23 @@ pub enum Update {
     /// The host's answer to a handoff this viewer asked for (R-HAND-1):
     /// what this device takes the session up with, or why it stays.
     Handoff(Result<super::Handed, String>),
+    /// Where this viewer stands as of the `Show` it ends, the last update
+    /// of one that moved it: what a device keeping its place across
+    /// launches saves with the events that `Show` holds, in one write.
+    Saved(Cursor),
+}
+
+/// A viewer's place (engineering/harness.md → Sync cursors): the stream,
+/// the last batch of it applied and shown, and the newest logged event the
+/// viewer holds every event up to — older than the newest held while a
+/// catch-up for a gap is still out, so a place kept across launches never
+/// catches up from past a gap.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Cursor {
+    pub stream: String,
+    pub after_seq: u64,
+    pub newest: Option<String>,
 }
 
 /// The last-applied-batch ack a viewer sends the relay (relay.md → Flow
@@ -66,10 +83,10 @@ pub fn ack(session: &[u8; 16], seq: u64) -> Vec<u8> {
     b
 }
 
-/// A viewer acks at least every this many batches, well inside the relay's
-/// window of 16, and at the next display frame after any it applied.
-pub const ACK_EVERY: u64 = 4;
-const _: () = assert!(ACK_EVERY < 16, "inside the relay's window of 16");
+// A viewer acks at the display frame that shows a batch it applied (`tick`),
+// with the last one shown, never one still waiting in the frame. More than
+// the relay's window of 16 batches inside one display frame holds the relay
+// back until that frame is shown: flow control, not a stall.
 
 /// Keeps the newest logged event id: ids are UUIDv7, so the greatest is
 /// the latest.
@@ -104,8 +121,11 @@ pub fn fresh_only(events: Vec<serde_json::Value>, seen: &mut HashSet<String>, la
         .into_iter()
         .filter(|e| {
             let Some(i) = e["id"].as_str() else { return false };
+            if !seen.insert(i.to_string()) {
+                return false;
+            }
             newest(last, i);
-            seen.insert(i.to_string())
+            true
         })
         .collect()
 }
@@ -183,6 +203,15 @@ impl CatchUps {
         }
     }
 
+    /// The oldest `after` asked and not yet answered, or owed: every event
+    /// after it may not be held yet.
+    pub fn outstanding(&self) -> Option<&Option<String>> {
+        match (&self.in_flight, &self.owed) {
+            (Some(a), Some(b)) => Some(if no_newer(a, b) { a } else { b }),
+            (a, b) => a.as_ref().or(b.as_ref()),
+        }
+    }
+
     #[cfg(test)]
     fn in_flight(&self) -> bool {
         self.in_flight.is_some()
@@ -199,10 +228,11 @@ pub fn gap_found(c: &mut CatchUps, after: Option<String>, covered_by_order: bool
 /// The batches held for a welcome, applied in order, each gap among them
 /// shown once. Answers the first gap's `after`: the oldest, which covers
 /// the later ones.
-pub fn replay(l: &mut ViewerLink, held: Vec<Vec<u8>>, seen: &mut HashSet<String>, last: &mut Option<String>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
+#[allow(clippy::too_many_arguments)]
+pub fn replay(l: &mut ViewerLink, held: Vec<Vec<u8>>, seen: &mut HashSet<String>, last: &mut Option<String>, left_out: &mut Option<Option<String>>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
     let mut first = None;
     for b in held {
-        if let Some(after) = apply(l, &b, seen, last, asked, frame, applied) {
+        if let Some(after) = apply(l, &b, seen, last, left_out, asked, frame, applied) {
             frame.push(Update::Gap);
             first.get_or_insert(after);
         }
@@ -210,26 +240,49 @@ pub fn replay(l: &mut ViewerLink, held: Vec<Vec<u8>>, seen: &mut HashSet<String>
     first
 }
 
-/// One stream batch: its lines, the log's events among them once each.
-/// Answers, when it skipped past a batch this viewer never opened, the
-/// newest event held *before* it: what the catch-up asks from, since this
-/// batch's own events are newer than the ones the gap swallowed.
-pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
+/// One stream batch: its lines, the log's events among them once each,
+/// and `applied` moved to it once they are in `frame`. Answers, when it
+/// skipped past a batch this viewer never opened, the newest event held
+/// *before* it: what the catch-up asks from, since this batch's own events
+/// are newer than the ones the gap swallowed. A batch that opens but does
+/// not parse is a gap too: its stream's counter refuses it if it comes
+/// again, so a catch-up is all that brings its events. A logged event this
+/// build cannot read (a newer host's) is skipped, as any line it does not
+/// know, and `left_out` keeps the newest event held before the first such:
+/// a place kept across launches reaches back to it, so a build that reads
+/// it gets it again.
+#[allow(clippy::too_many_arguments)]
+pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mut Option<String>, left_out: &mut Option<Option<String>>, asked: &mut HashSet<String>, frame: &mut Vec<Update>, applied: &mut u64) -> Option<Option<String>> {
     let before = last.clone();
     let Ok((body, end, skipped)) = l.open_batch_gap(b) else { return None };
     let seq = u64::from_be_bytes(b[20..28].try_into().expect("eight bytes"));
     // Against the last batch opened, or — the first since joining — the
     // relay's count at the join: either way the batch must be the next.
-    let gap = (skipped || seq != *applied + 1).then_some(before);
-    *applied = seq;
-    let Ok(batch) = serde_json::from_slice::<Batch>(&body) else { return gap };
-    for line in batch.lines {
+    let gap = (skipped || seq != *applied + 1).then(|| before.clone());
+    let Ok(batch) = serde_json::from_slice::<Lines>(&body) else {
+        if end {
+            frame.push(Update::Host(false));
+        }
+        *applied = seq;
+        return Some(before);
+    };
+    for raw in batch.lines {
+        let id = logged_id(&raw);
+        let Ok(line) = serde_json::from_value::<StreamLine>(raw) else {
+            if let Some(id) = id
+                && !seen.contains(&id)
+                && left_out.is_none()
+            {
+                *left_out = Some(last.clone());
+            }
+            continue;
+        };
         match &line {
             StreamLine::Log(e) => {
-                newest(last, &e.id);
                 if !seen.insert(e.id.clone()) {
                     continue;
                 }
+                newest(last, &e.id);
             }
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) if !asked.insert(r.request_id.clone()) => continue,
             StreamLine::Live(LiveEvent::ApprovalResolved { request_id, .. }) => {
@@ -244,7 +297,29 @@ pub fn apply(l: &mut ViewerLink, b: &[u8], seen: &mut HashSet<String>, last: &mu
     if end {
         frame.push(Update::Host(false));
     }
+    *applied = seq;
     gap
+}
+
+/// A batch's lines as they came, each read alone in `apply`: `Batch`, but
+/// for the lines this build cannot read, which `apply` notes.
+#[derive(serde::Deserialize)]
+struct Lines {
+    lines: Vec<serde_json::Value>,
+}
+
+/// A page of a catch-up as it came: `Answer::CatchUp`, read when one of its
+/// events is one this build cannot read, so the rest still apply.
+#[derive(serde::Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum RawAnswer {
+    CatchUp { events: Vec<serde_json::Value>, more: bool },
+}
+
+/// A logged event's id: a logged event has an id and a time, a live frame
+/// neither.
+fn logged_id(v: &serde_json::Value) -> Option<String> {
+    v["id"].as_str().filter(|_| v["timeMs"].is_number()).map(String::from)
 }
 
 /// What the caller of a `ViewerCore` does next, in the order given.
@@ -255,7 +330,8 @@ pub enum Effect {
     /// The text message `ping` on the current connection.
     Ping,
     /// Updates for the screen: at most one `Show` per `FRAME` (R-LAG-7),
-    /// but for the last one, which says `Failed` before `End`.
+    /// but for the last one, which says `Failed` before `End`. One that
+    /// moved the viewer's place ends with `Saved`.
     Show(Vec<Update>),
     /// Read the chunks written since `attached()` (`store::catch_up` on a
     /// clone of it, blocking, off the main thread), up to `want` when
@@ -343,6 +419,9 @@ pub struct ViewerCore {
     at_rest: Attached,
     seen: HashSet<String>,
     last_id: Option<String>,
+    /// The newest event held before the first logged event this build
+    /// could not read, if one came: the place never reaches past it.
+    left_out: Option<Option<String>>,
     /// Approval requests shown and not yet resolved, by request id: each
     /// welcome names the waiting ones and the stream carries them too.
     asked: HashSet<String>,
@@ -376,15 +455,23 @@ pub struct ViewerCore {
     // connection is still read meanwhile, and the one the session is on.
     candidates: Vec<Candidate>,
     probing: bool,
+    /// The next race is due as soon as one may run, whatever falls back
+    /// to the relay meanwhile: set by `race_now`, done with once a race
+    /// is asked for.
+    race_soon: bool,
     reprobe_ms: u64,
     backoff_ms: u64,
     moving: Option<Candidate>,
     moving_until_ms: u64,
     leaving: bool,
     on: Option<Candidate>,
-    /// The last stream batch applied, and the last acked to the relay.
+    /// The last stream batch applied, the last whose updates went out in a
+    /// `Show`, and the last acked to the relay: only a batch shown is.
     applied: u64,
+    shown: u64,
     acked: u64,
+    /// The place the last `Saved` named.
+    saved: Option<Cursor>,
     catch_ups: CatchUps,
     reading: Option<Reading>,
     waiting: VecDeque<Input>,
@@ -411,6 +498,7 @@ impl ViewerCore {
             at_rest,
             seen,
             last_id,
+            left_out: None,
             asked: HashSet::new(),
             frame: Vec::new(),
             shown_ms: now_ms,
@@ -428,6 +516,7 @@ impl ViewerCore {
             last_ping_ms: now_ms,
             candidates: Vec::new(),
             probing: false,
+            race_soon: false,
             reprobe_ms: now_ms,
             backoff_ms: ms(REPROBE),
             moving: None,
@@ -435,7 +524,9 @@ impl ViewerCore {
             leaving: false,
             on: None,
             applied: 0,
+            shown: 0,
             acked: 0,
+            saved: None,
             catch_ups: CatchUps::default(),
             reading: None,
             waiting: VecDeque::new(),
@@ -481,7 +572,7 @@ impl ViewerCore {
             return None;
         }
         let mut at = self.last_ping_ms.saturating_add(ms(PING));
-        if !self.frame.is_empty() || (self.applied > self.acked && self.connected) {
+        if !self.frame.is_empty() || (self.applied > self.acked && self.connected) || self.place() != self.saved {
             at = at.min(self.shown_ms.saturating_add(ms(FRAME)));
         }
         if self.moving.is_some() && self.reading.is_none() {
@@ -532,7 +623,7 @@ impl ViewerCore {
             Some((_, n)) => n,
             None => joined["seq"].as_u64().unwrap_or(0),
         };
-        self.acked = self.applied;
+        (self.shown, self.acked) = (self.applied, self.applied);
         self.link = Some(l);
         if !self.host {
             self.frame.push(Update::Host(false));
@@ -677,6 +768,32 @@ impl ViewerCore {
         self.take()
     }
 
+    /// The next race as soon as one may run, its backoff started over:
+    /// the network changed (another Wi-Fi, a VPN up or down) or the app
+    /// came forward, so a phone that lost races on the café's network
+    /// finds the host as soon as it is home (R-NET-2, R-IOS-2). A race out
+    /// is let go uncounted (the caller drops its candidates), and the
+    /// reset holds through a fall back to the relay before the next race.
+    pub fn race_now(&mut self, now_ms: u64) {
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.race_soon = true;
+            self.reprobe_ms = now_ms;
+            self.backoff_ms = ms(REPROBE);
+        }
+    }
+
+    /// A race cut short by the relay's connection ending, not lost: the
+    /// next one as soon as one may run, the backoff as it was.
+    pub fn race_cut_short(&mut self, now_ms: u64) {
+        if !self.ended {
+            self.now_ms = now_ms;
+            self.probing = false;
+            self.reprobe_ms = now_ms;
+        }
+    }
+
     /// A race nobody won: the next one later, the wait doubled.
     pub fn probe_lost(&mut self, now_ms: u64) {
         if !self.ended {
@@ -686,24 +803,39 @@ impl ViewerCore {
         }
     }
 
-    /// The time passing: the batches applied acked, the frame shown if a
-    /// display frame has passed since the last, a heartbeat every `PING`
-    /// (or, with no word for `DEAD`, the relay joined again), a move whose
-    /// welcome is late given up, and a race started when one is due.
+    /// The time passing: the frame shown if a display frame has passed
+    /// since the last, ending with the place when it moved, the batches
+    /// shown acked, a heartbeat every `PING` (or, with no word for `DEAD`,
+    /// the relay joined again), a move whose welcome is late given up, and
+    /// a race started when one is due.
     pub fn tick(&mut self, now_ms: u64) -> Vec<Effect> {
         if self.ended {
             return Vec::new();
         }
         self.now_ms = now_ms;
-        if self.applied > self.acked && self.connected {
-            self.acked = self.applied;
-            self.out.push(Effect::Send(ack(&self.raw, self.applied)));
-        }
         // Never two `Show`s inside one display frame, however often the
         // caller ticks (R-LAG-7).
-        if !self.frame.is_empty() && now_ms >= self.shown_ms.saturating_add(ms(FRAME)) {
-            self.shown_ms = now_ms;
-            self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+        if now_ms >= self.shown_ms.saturating_add(ms(FRAME)) {
+            let place = self.place();
+            if place != self.saved
+                && let Some(c) = place.clone()
+            {
+                self.frame.push(Update::Saved(c));
+            }
+            self.saved = place;
+            if !self.frame.is_empty() {
+                self.shown_ms = now_ms;
+                self.out.push(Effect::Show(std::mem::take(&mut self.frame)));
+            }
+        }
+        // With nothing waiting to be shown, every batch applied has been:
+        // one whose lines were all seen before showed nothing.
+        if self.frame.is_empty() {
+            self.shown = self.applied;
+        }
+        if self.shown > self.acked && self.connected {
+            self.acked = self.shown;
+            self.out.push(Effect::Send(ack(&self.raw, self.shown)));
         }
         if now_ms >= self.last_ping_ms.saturating_add(ms(PING)) {
             self.last_ping_ms = now_ms;
@@ -722,6 +854,7 @@ impl ViewerCore {
         }
         if self.may_probe() && now_ms >= self.reprobe_ms {
             self.probing = true;
+            self.race_soon = false;
             self.out.push(Effect::Probe);
         }
         self.take()
@@ -796,6 +929,10 @@ impl ViewerCore {
     }
 
     fn later(&mut self) {
+        if self.race_soon {
+            self.reprobe_ms = self.now_ms;
+            return;
+        }
         self.reprobe_ms = self.now_ms.saturating_add(self.backoff_ms);
         self.backoff_ms = self.backoff_ms.saturating_mul(2).min(ms(REPROBE_MAX));
     }
@@ -812,6 +949,20 @@ impl ViewerCore {
             Some(c) => Some(c),
             None => self.resume,
         }
+    }
+
+    /// Where this viewer stands, as `Saved` names it: the cursor, and the
+    /// newest event held, or the oldest a catch-up still out asks from, or
+    /// the one before a logged event this build could not read.
+    fn place(&self) -> Option<Cursor> {
+        let (stream, after_seq) = self.cursor()?;
+        Some(Cursor { stream: e2e::hex(&stream), after_seq, newest: self.place_newest().clone() })
+    }
+
+    /// The oldest of the newest event held, a catch-up still out and the
+    /// event before one this build could not read.
+    fn place_newest(&self) -> &Option<String> {
+        [self.catch_ups.outstanding(), self.left_out.as_ref()].into_iter().flatten().fold(&self.last_id, |n, a| if no_newer(a, n) { a } else { n })
     }
 
     fn welcomed(&self) -> bool {
@@ -957,23 +1108,20 @@ impl ViewerCore {
         } else if let Some((_, have)) = l.cursor() && seq_of(b) <= have {
             // A batch this viewer opened already, by the other uplink: acked
             // all the same, as a direct listener counts its window in what
-            // it sent.
+            // it sent — up to the last shown, and the rest once it is.
             if self.connected {
-                self.acked = self.acked.max(have);
-                self.out.push(Effect::Send(ack(&self.raw, have)));
+                self.acked = self.acked.max(self.shown);
+                self.out.push(Effect::Send(ack(&self.raw, self.shown)));
             }
         } else {
-            let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+            let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.left_out, &mut self.asked, &mut self.frame, &mut self.applied);
             // A batch the relay dropped: the host fills the gap, from the
             // newest event held before this batch, now or once the
             // catch-up in flight ends.
             if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
                 self.ask_catch_up(after);
             }
-            if self.applied >= self.acked + ACK_EVERY && self.connected {
-                self.acked = self.applied;
-                self.out.push(Effect::Send(ack(&self.raw, self.applied)));
-            }
+            // Acked at the frame that shows it (`tick`), not before.
         }
     }
 
@@ -1035,24 +1183,25 @@ impl ViewerCore {
         // asked covers a gap among them (by order).
         let Some(l) = self.link.as_mut() else { return };
         let held = std::mem::take(&mut self.held);
-        if let Some(after) = replay(l, held, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied).and_then(|after| self.catch_ups.gap(after, true)) {
+        if let Some(after) = replay(l, held, &mut self.seen, &mut self.last_id, &mut self.left_out, &mut self.asked, &mut self.frame, &mut self.applied).and_then(|after| self.catch_ups.gap(after, true)) {
             self.ask_catch_up(after);
         }
         // What was held may all have been batches opened already: acked all
-        // the same, or a direct listener, its window full, sends no more.
-        if let Some((_, have)) = self.link.as_ref().and_then(|l| l.cursor())
-            && self.connected
-        {
-            self.acked = self.acked.max(have);
-            self.out.push(Effect::Send(ack(&self.raw, have)));
+        // the same, up to the last shown, or a direct listener, its window
+        // full, sends no more. What is not shown yet is acked once it is.
+        if self.link.as_ref().and_then(|l| l.cursor()).is_some() && self.connected {
+            self.acked = self.acked.max(self.shown);
+            self.out.push(Effect::Send(ack(&self.raw, self.shown)));
         }
     }
 
     /// Asks the host for the logged events after `after`: a catch-up now
     /// in flight.
+    /// One that cannot be sealed is owed, so the place still reaches back
+    /// to it.
     fn ask_catch_up(&mut self, after: Option<String>) {
-        let Some(l) = self.link.as_mut() else { return };
-        let Ok(f) = l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: after.clone() }).expect("json"), false) else { return };
+        let sealed = self.link.as_mut().map(|l| l.frame(&serde_json::to_vec(&ViewerFrame::CatchUp { after: after.clone() }).expect("json"), false));
+        let Some(Ok(f)) = sealed else { return self.catch_ups.owe(after) };
         self.catch_ups.asked(after);
         self.send(f);
     }
@@ -1065,16 +1214,32 @@ impl ViewerCore {
             Ok(Answer::Handoff { id, handed, error }) => self.frame.extend(self.book.handoff_answered(&id, handed, error)),
             Ok(Answer::CatchUp { events, more }) => {
                 let events: Vec<serde_json::Value> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
-                let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
-                if !fresh.is_empty() {
-                    self.frame.push(Update::CaughtUp(fresh));
-                }
-                // The last page: a gap it did not cover is asked now.
-                if !more && let Some(after) = self.catch_ups.done() {
-                    self.ask_catch_up(after);
+                self.caught_up_page(events, more);
+            }
+            // A page holding an event this build cannot read (a newer
+            // host's): the rest of it applies, and the place holds from
+            // where the catch-up asked, before it.
+            Err(_) => {
+                if let Ok(RawAnswer::CatchUp { events, more }) = serde_json::from_slice(body) {
+                    let unread = events.iter().any(|e| serde_json::from_value::<crate::protocol::LogEvent>(e.clone()).is_err() && logged_id(e).is_some_and(|id| !self.seen.contains(&id)));
+                    if unread && self.left_out.is_none() {
+                        self.left_out = Some(self.place_newest().clone());
+                    }
+                    self.caught_up_page(events.into_iter().filter(|e| logged_id(e).is_some()).collect(), more);
                 }
             }
-            Err(_) => {}
+        }
+    }
+
+    /// A page of the catch-up in flight: what it holds not seen yet shown,
+    /// and on the last page, a gap it did not cover asked now.
+    fn caught_up_page(&mut self, events: Vec<serde_json::Value>, more: bool) {
+        let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
+        if !fresh.is_empty() {
+            self.frame.push(Update::CaughtUp(fresh));
+        }
+        if !more && let Some(after) = self.catch_ups.done() {
+            self.ask_catch_up(after);
         }
     }
 
@@ -1089,7 +1254,7 @@ impl ViewerCore {
             // Kept as the harness has it, though the direct welcome lets
             // the relay's connection go as it welcomes the link.
             Some(l) if l.welcomed() => {
-                let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.asked, &mut self.frame, &mut self.applied);
+                let gap = apply(l, b, &mut self.seen, &mut self.last_id, &mut self.left_out, &mut self.asked, &mut self.frame, &mut self.applied);
                 if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
                     self.ask_catch_up(after);
                 }
@@ -1129,7 +1294,7 @@ mod tests {
         let body = json!({"lines": [notice("before"), {"type": "subagent.someday", "sessionId": "kid", "what": 1}, {"type": "notice", "sessionId": "s"}, notice("after")], "head": null});
         let b = host.batch(&serde_json::to_vec(&body).unwrap(), false).unwrap();
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), None, HashSet::new(), Vec::new(), 0);
-        let gap = apply(&mut link, &b, &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        let gap = apply(&mut link, &b, &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);
         assert_eq!(gap, None, "opened, in order: no resync asked for");
         let texts: Vec<&str> = frame.iter().filter_map(|u| match u { Update::Line(StreamLine::Live(LiveEvent::Notice { text, .. })) => Some(text.as_str()), _ => None }).collect();
         assert_eq!(texts, ["before", "after"]);
@@ -1218,7 +1383,7 @@ mod tests {
         let mut shown = |lines: Vec<serde_json::Value>| {
             let b = host.batch(&serde_json::to_vec(&json!({"lines": lines, "head": null})).unwrap(), false).unwrap();
             let mut frame = Vec::new();
-            assert_eq!(apply(&mut link, &b, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), None, "in order");
+            assert_eq!(apply(&mut link, &b, &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied), None, "in order");
             frame
                 .iter()
                 .map(|u| match u {
@@ -1237,6 +1402,21 @@ mod tests {
         assert_eq!(shown(vec![requested("r1"), requested("r1")]), ["asked r1"], "the turn ended: shown again, once");
     }
 
+    /// R-IOS-1: an event seen before does not move the newest event held,
+    /// even one newer than it: the place names only what was applied.
+    #[test]
+    fn r_ios_1_a_duplicate_event_does_not_move_newest() {
+        let (mut link, [b1, b2, _]) = three_batches();
+        let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::from([id(2)]), Some(id(0)), HashSet::new(), Vec::new(), 0);
+        apply(&mut link, &b1, &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);
+        assert_eq!(last, Some(id(1)));
+        apply(&mut link, &b2, &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);
+        assert_eq!((last, applied, frame.len()), (Some(id(1)), 2, 1), "batch 2 applied, its seen event neither shown nor newest");
+        let mut last = Some(id(0));
+        assert!(fresh_only(vec![logged(2)], &mut seen, &mut last).is_empty());
+        assert_eq!(last, Some(id(0)), "nor in a catch-up");
+    }
+
     /// R-OFF-2: batches 1 and 3 held for a welcome whose catch-up went out
     /// from an older event: the gap shows once, and the welcome's catch-up
     /// covers it, so no second one is asked.
@@ -1247,7 +1427,7 @@ mod tests {
         // The harness's `send_welcomed`: the catch-up from the newest event the chunks held.
         assert_eq!(c.welcomed(Some(id(0))), Some(id(0)));
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), Some(id(0)), HashSet::new(), Vec::new(), 0);
-        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);
         assert_eq!(first, Some(Some(id(1))), "the gap is after batch 1's event");
         assert_eq!(gaps(&frame), 1, "the gap shows once");
         assert_eq!(c.gap(first.unwrap(), true), None, "the welcome's catch-up covers it: none asked now");
@@ -1334,7 +1514,7 @@ mod tests {
         let mut c = CatchUps::default();
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::new(), None, HashSet::new(), Vec::new(), 0);
         let ask = |link: &mut ViewerLink, b: &[u8], c: &mut CatchUps, seen: &mut _, last: &mut _, asked: &mut _, frame: &mut Vec<Update>, applied: &mut _| {
-            apply(link, b, seen, last, asked, frame, applied).and_then(|after| gap_found(c, after, false, frame))
+            apply(link, b, seen, last, &mut None, asked, frame, applied).and_then(|after| gap_found(c, after, false, frame))
         };
         assert_eq!(ask(&mut link, &b1, &mut c, &mut seen, &mut last, &mut asked, &mut frame, &mut applied), None, "in order");
         assert_eq!(gaps(&frame), 0);
@@ -1357,7 +1537,7 @@ mod tests {
         let (mut seen, mut last, mut frame, mut applied) = (HashSet::new(), Some(id(0)), Vec::new(), 0);
         c.asked(None);
         assert_eq!(c.welcomed(Some(id(0))), None, "from the start, as the relay's was");
-        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut asked, &mut frame, &mut applied);
+        let first = replay(&mut link, vec![b1, b3], &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);
         assert_eq!(gaps(&frame), 1);
         assert_eq!(c.gap(first.unwrap(), true), None);
         assert_eq!(c.done(), None);

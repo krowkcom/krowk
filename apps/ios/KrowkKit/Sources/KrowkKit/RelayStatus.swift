@@ -157,6 +157,10 @@ public protocol LiveSession: AnyObject, Sendable {
     /// none waiting: the screen's display link, paused while the session
     /// is idle, runs again (`FrameDriver.wake`).
     func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void)
+    /// `path` is called on the main actor with the path the session comes
+    /// by each time it changes (R-NET-2): `relay`, `direct over Tailscale`
+    /// or `direct over LAN`. Call it before `follow`.
+    func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void)
     /// Once per display frame, on the main thread: everything that arrived
     /// since the last, oldest first, as the transcript takes it. Takes a
     /// lock and maps what it holds: never blocks on the network or calls
@@ -179,6 +183,7 @@ public protocol LiveSession: AnyObject, Sendable {
 
 /// A session that follows no lifecycle (a test's stand-in) ignores it.
 public extension LiveSession {
+    func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void) {}
     func foreground() {}
     func background() {}
     func wake() {}
@@ -186,11 +191,15 @@ public extension LiveSession {
 
 /// The bar under the navigation bar: the status in one line of footnote
 /// text on a tinted strip, with a dot whose colour says it at a glance.
+/// Live, it names the path beside it, `live · direct over LAN`; to
+/// VoiceOver the path is the bar's value, its label the status.
 public final class RelayStatusBar: UIView {
     let label = UILabel()
     let dot = UIView()
 
     public private(set) var status: RelayStatus = .connecting
+    /// The path the session comes by, once the viewer said.
+    public private(set) var path: String?
 
     override public init(frame: CGRect) {
         super.init(frame: frame)
@@ -249,6 +258,12 @@ public final class RelayStatusBar: UIView {
         }
     }
 
+    /// The path the session comes by now (`LiveSession.onPath`).
+    public func show(path: String) {
+        self.path = path
+        draw()
+    }
+
     /// The countdown's timer, while a wait lasts.
     private var countdown: Timer?
 
@@ -266,7 +281,9 @@ public final class RelayStatusBar: UIView {
 
     private func draw() {
         let text = status.text
-        label.text = text
+        let path = status == .live ? path : nil
+        label.text = path.map { "\(text) · \($0)" } ?? text
         accessibilityLabel = text
+        accessibilityValue = path
     }
 }

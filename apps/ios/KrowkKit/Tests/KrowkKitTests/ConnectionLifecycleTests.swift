@@ -85,7 +85,7 @@ struct ConnectionLifecycleTests {
         #expect(seen == [false, true, true])
     }
 
-    @Test("R-IOS-1: waiting on the backoff, the bar counts down to the next try in whole seconds, keeping why the last failed; never a spinner")
+    @Test("R-IOS-1, R-NET-2: waiting on the backoff, the bar counts down to the next try in whole seconds, keeping why the last failed; never a spinner; live, it names the path")
     func countdown() {
         let now = ContinuousClock.now
         #expect(RelayStatus.retrying(at: now + .milliseconds(3200), why: nil).text(at: now) == "reconnecting in 4s")
@@ -138,6 +138,17 @@ struct ConnectionLifecycleTests {
         #expect(bar.dot.backgroundColor == .systemRed)
         bar.show(.live)
         #expect(bar.label.text == "live")
+        // R-NET-2: live, the bar names the path the session comes by.
+        bar.show(path: "direct over LAN")
+        #expect(bar.label.text == "live · direct over LAN")
+        #expect(bar.accessibilityLabel == "live")
+        #expect(bar.accessibilityValue == "direct over LAN")
+        bar.show(.reconnecting)
+        #expect(bar.label.text == "reconnecting")
+        #expect(bar.accessibilityValue == nil)
+        bar.show(path: "relay")
+        bar.show(.live)
+        #expect(bar.label.text == "live · relay")
     }
 }
 

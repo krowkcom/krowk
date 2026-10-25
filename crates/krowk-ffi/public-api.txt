@@ -1,4 +1,4 @@
-FFI_API_VERSION = 5
+FFI_API_VERSION = 7
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -871,6 +871,18 @@ pub enum Effect {
     Show { updates: Vec<ViewerUpdate> },
     ReadChunks,
     End,
+    Race { candidates: Vec<CandidateRecord> },
+    DialCandidate { url: String, ticket: String, connection: u64 },
+    SendOn { connection: u64, bytes: Vec<u8> },
+    CloseCandidate { connection: u64 },
+    Moved { connection: u64 },
+    CloseLeaving,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CandidateRecord {
+    pub url: String,
+    pub via: String,
 }
 
 #[derive(Debug, Clone, uniffi::Enum)]
@@ -893,7 +905,21 @@ pub enum ViewerUpdate {
     Note { text: String },
     HandoffTaken,
     HandoffRefused { detail: String },
+    Saved { cursor: CursorRecord },
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
+pub struct CursorRecord {
+    pub stream: String,
+    pub after_seq: u64,
+    pub newest: Option<String>,
+}
+
+#[uniffi::export]
+pub fn encode_cursor(cursor: CursorRecord) -> Result<String, KrowkError> {}
+
+#[uniffi::export]
+pub fn decode_cursor(json: String) -> Result<CursorRecord, KrowkError> {}
 
 #[derive(uniffi::Object)]
 pub struct ChunksRead {
@@ -966,6 +992,11 @@ impl Viewer {
 
 #[uniffi::export]
 impl Viewer {
+    pub fn network_changed(&self, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
     pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {}
 }
 
@@ -977,6 +1008,16 @@ impl Viewer {
 #[uniffi::export]
 impl Viewer {
     pub fn next_wake_ms(&self) -> Option<u64> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn race_join(&self, url: String, ticket: String, now_ms: u64) -> Vec<Effect> {}
+}
+
+#[uniffi::export]
+impl Viewer {
+    pub fn race_lost(&self, now_ms: u64) -> Vec<Effect> {}
 }
 
 #[uniffi::export]
@@ -1013,7 +1054,11 @@ pub use storage::KeyStorage;
 
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 
-pub use viewer::{ChunksRead, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{
+    CandidateRecord, ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame,
+};
+
+pub use viewer::{decode_cursor, encode_cursor};
 
 pub const FFI_API_VERSION: u32 = _;
 

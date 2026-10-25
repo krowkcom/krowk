@@ -122,7 +122,9 @@ extension TranscriptUpdate {
                 out.append(.commandSent(id: id, queued: queued))
             case .acked(let id, let error):
                 out.append(.commandAcked(id: id, error: error))
-            case .line(.log), .host, .path, .gap, .failed, .note, .handoffTaken, .handoffRefused:
+            // A place to save, the cache's (`TranscriptCacheWriter`):
+            // nothing on screen changes.
+            case .line(.log), .host, .path, .gap, .failed, .note, .handoffTaken, .handoffRefused, .saved:
                 break
             }
         }

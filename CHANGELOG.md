@@ -22,6 +22,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   permission mode, budget, toolset or effort: the host's own settings apply.
   The app library gains `Account.listHosts`, `Account.startSession` and
   `newCommandId`.
+- **The iPhone app moves a session onto a direct path.** Once on the
+  relay it races the host's tailnet address, MagicDNS name and LAN
+  address over Network.framework, as the terminal does, and moves onto
+  the first that joins; the bar reads `live · direct over LAN` (or
+  `Tailscale`), and back to `live · relay` if that path goes. The app
+  asks for the local network permission the first time it tries a LAN
+  address. A host's direct listener now accepts a join whose `Host`
+  header has no port, as the phone's WebSocket sends it. The app
+  library's viewer API is version 7 (`Race`, `race_join`, `race_lost`).
+
 - **A synced session can be read on from where a device stopped.**
   krowk-client's `store::resume` and the app library's
   `Account.resumeSession` open a session from a kept read place
@@ -334,6 +344,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   yourself.
 
 ### Changed
+
+- **A synced session's viewer moves its place only once a batch is shown.**
+  `krowk sync attach`, and the iPhone app, ack the relay only for batches
+  whose lines have been handed to the screen, and a batch that arrives but
+  does not parse now counts as a gap: its events are caught up from the
+  host instead of being dropped. A duplicate event no longer moves the
+  newest event held. krowk-client's viewer ends each frame that moved its
+  place with a new `Saved` update. The app library exports it as
+  `ViewerUpdate.saved` (FFI API version 6), with `encodeCursor` and
+  `decodeCursor`. The iPhone app writes that place to its cache in the same
+  write as the events it names. While a gap's catch-up is still out, the
+  saved place reaches back to the event before the gap.
 
 - **A synced session's model can be switched from another machine.** A
   prompt from another device now runs on the model it names, and

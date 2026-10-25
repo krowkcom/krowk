@@ -65,6 +65,13 @@
 //! devices left). The running `devices add` is ended first, so the next
 //! pairing asks `pair_url` for a fresh code.
 //!
+//! With `--direct-lan` every session's bridge offers a direct path too: its
+//! LAN listener on 127.0.0.1, named in each welcome as a `lan` candidate
+//! (`KROWK_DIRECT_LAN` with no Tailscale), so a phone in the simulator
+//! races it and moves onto it (R-NET-2, ticket 133). A POST to
+//! `sessions_url/<id>/direct/close` closes that session's listener, as a
+//! LAN path lost would: its viewers go back to the relay.
+//!
 //! Host A announces itself (R-HOST-3) as a daemon with automatic sync
 //! does, every 2 s: the mock model's instance ready, and one directory, a
 //! git repository the fleet made and host A's `trusted.json` lists. A
@@ -105,13 +112,14 @@ const NO_BIN: &str = "fake_fleet: set KROWK_BIN to a debug krowk, which answers 
 fn main() {
     use std::io::{BufRead, Write};
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let (mut demo, mut pair) = (false, false);
+    let (mut demo, mut pair, mut direct_lan) = (false, false, false);
     for a in &args {
         match a.as_str() {
             "--demo" => demo = true,
             "--pair" => pair = true,
+            "--direct-lan" => direct_lan = true,
             _ => {
-                eprintln!("fake_fleet: unknown arguments {args:?}; the only ones are --demo and --pair");
+                eprintln!("fake_fleet: unknown arguments {args:?}; the only ones are --demo, --pair and --direct-lan");
                 std::process::exit(2);
             }
         }
@@ -126,7 +134,7 @@ fn main() {
         eprintln!("fake_fleet: KROWK_BIN={} cannot be found ({e})\n{NO_BIN}", bin.to_string_lossy());
         std::process::exit(1);
     });
-    let fleet = fleet::start(demo);
+    let fleet = fleet::start_with(demo, direct_lan);
     let pairer = match fleet::Pairer::new(&fleet, &bin) {
         Ok(p) => std::sync::Arc::new(std::sync::Mutex::new(p)),
         Err(e) => fail(None, fleet, &e),
@@ -181,11 +189,12 @@ fn main() {
 /// any, its title), `POST /sessions/<id>/release` its lease let go,
 /// `POST /sessions/<id>/host` hosted again, `POST /sessions/<id>/turn`
 /// a turn typed at host A in it, `POST /sessions/<id>/turn-ended`:
-/// `ended` once those turns have ended, or `running` after 5 s, and
-/// `POST /devices/remove` the device the body names removed from host A's
-/// list, and `POST /hosts/offline`, `POST /hosts/hold` and `POST
-/// /hosts/online` host A's announcement left to lapse, held, and refreshed
-/// again.
+/// `ended` once those turns have ended, or `running` after 5 s,
+/// `POST /sessions/<id>/direct/close` its direct listener closed (with
+/// `--direct-lan`), `POST /devices/remove` the device the body names
+/// removed from host A's list, and `POST /hosts/offline`, `POST
+/// /hosts/hold` and `POST /hosts/online` host A's announcement left to
+/// lapse, held, and refreshed again.
 #[cfg(unix)]
 fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Pairer>, hosting: &fleet::Hosting) -> mock::Reply {
     let text = |status: u16, body: &str| mock::Reply { content_type: Some("text/plain"), ..mock::Reply::status(status, body) };
@@ -200,6 +209,10 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
     let turn = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/turn")).filter(|id| !id.is_empty() && !id.contains('/'));
     let again = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/host")).filter(|id| !id.is_empty() && !id.contains('/'));
     let ended = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/turn-ended")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let direct = seen.path.strip_prefix("/sessions/").and_then(|r| r.strip_suffix("/direct/close")).filter(|id| !id.is_empty() && !id.contains('/'));
+    if let ("POST", Some(id)) = (seen.method.as_str(), direct) {
+        return answered(&format!("POST {}", seen.path), hosting.close_direct(id).map(|()| "closed".into()));
+    }
     if let ("POST", Some(id)) = (seen.method.as_str(), ended) {
         let ended = hosting.turn_ended(id, std::time::Duration::from_secs(5));
         return answered(&format!("POST {}", seen.path), ended.map(|done| if done { "ended" } else { "running" }.into()));
@@ -231,7 +244,7 @@ fn control(seen: &mock::Seen, pair: bool, pairer: &std::sync::Mutex<fleet::Paire
             answered("POST /sessions", hosting.host(if title.is_empty() { "a test's session" } else { title }))
         }
         ("POST", _, Some(id)) if !id.is_empty() && !id.contains('/') => answered(&format!("POST {}", seen.path), hosting.release(id).map(|()| "released".into())),
-        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended, POST /devices/remove, POST /hosts/offline, POST /hosts/hold and POST /hosts/online"),
+        _ => text(404, "only POST /pair, POST /sessions, POST /sessions/<id>/release, POST /sessions/<id>/host, POST /sessions/<id>/turn, POST /sessions/<id>/turn-ended, POST /sessions/<id>/direct/close, POST /devices/remove, POST /hosts/offline, POST /hosts/hold and POST /hosts/online"),
     }
 }
 

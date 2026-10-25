@@ -469,6 +469,8 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
             String::new()
         }
         viewer::Update::Failed(e) => return Err(e),
+        // The terminal keeps no place across runs: nothing to print.
+        viewer::Update::Saved(_) => String::new(),
     })
 }
 
