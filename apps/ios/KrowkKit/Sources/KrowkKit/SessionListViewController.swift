@@ -56,9 +56,9 @@ public final class SessionListViewController: UIViewController, UICollectionView
         super.init(nibName: nil, bundle: nil)
         // Back in the foreground with no session open over this list, its
         // first read landing is the app caught up (ticket 128).
-        model.listed = { [weak self] started in
+        model.landed = { [weak self] started, succeeded in
             guard let self, navigationController?.topViewController === self, viewIfLoaded?.window != nil else { return }
-            Budgets.shared.listRead(startedAt: started)
+            Budgets.shared.listRead(startedAt: started, succeeded: succeeded)
         }
         title = "Sessions"
         navigationItem.largeTitleDisplayMode = .always

@@ -66,16 +66,16 @@ struct BudgetsTests {
         let rig = Rig()
         // A launch's first foreground: no time away, nothing measured.
         rig.budgets.cameForward()
-        rig.budgets.sessionStatus(live: false)
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.reconnecting)
+        rig.budgets.sessionStatus(.live)
         #expect(rig.recorded.isEmpty)
 
         // Away 9 s: a wake.
         rig.budgets.wentToBackground()
         rig.advance(9)
         rig.budgets.cameForward()
-        rig.budgets.sessionStatus(live: false)
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.reconnecting)
+        rig.budgets.sessionStatus(.live)
         rig.budgets.listRead(startedAt: Date())
         #expect(rig.recorded.isEmpty)
 
@@ -84,12 +84,12 @@ struct BudgetsTests {
         rig.budgets.wentToBackground()
         rig.advance(60)
         rig.budgets.cameForward()
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.live)
         rig.advance(0.2)
-        rig.budgets.sessionStatus(live: false)
+        rig.budgets.sessionStatus(.reconnecting)
         rig.advance(0.1)
-        rig.budgets.sessionStatus(live: true)
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.live)
+        rig.budgets.sessionStatus(.live)
         #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
         #expect(abs((rig.recorded.first?.1 ?? 0) - 300) < 1)
         rig.expectBalanced()
@@ -98,15 +98,65 @@ struct BudgetsTests {
     @Test("R-IOS-PERF: a bar that dropped while the app was away publishes only live on the return: that live is the catch-up")
     func droppedWhileAway() {
         let rig = Rig()
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.live)
         rig.budgets.wentToBackground()
-        rig.budgets.sessionStatus(live: false)
+        rig.budgets.sessionStatus(.reconnecting)
         rig.advance(20)
         rig.budgets.cameForward()
         rig.advance(0.4)
-        rig.budgets.sessionStatus(live: true)
+        rig.budgets.sessionStatus(.live)
         #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
         #expect(abs((rig.recorded.first?.1 ?? 0) - 400) < 1)
+        rig.expectBalanced()
+    }
+
+    @Test("R-IOS-PERF: a return that can't catch up — host offline, the connection ended, the list's read failed, or over 10 s — is given up, not logged")
+    func foregroundGivenUp() {
+        let rig = Rig()
+        let away = { (rig: Rig) in
+            rig.budgets.wentToBackground()
+            rig.advance(30)
+            rig.budgets.cameForward()
+        }
+        away(rig)
+        rig.budgets.sessionStatus(.reconnecting)
+        rig.budgets.sessionStatus(.hostOffline)
+        rig.advance(300)
+        rig.budgets.sessionStatus(.live)
+
+        away(rig)
+        rig.budgets.sessionStatus(.connecting)
+        rig.budgets.sessionStatus(.ended("gone"))
+
+        away(rig)
+        rig.budgets.listRead(startedAt: Date(), succeeded: false)
+        rig.advance(20)
+        rig.budgets.listRead(startedAt: Date())
+
+        away(rig)
+        rig.budgets.sessionStatus(.reconnecting)
+        rig.advance(10.5)
+        rig.budgets.sessionStatus(.live)
+
+        #expect(rig.recorded.isEmpty, "\(rig.recorded)")
+        #expect(rig.budgets.begun[.foregroundCaughtUp] == 4)
+        rig.expectBalanced()
+    }
+
+    @Test("R-IOS-PERF: a session screen closed since doesn't make the next one's first live a catch-up")
+    func sessionClosed() {
+        let rig = Rig()
+        rig.budgets.sessionStatus(.reconnecting)
+        rig.budgets.sessionClosed()
+        rig.budgets.wentToBackground()
+        rig.advance(30)
+        rig.budgets.cameForward()
+        rig.budgets.sessionStatus(.live)
+        #expect(rig.recorded.isEmpty)
+        rig.budgets.sessionStatus(.catchingUp)
+        rig.advance(0.25)
+        rig.budgets.sessionStatus(.live)
+        #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
         rig.expectBalanced()
     }
 

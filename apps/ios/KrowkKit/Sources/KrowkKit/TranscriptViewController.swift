@@ -415,6 +415,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         // Once per time on screen: UIKit may say it left more than one way.
         guard !left else { return }
         left = true
+        Budgets.shared.sessionClosed()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
         focusObserver = nil
         frames?.invalidate()
@@ -1165,7 +1166,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         // The foreground's budget (ticket 128): the open session's bar
         // live again is the app caught up. Not a screen covered or parked.
         if navigationController?.topViewController === self, viewIfLoaded?.window != nil, !parked {
-            Budgets.shared.sessionStatus(live: status == .live)
+            Budgets.shared.sessionStatus(status)
         }
         model.setHostOffline(status == .hostOffline)
         approvals?.connected = status == .live || status == .catchingUp

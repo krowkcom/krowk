@@ -18,7 +18,9 @@ import QuartzCore
 ///   `willFinishLaunching` instead.
 /// - `foreground.caughtUp`: `sceneWillEnterForeground` to the open
 ///   session's bar reading live again, or with none open, the list's first
-///   read landing. Not after less than 10 s away: that's a wake.
+///   read landing. Not after less than 10 s away: that's a wake. Given up
+///   when the host is offline, the connection ends, the read fails, or it
+///   takes over 10 s.
 /// - `tap.optimistic`: Send's touch-up to the next display frame after the
 ///   bubble's row was applied, so its cell is in the committed layer tree.
 /// - `key.glyph`: `textViewDidChange` to the next display frame, for one
@@ -61,6 +63,9 @@ public final class Budgets {
     /// Away less than this, a return is a wake, not a foreground (Canon →
     /// The iPhone app → Foreground).
     static let foregroundAfter: TimeInterval = 10
+    /// A return not caught up in this long is given up, not logged: what
+    /// held it (a host away, the network down) is no foreground's cost.
+    static let foregroundCeiling: TimeInterval = 10
     /// One keystroke in this many is measured.
     static let keySample = 10
 
@@ -179,26 +184,48 @@ public final class Budgets {
         foreground = begin(.foregroundCaughtUp, at: now)
     }
 
-    /// The open session's bar, on screen: live again after it wasn't since
-    /// the foreground (connecting, reconnecting, catching up…) is caught up.
-    func sessionStatus(live: Bool) {
+    /// The open session's bar, on screen: live again after it wasn't
+    /// (connecting, reconnecting, catching up…) is caught up. A host
+    /// offline or a connection ended can't catch up: given up.
+    func sessionStatus(_ status: RelayStatus) {
+        let live = status == .live
         sessionLive = live
         guard let open = foreground else { return }
-        guard live else {
+        switch status {
+        case .live:
+            guard foregroundLeftLive else { return }
+            foreground = nil
+            endForeground(open)
+        case .hostOffline, .ended:
+            foreground = nil
+            abandon(.foregroundCaughtUp, open)
+        case .connecting, .reconnecting, .catchingUp, .unreachable, .retrying:
             foregroundLeftLive = true
-            return
         }
-        guard foregroundLeftLive else { return }
-        foreground = nil
-        end(.foregroundCaughtUp, open)
+    }
+
+    /// The open session's screen closed or parked: what its bar read says
+    /// nothing about the next one's.
+    func sessionClosed() {
+        sessionLive = nil
     }
 
     /// The session list, with no session open over it, read by a read
-    /// that started at `startedAt`.
-    func listRead(startedAt: Date) {
+    /// that started at `startedAt`; one that failed gives the return up.
+    func listRead(startedAt: Date, succeeded: Bool = true) {
         guard let open = foreground, let since = foregroundSince, startedAt >= since else { return }
         foreground = nil
-        end(.foregroundCaughtUp, open)
+        if succeeded { endForeground(open) } else { abandon(.foregroundCaughtUp, open) }
+    }
+
+    /// Caught up: measured, unless it took longer than any foreground
+    /// should (`foregroundCeiling`).
+    private func endForeground(_ open: Open) {
+        if clock() - open.start > Self.foregroundCeiling {
+            abandon(.foregroundCaughtUp, open)
+        } else {
+            end(.foregroundCaughtUp, open)
+        }
     }
 
     // MARK: tap.optimistic and key.glyph
