@@ -19,12 +19,13 @@
 //! - **Lines enter scrollback exactly once, as text.** Finished lines are
 //!   printed where the viewport was — styled text and a CR LF each, the way
 //!   a shell command's output is — and the viewport is rebuilt below them;
-//!   they are never redrawn afterwards. A line wider than the terminal is
-//!   left for the terminal to wrap, so it rewraps itself when the window
-//!   is resized, and copies as one line. (Grok Build's inline terminal,
+//!   they are never redrawn afterwards, but for the last frame's, still on
+//!   screen, after a narrowing that cannot tell where they are (below). A
+//!   line wider than the terminal is left for the terminal to wrap, so it
+//!   rewraps itself when the window is resized, and copies as one line. (Grok Build's inline terminal,
 //!   `xai-ratatui-inline`'s `emit_to_scrollback`, does the same; this is
 //!   written from the idea, not its code.) The viewport is the only thing
-//!   ever repainted.
+//!   otherwise repainted.
 //! - **Every move is relative to where the cursor is.** A frame already on
 //!   its way when the terminal changes size is read by the terminal at the
 //!   new size, where an absolute row names some other row — a clamped one,
@@ -36,12 +37,15 @@
 //!   The one exception is `wipe` (`/new`), which clears the screen and its
 //!   scrollback from the home position: both mean the same at any size.
 //!   Its cells are drawn with autowrap off, so a row wider than the screen
-//!   it is read at is cut rather than pushed onto the next row. What is left:
-//!   such a row above the caret, cut, is measured after the resize as if the
-//!   terminal had reflowed it, and the clear starts that many rows too high.
-//!   The prompt box's top edge is always such a row, so a narrowing that
-//!   lands while a frame is on its way can blank the conversation line
-//!   right above the region.
+//!   it is read at is cut rather than pushed onto the next row. Such a row
+//!   above the caret (the prompt's band always is one) makes the frame stop
+//!   short of the top of the one before it, which the terminal reflowed,
+//!   and the resize cannot tell which of the two the terminal did; it clears
+//!   over the lines the last frame printed too and prints them again
+//!   (`Term::resize`). What is left: two frames running that differ in how
+//!   many rows a narrowing adds above the caret — a streaming row wider than
+//!   the new width in one and not the other — leave that difference, a row
+//!   of the frame before or a conversation row blanked.
 //!   The row it is on is tracked, not re-read: a glyph the terminal draws
 //!   wider than `unicode-width` says would put that off until the next
 //!   resize or job stop asks the terminal again.
@@ -399,6 +403,11 @@ pub struct Term<W: Write> {
     /// Lines that reached the screen while the view covered it, printed
     /// once it closes: nothing goes into scrollback under it.
     held: Vec<Line<'static>>,
+    /// How many of `tail`'s last lines the last frame sent printed, right
+    /// above the region it drew, and how many the bytes queued since do: a
+    /// narrowing resize prints the sent ones again (`resize`).
+    printed: usize,
+    queued_printed: usize,
 }
 
 /// The most lines printed `tail` keeps: a line is at least a row, and no
@@ -419,7 +428,7 @@ impl<W: Write> Term<W> {
         buf.set_row(top);
         let height = to_bottom(size, top, height);
         let terminal = build(&buf, size, top, height)?;
-        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false, tail: VecDeque::new(), covered: None, held: Vec::new() })
+        Ok(Term { terminal, buf, out, size, height, want: height, caret_row: 0, caret_col: 0, widths: Vec::new(), drawn_width: size.width, reflows: true, frames: 0, pad: 0, steady: false, tail: VecDeque::new(), covered: None, held: Vec::new(), printed: 0, queued_printed: 0 })
     }
 
     pub fn width(&self) -> u16 {
@@ -480,8 +489,24 @@ impl<W: Write> Term<W> {
     /// the region — conversation, already in scrollback's order — and never
     /// the region itself, unless the reflowed region is taller than the
     /// whole screen.
+    ///
+    /// Which of the two the terminal did is not always known. A frame on its
+    /// way when the window narrows is read at the new width, its rows cut
+    /// rather than reflowed (autowrap is off), and it moves up from the caret
+    /// only as far as the frame before it reached at the old width — not
+    /// to the top of that frame's rows as the terminal reflowed them, whose
+    /// first rows it leaves behind. A row of the region above the caret
+    /// wider than the new width (the prompt's band always is) makes the two
+    /// differ. So then the clear starts higher still, over the lines the
+    /// last frame printed, and those are printed again: read before the
+    /// narrowing, the region and the lines over it are where it was
+    /// reflowed to; read after, what the frame before left is right above
+    /// those lines, as many rows of it as the region gained by the reflow.
+    /// Either way the clear takes nothing but those, and they come back
+    /// where they were.
     pub fn resize(&mut self, size: Size, cursor_row: Option<u16>) -> io::Result<()> {
         self.buf.discard();
+        self.queued_printed = 0;
         self.size = size;
         // The view takes the whole screen, whatever its height now.
         let want = if self.covered.is_some() { size.height.max(1) } else { self.want.clamp(1, size.height.max(1)) };
@@ -491,7 +516,12 @@ impl<W: Write> Term<W> {
         // numbered on the old screen: on the new one it is at most the last.
         let row = cursor_row.unwrap_or_else(|| self.buf.row().min(size.height.saturating_sub(1)));
         self.buf.set_row(row);
-        let top = row.saturating_sub(above);
+        let again = self.print_again(cursor_row.is_some() && above > self.caret_row && self.covered.is_none());
+        let reprinted: u16 = again.iter().flatten().map(|l| soft_rows(l, size.width)).sum();
+        // Only lines all on screen: part of one in scrollback cannot be
+        // cleared, and printed again would be there twice.
+        let again = again.filter(|_| row >= above + reprinted);
+        let top = row.saturating_sub(above + if again.is_some() { reprinted } else { 0 });
         // A shorter screen can leave the region's top too low for all of it:
         // the terminal took the rows below the caret. The rows it needs are
         // made the way a new line makes them, scrolling what is above into
@@ -501,7 +531,21 @@ impl<W: Write> Term<W> {
         // prompt — but not when the cursor could not be asked: its row is a
         // guess, and rows reserved from a wrong one scroll conversation away.
         let height = if cursor_row.is_some() { to_bottom(size, top, want) } else { want };
-        self.rebuild(top, height)
+        self.rebuild(top, height)?;
+        match again {
+            Some(lines) => {
+                self.queued_printed = lines.len();
+                self.emit(&lines, want)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// The lines the last frame sent printed, when `ambiguous` and there
+    /// are any: `resize` clears and prints them again.
+    fn print_again(&self, ambiguous: bool) -> Option<Vec<Line<'static>>> {
+        let n = self.printed.min(self.tail.len());
+        (ambiguous && n > 0).then(|| self.tail.range(self.tail.len() - n..).map(|(l, _)| l.clone()).collect())
     }
 
     /// Rows the live region above the caret takes once reflowed to `width`.
@@ -635,6 +679,7 @@ impl<W: Write> Term<W> {
             self.set_height(height)?;
         } else {
             self.emit(lines, height)?;
+            self.queued_printed += lines.len();
         }
         let shown = usize::from(self.height);
         // Rows the region kept but does not need are blank above the rest.
@@ -752,6 +797,7 @@ impl<W: Write> Term<W> {
         if body.is_empty() {
             return Ok(());
         }
+        self.printed = std::mem::take(&mut self.queued_printed);
         let mut frame = Vec::with_capacity(body.len() + SYNC_BEGIN.len() + SYNC_END.len());
         frame.extend_from_slice(SYNC_BEGIN);
         frame.extend_from_slice(&body);
@@ -832,6 +878,7 @@ impl<W: Write> Term<W> {
     /// view, if open, has nothing to put back.
     fn forget(&mut self) {
         self.tail.clear();
+        (self.printed, self.queued_printed) = (0, 0);
         if self.covered.is_some() {
             self.covered = Some(0);
         }

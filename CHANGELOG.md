@@ -434,6 +434,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **Narrowing the terminal while an answer streams no longer leaves a
+  piece of it behind.** In the inline screen (`tui.screen: inline`), a
+  window made narrower just as a frame was on its way to the terminal
+  could leave a half-written line of the answer in your scrollback and
+  blank the finished line under it. The lines that frame printed are now
+  printed again in place after the resize, so each line is in your
+  scrollback once, whole.
 - **A prompt from your phone or another device reaches a session the
   host had stopped syncing.** A session synced automatically used to stop
   syncing after `sync.idleMinutes` with no turn run on the host itself,
