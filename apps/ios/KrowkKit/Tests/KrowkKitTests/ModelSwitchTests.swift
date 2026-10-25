@@ -145,6 +145,28 @@ struct ModelSwitchModelTests {
         #expect(model.commandsOut == 0)
     }
 
+    @Test("R-LAG-8: a switch the host took and another device's replaced ends, and Continue's prompt with it; a catch-up's line from before the pick answers nothing")
+    func replacedOrOld() {
+        let c = ModelChoice(instance: "openai", model: "gpt-5.4")
+        let model = Self.model()
+        model.apply(frame: [.logged([Self.event("e3", .turnStarted(turn: "t2", model: Self.a), at: 10)])])
+        let token = model.issue(.switchModel(Self.b))
+        model.prompt("Again", afterSwitch: token)
+        // An old line a gap left out, caught up now: not the switch.
+        model.apply(frame: [.caughtUp([Self.event("e0", .modelSwitched(model: Self.b.model, from: Self.a, to: Self.b), at: 5)])])
+        #expect(model.switching == Self.b)
+        model.apply(frame: [.commandMinted(token: token, id: "d-1"), .commandAcked(id: "d-1", error: nil)])
+        #expect(model.commandsOut == 1)
+        let ended = model.apply(frame: [.logged([
+            Self.event("e4", .turnCompleted(turn: "t2", end: .completed), at: 11),
+            Self.event("e5", .modelSwitched(model: c.model, from: Self.a, to: c), at: 12),
+        ])])
+        #expect(model.switching == nil, "replaced at the host")
+        #expect(model.currentModel == c)
+        #expect(ended.promptAgain == nil)
+        #expect(model.commandsOut == 0, "nothing keeps a parked screen")
+    }
+
     @Test("R-INST-7: an offer for another device's turn only says the limit; a turn starting withdraws it; a refused Continue sends nothing")
     func offerElsewhere() {
         let model = Self.model()

@@ -439,6 +439,8 @@ public final class TranscriptModel {
             let token = commands.add(.switchModel, text: choice.name)
             switching = choice
             switchToken = token
+            switchAcked = false
+            switchSince = [newestLiveMs, currentAtMs].compactMap { $0 }.max()
             if switchRefusal != nil { switchRefusal = nil }
             if let continuing, continuing.token != token { self.continuing = nil }
             return token
@@ -653,6 +655,14 @@ public final class TranscriptModel {
     /// the host keeps it for after the turn, so it stays until then.
     public private(set) var switching: ModelChoice?
     @ObservationIgnored private var switchToken: UInt64?
+    /// The host took the switch: the next `model.switched` or turn start
+    /// it logs is the switch, or what replaced it (the host keeps one
+    /// switch for after a running turn, the last asked for).
+    @ObservationIgnored private var switchAcked = false
+    /// The host's clock when the switch was asked for, as far as the
+    /// screen knows it: a catch-up's line from before then is not its
+    /// answer.
+    @ObservationIgnored private var switchSince: Int64?
     /// The host's refusal of the last switch (R-SWITCH-4): its sentence,
     /// ending "— the session stays on <model>", until the next switch.
     public private(set) var switchRefusal: String?
@@ -722,6 +732,14 @@ public final class TranscriptModel {
         }
         if switching != nil { switching = nil }
         switchToken = nil
+        switchAcked = false
+    }
+
+    /// Whether a line logged at `time` can answer the switch out: not a
+    /// catch-up's from before it was asked for.
+    private func answersSwitch(at time: Int64?) -> Bool {
+        guard placing == .afterParent, let time, let switchSince else { return true }
+        return time > switchSince
     }
 
     /// The host answered switch `token`: refused, it goes back, saying the
@@ -736,6 +754,7 @@ public final class TranscriptModel {
             applied.switchRefused = said
             return
         }
+        switchAcked = true
         if switching == currentModel, runningTurn == nil { endSwitch(settled: true) }
     }
 
@@ -1068,7 +1087,10 @@ public final class TranscriptModel {
             if let model {
                 turnModels[turn] = model
                 current(model, at: time)
-                if switching == model { endSwitch() }
+                // On the model asked for, or, once the host took the switch,
+                // on what replaced it: either way it is over (Continue's
+                // prompt is not sent into a turn that runs).
+                if let switching, answersSwitch(at: time), switching == model || switchAcked { endSwitch() }
             }
             // Another turn starting withdraws the offer, as it happens.
             if live, let offer, offer.turn != turn { self.offer = nil }
@@ -1098,7 +1120,14 @@ public final class TranscriptModel {
                 current(to, at: time)
                 // The switch asked for here, logged; or, failed once it
                 // ran, logged back (R-SWITCH-4).
-                if let switching, switching == to || (failed && from == switching) { endSwitch(settled: !failed) }
+                if let switching, answersSwitch(at: time) {
+                    if switching == to || (failed && from == switching) {
+                        endSwitch(settled: !failed)
+                    } else if switchAcked {
+                        // Another device's switch replaced it at the host.
+                        endSwitch()
+                    }
+                }
             }
             return add(ItemState(id: "switch:\(event)", kind: .mark, text: "Now on \(model)"))
         }
