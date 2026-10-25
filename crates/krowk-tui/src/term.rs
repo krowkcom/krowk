@@ -405,9 +405,10 @@ pub struct Term<W: Write> {
     /// Lines that reached the screen while the view covered it, printed
     /// once it closes: nothing goes into scrollback under it.
     held: Vec<Line<'static>>,
-    /// How many of `tail`'s last lines the last frame sent that printed any
-    /// printed, right above the region since, and how many the bytes queued
-    /// since do: a narrowing resize prints the sent ones again (`resize`).
+    /// The lines printed last, right above the region ever since: how many
+    /// of `tail`'s last lines the last sent frame that printed any printed,
+    /// and how many the bytes queued since print. A narrowing resize prints
+    /// the sent ones again (`resize`).
     printed: usize,
     queued_printed: usize,
 }

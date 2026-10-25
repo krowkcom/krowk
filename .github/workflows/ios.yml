@@ -295,7 +295,7 @@ jobs:
       # person runs: the UI tests' stub and the launch argument that picks
       # it are under #if DEBUG, so a Release build has neither, and links
       # LocalAuthentication. And no source names allowProject.
-      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and neither budget seam"
+      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and none of the budgets' seams"
         run: |
           xcodebuild build -quiet -skipPackagePluginValidation \
             -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
@@ -359,7 +359,7 @@ jobs:
       # the stored baseline. The shared runner's speed varies (five runs:
       # 70-129 ms against a 149 ms limit), so a failure is run once more and
       # fails the job only if it fails again; a regression, like the
-      # deliberate stall below (317-379 ms), fails both. One whose longest
+      # deliberate stall below (296-399 ms), fails both. One whose longest
       # gap drew an answer again whole (the stall #408 fixed, which depends
       # on how a frame's updates fall) fails at once. Its lines join
       # test.log for the trend.
