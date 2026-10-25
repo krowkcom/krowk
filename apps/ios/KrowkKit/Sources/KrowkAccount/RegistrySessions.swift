@@ -161,19 +161,23 @@ public final class RegistrySessions: SessionSource {
     /// of `known` and the place's head: only the chunks after it. Without
     /// one, `openSession`. A resume refused for good (`session_rolled_back`:
     /// the registry rolled back past what the cache holds) opens the
-    /// session afresh, and the cache's events of it are replaced by what
-    /// that read. What a read brought and the place it stopped at go into
-    /// the cache in one transaction. The viewer starts at the cache's
-    /// cursor (`SessionOpening.held`), none after a replace. With no cache,
-    /// `openSession`. Blocking: the cache, then registry calls.
+    /// session afresh, held to `known` alone, and the cache's events of it
+    /// are replaced by what that read (`SessionOpening.replaced`). What a
+    /// read brought and the place it stopped at go into the cache in one
+    /// transaction, off this thread. The viewer starts at the newest event
+    /// the cache holds with every one before it (`SessionOpening.held`:
+    /// its cursor's, or the last read's), none after a replace. With no
+    /// cache, `openSession`. Blocking: the cache, then registry calls.
+    /// Never on the main thread nor the concurrency runtime's: it waits
+    /// on the cache.
     public func resume(id: String, known: HeadRecord?) throws -> SessionOpening {
         dispatchPrecondition(condition: .notOnQueue(.main))
         guard let cache else { return SessionOpening(session: try openSession(id: id, known: known)) }
-        let (placeText, cursorText) = Self.waiting { () async -> (Data?, String?) in
-            (try? await cache.place(session: id), try? await cache.cursor(session: id))
+        let (kept, cursorText) = Self.waiting { () async -> ((place: Data, held: String?)?, String?) in
+            ((try? await cache.place(session: id)) ?? nil, try? await cache.cursor(session: id))
         }
-        let held = cursorText.flatMap { try? decodeCursor(json: $0) }?.newest
-        if let place = placeText.flatMap({ String(data: $0, encoding: .utf8) }).flatMap({ try? decodeReadPlace(json: $0) }) {
+        let held = Self.newer(cursorText.flatMap { try? decodeCursor(json: $0) }?.newest, kept?.held)
+        if let kept, let place = String(data: kept.place, encoding: .utf8).flatMap({ try? decodeReadPlace(json: $0) }) {
             do {
                 let session = try checked {
                     let account = try opened()
@@ -181,30 +185,43 @@ public final class RegistrySessions: SessionSource {
                     let higher = known.map { $0.index >= place.head.index ? $0 : place.head } ?? place.head
                     return try account.resumeSession(id: id, place: place, known: higher, relayOverride: RelayConnection.relayOverride())
                 }
-                keep(session, id: id, in: cache)
+                keep(session, id: id, in: cache, held: held, from: kept.place)
                 return SessionOpening(session: session, held: held)
             } catch KrowkError.Refused(code: "session_rolled_back", _) {
                 // Held to the listing's head alone: the place's is on the
                 // log that was rolled back.
                 let session = try openSession(id: id, known: known)
-                keep(session, id: id, in: cache, replacing: true)
-                return SessionOpening(session: session)
+                keep(session, id: id, in: cache, held: nil, from: kept.place, replacing: true)
+                return SessionOpening(session: session, replaced: true)
             }
         }
         let session = try openSession(id: id, known: known)
-        keep(session, id: id, in: cache)
+        keep(session, id: id, in: cache, held: nil, from: kept?.place)
         return SessionOpening(session: session, held: held)
     }
 
+    /// The later of two event ids (UUIDv7), either missing.
+    static func newer(_ a: String?, _ b: String?) -> String? {
+        guard let a else { return b }
+        guard let b else { return a }
+        return max(a, b)
+    }
+
     /// What `session`'s read brought and where it stopped, into `cache` in
-    /// one transaction. A read whose events don't all decode or encode
-    /// keeps no place: it would stand past what the cache lacks.
-    private func keep(_ session: OpenedSession, id: String, in cache: SessionCache, replacing: Bool = false) {
-        let events = try? session.events()
-        let rows = events?.compactMap { event in (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) } } ?? []
-        let whole = events.map { rows.count == $0.count } ?? false
-        let place = whole ? session.place().flatMap { try? encodeReadPlace(place: $0) }.map { Data($0.utf8) } : nil
-        Self.waiting { try? await cache.putRead(session: id, rows, place: place, replacing: replacing) }
+    /// one transaction, off the calling thread: the place only if the
+    /// cache's is still `from`, and with it the newest event held, the
+    /// later of `held` (before the read) and the read's newest. A read
+    /// whose events don't all decode or encode keeps no place: it would
+    /// stand past what the cache lacks.
+    private func keep(_ session: OpenedSession, id: String, in cache: SessionCache, held: String?, from: Data?, replacing: Bool = false) {
+        Task.detached {
+            let events = try? session.events()
+            let rows = events?.compactMap { event in (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) } } ?? []
+            let whole = events.map { rows.count == $0.count } ?? false
+            let place = whole ? session.place().flatMap { try? encodeReadPlace(place: $0) }.map { Data($0.utf8) } : nil
+            let newest = Self.newer(held, rows.map(\.id).max())
+            try? await cache.putRead(session: id, rows, place: place, held: newest, from: from, replacing: replacing)
+        }
     }
 
     /// `open`'s refusal checked against the device list: a phone gone from
@@ -219,8 +236,8 @@ public final class RegistrySessions: SessionSource {
     }
 
     /// `work` run to its end, from a thread that may block (never the main
-    /// one, nor the concurrency runtime's): the cache is an actor on a
-    /// queue of its own.
+    /// one, nor the concurrency runtime's, which it would hold): the cache
+    /// is an actor on a queue of its own.
     private static func waiting<T: Sendable>(_ work: @escaping @Sendable () async -> T) -> T {
         let result = Waited<T>()
         Task.detached {

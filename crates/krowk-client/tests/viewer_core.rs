@@ -1220,6 +1220,6 @@ fn r_ios_1_a_resumed_viewers_catch_up_starts_after_the_cached_newest() {
         r.welcome_with(Welcome::default());
         assert!(r.take_rest().iter().any(|e| matches!(e, Effect::ReadChunks { want: None })));
         r.read(Ok((vec![], Attached::default())));
-        assert_eq!(catch_ups(&r.frames), [after.clone()], "held up to {newest:?}");
+        assert_eq!(catch_ups(&r.frames), std::slice::from_ref(&after), "held up to {newest:?}");
     }
 }

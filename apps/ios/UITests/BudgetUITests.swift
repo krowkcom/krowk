@@ -109,6 +109,13 @@ final class BudgetUITests: XCTestCase {
             XCTAssertTrue(demo.exists, "a paired launch never drew the demo session's row")
             app.terminate()
         }
+        // Drawn from the cache: with the registry unreachable the row
+        // still shows.
+        app.launchEnvironment["KROWK_API_URL"] = "http://127.0.0.1:9/v1"
+        app.launch()
+        if !demo.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        XCTAssertTrue(demo.exists, "the list was not drawn from the cache")
+        app.terminate()
     }
 
     /// In a session of the test's own, each prompt typed and sent shows

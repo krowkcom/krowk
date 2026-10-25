@@ -20,7 +20,8 @@ public struct CachedSession: SessionRecord, Hashable {
     /// epoch.
     public var listedAtMs: UInt64
     /// Where the last read of it stopped (ticket 126), opaque here:
-    /// `putRead` writes it with the events read. `putIndex` never writes
+    /// `putRead` writes it with the events read (and `place(session:)`
+    /// reads it with the newest event held then). `putIndex` never writes
     /// it: a session listed again keeps its own.
     public var place: Data?
 
@@ -94,8 +95,9 @@ public actor SessionCache {
     /// How many sessions keep their transcripts (`evict`).
     public static let transcripts = 20
 
-    /// The schema this build writes.
-    static let schemaVersion: Int32 = 1
+    /// The schema this build writes. Version 1 (ticket 129) is taken up:
+    /// it lacks only `place_held`.
+    static let schemaVersion: Int32 = 2
 
     public let url: URL
     private let queue: DispatchSerialQueue
@@ -232,14 +234,21 @@ public actor SessionCache {
 
     /// What a read of `session` from the registry brought (ticket 131):
     /// its events, appended as `appendEvents` does, and the place the read
-    /// stopped at (krowk-ffi's `encodeReadPlace`, opaque here), in one
-    /// transaction, so a place kept never stands past an event the cache
-    /// does not hold. `replacing`, the session's events and cursor go
-    /// first: a read that started over (the session rolled back past what
-    /// the cache held). A session not in the index keeps no place.
-    public func putRead(session: String, _ events: [(id: String, json: String)], place: Data?, replacing: Bool = false) throws(SessionCacheFailure) {
+    /// stopped at (krowk-ffi's `encodeReadPlace`, opaque here) with `held`,
+    /// the newest event the cache then holds with every one before it, in
+    /// one transaction, so a place kept never stands past an event the
+    /// cache does not hold. The place is written only if the one kept is
+    /// still `from`, the one the read started at: one evicted meanwhile
+    /// (its events with it) leaves none. `replacing`, the session's events
+    /// and cursor go first: a read that started over (the session rolled
+    /// back past what the cache held). A session not in the index keeps no
+    /// place.
+    public func putRead(
+        session: String, _ events: [(id: String, json: String)], place: Data?, held: String?, from: Data?, replacing: Bool = false
+    ) throws(SessionCacheFailure) {
         let db = try opened()
         try transaction(db) { () throws(SessionCacheFailure) in
+            let kept = try readPlace(db, session: session)?.place
             if replacing {
                 for table in ["events", "cursors"] {
                     let drop = try Statement(db, "DELETE FROM \(table) WHERE session_id = ?")
@@ -248,19 +257,26 @@ public actor SessionCache {
                 }
             }
             try insert(db, events, session: session)
-            let put = try Statement(db, "UPDATE sessions SET place = ? WHERE id = ?")
-            put.bind(1, place)
-            put.bind(2, session)
+            let fresh = kept == from && place != nil
+            let put = try Statement(db, "UPDATE sessions SET place = ?, place_held = ? WHERE id = ?")
+            put.bind(1, fresh ? place : nil)
+            put.bind(2, fresh ? held : nil)
+            put.bind(3, session)
             try put.run()
         }
     }
 
-    /// The place the last read of `session` stopped at (`putRead`), if any.
-    public func place(session: String) throws(SessionCacheFailure) -> Data? {
-        let db = try opened()
-        let row = try Statement(db, "SELECT place FROM sessions WHERE id = ?")
+    /// The place the last read of `session` stopped at (`putRead`), and
+    /// the newest event the cache held with every one before it then.
+    public func place(session: String) throws(SessionCacheFailure) -> (place: Data, held: String?)? {
+        try readPlace(try opened(), session: session)
+    }
+
+    private func readPlace(_ db: OpaquePointer, session: String) throws(SessionCacheFailure) -> (place: Data, held: String?)? {
+        let row = try Statement(db, "SELECT place, place_held FROM sessions WHERE id = ?")
         row.bind(1, session)
-        return try row.step() ? row.data(0) : nil
+        guard try row.step(), let place = row.data(0) else { return nil }
+        return (place, row.text(1))
     }
 
     /// Where the viewer of `session` stands, as krowk-ffi's `encodeCursor`
@@ -284,6 +300,26 @@ public actor SessionCache {
         upsert.bind(1, session)
         upsert.bind(2, cursor)
         try upsert.run()
+    }
+
+    /// Up to `limit` of `session`'s events before event `id` (all, when
+    /// nil) in the session's own order, newest first: a transcript paged
+    /// backwards (R-IOS-3, ticket 131). Event ids are UUIDv7, so their
+    /// order is the log's, whatever order they reached the cache in (a
+    /// gap's catch-up after later live lines).
+    public func events(session: String, beforeEvent id: String?, limit: Int) throws(SessionCacheFailure) -> [CachedEvent] {
+        let db = try opened()
+        let rows = try Statement(db, id == nil
+            ? "SELECT event_id, json, ord FROM events WHERE session_id = ? ORDER BY event_id DESC LIMIT ?"
+            : "SELECT event_id, json, ord FROM events WHERE session_id = ? AND event_id < ? ORDER BY event_id DESC LIMIT ?")
+        rows.bind(1, session)
+        if let id { rows.bind(2, id) }
+        rows.bind(id == nil ? 2 : 3, max(limit, 0))
+        var out: [CachedEvent] = []
+        while try rows.step() {
+            out.append(CachedEvent(id: rows.text(0) ?? "", json: rows.text(1) ?? "", ord: rows.int(2) ?? 0))
+        }
+        return out
     }
 
     /// Up to `limit` of `session`'s events before `ord` (all, when nil),
@@ -318,7 +354,7 @@ public actor SessionCache {
                 try drop.run()
             }
             let forget = try Statement(db, """
-                UPDATE sessions SET place = NULL
+                UPDATE sessions SET place = NULL, place_held = NULL
                 WHERE place IS NOT NULL AND id NOT IN (SELECT id FROM sessions ORDER BY updated_ms DESC, id LIMIT ?)
                 """)
             forget.bind(1, max(keep, 0))
@@ -422,6 +458,11 @@ public actor SessionCache {
             switch found {
             case Self.schemaVersion: break
             case 0: try create(db)
+            case 1:
+                try transaction(db) { () throws(SessionCacheFailure) in
+                    try exec(db, "ALTER TABLE sessions ADD COLUMN place_held TEXT")
+                    try exec(db, "PRAGMA user_version = \(Self.schemaVersion)")
+                }
             default:
                 throw SessionCacheFailure(description: "the cache's schema is version \(found), not \(Self.schemaVersion)", unreadable: true)
             }
@@ -443,7 +484,7 @@ public actor SessionCache {
                 CREATE TABLE IF NOT EXISTS sessions(
                     id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, updated_ms INTEGER NOT NULL,
                     head_index INTEGER, head_digest BLOB, hosted_by TEXT, host_device TEXT,
-                    listed_at_ms INTEGER NOT NULL, place BLOB)
+                    listed_at_ms INTEGER NOT NULL, place BLOB, place_held TEXT)
                 """)
             try exec(db, """
                 CREATE TABLE IF NOT EXISTS events(

@@ -11,16 +11,17 @@ import Testing
 import UIKit
 @testable import KrowkCache
 @testable import KrowkKit
+import SQLite3
 
 /// What the phone kept of a session, as the test sets it: a page in
 /// memory, a newest page held until `release`, older pages by `older`.
 final class StubKept: KeptTranscript, @unchecked Sendable {
-    private let lock = Mutex<(released: Bool, reads: Int)>((false, 0))
+    private let lock = Mutex<(released: Bool, reads: Int, olderReads: Int)>((false, 0, 0))
     let inMemory: KeptPage?
     let newestPage: KeptPage?
-    let older: [Int: KeptPage]
+    let older: [String: KeptPage]
 
-    init(ready: KeptPage? = nil, newest: KeptPage? = nil, older: [Int: KeptPage] = [:], released: Bool = true) {
+    init(ready: KeptPage? = nil, newest: KeptPage? = nil, older: [String: KeptPage] = [:], released: Bool = true) {
         inMemory = ready
         newestPage = newest
         self.older = older
@@ -28,7 +29,9 @@ final class StubKept: KeptTranscript, @unchecked Sendable {
     }
 
     func release() { lock.withLock { $0.released = true } }
+    /// `newest()` calls, and `page(before:)` calls.
     var reads: Int { lock.withLock { $0.reads } }
+    var olderReads: Int { lock.withLock { $0.olderReads } }
 
     @MainActor func ready() -> KeptPage? { inMemory }
 
@@ -38,8 +41,8 @@ final class StubKept: KeptTranscript, @unchecked Sendable {
         return newestPage
     }
 
-    func page(before older: Int) async -> KeptPage? {
-        lock.withLock { $0.reads += 1 }
+    func page(before older: String) async -> KeptPage? {
+        lock.withLock { $0.olderReads += 1 }
         return self.older[older]
     }
 }
@@ -48,11 +51,13 @@ final class StubKept: KeptTranscript, @unchecked Sendable {
 @Suite("R-IOS-1, R-IOS-3: cache first, the transcript model")
 struct KeptTranscriptModelTests {
     static let s = TranscriptScreenTests.session
+    /// Ids that sort in the log's order, as UUIDv7s do.
+    static func id(_ n: Int) -> String { String(format: "e%05d", n) }
     static func prompt(_ n: Int) -> TranscriptEvent {
-        TranscriptScreenTests.event("e\(n)", .userText(item: "u\(n)", text: "prompt \(n)", images: []))
+        TranscriptScreenTests.event(id(2 * n), .userText(item: "u\(n)", text: "prompt \(n)", images: []))
     }
     static func answer(_ n: Int) -> TranscriptEvent {
-        TranscriptScreenTests.event("a\(n)", .assistantText(item: "r\(n)", text: "answer \(n)"))
+        TranscriptScreenTests.event(id(2 * n + 1), .assistantText(item: "r\(n)", text: "answer \(n)"))
     }
 
     @Test("R-IOS-1: the kept page drawn first, then the session's read and catch-up holding some of the same events: each drawn once, in order")
@@ -77,6 +82,39 @@ struct KeptTranscriptModelTests {
         late.apply(frame: [.attached([Self.prompt(2), Self.answer(2)])])
         late.drawKept([Self.prompt(1), Self.answer(1), Self.prompt(2)])
         #expect(late.ids == ["item:u1", "item:r1", "item:u2", "item:r2"])
+    }
+
+    @Test("R-IOS-1: a read reaching further back than the kept page (a full read, with no place kept) puts what is older above it, each event once")
+    func testR_IOS_1_aFullReadGoesAboveTheKeptPage() {
+        let model = TranscriptModel(sessionID: Self.s)
+        model.drawKept([Self.prompt(3), Self.answer(3)])
+        model.apply(frame: [.attached([Self.prompt(1), Self.answer(1), Self.prompt(2), Self.answer(2), Self.prompt(3), Self.answer(3)])])
+        #expect(model.ids == ["item:u1", "item:r1", "item:u2", "item:r2", "item:u3", "item:r3"])
+        // A catch-up from the start (no event held to ask after) likewise.
+        let caught = TranscriptModel(sessionID: Self.s)
+        caught.drawKept([Self.prompt(2), Self.answer(2)])
+        caught.apply(frame: [.caughtUp([Self.prompt(1), Self.answer(1), Self.prompt(2), Self.answer(2), Self.prompt(3)])])
+        #expect(caught.ids == ["item:u1", "item:r1", "item:u2", "item:r2", "item:u3"])
+    }
+
+    @Test("R-IOS-1: a kept page that comes after the session's read puts its newer events after theirs, and settles no bubble")
+    func testR_IOS_1_aLatePageMergesAsHistory() {
+        let model = TranscriptModel(sessionID: Self.s)
+        model.apply(frame: [.attached([Self.prompt(1), Self.answer(1)])])
+        let token = model.issue(.prompt("prompt 2"))
+        model.drawKept([Self.prompt(1), Self.answer(1), Self.prompt(2)])
+        #expect(model.ids == ["item:u1", "item:r1", "item:u2", TranscriptModel.bubbleID(token)])
+    }
+
+    @Test("R-IOS-1: read afresh (rolled back past the cache), the kept rows go and the session's draw anew; what was typed stays")
+    func testR_IOS_1_aRestartDropsTheKeptRows() {
+        let model = TranscriptModel(sessionID: Self.s)
+        model.drawKept([Self.prompt(1), Self.answer(1), Self.prompt(2)])
+        let token = model.issue(.prompt("typed"))
+        let done = model.apply(frame: [.restarted, .attached([Self.prompt(1), Self.answer(5)])])
+        #expect(done.restarted)
+        #expect(model.ids == ["item:u1", "item:r5", TranscriptModel.bubbleID(token)])
+        #expect(model.attached)
     }
 
     @Test("R-IOS-3: an older page's turn never sets one running, and its end refuses no bubble; a result drawn before its call takes it in")
@@ -175,7 +213,7 @@ struct KeptTranscriptScreenTests {
         return window
     }
 
-    @Test("R-IOS-1, R-IOS-3: a page prefetched into memory is drawn as the screen loads: no spinner, ever, and nothing read")
+    @Test("R-IOS-1, R-IOS-3: a page prefetched into memory is drawn as the screen loads, before anything is read: no spinner, ever")
     func testR_IOS_3_aPrefetchedPageDrawsAtOnce() {
         let kept = StubKept(ready: KeptPage(events: [M.prompt(1), M.answer(1)], older: nil))
         let screen = TranscriptViewController(row: row, session: StubSession(), kept: kept)
@@ -219,17 +257,30 @@ struct KeptTranscriptScreenTests {
     func testR_IOS_3_scrollingUpPagesOlderEventsIn() async throws {
         let newest = (40..<80).flatMap { [M.prompt($0), M.answer($0)] }
         let older = (0..<40).flatMap { [M.prompt($0), M.answer($0)] }
-        let kept = StubKept(ready: KeptPage(events: newest, older: 40), older: [40: KeptPage(events: older, older: nil)])
+        let page = KeptPage(events: newest, older: M.id(80))
+        let kept = StubKept(ready: page, newest: page, older: [M.id(80): KeptPage(events: older, older: nil)])
         let screen = TranscriptViewController(row: row, session: StubSession(), kept: kept)
         let window = shown(screen)
         defer { window.isHidden = true }
         #expect(screen.model.ids.count == 80)
-        // Scrolled to the top: the older page comes in above.
-        screen.collectionView.setContentOffset(CGPoint(x: 0, y: -screen.collectionView.adjustedContentInset.top), animated: false)
+        // Opened at the end: nothing older is read until the person
+        // scrolls (the newest page is read again, in case it moved on).
+        try await waitFor { kept.reads == 1 }
+        #expect(kept.olderReads == 0)
+        #expect(screen.model.ids.count == 80)
+        // A finger takes the list to the top: the older page comes in above.
+        let list = try #require(screen.collectionView as? TranscriptCollectionView)
+        list.touching = true
+        defer { list.touching = nil }
+        list.setContentOffset(CGPoint(x: 0, y: -list.adjustedContentInset.top), animated: false)
         try await waitFor { screen.model.ids.count == 160 }
         #expect(screen.model.ids.first == "item:u0")
         #expect(screen.model.ids[80] == "item:u40")
-        #expect(kept.reads == 1)
+        #expect(kept.olderReads == 1)
+        // The row that was at the top is still on screen.
+        try await waitFor { screen.dataSource.snapshot().numberOfItems == 160 }
+        let top = try #require(screen.dataSource.indexPath(for: "item:u40"))
+        #expect(list.indexPathsForVisibleItems.contains(top), "the rows on screen moved away")
     }
 
     private func waitFor(_ done: () -> Bool) async throws {
@@ -252,26 +303,68 @@ struct KeptPlaceTests {
         defer { Task { try? await cache.forgetAll() } }
         try await cache.putIndex([SessionCacheTests.session("s", updatedMs: 2), SessionCacheTests.session("t", updatedMs: 1)], listedAtMs: 1)
         let place = Data(#"{"next":1}"#.utf8)
-        try await cache.putRead(session: "s", SessionCacheTests.events(0..<3), place: place)
-        #expect(try await cache.place(session: "s") == place)
+        try await cache.putRead(session: "s", SessionCacheTests.events(0..<3), place: place, held: "s-e2", from: nil)
+        #expect(try await cache.place(session: "s")?.place == place)
+        #expect(try await cache.place(session: "s")?.held == "s-e2")
         #expect(try await cache.events(session: "s", limit: 10).count == 3)
         // Listed again: the place stays.
         try await cache.putIndex([SessionCacheTests.session("s", updatedMs: 3), SessionCacheTests.session("t", updatedMs: 1)], listedAtMs: 2)
-        #expect(try await cache.place(session: "s") == place)
+        #expect(try await cache.place(session: "s")?.place == place)
+
+        // A read that started at another place than the one kept (evicted
+        // and read afresh meanwhile) keeps its events but no place.
+        let stale = Data(#"{"next":5}"#.utf8)
+        try await cache.putRead(session: "s", SessionCacheTests.events(3..<4), place: stale, held: "s-e3", from: Data(#"{"next":0}"#.utf8))
+        #expect(try await cache.place(session: "s") == nil)
+        #expect(try await cache.events(session: "s", limit: 10).count == 4)
 
         try await cache.putCursor(session: "s", json: "{}")
         let again = Data(#"{"next":9}"#.utf8)
-        try await cache.putRead(session: "s", SessionCacheTests.events(7..<9), place: again, replacing: true)
+        try await cache.putRead(session: "s", SessionCacheTests.events(7..<9), place: again, held: "s-e8", from: nil, replacing: true)
         #expect(try await cache.events(session: "s", limit: 10).map(\.id) == ["s-e8", "s-e7"])
         #expect(try await cache.cursor(session: "s") == nil)
-        #expect(try await cache.place(session: "s") == again)
+        #expect(try await cache.place(session: "s")?.place == again)
 
         // A session the index doesn't hold keeps no place.
-        try await cache.putRead(session: "gone", SessionCacheTests.events(0..<1, in: "gone"), place: place)
+        try await cache.putRead(session: "gone", SessionCacheTests.events(0..<1, in: "gone"), place: place, held: nil, from: nil)
         #expect(try await cache.place(session: "gone") == nil)
 
         try await cache.evict(keep: 0)
         #expect(try await cache.place(session: "s") == nil, "a place over no events")
         #expect(try await cache.index().map(\.id) == ["s", "t"])
+    }
+
+    @Test("R-IOS-3: pages come in the log's order, by event id, whatever order the events reached the cache in")
+    func testR_IOS_3_pagesAreInTheLogsOrder() async throws {
+        let cache = try await cache()
+        defer { Task { try? await cache.forgetAll() } }
+        // A gap's catch-up reached the cache after later live lines.
+        try await cache.appendEvents(session: "s", SessionCacheTests.events([0, 1, 4, 5, 2, 3]))
+        #expect(try await cache.events(session: "s", beforeEvent: nil, limit: 4).map(\.id) == ["s-e5", "s-e4", "s-e3", "s-e2"])
+        #expect(try await cache.events(session: "s", beforeEvent: "s-e2", limit: 4).map(\.id) == ["s-e1", "s-e0"])
+    }
+
+    @Test("R-IOS-1: a cache of ticket 129's schema is taken up, not started afresh: its index stays, with no place")
+    func testR_IOS_1_aVersion1CacheIsTakenUp() async throws {
+        let url = URL.temporaryDirectory.appending(path: "krowk-cache-tests/\(UUID().uuidString)/krowk-cache.sqlite")
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path(percentEncoded: false), &db) == SQLITE_OK)
+        for sql in [
+            "CREATE TABLE sessions(id TEXT PRIMARY KEY, title TEXT NOT NULL, cwd TEXT NOT NULL, updated_ms INTEGER NOT NULL, head_index INTEGER, head_digest BLOB, hosted_by TEXT, host_device TEXT, listed_at_ms INTEGER NOT NULL, place BLOB)",
+            "CREATE TABLE events(session_id TEXT NOT NULL, ord INTEGER NOT NULL, event_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY(session_id, event_id))",
+            "CREATE TABLE cursors(session_id TEXT PRIMARY KEY, cursor BLOB)",
+            "INSERT INTO sessions(id, title, cwd, updated_ms, listed_at_ms) VALUES ('s', 'Kept', '/', 1, 1)",
+            "PRAGMA user_version = 1",
+        ] {
+            #expect(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+        }
+        sqlite3_close(db)
+        let cache = try await SessionCache.open(at: url)
+        defer { Task { try? await cache.forgetAll() } }
+        #expect(try await cache.index().map(\.title) == ["Kept"])
+        #expect(try await cache.place(session: "s") == nil)
+        try await cache.putRead(session: "s", SessionCacheTests.events(0..<1), place: Data("p".utf8), held: "s-e0", from: nil)
+        #expect(try await cache.place(session: "s")?.held == "s-e0")
     }
 }

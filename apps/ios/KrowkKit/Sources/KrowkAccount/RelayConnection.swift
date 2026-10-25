@@ -300,13 +300,13 @@ public actor RelayConnection: LiveSession {
         let supervisor = self.supervisor
         let now = self.now()
         offQueue(queue) {
-            Result { () throws -> (OpenedSession, Viewer) in
+            Result { () throws -> (OpenedSession, Viewer, Bool) in
                 let opening = try open()
                 // The core takes the newest event it holds only from the
                 // events the session read, and a resumed session read only
                 // those after its place: the cache's newest is passed in.
                 let viewer = try Viewer.openResumed(session: opening.session, supervisor: supervisor, held: opening.held, nowMs: now)
-                return (opening.session, viewer)
+                return (opening.session, viewer, opening.replaced)
             }
         } then: { (me: isolated RelayConnection, opened) in
             // One the background abandoned: a success is still used if no
@@ -320,10 +320,13 @@ public actor RelayConnection: LiveSession {
         }
     }
 
-    private func opened(_ opened: Result<(OpenedSession, Viewer), any Error>) {
+    private func opened(_ opened: Result<(OpenedSession, Viewer, Bool), any Error>) {
         guard !done else { return }
         switch opened {
-        case .success(let (session, viewer)):
+        case .success(let (session, viewer, replaced)):
+            // Read afresh, what the phone kept replaced: the screen's rows
+            // from the cache go before the session's own.
+            if replaced { mailbox.post([.restarted]) }
             tracker.opened()
             self.session = session
             self.viewer = viewer

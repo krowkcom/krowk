@@ -1,15 +1,15 @@
 import Foundation
 
 /// A page of what the phone kept of a session (R-IOS-1, R-IOS-3): its
-/// events oldest first, and where the page before it ends, while the phone
+/// events oldest first, in the log's order, and where the page before it ends, while the phone
 /// keeps an older one.
 public struct KeptPage: Sendable, Equatable {
     public var events: [TranscriptEvent]
     /// What `KeptTranscript.page(before:)` takes for the page before this
-    /// one; nil when this one is the oldest kept.
-    public var older: Int?
+    /// one (its oldest event's id); nil when this one is the oldest kept.
+    public var older: String?
 
-    public init(events: [TranscriptEvent], older: Int?) {
+    public init(events: [TranscriptEvent], older: String?) {
         self.events = events
         self.older = older
     }
@@ -29,5 +29,5 @@ public protocol KeptTranscript: AnyObject, Sendable {
     func newest() async -> KeptPage?
     /// The page before `older` (a page's `older`), read and decoded off
     /// the main thread; nil when there is none.
-    func page(before older: Int) async -> KeptPage?
+    func page(before older: String) async -> KeptPage?
 }

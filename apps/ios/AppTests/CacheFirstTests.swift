@@ -144,38 +144,81 @@ extension HostedKeychain {
             #expect(try await cache.place(session: id) != nil, "the resumed read kept no place")
         }
 
-        @Test("R-IOS-1: the cache's page, the session read on from its place and the welcome's catch-up hold some of the same events: each is drawn once, as a full read of the session draws it")
+        @Test("R-IOS-1: the cache's page and the session read on from its place hold some of the same events (a turn followed live, then written to the log): each is drawn once, in the order a full read draws them; with no place kept, the full read goes above the kept page")
         func testR_IOS_1_eventsTheCacheAndTheCatchUpBothHoldAreDrawnOnce() async throws {
             let phone = try await TestFleet.shared.paired()
             let cache = Self.cache()
             defer { Task { try? await cache.forgetAll() } }
+            let id = try await SessionListTests.control("", body: "A merged session")
             let source = RegistrySessions(api: phone.api, storage: phone.storage, cache: cache)
-            let listing = try await blockingCall { try source.list() }
-            let demo = try #require(listing.sessions.compactMap { $0 as? SessionSummary }.first { $0.title == "A demo session" })
+            _ = try await blockingCall { try source.list() }
             try await Self.wait(within: .seconds(10), "the index was not written") {
-                try await cache.index().contains { $0.id == demo.id }
+                try await cache.index().contains { $0.id == id }
             }
-            try await Self.fill(cache, with: source, id: demo.id, known: demo.head, phone: phone)
+            try await Self.fill(cache, with: source, id: id, known: nil, phone: phone)
 
-            let screen = TranscriptViewController(
-                row: Self.row(demo.id, "A demo session"),
-                session: RelayConnection(resuming: { try source.resume(id: demo.id, known: demo.head) }),
-                kept: KeptTranscripts(cache: cache).transcript(demo.id))
-            let window = try Self.window(screen)
-            defer { window.isHidden = true }
-            let model = screen.model
-            try await LiveFollowTests.wait(until: { screen.statusBar.status == .live && model.attached }, within: .seconds(30), "never live: \(screen.statusBar.status)")
-            #expect(source.calls.resumes == 1, "\(source.calls)")
+            // A turn followed live: the cache takes its events past the
+            // place the read stopped at.
+            let live = RelayConnection(
+                resuming: { try source.resume(id: id, known: nil) },
+                cache: TranscriptCacheWriter(session: id, cache: cache, interval: .milliseconds(50)))
+            live.follow { _ in }
+            try await Self.wait(within: .seconds(30), "the follow never kept a place") { try await cache.place(session: id) != nil }
+            #expect(try await SessionListTests.control("/\(id)/turn", body: "Please stream a long answer") == "started")
+            try await Self.wait(within: .seconds(180), "the turn never ended at the host") {
+                try await SessionListTests.control("/\(id)/turn-ended") != "running"
+            }
+            try await Self.wait(within: .seconds(30), "the turn's end was never cached") {
+                try await cache.events(session: id, limit: 100_000).contains { event in
+                    guard case .turnCompleted? = (try? decodeLogEvent(json: event.json))?.body else { return false }
+                    return true
+                }
+            }
+            live.stop()
+            // Once the host wrote the turn to the log, a read on from the
+            // place holds events the cache holds too.
+            let kept = try #require(try await cache.place(session: id))
+            let place = try decodeReadPlace(json: String(decoding: kept.place, as: UTF8.self))
+            let relay = try #require(RelayConnection.relayOverride())
+            try await Self.wait(within: .seconds(60), "the turn never reached the log past the place") {
+                let read = try await blockingCall { try phone.account.resumeSession(id: id, place: place, known: nil, relayOverride: relay).events() }.map(\.id)
+                let cached = Set(try await cache.events(session: id, limit: 100_000).map(\.id))
+                return read.contains(where: cached.contains)
+            }
 
-            // A full read of the session, drawn on its own.
-            let full = TranscriptModel(sessionID: demo.id)
-            full.attach(try await RelayConnectionTests.open(demo.id, phone: phone, known: demo.head).events().map(TranscriptEvent.init))
-            let drawn = model.ids.filter { !$0.hasPrefix("notice:") && !$0.hasPrefix("pending:") }
-            #expect(Set(drawn).count == drawn.count, "a row twice: \(drawn)")
-            // Live lines of a turn still under way may add rows a full read
-            // hasn't logged yet; every row it draws is there, in its order.
-            let read = Set(full.ids)
-            #expect(drawn.filter(read.contains) == full.ids, "drawn \(TranscriptTests.rows(of: model)), a full read draws \(TranscriptTests.rows(of: full))")
+            /// A new screen of the session, read until its turn's end is
+            /// drawn: drawn once each, as a full read draws them.
+            func reopened() async throws {
+                let screen = TranscriptViewController(
+                    row: Self.row(id, "A merged session"),
+                    session: RelayConnection(resuming: { try source.resume(id: id, known: nil) }),
+                    kept: KeptTranscripts(cache: cache).transcript(id))
+                let window = try Self.window(screen)
+                defer { window.isHidden = true }
+                let model = screen.model
+                try await LiveFollowTests.wait(until: { model.attached && model.ids.contains { $0.hasPrefix("turn:") } }, within: .seconds(30), "never read: \(TranscriptTests.rows(of: model))")
+                let full = TranscriptModel(sessionID: id)
+                full.attach(try await RelayConnectionTests.open(id, phone: phone).events().map(TranscriptEvent.init))
+                let drawn = model.ids.filter { !$0.hasPrefix("notice:") && !$0.hasPrefix("pending:") }
+                #expect(Set(drawn).count == drawn.count, "a row twice: \(drawn)")
+                // Live lines of a turn still under way may add rows a full
+                // read hasn't logged yet; every row it draws is there, in
+                // its order.
+                let read = Set(full.ids)
+                #expect(drawn.filter(read.contains) == full.ids, "drawn \(TranscriptTests.rows(of: model)), a full read draws \(TranscriptTests.rows(of: full))")
+            }
+
+            let calls = source.calls
+            try await reopened()
+            #expect(source.calls.resumes == calls.resumes + 1 && source.calls.opens == calls.opens, "\(source.calls)")
+
+            // No place kept (a cache an earlier build wrote): read in full,
+            // what is older than the kept page goes above it.
+            let now = try #require(try await cache.place(session: id))
+            try await cache.putRead(session: id, [], place: nil, held: nil, from: now.place)
+            #expect(try await cache.place(session: id) == nil)
+            try await reopened()
+            #expect(source.calls.opens == calls.opens + 1, "\(source.calls)")
         }
 
         /// Polls `done` every 50 ms until it holds, or fails at `limit`.

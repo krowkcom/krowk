@@ -36,16 +36,20 @@ public func listedHead(_ record: any SessionRecord) -> HeadRecord? {
 public struct SessionOpening: @unchecked Sendable {
     public let session: OpenedSession
     public let held: String?
+    /// The session was read afresh, what the phone kept of it replaced
+    /// (rolled back past it): a screen drawn from the cache starts over.
+    public let replaced: Bool
 
-    public init(session: OpenedSession, held: String? = nil) {
+    public init(session: OpenedSession, held: String? = nil, replaced: Bool = false) {
         self.session = session
         self.held = held
+        self.replaced = replaced
     }
 }
 
 /// What the cache kept of one session's transcript, a page at a time
 /// (`KeptTranscript`): the newest 200 events, then 200 before each page as
-/// the person scrolls up. Read on the cache's queue and decoded
+/// the person scrolls up, in the log's order (by event id, UUIDv7). Read on the cache's queue and decoded
 /// (`decodeLogEvent`) off the main thread; an event this build can't
 /// decode is left out. The newest page may be in memory already
 /// (`KeptTranscripts.prefetch`).
@@ -70,12 +74,12 @@ public final class CachedTranscript: KeptTranscript {
         await read(before: nil)
     }
 
-    public func page(before older: Int) async -> KeptPage? {
+    public func page(before older: String) async -> KeptPage? {
         await read(before: older)
     }
 
-    private func read(before: Int?) async -> KeptPage? {
-        guard let kept = try? await cache.events(session: session, before: before, limit: Self.pageSize), !kept.isEmpty else { return nil }
+    private func read(before: String?) async -> KeptPage? {
+        guard let kept = try? await cache.events(session: session, beforeEvent: before, limit: Self.pageSize), !kept.isEmpty else { return nil }
         return Self.page(kept)
     }
 
@@ -83,8 +87,7 @@ public final class CachedTranscript: KeptTranscript {
     /// first. Nonisolated: never on the main thread.
     nonisolated static func page(_ kept: [CachedEvent]) -> KeptPage {
         let events = kept.reversed().compactMap { (try? decodeLogEvent(json: $0.json)).map(TranscriptEvent.init) }
-        let oldest = kept.map(\.ord).min() ?? 0
-        return KeptPage(events: events, older: kept.count < pageSize || oldest == 0 ? nil : oldest)
+        return KeptPage(events: events, older: kept.count < pageSize ? nil : kept.last?.id)
     }
 }
 

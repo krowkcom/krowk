@@ -57,7 +57,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// them; and no spinner shows yet.
     public private(set) var readingKept = false
     /// Where the next older kept page ends, while there is one.
-    private var olderKept: Int?
+    private var olderKept: String?
     /// An older kept page is being read.
     private var pagingOlder = false
     /// How long the session's updates wait for the kept page at most.
@@ -554,11 +554,17 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     /// The kept newest page: drawn now when it is in memory, else read
     /// off the main thread with the session's updates held for it (at
-    /// most `keptWait`: one that comes later goes above what is drawn).
+    /// most `keptWait`: one that comes later is merged as history). One in
+    /// memory is read again all the same, in case the cache took more
+    /// since it was read ahead: what that adds is merged.
     private func drawKept() {
         guard let kept else { return }
         if let page = kept.ready() {
             draw(page)
+            Task { [weak self] in
+                guard let page = await kept.newest() else { return }
+                self?.draw(page, older: false)
+            }
             return
         }
         readingKept = true
@@ -582,8 +588,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         driver?.wake()
     }
 
-    private func draw(_ page: KeptPage) {
-        olderKept = page.older
+    private func draw(_ page: KeptPage, older: Bool = true) {
+        if older { olderKept = page.older }
         model.drawKept(page.events)
         // The rows now, not on the observation's next turn.
         if isViewLoaded, dataSource != nil { apply(rows: model.ids, attached: model.attached) }
@@ -593,7 +599,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// Within a screen of the top, an older kept page is read and drawn
     /// above (R-IOS-3); the rows on screen stay where they are.
     private func pageOlderIfNeeded() {
-        guard let kept, let older = olderKept, !pagingOlder, let collectionView else { return }
+        guard let kept, let older = olderKept, !pagingOlder, let collectionView, drewRows else { return }
+        // Only as the person scrolls (not the list settling at the end as
+        // it opens), or while what is drawn doesn't fill the screen.
+        let scrolling = collectionView.isTracking || collectionView.isDragging || collectionView.isDecelerating
+        guard scrolling || collectionView.contentSize.height <= collectionView.bounds.height else { return }
         let fromTop = collectionView.contentOffset.y + collectionView.adjustedContentInset.top
         guard fromTop < collectionView.bounds.height else { return }
         pagingOlder = true
@@ -614,6 +624,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// shows if something came while scrolled up; VoiceOver hears a turn
     /// end (never each word).
     private func drawFrame(_ done: FrameApplied) {
+        // The session was read afresh: what the phone kept is not it.
+        if done.restarted { olderKept = nil }
         // A collapsed "Thought" draws none of its text.
         let drawn = done.grown.filter { $0.kind != .reasoning || $0.expanded }
         for state in drawn {

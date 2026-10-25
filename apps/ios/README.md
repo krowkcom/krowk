@@ -344,20 +344,28 @@ keyed by session id, over `KrowkKit.SessionListModel` (`@MainActor`,
   network read and applied without animation; its rows say "last seen",
   never live (only a fresh listing names a lease). The network's listing
   then replaces them, animated. Opening a session draws the newest 200
-  events the cache kept (decoded off the main thread) before anything the
-  connection brings, which waits in its mailbox meanwhile, and pages
-  older ones in above as the person scrolls up. Off the main thread, the
-  session is then read on from the place the cache kept
-  (`Account.resumeSession`, only the chunks after it; `openSession`
-  without one, and afresh when a resume is refused as
-  `session_rolled_back`, its cached events replaced), the events read
-  and the new place written in one transaction. The viewer starts at the
-  cache cursor's newest event (`Viewer.openResumed`), so the welcome's
+  events the cache kept, in the log's order (by event id, UUIDv7, not the
+  order they reached the cache), decoded off the main thread, before
+  anything the connection brings, which waits in its mailbox meanwhile
+  (at most 500 ms). Older pages come in above as the person scrolls up.
+  Off the main thread, the session is then read on from the place the
+  cache kept (`Account.resumeSession`, only the chunks after it;
+  `openSession` without one). A resume refused as `session_rolled_back`
+  reads afresh, replaces the session's cached events, and the screen's
+  rows start over. The events read and the new place (with the newest
+  event the cache then holds) are written in one transaction, off the
+  open's thread, and only if the place kept is still the one the read
+  started from (an eviction meanwhile leaves none). The viewer starts at
+  the newest event the cache holds with every one before it (its
+  cursor's, else the last read's: `Viewer.openResumed`), so the welcome's
   catch-up asks only for what came after. Everything is merged by event
-  id, so an event drawn from the cache is never drawn again. The sessions
+  id: an event drawn from the cache is never drawn again, and one a read
+  brings that is older than everything drawn goes above it. The sessions
   above and below the one opened have their newest pages read ahead from
-  the cache, so switching draws from memory. The connection bar is the
-  only progress shown: no spinner or empty sentence over kept rows.
+  the cache, so switching draws from memory (and the page is read again,
+  in case it moved on). The connection bar is the only progress shown: no
+  spinner or empty sentence over kept rows. The cache's schema is version
+  2 (`place_held`); a version 1 file is taken up, not started afresh.
 
 ## Removed from your devices
 
