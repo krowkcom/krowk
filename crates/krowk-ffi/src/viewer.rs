@@ -384,6 +384,9 @@ struct Inner {
     /// The relay's connection while the session moves off it, until the
     /// direct welcome: what it receives goes to `ViewerCore::leaving`.
     leaving: Option<u64>,
+    /// A race the core asked for in the background, held (the core thinks
+    /// it out) until the foreground runs it.
+    race_held: bool,
 }
 
 /// A race for a direct path: the candidates not yet handed a ticket, by
@@ -445,7 +448,7 @@ impl Viewer {
         }
         let at_rest = session.snapshot();
         let (core, first) = ViewerCore::new(session.keys().clone(), &session.id(), session.device(), session.relay(), at_rest, now_ms);
-        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None };
+        let inner = Inner { core, opened: session, first: Some(first), pending: None, joining: None, connection: None, dialed: 0, asked: 0, want: None, sup: supervisor, held: false, ticket_at: None, replacing: false, race: None, leaving: None, race_held: false };
         Ok(Arc::new(Viewer { id: VIEWERS.fetch_add(1, Ordering::Relaxed), inner: Mutex::new(inner) }))
     }
 
@@ -608,7 +611,8 @@ impl Viewer {
     /// lost from here is not joined again until `foreground`. A join
     /// waiting for its ticket (on the backoff, or being fetched) is held
     /// too: Swift drops the ticket it asked for, and `foreground` asks
-    /// afresh, so a fetch iOS suspended never holds the return up.
+    /// afresh, so a fetch iOS suspended never holds the return up. So is a
+    /// race: its candidates dropped, it runs once in the foreground.
     pub fn background(&self, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             i.sup.background(now_ms);
@@ -616,9 +620,9 @@ impl Viewer {
                 i.held = true;
                 i.ticket_at = None;
             }
-            // No race in the background: the one out is lost, and the
-            // core races again later, in the foreground.
-            i.lose_race(now_ms)
+            // No race in the background: the one out is held for the
+            // foreground, its candidates dropped.
+            i.hold_race()
         })
     }
 
@@ -626,20 +630,22 @@ impl Viewer {
     /// VPN up or down): off a direct path, the next race is due at once,
     /// its backoff started over (R-NET-2). Call it before `wake`.
     pub fn network_changed(&self, now_ms: u64) -> Vec<Effect> {
-        self.with(|i| {
-            i.core.network_changed(now_ms);
-            Vec::new()
-        })
+        self.with(|i| i.race_now(now_ms))
     }
 
     /// The scene is coming forward: after 10 s or more away the
     /// connection is replaced at once, one lost meanwhile joined now, and
-    /// otherwise as `wake`.
+    /// otherwise as `wake`; the next race for a direct path is due at once.
     pub fn foreground(&self, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             let link = i.link(now_ms);
             let w = i.sup.foreground(now_ms, link);
-            i.act(w, now_ms)
+            let mut out = i.act(w, now_ms);
+            // Come forward, the direct paths are raced as soon as the relay
+            // has welcomed this viewer (R-IOS-2), a race held there with
+            // them.
+            out.extend(i.race_now(now_ms));
+            out
         })
     }
 
@@ -671,7 +677,7 @@ impl Viewer {
     pub fn race_join(&self, url: String, ticket: String, now_ms: u64) -> Vec<Effect> {
         self.with(|i| {
             if i.sup.in_background() {
-                return i.lose_race(now_ms);
+                return i.hold_race();
             }
             let Some(r) = i.race.as_mut() else { return Vec::new() };
             let Some(k) = r.untried.iter().position(|c| c.url == url) else { return Vec::new() };
@@ -797,6 +803,8 @@ impl Inner {
         if !joins && self.connection.take().is_some() {
             out.push(Effect::Close);
         }
+        // A replaced link may be a changed network: raced again at once.
+        out.extend(self.race_now(now_ms));
         out
     }
 
@@ -834,6 +842,23 @@ impl Inner {
                 out
             }
         }
+    }
+
+    /// The next race as soon as one may run (`ViewerCore::race_now`): a
+    /// race out, or held, is let go uncounted, its candidates dropped.
+    fn race_now(&mut self, now_ms: u64) -> Vec<Effect> {
+        let out = self.race.take().map(|r| r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()).unwrap_or_default();
+        self.race_held = false;
+        self.core.race_now(now_ms);
+        out
+    }
+
+    /// The race out, if any, held for the foreground: its candidates
+    /// dropped, the core still thinking it out, so it asks for none more.
+    fn hold_race(&mut self) -> Vec<Effect> {
+        let Some(r) = self.race.take() else { return Vec::new() };
+        self.race_held = true;
+        r.joins.iter().map(|j| Effect::CloseCandidate { connection: j.connection }).collect()
     }
 
     /// A race with no candidate left to try or under way is lost.
@@ -904,8 +929,11 @@ impl Inner {
                         out.push(Effect::CloseLeaving);
                     }
                     // Every connection goes with the relay's: a race out is
-                    // lost, and run again later.
-                    out.extend(self.lose_race(now_ms));
+                    // cut short, uncounted, and run once joined again; one
+                    // held for the foreground stays held.
+                    if !self.race_held && self.race.is_some() {
+                        out.extend(self.race_now(now_ms));
+                    }
                     self.joining = None;
                     self.pending = Some(extra);
                     let replacing = std::mem::take(&mut self.replacing);
@@ -922,8 +950,8 @@ impl Inner {
                     out.extend(at.map(|at_ms| Effect::NeedTicket { at_ms }));
                 }
                 // Swift fetches one ticket for every candidate. Never in the
-                // background: lost there, and raced again later.
-                core::Effect::Probe if self.sup.in_background() => self.core.probe_lost(now_ms),
+                // background: held for the foreground.
+                core::Effect::Probe if self.sup.in_background() => self.race_held = true,
                 core::Effect::Probe => {
                     out.extend(self.lose_race(now_ms));
                     let candidates = self.core.candidates().to_vec();
@@ -936,6 +964,7 @@ impl Inner {
                     }
                 }
                 core::Effect::End => {
+                    self.race_held = false;
                     self.pending = None;
                     self.joining = None;
                     self.connection = None;

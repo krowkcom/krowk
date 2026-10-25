@@ -668,9 +668,8 @@ fn r_net_2_losing_the_direct_path_goes_back_to_the_relay_at_the_cursor() {
 }
 
 /// R-NET-2: a race is let go with the relay's connection: a rejoin drops
-/// every candidate, and a refusal on one, or a ticket that never came,
-/// loses the race too; each time the next race is asked for later, never
-/// left stuck.
+/// every candidate and races again once joined; a refusal on each, or a
+/// ticket that never came, loses the race; never left stuck.
 #[test]
 fn r_net_2_a_race_ends_with_the_relay_s_connection_a_refusal_or_no_ticket() {
     // The relay's connection ends mid-race.
@@ -687,7 +686,7 @@ fn r_net_2_a_race_ends_with_the_relay_s_connection_a_refusal_or_no_ticket() {
     p.join(true, 0);
     p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
     p.frame();
-    assert!(!p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "the next race later, not at once");
+    assert!(p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "the race cut short by the relay's end runs again once joined, uncounted");
     assert!(p.on(dialed[0].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty(), "a dropped candidate goes nowhere");
 
     // A candidate refused, then the other: the race lost.
@@ -709,9 +708,10 @@ fn r_net_2_a_race_ends_with_the_relay_s_connection_a_refusal_or_no_ticket() {
 }
 
 /// R-NET-2, R-IOS-2: a network change starts the next race at once, its
-/// backoff over; in the background no race runs, and one out is lost.
+/// backoff over, dropping a race out on the old network; in the background
+/// no race runs, one out is held, and the foreground runs it.
 #[test]
-fn r_net_2_r_ios_2_a_network_change_races_again_at_once_and_the_background_races_nothing() {
+fn r_net_2_r_ios_2_a_network_change_races_again_at_once_and_the_background_holds_the_race() {
     let (mut p, race) = Phone::racing();
     assert!(p.viewer.race_lost(p.now).is_empty());
     p.at(p.now + 1_000);
@@ -719,15 +719,57 @@ fn r_net_2_r_ios_2_a_network_change_races_again_at_once_and_the_background_races
     assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "backed off");
     assert!(p.viewer.network_changed(p.now).is_empty());
     assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "raced at once after the change");
+    let dialed = p.race_tickets(&race);
+    let e = p.viewer.network_changed(p.now);
+    assert_eq!(e.len(), 2, "the race on the old network dropped: {e:?}");
+    assert!(p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "and run again at once");
+    let _ = dialed;
 
     let dialed = p.race_tickets(&race);
     let e = p.viewer.background(p.now);
     assert_eq!(e.len(), 2, "both candidates dropped: {e:?}");
     assert!(e.iter().all(|e| matches!(e, Effect::CloseCandidate { .. })));
     assert!(p.on(dialed[1].1, json!({"type": "joined", "link": 9, "host": true, "seq": 0})).is_empty());
-    p.viewer.network_changed(p.now);
-    p.at(p.now + 16);
-    assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "no race in the background");
+    for _ in 0..3 {
+        p.at(p.now + 20_000);
+        let _ = p.viewer.received(p.conn, WsFrame::Text { text: "pong".into() }, p.now);
+        assert!(!p.viewer.tick(p.now).iter().any(|e| matches!(e, Effect::Race { .. })), "no race in the background");
+    }
+    // A minute away: the relay's connection replaced, and once welcomed
+    // again the held race runs at once.
+    p.rest.clear();
+    let e = p.viewer.foreground(p.now);
+    p.take(e);
+    p.rest.retain(|e| matches!(e, Effect::NeedTicket { .. }));
+    p.join(true, 0);
+    p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
+    p.frame();
+    assert!(p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "the held race runs as the app comes forward");
+}
+
+/// R-IOS-2, R-NET-2: on a direct path, a return from 10 s or more away
+/// replaces the connection, and the relay it rejoins is raced from as
+/// soon as it welcomes, not after a backoff.
+#[test]
+fn r_ios_2_r_net_2_the_foreground_races_again_as_soon_as_the_relay_welcomes() {
+    let (mut p, race) = Phone::racing();
+    let dialed = p.race_tickets(&race);
+    let direct = (1 << 40) + 1;
+    let (_, e) = p.candidate_joins(dialed[1].1, direct, true, LAN);
+    p.moved(dialed[1].1, direct, e);
+    p.welcome(Welcome::default());
+    p.frame();
+    p.take_rest();
+    let _ = p.viewer.background(p.now);
+    p.at(p.now + 15_000);
+    let e = p.viewer.foreground(p.now);
+    p.take(e);
+    assert!(p.rest.iter().any(|e| matches!(e, Effect::Close)), "replaced: {:?}", p.rest);
+    p.rest.retain(|e| matches!(e, Effect::NeedTicket { .. }));
+    p.join(true, 0);
+    p.welcome(Welcome { candidates: candidates(), ..Welcome::default() });
+    p.frame();
+    assert!(p.take_rest().iter().any(|e| matches!(e, Effect::Race { .. })), "raced as soon as the relay welcomed");
 }
 
 /// R-CLIENT-1: a join the relay leaves unanswered — the connection open,
