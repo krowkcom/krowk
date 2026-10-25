@@ -176,7 +176,7 @@ public final class SessionRowFormatter {
     }
 
     /// The last path component of `cwd`, or "" for none.
-    static func basename(_ cwd: String) -> String {
+    public static func basename(_ cwd: String) -> String {
         cwd.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? ""
     }
 }

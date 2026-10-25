@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The iPhone app starts a session on one of your machines.** Sessions'
+  `+` opens "New session": your hosts as they announce themselves, online
+  first (one offline is greyed with when it was last seen and can't be
+  chosen), one of the directories the host offers, a model one of its
+  instances has ready, with that instance's limit, and the first prompt.
+  Start closes the sheet at once and a row reads `starting on <host>…` until
+  the host answers; then the session's transcript opens, live. A host's
+  refusal shows in the row, with **Edit and retry**. The phone offers no
+  permission mode, budget, toolset or effort: the host's own settings apply.
+  The app library gains `Account.listHosts`, `Account.startSession` and
+  `newCommandId`.
 - **The iPhone app moves a session onto a direct path.** Once on the
   relay it races the host's tailnet address, MagicDNS name and LAN
   address over Network.framework, as the terminal does, and moves onto

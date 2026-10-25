@@ -19,7 +19,12 @@
 # <url>/<id>/turn runs a turn in (its body the prompt; "Please stream a
 # long answer" streams one at 200 tokens a second, far slower on a busy
 # runner), and <url>/<id>/turn-ended answers `ended` once that turn has
-# ended at the host, or `running` if it still runs 5 s later. The fleet
+# ended at the host, or `running` if it still runs 5 s later. Host A
+# announces itself with one trusted repository and the mock model ready
+# (R-HOST-3), and starts a session a phone asks for there (R-HOST-4); a
+# POST to KROWK_HOSTS_URL/offline lets its announcement lapse, replying
+# once it is listed offline, KROWK_HOSTS_URL/hold holds its refreshes so a
+# start waits, and KROWK_HOSTS_URL/online brings it back. The fleet
 # runs with --demo: its session is titled "A demo session", has a turn
 # with a tool call and its result, and holds an approval. It runs with
 # --direct-lan too: each session's host offers its LAN listener on
@@ -116,14 +121,14 @@ read_fleet() {
   [ -n "$ready" ]
 }
 
-fleet_api='' fleet_relay='' fleet_pair='' fleet_pair_url='' fleet_sessions_url='' fleet_devices_url=''
+fleet_api='' fleet_relay='' fleet_pair='' fleet_pair_url='' fleet_sessions_url='' fleet_devices_url='' fleet_hosts_url=''
 removal_api='' removal_relay='' removal_pair_url='' removal_devices_url=''
 if ! read_fleet 4 fleet || [ -z "$fleet_api" ] || ! read_fleet 6 removal || [ -z "$removal_api" ]; then
   echo "with-fleet: a fake fleet did not start; the end of $log:" >&2
   tail -n 40 "$log" >&2 || true
   exit 1
 fi
-echo "with-fleet: api=$fleet_api relay=$fleet_relay pair=$fleet_pair pair_url=$fleet_pair_url sessions_url=$fleet_sessions_url" >&2
+echo "with-fleet: api=$fleet_api relay=$fleet_relay pair=$fleet_pair pair_url=$fleet_pair_url sessions_url=$fleet_sessions_url hosts_url=$fleet_hosts_url" >&2
 echo "with-fleet: removal api=$removal_api relay=$removal_relay pair_url=$removal_pair_url devices_url=$removal_devices_url" >&2
 
 export TEST_RUNNER_KROWK_API_URL=$fleet_api
@@ -131,6 +136,7 @@ export TEST_RUNNER_KROWK_RELAY_URL=$fleet_relay
 export TEST_RUNNER_KROWK_PAIRING_CODE=$fleet_pair
 export TEST_RUNNER_KROWK_PAIR_URL=$fleet_pair_url
 export TEST_RUNNER_KROWK_SESSIONS_URL=$fleet_sessions_url
+export TEST_RUNNER_KROWK_HOSTS_URL=$fleet_hosts_url
 export TEST_RUNNER_KROWK_REMOVAL_API_URL=$removal_api
 export TEST_RUNNER_KROWK_REMOVAL_RELAY_URL=$removal_relay
 export TEST_RUNNER_KROWK_REMOVAL_PAIR_URL=$removal_pair_url

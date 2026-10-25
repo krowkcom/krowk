@@ -198,20 +198,34 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let parked = parkedScreens
         // Allowing a call asks for Face ID first (R-IOS-11).
         let owner = OwnerChecks.make()
-        return SessionListViewController(model: model) { [weak model] row in
-            if let kept = parked.take(row.id) { return kept }
-            let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
+        // A session's transcript, followed live through the relay while its
+        // screen is open, opened by `opening`.
+        let transcript = { @MainActor (row: SessionRow, opening: @escaping @Sendable () throws -> OpenedSession) -> UIViewController in
             // Its approvals rise in a sheet over the transcript (R-PERM-2).
             let approvals = ApprovalQueue(sessionID: row.id, ownerCheck: owner)
             // Its logged events are kept as they come (ticket 129).
             let live = RelayConnection(
-                opening: { try source.openSession(id: row.id, known: known) }, approvals: approvals,
+                opening: opening, approvals: approvals,
                 standing: { source.standing() }, cache: TranscriptCacheWriter(session: row.id, cache: cache))
             let screen = TranscriptViewController(row: row, session: live, approvals: approvals)
             screen.parking = parked
             // What an earlier screen of it had refused, with "Edit and resend".
             screen.restore(parked.takeRefusals(row.id))
             return screen
+        }
+        // `+` starts a session on one of the person's hosts (R-HOST-4); the
+        // started one opens live as soon as the registry lists it.
+        let newSessions = NewSessions(source: source, starting: StartingSessions(source: source)) { session, request in
+            // Its screen parked with commands out, if it was left so.
+            if let kept = parked.take(session) { return kept }
+            let place = SessionRowFormatter.basename(request.cwd)
+            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
+            return transcript(row) { try source.openStartedSession(id: session) }
+        }
+        return SessionListViewController(model: model, newSessions: newSessions) { [weak model] row in
+            if let kept = parked.take(row.id) { return kept }
+            let known = (model?.listing?.sessions.first { $0.id == row.id } as? SessionSummary)?.head
+            return transcript(row) { try source.openSession(id: row.id, known: known) }
         }
     }
 
