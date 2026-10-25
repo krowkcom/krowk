@@ -169,6 +169,21 @@ impl From<core::Cursor> for CursorRecord {
     }
 }
 
+/// A viewer's place as the phone's cache keeps it: its JSON text
+/// (`{"stream", "afterSeq", "newest"}`), which `decode_cursor` reads back,
+/// so Swift never builds or parses it.
+#[uniffi::export]
+pub fn encode_cursor(cursor: CursorRecord) -> Result<String, KrowkError> {
+    let c = core::Cursor { stream: cursor.stream, after_seq: cursor.after_seq, newest: cursor.newest };
+    serde_json::to_string(&c).map_err(|e| KrowkError::Internal { detail: format!("a cursor did not encode: {e}") })
+}
+
+/// A viewer's place, from the JSON text `encode_cursor` wrote.
+#[uniffi::export]
+pub fn decode_cursor(json: String) -> Result<CursorRecord, KrowkError> {
+    serde_json::from_str::<core::Cursor>(&json).map(Into::into).map_err(|e| KrowkError::Decode { detail: format!("that is not a cursor this build understands: {e}") })
+}
+
 /// The updates one core `Update` crosses as: one, and a `Failed` after it
 /// when some of its events do not decode. No `_` arm: a new `Update` fails
 /// this build until it crosses.

@@ -34,6 +34,12 @@ extension SessionCache {
 /// batch that couldn't be written (the phone locked) is held and tried
 /// again with the next, so the transcript keeps no hole while the screen
 /// is open; one a forgotten cache refused is dropped.
+///
+/// The viewer's place (`saved`, the last update of a frame that moved it)
+/// is written in the same transaction as every event held up to it, so the
+/// cache's cursor never names an event it does not hold. Once events held
+/// for a write that kept failing were let go, no place is written again:
+/// the transcript has a hole a place after it would skip.
 public final class TranscriptCacheWriter: Sendable {
     public let session: String
     private let cache: SessionCache
@@ -42,6 +48,10 @@ public final class TranscriptCacheWriter: Sendable {
         var events: [LogEvent] = []
         /// A batch that couldn't be written, encoded: first in the next.
         var unwritten: [(id: String, json: String)] = []
+        /// The newest place, encoded, to write with the events before it.
+        var cursor: String?
+        /// Events were let go unwritten: no place is written again.
+        var holed = false
         var scheduled = false
         /// The write last scheduled: the next waits for it, so batches
         /// land in order.
@@ -57,46 +67,61 @@ public final class TranscriptCacheWriter: Sendable {
         self.interval = interval
     }
 
-    /// The logged events in what the viewer showed, in order.
+    /// The logged events in what the viewer showed, in order, and the
+    /// place the frame ended at, if it moved.
     public func add(_ updates: [ViewerUpdate]) {
-        add(events: updates.flatMap { update -> [LogEvent] in
+        var cursor: String?
+        let events = updates.flatMap { update -> [LogEvent] in
             switch update {
-            case .attached(let events, _), .caughtUp(let events): events
-            case .line(.log(let event)): [event]
-            default: []
+            case .attached(let events, _), .caughtUp(let events): return events
+            case .line(.log(let event)): return [event]
+            case .saved(let saved):
+                cursor = (try? encodeCursor(cursor: saved)) ?? cursor
+                return []
+            default: return []
             }
-        })
+        }
+        add(events: events, cursor: cursor)
     }
 
     /// Logged events, in order: written within `interval`, with whatever
     /// else came meanwhile. With none, a batch still held from a failed
     /// write is tried again: the viewer showing anything at all (it does
     /// on every join) is a moment to.
-    public func add(events: [LogEvent]) {
+    public func add(events: [LogEvent], cursor: String? = nil) {
         held.withLock { held in
             held.events += events
-            guard !held.events.isEmpty || !held.unwritten.isEmpty, !held.scheduled else { return }
+            if let cursor, !held.holed { held.cursor = cursor }
+            guard !held.events.isEmpty || !held.unwritten.isEmpty || held.cursor != nil, !held.scheduled else { return }
             held.scheduled = true
             let previous = held.last
             held.last = Task.detached { [self] in
                 await previous?.value
                 try? await Task.sleep(for: interval)
-                let (unwritten, batch) = self.held.withLock { held in
+                let (unwritten, batch, cursor) = self.held.withLock { held in
                     held.scheduled = false
                     defer {
                         held.events = []
                         held.unwritten = []
+                        held.cursor = nil
                     }
-                    return (held.unwritten, held.events)
+                    return (held.unwritten, held.events, held.cursor)
                 }
                 let rows = unwritten + batch.compactMap { event in
                     (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) }
                 }
                 do throws(SessionCacheFailure) {
-                    try await cache.appendEvents(session: session, rows)
+                    try await cache.appendEvents(session: session, rows, cursor: cursor)
                 } catch where !error.forgotten {
                     self.held.withLock { held in
-                        held.unwritten = Array((rows + held.unwritten).suffix(Self.mostHeld))
+                        let kept = rows + held.unwritten
+                        held.unwritten = Array(kept.suffix(Self.mostHeld))
+                        if kept.count > Self.mostHeld {
+                            held.holed = true
+                            held.cursor = nil
+                        } else if held.cursor == nil {
+                            held.cursor = cursor
+                        }
                     }
                 } catch {}
             }

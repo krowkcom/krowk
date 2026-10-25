@@ -3,7 +3,8 @@
 // index replaced whole, events kept once and paged newest first, the
 // transcripts of the 20 newest sessions kept, a schema this build
 // doesn't know started afresh, the file's protection and backup
-// exclusion, and forgetting it. The hosted CacheTests write it from the
+// exclusion, forgetting it, and a viewer's place kept in one write with
+// the events it names (ticket 130). The hosted CacheTests write it from the
 // fake fleet.
 import Foundation
 @testable import KrowkCache
@@ -63,6 +64,44 @@ struct SessionCacheTests {
         #expect(kept.map(\.id) == (0..<5).reversed().map { "s-e\($0)" })
         #expect(kept.map(\.ord) == [4, 3, 2, 1, 0])
         #expect(kept.last?.json == #"{"id":"s-e0"}"#)
+    }
+
+    @Test("R-IOS-1: a place is kept with the events it names, replaced by the next, and read back as written")
+    func testR_IOS_1_aCursorIsKeptWithItsEvents() async throws {
+        let cache = try await SessionCache.open(at: url)
+        try await cache.putIndex([Self.session("s"), Self.session("t")], listedAtMs: 1)
+        #expect(try await cache.cursor(session: "s") == nil)
+        try await cache.appendEvents(session: "s", Self.events(0..<3), cursor: #"{"newest":"s-e2"}"#)
+        #expect(try await cache.cursor(session: "s") == #"{"newest":"s-e2"}"#)
+        #expect(try await cache.events(session: "s", limit: 10).count == 3)
+        // A place alone, with no new event (a frame of seen lines).
+        try await cache.appendEvents(session: "s", [], cursor: #"{"newest":"s-e2","afterSeq":4}"#)
+        #expect(try await cache.cursor(session: "s") == #"{"newest":"s-e2","afterSeq":4}"#)
+        try await cache.putCursor(session: "t", json: "{}")
+        #expect(try await cache.cursor(session: "t") == "{}")
+        // Gone from the listing: gone with its events.
+        try await cache.putIndex([Self.session("s")], listedAtMs: 2)
+        #expect(try await cache.cursor(session: "t") == nil)
+        try await cache.evict(keep: 0)
+        #expect(try await cache.cursor(session: "s") == nil)
+    }
+
+    @Test("R-IOS-1: events and the place they come with are one write: when the place is refused, the events are not kept either")
+    func testR_IOS_1_eventsAndCursorAreOneTransaction() async throws {
+        let cache = try await SessionCache.open(at: url)
+        try await cache.putIndex([Self.session("s")], listedAtMs: 1)
+        await cache.close()
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path(percentEncoded: false), &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "CREATE TRIGGER refuse BEFORE INSERT ON cursors BEGIN SELECT RAISE(ABORT, 'refused'); END", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+        await #expect(throws: SessionCacheFailure.self) {
+            try await cache.appendEvents(session: "s", Self.events(0..<3), cursor: #"{"newest":"s-e2"}"#)
+        }
+        #expect(try await cache.events(session: "s", limit: 10).isEmpty, "events kept without their place")
+        #expect(try await cache.cursor(session: "s") == nil)
+        try await cache.appendEvents(session: "s", Self.events(0..<3))
+        #expect(try await cache.events(session: "s", limit: 10).count == 3, "without a place they go in")
     }
 
     @Test("R-IOS-3: events(before:limit:) pages a transcript backwards, newest first, across three pages")

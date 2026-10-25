@@ -157,6 +157,7 @@ pub use sign_in::{SignIn, SignedIn};
 pub use storage::KeyStorage;
 pub use supervisor::{ConnectionSupervisor, LinkState, WakeAction};
 pub use viewer::{ChunksRead, CursorRecord, Effect, Viewer, ViewerUpdate, WsFrame};
+pub use viewer::{decode_cursor, encode_cursor};
 
 use krowk_client::pairing::PairingCode;
 
