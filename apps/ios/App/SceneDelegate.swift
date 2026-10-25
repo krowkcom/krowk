@@ -239,7 +239,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // early for it, if one was (ticket 132), not a second.
         let transcript = { @MainActor (row: SessionRow, kept: (any KeptTranscript)?, opening: @escaping @Sendable () throws -> SessionOpening) -> UIViewController in
             let live = early.take(row.id) ?? connection(row.id, opening)
-            let screen = TranscriptViewController(row: row, session: live.session, approvals: live.approvals, kept: kept)
+            // Its model switches among its host's instances (ticket 135).
+            let screen = TranscriptViewController(row: row, session: live.session, approvals: live.approvals, kept: kept, hosts: source)
             // The session last open, kept for the next launch's early start.
             screen.onScreen = { [id = row.id] in early.onScreen(id, $0) }
             screen.parking = parked
@@ -257,7 +258,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 return kept
             }
             let place = SessionRowFormatter.basename(request.cwd)
-            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place)
+            let row = SessionRow(id: session, title: place.isEmpty ? "New session" : place, detail: "", live: true, accessibilityLabel: place, hostDevice: request.device)
             // New: the cache holds nothing of it yet.
             return transcript(row, nil) { SessionOpening(session: try source.openStartedSession(id: session)) }
         }

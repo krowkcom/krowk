@@ -146,8 +146,9 @@ extension TranscriptUpdate {
 
     /// One live line: what it draws, if anything. A tool call's input
     /// deltas draw nothing (its summary comes from the completed call);
-    /// cost, limits, background work and the run's result are M1's to
-    /// ignore; subagents' streams are out of scope.
+    /// cost and background work are M1's to ignore; subagents' streams are
+    /// out of scope. The run's result carries a rate-limit offer, and
+    /// `limits` each instance's limit (ticket 135).
     @MainActor
     static func live(_ line: LiveEvent, approvals: any ApprovalSink) -> TranscriptUpdate? {
         switch line {
@@ -174,10 +175,21 @@ extension TranscriptUpdate {
             approvals.resolved(sessionId: session, requestId: request, decision: decision)
             return nil
         case .result(let result):
-            // The run's end: its turn asks nothing more.
+            // The run's end: its turn asks nothing more, and the host may
+            // offer another instance for it (ticket 135).
             approvals.turnEnded(sessionId: result.sessionId, turnId: result.turnId)
-            return nil
-        case .cost, .limits, .backendAgents, .background, .subagentStatus, .turnUnprompted:
+            let offer = result.switchOffer.map {
+                SwitchOfferInfo(from: ModelChoice($0.from), to: ModelChoice($0.to), resetsAtMs: $0.resetsAtMs)
+            }
+            return .result(session: result.sessionId, turn: result.turnId, offer: offer)
+        case .limits(let session, _, let instance, let limit):
+            let state = switch limit.status {
+            case .allowed: "allowed"
+            case .warning: "warning"
+            case .limited: "limited"
+            }
+            return .limits(session: session, instance: instance, limit: InstanceLimit(state: state, usedPercent: limit.usedPercent, resetsAtMs: limit.resetsAtMs))
+        case .cost, .backendAgents, .background, .subagentStatus, .turnUnprompted:
             return nil
         }
     }
@@ -213,7 +225,18 @@ extension LiveCommand {
             // request is answered for the subagent.
             .approve(sessionId: reply.sessionID, requestId: reply.requestID, decision: reply.verdict.decision,
                      answers: reply.answers.map { QuestionAnswer(id: $0.id, picked: $0.picked, text: $0.text) })
+        case .switchModel(let choice):
+            // The model only: a remote client never switches the mode,
+            // toolset, effort or budget, and the command has no field for one.
+            .switchModel(sessionId: session, model: ModelRef(instance: choice.instance, model: choice.model))
         }
+    }
+}
+
+extension ModelChoice {
+    /// The generated `ModelRef`, as KrowkKit takes it.
+    public init(_ ref: ModelRef) {
+        self.init(instance: ref.instance, model: ref.model)
     }
 }
 
@@ -244,10 +267,10 @@ extension TranscriptEvent {
 
     static func change(_ event: LogEvent) -> TranscriptChange? {
         switch event.body {
-        case .itemCompleted(_, let itemId, let item):
+        case .itemCompleted(let turnId, let itemId, let item):
             switch item {
             case .userText(let text, let images):
-                return .userText(item: itemId, text: text, images: images.map(\.number))
+                return .userText(item: itemId, text: text, images: images.map(\.number), turn: turnId)
             case .assistantText(let text):
                 return .assistantText(item: itemId, text: text)
             case .reasoning(let text, _):
@@ -264,10 +287,10 @@ extension TranscriptEvent {
             case .failed: .failed(error?.message)
             }
             return .turnCompleted(turn: turnId, end: end)
-        case .modelSwitched(_, _, let to, _, _):
-            return .modelSwitched(model: to.model)
-        case .turnStarted(let turnId, _, _, _, _, _):
-            return .turnStarted(turn: turnId)
+        case .modelSwitched(_, let from, let to, let reason, _):
+            return .modelSwitched(model: to.model, from: from.map(ModelChoice.init), to: ModelChoice(to), failed: reason == .switchFailed)
+        case .turnStarted(let turnId, let model, _, _, _, _):
+            return .turnStarted(turn: turnId, model: ModelChoice(model))
         case .sessionStarted, .responseCompleted, .backendSession, .subagentResponse, .subagentStarted,
              .todosUpdated, .runOpened, .backendHandoff, .sessionMoved:
             return nil

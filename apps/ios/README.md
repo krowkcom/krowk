@@ -24,7 +24,7 @@ apps/ios/
                      TranscriptModelTests, TranscriptTests, LiveFollowTests,
                      ComposerTests, ApprovalMappingTests, ApprovalScreenTests,
                      NotificationRoutingTests, RemovalTests, CacheTests,
-                     CacheFirstTests, ConnectEarlyTests, and the TestFleet fixture
+                     CacheFirstTests, ConnectEarlyTests, ModelSwitchTests, and the TestFleet fixture
   UITests/           XCUITest target: ApprovalUITests, LaunchTests, SignInUITests,
                      PairingUITests, NotificationUITests, RemovalUITests,
                      OfflineUITests
@@ -68,7 +68,7 @@ The scheme `Krowk-iOS` runs the UI tests `ApprovalUITests`, `LaunchTests`,
 `TranscriptTests`, `LiveFollowTests`, `ComposerTests`,
 `ApprovalMappingTests`, `ApprovalScreenTests`,
 `NotificationRoutingTests`, `RemovalTests`, `CacheTests`,
-`CacheFirstTests` and `ConnectEarlyTests` (target
+`CacheFirstTests`, `ConnectEarlyTests` and `ModelSwitchTests` (target
 `Krowk-iOSTests`), KrowkKit's unit tests (`FrameApplyBaselineTests`
 prints the per-frame apply baseline, which CI writes to its run's
 summary) and KrowkCore's `BindingsTests`.
@@ -111,6 +111,12 @@ automatic sync takes it up at its first turn. A POST to
 `TEST_RUNNER_KROWK_HOSTS_URL`'s `/offline` lets host A's announcement
 lapse and answers `offline` once it is listed so; `/hold` holds its
 refreshes, so a start waits; `/online` brings it back.
+Host A has two instances ready on the mock model, `anthropic` and
+`anthropic:personal`, so ModelSwitchTests switch a session between them;
+each answer says how near its limit the instance is (85% used on
+`anthropic`, 10% on `anthropic:personal`). A POST to `/limit` has the next
+turn on `anthropic` hit its limit (the mock answers 429 with
+`retry-after: 0`), and the host offers `anthropic:personal`.
 A second fleet, with no demo, runs beside it for the tests that remove
 their phone from host A's devices (ticket 117), since a removal rotates
 host A's user key, which would stop the first fleet's hosts: its URLs are

@@ -729,3 +729,85 @@ fn rand_id() -> u64 {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     N.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + u64::from(std::process::id()) * 1000
 }
+
+/// R-SWITCH-4, R-SWITCH-1, R-INST-6, R-INST-7: host A has two instances
+/// ready on the mock model, `anthropic` and `anthropic:personal`, and
+/// announces both. A second device's `switchModel` for a test's own session
+/// is acked and logged, and the next turn runs there, its limit reported;
+/// one to an instance host A lacks is refused, saying the session stays
+/// where it was. With `Hosting::limit` (the control's `POST /hosts/limit`)
+/// the next turn on `anthropic` fails on its limit with an offer of
+/// `anthropic:personal`, and the yes, a switch there and the prompt again,
+/// runs it there. What the phone's model-switch tests rely on.
+#[test]
+fn r_switch_4_r_inst_7_a_viewer_switches_a_fleet_session_between_host_as_instances_and_takes_a_limits_offer() {
+    use krowk_client::protocol::{LimitState, ModelRef, SwitchReason};
+    let f = fleet::start(false);
+    let id = f.hosting.host("switching").unwrap();
+    let b = fleet::Device::new("machine-b");
+    let (chain, batch) = f.chain.clone().batch(&f.user, vec![Change::Add(b.subject("machine-b"))], f.host.key.id(), &f.host.signing, fleet::T0 + 1).unwrap();
+    f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
+    let api = b.client(&f.api);
+    api.claim_key_device().unwrap();
+    let keys = UserKeys::new(f.user.clone(), []).unwrap();
+    let host = f.host.key.id();
+
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let announced = loop {
+        let opened = api.list_presences().unwrap().into_iter().find(|p| p.device == host.to_string() && p.online).and_then(|p| krowk_client::presence::open(&p.sealed, &host, &keys, &chain).ok());
+        if let Some(a) = opened {
+            break a;
+        }
+        assert!(Instant::now() < deadline, "host A never announced itself");
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let ready: Vec<_> = announced.instances.iter().filter(|i| i.ready && !i.models.is_empty()).map(|i| i.name.as_str()).collect();
+    assert_eq!(ready, ["anthropic", fleet::PERSONAL], "both instances ready: {:?}", announced.instances);
+
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys, chain, session: id.clone(), known: None };
+    let mut v = rt.block_on(viewer::attach(o)).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(true)))));
+    let anthropic = ModelRef { instance: "anthropic".into(), model: "claude-sonnet-4-6".into() };
+    let personal = ModelRef { instance: fleet::PERSONAL.into(), model: "claude-sonnet-4-6".into() };
+    let acked = |all: &[viewer::Update]| all.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None });
+    let logged = |all: &[viewer::Update]| -> Vec<LogEvent> { all.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Log(e)) = u { Some(e.clone()) } else { None }).collect() };
+    let prompt = |text: &str| Cmd::Prompt { session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let ended = |all: &[viewer::Update]| all.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::Result(_)))));
+
+    // A switch: acked, logged, and the next turn runs there.
+    v.commands.send(Cmd::SwitchModel { session_id: Some(id.clone()), model: personal.clone() }).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(20), |all| logged(all).iter().any(|e| matches!(e.body, LogBody::ModelSwitched { .. }))));
+    let switched = logged(&got).into_iter().find_map(|e| if let LogBody::ModelSwitched { to, reason, .. } = e.body { Some((to, reason)) } else { None });
+    assert_eq!(switched, Some((personal.clone(), SwitchReason::Requested)));
+    v.commands.send(prompt("Say hello")).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(30), ended));
+    let started = logged(&got).into_iter().find_map(|e| if let LogBody::TurnStarted { model, .. } = e.body { Some(model) } else { None });
+    assert_eq!(started, Some(personal.clone()), "the next turn runs on the instance switched to");
+    let limits: Vec<_> = got.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Limits { instance, limit, .. })) = u { Some((instance.clone(), limit.status)) } else { None }).collect();
+    assert!(limits.contains(&(fleet::PERSONAL.to_string(), LimitState::Allowed)), "R-INST-6: its limit, live: {limits:?}");
+
+    // One host A can't run: refused, and the session stays.
+    v.commands.send(Cmd::SwitchModel { session_id: Some(id.clone()), model: ModelRef { instance: "no-such-instance".into(), model: "x".into() } }).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(20), |all| acked(all).is_some()));
+    let error = acked(&got).flatten().expect("refused");
+    assert!(error.ends_with(&format!("the session stays on {personal}")), "{error}");
+
+    // Back on `anthropic`, at its limit: an offer, and the yes runs there.
+    v.commands.send(Cmd::SwitchModel { session_id: Some(id.clone()), model: anthropic.clone() }).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(20), |all| logged(all).iter().any(|e| matches!(e.body, LogBody::ModelSwitched { .. }))));
+    f.hosting.limit();
+    v.commands.send(prompt("Hit the limit")).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(30), ended));
+    let offer = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) = u { r.switch_offer.clone() } else { None }).expect("an offer");
+    assert_eq!((offer.from, offer.to.clone()), (anthropic, personal.clone()));
+    // The prompt once the switch is logged: a switch the host takes while
+    // the limited turn still lets go of the session waits for its end.
+    v.commands.send(Cmd::SwitchModel { session_id: Some(id.clone()), model: offer.to }).unwrap();
+    rt.block_on(until(&mut v, Duration::from_secs(20), |all| logged(all).iter().any(|e| matches!(e.body, LogBody::ModelSwitched { .. }))));
+    v.commands.send(prompt("Hit the limit")).unwrap();
+    let got = rt.block_on(until(&mut v, Duration::from_secs(30), ended));
+    let started = logged(&got).into_iter().find_map(|e| if let LogBody::TurnStarted { model, .. } = e.body { Some(model) } else { None });
+    assert_eq!(started, Some(personal), "the prompt again runs on the instance offered");
+    f.stop();
+}

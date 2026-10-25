@@ -244,14 +244,20 @@ public enum NewSessionText {
     /// An instance's limit (R-INST-6): `allowed`, `warning: 82% used`,
     /// `limited until 14:05`; nil when none was seen.
     public static func limit(_ instance: some AnnouncedInstance, timeZone: TimeZone = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String? {
-        switch instance.limitState {
+        limit(state: instance.limitState, usedPercent: instance.limitUsedPercent, resetsAtMs: instance.limitResetsAtMs, timeZone: timeZone, locale: locale)
+    }
+
+    /// A limit from its fields: a session's `limits` line's (ticket 135),
+    /// or an announcement's.
+    public static func limit(state: String?, usedPercent: Double?, resetsAtMs: Int64?, timeZone: TimeZone = .autoupdatingCurrent, locale: Locale = .autoupdatingCurrent) -> String? {
+        switch state {
         case nil: return nil
         case "allowed": return "allowed"
         case "warning":
-            guard let used = instance.limitUsedPercent else { return "warning" }
+            guard let used = usedPercent else { return "warning" }
             return "warning: \(Int(used.rounded()))% used"
         case "limited":
-            guard let resets = instance.limitResetsAtMs else { return "limited" }
+            guard let resets = resetsAtMs else { return "limited" }
             let style = Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, timeZone: timeZone)
             return "limited until \(Date(timeIntervalSince1970: TimeInterval(resets) / 1000).formatted(style))"
         case let other?: return SafeText.clean(other)
