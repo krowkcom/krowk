@@ -201,7 +201,13 @@ public actor RelayConnection: LiveSession {
     }
 
     public nonisolated func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void) {
-        queue.async { self.assumeIsolated { $0.onPathChange = path } }
+        queue.async {
+            self.assumeIsolated { me in
+                me.onPathChange = path
+                // Followed before its screen: the path it is on now.
+                if let shown = me.sessionPath { DispatchQueue.main.async { MainActor.assumeIsolated { path(shown) } } }
+            }
+        }
     }
 
     public nonisolated func onUpdates(_ wake: @escaping @MainActor @Sendable () -> Void) {
@@ -279,9 +285,15 @@ public actor RelayConnection: LiveSession {
     // MARK: Driving the viewer
 
     private func start(_ status: (@MainActor @Sendable (RelayStatus) -> Void)?) {
-        guard !started, !done else { return }
-        started = true
+        // Started before its screen (ticket 132): the screen hears where
+        // it stands now, ended too, and nothing joins again.
+        if started {
+            onStatus = status
+            return publish()
+        }
+        guard !done else { return }
         onStatus = status
+        started = true
         publish()
         watchPath()
         openSession()
@@ -395,6 +407,9 @@ public actor RelayConnection: LiveSession {
                 ticketAsk += 1
                 raceAsk += 1
                 run(viewer.background(nowMs: now))
+                // What the cache holds back for its next batch, this step's
+                // too, is written now, before iOS suspends or ends the app.
+                cache?.flush()
             case .wake: run(viewer.wake(nowMs: now))
             }
             return

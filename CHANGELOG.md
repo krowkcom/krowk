@@ -25,6 +25,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   in `~/.krowk/takes/<session>.log`. The app library adds
   `Account.takeSession`, `Account.cancelTake` and `TakeAnswer` (no
   version change).
+- **The iPhone app connects before it draws, and says how old what it
+  shows is.** At launch and each time it comes back to the foreground,
+  before any screen appears, it starts reading the session list and
+  reconnects the session you had open, so that session is often live by
+  the time you tap it. A session with no host shows `last seen 12m ago`,
+  never live, and so does every session when the phone is offline. Its
+  transcript stays readable under a line saying the host is offline and
+  when it was last seen, and a prompt you send is queued until the host
+  is back. With no network at all, the list keeps the rows the phone
+  cached and says it couldn't be read, and the bar says the relay can't
+  be reached.
 - **The iPhone app switches a session's model.** A session's navigation
   bar shows the model it runs on, `<instance>/<id>`. Tap it to see the
   host's ready instances and their models, each instance with its limit

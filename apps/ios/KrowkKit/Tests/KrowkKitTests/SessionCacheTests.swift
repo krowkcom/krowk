@@ -176,6 +176,52 @@ struct SessionCacheTests {
         #expect(try await SessionCache.open(at: url).index().isEmpty)
     }
 
+    @Test("R-IOS-2: the session last open is kept as an index row, read back at once on the caller's thread, cleared only by its own screen, and gone with its session from the listing")
+    func testR_IOS_2_theLastOpenSessionIsKept() async throws {
+        let cache = try await SessionCache.open(at: url)
+        #expect(cache.lastOpenNow() == nil)
+        try await cache.putIndex([Self.session("a", title: "A"), Self.session("b")], listedAtMs: 1)
+        try await cache.putLastOpen("a")
+        #expect(cache.lastOpenNow()?.title == "A")
+        try await cache.putLastOpen("b")
+        // Left after another opened: the other stays.
+        try await cache.clearLastOpen("a")
+        #expect(try await cache.lastOpen()?.id == "b")
+        try await cache.clearLastOpen("b")
+        #expect(cache.lastOpenNow() == nil)
+        // Not in the index: never kept.
+        try await cache.putLastOpen("z")
+        #expect(cache.lastOpenNow() == nil)
+        try await cache.putLastOpen("a")
+        try await cache.putIndex([Self.session("b")], listedAtMs: 2)
+        #expect(cache.lastOpenNow() == nil, "a session gone from the listing is not last open")
+        // Locked: none read, and nothing blocks.
+        try await cache.putLastOpen("b")
+        await cache.suspend()
+        #expect(cache.lastOpenNow() == nil)
+        await cache.resume()
+        #expect(cache.lastOpenNow()?.id == "b")
+    }
+
+    @Test("R-IOS-2: a version 2 file (ticket 131) is taken up, not wiped: its rows and places stay, and it keeps a last open session from then")
+    func testR_IOS_2_aVersionTwoFileIsTakenUp() async throws {
+        let cache = try await SessionCache.open(at: url)
+        try await cache.putIndex([Self.session("s")], listedAtMs: 1)
+        try await cache.appendEvents(session: "s", Self.events(0..<3))
+        await cache.close()
+
+        var db: OpaquePointer?
+        #expect(sqlite3_open(url.path(percentEncoded: false), &db) == SQLITE_OK)
+        #expect(sqlite3_exec(db, "DROP TABLE last_open; PRAGMA user_version = 2", nil, nil, nil) == SQLITE_OK)
+        sqlite3_close(db)
+
+        let reopened = try await SessionCache.open(at: url)
+        #expect(try await reopened.index().map(\.id) == ["s"])
+        #expect(try await reopened.events(session: "s", limit: 10).count == 3)
+        try await reopened.putLastOpen("s")
+        #expect(reopened.lastOpenNow()?.id == "s")
+    }
+
     @Test("R-IOS-1, R-E2E-1: the file has .complete protection (on a device; the simulator has none) and is excluded from backup")
     func testR_IOS_1_fileIsProtectedAndNotBackedUp() async throws {
         let cache = try await SessionCache.open(at: url)

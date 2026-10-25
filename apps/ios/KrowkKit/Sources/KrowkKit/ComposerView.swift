@@ -18,9 +18,11 @@ public struct ComposerState: Equatable, Sendable {
     public var note: String
 
     /// `text` typed; a turn `running`; `stopping`; the bar's `status`;
-    /// `stopRefused`, the host's last word on a stop.
-    public init(text: String, running: Bool, stopping: Bool, status: RelayStatus, stopRefused: String? = nil) {
-        let offline = status == .hostOffline
+    /// `stopRefused`, the host's last word on a stop; `hostAway`, the
+    /// screen's view of the host (R-IOS-7: none on the session, or none
+    /// known with the relay out of reach), host offline by default.
+    public init(text: String, running: Bool, stopping: Bool, status: RelayStatus, stopRefused: String? = nil, hostAway: Bool? = nil) {
+        let offline = hostAway ?? (status == .hostOffline)
         let ended: Bool = if case .ended = status { true } else { false }
         // Joined and welcomed by a host: a stop goes now, not at some later
         // welcome where it could reach a turn started meanwhile.
