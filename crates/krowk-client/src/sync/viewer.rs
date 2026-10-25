@@ -83,12 +83,10 @@ pub fn ack(session: &[u8; 16], seq: u64) -> Vec<u8> {
     b
 }
 
-/// A viewer acks at least every this many batches shown, well inside the
-/// relay's window of 16, and at the next display frame after any it
-/// applied. A frame holding more than the window's batches holds the relay
-/// back until it is shown: flow control, not a stall.
-pub const ACK_EVERY: u64 = 4;
-const _: () = assert!(ACK_EVERY < 16, "inside the relay's window of 16");
+// A viewer acks at the display frame that shows a batch it applied (`tick`),
+// with the last one shown, never one still waiting in the frame. More than
+// the relay's window of 16 batches inside one display frame holds the relay
+// back until that frame is shown: flow control, not a stall.
 
 /// Keeps the newest logged event id: ids are UUIDv7, so the greatest is
 /// the latest.
@@ -1040,12 +1038,7 @@ impl ViewerCore {
             if let Some(after) = gap.and_then(|after| gap_found(&mut self.catch_ups, after, false, &mut self.frame)) {
                 self.ask_catch_up(after);
             }
-            // Only what a `Show` handed the screen is acked: the rest at
-            // the frame that shows it.
-            if self.shown >= self.acked + ACK_EVERY && self.connected {
-                self.acked = self.shown;
-                self.out.push(Effect::Send(ack(&self.raw, self.shown)));
-            }
+            // Acked at the frame that shows it (`tick`), not before.
         }
     }
 

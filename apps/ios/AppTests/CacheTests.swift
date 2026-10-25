@@ -106,6 +106,27 @@ extension HostedKeychain {
             #expect(try decodeCursor(json: kept) == place)
         }
 
+        @Test("R-IOS-1: once a frame says some events were left out, no place is written again: a later place would skip them")
+        func testR_IOS_1_noPlaceAfterEventsLeftOut() async throws {
+            let url = URL.temporaryDirectory.appending(path: "krowk-cache-hosted/\(UUID().uuidString)/krowk-cache.sqlite")
+            let cache = try await SessionCache.open(at: url)
+            defer { Task { try? await cache.forgetAll() } }
+            let (events, session) = try await MainActor.run { (try TranscriptModelTests.events(), TranscriptModelTests.session) }
+            let writer = TranscriptCacheWriter(session: session, cache: cache, interval: .milliseconds(10))
+            let place = { (n: Int) in CursorRecord(stream: String(repeating: "ab", count: 16), afterSeq: UInt64(n), newest: events[n - 1].id) }
+
+            writer.add([.line(line: .log(events[0])), .saved(cursor: place(1))])
+            await writer.written()
+            #expect(try await cache.cursor(session: session).map { try decodeCursor(json: $0) } == place(1))
+            // The core's caught-up events, one of which this build couldn't
+            // decode: krowk-ffi crosses the rest and says `failed`.
+            writer.add([.caughtUp(events: [events[1]]), .failed(detail: "1 event(s) this build cannot show were left out"), .saved(cursor: place(3))])
+            writer.add([.line(line: .log(events[3])), .saved(cursor: place(4))])
+            await writer.written()
+            #expect(try await cache.events(session: session, limit: 100).count == 3, "the events still go in")
+            #expect(try await cache.cursor(session: session).map { try decodeCursor(json: $0) } == place(1), "no place past what was left out")
+        }
+
         @Test("R-IOS-1: a session of the fleet's followed through a turn: the cache's cursor names the newest event the cache holds, and never one it doesn't")
         func testR_IOS_1_theCursorNamesTheNewestEventHeld() async throws {
             let phone = try await TestFleet.shared.paired()
@@ -124,8 +145,10 @@ extension HostedKeychain {
             /// The events held, the place kept, and the turns ended among
             /// them; the place, whenever there is one, names an event held.
             func read() async throws -> (held: [String], cursor: CursorRecord?, turns: Int) {
-                let held = try await cache.events(session: id, limit: 100_000)
+                // The place first: written with its events, so the events
+                // read after it hold every one it names.
                 let cursor = try await cache.cursor(session: id).map { try decodeCursor(json: $0) }
+                let held = try await cache.events(session: id, limit: 100_000)
                 if let newest = cursor?.newest {
                     #expect(held.contains { $0.id == newest }, "the place names \(newest), which the cache doesn't hold")
                 }

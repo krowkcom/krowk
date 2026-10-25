@@ -37,9 +37,11 @@ extension SessionCache {
 ///
 /// The viewer's place (`saved`, the last update of a frame that moved it)
 /// is written in the same transaction as every event held up to it, so the
-/// cache's cursor never names an event it does not hold. Once events held
-/// for a write that kept failing were let go, no place is written again:
-/// the transcript has a hole a place after it would skip.
+/// cache's cursor never names an event it does not hold. Once an event was
+/// left out — one this build could not decode (the frame's `failed` says
+/// so) or encode, or events held for a write that kept failing were let
+/// go — no place is written again: the transcript has a hole a place after
+/// it would skip.
 public final class TranscriptCacheWriter: Sendable {
     public let session: String
     private let cache: SessionCache
@@ -50,7 +52,7 @@ public final class TranscriptCacheWriter: Sendable {
         var unwritten: [(id: String, json: String)] = []
         /// The newest place, encoded, to write with the events before it.
         var cursor: String?
-        /// Events were let go unwritten: no place is written again.
+        /// An event was left out: no place is written again.
         var holed = false
         var scheduled = false
         /// The write last scheduled: the next waits for it, so batches
@@ -68,9 +70,12 @@ public final class TranscriptCacheWriter: Sendable {
     }
 
     /// The logged events in what the viewer showed, in order, and the
-    /// place the frame ended at, if it moved.
+    /// place the frame ended at, if it moved. A frame that says `failed`
+    /// left events out (ones this build cannot decode), or ends the viewer:
+    /// either way no place is written from it on.
     public func add(_ updates: [ViewerUpdate]) {
         var cursor: String?
+        var holed = false
         let events = updates.flatMap { update -> [LogEvent] in
             switch update {
             case .attached(let events, _), .caughtUp(let events): return events
@@ -78,9 +83,13 @@ public final class TranscriptCacheWriter: Sendable {
             case .saved(let saved):
                 cursor = (try? encodeCursor(cursor: saved)) ?? cursor
                 return []
+            case .failed:
+                holed = true
+                return []
             default: return []
             }
         }
+        if holed { held.withLock { $0.holed = true; $0.cursor = nil } }
         add(events: events, cursor: cursor)
     }
 
@@ -98,7 +107,7 @@ public final class TranscriptCacheWriter: Sendable {
             held.last = Task.detached { [self] in
                 await previous?.value
                 try? await Task.sleep(for: interval)
-                let (unwritten, batch, cursor) = self.held.withLock { held in
+                let (unwritten, batch, saved) = self.held.withLock { held in
                     held.scheduled = false
                     defer {
                         held.events = []
@@ -107,9 +116,16 @@ public final class TranscriptCacheWriter: Sendable {
                     }
                     return (held.unwritten, held.events, held.cursor)
                 }
-                let rows = unwritten + batch.compactMap { event in
+                let encoded = batch.compactMap { event in
                     (try? encodeLogEvent(event: event)).map { (id: event.id, json: $0) }
                 }
+                var cursor = saved
+                if encoded.count < batch.count {
+                    // An event left out: no place past it, now or later.
+                    cursor = nil
+                    self.held.withLock { $0.holed = true; $0.cursor = nil }
+                }
+                let rows = unwritten + encoded
                 do throws(SessionCacheFailure) {
                     try await cache.appendEvents(session: session, rows, cursor: cursor)
                 } catch where !error.forgotten {
@@ -119,7 +135,7 @@ public final class TranscriptCacheWriter: Sendable {
                         if kept.count > Self.mostHeld {
                             held.holed = true
                             held.cursor = nil
-                        } else if held.cursor == nil {
+                        } else if held.cursor == nil, !held.holed {
                             held.cursor = cursor
                         }
                     }
