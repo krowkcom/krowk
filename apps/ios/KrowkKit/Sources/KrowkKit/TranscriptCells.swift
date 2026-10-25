@@ -390,6 +390,10 @@ final class TranscriptTextCell: TranscriptCell {
         // Whole: drawn once more, in one view, with its links (a URL may
         // have been cut between two deltas, so none is tappable while it
         // streams).
+        #if DEBUG
+        let redrawing = FrameCosts.start()
+        defer { FrameCosts.end("text drawn whole \(drawn.length)", redrawing) }
+        #endif
         text.end()
         shown = drawn
         textView.attributedText = drawn
@@ -407,6 +411,10 @@ final class TranscriptTextCell: TranscriptCell {
     }
 
     override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        #if DEBUG
+        let sizing = FrameCosts.start()
+        defer { FrameCosts.end("size text", sizing) }
+        #endif
         sizeText(toFit: attributes.size.width)
         return super.preferredLayoutAttributesFitting(attributes)
     }
@@ -603,12 +611,24 @@ final class TranscriptToolCell: TranscriptCell {
     }
 
     override func prepareForReuse() {
+        #if DEBUG
+        let reusing = FrameCosts.start()
+        defer { FrameCosts.end("reuse tool", reusing) }
+        #endif
         super.prepareForReuse()
         shownBody = nil
         shownExpanded = nil
         output.end()
         body.attributedText = nil
     }
+
+    #if DEBUG
+    override func preferredLayoutAttributesFitting(_ attributes: UICollectionViewLayoutAttributes) -> UICollectionViewLayoutAttributes {
+        let sizing = FrameCosts.start()
+        defer { FrameCosts.end("size tool", sizing) }
+        return super.preferredLayoutAttributesFitting(attributes)
+    }
+    #endif
 }
 
 /// The tappable top of a tool or reasoning row: one element for VoiceOver,

@@ -15,7 +15,9 @@
 #    stand-in APNs token, KROWK_FAKE_APNS_TOKEN (R-IOS-12), and their
 #    stand-in for a tapped alert, KROWK_NOTIFICATION_USERINFO (ticket 106),
 #    and the budgets' seams (ticket 127, R-PERF-7): the deliberate stall,
-#    KROWK_TEST_STALL_MS, and the 10,000-item fixture, KROWK_FIXTURE.
+#    KROWK_TEST_STALL_MS, the 10,000-item fixture, KROWK_FIXTURE, and the
+#    stall test's breakdown of the main thread's time, FrameCosts (ticket
+#    140), found by the name of the piece a whole redraw records.
 #
 #   apps/ios/scripts/approvals.sh [path/to/Krowk.app release|debug]
 #
@@ -39,7 +41,7 @@ app=$1 kind=${2:-release}
 libs() {
   if command -v otool >/dev/null; then otool -L "$1" 2>/dev/null; else llvm-objdump --macho --dylibs-used "$1" 2>/dev/null; fi
 }
-stub=0 auth=0 checked=0 apns=0 tap=0 stall=0 fixture=0 fixtureID=0 scroller=0
+stub=0 auth=0 checked=0 apns=0 tap=0 stall=0 fixture=0 fixtureID=0 scroller=0 costs=0
 while IFS= read -r -d '' file; do
   used=$(libs "$file") || continue
   [ -n "$used" ] || continue
@@ -48,6 +50,7 @@ while IFS= read -r -d '' file; do
   if grep -aq KROWK_FAKE_APNS_TOKEN "$file"; then apns=1; echo "the stand-in APNs token is in $file"; fi
   if grep -aq KROWK_NOTIFICATION_USERINFO "$file"; then tap=1; echo "the stand-in tapped alert is in $file"; fi
   if grep -aq KROWK_TEST_STALL_MS "$file"; then stall=1; echo "the deliberate stall is in $file"; fi
+  if grep -aq 'text drawn whole' "$file"; then costs=1; echo "the stall test's FrameCosts is in $file"; fi
   # KROWK_FIXTURE is short enough for an optimised build to keep inline,
   # not as text: the fixture's session id and its scroller's class name
   # (KrowkKit's and the app's) are what a leak would leave.
@@ -65,13 +68,15 @@ case $kind in
     [ "$tap" = 0 ] || { echo "R-IOS-12: a Release build reads KROWK_NOTIFICATION_USERINFO" >&2; exit 1; }
     [ "$stall" = 0 ] || { echo "R-PERF-7: a Release build reads KROWK_TEST_STALL_MS" >&2; exit 1; }
     [ "$fixture" = 0 ] || { echo "R-PERF-7: a Release build reads KROWK_FIXTURE" >&2; exit 1; }
+    [ "$costs" = 0 ] || { echo "R-PERF-7: a Release build has the stall test's FrameCosts" >&2; exit 1; }
     echo "R-IOS-11: the Release build has only the LAContext owner check"
-    echo "R-PERF-7: the Release build has neither the deliberate stall nor the 10,000-item fixture" ;;
+    echo "R-PERF-7: the Release build has neither the deliberate stall, the 10,000-item fixture nor FrameCosts" ;;
   debug)
     [ "$stub" = 1 ] || { echo "approvals.sh: a Debug build has no stub, so this check finds nothing" >&2; exit 1; }
     [ "$apns" = 1 ] || { echo "approvals.sh: a Debug build has no stand-in APNs token, so this check finds nothing" >&2; exit 1; }
     [ "$tap" = 1 ] || { echo "approvals.sh: a Debug build has no stand-in tapped alert, so this check finds nothing" >&2; exit 1; }
     [ "$stall" = 1 ] || { echo "approvals.sh: a Debug build has no deliberate stall, so this check finds nothing" >&2; exit 1; }
+    [ "$costs" = 1 ] || { echo "approvals.sh: a Debug build has no FrameCosts, so this check finds nothing" >&2; exit 1; }
     [ "$fixtureID" = 1 ] && [ "$scroller" = 1 ] || { echo "approvals.sh: a Debug build has no 10,000-item fixture, so this check finds nothing" >&2; exit 1; }
     echo "R-IOS-11: the Debug build has the UI tests' stub, as it may" ;;
   *) echo "approvals.sh: release or debug, not $kind" >&2; exit 2 ;;

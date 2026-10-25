@@ -195,11 +195,19 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let open: @MainActor (URL) -> Void = { [weak self] in self?.confirm($0) }
         let text = UICollectionView.CellRegistration<TranscriptTextCell, String> { [weak self] cell, _, id in
             guard let state = self?.model.item(id) else { return }
+            #if DEBUG
+            let configuring = FrameCosts.start()
+            defer { FrameCosts.end("configure text", configuring) }
+            #endif
             cell.openLink = open
             cell.show(state)
         }
         let tool = UICollectionView.CellRegistration<TranscriptToolCell, String> { [weak self] cell, _, id in
             guard let state = self?.model.item(id) else { return }
+            #if DEBUG
+            let configuring = FrameCosts.start()
+            defer { FrameCosts.end("configure tool", configuring) }
+            #endif
             cell.openLink = open
             cell.toggle = { [weak self] in self?.toggle(id) }
             cell.show(state)
@@ -1113,7 +1121,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             // Not animated: the first load, and (until ticket 89 decides how
             // live rows arrive) every one after. A row's own changes are its
             // cell's, which observes it: nothing is reloaded.
+            #if DEBUG
+            let applying = FrameCosts.start()
+            #endif
             dataSource.apply(snapshot, animatingDifferences: false)
+            #if DEBUG
+            FrameCosts.end("snapshot \(applied.count)→\(rows.count) rows", applying)
+            #endif
             snapshotApplies += 1
             applied = rows
             if first && !rows.isEmpty { scrollToEnd() }
@@ -1290,6 +1304,10 @@ final class TranscriptCollectionView: UICollectionView {
     }
 
     override func layoutSubviews() {
+        #if DEBUG
+        let laying = FrameCosts.start()
+        defer { FrameCosts.end("layout", laying) }
+        #endif
         super.layoutSubviews()
         afterLayout?()
     }

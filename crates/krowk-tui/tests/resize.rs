@@ -176,3 +176,67 @@ fn r_tui_3_a_frame_the_terminal_reads_after_it_resized_still_lands_on_the_region
     // bottom and leave the old region, and the line it held, above it.
     shrunk_around_a_frame("race", (70, 20), false, true);
 }
+
+/// As `shrunk_around_a_frame`, with the prompt's band above the caret, as
+/// the TUI draws it: rows as wide as the screen, which a narrowing splits
+/// in two. The frame that prints line 41 is read before the window
+/// narrows, or after, over the frame before it as the pane reflowed it;
+/// with `ticked`, a frame that prints nothing (the spinner's next) follows
+/// it before the resize is handled.
+fn banded_around_a_frame(name: &str, frame_read_first: bool, ticked: bool) {
+    let Some(mut pane) = Pane::start(name, 100, 30) else { return };
+    let line = |n: u32| Line::from(format!("line {n:05}: the quick brown fox jumps over the lazy dog again"));
+    let band = ratatui::style::Style::new().bg(ratatui::style::Color::Indexed(236));
+    let live_at = |tail: Option<&str>, spinner: &str| {
+        let mut rows: Vec<Line<'static>> = tail.map(|t| Line::from(t.to_string())).into_iter().collect();
+        rows.extend([Line::from(spinner.to_string()), Line::from(""), Line::from("").style(band), Line::from("❯ ").style(band), Line::from("").style(band), Line::from("  anthropic/claude-opus-5-5 | $0.05 | ? help")]);
+        let caret = (2, rows.len() as u16 - 3);
+        (rows, caret)
+    };
+    let live = |tail: Option<&str>| live_at(tail, "⠹ Responding… 0.3s │ esc to interrupt");
+    let out = Out::default();
+    let mut t = Term::new(out.clone(), Size { width: 100, height: 30 }, 0, 4).unwrap();
+    let (rows, caret) = live(Some("line 00041: the quick"));
+    t.frame(&(1..=40).map(line).collect::<Vec<_>>(), &rows, caret).unwrap();
+    pane.send(&out);
+    let (rows, caret) = live(Some("line 00042: the quick"));
+    t.frame(&[line(41)], &rows, caret).unwrap();
+    if ticked {
+        let (rows, caret) = live_at(Some("line 00042: the quick"), "⠸ Responding… 0.4s │ esc to interrupt");
+        t.frame(&[], &rows, caret).unwrap();
+    }
+    if frame_read_first {
+        pane.send(&out);
+        pane.resize(70, 20);
+    } else {
+        pane.resize(70, 20);
+        pane.send(&out);
+    }
+    t.resize(Size { width: 70, height: 20 }, Some(pane.cursor_row())).unwrap();
+    let (rows, caret) = live(None);
+    t.frame(&[line(42)], &rows, caret).unwrap();
+    pane.send(&out);
+    let history = pane.history();
+    let seen: Vec<u32> = history.lines().filter_map(|l| l.strip_prefix("line ")?.get(..5)?.parse().ok()).collect();
+    assert_eq!(seen, (1..=42).collect::<Vec<_>>(), "every line once, in order:\n{history}");
+    assert!(!history.contains("the quick\n"), "a streaming row was left behind:\n{history}");
+    assert_eq!(history.matches("Responding").count(), 1, "the old live region was left behind:\n{history}");
+}
+
+#[test]
+fn r_tui_3_a_banded_region_narrowed_after_its_frame_is_measured_as_reflowed() {
+    banded_around_a_frame("band", true, false);
+    banded_around_a_frame("band-ticked", true, true);
+}
+
+#[test]
+fn r_tui_3_a_frame_read_after_a_narrowing_leaves_nothing_of_the_reflowed_one_before_it() {
+    // The frame moves up from the caret as far as the band took at 100
+    // columns, a row short of where the pane reflowed the one before it:
+    // that row (the streaming line) is left, and the clear measured as if
+    // this frame had reflowed takes line 41. The lines the frame printed
+    // are cleared with what was left over them and printed again, and
+    // still are after a frame that printed nothing (the spinner's tick).
+    banded_around_a_frame("band-race", false, false);
+    banded_around_a_frame("band-race-ticked", false, true);
+}

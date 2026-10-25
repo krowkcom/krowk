@@ -188,8 +188,9 @@ jobs:
   # items, and the longest frame gap while StallBudgetTests replays a
   # burst (2× a stored baseline; a run with a deliberate 250 ms stall must
   # fail it) — and a trend that fails nothing: the launch, the frame-apply
-  # baseline, host-to-screen latency and a notification's cold launch, in
-  # the step summary and the ios-perf.json artifact on every run.
+  # baseline, host-to-screen latency, a notification's cold launch and the
+  # most updates a live follow had waiting, in the step summary and the
+  # ios-perf.json artifact on every run.
   app:
     needs: [key, bindings]
     # Also when bindings was skipped on a cache hit.
@@ -294,7 +295,7 @@ jobs:
       # person runs: the UI tests' stub and the launch argument that picks
       # it are under #if DEBUG, so a Release build has neither, and links
       # LocalAuthentication. And no source names allowProject.
-      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and neither budget seam"
+      - name: "R-IOS-11, R-IOS-12, R-PERF-7: a Release build has only the LAContext owner check, no allowProject, no stand-in APNs token and none of the budgets' seams"
         run: |
           xcodebuild build -quiet -skipPackagePluginValidation \
             -project apps/ios/Krowk.xcodeproj -scheme Krowk-iOS -configuration Release \
@@ -354,11 +355,14 @@ jobs:
           exit 1
 
       # The stall gate (R-PERF-7, R-LAG-7): StallBudgetTests' longest frame
-      # gap against 2x the stored baseline. The shared runner's speed varies
-      # (five runs: 70-129 ms against a 149 ms limit), so a failure is run
-      # once more and fails the job only if it fails again; a regression,
-      # like the deliberate stall below (317-379 ms), fails both. Its lines
-      # join test.log for the trend.
+      # gap, from a screen already open on the turn's first rows, against 2x
+      # the stored baseline. The shared runner's speed varies (five runs:
+      # 70-129 ms against a 149 ms limit), so a failure is run once more and
+      # fails the job only if it fails again; a regression, like the
+      # deliberate stall below (296-399 ms), fails both. One whose longest
+      # gap drew an answer again whole (the stall #408 fixed, which depends
+      # on how a frame's updates fall) fails at once. Its lines join
+      # test.log for the trend.
       - name: "R-PERF-7, R-LAG-7: no main-thread stall while a burst streams (gate)"
         if: ${{ !cancelled() && env.BUILT == '1' }}
         run: |
@@ -374,6 +378,10 @@ jobs:
             fi
             cat "$RUNNER_TEMP/stall-gate.log" >> "$RUNNER_TEMP/test.log"
             if grep -q "R-PERF-7: the main thread stalled" "$RUNNER_TEMP/stall-gate.log"; then
+              if grep -qE "krowk main-thread stall:.*spent in it:.*text drawn whole" "$RUNNER_TEMP/stall-gate.log"; then
+                echo "::error::R-PERF-7: the longest gap drew an answer again whole: $(grep -oE 'krowk main-thread stall:.*' "$RUNNER_TEMP/stall-gate.log" | tail -1)"
+                exit 1
+              fi
               stalls=$((stalls + 1))
               [ "$stalls" -lt 2 ] || { echo "::error::R-PERF-7: StallBudgetTests stalled twice"; exit 1; }
             else

@@ -53,7 +53,7 @@ final class SignInUITests: XCTestCase {
 
         let signIn = app.buttons["sign-in"]
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
-        signIn.tap()
+        _ = FleetUI.tap(signIn, until: app.staticTexts["sign-in-code"], timeout: 30)
 
         // The sheet, with the stand-in's page naming the code.
         let code = try XCTUnwrap(FleetUI.signInCode(in: app), "no sign-in code shown")

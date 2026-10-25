@@ -68,15 +68,12 @@ final class PairingUITests: XCTestCase {
         XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
         // R-IOS-12: never asked at launch.
         XCTAssertFalse(XCUIApplication(bundleIdentifier: "com.apple.springboard").alerts.firstMatch.waitForExistence(timeout: 2), "a system prompt at launch")
-        signIn.tap()
-        let code = try XCTUnwrap(FleetUI.signInCode(in: app), "no sign-in code shown")
-        XCTAssertTrue(FleetUI.allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
+        try await FleetUI.signIn(app, api: api)
         let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
-        try await Self.post("\(site)/_approve/cli/authorizations/\(code)/approval")
 
         // The pairing screen, under "Signed in to <workspace>".
         let title = app.staticTexts["pairing-title"]
-        if !title.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        if !FleetUI.answering(until: title, timeout: 30) { Screenshots.tree(of: app) }
         XCTAssertTrue(title.exists, "no pairing screen 30 s after approving")
         XCTAssertTrue(app.staticTexts["signed-in"].exists)
         // No camera in the simulator: DataScannerViewController.isSupported
@@ -120,7 +117,7 @@ final class PairingUITests: XCTestCase {
         }
         XCTAssertEqual(Array(newDevices.values), ["sandbox"], "the paired phone's token is not registered 60 s after pairing")
         Screenshots.keep("paired", in: app)
-        app.buttons["pairing-continue"].tap()
+        _ = FleetUI.tap(app.buttons["pairing-continue"], until: app.collectionViews["sessions-list"], timeout: 30, notifications: true)
         let demo = demoSession(in: app, after: "Continue")
         Screenshots.keep("sessions", in: app)
         demo.tap()
@@ -274,16 +271,10 @@ final class PairingUITests: XCTestCase {
         return demo
     }
 
-    /// Types `code` into the field: a whole code starts at once. The last
-    /// symbol is typed into the app, not the field, which goes away as
-    /// the pairing starts: XCUITest would fail looking for its focus.
+    /// Types `code` into the field (`FleetUI.typeCode`).
     @MainActor
     private func type(_ code: String, in app: XCUIApplication) {
-        let field = app.textFields["pairing-code"]
-        XCTAssertTrue(field.waitForExistence(timeout: 10), "no code field")
-        field.tap()
-        field.typeText(String(code.dropLast()))
-        app.typeText(String(code.suffix(1)))
+        FleetUI.typeCode(code, in: app)
     }
 
     private static func env(_ name: String) throws -> String {
@@ -297,11 +288,6 @@ final class PairingUITests: XCTestCase {
         let (status, body) = try await request(try env("KROWK_PAIR_URL"))
         XCTAssertEqual(status, 200, body)
         return body
-    }
-
-    private static func post(_ url: String) async throws {
-        let (status, body) = try await request(url)
-        XCTAssertEqual(status, 200, "POST \(url): \(body)")
     }
 
     /// A POST to the fleet. Two minutes: hosting a session waits up to a

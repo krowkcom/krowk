@@ -4,8 +4,11 @@
 // outputs) is replayed at real speed into a TranscriptViewController
 // through the mailbox the live path uses: posted from a thread of its own,
 // as RelayConnection's queue posts, drained once per display frame by
-// FrameDriver. A CADisplayLink of the test's own records the longest gap
-// between frames; over `stall.baselineMs × stall.factor` in
+// FrameDriver. The screen is open on the turn's first rows (its prompt
+// and first tool call) before the burst. A CADisplayLink of the test's
+// own records the longest gap between frames from then on, and what each
+// piece of the main thread's work in it took (a DEBUG build's FrameCosts);
+// over `stall.baselineMs × stall.factor` in
 // apps/ios/budgets.json fails it. CI runs it once more with
 // KROWK_TEST_STALL_MS=250, a DEBUG build's deliberate sleep in the apply,
 // and passes only if that run fails: the gate bites.
@@ -41,13 +44,29 @@ final class StallBudgetTests: XCTestCase {
         window.makeKeyAndVisible()
         defer { window.isHidden = true }
 
-        // The display running steadily before the burst: 30 frames seen.
+        // The session open on the turn's first rows, its prompt and first
+        // tool call, before the burst: the first text and tool cells a
+        // screen makes cost 60-90 ms each on CI's simulator (UIKit's and
+        // TextKit's setup, once per screen), which is opening a session —
+        // the phone's budget (ticket 138) — not a burst streaming into
+        // one. Measured, they were most of the gate's failures that a
+        // second run passed. Then the display running steadily: 30 frames.
         let gaps = FrameGaps()
         defer { gaps.stop() }
-        try await Self.wait(until: { gaps.frames >= 30 }, within: .seconds(10), "the display link never ran")
+        let opening = Array(lines.prefix { $0.at < 200 })
+        replay.play(opening)
+        try await Self.wait(until: { replay.done && screen.dataSource.indexPath(for: "item:c1") != nil }, within: .seconds(10),
+                            "the turn's first rows never showed: \(screen.model.ids)")
+        let opened = gaps.frames
+        try await Self.wait(until: { gaps.frames >= opened + 30 }, within: .seconds(10), "the display link never ran")
         gaps.reset()
+        // What the main thread did, piece by piece (a DEBUG build's
+        // FrameCosts): where the longest gap went.
+        let costs = Costs()
+        FrameCosts.record = { costs.add($0, $1, $2) }
+        defer { FrameCosts.record = nil }
 
-        replay.play(lines)
+        replay.play(Array(lines.dropFirst(opening.count)))
         try await Self.wait(until: { replay.done && screen.model.ids.last == "turn:t1" }, within: .seconds(90),
                             "the replay never reached the turn's end: \(screen.model.ids.suffix(3))")
         let longest = gaps.longest * 1000
@@ -57,8 +76,9 @@ final class StallBudgetTests: XCTestCase {
         let during = replay.applied.withLock { $0 }
             .filter { $0.at >= gaps.longestEnd - gaps.longest - 0.001 && $0.at <= gaps.longestEnd }
             .map(\.what).joined(separator: "; ")
-        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f); applied in it: %@",
-                          longest, frames, lines.count, limit, baseline, factor, during.isEmpty ? "nothing" : during)
+        let spent = costs.within(gaps.longestEnd - gaps.longest, gaps.longestEnd)
+        let text = String(format: "krowk main-thread stall: the longest gap between frames %.1f ms over %d frames, replaying %d lines (budget %.1f ms: %.1f ms baseline × %.0f); applied in it: %@; spent in it: %@",
+                          longest, frames, lines.count, limit, baseline, factor, during.isEmpty ? "nothing" : during, spent.isEmpty ? "nothing measured" : spent)
         print(text)
         let attachment = XCTAttachment(string: text)
         attachment.name = "krowk main-thread stall"
@@ -115,6 +135,26 @@ final class StallBudgetTests: XCTestCase {
 
     struct Failure: Error, CustomStringConvertible {
         let description: String
+    }
+}
+
+/// The pieces of main-thread time FrameCosts reports.
+@MainActor
+final class Costs {
+    private var pieces: [(what: String, took: CFTimeInterval, end: CFTimeInterval)] = []
+
+    func add(_ what: String, _ took: CFTimeInterval, _ end: CFTimeInterval) {
+        pieces.append((what, took, end))
+    }
+
+    /// Those that ended between `start` and `end`, by name: their total,
+    /// how many and the longest, longest total first ("layout 182.4 ms ×2
+    /// (≤ 120.1), …"). A piece holds what ran inside it (a snapshot's
+    /// layout pass, a layout's sizing), so they overlap.
+    func within(_ start: CFTimeInterval, _ end: CFTimeInterval) -> String {
+        let inside = pieces.filter { $0.end > start - 0.001 && $0.end <= end + 0.001 }
+        let byName = Dictionary(grouping: inside, by: { $0.what }).map { ($0.key, $0.value.reduce(0) { $0 + $1.took }, $0.value.count, $0.value.map { $0.took }.max() ?? 0) }
+        return byName.sorted { $0.1 > $1.1 }.map { String(format: "%@ %.1f ms ×%d (≤ %.1f)", $0.0, $0.1 * 1000, $0.2, $0.3 * 1000) }.joined(separator: ", ")
     }
 }
 
@@ -216,9 +256,11 @@ final class ReplaySession: LiveSession {
 
     /// `lines` posted at real speed, from a thread of their own: those due
     /// at the same moment in one post, a burst.
+    /// Posts `lines` at their times, from now; `done` once all are.
     func play(_ lines: [(at: Int, line: StreamLine)]) {
         let mailbox = mailbox
         let finished = finished
+        finished.withLock { $0 = false }
         Thread.detachNewThread {
             let start = Date.now
             var i = 0

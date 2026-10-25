@@ -8,7 +8,8 @@
 // shows running… then its result, and the turn's separator appears. How
 // far the screen runs behind the host (each live logged line's host time
 // to the frame that applied it, one clock: the simulator's is the Mac's)
-// is printed as a recorded number, not a gate. Then the host goes away
+// and the most updates that waited for a frame are printed as recorded
+// numbers, not gates. Then the host goes away
 // mid-turn: the bar says host offline, and what was drawn stays.
 //
 // Live lines decoded by krowk-ffi (`decodeStreamLine`) map onto the
@@ -49,8 +50,12 @@ extension HostedKeychain {
             var drawn: [String] = []
             var latencies: [Int64] = []
             var lastNewest = model.newestLiveMs
-            // The most updates ever waiting for a frame: the phone keeping
-            // up with what comes, however fast the host is.
+            // The most updates ever waiting for a frame, a recorded number
+            // like the latency, not a gate: it counts what the host sent
+            // in one go as much as any frame the phone was late for. Each
+            // frame takes everything waiting (FrameApplyTests), and how
+            // long the main thread can go without one is the stall gate's
+            // (StallBudgetTests, against a stored baseline).
             var mostWaiting = 0
             var scrolledUp = false
             // Until 30 s after the host ended the turn, however long the
@@ -106,7 +111,6 @@ extension HostedKeychain {
             #expect(screen.following && screen.isAtBottom, "not at the end after the turn")
             Self.keep("live-done", window)
             #expect(scrolledUp, "never scrolled up mid-stream")
-            #expect(mostWaiting < 100, "\(mostWaiting) updates waited for a frame: the phone fell behind")
             // Nothing under way once the turn ended: the display link pauses
             // within a second or so of the last update.
             #expect(!model.isStreaming, "an item still under way after the turn")

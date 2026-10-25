@@ -9,6 +9,31 @@ public protocol FrameTicker: AnyObject {
     var isPaused: Bool { get set }
 }
 
+#if DEBUG
+/// Where a DEBUG build's main thread spends its frames, for StallBudgetTests
+/// to say what its longest gap was made of (R-PERF-7): each frame's apply
+/// and draw, the rows' snapshot, the list's layout passes and each text
+/// row's sizing. Nil, as in every other run, it costs a check.
+@MainActor
+public enum FrameCosts {
+    /// Called as each piece ends: its name, how long it took and when it
+    /// ended, in seconds on `CACurrentMediaTime`'s clock.
+    public static var record: (@MainActor (String, CFTimeInterval, CFTimeInterval) -> Void)?
+
+    /// When a piece starts, if anything records.
+    static func start() -> CFTimeInterval? {
+        record == nil ? nil : CACurrentMediaTime()
+    }
+
+    /// The piece `what` that began at `start`, ended now.
+    static func end(_ what: @autoclosure () -> String, _ start: CFTimeInterval?) {
+        guard let start, let record else { return }
+        let now = CACurrentMediaTime()
+        record(what(), now - start, now)
+    }
+}
+#endif
+
 /// A `CADisplayLink` as a ticker.
 @MainActor
 final class DisplayLinkTicker: FrameTicker {
@@ -109,9 +134,17 @@ public final class FrameDriver {
         let interval = signposter.beginInterval("krowk.frame.apply", id: signposter.makeSignpostID(), "\(taken.count) updates")
         #if DEBUG
         if let stall = Self.testStall { Thread.sleep(forTimeInterval: stall) }
+        let applying = FrameCosts.start()
         #endif
         let done = model.apply(frame: taken)
+        #if DEBUG
+        FrameCosts.end("apply", applying)
+        let drawing = FrameCosts.start()
+        #endif
         applied?(done)
+        #if DEBUG
+        FrameCosts.end("draw", drawing)
+        #endif
         signposter.endInterval("krowk.frame.apply", interval)
         transactions += 1
         updates += taken.count

@@ -117,33 +117,115 @@ enum FleetUI {
         app.launchEnvironment["KROWK_DEVICE_NAME"] = "UI iPhone \(UUID().uuidString.prefix(8))"
         app.launch()
 
-        let signIn = app.buttons["sign-in"]
-        XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
-        signIn.tap()
-        let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
-        XCTAssertTrue(allowTheSignInPage(until: app.staticTexts[code]), "the page in the sheet does not show \(code)")
-        let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
-        let (approved, why) = try await request("\(site)/_approve/cli/authorizations/\(code)/approval")
-        XCTAssertEqual(approved, 200, why)
-
+        try await signIn(app, api: api)
         let field = app.textFields["pairing-code"]
-        if !field.waitForExistence(timeout: 30) { Screenshots.tree(of: app) }
+        if !answering(until: field, timeout: 30) { Screenshots.tree(of: app) }
         XCTAssertTrue(field.exists, "no pairing screen 30 s after approving")
         let (status, fresh) = try await request(try env("KROWK_PAIR_URL"))
         XCTAssertEqual(status, 200, fresh)
-        field.tap()
-        field.typeText(String(fresh.dropLast()))
-        app.typeText(String(fresh.suffix(1)))
+        typeCode(fresh, in: app)
         let done = app.staticTexts["pairing-done"]
-        if !done.waitForExistence(timeout: 90) { Screenshots.tree(of: app) }
+        if !answering(until: done, timeout: 90) { Screenshots.tree(of: app) }
         XCTAssertTrue(done.exists, "not paired 90 s after the code")
         // R-IOS-12: iOS asks to send notifications once paired, once per
-        // install; PairingUITests checks what the answer registers.
+        // install; PairingUITests checks what the answer registers. Late,
+        // it is answered while Continue is tapped.
         NotificationPrompt.allow(timeout: 5)
-        app.buttons["pairing-continue"].tap()
         let list = app.collectionViews["sessions-list"]
-        XCTAssertTrue(list.waitForExistence(timeout: 10), "Continue did not open Sessions")
+        if !tap(app.buttons["pairing-continue"], until: list, timeout: 30, notifications: true) { Screenshots.tree(of: app) }
+        XCTAssertTrue(list.exists, "Continue did not open Sessions")
         return app
+    }
+
+    /// Signs `app` in through the fleet at `api`: Sign in tapped until its
+    /// code shows, and the code approved as the page's button would. What
+    /// the page shows is SignInUITests' to check, and the poll, not the
+    /// page, signs the app in: the sheet may still be loading (on a busy
+    /// simulator its web content can take a minute to start, or never)
+    /// when the sign-in closes it.
+    @MainActor
+    static func signIn(_ app: XCUIApplication, api: String) async throws {
+        let signIn = app.buttons["sign-in"]
+        XCTAssertTrue(signIn.waitForExistence(timeout: 10), "no Sign in button")
+        if !tap(signIn, until: app.staticTexts["sign-in-code"], timeout: 30) { Screenshots.tree(of: app) }
+        let code = try XCTUnwrap(signInCode(in: app), "no sign-in code shown")
+        let site = api.hasSuffix("/v1") ? String(api.dropLast(3)) : api
+        let (approved, why) = try await request("\(site)/_approve/cli/authorizations/\(code)/approval")
+        XCTAssertEqual(approved, 200, why)
+    }
+
+    /// Taps `button` until `next` shows. A tap the app didn't take — it
+    /// came as the screen was still settling — leaves `button` there, and
+    /// it is tapped again; one it took replaces `button` (every screen
+    /// here does), and `next` is waited for. A system prompt up meanwhile
+    /// takes the taps meant for the app, so it is answered first, as a
+    /// person would (`answerPrompt`). Whether `next` showed within
+    /// `timeout`.
+    @MainActor
+    static func tap(_ button: XCUIElement, until next: XCUIElement, timeout: TimeInterval, notifications: Bool = false) -> Bool {
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while Date.now < deadline {
+            if next.exists { return true }
+            if answerPrompt(notifications: notifications) { continue }
+            if button.exists && button.isHittable { button.tap() }
+            _ = next.waitForExistence(timeout: 3)
+        }
+        return next.exists
+    }
+
+    /// Waits for `element`, answering a system prompt that comes up over
+    /// the app meanwhile. Whether it showed within `timeout`.
+    @MainActor
+    static func answering(until element: XCUIElement, timeout: TimeInterval) -> Bool {
+        let deadline = Date.now.addingTimeInterval(timeout)
+        while Date.now < deadline {
+            if element.waitForExistence(timeout: 2) { return true }
+            _ = answerPrompt()
+        }
+        return element.exists
+    }
+
+    /// A system prompt over the app, answered as a person would: the
+    /// sign-in page's question with Continue, and with `notifications`
+    /// (once paired, where R-IOS-12 asks) the notifications prompt allowed
+    /// (NotificationPrompt, which keeps its screenshot). Anywhere else that
+    /// prompt is left up, and the test fails behind it. Whether one was
+    /// answered.
+    @MainActor
+    static func answerPrompt(notifications: Bool = false) -> Bool {
+        let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+        if notifications, springboard.alerts.firstMatch.buttons["Allow"].exists {
+            return NotificationPrompt.allow(timeout: 1)
+        }
+        let proceed = springboard.buttons["Continue"]
+        guard proceed.exists else { return false }
+        proceed.tap()
+        return true
+    }
+
+    /// Types a pairing code into the field, tapped until it has the
+    /// keyboard: a tap that lands as the screen settles leaves it without,
+    /// and the keys would go nowhere. A whole code starts at once, so the
+    /// last symbol is typed into the app, not the field, which goes away
+    /// as the pairing starts: XCUITest would fail looking for its focus.
+    @MainActor
+    static func typeCode(_ code: String, in app: XCUIApplication) {
+        let field = app.textFields["pairing-code"]
+        XCTAssertTrue(field.waitForExistence(timeout: 10), "no code field")
+        let focused = { (field.value(forKey: "hasKeyboardFocus") as? Bool) == true }
+        let deadline = Date.now.addingTimeInterval(30)
+        while !focused() && Date.now < deadline {
+            if answerPrompt() { continue }
+            field.tap()
+            let tapped = Date.now
+            while !focused() && Date.now.timeIntervalSince(tapped) < 3 {
+                RunLoop.current.run(until: Date.now.addingTimeInterval(0.1))
+            }
+        }
+        if !focused() { Screenshots.tree(of: app) }
+        XCTAssertTrue(focused(), "the code field never took the keyboard")
+        field.typeText(String(code.dropLast()))
+        app.typeText(String(code.suffix(1)))
     }
 
     /// The code the sign-in shows, from "Check the page shows the code
