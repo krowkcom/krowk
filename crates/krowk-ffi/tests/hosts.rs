@@ -19,7 +19,7 @@ use krowk_client::keystore::Keystore;
 use krowk_client::presence::{self, AnnouncedInstance, Announcement};
 use krowk_client::protocol::{LimitState, LimitStatus, ModelRef};
 use krowk_client::user_key::{UserKey, UserKeys};
-use krowk_ffi::{KrowkError, StartAnswer, new_command_id};
+use krowk_ffi::{KrowkError, StartAnswer, TakeAnswer, new_command_id};
 
 /// The list as the registry serves it, verified from entry 0.
 fn served(w: &World) -> Chain {
@@ -209,7 +209,7 @@ fn r_host_4_a_start_the_host_answers_returns_started_and_names_no_permission_mod
     // What reached the host: the place, the model and the words, and no
     // more — the command has no field for a mode, a toolset, an effort or
     // a budget.
-    let HostCommand::Start { cwd, model: got, prompt } = host.join().unwrap();
+    let HostCommand::Start { cwd, model: got, prompt } = host.join().unwrap() else { panic!("not a start") };
     assert_eq!((cwd.as_str(), got, prompt.as_str()), ("/home/ann/code/app", model, "fix the tests"));
 }
 
@@ -238,7 +238,7 @@ fn r_host_4_the_same_id_again_is_the_same_command() {
     assert_eq!(start().unwrap(), StartAnswer::Started { session_id: session.into() });
     // The id is that start's: another under it is refused, nothing sent.
     match w.phone.start_session(w.host_device.id().to_string(), "/home/ann/code/app".into(), model.clone(), "something else".into(), id.clone()) {
-        Err(KrowkError::InvalidInput { detail }) => assert!(detail.contains("another start"), "{detail}"),
+        Err(KrowkError::InvalidInput { detail }) => assert!(detail.contains("another command"), "{detail}"),
         other => panic!("{other:?}"),
     }
 }
@@ -271,4 +271,45 @@ fn r_host_4_command_ids_are_fresh_version_4_uuids() {
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"), "{id}");
         assert_eq!(id, id.to_lowercase());
     }
+}
+
+#[test]
+fn r_hand_4_take_session_sends_take_and_returns_the_hosts_answer() {
+    let w = World::new();
+    let session = "0199c0de-0000-7000-8000-000000000003";
+    let host = host_answers(&w, HostAnswer::Taken { session_id: session.into() });
+    let answer = w.phone.take_session(w.host_device.id().to_string(), session.into(), "/home/ann/code/app".into(), new_command_id()).unwrap();
+    assert_eq!(answer, TakeAnswer::Taken { session_id: session.into() });
+    assert_eq!(host.join().unwrap(), HostCommand::Take { session_id: session.into(), cwd: "/home/ann/code/app".into() });
+
+    // A refusal is the host's take's own sentence (R-CRED-1: an instance
+    // not ready there), and the session stays.
+    let fix = "anthropic isn't signed in here — set ANTHROPIC_API_KEY — the session stays where it is";
+    let host = host_answers(&w, HostAnswer::refused("take_refused", fix));
+    let answer = w.phone.take_session(w.host_device.id().to_string(), session.into(), "/home/ann/code/app".into(), new_command_id()).unwrap();
+    assert_eq!(answer, TakeAnswer::Refused { code: "take_refused".into(), message: fix.into() });
+    host.join().unwrap();
+
+    // A session id that is none is refused before anything is sent.
+    assert!(matches!(w.phone.take_session(w.host_device.id().to_string(), "--help".into(), "/a".into(), new_command_id()), Err(KrowkError::InvalidInput { .. })));
+}
+
+#[test]
+fn r_hand_4_cancel_take_ends_the_wait_within_a_second() {
+    let w = World::new();
+    let (phone, to) = (w.phone.clone(), w.host_device.id().to_string());
+    let waiting = std::thread::spawn(move || phone.take_session(to, "0199c0de-0000-7000-8000-000000000004".into(), "/home/ann/code/app".into(), new_command_id()));
+    // Sent, and waited on: the host sees it, and never answers.
+    let keys = UserKeys::new(w.user.clone(), []).unwrap();
+    let sealed = presence::seal(&announcement(w.host_device.id(), "0.31.0"), &keys, w.user.generation(), &w.host_device.id()).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while w.host.put_presence(&sealed, 30).unwrap().commands.is_empty() {
+        assert!(Instant::now() < deadline, "the take was never sent");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let asked = Instant::now();
+    w.phone.cancel_take();
+    let answer = waiting.join().unwrap().unwrap();
+    assert!(asked.elapsed() < Duration::from_secs(1), "{:?}", asked.elapsed());
+    assert!(matches!(&answer, TakeAnswer::Refused { code, .. } if code == "cancelled"), "{answer:?}");
 }

@@ -32,6 +32,9 @@ pub struct Account {
     /// The starts this account sealed lately, by command id, so a retry of
     /// one sends the very bytes again (`start_session`).
     pub(crate) starts: Mutex<crate::hosts::Sealed>,
+    /// Bumped by `cancel_take`: a `take_session` waiting since an older
+    /// count stops waiting.
+    pub(crate) take_cancels: std::sync::atomic::AtomicU64,
     workspace: String,
     workspace_name: String,
 }
@@ -59,6 +62,7 @@ impl Account {
             storage,
             pairing: Mutex::new(None),
             starts: Mutex::default(),
+            take_cancels: Default::default(),
             workspace: creds.workspace.clone(),
             workspace_name: creds.workspace_name.clone(),
         }))

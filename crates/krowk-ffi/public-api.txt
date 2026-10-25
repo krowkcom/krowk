@@ -111,6 +111,12 @@ pub enum StartAnswer {
     Refused { code: String, message: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, uniffi::Enum)]
+pub enum TakeAnswer {
+    Taken { session_id: String },
+    Refused { code: String, message: String },
+}
+
 #[uniffi::export]
 impl Account {
     pub fn list_hosts(&self) -> Result<HostList, KrowkError> {}
@@ -126,6 +132,22 @@ impl Account {
         prompt: String,
         id: String,
     ) -> Result<StartAnswer, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn take_session(
+        &self,
+        device: String,
+        session_id: String,
+        cwd: String,
+        id: String,
+    ) -> Result<TakeAnswer, KrowkError> {}
+}
+
+#[uniffi::export]
+impl Account {
+    pub fn cancel_take(&self) {}
 }
 
 #[uniffi::export]
@@ -1052,6 +1074,8 @@ pub use account::{Account, ListedDevice};
 pub use error::KrowkError;
 
 pub use hosts::{HostList, HostRecord, InstanceRecord, StartAnswer, new_command_id};
+
+pub use hosts::TakeAnswer;
 
 pub use pairing::{
     Joined, OpenPairing, PairingInvite, RegistryMailbox, parse_pairing_invite,
