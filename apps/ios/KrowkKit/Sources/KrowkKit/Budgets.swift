@@ -19,8 +19,8 @@ import QuartzCore
 /// - `foreground.caughtUp`: `sceneWillEnterForeground` to the open
 ///   session's bar reading live again, or with none open, the list's first
 ///   read landing. Not after less than 10 s away: that's a wake. Given up
-///   when the host is offline, the connection ends, the read fails, or it
-///   takes over 10 s.
+///   when the host is offline, the connection ends, the read fails, it
+///   takes over 10 s, or a session screen opens or closes meanwhile.
 /// - `tap.optimistic`: Send's touch-up to the next display frame after the
 ///   bubble's row was applied, so its cell is in the committed layer tree.
 /// - `key.glyph`: `textViewDidChange` to the next display frame, for one
@@ -162,8 +162,7 @@ public final class Budgets {
     public func wentToBackground() {
         backgroundedAt = clock()
         launchAbandoned()
-        if let open = foreground { abandon(.foregroundCaughtUp, open) }
-        foreground = nil
+        giveUpForeground()
         if let open = tap { abandon(.tapOptimistic, open) }
         tap = nil
         if let open = key { abandon(.keyGlyph, open) }
@@ -204,10 +203,25 @@ public final class Budgets {
         }
     }
 
+    /// A session's screen comes into view (pushed, or uncovered), its bar
+    /// reading `status`. A return under way was another screen's: the
+    /// time spent getting here is no catch-up, so it's given up.
+    func sessionShown(_ status: RelayStatus) {
+        sessionLive = status == .live
+        giveUpForeground()
+    }
+
     /// The open session's screen closed or parked: what its bar read says
-    /// nothing about the next one's.
+    /// nothing about the next one's, and a return under way was its own.
     func sessionClosed() {
         sessionLive = nil
+        giveUpForeground()
+    }
+
+    private func giveUpForeground() {
+        guard let open = foreground else { return }
+        foreground = nil
+        abandon(.foregroundCaughtUp, open)
     }
 
     /// The session list, with no session open over it, read by a read

@@ -369,6 +369,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
 
     override public func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
+        // The foreground's budget follows the screen the app came back to,
+        // and this one's bar from here (ticket 128).
+        if session != nil { Budgets.shared.sessionShown(statusBar.status) }
         left = false
         unpark()
         observeFocus()

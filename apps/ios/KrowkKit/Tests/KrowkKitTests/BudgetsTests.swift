@@ -160,6 +160,37 @@ struct BudgetsTests {
         rig.expectBalanced()
     }
 
+    @Test("R-IOS-PERF: a return follows the screen it came back to: a session opened or closed meanwhile gives it up, so no navigation is counted")
+    func navigationGivesUp() {
+        let rig = Rig()
+        let away = { (rig: Rig) in
+            rig.budgets.wentToBackground()
+            rig.advance(30)
+            rig.budgets.cameForward()
+        }
+        // Back on a session whose bar stayed live; popped to the list.
+        rig.budgets.sessionShown(.live)
+        away(rig)
+        rig.advance(4)
+        rig.budgets.sessionClosed()
+        rig.budgets.listRead(startedAt: Date())
+
+        // Back on the list; a session tapped before its read landed.
+        away(rig)
+        rig.budgets.sessionShown(.connecting)
+        rig.budgets.sessionStatus(.live)
+        #expect(rig.recorded.isEmpty, "\(rig.recorded)")
+
+        // B popped back to A, whose bar was reconnecting under it: its
+        // next live is the catch-up.
+        rig.budgets.sessionShown(.reconnecting)
+        away(rig)
+        rig.advance(0.2)
+        rig.budgets.sessionStatus(.live)
+        #expect(rig.recorded.map(\.0) == [.foregroundCaughtUp])
+        rig.expectBalanced()
+    }
+
     @Test("R-IOS-PERF: a list read that started before the foreground (in flight as the app left) doesn't end it")
     func staleListRead() {
         let rig = Rig()
