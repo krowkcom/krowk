@@ -19,13 +19,13 @@
 //! - **Lines enter scrollback exactly once, as text.** Finished lines are
 //!   printed where the viewport was — styled text and a CR LF each, the way
 //!   a shell command's output is — and the viewport is rebuilt below them;
-//!   they are never redrawn afterwards, but for the last frame's, still on
-//!   screen, after a narrowing that cannot tell where they are (below). A
-//!   line wider than the terminal is left for the terminal to wrap, so it
-//!   rewraps itself when the window is resized, and copies as one line. (Grok Build's inline terminal,
-//!   `xai-ratatui-inline`'s `emit_to_scrollback`, does the same; this is
-//!   written from the idea, not its code.) The viewport is the only thing
-//!   otherwise repainted.
+//!   they are never redrawn afterwards, but for the last ones printed, still
+//!   on screen, after a narrowing that cannot tell where they are (below).
+//!   A line wider than the terminal is left for the terminal to wrap, so it
+//!   rewraps itself when the window is resized, and copies as one line.
+//!   (Grok Build's inline terminal, `xai-ratatui-inline`'s
+//!   `emit_to_scrollback`, does the same; this is written from the idea,
+//!   not its code.) The viewport is the only thing otherwise repainted.
 //! - **Every move is relative to where the cursor is.** A frame already on
 //!   its way when the terminal changes size is read by the terminal at the
 //!   new size, where an absolute row names some other row — a clamped one,
@@ -41,11 +41,13 @@
 //!   above the caret (the prompt's band always is one) makes the frame stop
 //!   short of the top of the one before it, which the terminal reflowed,
 //!   and the resize cannot tell which of the two the terminal did; it clears
-//!   over the lines the last frame printed too and prints them again
-//!   (`Term::resize`). What is left: two frames running that differ in how
-//!   many rows a narrowing adds above the caret — a streaming row wider than
-//!   the new width in one and not the other — leave that difference, a row
-//!   of the frame before or a conversation row blanked.
+//!   over the last lines printed too and prints them again (`Term::resize`).
+//!   What is left: when the frame before and the late one differ in how many
+//!   rows a narrowing adds above the caret — the line still streaming wider
+//!   than the new width in one and not the other, as when it ended in the
+//!   late frame — that many rows of the frame before stay in scrollback; and
+//!   several frames that printed lines, all on their way at once, leave the
+//!   frame before the first of them.
 //!   The row it is on is tracked, not re-read: a glyph the terminal draws
 //!   wider than `unicode-width` says would put that off until the next
 //!   resize or job stop asks the terminal again.
@@ -403,9 +405,9 @@ pub struct Term<W: Write> {
     /// Lines that reached the screen while the view covered it, printed
     /// once it closes: nothing goes into scrollback under it.
     held: Vec<Line<'static>>,
-    /// How many of `tail`'s last lines the last frame sent printed, right
-    /// above the region it drew, and how many the bytes queued since do: a
-    /// narrowing resize prints the sent ones again (`resize`).
+    /// How many of `tail`'s last lines the last frame sent that printed any
+    /// printed, right above the region since, and how many the bytes queued
+    /// since do: a narrowing resize prints the sent ones again (`resize`).
     printed: usize,
     queued_printed: usize,
 }
@@ -797,7 +799,11 @@ impl<W: Write> Term<W> {
         if body.is_empty() {
             return Ok(());
         }
-        self.printed = std::mem::take(&mut self.queued_printed);
+        // A frame that printed nothing (a spinner's tick) leaves the last
+        // printed lines right above the region, where a resize finds them.
+        if self.queued_printed > 0 {
+            self.printed = std::mem::take(&mut self.queued_printed);
+        }
         let mut frame = Vec::with_capacity(body.len() + SYNC_BEGIN.len() + SYNC_END.len());
         frame.extend_from_slice(SYNC_BEGIN);
         frame.extend_from_slice(&body);

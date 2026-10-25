@@ -664,16 +664,19 @@ fails when:
 - the longest gap between display frames while `StallBudgetTests` replays
   `AppTests/burst.stream` (20 s at 200 tokens a second, two 1 MiB tool
   outputs; `scripts/burst-fixture.py` writes it) through the mailbox the
-  live path uses is over `stall.baselineMs × stall.factor`, twice: the
-  shared runner's speed varies, so a failure is run once more. A run with
-  `KROWK_TEST_STALL_MS=250`, a Debug build's sleep in each frame's apply,
-  must fail it.
+  live path uses, into a screen already open on the turn's first rows, is
+  over `stall.baselineMs × stall.factor`, twice: the shared runner's speed
+  varies, so a failure is run once more. One that drew an answer again
+  whole fails at once. A Debug build's `FrameCosts` says what the longest
+  gap was spent on. A run with `KROWK_TEST_STALL_MS=250`, a Debug build's
+  sleep in each frame's apply, must fail it.
 
 A Release build has neither seam (`scripts/approvals.sh`). Raising a
 ceiling is a commit that changes its `max`, with the new measurement and
 its date in `why`. The launch (`BudgetUITests.testLaunch`), the
-frame-apply baseline, host-to-screen latency, a notification's cold launch
-and the stall test's longest gap are a trend, not a gate: the step summary
+frame-apply baseline, host-to-screen latency, a notification's cold launch,
+the most updates `LiveFollowTests` had waiting for a frame and the stall
+test's longest gap are a trend, not a gate: the step summary
 and the `ios-perf` artifact (`ios-perf.json`) on every run. Launch and
 latency budgets are a phone's (Canon → The iPhone app → Budgets).
 

@@ -80,7 +80,7 @@ final class RemovalUITests: XCTestCase {
         let phone = try XCTUnwrap(device, "no push token registered for the new phone within 60 s")
 
         let list = app.collectionViews["sessions-list"]
-        if !FleetUI.tap(app.buttons["pairing-continue"], until: list, timeout: 30) { Screenshots.tree(of: app) }
+        if !FleetUI.tap(app.buttons["pairing-continue"], until: list, timeout: 30, notifications: true) { Screenshots.tree(of: app) }
         XCTAssertTrue(list.exists, "Continue did not open Sessions")
         XCTAssertFalse(app.staticTexts["pairing-kit"].exists)
 

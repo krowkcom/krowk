@@ -180,17 +180,20 @@ fn r_tui_3_a_frame_the_terminal_reads_after_it_resized_still_lands_on_the_region
 /// As `shrunk_around_a_frame`, with the prompt's band above the caret, as
 /// the TUI draws it: rows as wide as the screen, which a narrowing splits
 /// in two. The frame that prints line 41 is read before the window
-/// narrows, or after, over the frame before it as the pane reflowed it.
-fn banded_around_a_frame(name: &str, frame_read_first: bool) {
+/// narrows, or after, over the frame before it as the pane reflowed it;
+/// with `ticked`, a frame that prints nothing (the spinner's next) follows
+/// it before the resize is handled.
+fn banded_around_a_frame(name: &str, frame_read_first: bool, ticked: bool) {
     let Some(mut pane) = Pane::start(name, 100, 30) else { return };
     let line = |n: u32| Line::from(format!("line {n:05}: the quick brown fox jumps over the lazy dog again"));
     let band = ratatui::style::Style::new().bg(ratatui::style::Color::Indexed(236));
-    let live = |tail: Option<&str>| {
+    let live_at = |tail: Option<&str>, spinner: &str| {
         let mut rows: Vec<Line<'static>> = tail.map(|t| Line::from(t.to_string())).into_iter().collect();
-        rows.extend([Line::from("⠹ Responding… 0.3s │ esc to interrupt"), Line::from(""), Line::from("").style(band), Line::from("❯ ").style(band), Line::from("").style(band), Line::from("  anthropic/claude-opus-5-5 | $0.05 | ? help")]);
+        rows.extend([Line::from(spinner.to_string()), Line::from(""), Line::from("").style(band), Line::from("❯ ").style(band), Line::from("").style(band), Line::from("  anthropic/claude-opus-5-5 | $0.05 | ? help")]);
         let caret = (2, rows.len() as u16 - 3);
         (rows, caret)
     };
+    let live = |tail: Option<&str>| live_at(tail, "⠹ Responding… 0.3s │ esc to interrupt");
     let out = Out::default();
     let mut t = Term::new(out.clone(), Size { width: 100, height: 30 }, 0, 4).unwrap();
     let (rows, caret) = live(Some("line 00041: the quick"));
@@ -198,6 +201,10 @@ fn banded_around_a_frame(name: &str, frame_read_first: bool) {
     pane.send(&out);
     let (rows, caret) = live(Some("line 00042: the quick"));
     t.frame(&[line(41)], &rows, caret).unwrap();
+    if ticked {
+        let (rows, caret) = live_at(Some("line 00042: the quick"), "⠸ Responding… 0.4s │ esc to interrupt");
+        t.frame(&[], &rows, caret).unwrap();
+    }
     if frame_read_first {
         pane.send(&out);
         pane.resize(70, 20);
@@ -218,7 +225,8 @@ fn banded_around_a_frame(name: &str, frame_read_first: bool) {
 
 #[test]
 fn r_tui_3_a_banded_region_narrowed_after_its_frame_is_measured_as_reflowed() {
-    banded_around_a_frame("band", true);
+    banded_around_a_frame("band", true, false);
+    banded_around_a_frame("band-ticked", true, true);
 }
 
 #[test]
@@ -227,6 +235,8 @@ fn r_tui_3_a_frame_read_after_a_narrowing_leaves_nothing_of_the_reflowed_one_bef
     // columns, a row short of where the pane reflowed the one before it:
     // that row (the streaming line) is left, and the clear measured as if
     // this frame had reflowed takes line 41. The lines the frame printed
-    // are cleared with what was left over them and printed again.
-    banded_around_a_frame("band-race", false);
+    // are cleared with what was left over them and printed again, and
+    // still are after a frame that printed nothing (the spinner's tick).
+    banded_around_a_frame("band-race", false, false);
+    banded_around_a_frame("band-race-ticked", false, true);
 }

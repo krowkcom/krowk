@@ -117,7 +117,7 @@ final class PairingUITests: XCTestCase {
         }
         XCTAssertEqual(Array(newDevices.values), ["sandbox"], "the paired phone's token is not registered 60 s after pairing")
         Screenshots.keep("paired", in: app)
-        _ = FleetUI.tap(app.buttons["pairing-continue"], until: app.collectionViews["sessions-list"], timeout: 30)
+        _ = FleetUI.tap(app.buttons["pairing-continue"], until: app.collectionViews["sessions-list"], timeout: 30, notifications: true)
         let demo = demoSession(in: app, after: "Continue")
         Screenshots.keep("sessions", in: app)
         demo.tap()

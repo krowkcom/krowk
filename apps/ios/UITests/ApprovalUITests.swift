@@ -132,7 +132,7 @@ enum FleetUI {
         // it is answered while Continue is tapped.
         NotificationPrompt.allow(timeout: 5)
         let list = app.collectionViews["sessions-list"]
-        if !tap(app.buttons["pairing-continue"], until: list, timeout: 30) { Screenshots.tree(of: app) }
+        if !tap(app.buttons["pairing-continue"], until: list, timeout: 30, notifications: true) { Screenshots.tree(of: app) }
         XCTAssertTrue(list.exists, "Continue did not open Sessions")
         return app
     }
@@ -162,11 +162,11 @@ enum FleetUI {
     /// person would (`answerPrompt`). Whether `next` showed within
     /// `timeout`.
     @MainActor
-    static func tap(_ button: XCUIElement, until next: XCUIElement, timeout: TimeInterval) -> Bool {
+    static func tap(_ button: XCUIElement, until next: XCUIElement, timeout: TimeInterval, notifications: Bool = false) -> Bool {
         let deadline = Date.now.addingTimeInterval(timeout)
         while Date.now < deadline {
             if next.exists { return true }
-            if answerPrompt() { continue }
+            if answerPrompt(notifications: notifications) { continue }
             if button.exists && button.isHittable { button.tap() }
             _ = next.waitForExistence(timeout: 3)
         }
@@ -186,13 +186,15 @@ enum FleetUI {
     }
 
     /// A system prompt over the app, answered as a person would: the
-    /// notifications prompt allowed (NotificationPrompt, which keeps its
-    /// screenshot), the sign-in page's question with Continue. Whether
-    /// one was up.
+    /// sign-in page's question with Continue, and with `notifications`
+    /// (once paired, where R-IOS-12 asks) the notifications prompt allowed
+    /// (NotificationPrompt, which keeps its screenshot). Anywhere else that
+    /// prompt is left up, and the test fails behind it. Whether one was
+    /// answered.
     @MainActor
-    static func answerPrompt() -> Bool {
+    static func answerPrompt(notifications: Bool = false) -> Bool {
         let springboard = XCUIApplication(bundleIdentifier: "com.apple.springboard")
-        if springboard.alerts.firstMatch.buttons["Allow"].exists {
+        if notifications, springboard.alerts.firstMatch.buttons["Allow"].exists {
             return NotificationPrompt.allow(timeout: 1)
         }
         let proceed = springboard.buttons["Continue"]
