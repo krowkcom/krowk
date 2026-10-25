@@ -1649,7 +1649,9 @@ impl<'h> Ui<'h> {
         if let Some(m) = app.started_on.take() {
             match turn {
                 Turn::Continued => self.named |= self.model.as_ref().is_some_and(|had| *had != m),
-                Turn::Prompted if std::mem::take(&mut self.named) => {}
+                // A pick given while the prompt was on its way waits for
+                // the next one.
+                Turn::Prompted if self.named => self.named = self.model.as_ref() != Some(&m),
                 Turn::Prompted | Turn::Watched => {
                     self.named = false;
                     self.retarget(&m);

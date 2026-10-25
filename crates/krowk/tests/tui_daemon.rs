@@ -246,12 +246,19 @@ fn switch_kept_by_the_next_prompt(daemon: bool) {
             std::thread::sleep(Duration::from_millis(20));
         }
     };
-    // B's own prompt too, which a TUI on the daemon sees run.
+    // B's own prompt too, which a TUI on the daemon sees run; A's goes
+    // once B has let go of the session, its footer drawn.
+    let footers = |t: &pty::Pty| t.text().matches("tokens").count();
+    let before = footers(&b);
     b.write(b"from b\r");
     ended(2, &b);
+    let deadline = Instant::now() + secs(10);
+    while footers(&b) == before {
+        assert!(Instant::now() < deadline, "B's turn never ended: {:?}", b.text());
+        std::thread::sleep(Duration::from_millis(20));
+    }
     a.write(b"and again\r");
     ended(3, &a);
-    assert!(a.wait_for("on the other one", secs(10)).is_some(), "A's next prompt ran where B moved the session: {:?}", a.text());
     let (switched, turns) = (of("model.switched"), of("turn.started"));
     assert_eq!(switched.len(), 1, "B's switch alone, never one back: {switched:?}");
     assert_eq!(turns.iter().map(|t| t["model"]["instance"].as_str().unwrap_or_default()).collect::<Vec<_>>(), ["anthropic", "anthropic:personal", "anthropic:personal"], "{turns:?}");
