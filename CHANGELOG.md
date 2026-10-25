@@ -16,8 +16,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `Account.resumeSession` open a session from a kept read place
   (`OpenedSession.place()`) and read only the chunks written after it,
   rather than the whole log from its checkpoint. The chunks are held to the
-  same chain, and an index older than the place, or a chunk that does not
-  follow it, is refused as a rollback. The iPhone app does not keep a place
+  same chain. A chunk that does not follow the place, or an index older
+  than it with nothing served after it, is refused as a rollback. The iPhone app does not keep a place
   yet.
 - **`krowk sync new` starts a session on another of your machines.**
   `krowk sync new --host <name> --cwd <dir> [--model <instance>/<id>]

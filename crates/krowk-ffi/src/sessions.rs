@@ -176,8 +176,8 @@ impl Account {
     /// read), and reads only the chunks after it: `events` are only those
     /// after `place`. Held to the same chain, then to the sealed index's
     /// head and to `known`. Refused as `session_rolled_back`: an index
-    /// older than `place` (the registry rolled back past what this phone
-    /// read), a log short of the index's head or of `known` or holding
+    /// older than `place` with nothing served after it (the registry
+    /// rolled back past what this phone read), a log short of the index's head or of `known` or holding
     /// another chunk there, and — unlike `open_session`, where it is
     /// `Internal` — a chunk after `place` that does not open where it was
     /// served (another log). A `place` no reading stopped at, or whose

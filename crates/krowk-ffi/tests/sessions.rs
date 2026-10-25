@@ -262,6 +262,8 @@ fn r_perf_6_resume_from_a_place_reads_only_the_chunks_after_it() {
     assert_eq!(run_names(&a.events), ["c1", "c2", "c3", "c4", "c5", "c6"]);
     let place = a.place().expect("chunks were read");
     assert_eq!((place.next, place.head), (6, a.head.unwrap()));
+    // Kept on disk as JSON, as the phone's cache keeps it.
+    let place: ReadPlace = serde_json::from_str(&serde_json::to_string(&place).unwrap()).unwrap();
 
     more(&mut h, 7..=10);
     let r = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, a.head).unwrap();
@@ -273,6 +275,12 @@ fn r_perf_6_resume_from_a_place_reads_only_the_chunks_after_it() {
     let again = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), r.place().unwrap(), None).unwrap();
     assert!(again.events.is_empty());
     assert_eq!(again.head, r.head);
+
+    // An index behind the place, as between a holder's chunk and its index
+    // write, with the log served on past the place: only behind, read.
+    let behind = store::Index { head: Some(a.heads[3]), ..index(&w, &h) };
+    let r = store::resume(&w.host, &h.keys, SESSION, behind, place, None).unwrap();
+    assert_eq!(run_names(&r.events), ["c7", "c8", "c9", "c10"]);
 }
 
 #[test]
@@ -345,4 +353,21 @@ fn r_ios_1_resume_session_reads_only_the_events_after_the_place() {
     assert!(matches!(w.phone.resume_session(SESSION.into(), short, None, None), Err(KrowkError::InvalidInput { .. })));
     let skewed = ReadPlaceRecord { next: place.next + 1, ..place.clone() };
     assert!(matches!(w.phone.resume_session(SESSION.into(), skewed, None, None), Err(KrowkError::InvalidInput { .. })));
+}
+
+/// A chunk after the place that this build cannot open yet, a newer
+/// format's, is refused for good but is no rollback: the app may need
+/// updating.
+#[test]
+fn r_ios_1_a_newer_chunk_after_the_place_is_not_a_rollback() {
+    let w = World::new();
+    let h = chunked(&w, 3);
+    let a = store::attach(&w.host, &h.keys, SESSION, index(&w, &h), None).unwrap();
+    let place = a.place().unwrap();
+    let mut sealer = e2e::ChunkSealer::new(&h.keys, krowk_client::sync::uuid(SESSION), place.next, place.previous, place.fence);
+    let mut newer = sealer.seal(b"{}", false).unwrap();
+    newer[0] = e2e::CHUNK_V2 + 1;
+    w.host.put_chunk(SESSION, place.next, &newer, &h.token).unwrap();
+    let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, None).unwrap_err();
+    assert!(e.permanent && !e.rolled_back && e.detail.contains("upgrade krowk"), "{e:?}");
 }
