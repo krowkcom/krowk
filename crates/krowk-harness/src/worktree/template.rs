@@ -828,7 +828,7 @@ mod tests {
 
     /// (btrfs) A worktree of this repository, from a clone of it: the
     /// first makes the template, the next are snapshots of it, each costing
-    /// well under a second of CPU, and most of them (the median) under a
+    /// under a second of CPU, and most of them (the median) under a
     /// second from start to end.
     #[test]
     fn wt11_a_worktree_of_this_repository_takes_under_a_second() {
@@ -874,7 +874,20 @@ mod tests {
             };
             used(libc::RUSAGE_SELF) + used(libc::RUSAGE_CHILDREN)
         };
+        // A snapshot commits a btrfs transaction, which first writes back
+        // what is waiting on the file system: the clone's files, and on a
+        // loaded machine every other writer's (a build, the other tests).
+        // Written back before the clock starts, so it times the snapshot,
+        // not the backlog it found.
+        let written_back = || {
+            #[cfg(target_os = "linux")]
+            if let Ok(f) = std::fs::File::open(&base) {
+                // SAFETY: syncfs only reads the open descriptor it is given.
+                unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&f)) };
+            }
+        };
         let timed = |owner: &str| {
+            written_back();
             let (at, cpu_at) = (std::time::Instant::now(), cpu());
             let made = create_fastest(&main, &root, owner, &WorktreesConfig::default()).unwrap();
             (made, at.elapsed(), cpu() - cpu_at)
