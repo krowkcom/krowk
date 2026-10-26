@@ -61,7 +61,9 @@ fn bare_path(home: &Path) -> std::ffi::OsString {
         let work = home.parent().unwrap_or(home).join("path");
         let _ = std::fs::remove_dir_all(&work);
         let dirs = std::env::split_paths(&path).enumerate().map(|(i, d)| {
-            if cfg!(not(unix)) || !AGENT_CLIS.iter().any(|b| d.join(b).exists()) {
+            // A relative entry is the measured process's own, under its
+            // fresh home, which holds no CLI.
+            if cfg!(not(unix)) || !d.is_absolute() || !AGENT_CLIS.iter().any(|b| d.join(b).exists()) {
                 return d;
             }
             let stand_in = work.join(i.to_string());
@@ -74,7 +76,8 @@ fn bare_path(home: &Path) -> std::ffi::OsString {
             }
             stand_in
         });
-        std::env::join_paths(dirs.collect::<Vec<_>>()).unwrap_or(path)
+        // Never the caller's PATH instead: that measures nothing again.
+        std::env::join_paths(dirs.collect::<Vec<_>>()).unwrap_or_else(|e| panic!("{} cannot stand in PATH entries: {e}", work.display()))
     })
     .clone()
 }
