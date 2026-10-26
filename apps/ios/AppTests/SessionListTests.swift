@@ -4,7 +4,8 @@
 // transcript read), through the list's model and row formatter. The
 // fleet's demo session is listed live, on host A, under its title; a
 // session whose host lets its lease go reads "last seen" after the next
-// refresh. The listing runs off the main thread: RegistrySessions.list
+// refresh; with the registry out of reach, the listing fails as Network
+// (ticket 143). The listing runs off the main thread: RegistrySessions.list
 // holds dispatchPrecondition(.notOnQueue(.main)), so a call from the main
 // thread would stop the test process.
 //
@@ -14,6 +15,7 @@
 import Foundation
 import Krowk
 import KrowkAccount
+import KrowkCache
 import KrowkKit
 import Testing
 
@@ -42,6 +44,30 @@ extension HostedKeychain {
             // R-HAND-4: listed, never hosted by this phone.
             #expect(listing.sessions.allSatisfy { $0.hostedBy != phone.account.deviceId() })
             #expect(lines.all().isEmpty, "\(lines.all())")
+        }
+
+        @Test("R-IOS-7 (ticket 143): with the registry out of reach, krowk-ffi's listing fails as Network, and the footer over the rows last read names the registry")
+        func unreachableRegistryIsNamed() async throws {
+            let phone = try await TestFleet.shared.paired()
+            let cache = CacheFirstTests.cache()
+            defer { Task { try? await cache.forgetAll() } }
+            _ = try await blockingCall { try RegistrySessions(api: phone.api, storage: phone.storage, cache: cache).list() }
+            try await CacheFirstTests.wait(within: .seconds(10), "the index was not written") {
+                try await cache.index().isEmpty == false
+            }
+
+            let offline = RegistrySessions(api: CacheFirstTests.deadAPI, storage: phone.storage, cache: cache)
+            let model = SessionListModel(source: offline, kept: { await cache.listing() })
+            await model.prime()
+            await model.refresh()
+            guard case .network? = model.failure else {
+                Issue.record("not the network: \(String(describing: model.failure))")
+                return
+            }
+            // What the footer under the rows starts with (SessionListModelTests
+            // holds the footer to it).
+            #expect(model.listing?.sessions.isEmpty == false, "the rows last read went")
+            #expect(model.failure?.sentence == "krowk's registry couldn't be reached.")
         }
 
         @Test("R-IOS-7: after the host lets a session's lease go, its row reads \"last seen …\" within one refresh, never live")

@@ -409,3 +409,77 @@ fn r_perf_6_a_chunk_listed_at_another_index_than_its_own_is_refused() {
     let e = store::resume(&w.host, &h.keys, SESSION, index(&w, &h), place, Some(relabelled)).unwrap_err();
     assert!(e.rolled_back && e.detail.contains("a gap"), "{e:?}");
 }
+
+/// A TCP proxy to `to` that drops, unanswered, every request whose bytes
+/// hold the text `refusing` names (all of them for `""`; none for `None`):
+/// the registry out of reach for those calls. Its `/v1` URL.
+fn cutting_proxy(to: std::net::SocketAddr) -> (String, Arc<Mutex<Option<&'static str>>>) {
+    use std::io::{Read, Write};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let refusing = Arc::new(Mutex::new(None::<&'static str>));
+    let cut = refusing.clone();
+    std::thread::spawn(move || {
+        for client in listener.incoming().map_while(Result::ok) {
+            let upstream = std::net::TcpStream::connect(to).unwrap();
+            let (mut c_in, mut u_out) = (client.try_clone().unwrap(), upstream.try_clone().unwrap());
+            let (mut u_in, mut c_out) = (upstream, client);
+            let cut = cut.clone();
+            std::thread::spawn(move || {
+                let mut buf = [0u8; 16 * 1024];
+                while let Ok(n @ 1..) = c_in.read(&mut buf) {
+                    // A pooled connection is cut too, at its next request.
+                    let held = String::from_utf8_lossy(&buf[..n]);
+                    if cut.lock().unwrap().is_some_and(|text| held.contains(text)) {
+                        let _ = c_in.shutdown(std::net::Shutdown::Both);
+                        break;
+                    }
+                    if u_out.write_all(&buf[..n]).is_err() {
+                        break;
+                    }
+                }
+                let _ = u_out.shutdown(std::net::Shutdown::Write);
+            });
+            std::thread::spawn(move || {
+                let _ = std::io::copy(&mut u_in, &mut c_out);
+                let _ = c_out.shutdown(std::net::Shutdown::Write);
+            });
+        }
+    });
+    (url, refusing)
+}
+
+fn network<T>(r: Result<T, KrowkError>) -> String {
+    match r {
+        Err(KrowkError::Network { detail }) => detail,
+        Err(e) => panic!("not Network: {e:?}"),
+        Ok(_) => panic!("not refused"),
+    }
+}
+
+/// Ticket 143: the registry out of reach while the phone lists, opens,
+/// resumes or catches up on a session is `Network`, so the app says the
+/// registry couldn't be reached and tries again, rather than `Internal`.
+#[test]
+fn r_ios_7_the_registry_out_of_reach_is_network_listing_opening_and_reading_on() {
+    let w = World::new();
+    let mut h = chunked(&w, 2);
+    let (url, refusing) = cutting_proxy(w.registry.addr());
+    let phone = Account::open(url, w.storage.clone()).unwrap();
+    let opened = phone.open_session(SESSION.into(), None, None).unwrap();
+    let place = opened.place().unwrap();
+
+    *refusing.lock().unwrap() = Some("");
+    let detail = network(phone.list_sessions());
+    assert!(detail.contains("krowk's registry cannot be reached"), "{detail}");
+
+    // The session's record read, its chunks not: the read itself failed.
+    *refusing.lock().unwrap() = Some("/chunks?");
+    network(phone.open_session(SESSION.into(), None, None));
+    network(phone.resume_session(SESSION.into(), place.clone(), None, None));
+    network(opened.catch_up());
+
+    *refusing.lock().unwrap() = None;
+    more(&mut h, 3..=3);
+    assert_eq!(opened.catch_up().unwrap().len(), 1, "read on once the registry is back");
+}

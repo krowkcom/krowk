@@ -5,9 +5,9 @@
 // against the fake fleet, the app opens a session of the test's own and a
 // turn lands in it; terminated with it open, then relaunched offline, the
 // list shows the session "last seen", never live, its footer saying the
-// list couldn't be read; opened, the session shows the cached turn under
-// the offline notice, the bar says the relay can't be reached, and
-// nothing on screen is a spinner. Screenshots are kept in the results.
+// registry couldn't be reached (ticket 143); opened, the session shows the
+// cached turn under the offline notice, the bar says the relay can't be
+// reached, naming the registry, and nothing on screen is a spinner. Screenshots are kept in the results.
 //
 // Needs the fleet: apps/ios/scripts/with-fleet.sh hands its URLs to this
 // runner.
@@ -64,15 +64,14 @@ final class OfflineUITests: XCTestCase {
         // too, so it may be below the screen.
         let list = offline.collectionViews["sessions-list"]
         // The registry out of reach reads "krowk's registry couldn't be
-        // reached." or, from the listing's own read, "Your sessions
-        // couldn't be listed."; either way the rows are as last read.
+        // reached.", the rows as last read.
         let footer = list.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "no session shows as live until it's read again")).firstMatch
         for _ in 0..<15 where !footer.waitForExistence(timeout: 4) {
             list.swipeUp()
         }
         if !footer.exists { Screenshots.tree(of: offline) }
         XCTAssertTrue(footer.exists, "the footer never said the list couldn't be read")
-        XCTAssertTrue(footer.label.contains("couldn't be"), footer.label)
+        XCTAssertTrue(footer.label.hasPrefix("krowk's registry couldn't be reached."), footer.label)
         XCTAssertFalse(offline.activityIndicators["sessions-loading"].exists, "a spinner over the cached list")
         Screenshots.keep("offline-sessions", in: offline)
 
@@ -92,10 +91,10 @@ final class OfflineUITests: XCTestCase {
         XCTAssertTrue(notice.exists, "no offline notice")
         XCTAssertTrue(notice.label.contains("The host is offline (last seen"), notice.label)
         let bar = offline.descendants(matching: .any)["relay-status"]
-        let unreachable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@", "can't reach the relay"), object: bar)
+        let unreachable = XCTNSPredicateExpectation(predicate: NSPredicate(format: "label BEGINSWITH %@ AND label CONTAINS %@", "can't reach the relay", "krowk's registry"), object: bar)
         let barSaid = await XCTWaiter().fulfillment(of: [unreachable], timeout: 60)
         if barSaid != .completed { Screenshots.tree(of: offline) }
-        XCTAssertEqual(barSaid, .completed, "the bar never said the relay can't be reached: \(bar.label)")
+        XCTAssertEqual(barSaid, .completed, "the bar never said the relay can't be reached, naming the registry: \(bar.label)")
         XCTAssertFalse(offline.activityIndicators["transcript-loading"].exists, "a spinner over the cached transcript")
         // Readable: it scrolls.
         offline.collectionViews["transcript"].swipeDown()

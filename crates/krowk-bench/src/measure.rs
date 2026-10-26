@@ -306,7 +306,7 @@ pub fn remote_attach(runs: usize, resume: bool) -> Outcome {
         let got = api.show_sync_session(&id).map_err(|e| e.to_string()).and_then(|s| store::open_index(&key, &id, &s.sealed_index)).and_then(|index| match (resume, place) {
             (true, Some(p)) => store::resume(&api, &key, &id, index, p, None).map_err(String::from),
             (true, None) => Err("the reading after turn 35 kept no place".into()),
-            (false, _) => store::attach(&api, &key, &id, index, None),
+            (false, _) => store::attach(&api, &key, &id, index, None).map_err(String::from),
         });
         match got {
             Ok(a) => events = a.events.len(),

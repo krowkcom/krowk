@@ -122,7 +122,7 @@ const FETCH: usize = 8;
 /// Why reading a session's chunks failed (`catch_up`), and whether reading
 /// them again could help: a viewer joins again after a transient failure,
 /// and stops at a permanent one.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReadError {
     pub detail: String,
     /// Reading again reads the same: the session is gone (the registry
@@ -140,29 +140,33 @@ pub struct ReadError {
     /// replayed, out of order, or not following the chunk before it). What
     /// the phone calls `session_rolled_back`.
     pub rolled_back: bool,
+    /// The registry or storage call that failed, when one did: what tells
+    /// the network out of reach from the rest (the phone's `Network`).
+    pub registry: Option<krowk_api::Error>,
 }
 
 impl ReadError {
     pub fn transient(detail: impl Into<String>) -> ReadError {
-        ReadError { detail: detail.into(), permanent: false, rolled_back: false }
+        ReadError { detail: detail.into(), permanent: false, rolled_back: false, registry: None }
     }
 
     pub fn permanent(detail: impl Into<String>) -> ReadError {
-        ReadError { detail: detail.into(), permanent: true, rolled_back: false }
+        ReadError { detail: detail.into(), permanent: true, rolled_back: false, registry: None }
     }
 
     pub fn rolled_back(detail: impl Into<String>) -> ReadError {
-        ReadError { detail: detail.into(), permanent: true, rolled_back: true }
+        ReadError { detail: detail.into(), permanent: true, rolled_back: true, registry: None }
     }
 
     /// A registry or storage call that failed: permanent only when the
     /// session is gone.
     fn registry(e: krowk_api::Error) -> ReadError {
-        if matches!(e.status, 404 | 410) {
+        let read = if matches!(e.status, 404 | 410) {
             ReadError::permanent(format!("the session, or a chunk of it, is gone from the registry ({e})"))
         } else {
             ReadError::transient(e.to_string())
-        }
+        };
+        ReadError { registry: Some(e), ..read }
     }
 }
 
@@ -208,7 +212,7 @@ pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, last: Opti
     read_chunks(client, id, reader, last, each).map_err(String::from)
 }
 
-/// `read_from`, its failure classified: what `catch_up` reads with. A
+/// `read_from`, its failure classified: what `attach` and `catch_up` read with. A
 /// refusal of `each`'s is permanent.
 fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, ReadError> {
     let mut after = reader.next().checked_sub(1);
@@ -338,18 +342,19 @@ pub struct Listed {
 /// and how many it cannot. One whose record no device the verified list
 /// has held signed, or whose key or index does not open under the user
 /// keys this device holds — one sealed under a generation newer than it
-/// has, say — is left out and counted, never an error. Blocking: a page of
+/// has, say — is left out and counted, never an error: what fails it is a
+/// registry call, its error as the registry gave it. Blocking: a page of
 /// the listing and then one `show` a session, since a listing leaves the
 /// sealed index out.
-pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), String> {
+pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), krowk_api::Error> {
     let mut out = Vec::new();
     let mut unreadable = 0;
     let mut before = String::new();
     loop {
-        let page = api.list_sync_sessions(&before, 100).map_err(|e| e.to_string())?;
+        let page = api.list_sync_sessions(&before, 100)?;
         for s in &page.sessions {
             // A listing leaves the index out; `show` has it.
-            let full = api.show_sync_session(&s.id).map_err(|e| e.to_string())?;
+            let full = api.show_sync_session(&s.id)?;
             match open_session_key(&full, &s.id, keys, chain, session_record::Signer::EverHeld).and_then(|k| open_index(&k, &s.id, &full.sealed_index)) {
                 Ok(index) => out.push(Listed { id: s.id.clone(), index, holder: full.lease.map(|l| l.device), signer: full.signer.clone() }),
                 Err(_) => unreadable += 1,
@@ -383,8 +388,9 @@ pub fn open_index(key: &SessionKeys, id: &str, sealed_hex: &str) -> Result<Index
 }
 
 /// Attaches from the latest checkpoint and reads the tail after it, then
-/// holds what was read to the index's head and to `known`.
-pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known: Option<Head>) -> Result<Attached, String> {
+/// holds what was read to the index's head and to `known`. A log short of
+/// either, or holding another chunk there, is a rolled-back `ReadError`.
+pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known: Option<Head>) -> Result<Attached, ReadError> {
     let session = crate::sync::uuid(id);
     let mut reader = match index.checkpoint {
         Some(m) => ChunkReader::resume(key, session, m.index, m.previous, m.fence, 0),
@@ -392,7 +398,7 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
     };
     let mut events = Vec::new();
     let mut heads = Vec::new();
-    let head = read_from(client, id, &mut reader, None, &mut |c, h| {
+    let head = read_chunks(client, id, &mut reader, None, &mut |c, h| {
         match c {
             Chunk::Events { events: e } => events.extend(e),
             Chunk::Checkpoint(cp) => {
@@ -404,8 +410,8 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
         heads.push(h);
         Ok(())
     })?;
-    Head::at_least(&heads, index.head)?;
-    Head::at_least(&heads, known)?;
+    Head::at_least(&heads, index.head).map_err(ReadError::rolled_back)?;
+    Head::at_least(&heads, known).map_err(ReadError::rolled_back)?;
     Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), epoch: reader.epoch(), index, events, head, heads })
 }
 
