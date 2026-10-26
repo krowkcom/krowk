@@ -35,9 +35,14 @@ fn metadata() -> Value {
 }
 
 /// R-OSS-1: the threat model, with the server side assumed hostile, and the
-/// crypto design are published here, and SECURITY.md links them.
+/// crypto design are published here, and SECURITY.md links them. Both are
+/// Canon's, copied by `scripts/publish_security_docs.sh`, which notes the
+/// commit under each title.
 #[test]
 fn r_oss_1_the_threat_model_and_crypto_design_are_public() {
+    for doc in ["docs/security/threat-model.md", "docs/security/crypto.md"] {
+        assert!(read(doc).lines().nth(2).is_some_and(|l| l.starts_with("> Published from Canon")), "{doc} says where it came from");
+    }
     let model = read("docs/security/threat-model.md");
     assert!(model.contains("**The server side is assumed hostile.**"), "the threat model assumes a hostile server side");
     assert!(model.contains("## The independent audit"), "the threat model scopes the audit (R-OSS-2)");

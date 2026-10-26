@@ -571,6 +571,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   now they lived in krowk's private design repository, so a reader could
   not check what the encryption claims to protect, from whom, or which
   risks krowk accepts.
+- **The published threat model and crypto design are current again.**
+  [`docs/security/`](docs/security/) is republished from the design
+  repository. It now covers push notifications, host announcements and
+  the `take` host command, the pairing invite and what reaches the device
+  list when a pairing ends unconfirmed, the key-storage seam, and on the
+  iPhone the Keychain, Face ID before an allow, how agent output is drawn
+  and the zeroization gaps the FFI adds. `scripts/publish_security_docs.sh`
+  now makes the copy, so the next one is made the same way.
 
 ### Fixed
 

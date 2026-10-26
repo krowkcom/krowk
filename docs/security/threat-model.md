@@ -1,6 +1,6 @@
 # Threat model
 
-> Published from Canon, krowk's private design repository (`engineering/threat-model.md` at 7823b56). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design repository (`engineering/threat-model.md` at 9c0ec67). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 What krowk protects, from whom, where each protection lives, and what it does not protect against. This is the public threat model spec R-OSS-1 asks for before sync ships; `crypto.md` is the crypto design it rests on, and `relay.md` the relay's contract. It states each defence once and links the file that holds it, so that the two cannot drift.
 
@@ -26,6 +26,7 @@ Holds ciphertext and metadata; can substitute, replay, reorder, drop and delay a
 - **Cannot change, move or replay content unnoticed.** Each sealed message is bound to its session, direction, the receiver's epoch and a strictly increasing counter; chunks at rest form a chain that binds each one's predecessor and its lease fence; a truncated stream is caught by the missing final sealed message and a truncated log by the head in the sealed index (`crypto.md` → Blob formats, Nonces).
 - **Cannot add its own device.** The device list is signed and chained by the person's devices, and a device adopts a user key only when its id is the one the verified list names; pairing is by a short SPAKE2 code, so the registry gets one online guess per side (`crypto.md` → The device list, Adding a device, Threats to the device list).
 - **Cannot act as a device.** Every registry call that acts as a device is signed by that device's Ed25519 key, which never leaves it, with a five-minute window and a replay memory; a relay join is a signature over the dialled origin and a fresh challenge (`crypto.md` → Signed registry requests, `relay.md` → Joining).
+- **Can drop, delay or fake a generic alert.** It sends the push notifications, so it can make a phone buzz for nothing, late, or not at all. It cannot make the alert show content, since it has none to put there, nor answer for it: an approval is still a signed command over the relay.
 - **Can** see the metadata `crypto.md` → What the server side can and cannot see lists: how many devices and sessions an account has, when each is active, every message's size and timing, device host names, the addresses devices connect from. And it can deny service.
 
 ### Someone on the network
@@ -42,9 +43,11 @@ A tenant of the same registry or relay. Session ids are unique across workspaces
 
 It holds the user key, so until it is removed it can read every session sealed under that key's current and older generations. Removing it is an entry on the signed device list and rotates the user key, so nothing sealed afterwards opens on it; it also refuses its signed requests and so its relay tickets. A ticket already issued lasts up to five minutes, and a device already joined stays joined until it reconnects (`relay.md` → Not yet). **It keeps what it could already read**: session keys are not rewrapped on rotation (`crypto.md` → Out of scope, `devices.md` → Removing a device).
 
+**An iPhone in someone else's hand.** Approvals are the phone's most valuable action: an allow runs code on the person's computer. Before it allows any tool not known to only read, the phone asks for its owner's Face ID or passcode (R-IOS-11, `harness.md` → The iPhone app), so someone holding an unlocked phone — picked up from a desk, or handed back after a call — cannot approve a command, and a tap that lands as a request rises cannot either. It does not stop the owner being talked into allowing something (the sheet shows the command, and the request's words are drawn as hostile text, but the choice is theirs), someone who knows the passcode, code running inside the unlocked app, or reading and denying: deny and the read-only tools ask nothing, and the transcript is readable to whoever holds the unlocked phone. Removing the device is still what ends its access. The phone's cache of session lists and recent transcripts (`harness.md` → The iPhone app → Sessions) is the same content as the transcript on screen, and as guarded: under `FileProtectionType.complete` it is readable only while the phone is unlocked, never in a backup, and it holds no key; a locked phone gives none of it up.
+
 ### Content the agent reads
 
-A web page, an issue body, a file in a repository: text written by someone else that a model reads and may follow. This is prompt injection, and krowk does not claim to stop a model from being persuaded. It limits what a persuaded model can do: the permission modes and rules, the fence around krowk's home, the refusal of credential files and hard links on publish, and git judged fail-closed (`harness.md` → Permissions and Trust, `architecture.md` → The security posture). The boundary is the tool, not the model.
+A web page, an issue body, a file in a repository: text written by someone else that a model reads and may follow. This is prompt injection, and krowk does not claim to stop a model from being persuaded. It limits what a persuaded model can do: the permission modes and rules, the fence around krowk's home, the refusal of credential files and hard links on publish, and git judged fail-closed (`harness.md` → Permissions and Trust, `architecture.md` → The security posture). The boundary is the tool, not the model. What the model writes back is hostile too, to whoever reads it: on the iPhone (R-IOS-10, `harness.md` → The iPhone app) agent output is drawn with control and bidi-override characters stripped, no remote image loads and there is no web view, and a link shows its full host and opens only after a tap on a sheet naming the whole URL — so injected text cannot fetch on its own, pose a lookalike link as another site, or make a path read backwards.
 
 ### A compromised build or dependency
 
@@ -56,7 +59,7 @@ A binary that is not the one this source builds, or a dependency that turned hos
 
 ### Local malware
 
-A process running as the person. **Out of scope**: it can read `device.json`, `credentials.json` and the terminal, and anything the client can. Every defence above assumes the device itself is the person's. Platform key stores (Keychain, Secure Enclave, Android Keystore) come with the desktop and mobile clients and narrow this; they do not close it.
+A process running as the person. **Out of scope**: it can read `device.json`, `credentials.json` and the terminal, and anything the client can. Every defence above assumes the device itself is the person's. Platform key stores narrow this; they do not close it. On the iPhone they are built (`crypto.md` → R-IOS-8): every key slot and the krowk API key are Keychain items readable only while the phone is unlocked, never synced to iCloud, restorable from a backup only to the same phone, and sealed under a Secure Enclave key that cannot leave it; no key is a file in the app. A backup, a copied container or a forensic image of a locked phone holds no key that opens anywhere but in that phone's enclave; code running inside the unlocked app — an exploited app, a debugger, a jailbreak's injection — can still have the enclave open every slot, as the app does. The simulator's software wrapping key is for tests only. The macOS keychain and Android's keystore come with those clients.
 
 ## Accepted risks
 
@@ -95,6 +98,10 @@ Spec R-OSS-2: an independent audit of the crypto and the relay before Pro sync r
 
 ## Change log
 
+- **2026-10-25** — Harness P4 ticket 129: An iPhone in someone else's hand — the on-device cache of session lists and recent transcripts is readable only while the phone is unlocked (`.complete`), like the transcript on screen, and kept out of backups.
+- **2026-10-23** — Harness P4 ticket 91: A lost, stolen or removed device — what Face ID before an allow on the iPhone stops (an unlocked phone in someone else's hand approving a command) and what it doesn't (a persuaded owner, a known passcode, code inside the unlocked app, reading and denying) (R-IOS-11).
+- **2026-10-22** — Harness P4 ticket 88: Content the agent reads — what it writes back is hostile to its reader: the iPhone's rules for drawing agent output (R-IOS-10).
+- **2026-10-20** — Harness P4 ticket 82: Local malware — on the iPhone the platform key store is built (R-IOS-8): what the Keychain and the Secure Enclave keep out, and what they don't (code running inside the unlocked app).
 - **2026-10-12** — P2 follow-ups: `krowk upgrade` verifies the release's Sigstore signature; the accepted risk narrows to the checks it leaves out.
 - **2026-10-11** — P2 follow-ups: a trusted repository's `${VAR}` expansion in its MCP config named as an accepted risk.
 - **2026-10-10** — Steering ST2: a background job's sweep comes at its exit, so a job leaves a wider window than a call; what the sweep at exit covers, and what it doesn't.
