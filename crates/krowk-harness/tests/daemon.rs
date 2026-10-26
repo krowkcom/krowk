@@ -1010,6 +1010,55 @@ fn r_host_1_status_counts_a_sessions_answering_followers() {
     daemon.join().unwrap().unwrap();
 }
 
+/// R-HOST-1: a session's `running` in `status` agrees with whether a prompt
+/// to it is refused as busy — true from the moment a prompt is accepted,
+/// while its turn sets up before `turn.started`, not only once it started.
+#[test]
+fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("busy", &m.url);
+    let daemon = home.serve(Some(Duration::from_millis(300)));
+    let rt = rt();
+    rt.block_on(async {
+        let a = home.client().await;
+        let (tx, _rx) = mpsc::channel(1024);
+        let s = a.execute(home.prompt("hi"), tx).await.unwrap().unwrap().session_id;
+        let resume = |text: &str| match home.prompt(text) {
+            Command::Prompt { model, permission_mode, .. } => Command::Prompt { session_id: Some(s.clone()), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None },
+            _ => unreachable!(),
+        };
+        let running = |st: krowk_harness::protocol::HostStatus| st.sessions.into_iter().find(|x| x.session_id == s).map(|x| x.running);
+        assert_eq!(running(a.status().await.unwrap()), Some(false), "nothing runs between turns");
+        // The next turn is accepted, and held before its `turn.started`.
+        let held = krowk_harness::host::hold_turn_starts();
+        let (tx, mut rx) = mpsc::channel(1024);
+        let mut first = Box::pin(a.execute(resume("again"), tx));
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while held.waiting() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the turn never reached its start");
+            tokio::select! {
+                r = &mut first => panic!("the turn ended before its start: {r:?}"),
+                () = tokio::time::sleep(Duration::from_millis(5)) => {}
+            }
+        }
+        while let Ok(l) = rx.try_recv() {
+            assert!(!matches!(l, StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. })), "held before its turn.started");
+        }
+        let b = home.client().await;
+        let (btx, _brx) = mpsc::channel(1024);
+        let refused = b.execute(resume("too"), btx).await.expect_err("a second prompt is refused meanwhile");
+        assert_eq!(refused.code, "session_busy");
+        assert_eq!(running(b.status().await.unwrap()), Some(true), "status says it runs while a prompt is refused as busy");
+        drop(held);
+        first.await.unwrap().unwrap();
+        assert_eq!(running(a.status().await.unwrap()), Some(false), "and not once its command is over");
+        let (btx, _brx) = mpsc::channel(1024);
+        b.execute(resume("now"), btx).await.expect("a prompt is taken again");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
 /// A turn hook's events until `n` have come.
 async fn turn_events(rx: &mut tokio::sync::mpsc::UnboundedReceiver<server::TurnEvent>, n: usize) -> Vec<server::TurnEvent> {
     let mut got = Vec::new();

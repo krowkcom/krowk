@@ -460,6 +460,13 @@ impl Host {
         self.shared.jobs.counted(session) as u32
     }
 
+    /// Whether `session` is held running here — a turn's, from its
+    /// prompt's acceptance until its command lets go, or a backend's agent
+    /// — so that a prompt to it is refused as busy.
+    pub fn holds(&self, session: &str) -> bool {
+        self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session)
+    }
+
     /// Every background job running here, as (session, id): what
     /// `shutdown` stops.
     pub fn running_jobs(&self) -> Vec<(String, String)> {
@@ -1670,6 +1677,48 @@ impl Rolling {
     }
 }
 
+/// For tests (`test-hooks`): turns accepted wait here, registered, before
+/// their `turn.started`, while a `HeldStarts` lives.
+#[cfg(feature = "test-hooks")]
+static HOLD_STARTS: std::sync::LazyLock<watch::Sender<bool>> = std::sync::LazyLock::new(|| watch::channel(false).0);
+
+/// For tests (`test-hooks`): holds every turn accepted from here on before
+/// its `turn.started`, as a backend slow to set up would, until the guard
+/// goes.
+#[cfg(feature = "test-hooks")]
+#[must_use = "turns are held only while the guard lives"]
+pub fn hold_turn_starts() -> HeldStarts {
+    HOLD_STARTS.send_replace(true);
+    HeldStarts(())
+}
+
+/// Turns are held before their start while this lives (`hold_turn_starts`).
+#[cfg(feature = "test-hooks")]
+pub struct HeldStarts(());
+
+#[cfg(feature = "test-hooks")]
+impl HeldStarts {
+    /// How many turns wait at the hold now.
+    pub fn waiting(&self) -> usize {
+        HOLD_STARTS.receiver_count()
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for HeldStarts {
+    fn drop(&mut self) {
+        HOLD_STARTS.send_replace(false);
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+async fn held_start() {
+    if *HOLD_STARTS.borrow() {
+        let mut rx = HOLD_STARTS.subscribe();
+        let _ = rx.wait_for(|held| !held).await;
+    }
+}
+
 /// A turn's hold on its session in this host: its cancel switch, its
 /// steering, and a `switchModel` for after it — from before the log is
 /// opened until the turn lets go. Let go of on drop, however it ends.
@@ -2085,6 +2134,8 @@ impl Writer<'_> {
     /// A turn's opening records: a rollover that brought it to `model`,
     /// then `started`.
     async fn begin(&mut self, rolling: Option<&Rolling>, session_id: &str, model: &ModelRef, started: LogBody) -> Result<(), EngineError> {
+        #[cfg(feature = "test-hooks")]
+        held_start().await;
         // A rollover is on the record only now that its turn has passed
         // every check, and every client is told: never silent (R-INST-8).
         if let Some(r) = rolling {

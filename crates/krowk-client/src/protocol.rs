@@ -1340,7 +1340,9 @@ pub struct HostStatus {
 #[serde(rename_all = "camelCase")]
 pub struct HostSession {
     pub session_id: String,
-    /// A turn of it is under way.
+    /// A turn of it is under way, from the moment a prompt to it is
+    /// accepted until that command is over: while another prompt to it
+    /// through this daemon is refused as `session_busy`.
     pub running: bool,
     /// Clients following it now, background ones included.
     pub clients: u32,
