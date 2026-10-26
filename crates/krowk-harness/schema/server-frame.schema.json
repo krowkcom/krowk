@@ -2132,7 +2132,7 @@
           "type": "string"
         },
         "running": {
-          "description": "A turn of it is under way, from the moment a prompt to it is\naccepted until that command is over: while another prompt to it\nthrough this daemon is refused as `session_busy`.",
+          "description": "A turn of it holds it, from the moment the prompt is accepted until\nthe turn lets go as its command ends, or a backend runs it as an\nagent: exactly while a prompt to it through this daemon is refused\nas `session_busy`.",
           "type": "boolean"
         },
         "clients": {
