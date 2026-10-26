@@ -872,19 +872,26 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     let watcher = Raw::connect(&home);
     drop(watcher);
     let mut y = Raw::connect(&home);
-    // The first turn ends while X sleeps: waited for, not slept on, since a
-    // slow runner types slower than the mock's pace and a prompt sent into
-    // the running turn would make one turn of two.
-    rt().block_on(async {
-        let w = home.client().await;
-        let deadline = Instant::now() + Duration::from_secs(20);
-        while w.status().await.unwrap().sessions.iter().any(|s| s.session_id == session && s.running) {
-            assert!(Instant::now() < deadline, "the first turn ended");
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-    });
+    // The first turn's command is over while X sleeps: waited for, not
+    // slept on, since a slow runner types slower than the mock's pace. Not
+    // by `status`, whose `running` is false until `turn.started`, after the
+    // session's first line, and again from `turn.completed`, before the
+    // command lets the session go: a prompt sent in either window is
+    // refused as busy, and there is no second turn. An attach's `running`
+    // is the whole command, and `settled` its end.
+    let mut w = Raw::connect(&home);
+    w.send(&ClientFrame::Attach { id: 3, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None });
+    let attached = w.until(|f| matches!(f, ServerFrame::Attached { id: 3, .. }));
+    let Some(ServerFrame::Attached { running, error: None, .. }) = attached.last() else { panic!("attached: {:?}", attached.last()) };
+    if *running {
+        w.until(|f| matches!(f, ServerFrame::Settled { session: s } if *s == session));
+    }
+    drop(w);
     y.send(&ClientFrame::Execute { id: 9, command: prompt_in(&home, Some(&session), "two") });
-    y.until(|f| matches!(f, ServerFrame::Done { id: 9, .. }));
+    let taken = y.until(|f| matches!(f, ServerFrame::Done { id: 9, .. }));
+    if let Some(ServerFrame::Done { error: Some(e), .. }) = taken.last() {
+        panic!("the second prompt was taken, not refused: {} ({})", e.code, e.message);
+    }
     // X reads again: its first turn's end, its done, then the second turn.
     use krowk_harness::protocol::{LogBody, LogEvent};
     let log_kind = |f: &ServerFrame, started: bool| match f {
@@ -903,8 +910,9 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     let done = all.iter().position(|f| matches!(f, ServerFrame::Done { id: 1, .. })).expect("the first turn's done came");
     let second_start = all.iter().enumerate().filter(|(_, f)| log_kind(f, true)).map(|(i, _)| i).nth(1).expect("the second turn started");
     assert!(first_end < done && done < second_start, "done at {done}, between its turn's end ({first_end}) and the next turn's start ({second_start})");
-    let caught_up = rt().block_on(async { home.client().await.status().await.unwrap().caught_up });
-    assert!(caught_up > 0, "it did fall behind");
+    // X itself was caught up, not just someone: a line replayed from the
+    // log has no `seq`.
+    assert!(all.iter().any(|f| matches!(f, ServerFrame::Line { seq: None, .. })), "it did fall behind");
     drop((x, y));
     daemon.join().unwrap().unwrap();
 }
