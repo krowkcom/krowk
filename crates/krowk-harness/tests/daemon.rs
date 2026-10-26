@@ -1045,15 +1045,24 @@ fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
                     () = tokio::time::sleep(Duration::from_millis(5)) => {}
                 }
             }
+            // What the turn logged before the hold is on its way to the
+            // client: waited for when it is to come, else none came.
             let mut seen = (false, false);
-            while let Ok(l) = rx.try_recv() {
-                match l {
-                    StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }) => seen.0 = true,
-                    StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }) => seen.1 = true,
-                    _ => {}
+            let take = |seen: &mut (bool, bool), l: StreamLine| match l {
+                StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }) => seen.0 = true,
+                StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }) => seen.1 = true,
+                _ => {}
+            };
+            if logged {
+                while seen != (true, true) {
+                    take(&mut seen, tokio::time::timeout(Duration::from_secs(10), rx.recv()).await.expect("the turn's turn.completed never came").expect("the stream closed first"));
                 }
+            } else {
+                while let Ok(l) = rx.try_recv() {
+                    take(&mut seen, l);
+                }
+                assert_eq!(seen, (false, false), "held {window}");
             }
-            assert_eq!(seen, (logged, logged), "held {window}");
             let (btx, _brx) = mpsc::channel(1024);
             let refused = b.execute(resume("too"), btx).await.expect_err("a second prompt is refused meanwhile");
             assert_eq!(refused.code, "session_busy", "{window}");

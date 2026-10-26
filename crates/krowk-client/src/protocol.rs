@@ -1340,10 +1340,11 @@ pub struct HostStatus {
 #[serde(rename_all = "camelCase")]
 pub struct HostSession {
     pub session_id: String,
-    /// A turn of it holds it, from the moment the prompt is accepted until
-    /// the turn lets go as its command ends, or a backend runs it as an
-    /// agent: exactly while a prompt to it through this daemon is refused
-    /// as `session_busy`.
+    /// A turn in this daemon holds it, from the moment the prompt is
+    /// accepted until the turn lets go as its command ends, or a backend
+    /// runs it as an agent: while a prompt to it through this daemon is
+    /// refused as `session_busy` for that reason. (One run by another krowk
+    /// process is refused too, and not shown here.)
     pub running: bool,
     /// Clients following it now, background ones included.
     pub clients: u32,
