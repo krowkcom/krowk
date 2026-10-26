@@ -396,6 +396,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Closing the fullscreen TUI leaves the shell's screen as it was.** The
+  conversation is no longer printed onto it on the way out, where it came
+  out without the layout the TUI drew it in. The session is saved, and the
+  one line krowk leaves says how to open it again:
+  `resume this session with: krowk --resume <id>`. Inline mode is
+  unchanged: its conversation is in the terminal's scrollback already.
 - **A synced session's viewer moves its place only once a batch is shown.**
   `krowk sync attach`, and the iPhone app, ack the relay only for batches
   whose lines have been handed to the screen, and a batch that arrives but

@@ -22,10 +22,11 @@
 //!   starts at the first column so the terminal's own selection copies
 //!   nothing before it; here the selection is krowk's, and the padding
 //!   copies as nothing.
-//! - **Left to the shell's screen.** On the way out the alternate screen is
-//!   left and the conversation printed onto the screen the shell had, the
-//!   way inline mode leaves it in scrollback. A job stop or a vendor's login
-//!   leaves the alternate screen, and coming back redraws it whole.
+//! - **Left with the alternate screen.** On the way out the shell's screen
+//!   comes back as it was, the conversation not printed onto it: the
+//!   session is saved, and the line under it says how to resume it. A job
+//!   stop or a vendor's login leaves the alternate screen, and coming back
+//!   redraws it whole.
 
 use crate::term::{Back, FrameBuf, AUTOWRAP_OFF, AUTOWRAP_ON, SYNC_BEGIN, SYNC_END, TITLE_RESTORE};
 use ratatui::layout::{Rect, Size};
@@ -346,24 +347,6 @@ impl<W: Write> Full<W> {
         self.flush()
     }
 
-    /// The conversation, printed onto the shell's screen as inline mode
-    /// leaves it in scrollback: styled text, the terminal wrapping it.
-    pub fn print_conversation(&mut self) -> io::Result<()> {
-        let width = self.size.width;
-        let mut out = Vec::new();
-        for line in &self.kept.lines {
-            crate::term::write_styled(&mut out, line)?;
-            if let Some(bg) = line.style.bg
-                && !crate::term::fills_last_row(line, width)
-            {
-                write!(out, "\x1b[{}m\x1b[K\x1b[0m", crate::term::sgr(Style::new().bg(bg)))?;
-            }
-            out.extend_from_slice(b"\r\n");
-        }
-        self.out.write_all(&out)?;
-        self.out.flush()
-    }
-
     /// Back after a job stop or a vendor's login: the alternate screen taken
     /// again at the size the window is now, and drawn whole.
     pub fn resume(&mut self, size: Size) -> io::Result<()> {
@@ -408,8 +391,7 @@ impl<W: Write> Full<W> {
 /// the end while it is at the bottom; scrolled up, lines that arrive leave
 /// it where it is, and back at the bottom it follows again.
 pub struct Kept {
-    /// Every line kept, cleaned: what a resize wraps again and leaving
-    /// prints.
+    /// Every line kept, cleaned: what a resize wraps again.
     lines: VecDeque<Line<'static>>,
     /// `lines` wrapped to the width, after the note that earlier ones were
     /// let go when they were.
@@ -905,15 +887,13 @@ mod tests {
     fn nothing_reaches_the_screen_with_a_control_character_in_it() {
         let mut t = Full::new(Vec::new(), Size { width: 60, height: 8 }).unwrap();
         t.frame(&[Line::from("evil\x1b]0;pwned\x07\x1b[2J\rname")], &footer(), (4, 0)).unwrap();
-        t.finish().unwrap();
-        t.print_conversation().unwrap();
         let out = String::from_utf8_lossy(&t.out).into_owned();
         assert!(!out.contains("\x1b]0;") && !out.contains('\x07') && !out.contains("\x1b[2J\r"), "{out:?}");
-        assert!(out.contains("evil]0;pwned[2Jname"), "{out:?}");
+        assert!(out.contains("pwned"), "{out:?}");
     }
 
     #[test]
-    fn a_link_is_a_hyperlink_cell_by_cell_and_printed_whole_on_the_way_out() {
+    fn a_link_is_a_hyperlink_cell_by_cell_and_leaving_prints_nothing_of_the_conversation() {
         let mut t = Full::new(Vec::new(), Size { width: 60, height: 8 }).unwrap();
         let mut fence = crate::look::Markdown::default();
         t.frame(&[crate::look::markdown_line("see [docs](https://krowk.com/d)", &mut fence)], &footer(), (4, 0)).unwrap();
@@ -922,10 +902,8 @@ mod tests {
         assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "the URL's carrier never reaches the terminal");
         let start = t.out.len();
         t.finish().unwrap();
-        t.print_conversation().unwrap();
         let out = String::from_utf8_lossy(&t.out[start..]).into_owned();
-        assert!(out.find("\x1b[?1049l").unwrap() < out.find("see").unwrap(), "printed on the shell's screen: {out:?}");
-        assert!(!out.chars().any(|c| ('\u{E0000}'..='\u{E007F}').contains(&c)), "{out:?}");
+        assert!(out.contains("\x1b[?1049l") && !out.contains("see"), "the shell's screen as it was: {out:?}");
     }
 
     #[test]

@@ -9,8 +9,8 @@
 //!   (as Grok Build decides). `fullscreen` takes the terminal's alternate
 //!   screen: the prompt and the status line stay on the bottom rows while
 //!   the conversation scrolls above them with the mouse wheel or PgUp and
-//!   PgDn, a drag over it selects and copies, and on the way out the
-//!   conversation is printed onto the shell's screen. `inline` draws at the bottom of the normal screen and leaves
+//!   PgDn, a drag over it selects and copies, and on the way out the shell's
+//!   screen comes back as it was, with the line that resumes the session. `inline` draws at the bottom of the normal screen and leaves
 //!   the conversation in the terminal's own scrollback (`term`), for a
 //!   terminal where the alternate screen or the mouse is unwelcome. Read
 //!   when the TUI starts.

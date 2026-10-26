@@ -115,16 +115,6 @@ impl<W: Write> Screen<W> {
         }
     }
 
-    /// Leaving: fullscreen prints the conversation onto the shell's screen;
-    /// inline's is in scrollback already.
-    pub fn leave(&mut self) -> io::Result<()> {
-        self.finish()?;
-        match self {
-            Screen::Full(t) => t.print_conversation(),
-            Screen::Inline(_) => Ok(()),
-        }
-    }
-
     /// Scrolls the conversation `by` rows, up when positive; false when
     /// the terminal scrolls it instead (inline).
     pub fn scroll(&mut self, by: isize) -> bool {

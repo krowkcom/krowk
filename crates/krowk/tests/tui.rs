@@ -2088,8 +2088,9 @@ fn bottom(screen: &str, n: usize) -> Vec<String> {
 
 /// Fullscreen: the conversation scrolls with PgUp/PgDn and the wheel while
 /// the prompt and the status line stay on the bottom rows; Enter goes back
-/// to the bottom; a drag selects and copies; leaving gives the shell's screen back with every line of
-/// the conversation printed on it once.
+/// to the bottom; a drag selects and copies; leaving gives the shell's
+/// screen back as it was, with the line that resumes the session and none
+/// of the conversation.
 #[test]
 fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conversation_scrolls() {
     let m = streamed(120, Duration::from_micros(100));
@@ -2148,11 +2149,8 @@ fn fullscreen_the_prompt_and_status_line_stay_on_the_bottom_rows_while_the_conve
     assert_eq!(tm.tmux(&["display", "-p", "-t", "t", "#{alternate_on}"]).trim(), "0", "the shell's screen back");
     let history = tm.history();
     assert!(history.contains("krowk-exit=0"), "krowk exited 0: {history}");
-    assert!(history.find("shell-was-here").unwrap() < history.find("write it all out").unwrap(), "printed under what the shell had: {history}");
-    let want: Vec<String> = mock::numbered_lines(120).lines().map(String::from).collect();
-    let got: Vec<&str> = history.lines().filter(|l| l.starts_with("line ")).collect();
-    assert_eq!(got.len(), 2 * want.len(), "both answers, every line once each:\n{history}");
-    assert!(got.iter().zip(want.iter().chain(&want)).all(|(g, w)| g == w), "in order, byte for byte");
+    assert!(history.find("shell-was-here").unwrap() < history.find("krowk --resume ").unwrap(), "the resume line under what the shell had: {history}");
+    assert!(!history.contains("write it all out") && !history.lines().any(|l| l.starts_with("line ")), "none of the conversation printed:\n{history}");
     assert_eq!(history.matches("to interrupt").count() + history.matches("more below").count(), 0, "no live row left behind:\n{history}");
 }
 
@@ -2197,7 +2195,8 @@ fn fullscreen_takes_the_alternate_screen_and_gives_everything_back() {
         assert_eq!(out.matches(seq).count(), n, "{seq:?}: {out:?}");
     }
     assert!(!out.contains("\x1b[?1003h"), "no motion reported without a button down: {out:?}");
-    assert!(out.find("\x1b[?1049l").unwrap() < out.rfind("Directory").unwrap(), "the header printed again on the shell's screen: {out:?}");
+    let left = &out[out.find("\x1b[?1049l").unwrap()..];
+    assert!(!left.contains("Directory"), "nothing of the conversation printed on the shell's screen: {out:?}");
     assert!(out.ends_with("\x1b[?2004l\x1b[?25h"), "bracketed paste off and the cursor back, last: {out:?}");
 }
 
