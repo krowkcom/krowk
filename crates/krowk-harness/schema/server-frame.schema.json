@@ -2132,7 +2132,7 @@
           "type": "string"
         },
         "running": {
-          "description": "A turn of it is under way.",
+          "description": "A turn in this daemon holds it, from the moment the prompt is\naccepted until the turn lets go as its command ends, or a backend\nruns it as an agent: while a prompt to it through this daemon is\nrefused as `session_busy` for that reason. (One run by another krowk\nprocess is refused too, and not shown here.)",
           "type": "boolean"
         },
         "clients": {

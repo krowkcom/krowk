@@ -155,6 +155,10 @@ struct Running {
     /// A backend's agent (R-SUB-7): its turn is the backend's, which krowk
     /// cannot steer, and stops by asking the backend (R-SUB-10).
     backend_child: Option<BackendTask>,
+    /// The turn has taken its switch and is letting go: it still holds the
+    /// log, so a prompt is refused as busy, but a `switchModel` now waits
+    /// for the log rather than being kept for a turn that has closed.
+    closing: bool,
 }
 
 /// A backend's agent, as the backend knows it: the session whose backend
@@ -335,7 +339,7 @@ struct ChildHeld {
 
 impl ChildHeld {
     fn new(shared: &Arc<Shared>, id: &str, task: BackendTask) -> ChildHeld {
-        let running = Running { cancel: Arc::new(watch::channel(false).0), steers: Steers::default(), switch: None, backend_child: Some(task) };
+        let running = Running { cancel: Arc::new(watch::channel(false).0), steers: Steers::default(), switch: None, backend_child: Some(task), closing: false };
         shared.running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), running);
         ChildHeld { shared: Arc::downgrade(shared), id: id.to_string() }
     }
@@ -458,6 +462,13 @@ impl Host {
     /// background children — as the status line has it (`background`).
     pub fn background_of(&self, session: &str) -> u32 {
         self.shared.jobs.counted(session) as u32
+    }
+
+    /// Whether `session` is held running here — a turn's, from its
+    /// prompt's acceptance until its command lets go, or a backend's agent
+    /// — so that a prompt to it is refused as busy.
+    pub fn holds(&self, session: &str) -> bool {
+        self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session)
     }
 
     /// Every background job running here, as (session, id): what
@@ -995,7 +1006,9 @@ impl Shared {
         self.check_model(&model, past.cwd.as_deref().unwrap_or(&self.cfg.cwd), past.model.as_ref()).await?;
         {
             let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(r) = running.get_mut(id) {
+            if let Some(r) = running.get_mut(id)
+                && !r.closing
+            {
                 r.switch = Some(model);
                 return Ok(());
             }
@@ -1012,7 +1025,9 @@ impl Shared {
                     tries += 1;
                     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                     let mut running = self.running.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(r) = running.get_mut(id) {
+                    if let Some(r) = running.get_mut(id)
+                        && !r.closing
+                    {
                         r.switch = Some(model);
                         return Ok(());
                     }
@@ -1670,6 +1685,57 @@ impl Rolling {
     }
 }
 
+/// For tests (`test-hooks`): where a turn waits while a `Held` for it
+/// lives, still holding its session.
+#[cfg(feature = "test-hooks")]
+#[derive(Clone, Copy)]
+pub enum HoldAt {
+    /// Before its `turn.started`, as a backend slow to set up would hold it.
+    Start,
+    /// After its `turn.completed` is logged, before its result goes out.
+    Result,
+}
+
+#[cfg(feature = "test-hooks")]
+static HOLDS: [std::sync::LazyLock<watch::Sender<bool>>; 2] = [std::sync::LazyLock::new(|| watch::channel(false).0), std::sync::LazyLock::new(|| watch::channel(false).0)];
+
+/// For tests (`test-hooks`): holds every turn that reaches `at` from here
+/// on, until the guard goes. Process-wide, as `log::simulate_slow_disk`.
+#[cfg(feature = "test-hooks")]
+#[must_use = "turns are held only while the guard lives"]
+pub fn hold_turns(at: HoldAt) -> Held {
+    HOLDS[at as usize].send_replace(true);
+    Held(at)
+}
+
+/// Turns are held at a place while this lives (`hold_turns`).
+#[cfg(feature = "test-hooks")]
+pub struct Held(HoldAt);
+
+#[cfg(feature = "test-hooks")]
+impl Held {
+    /// How many turns wait at the hold now.
+    pub fn waiting(&self) -> usize {
+        HOLDS[self.0 as usize].receiver_count()
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+impl Drop for Held {
+    fn drop(&mut self) {
+        HOLDS[self.0 as usize].send_replace(false);
+    }
+}
+
+#[cfg(feature = "test-hooks")]
+async fn held(at: HoldAt) {
+    let hold = &HOLDS[at as usize];
+    if *hold.borrow() {
+        let mut rx = hold.subscribe();
+        let _ = rx.wait_for(|held| !held).await;
+    }
+}
+
 /// A turn's hold on its session in this host: its cancel switch, its
 /// steering, and a `switchModel` for after it — from before the log is
 /// opened until the turn lets go. Let go of on drop, however it ends.
@@ -1679,12 +1745,14 @@ struct Registration {
     cancel: Arc<watch::Sender<bool>>,
     cancel_rx: watch::Receiver<bool>,
     steers: Steers,
+    /// `finish` has closed the turn.
+    closed: bool,
 }
 
 impl Registration {
     fn new(shared: Arc<Shared>) -> Registration {
         let (tx, rx) = watch::channel(false);
-        Registration { shared, id: None, cancel: Arc::new(tx), cancel_rx: rx, steers: Steers::default() }
+        Registration { shared, id: None, cancel: Arc::new(tx), cancel_rx: rx, steers: Steers::default(), closed: false }
     }
 
     fn register(&mut self, id: &str) -> Result<(), EngineError> {
@@ -1692,25 +1760,40 @@ impl Registration {
         if running.contains_key(id) {
             return Err(EngineError::new("session_busy", format!("session {id} has a turn running here already — wait for it, or steer it")));
         }
-        running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: None });
+        running.insert(id.to_string(), Running { cancel: self.cancel.clone(), steers: self.steers.clone(), switch: None, backend_child: None, closing: false });
         self.id = Some(id.to_string());
         // A background job's note, held for this turn, is read first.
         self.shared.jobs.attach(id, &self.steers);
         Ok(())
     }
 
-    /// Lets go, and returns the switch that arrived for after the turn.
+    /// Closes the turn, and returns the switch that arrived for after it.
+    /// The session stays held, as its log does, until the registration
+    /// goes: a prompt meanwhile is refused as busy, and says so in
+    /// `status` (`Host::holds`).
     fn finish(&mut self) -> Option<ModelRef> {
-        let id = self.id.take()?;
+        let id = self.id.as_deref()?;
+        if self.closed {
+            return None;
+        }
+        self.closed = true;
         let notes = self.steers.close().into_iter().filter(|s| s.from_krowk).collect();
-        self.shared.jobs.detach(&id, notes);
-        self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id).and_then(|r| r.switch)
+        self.shared.jobs.detach(id, notes);
+        let mut running = self.shared.running.lock().unwrap_or_else(|e| e.into_inner());
+        running.get_mut(id).and_then(|r| {
+            r.closing = true;
+            r.switch.take()
+        })
     }
 }
 
 impl Drop for Registration {
+    /// Lets go, after the log it held: a `TurnPlan` drops its log first.
     fn drop(&mut self) {
         let _ = self.finish();
+        if let Some(id) = self.id.take() {
+            self.shared.running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
+        }
     }
 }
 
@@ -2085,6 +2168,8 @@ impl Writer<'_> {
     /// A turn's opening records: a rollover that brought it to `model`,
     /// then `started`.
     async fn begin(&mut self, rolling: Option<&Rolling>, session_id: &str, model: &ModelRef, started: LogBody) -> Result<(), EngineError> {
+        #[cfg(feature = "test-hooks")]
+        held(HoldAt::Start).await;
         // A rollover is on the record only now that its turn has passed
         // every check, and every client is told: never silent (R-INST-8).
         if let Some(r) = rolling {
@@ -2147,6 +2232,8 @@ impl Writer<'_> {
     async fn finish(&mut self, completed: LogBody, status: TurnStatus, model: &ModelRef, after: Option<&(ModelRef, SwitchReason, String)>, here: &mut Registration, next: Option<Rolling>) -> Result<Option<Rolling>, EngineError> {
         let closed = self.close(completed, model, after, here, next).await;
         self.child_status(ended(status, closed.is_ok())).await;
+        #[cfg(feature = "test-hooks")]
+        held(HoldAt::Result).await;
         closed
     }
 

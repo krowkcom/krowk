@@ -672,7 +672,10 @@ fn status(s: &State) -> HostStatus {
         background: Some(s.hosts.values().map(|h| h.background()).sum()),
         background_sessions: Some(s.hosts.values().flat_map(|h| h.background_sessions()).collect()),
         bridged: s.opts.bridged.as_ref().and_then(|b| b.lock().map(|s| s.iter().cloned().collect()).ok()),
-        sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running, clients: h.followers.len() as u32, answering: s.answering(h) }).collect(),
+        // Running as a prompt to it is refused as busy: held by a turn on any
+        // of the hosts, from its acceptance to its command's end, not just
+        // between its `turn.started` and `turn.completed`.
+        sessions: hubs.into_iter().map(|(id, h)| HostSession { session_id: id.clone(), running: h.running || s.hosts.values().any(|x| x.holds(id)), clients: h.followers.len() as u32, answering: s.answering(h) }).collect(),
     }
 }
 
