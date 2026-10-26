@@ -343,7 +343,7 @@ pub struct Listed {
 /// has held signed, or whose key or index does not open under the user
 /// keys this device holds — one sealed under a generation newer than it
 /// has, say — is left out and counted, never an error: what fails it is a
-/// registry call, its error as the registry gave it. Blocking: a page of
+/// registry call, and its error is that call's. Blocking: a page of
 /// the listing and then one `show` a session, since a listing leaves the
 /// sealed index out.
 pub fn list(api: &Client, keys: &UserKeys, chain: &Chain) -> Result<(Vec<Listed>, usize), krowk_api::Error> {

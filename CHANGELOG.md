@@ -603,9 +603,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   read for the same reason now says the relay can't be reached and tries
   again, rather than stopping. The app library's `Account.listSessions`,
   `openSession`, `resumeSession` and `OpenedSession.catchUp` now fail
-  with `Network` when the registry or its storage is out of reach,
-  rate-limits or fails, rather than `Internal`; `listSessions` fails
-  with `Refused` and the registry's code for any other refusal (no
+  with `Network` when the registry can't be reached, rate-limits or
+  fails, or its storage can't be reached, rather than `Internal` (no
   version change). `krowk sync sessions` and `krowk hosts` now report a
   registry failure in the registry's own words and exit with its exit
   code (6 when it can't be reached), rather than as `sync_failed` with

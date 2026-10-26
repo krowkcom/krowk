@@ -484,6 +484,7 @@ fn r_ios_7_the_registry_out_of_reach_is_network_listing_opening_and_reading_on()
     *refusing.lock().unwrap() = Some("/_storage/");
     more(&mut h, 3..=3);
     network(phone.open_session(SESSION.into(), None, None));
+    network(phone.resume_session(SESSION.into(), place.clone(), None, None));
     network(opened.catch_up());
 
     *refusing.lock().unwrap() = None;

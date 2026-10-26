@@ -155,11 +155,15 @@ impl Account {
     /// Refused with `not_paired` until the phone holds the user keys and
     /// the device list. A registry call that fails fails the listing:
     /// `Network` when the registry can't be reached, rate-limits or fails
-    /// (5xx), else `Refused` with its code. Blocking: one call per page of
+    /// (5xx), else `Internal` with its code — never `Refused`, whose codes
+    /// the app reads as the phone's own. Blocking: one call per page of
     /// the listing and one per session; call it off the main thread.
     pub fn list_sessions(&self) -> Result<SessionList, KrowkError> {
         let (keys, chain) = self.paired()?;
-        let (listed, unreadable) = store::list(&self.client, &keys, &chain)?;
+        let (listed, unreadable) = store::list(&self.client, &keys, &chain).map_err(|e| {
+            let detail = e.to_string();
+            network_or_internal(Some(e), detail)
+        })?;
         Ok(SessionList { sessions: listed.into_iter().map(Into::into).collect(), unreadable: u32::try_from(unreadable).unwrap_or(u32::MAX) })
     }
 
@@ -170,7 +174,8 @@ impl Account {
     /// that head's place, is refused as `session_rolled_back`. One whose
     /// record or index this phone cannot open is refused as
     /// `session_unreadable`; `not_paired` as for `list_sessions`; the
-    /// registry out of reach, rate-limiting or failing (5xx) is `Network`;
+    /// registry out of reach, rate-limiting or failing (5xx), or the
+    /// storage its chunks are read from out of reach, is `Network`;
     /// a chunk that fails to read or open otherwise is `Internal`. The session keeps
     /// `relay_url(relay_override)` as its relay. Blocking: a few round
     /// trips, chunks fetched eight at a time; call it off the main thread.
@@ -328,8 +333,8 @@ impl OpenedSession {
     /// events. A read that fails, or new events that do not decode
     /// (`Decode`), leave the session where it was, so the next call reads
     /// them again rather than skipping them: `Network` when the registry
-    /// can't be reached, rate-limits or fails (5xx), else `Internal`, as
-    /// for `open_session`. Blocking: a round trip, more
+    /// or its storage can't be reached, or the registry rate-limits or
+    /// fails (5xx), else `Internal`, as for `open_session`. Blocking: a round trip, more
     /// when there is more; call it off the main thread. Two at once take
     /// turns; the other methods do not wait for it.
     pub fn catch_up(&self) -> Result<Vec<LogEvent>, KrowkError> {
@@ -431,13 +436,18 @@ fn read_failed(e: ReadError) -> KrowkError {
     if e.rolled_back { rolled_back(e.detail) } else { unreached(e) }
 }
 
-/// A read at rest that failed: `Network` when a registry or storage call
-/// did for want of the network (as `KrowkError::from` maps one), else
-/// `Internal` with the read's words.
+/// A read at rest that failed: as `network_or_internal`, with the read's
+/// words.
 fn unreached(e: ReadError) -> KrowkError {
-    match e.registry.map(KrowkError::from) {
+    network_or_internal(e.registry, e.detail)
+}
+
+/// `Network` when a registry or storage call failed for want of the
+/// network (as `KrowkError::from` maps one), else `Internal` with `detail`.
+fn network_or_internal(e: Option<krowk_api::Error>, detail: String) -> KrowkError {
+    match e.map(KrowkError::from) {
         Some(network @ KrowkError::Network { .. }) => network,
-        _ => internal(e.detail),
+        _ => internal(detail),
     }
 }
 
