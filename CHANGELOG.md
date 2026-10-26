@@ -601,8 +601,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   its second prompt before the first turn had started, because the
   daemon's `status` reports a session running only from `turn.started`
   to `turn.completed`, not for the whole command. That prompt was
-  refused as busy, so there was no second turn to wait for. The test now waits for an attach to say the first turn's command
-  is over. krowk itself is unchanged.
+  refused as busy, so there was no second turn to wait for. The test
+  now waits for an attach to say the first turn's command is over.
+  krowk itself is unchanged.
 - **The iPhone app says when krowk's registry can't be reached.** With
   the network down, the session list's footer read "Your sessions
   couldn't be listed." It now reads "krowk's registry couldn't be
