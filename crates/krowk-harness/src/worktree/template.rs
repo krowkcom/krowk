@@ -827,8 +827,9 @@ mod tests {
     }
 
     /// (btrfs) A worktree of this repository, from a clone of it: the
-    /// first makes the template, the next are snapshots of it, each well
-    /// under a second.
+    /// first makes the template, the next are snapshots of it, each costing
+    /// well under a second of CPU, and most of them (the median) under a
+    /// second from start to end.
     #[test]
     fn wt11_a_worktree_of_this_repository_takes_under_a_second() {
         let this = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -836,14 +837,21 @@ mod tests {
             eprintln!("not in a checkout of krowk: skipping");
             return;
         }
-        // Beside the build (`target/debug/deps/<test>`), on the checkout's
-        // file system, where its worktrees are made: a temp directory may
-        // be tmpfs, where no template is, and nothing would be measured.
+        // Beside the build (`target/debug/deps/<test>`), on a disk's file
+        // system: a temp directory may be tmpfs, where no template is, and
+        // nothing would be measured. Gone at the end, failed or not.
+        struct Gone(PathBuf);
+        impl Drop for Gone {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
         let exe = std::env::current_exe().unwrap();
         let beside = exe.parent().and_then(Path::parent).map_or_else(std::env::temp_dir, |d| d.join("tmp"));
         let base = beside.join(format!("krowk-worktree-wt11-this-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
+        let _gone = Gone(base.clone());
         let main = base.join("main");
         // No `--local`: with it, git dies where it cannot hard-link (another
         // file system) rather than copy.
@@ -851,7 +859,8 @@ mod tests {
         let root = base.join("worktrees");
         // The CPU time of this process and of the programs it ran and
         // waited for: what a creation costs, which a loaded machine's
-        // waiting for a CPU does not add to.
+        // waiting for a CPU does not add to. nextest runs the test in a
+        // process of its own, so no other test's work is counted.
         let cpu = || {
             let used = |who| {
                 // SAFETY: getrusage writes the struct it is given, zeroed.
@@ -874,7 +883,6 @@ mod tests {
         eprintln!("the first worktree of this repository ({how:?}, the template made): {took:?}");
         if how == Made::Checkout {
             eprintln!("no snapshots here: not measured");
-            let _ = std::fs::remove_dir_all(&base);
             return;
         }
         let mut times = Vec::new();
@@ -885,15 +893,16 @@ mod tests {
             assert_eq!(git_ok(&w.path, &["status", "--porcelain"]), "");
             times.push((took, used));
         }
-        // Each costs well under a second, and one at least took under a
-        // second from start to end: the fastest is what a snapshot takes,
-        // the rest what the machine's load added to it. The test runs with
-        // no other test beside it (.config/nextest.toml).
+        // Each costs well under a second of CPU; from start to end, which
+        // also counts waiting on the disk, the median is under a second:
+        // one snapshot the machine's load held up is let pass, not two. The
+        // test runs with no other test beside it (.config/nextest.toml).
         let second = std::time::Duration::from_secs(1);
         assert!(times.iter().all(|(_, used)| *used < second), "{times:?}");
-        assert!(times.iter().map(|(took, _)| *took).min().is_some_and(|t| t < second), "{times:?}");
+        let mut took: Vec<_> = times.iter().map(|(took, _)| *took).collect();
+        took.sort();
+        assert!(took[1] < second, "{times:?}");
         drop(first);
-        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// (btrfs) A snapshot that fails once it is made, the repository's lock

@@ -51,7 +51,8 @@ test-group = "switch"
 filter = "binary(daemon_ws)"
 threads-required = "num-test-threads"
 
-# So does the one timing a worktree of this repository made as a snapshot.
+# So does the one timing a worktree of this repository made as a snapshot:
+# about half a minute alone, most of it the clone, which is not timed.
 [[profile.default.overrides]]
 filter = "package(krowk-harness) & test(=worktree::template::tests::wt11_a_worktree_of_this_repository_takes_under_a_second)"
 threads-required = "num-test-threads"

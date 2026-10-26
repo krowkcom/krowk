@@ -379,8 +379,9 @@ pub fn words(text: &str) -> String {
             }
             // OSC: up to BEL or ST (ESC \).
             Some(']') => {
+                let mut chars = chars.by_ref().peekable();
                 while let Some(c) = chars.next() {
-                    if c == '\x07' || (c == '\x1b' && chars.next().is_some()) {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
                         break;
                     }
                 }
