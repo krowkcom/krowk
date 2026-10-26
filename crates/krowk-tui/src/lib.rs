@@ -74,6 +74,7 @@ pub mod synced {
         Host(bool),
         Path(String),
         Note(String),
+        ApprovalGone(String),
         Turn(mpsc::Receiver<StreamLine>, oneshot::Receiver<Result<Option<RunResult>, EngineError>>),
     }
     pub struct Opened {
