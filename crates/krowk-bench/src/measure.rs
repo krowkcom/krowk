@@ -38,10 +38,19 @@ pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     let mut c = Command::new(bin);
     c.env_clear()
         .env("HOME", home)
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", bare_path(&std::env::var_os("PATH").unwrap_or_default()))
         .current_dir(home)
         .stdin(Stdio::null());
     c
+}
+
+/// `path` less every directory holding a CLI krowk connects by finding it
+/// on PATH (`claude`, `codex`): with one there, krowk has more than the
+/// bench's API instance able to run a model, and `krowk -p` refuses to
+/// choose — so a machine with them installed measured nothing.
+fn bare_path(path: &std::ffi::OsStr) -> std::ffi::OsString {
+    let kept = std::env::split_paths(path).filter(|d| !["claude", "codex"].iter().any(|b| d.join(b).exists()));
+    std::env::join_paths(kept).unwrap_or_default()
 }
 
 /// Wall time from spawn to exit, the median of `runs` new processes. One run
