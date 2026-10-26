@@ -37,13 +37,15 @@ pub enum Update {
     /// The host took it, or refused it.
     Acked { id: String, error: Option<String> },
     /// Events the chunks or the host held that the live stream did not
-    /// bring.
+    /// bring. A catch-up this viewer asked for ends with one, empty when
+    /// it brought nothing new, so a screen holding "catching up" since a
+    /// `Gap` knows it is over.
     CaughtUp(Vec<serde_json::Value>),
     /// The path the session now comes by: `relay`, `direct over Tailscale`
     /// or `direct over LAN`, and the address when direct (R-NET-2).
     Path { path: String, via: Option<String> },
     /// The relay dropped a batch: the host is asked for what it held, and
-    /// `CaughtUp` follows.
+    /// `CaughtUp` follows once nothing more is asked.
     Gap,
     /// Something the viewer cannot go on from.
     Failed(String),
@@ -55,6 +57,10 @@ pub enum Update {
     /// The host's answer to a handoff this viewer asked for (R-HAND-1):
     /// what this device takes the session up with, or why it stays.
     Handoff(Result<super::Handed, String>),
+    /// An approval request shown and not answered here was resolved while
+    /// this viewer was away: a host's welcome no longer names it. How it
+    /// was answered is not known; that it waits no more is.
+    ApprovalGone(String),
     /// Where this viewer stands as of the `Show` it ends, the last update
     /// of one that moved it: what a device keeping its place across
     /// launches saves with the events that `Show` holds, in one write.
@@ -715,7 +721,7 @@ impl ViewerCore {
         match self.reading.take() {
             None => {}
             Some(Reading::Resync) => match read {
-                Ok((fresh, a)) => self.caught_up(fresh, a),
+                Ok((fresh, a)) => self.caught_up(fresh, a, true),
                 Err(e) if e.permanent => self.fail(e.detail),
                 Err(_) => {}
             },
@@ -723,7 +729,7 @@ impl ViewerCore {
             Some(Reading::Welcome(w)) => match read {
                 Ok((fresh, a)) => {
                     (self.unread, self.reread_ms) = (None, RETRY_MS);
-                    self.caught_up(fresh, a);
+                    self.caught_up(fresh, a, false);
                     self.welcomed_with(w);
                 }
                 Err(e) if e.permanent => self.fail(e.detail),
@@ -1094,11 +1100,12 @@ impl ViewerCore {
         }
     }
 
-    /// What the chunks held that was not seen yet, shown.
-    fn caught_up(&mut self, fresh: Vec<serde_json::Value>, a: Attached) {
+    /// What the chunks held that was not seen yet, shown; with nothing
+    /// new, said all the same when the read was a catch-up (`asked`).
+    fn caught_up(&mut self, fresh: Vec<serde_json::Value>, a: Attached, asked: bool) {
         let fresh = fresh_only(fresh, &mut self.seen, &mut self.last_id);
         self.at_rest = a;
-        if !fresh.is_empty() {
+        if asked || !fresh.is_empty() {
             self.frame.push(Update::CaughtUp(fresh));
         }
     }
@@ -1167,9 +1174,18 @@ impl ViewerCore {
 
     /// The welcome, once the chunks reach its head: the host shown, its
     /// approvals, the catch-up and the commands, then the batches held.
+    /// A request shown before that the welcome no longer names was
+    /// resolved while this viewer was away: said gone.
     fn welcomed_with(&mut self, w: Welcome) {
         self.host = true;
         self.frame.push(Update::Host(true));
+        let waiting: HashSet<&str> = w.approvals.iter().map(|r| r.request_id.as_str()).collect();
+        let mut gone: Vec<String> = self.asked.iter().filter(|id| !waiting.contains(id.as_str())).cloned().collect();
+        gone.sort();
+        for id in gone {
+            self.asked.remove(&id);
+            self.frame.push(Update::ApprovalGone(id));
+        }
         for r in w.approvals {
             if self.asked.insert(r.request_id.clone()) {
                 self.frame.push(Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))));
@@ -1241,13 +1257,16 @@ impl ViewerCore {
     }
 
     /// A page of the catch-up in flight: what it holds not seen yet shown,
-    /// and on the last page, a gap it did not cover asked now.
+    /// and on the last page, a gap it did not cover asked now. The last
+    /// page with nothing asked after it is said even when it brings
+    /// nothing new: every gap shown is caught up.
     fn caught_up_page(&mut self, events: Vec<serde_json::Value>, more: bool) {
         let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
-        if !fresh.is_empty() {
+        let next = if more { None } else { self.catch_ups.done() };
+        if !fresh.is_empty() || (!more && next.is_none()) {
             self.frame.push(Update::CaughtUp(fresh));
         }
-        if !more && let Some(after) = self.catch_ups.done() {
+        if let Some(after) = next {
             self.ask_catch_up(after);
         }
     }

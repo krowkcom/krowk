@@ -491,6 +491,78 @@ fn r_perm_2_a_welcomes_approvals_show_once() {
     assert_eq!(n, 0, "not again: {shown:?}");
 }
 
+/// R-PERM-2 (ticket 145): requests shown, then the viewer away, and a
+/// rejoin whose welcome names only one of them: the others were answered
+/// elsewhere meanwhile, and are said gone, once, before the requests the
+/// welcome names. The next welcome says nothing more.
+#[test]
+fn r_perm_2_a_request_resolved_while_away_is_gone_at_the_rejoin() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    let b = r.batch(vec![approval("r1"), approval("r2"), approval("r3")], false);
+    r.receive(&b);
+    r.at(16).tick();
+    r.updates();
+    r.at(5_000).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
+    r.joined(true, 0);
+    let waiting: ApprovalRequest = serde_json::from_value(approval("r2")).unwrap();
+    r.welcome_with(Welcome { approvals: vec![waiting.clone()], ..Welcome::default() });
+    r.read(Ok((vec![], Attached::default())));
+    r.at(5_016).tick();
+    let shown = r.updates();
+    let gone: Vec<&str> = shown.iter().filter_map(|u| if let Update::ApprovalGone(id) = u { Some(id.as_str()) } else { None }).collect();
+    assert_eq!(gone, ["r1", "r3"], "{shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(_))))), "r2 was shown already: {shown:?}");
+
+    // Gone, it is asked no more: the stream bringing r1 again shows it.
+    let b = r.batch(vec![approval("r1")], false);
+    r.receive(&b);
+    r.at(5_032).tick();
+    assert!(r.updates().iter().any(|u| matches!(u, Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(a))) if a.request_id == "r1")));
+    r.at(9_000).control(json!({"type": "resync", "reason": "stream", "stream": "00", "seq": 0}));
+    r.joined(true, 0);
+    let again: ApprovalRequest = serde_json::from_value(approval("r1")).unwrap();
+    r.welcome_with(Welcome { approvals: vec![waiting, again], ..Welcome::default() });
+    r.read(Ok((vec![], Attached::default())));
+    r.at(9_016).tick();
+    let shown = r.updates();
+    assert!(!shown.iter().any(|u| matches!(u, Update::ApprovalGone(_))), "all still waiting: {shown:?}");
+}
+
+/// R-OFF-2 (ticket 145): every catch-up the viewer asks for ends with a
+/// `CaughtUp`, empty when the host had nothing the viewer had not seen
+/// (the batch the relay dropped held only live lines): a screen showing
+/// "catching up" since the `Gap` hears that it is over. A page with more
+/// to come, or a last page with a catch-up owed after it, says nothing.
+#[test]
+fn r_off_2_an_empty_catch_up_still_says_caught_up() {
+    let mut r = Relay::new(vec![], 0);
+    r.live();
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.at(16).tick();
+    let shown = r.updates();
+    assert!(shown.iter().any(|u| matches!(u, Update::CaughtUp(e) if e.is_empty())), "the welcome's catch-up ended: {shown:?}");
+
+    let (b1, _b2, b3) = (r.batch(vec![logged(1)], false), r.batch(vec![], false), r.batch(vec![logged(3)], false));
+    r.receive(&b1);
+    r.receive(&b3);
+    let (_b4, b5) = (r.batch(vec![], false), r.batch(vec![logged(5)], false));
+    r.receive(&b5);
+    r.at(32).tick();
+    let shown = r.updates();
+    assert_eq!(shown.iter().filter(|u| matches!(u, Update::Gap)).count(), 2, "{shown:?}");
+    assert!(!shown.iter().any(|u| matches!(u, Update::CaughtUp(_))), "{shown:?}");
+
+    r.answer(&Answer::CatchUp { events: vec![], more: true });
+    r.answer(&Answer::CatchUp { events: vec![serde_json::from_value(logged(3)).unwrap()], more: false });
+    r.at(48).tick();
+    let shown = r.updates();
+    assert!(!shown.iter().any(|u| matches!(u, Update::CaughtUp(_))), "the second gap's catch-up is still out: {shown:?}");
+    r.answer(&Answer::CatchUp { events: vec![], more: false });
+    r.at(64).tick();
+    assert!(matches!(r.updates().as_slice(), [Update::CaughtUp(e)] if e.is_empty()), "the last one, with nothing new");
+}
+
 /// R-OFF-2: a host arriving while the viewer waits for one joins again; the
 /// relay closing joins again a second later; a refused join is said once
 /// and tried again every second.

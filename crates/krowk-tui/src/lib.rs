@@ -1939,6 +1939,7 @@ impl<'h> Ui<'h> {
             }
             synced::Event::Path(p) => status.path = Some(p),
             synced::Event::Note(n) => app.notice(&n),
+            synced::Event::ApprovalGone(id) => app.answered(&id),
             synced::Event::Turn(rx, done) => {
                 if self.turn.is_some() {
                     return;
