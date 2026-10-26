@@ -256,6 +256,21 @@ impl Pty {
         None
     }
 
+    /// As `wait_for`, on the output's words: its escape sequences taken out
+    /// and every run of spaces and line breaks one space, so a hint the TUI
+    /// wrapped (at a width a long path pushes it to) still matches.
+    pub fn wait_for_words(&self, needle: &str, timeout: Duration) -> Option<Instant> {
+        let needle = words(needle);
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if words(&self.text()).contains(&needle) {
+                return Some(Instant::now());
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        None
+    }
+
     /// The screen the output draws, a row a line, as far as the TUI's own
     /// drawing goes (`screen`). What `wait_for` cannot see: a frame draws
     /// only the cells that changed, so a row's words can arrive with a cell
@@ -341,6 +356,40 @@ impl Drop for Pty {
     fn drop(&mut self) {
         self.kill();
     }
+}
+
+/// `text` without its escape sequences (CSI, OSC and two-byte ones), its
+/// words one space apart.
+pub fn words(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\x1b' {
+            plain.push(c);
+            continue;
+        }
+        match chars.next() {
+            // CSI: parameters up to a final byte, @ to ~.
+            Some('[') => {
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: up to BEL or ST (ESC \).
+            Some(']') => {
+                let mut chars = chars.by_ref().peekable();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' || (c == '\x1b' && chars.next_if_eq(&'\\').is_some()) {
+                        break;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    plain.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `out` played onto a `cols` by `rows` screen that starts blank with the
