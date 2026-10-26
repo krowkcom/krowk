@@ -225,7 +225,7 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
         Err(e) if e.status == 404 => Vec::new(),
         Err(e) => return Err(e),
     };
-    let (listed, _) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
+    let (listed, _) = viewer::list(&api, &k.user, &k.chain)?;
     let mut unopened = 0;
     let announced: Vec<Announced> = presences
         .into_iter()
@@ -354,7 +354,7 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = signed(ctx, &k, "krowk sync sessions")?;
-    let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain).map_err(|e| fail("sync_failed", e))?;
+    let (listed, unreadable) = viewer::list(&api, &k.user, &k.chain)?;
     let rows: Vec<_> = listed.iter().map(|s| json!({"id": s.id, "title": s.index.title, "cwd": s.index.cwd, "updatedMs": s.index.updated_ms, "host": s.holder})).collect();
     if ctx.format == crate::output::Format::Json {
         return ctx.emit(&json!({"sessions": rows, "unreadable": unreadable}).to_string());

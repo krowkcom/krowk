@@ -153,12 +153,17 @@ impl Account {
     /// record checked against the device list it holds and its index
     /// unsealed; the rest are counted in `unreadable`, not an error.
     /// Refused with `not_paired` until the phone holds the user keys and
-    /// the device list. A registry call that fails fails the listing, as
-    /// `Internal` with the registry's words. Blocking: one call per page of
+    /// the device list. A registry call that fails fails the listing:
+    /// `Network` when the registry can't be reached, rate-limits or fails
+    /// (5xx), else `Internal` with its code — never `Refused`, whose codes
+    /// the app reads as the phone's own. Blocking: one call per page of
     /// the listing and one per session; call it off the main thread.
     pub fn list_sessions(&self) -> Result<SessionList, KrowkError> {
         let (keys, chain) = self.paired()?;
-        let (listed, unreadable) = store::list(&self.client, &keys, &chain).map_err(internal)?;
+        let (listed, unreadable) = store::list(&self.client, &keys, &chain).map_err(|e| {
+            let detail = e.to_string();
+            network_or_internal(Some(e), detail)
+        })?;
         Ok(SessionList { sessions: listed.into_iter().map(Into::into).collect(), unreadable: u32::try_from(unreadable).unwrap_or(u32::MAX) })
     }
 
@@ -168,8 +173,10 @@ impl Account {
     /// it before (`OpenedSession::head`, kept) — or holds another chunk at
     /// that head's place, is refused as `session_rolled_back`. One whose
     /// record or index this phone cannot open is refused as
-    /// `session_unreadable`; `not_paired` as for `list_sessions`; a chunk
-    /// that fails to read or open is `Internal`. The session keeps
+    /// `session_unreadable`; `not_paired` as for `list_sessions`; the
+    /// registry out of reach, rate-limiting or failing (5xx), or the
+    /// storage its chunks are read from out of reach, is `Network`;
+    /// a chunk that fails to read or open otherwise is `Internal`. The session keeps
     /// `relay_url(relay_override)` as its relay. Blocking: a few round
     /// trips, chunks fetched eight at a time; call it off the main thread.
     pub fn open_session(&self, id: String, known: Option<HeadRecord>, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
@@ -183,7 +190,7 @@ impl Account {
         // `attach`, so a rollback is told apart from a read that failed: the
         // same two checks `attach` makes, in the same order.
         let sealed_head = index.head;
-        let mut attached = store::attach(&self.client, &key, &id, store::Index { head: None, ..index }, None).map_err(internal)?;
+        let mut attached = store::attach(&self.client, &key, &id, store::Index { head: None, ..index }, None).map_err(unreached)?;
         Head::at_least(&attached.heads, sealed_head).map_err(rolled_back)?;
         Head::at_least(&attached.heads, known).map_err(rolled_back)?;
         attached.index.head = sealed_head;
@@ -201,7 +208,7 @@ impl Account {
     /// `Internal` — a chunk after `place` that does not open where it was
     /// served (another log). A `place` no reading stopped at, or whose
     /// digests are not 32 bytes, is `InvalidInput`. Otherwise as
-    /// `open_session`. A `Viewer` opened on the session knows only the
+    /// `open_session`, `Network` included. A `Viewer` opened on the session knows only the
     /// events after `place`: the app hands it what it kept (ticket 131).
     /// Blocking; call it off the main thread.
     pub fn resume_session(&self, id: String, place: ReadPlaceRecord, known: Option<HeadRecord>, relay_override: Option<String>) -> Result<Arc<OpenedSession>, KrowkError> {
@@ -325,7 +332,9 @@ impl OpenedSession {
     /// Reads what the host wrote since the last read and returns only those
     /// events. A read that fails, or new events that do not decode
     /// (`Decode`), leave the session where it was, so the next call reads
-    /// them again rather than skipping them. Blocking: a round trip, more
+    /// them again rather than skipping them: `Network` when the registry
+    /// or its storage can't be reached, or the registry rate-limits or
+    /// fails (5xx), else `Internal`, as for `open_session`. Blocking: a round trip, more
     /// when there is more; call it off the main thread. Two at once take
     /// turns; the other methods do not wait for it.
     pub fn catch_up(&self) -> Result<Vec<LogEvent>, KrowkError> {
@@ -342,7 +351,7 @@ impl OpenedSession {
             (Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads }, a.events.len(), lent)
         };
         let decoded = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None)
-            .map_err(|e| internal(e.into()))
+            .map_err(unreached)
             .and_then(|fresh| decode(&fresh, before).map(|d| (fresh, d)));
         let mut a = self.attached();
         let (fresh, decoded) = match decoded {
@@ -422,9 +431,24 @@ fn rolled_back(detail: String) -> KrowkError {
 }
 
 /// A read at rest that failed: `session_rolled_back` when the log is not
-/// the one this phone read or was told of, else `Internal`.
+/// the one this phone read or was told of, else as `unreached`.
 fn read_failed(e: ReadError) -> KrowkError {
-    if e.rolled_back { rolled_back(e.detail) } else { internal(e.detail) }
+    if e.rolled_back { rolled_back(e.detail) } else { unreached(e) }
+}
+
+/// A read at rest that failed: as `network_or_internal`, with the read's
+/// words.
+fn unreached(e: ReadError) -> KrowkError {
+    network_or_internal(e.registry, e.detail)
+}
+
+/// `Network` when a registry or storage call failed for want of the
+/// network (as `KrowkError::from` maps one), else `Internal` with `detail`.
+fn network_or_internal(e: Option<krowk_api::Error>, detail: String) -> KrowkError {
+    match e.map(KrowkError::from) {
+        Some(network @ KrowkError::Network { .. }) => network,
+        _ => internal(detail),
+    }
 }
 
 /// The log's events, the first of them the `from`th read since the
