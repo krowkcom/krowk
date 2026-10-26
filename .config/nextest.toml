@@ -53,7 +53,7 @@ threads-required = "num-test-threads"
 
 # So does the one timing a worktree of this repository made as a snapshot:
 # about half a minute alone, most of it the clone and the first worktree,
-# neither timed.
+# neither held to the second.
 [[profile.default.overrides]]
 filter = "package(krowk-harness) & test(=worktree::template::tests::wt11_a_worktree_of_this_repository_takes_under_a_second)"
 threads-required = "num-test-threads"

@@ -874,16 +874,18 @@ mod tests {
             };
             used(libc::RUSAGE_SELF) + used(libc::RUSAGE_CHILDREN)
         };
-        // A snapshot commits a btrfs transaction, which first writes back
-        // what is waiting on the file system: the clone's files, and on a
-        // loaded machine every other writer's (a build, the other tests).
-        // Written back before the clock starts, so it times the snapshot,
-        // not the backlog it found.
+        // A snapshot commits a btrfs transaction, which queues behind the
+        // writeback the file system has left over (the build's output, the
+        // earlier tests' files). Written back before the clock starts, so
+        // it times the snapshot, not the backlog it found.
         let written_back = || {
             #[cfg(target_os = "linux")]
             if let Ok(f) = std::fs::File::open(&base) {
-                // SAFETY: syncfs only reads the open descriptor it is given.
-                unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&f)) };
+                let at = std::time::Instant::now();
+                // SAFETY: syncfs takes only a descriptor, open and owned by
+                // `f` for the call; no memory is passed.
+                let r = unsafe { libc::syncfs(std::os::fd::AsRawFd::as_raw_fd(&f)) };
+                eprintln!("written back first: {:?} ({r})", at.elapsed());
             }
         };
         let timed = |owner: &str| {
@@ -906,7 +908,7 @@ mod tests {
             assert_eq!(git_ok(&w.path, &["status", "--porcelain"]), "");
             times.push((took, used));
         }
-        // Each costs well under a second of CPU; from start to end, which
+        // Each costs under a second of CPU; from start to end, which
         // also counts waiting on the disk, the median is under a second:
         // one snapshot the machine's load held up is let pass, not two. The
         // test runs with no other test beside it (.config/nextest.toml).
