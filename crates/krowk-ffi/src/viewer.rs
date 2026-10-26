@@ -182,14 +182,15 @@ pub enum ViewerUpdate {
     /// The host took the command `id`, or refused it with `error`.
     Acked { id: String, error: Option<String> },
     /// Logged events the live stream did not bring: from the chunks or the
-    /// host's catch-up. A catch-up the core asked for ends with one, its
-    /// `events` empty when it brought nothing new.
+    /// host's catch-up, a page at a time. The last page of a catch-up the
+    /// core asked for, none owed after it, crosses as one even with
+    /// nothing new, its `events` empty.
     CaughtUp { events: Vec<LogEvent> },
     /// The path the session comes by: `relay`, `direct over Tailscale` or
     /// `direct over LAN`, and the address when direct.
     Path { path: String, via: Option<String> },
     /// The relay dropped a batch: the host is asked for what it held, and
-    /// `CaughtUp` follows once nothing more is asked.
+    /// `CaughtUp` follows.
     Gap,
     /// Something went wrong. With an `End` after it the viewer cannot go
     /// on; without one, the update before it left out events this build

@@ -37,15 +37,16 @@ pub enum Update {
     /// The host took it, or refused it.
     Acked { id: String, error: Option<String> },
     /// Events the chunks or the host held that the live stream did not
-    /// bring. A catch-up this viewer asked for ends with one, empty when
-    /// it brought nothing new, so a screen holding "catching up" since a
-    /// `Gap` knows it is over.
+    /// bring, as each page of a catch-up brings them. The last page of a
+    /// catch-up this viewer asked for, with none owed after it, says one
+    /// even when it brought nothing new, empty: a screen holding
+    /// "catching up" since a `Gap` is never left waiting.
     CaughtUp(Vec<serde_json::Value>),
     /// The path the session now comes by: `relay`, `direct over Tailscale`
     /// or `direct over LAN`, and the address when direct (R-NET-2).
     Path { path: String, via: Option<String> },
     /// The relay dropped a batch: the host is asked for what it held, and
-    /// `CaughtUp` follows once nothing more is asked.
+    /// `CaughtUp` follows.
     Gap,
     /// Something the viewer cannot go on from.
     Failed(String),
@@ -1259,7 +1260,7 @@ impl ViewerCore {
     /// A page of the catch-up in flight: what it holds not seen yet shown,
     /// and on the last page, a gap it did not cover asked now. The last
     /// page with nothing asked after it is said even when it brings
-    /// nothing new: every gap shown is caught up.
+    /// nothing new, so a `Gap` is always followed by a `CaughtUp`.
     fn caught_up_page(&mut self, events: Vec<serde_json::Value>, more: bool) {
         let fresh = fresh_only(events, &mut self.seen, &mut self.last_id);
         let next = if more { None } else { self.catch_ups.done() };

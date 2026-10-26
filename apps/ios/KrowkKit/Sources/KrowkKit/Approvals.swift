@@ -403,14 +403,19 @@ public final class ApprovalQueue {
     }
 
     /// Resolved while the phone was away (the host's welcome on rejoining
-    /// no longer names it), how isn't known: one still waiting here goes.
-    /// One answered here and not yet acked stays for its ack, which the
+    /// no longer names it), how isn't known: one still waiting here goes,
+    /// and shows again should the host ask it again, as the core does. One
+    /// answered here and not yet acked stays for its ack, which the
     /// rejoin's resend brings: settled if the host took it, else dropped,
     /// never back on the sheet.
     public func gone(requestID: String) {
-        resolved.insert(requestID)
-        guard let at = held.firstIndex(where: { $0.prompt.requestID == requestID && !$0.isAnswered }) else { return }
+        guard let at = held.firstIndex(where: { $0.prompt.requestID == requestID }) else { return }
+        guard !held[at].isAnswered else {
+            resolved.insert(requestID)
+            return
+        }
         let gone = held.remove(at: at)
+        seen.remove(requestID)
         onEvent?(.dropped(gone.prompt, nil))
         onChange?()
     }
