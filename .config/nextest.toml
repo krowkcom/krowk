@@ -51,6 +51,11 @@ test-group = "switch"
 filter = "binary(daemon_ws)"
 threads-required = "num-test-threads"
 
+# So does the one timing a worktree of this repository made as a snapshot.
+[[profile.default.overrides]]
+filter = "package(krowk-harness) & test(=worktree::template::tests::wt11_a_worktree_of_this_repository_takes_under_a_second)"
+threads-required = "num-test-threads"
+
 # CI: a test that fails and then passes is reported FLAKY and the job goes on,
 # instead of the whole job being run again. One that fails three times fails.
 # Only the tests named below are retried, each a flake seen on a loaded runner

@@ -836,18 +836,41 @@ mod tests {
             eprintln!("not in a checkout of krowk: skipping");
             return;
         }
-        let base = std::env::temp_dir().join(format!("krowk-worktree-wt11-this-{}", std::process::id()));
+        // Beside the build (`target/debug/deps/<test>`), on the checkout's
+        // file system, where its worktrees are made: a temp directory may
+        // be tmpfs, where no template is, and nothing would be measured.
+        let exe = std::env::current_exe().unwrap();
+        let beside = exe.parent().and_then(Path::parent).map_or_else(std::env::temp_dir, |d| d.join("tmp"));
+        let base = beside.join(format!("krowk-worktree-wt11-this-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         let main = base.join("main");
-        git_ok(&base, &["clone", "-q", "--local", this.to_str().unwrap(), main.to_str().unwrap()]);
+        // No `--local`: with it, git dies where it cannot hard-link (another
+        // file system) rather than copy.
+        git_ok(&base, &["clone", "-q", this.to_str().unwrap(), main.to_str().unwrap()]);
         let root = base.join("worktrees");
-        let timed = |owner: &str| {
-            let at = std::time::Instant::now();
-            let made = create_fastest(&main, &root, owner, &WorktreesConfig::default()).unwrap();
-            (made, at.elapsed())
+        // The CPU time of this process and of the programs it ran and
+        // waited for: what a creation costs, which a loaded machine's
+        // waiting for a CPU does not add to.
+        let cpu = || {
+            let used = |who| {
+                // SAFETY: getrusage writes the struct it is given, zeroed.
+                let r = unsafe {
+                    let mut r: libc::rusage = std::mem::zeroed();
+                    assert_eq!(libc::getrusage(who, &mut r), 0);
+                    r
+                };
+                let t = |v: libc::timeval| std::time::Duration::new(v.tv_sec as u64, v.tv_usec as u32 * 1000);
+                t(r.ru_utime) + t(r.ru_stime)
+            };
+            used(libc::RUSAGE_SELF) + used(libc::RUSAGE_CHILDREN)
         };
-        let ((first, _h1, how), took) = timed("s1");
+        let timed = |owner: &str| {
+            let (at, cpu_at) = (std::time::Instant::now(), cpu());
+            let made = create_fastest(&main, &root, owner, &WorktreesConfig::default()).unwrap();
+            (made, at.elapsed(), cpu() - cpu_at)
+        };
+        let ((first, _h1, how), took, _) = timed("s1");
         eprintln!("the first worktree of this repository ({how:?}, the template made): {took:?}");
         if how == Made::Checkout {
             eprintln!("no snapshots here: not measured");
@@ -856,13 +879,19 @@ mod tests {
         }
         let mut times = Vec::new();
         for i in 0..3 {
-            let ((w, _h, how), took) = timed(&format!("s{}", i + 2));
-            eprintln!("a snapshot worktree of this repository ({how:?}): {took:?}");
+            let ((w, _h, how), took, used) = timed(&format!("s{}", i + 2));
+            eprintln!("a snapshot worktree of this repository ({how:?}): {took:?}, {used:?} of CPU");
             assert!(matches!(how, Made::Snapshot { .. }));
             assert_eq!(git_ok(&w.path, &["status", "--porcelain"]), "");
-            times.push(took);
+            times.push((took, used));
         }
-        assert!(times.iter().all(|t| *t < std::time::Duration::from_secs(1)), "{times:?}");
+        // Each costs well under a second, and one at least took under a
+        // second from start to end: the fastest is what a snapshot takes,
+        // the rest what the machine's load added to it. The test runs with
+        // no other test beside it (.config/nextest.toml).
+        let second = std::time::Duration::from_secs(1);
+        assert!(times.iter().all(|(_, used)| *used < second), "{times:?}");
+        assert!(times.iter().map(|(took, _)| *took).min().is_some_and(|t| t < second), "{times:?}");
         drop(first);
         let _ = std::fs::remove_dir_all(&base);
     }
