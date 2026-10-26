@@ -402,6 +402,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
   one line krowk leaves says how to open it again:
   `resume this session with: krowk --resume <id>`. Inline mode is
   unchanged: its conversation is in the terminal's scrollback already.
+- **The TUI's header sits a row below the top.** A new session's Krowk
+  mark no longer starts on the first row: one blank row above it matches
+  the padding on its left.
 - **A synced session's viewer moves its place only once a batch is shown.**
   `krowk sync attach`, and the iPhone app, ack the relay only for batches
   whose lines have been handed to the screen, and a batch that arrives but
