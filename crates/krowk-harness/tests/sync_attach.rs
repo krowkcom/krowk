@@ -4322,6 +4322,10 @@ async fn r_host_4_a_started_sessions_first_approval_waits_for_its_bridge() {
     }
     let held = followed(1, 1).await;
     assert!(held.running, "the turn ended: its approval was denied");
+    // Nor denied a moment before, its turn not over yet: a denied call's
+    // result is logged as the model is told.
+    let logged = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session_id).join(log::EVENTS_FILE)).unwrap();
+    assert!(!logged.iter().any(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::ToolResult { .. }, .. })), "its approval was denied: {logged:?}");
     assert!(!w.repo().join("approved.txt").exists());
     auto.stop(Duration::from_secs(10)).await;
 }
