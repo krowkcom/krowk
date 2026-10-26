@@ -596,6 +596,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   arrive in two pieces with a cursor move between them. It failed with
   "the next turn never answered" although the answer was on screen. The
   row now reads the screen.
+- **The daemon test `r_lag_4_a_done_held_while_behind…` no longer fails
+  now and then.** It wasn't the catching up: under load the test sent
+  its second prompt before the first turn had started, because the
+  daemon's `status` reports a session running only from `turn.started`.
+  That prompt was refused as busy, so there was no second turn to wait
+  for. The test now waits for an attach to say the first turn's command
+  is over. krowk itself is unchanged.
 - **The iPhone app says when krowk's registry can't be reached.** With
   the network down, the session list's footer read "Your sessions
   couldn't be listed." It now reads "krowk's registry couldn't be
