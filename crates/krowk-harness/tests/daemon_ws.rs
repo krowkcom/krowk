@@ -748,6 +748,10 @@ struct Raw {
     w: std::os::unix::net::UnixStream,
     r: std::io::BufReader<std::os::unix::net::UnixStream>,
     epoch: u64,
+    /// How many frames were read, and the last of them: where a read that
+    /// never came stalled, for a wait that times out only now and then.
+    read: usize,
+    last: String,
 }
 
 impl Raw {
@@ -759,7 +763,7 @@ impl Raw {
         use std::io::Write;
         let s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(20))).unwrap();
-        let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0 };
+        let mut raw = Raw { w: s.try_clone().unwrap(), r: std::io::BufReader::new(s), epoch: 0, read: 0, last: String::new() };
         let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: cwd.display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None, background: false };
         writeln!(raw.w, "{}", serde_json::to_string(&hello).unwrap()).unwrap();
         match raw.next() {
@@ -777,7 +781,11 @@ impl Raw {
     fn next(&mut self) -> ServerFrame {
         use std::io::BufRead;
         let mut line = String::new();
-        self.r.read_line(&mut line).expect("a frame in time");
+        if let Err(e) = self.r.read_line(&mut line) {
+            panic!("a frame in time: {e}; {} read, the last {}", self.read, self.last);
+        }
+        self.read += 1;
+        self.last = line.chars().take(200).collect();
         serde_json::from_str(&line).unwrap_or_else(|e| panic!("{e}: {line}"))
     }
 
