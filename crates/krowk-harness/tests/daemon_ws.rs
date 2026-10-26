@@ -882,7 +882,8 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     let mut w = Raw::connect(&home);
     w.send(&ClientFrame::Attach { id: 3, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None });
     let attached = w.until(|f| matches!(f, ServerFrame::Attached { id: 3, .. }));
-    if let Some(ServerFrame::Attached { running: true, .. }) = attached.last() {
+    let Some(ServerFrame::Attached { running, error: None, .. }) = attached.last() else { panic!("attached: {:?}", attached.last()) };
+    if *running {
         w.until(|f| matches!(f, ServerFrame::Settled { session: s } if *s == session));
     }
     drop(w);
@@ -909,8 +910,9 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     let done = all.iter().position(|f| matches!(f, ServerFrame::Done { id: 1, .. })).expect("the first turn's done came");
     let second_start = all.iter().enumerate().filter(|(_, f)| log_kind(f, true)).map(|(i, _)| i).nth(1).expect("the second turn started");
     assert!(first_end < done && done < second_start, "done at {done}, between its turn's end ({first_end}) and the next turn's start ({second_start})");
-    let caught_up = rt().block_on(async { home.client().await.status().await.unwrap().caught_up });
-    assert!(caught_up > 0, "it did fall behind");
+    // X itself was caught up, not just someone: a line replayed from the
+    // log has no `seq`.
+    assert!(all.iter().any(|f| matches!(f, ServerFrame::Line { seq: None, .. })), "it did fall behind");
     drop((x, y));
     daemon.join().unwrap().unwrap();
 }
