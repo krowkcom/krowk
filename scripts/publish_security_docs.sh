@@ -10,6 +10,7 @@
 # The checkout defaults to $KROWK_CANON, else ../krowk-canon beside this
 # repository's main checkout; the ref to origin/main.
 set -euo pipefail
+unset CDPATH
 canon=${1:-${KROWK_CANON:-}}
 [ -z "$canon" ] || canon=$(cd "$canon" && pwd)
 cd "$(dirname "$0")/.."
@@ -18,18 +19,14 @@ canon=${canon:-$main/../krowk-canon}
 ref=${2:-origin/main}
 sha=$(git -C "$canon" rev-parse --short=7 --verify "$ref^{commit}")
 
-# Both are written to a scratch directory first, so a copy that fails
-# leaves docs/security/ as it was.
-out=$(mktemp -d)
+# Both are written to a scratch directory beside them first, so a copy that
+# fails leaves docs/security/ as it was, and each move is a rename.
+out=$(mktemp -d docs/security/.publish.XXXXXX)
 trap 'rm -rf "$out"' EXIT
 publish() {
-  local name=$1 other=$2 body
-  body=$(git -C "$canon" show "$sha:engineering/$name.md")
-  {
-    printf '%s\n\n' "$(head -n 1 <<< "$body")"
-    printf '> Published from Canon, krowk'\''s private design repository (`engineering/%s.md` at %s). `%s.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.\n' "$name" "$sha" "$other"
-    tail -n +2 <<< "$body"
-  } > "$out/$name.md"
+  local name=$1 other=$2 note
+  note=$(printf '> Published from Canon, krowk'\''s private design repository (`engineering/%s.md` at %s). `%s.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.' "$name" "$sha" "$other")
+  git -C "$canon" show "$sha:engineering/$name.md" | NOTE=$note awk 'NR == 1 { print; print ""; print ENVIRON["NOTE"]; next } { print }' > "$out/$name.md"
 }
 
 publish threat-model crypto
