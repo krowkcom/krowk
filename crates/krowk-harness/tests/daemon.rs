@@ -1012,9 +1012,11 @@ fn r_host_1_status_counts_a_sessions_answering_followers() {
 
 /// R-HOST-1: a session's `running` in `status` agrees with whether a prompt
 /// to it is refused as busy — true from the moment a prompt is accepted,
-/// while its turn sets up before `turn.started`, not only once it started.
+/// while its turn sets up before `turn.started` and after its
+/// `turn.completed` until it lets go, not only in between.
 #[test]
 fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
+    use krowk_harness::host::{HoldAt, hold_turns};
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
     let home = Home::new("busy", &m.url);
     let daemon = home.serve(Some(Duration::from_millis(300)));
@@ -1029,31 +1031,39 @@ fn r_host_1_status_running_agrees_with_a_prompt_refused_as_busy() {
         };
         let running = |st: krowk_harness::protocol::HostStatus| st.sessions.into_iter().find(|x| x.session_id == s).map(|x| x.running);
         assert_eq!(running(a.status().await.unwrap()), Some(false), "nothing runs between turns");
-        // The next turn is accepted, and held before its `turn.started`.
-        let held = krowk_harness::host::hold_turn_starts();
-        let (tx, mut rx) = mpsc::channel(1024);
-        let mut first = Box::pin(a.execute(resume("again"), tx));
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
-        while held.waiting() == 0 {
-            assert!(std::time::Instant::now() < deadline, "the turn never reached its start");
-            tokio::select! {
-                r = &mut first => panic!("the turn ended before its start: {r:?}"),
-                () = tokio::time::sleep(Duration::from_millis(5)) => {}
-            }
-        }
-        while let Ok(l) = rx.try_recv() {
-            assert!(!matches!(l, StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. })), "held before its turn.started");
-        }
         let b = home.client().await;
+        for (at, logged, window) in [(HoldAt::Start, false, "before its turn.started"), (HoldAt::Result, true, "after its turn.completed")] {
+            // The next turn is accepted, and held there.
+            let held = hold_turns(at);
+            let (tx, mut rx) = mpsc::channel(1024);
+            let mut first = Box::pin(a.execute(resume("again"), tx));
+            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+            while held.waiting() == 0 {
+                assert!(std::time::Instant::now() < deadline, "the turn never reached the hold {window}");
+                tokio::select! {
+                    r = &mut first => panic!("the turn ended before the hold {window}: {r:?}"),
+                    () = tokio::time::sleep(Duration::from_millis(5)) => {}
+                }
+            }
+            let mut seen = (false, false);
+            while let Ok(l) = rx.try_recv() {
+                match l {
+                    StreamLine::Log(LogEvent { body: LogBody::TurnStarted { .. }, .. }) => seen.0 = true,
+                    StreamLine::Log(LogEvent { body: LogBody::TurnCompleted { .. }, .. }) => seen.1 = true,
+                    _ => {}
+                }
+            }
+            assert_eq!(seen, (logged, logged), "held {window}");
+            let (btx, _brx) = mpsc::channel(1024);
+            let refused = b.execute(resume("too"), btx).await.expect_err("a second prompt is refused meanwhile");
+            assert_eq!(refused.code, "session_busy", "{window}");
+            assert_eq!(running(b.status().await.unwrap()), Some(true), "status says it runs while a prompt is refused as busy, {window}");
+            drop(held);
+            first.await.unwrap().unwrap();
+        }
         let (btx, _brx) = mpsc::channel(1024);
-        let refused = b.execute(resume("too"), btx).await.expect_err("a second prompt is refused meanwhile");
-        assert_eq!(refused.code, "session_busy");
-        assert_eq!(running(b.status().await.unwrap()), Some(true), "status says it runs while a prompt is refused as busy");
-        drop(held);
-        first.await.unwrap().unwrap();
-        assert_eq!(running(a.status().await.unwrap()), Some(false), "and not once its command is over");
-        let (btx, _brx) = mpsc::channel(1024);
-        b.execute(resume("now"), btx).await.expect("a prompt is taken again");
+        b.execute(resume("now"), btx).await.expect("a prompt is taken once the turns are over");
+        assert_eq!(running(b.status().await.unwrap()), Some(false), "and not once its command is over");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();
