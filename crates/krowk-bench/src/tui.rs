@@ -301,7 +301,10 @@ pub fn replay_rss(bin: &Path, home: &Path) -> Outcome {
         let r = (|| {
             t.wait_for("resumed", Duration::from_secs(30)).ok_or_else(|| format!("the session was not replayed: {:?}", tail(&t.text())))?;
             t.write(b"continue\r");
-            t.wait_for("replayed-and-answered", Duration::from_secs(30)).ok_or_else(|| format!("the next turn never answered: {:?}", tail(&t.text())))?;
+            // On the screen, not in the bytes: the answer's last frame draws
+            // only the cells the one before it left wrong, so the word can
+            // arrive in pieces, and does when the frames fall that way.
+            t.wait_on_screen("replayed-and-answered", Duration::from_secs(30)).ok_or_else(|| format!("the next turn never answered: {:?}", tail(&t.screen())))?;
             let sent = m.seen.lock().unwrap().iter().map(|s| s.body.to_string().len()).max().unwrap_or(0);
             Ok((proc_status_kib(pid, "VmHWM:")? as f64 * 1024.0 / 1e6, sent))
         })();

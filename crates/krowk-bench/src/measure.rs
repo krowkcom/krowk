@@ -38,10 +38,52 @@ pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     let mut c = Command::new(bin);
     c.env_clear()
         .env("HOME", home)
-        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("PATH", bare_path(home))
         .current_dir(home)
         .stdin(Stdio::null());
     c
+}
+
+/// The CLIs krowk connects by finding them on PATH: with one there, krowk
+/// has more than the bench's API instance able to run a model, and
+/// `krowk -p` refuses to choose — a machine with them installed measured
+/// nothing.
+const AGENT_CLIS: [&str; 2] = ["claude", "codex"];
+
+/// The caller's PATH with each directory that holds one of `AGENT_CLIS`
+/// stood in for by a directory beside the homes (`home`'s parent, the
+/// work directory) of links to all it holds but those: the measured
+/// krowk still finds `git`, `sh` or `bwrap` there. Made once a run.
+fn bare_path(home: &Path) -> std::ffi::OsString {
+    static PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+    PATH.get_or_init(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let work = home.parent().unwrap_or(home).join("path");
+        let _ = std::fs::remove_dir_all(&work);
+        let dirs = std::env::split_paths(&path).enumerate().filter_map(|(i, d)| {
+            // A relative entry means nothing to the measured krowk, nor to
+            // the daemon it starts (which runs in `/`, where `usr/bin`
+            // would find a CLI): left out.
+            if !d.is_absolute() {
+                return None;
+            }
+            if cfg!(not(unix)) || !AGENT_CLIS.iter().any(|b| d.join(b).exists()) {
+                return Some(d);
+            }
+            let stand_in = work.join(i.to_string());
+            let _ = std::fs::create_dir_all(&stand_in);
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                #[cfg(unix)]
+                if !AGENT_CLIS.iter().any(|b| e.file_name() == *b) {
+                    let _ = std::os::unix::fs::symlink(e.path(), stand_in.join(e.file_name()));
+                }
+            }
+            Some(stand_in)
+        });
+        // Never the caller's PATH instead: that measures nothing again.
+        std::env::join_paths(dirs.collect::<Vec<_>>()).unwrap_or_else(|e| panic!("{} cannot stand in PATH entries: {e}", work.display()))
+    })
+    .clone()
 }
 
 /// Wall time from spawn to exit, the median of `runs` new processes. One run

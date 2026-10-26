@@ -574,6 +574,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`make bench` measures on a machine with Claude Code or Codex
+  installed.** The measured krowk inherited your `PATH`, so it found
+  `claude` and `codex` there, had three instances able to run a model,
+  and `krowk -p` refused to pick one: the engine, turn, token and redraw
+  rows failed with nothing measured. Each directory holding them is now
+  stood in for by one with everything else it holds, so the bench's own
+  API stand-in is the only instance, and `git` and the rest are still
+  found.
+- **`make bench`'s `session.replay_rss` row no longer fails now and
+  then.** It looked for the turn's answer in the bytes the TUI wrote,
+  but the TUI redraws only the cells that changed, so the answer could
+  arrive in two pieces with a cursor move between them. It failed with
+  "the next turn never answered" although the answer was on screen. The
+  row now reads the screen.
 - **A model switch made from another terminal or device is kept.** When
   a second terminal's `/model`, or a phone or other device synced to the
   session, moved it to another model between your turns, the TUI that

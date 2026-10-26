@@ -877,6 +877,17 @@ async fn until_or(v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Insta
     }
 }
 
+/// As `until_or`, for what may have come already: `got`, what an earlier
+/// wait read up to the end of the frame it stopped in. A frame holds all
+/// that arrived within it (R-LAG-7), so under load an ack and the turn's
+/// result can come in one, and a wait begun after it would never see it.
+async fn until_after(got: Vec<viewer::Update>, v: &mut viewer::Viewer, wait: Duration, frames: &mut Vec<Instant>, mut done: impl FnMut(&viewer::Update) -> bool, why: impl Fn() -> String) -> Vec<viewer::Update> {
+    if got.iter().any(&mut done) {
+        return got;
+    }
+    until_or(v, wait, frames, done, why).await
+}
+
 fn result_of(u: &viewer::Update) -> bool {
     matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::Result(_))))
 }
@@ -2454,16 +2465,17 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
 
     let mut ack = async |c: Command| {
         v.commands.send(c).unwrap();
-        let got = until_or(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. }), why).await;
-        got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap()
+        until_or(&mut v, Duration::from_secs(5), &mut frames, |u| matches!(u, viewer::Update::Acked { .. }), why).await
     };
+    let error = |got: &[viewer::Update]| got.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None }).unwrap();
     let answer = |session_id: &str| Command::Approve { session_id: session_id.into(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() };
     for refused in [other.as_str(), "01a0ec7b-0000-7000-8000-00000000beef"] {
-        let e = ack(answer(refused)).await;
+        let e = error(&ack(answer(refused)).await);
         assert!(e.as_deref().is_some_and(|e| e.contains("nothing else")), "{refused}: {e:?}");
     }
-    assert_eq!(ack(answer(&req.session_id)).await, None, "the session's own child's approval is answered");
-    until_or(&mut v, Duration::from_secs(20), &mut frames, result_of, why).await;
+    let got = ack(answer(&req.session_id)).await;
+    assert_eq!(error(&got), None, "the session's own child's approval is answered");
+    until_after(got, &mut v, Duration::from_secs(20), &mut frames, result_of, why).await;
     let fake = std::fs::read_to_string(w.root.join("fake-claude.log")).unwrap();
     assert!(fake.lines().any(|l| l.starts_with("answer ") && l.contains(r#""behavior":"allow","updatedInput":{"command":"sleep 30"#)), "Claude Code was answered: {fake}");
 }
@@ -2540,9 +2552,9 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
     let child = got.iter().find_map(started).unwrap();
     v.commands.send(Command::Interrupt { session_id: child.clone() }).unwrap();
     let got = until(&mut v, Duration::from_secs(15), &mut frames, |u| matches!(u, viewer::Update::Acked { .. })).await;
-    let error = got.into_iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error) } else { None }).unwrap();
+    let error = got.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None }).unwrap();
     assert_eq!(error, None, "the session's own Claude Code agent stops");
-    let got = until(&mut v, Duration::from_secs(20), &mut frames, result_of).await;
+    let got = until_after(got, &mut v, Duration::from_secs(20), &mut frames, result_of, String::new).await;
     let status = got.iter().find_map(|u| match u {
         viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) => Some(r.status),
         _ => None,
@@ -4298,10 +4310,22 @@ async fn r_host_4_a_started_sessions_first_approval_waits_for_its_bridge() {
             }
         }
     };
-    // The start's client and the bridge, then the bridge alone.
-    followed(2, 2).await;
+    // The bridge joins the relay only once it follows the session: from
+    // then on, one answering client is the bridge alone, the start's
+    // client gone. Waited for, never sampled for the two together: they
+    // follow it together only until the start's client next looks (200 ms
+    // at most), which a status poll under load can miss. Had the start's
+    // client gone before the bridge came, the approval was denied then.
+    while w.a_conns.load(Ordering::SeqCst) == 0 {
+        assert!(Instant::now() < by, "{session_id}'s bridge never joined the relay");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
     let held = followed(1, 1).await;
     assert!(held.running, "the turn ended: its approval was denied");
+    // Nor denied a moment before, its turn not over yet: a denied call's
+    // result is logged as the model is told.
+    let logged = log::read_events(&log::sessions_dir(&w.env()).unwrap().join(&session_id).join(log::EVENTS_FILE)).unwrap();
+    assert!(!logged.iter().any(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::ToolResult { .. }, .. })), "its approval was denied: {logged:?}");
     assert!(!w.repo().join("approved.txt").exists());
     auto.stop(Duration::from_secs(10)).await;
 }
