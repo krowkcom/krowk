@@ -571,6 +571,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   now they lived in krowk's private design repository, so a reader could
   not check what the encryption claims to protect, from whom, or which
   risks krowk accepts.
+- **The published threat model and crypto design are current again.**
+  [`docs/security/`](docs/security/) is republished from the design
+  repository: push notifications, host announcements and commands, the
+  pairing invite, the iPhone's Keychain and Face ID before an allow, and
+  the zeroization gaps the phone adds. `scripts/publish_security_docs.sh`
+  now does the copy, so the next one is the same.
 
 ### Fixed
 
