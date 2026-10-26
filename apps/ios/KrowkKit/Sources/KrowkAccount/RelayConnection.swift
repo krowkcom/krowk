@@ -82,10 +82,6 @@ public actor RelayConnection: LiveSession {
     /// fetched for an earlier one is dropped.
     private var ticketAsk: UInt64 = 0
     private var started = false
-    /// Gaps seen: a later one restarts the wait for its catch-up.
-    private var gaps = 0
-    /// How long `catching up…` waits for a catch-up that may bring nothing.
-    static let gapWait: DispatchTimeInterval = .seconds(5)
     /// Stopped, or the viewer ended: nothing more is called.
     private var done = false
     /// When to connect and try again (ticket 86): asked while the session
@@ -555,9 +551,9 @@ public actor RelayConnection: LiveSession {
                     // read, then the read's welcome): not the bar's to show.
                     case .host(let present): if connection != nil { tracker.host(present) }
                     case .note(let text): tracker.note(text)
-                    case .gap:
-                        tracker.gap()
-                        settleGap()
+                    // The core ends every catch-up it asks with a
+                    // `caughtUp`, empty when it brought nothing new.
+                    case .gap: tracker.gap()
                     case .caughtUp: tracker.caughtUp()
                     case .failed(let detail): failure = detail
                     case .path(let path, _): showPath(path)
@@ -578,21 +574,6 @@ public actor RelayConnection: LiveSession {
         }
         publishIfChanged()
         armWake()
-    }
-
-    /// A gap's catch-up that brings nothing new (the batch the relay
-    /// dropped held only typing) is never announced by the core: after
-    /// `gapWait` with no `caughtUp`, the bar reads live again.
-    private func settleGap() {
-        gaps += 1
-        let gap = gaps
-        queue.asyncAfter(deadline: .now() + Self.gapWait) { [weak self] in
-            self?.assumeIsolated { me in
-                guard !me.done, gap == me.gaps else { return }
-                me.tracker.caughtUp()
-                me.publishIfChanged()
-            }
-        }
     }
 
     private func armWake() {

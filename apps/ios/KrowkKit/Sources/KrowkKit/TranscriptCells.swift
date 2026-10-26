@@ -303,8 +303,10 @@ final class TranscriptTextCell: TranscriptCell {
     private var user = false
     /// The layout last configured: a prompt's, an answer's, or none yet.
     private var configuredUser: Bool?
-    /// The item whose completion was kept in the blocks it streamed into.
-    private var finished: (item: ObjectIdentifier, font: UIFont)?
+    /// The item whose completion was kept in the blocks it streamed into,
+    /// and the text kept: a later one (a catch-up's, after its turn ended
+    /// live) is drawn.
+    private var finished: (item: ObjectIdentifier, font: UIFont, text: String)?
     /// The streaming state (for the tests).
     var streamed: (item: ObjectIdentifier, bytes: Int, font: UIFont)? { text.streamed }
     var appends: Int { text.appends }
@@ -364,7 +366,7 @@ final class TranscriptTextCell: TranscriptCell {
         }
         if text.openLink == nil { text.openLink = { [weak self] in self?.openLink?($0) } }
         guard state.done else { return stream(state, font: font) }
-        if let finished, finished.item == ObjectIdentifier(state), finished.font == font { return }
+        if let finished, finished.item == ObjectIdentifier(state), finished.font == font, finished.text == state.text { return }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font {
             // Its last deltas may have come in the frame that completed it:
             // appended first, as any frame's are, so a whole text that only
@@ -377,7 +379,7 @@ final class TranscriptTextCell: TranscriptCell {
         }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,
            text.finish(state.text, font: font) {
-            finished = (ObjectIdentifier(state), font)
+            finished = (ObjectIdentifier(state), font, state.text)
             shown = nil
             return
         }
@@ -466,6 +468,9 @@ final class TranscriptToolCell: TranscriptCell {
     private let stack = UIStackView()
     private var shownBody: NSAttributedString?
     private var shownExpanded: (id: String, expanded: Bool)?
+    /// The reasoning whose completion was kept in the blocks it streamed
+    /// into, expanded, and the text kept.
+    private var finished: (item: ObjectIdentifier, font: UIFont, text: String)?
     /// Tapped on the header (VoiceOver's activate too): expand or collapse.
     var toggle: (@MainActor () -> Void)?
     private static let down = UIImage(systemName: "chevron.down")
@@ -574,6 +579,7 @@ final class TranscriptToolCell: TranscriptCell {
             output.view.isHidden = true
             state.forget("output")
             output.end()
+            finished = nil
             if shownBody != nil {
                 body.attributedText = nil
                 shownBody = nil
@@ -584,10 +590,16 @@ final class TranscriptToolCell: TranscriptCell {
         if state.kind == .reasoning, !state.done {
             // Expanded while it streams: appended in place, as an answer.
             shownBody = nil
+            finished = nil
             if output.stream(state, font: TranscriptFonts.body, color: .secondaryLabel) { invalidateIntrinsicContentSize() }
             if opened { UIAccessibility.post(notification: .layoutChanged, argument: body.view) }
             return
         }
+        if state.kind == .reasoning, keepStreamed(state) {
+            if opened { UIAccessibility.post(notification: .layoutChanged, argument: body.view) }
+            return
+        }
+        finished = nil
         output.end()
         let text: NSAttributedString
         if state.kind == .reasoning {
@@ -610,6 +622,23 @@ final class TranscriptToolCell: TranscriptCell {
         if opened { UIAccessibility.post(notification: .layoutChanged, argument: body.view) }
     }
 
+    /// A reasoning that finished while it streamed, expanded: kept in the
+    /// blocks it streamed into, as an answer's is (`TranscriptTextCell`),
+    /// its last deltas appended first, rather than drawn again whole in
+    /// one view. Whether it was.
+    private func keepStreamed(_ state: ItemState) -> Bool {
+        let font = TranscriptFonts.body
+        let id = ObjectIdentifier(state)
+        if let finished, finished.item == id, finished.font == font, finished.text == state.text { return true }
+        guard let streamed = output.streamed, streamed.item == id, streamed.font == font else { return false }
+        if output.stream(state, font: font, color: .secondaryLabel) { invalidateIntrinsicContentSize() }
+        guard let again = output.streamed, again.item == id, again.font == font,
+              output.finish(state.text, font: font, color: .secondaryLabel) else { return false }
+        finished = (id, font, state.text)
+        shownBody = nil
+        return true
+    }
+
     override func prepareForReuse() {
         #if DEBUG
         let reusing = FrameCosts.start()
@@ -618,6 +647,7 @@ final class TranscriptToolCell: TranscriptCell {
         super.prepareForReuse()
         shownBody = nil
         shownExpanded = nil
+        finished = nil
         output.end()
         body.attributedText = nil
     }

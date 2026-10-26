@@ -107,6 +107,24 @@ struct ApprovalQueueTests {
         #expect(h.queue.position == nil, "one left: no count")
     }
 
+    @Test("R-PERM-2 (ticket 145): resolved while the phone was away, a waiting request goes; one answered here waits for its ack, and an error then never brings it back")
+    func goneWhileAway() async {
+        let h = ApprovalHarness()
+        h.queue.requested(Self.call("r1"))
+        h.queue.requested(Self.call("r2"))
+        h.queue.requested(Self.call("r3"))
+        #expect(await h.queue.answer("r2", .allow))
+        h.queue.gone(requestID: "r1")
+        h.queue.gone(requestID: "r2")
+        #expect(h.queue.held.map(\.prompt.requestID) == ["r2", "r3"])
+        #expect(h.queue.current?.prompt.requestID == "r3", "the sheet moves on")
+        #expect(h.sent.events.last == .dropped(Self.call("r1"), nil))
+        h.queue.acked(1, error: "Error: no such request")
+        #expect(h.queue.held.map(\.prompt.requestID) == ["r3"], "not back on the sheet")
+        h.queue.requested(Self.call("r1"))
+        #expect(h.queue.waiting == 1, "a stale re-send never shows it again")
+    }
+
     @Test("R-PERM-2: the same request id from a welcome and live shows once, and never again once settled")
     func duplicatesShowOnce() async {
         let h = ApprovalHarness()

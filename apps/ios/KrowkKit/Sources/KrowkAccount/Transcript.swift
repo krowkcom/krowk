@@ -10,6 +10,9 @@ public protocol ApprovalSink: AnyObject, Sendable {
     @MainActor func requested(_ request: ApprovalRequest)
     /// `approval.resolved`: it was answered, here or elsewhere.
     @MainActor func resolved(sessionId: String, requestId: String, decision: ApprovalDecision)
+    /// `approvalGone`: answered elsewhere while the phone was away, how
+    /// isn't known (ticket 145).
+    @MainActor func gone(requestId: String)
     /// A turn ended (its logged `turn.completed`, or the run's result): what
     /// it still asked is over.
     @MainActor func turnEnded(sessionId: String, turnId: String)
@@ -20,6 +23,7 @@ public final class NoApprovals: ApprovalSink {
     public init() {}
     @MainActor public func requested(_ request: ApprovalRequest) {}
     @MainActor public func resolved(sessionId: String, requestId: String, decision: ApprovalDecision) {}
+    @MainActor public func gone(requestId: String) {}
     @MainActor public func turnEnded(sessionId: String, turnId: String) {}
 }
 
@@ -45,6 +49,10 @@ extension ApprovalQueue: ApprovalSink {
 
     public func turnEnded(sessionId: String, turnId: String) {
         turnEnded(sessionID: sessionId, turnID: turnId)
+    }
+
+    public func gone(requestId: String) {
+        gone(requestID: requestId)
     }
 }
 
@@ -117,9 +125,13 @@ extension TranscriptUpdate {
             case .attached(let events, _):
                 for event in events { ended(event, approvals: approvals) }
                 out.append(.attached(events.map(TranscriptEvent.init)))
+            // Empty, it only says a catch-up ended: the bar's business.
             case .caughtUp(let events):
+                guard !events.isEmpty else { continue }
                 for event in events { ended(event, approvals: approvals) }
                 out.append(.caughtUp(events.map(TranscriptEvent.init)))
+            case .approvalGone(let request):
+                approvals.gone(requestId: request)
             case .line(.live(let line)):
                 if let mapped = live(line, approvals: approvals) { out.append(mapped) }
             case .sent(let id, let queued):

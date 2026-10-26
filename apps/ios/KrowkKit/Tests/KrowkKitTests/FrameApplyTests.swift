@@ -182,6 +182,28 @@ struct FrameApplyTests {
         #expect(cell.text.drawnText == whole)
     }
 
+    @Test("R-LAG-7 (ticket 145): an answer kept in its blocks at its turn's end is drawn again when a catch-up brings a different completion")
+    func finishedThenChanged() async throws {
+        let (session, screen, window, cell) = try await streaming("Start\n")
+        defer { window.isHidden = true }
+        let line = String(repeating: "word ", count: 20) + "\n"
+        for _ in 0..<40 {
+            session.bring([Self.delta("a2", line)])
+            screen.frame()
+        }
+        let streamed = "Start\n" + String(repeating: line, count: 40)
+        session.bring([.logged([Self.event("e10", .turnCompleted(turn: "t2", end: .completed), parent: "e6")])])
+        screen.frame()
+        try await waitFor { cell.streamed == nil }
+        #expect(!cell.text.blocks.isEmpty, "kept in its blocks")
+        #expect(cell.text.drawnText == streamed)
+        let whole = streamed + "and the part a gap lost"
+        session.bring([.caughtUp([Self.event("e9", .assistantText(item: "a2", text: whole), parent: "e6")])])
+        screen.frame()
+        try await waitFor { cell.text.blocks.isEmpty }
+        #expect(cell.textView.view.text == whole)
+    }
+
     @Test("R-LAG-7: an unbroken run (no space, no line break) is cut into blocks too, between two characters, nothing lost")
     func unbrokenRun() async throws {
         let (session, screen, window, cell) = try await streaming("x")
@@ -406,6 +428,33 @@ struct FrameApplyTests {
         #expect(cell.output.appends == appends + 1)
         #expect(cell.output.drawnText == "Thinking" + (0..<50).map { " step\($0)" }.joined())
         #expect(!screen.following, "opened to read: not following")
+    }
+
+    @Test("R-LAG-7, R-PERF-7 (ticket 145): an expanded \"Thought\" that finishes while it streams keeps its blocks: its last deltas appended, nothing drawn again in one view")
+    func thoughtFinishesInPlace() async throws {
+        let (session, screen, window, _) = try await streaming()
+        defer { window.isHidden = true }
+        session.bring([Self.started("r2", .reasoning), Self.delta("r2", "Thinking\n")])
+        screen.frame()
+        try await waitFor { screen.dataSource.snapshot().itemIdentifiers.last == "item:r2" }
+        window.layoutIfNeeded()
+        let cell = try #require(visibleCell("item:r2", in: screen, window: window) as? TranscriptToolCell)
+        screen.toggle("item:r2")
+        try await waitFor { !cell.output.view.isHidden }
+        let line = String(repeating: "step ", count: 20) + "\n"
+        for _ in 0..<40 {
+            session.bring([Self.delta("r2", line)])
+            screen.frame()
+        }
+        let blocks = cell.output.blocks.map(\.view)
+        #expect(blocks.count >= 2)
+        let whole = "Thinking\n" + String(repeating: line, count: 41) + "done"
+        session.bring([Self.delta("r2", line), Self.delta("r2", "done"),
+                       .logged([Self.event("e10", .reasoning(item: "r2", text: whole), parent: "e6")])])
+        screen.frame()
+        try await waitFor { cell.output.streamed == nil }
+        #expect(Array(cell.output.blocks.map(\.view).prefix(blocks.count)) == blocks, "drawn again in one view")
+        #expect(cell.output.drawnText == whole)
     }
 
     @Test("R-LAG-7: taken out of its navigation stack from beneath another screen, the screen lets its display link and session go")

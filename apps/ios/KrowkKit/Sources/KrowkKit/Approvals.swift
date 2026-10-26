@@ -402,6 +402,19 @@ public final class ApprovalQueue {
         onChange?()
     }
 
+    /// Resolved while the phone was away (the host's welcome on rejoining
+    /// no longer names it), how isn't known: one still waiting here goes.
+    /// One answered here and not yet acked stays for its ack, which the
+    /// rejoin's resend brings: settled if the host took it, else dropped,
+    /// never back on the sheet.
+    public func gone(requestID: String) {
+        resolved.insert(requestID)
+        guard let at = held.firstIndex(where: { $0.prompt.requestID == requestID && !$0.isAnswered }) else { return }
+        let gone = held.remove(at: at)
+        onEvent?(.dropped(gone.prompt, nil))
+        onChange?()
+    }
+
     /// A turn ended (`turn.completed`, or the run's result): its requests
     /// go, answered or not. A subagent's turn ends on the same stream, by
     /// its own session id.
