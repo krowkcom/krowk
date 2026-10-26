@@ -10,9 +10,11 @@
 # The checkout defaults to $KROWK_CANON, else ../krowk-canon beside this
 # repository's main checkout; the ref to origin/main.
 set -euo pipefail
+canon=${1:-${KROWK_CANON:-}}
+[ -z "$canon" ] || canon=$(cd "$canon" && pwd)
 cd "$(dirname "$0")/.."
 main=$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")
-canon=${1:-${KROWK_CANON:-$main/../krowk-canon}}
+canon=${canon:-$main/../krowk-canon}
 ref=${2:-origin/main}
 sha=$(git -C "$canon" rev-parse --short=7 --verify "$ref^{commit}")
 

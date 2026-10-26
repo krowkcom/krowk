@@ -1,6 +1,6 @@
 # Threat model
 
-> Published from Canon, krowk's private design repository (`engineering/threat-model.md` at 05bc697). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
+> Published from Canon, krowk's private design repository (`engineering/threat-model.md` at 2129ba8). `crypto.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.
 
 What krowk protects, from whom, where each protection lives, and what it does not protect against. This is the public threat model spec R-OSS-1 asks for before sync ships; `crypto.md` is the crypto design it rests on, and `relay.md` the relay's contract. It states each defence once and links the file that holds it, so that the two cannot drift.
 
