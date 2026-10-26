@@ -18,6 +18,10 @@ canon=${canon:-$main/../krowk-canon}
 ref=${2:-origin/main}
 sha=$(git -C "$canon" rev-parse --short=7 --verify "$ref^{commit}")
 
+# Both are written to a scratch directory first, so a copy that fails
+# leaves docs/security/ as it was.
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
 publish() {
   local name=$1 other=$2 body
   body=$(git -C "$canon" show "$sha:engineering/$name.md")
@@ -25,9 +29,10 @@ publish() {
     printf '%s\n\n' "$(head -n 1 <<< "$body")"
     printf '> Published from Canon, krowk'\''s private design repository (`engineering/%s.md` at %s). `%s.md` is in this directory. The other design files it cites, such as `relay.md`, `harness.md` and `devices.md`, are not published.\n' "$name" "$sha" "$other"
     tail -n +2 <<< "$body"
-  } > "docs/security/$name.md"
+  } > "$out/$name.md"
 }
 
 publish threat-model crypto
 publish crypto threat-model
+mv "$out/threat-model.md" "$out/crypto.md" docs/security/
 echo "docs/security/ published from Canon at $sha"
