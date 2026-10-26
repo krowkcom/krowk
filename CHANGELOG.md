@@ -396,6 +396,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **Closing the fullscreen TUI leaves the shell's screen as it was.** The
+  conversation is no longer printed onto it on the way out, where it came
+  out without the layout the TUI drew it in. The session is saved, and the
+  one line krowk leaves says how to open it again:
+  `resume this session with: krowk --resume <id>`. Inline mode is
+  unchanged: its conversation is in the terminal's scrollback already.
 - **The TUI's header sits a row below the top.** A new session's Krowk
   mark no longer starts on the first row: one blank row above it matches
   the padding on its left.

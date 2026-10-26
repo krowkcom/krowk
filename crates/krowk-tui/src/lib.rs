@@ -629,7 +629,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(clear) = ui.presence.clear() {
         let _ = term.report(&clear);
     }
-    let _ = term.leave();
+    let _ = term.finish();
     ui.presence.finish();
     let mut out = term.into_inner();
     // This process's jobs go with it, which is said where the person
