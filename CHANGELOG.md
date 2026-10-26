@@ -616,9 +616,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `turn.started` to `turn.completed`. It was false while a turn set up,
   and after it completed until it let go of the session, though a prompt
   then got `session_busy`. It now holds from the moment a prompt is
-  accepted until its turn lets go. Its readers now count those windows
-  too: `krowk host status`, the TUI's "still running here" note and a
-  handover's wait. The schema's description of the field says so.
+  accepted until its turn lets go, and while a backend runs the session
+  as an agent. Its readers now count those windows too: `krowk host
+  status`, the TUI's "still running here" note and a handover's wait. The
+  schema's description of the field says so.
 - **The daemon test `r_lag_4_a_done_held_while_behind…` no longer fails
   now and then.** It wasn't the catching up: under load the test sent
   its second prompt before the first turn had started, because the
