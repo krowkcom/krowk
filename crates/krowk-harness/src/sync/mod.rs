@@ -462,6 +462,9 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
         viewer::Update::Acked { id, error } => json!({"type": "sync.acked", "id": id, "error": error}).to_string(),
         viewer::Update::Path { path, via } => json!({"type": "sync.path", "path": path, "via": via}).to_string(),
         viewer::Update::Gap => json!({"type": "sync.gap"}).to_string(),
+        // Answered while this viewer was away: whoever shows the request
+        // shows it no more.
+        viewer::Update::ApprovalGone(id) => json!({"type": "sync.approvalGone", "requestId": id}).to_string(),
         // `krowk sync attach` never asks for one; the line is for whoever does.
         viewer::Update::Handoff(r) => json!({"type": "sync.handoff", "error": r.err()}).to_string(),
         viewer::Update::Note(n) => {

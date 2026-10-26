@@ -582,6 +582,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **The iPhone app closes three gaps left by earlier tickets (ticket
+  145).** An approval request answered on another device while the
+  phone was disconnected now leaves the approval sheet when the phone
+  reconnects. It used to stay there until you answered it and were
+  refused. The host's welcome on rejoining lists the requests still
+  waiting, and the viewer core now reports each one it showed that is
+  missing (`ApprovalGone` in krowk-ffi, FFI_API_VERSION 8). `krowk sync
+  attach` prints it as a `sync.approvalGone` line, and the TUI drops the
+  request too. `catching up…` now clears as soon as the host answers,
+  not after a 5 s timer. The core used to report a catch-up only when
+  it brought new events, and now reports every catch-up it asked for.
+  An expanded "Thought" that finishes while it streams keeps the text
+  already on screen instead of drawing it all again. A finished answer
+  whose text a later catch-up changes is redrawn; before, it kept
+  showing the old text.
 - **`make bench` measures on a machine with Claude Code or Codex
   installed.** The measured krowk inherited your `PATH`, so it found
   `claude` and `codex` there, had three instances able to run a model,

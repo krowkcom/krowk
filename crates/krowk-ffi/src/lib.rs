@@ -180,8 +180,10 @@ use krowk_client::pairing::PairingCode;
 /// `join_invite`'s `invite_mismatch` is `invite_other_account` or
 /// `invite_other_pairing`; 6: `ViewerUpdate` gains `Saved`, which a Swift
 /// switch over it must handle; 7: the viewer's `Effect` gains the
-/// direct-path race, `Race` to `CloseLeaving`).
-pub const FFI_API_VERSION: u32 = 7;
+/// direct-path race, `Race` to `CloseLeaving`; 8: `ViewerUpdate` gains
+/// `ApprovalGone`, and a catch-up asked ends with a `CaughtUp` even when
+/// its `events` are empty).
+pub const FFI_API_VERSION: u32 = 8;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

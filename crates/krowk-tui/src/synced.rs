@@ -38,6 +38,9 @@ pub enum Event {
     /// Something to tell the person: why the relay cannot be joined, a
     /// command the host refused.
     Note(String),
+    /// An approval request resolved while the viewer was away (the host's
+    /// welcome no longer names it): it waits no more.
+    ApprovalGone(String),
     /// A turn begun elsewhere, for the TUI to follow as its own: its lines,
     /// then its result.
     Turn(mpsc::Receiver<StreamLine>, Done),
@@ -336,6 +339,9 @@ impl Pump {
             Update::Acked { id, error } => self.acked(id, error),
             // The terminal keeps no place across runs.
             Update::Gap | Update::Saved(_) => {}
+            Update::ApprovalGone(id) => {
+                let _ = self.events.send(Event::ApprovalGone(id));
+            }
             Update::Note(n) => {
                 let _ = self.events.send(Event::Note(n));
             }

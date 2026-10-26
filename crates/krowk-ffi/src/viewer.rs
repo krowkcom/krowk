@@ -182,7 +182,9 @@ pub enum ViewerUpdate {
     /// The host took the command `id`, or refused it with `error`.
     Acked { id: String, error: Option<String> },
     /// Logged events the live stream did not bring: from the chunks or the
-    /// host's catch-up.
+    /// host's catch-up, a page at a time. The last page of a catch-up the
+    /// core asked for, none owed after it, crosses as one even with
+    /// nothing new, its `events` empty.
     CaughtUp { events: Vec<LogEvent> },
     /// The path the session comes by: `relay`, `direct over Tailscale` or
     /// `direct over LAN`, and the address when direct.
@@ -203,6 +205,10 @@ pub enum ViewerUpdate {
     HandoffTaken,
     /// A handoff to this device was refused, and why.
     HandoffRefused { detail: String },
+    /// Approval request `request_id`, shown before, was resolved while the
+    /// phone was away: the host's welcome on rejoining no longer names it.
+    /// How it was answered isn't known; it waits no more.
+    ApprovalGone { request_id: String },
     /// Where the viewer stands as of this frame, its last update when the
     /// frame moved it: saved with the frame's logged events in one write,
     /// so the place never names an event the cache does not hold. Nothing
@@ -267,11 +273,10 @@ fn updates(u: Update, out: &mut Vec<ViewerUpdate>) {
             out.push(ViewerUpdate::Acked { id, error });
             None
         }
+        // Empty too: it says a catch-up ended.
         Update::CaughtUp(events) => {
             let (events, failed) = decode(&events);
-            if !events.is_empty() {
-                out.push(ViewerUpdate::CaughtUp { events });
-            }
+            out.push(ViewerUpdate::CaughtUp { events });
             failed
         }
         Update::Path { path, via } => {
@@ -302,6 +307,10 @@ fn updates(u: Update, out: &mut Vec<ViewerUpdate>) {
         }
         Update::Handoff(Err(detail)) => {
             out.push(ViewerUpdate::HandoffRefused { detail });
+            None
+        }
+        Update::ApprovalGone(request_id) => {
+            out.push(ViewerUpdate::ApprovalGone { request_id });
             None
         }
         Update::Saved(c) => {
@@ -1008,7 +1017,9 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
-        assert!(matches!(crossed(Update::CaughtUp(vec![newer.clone()])).as_slice(), [ViewerUpdate::Failed { .. }]));
+        assert!(matches!(crossed(Update::CaughtUp(vec![newer.clone()])).as_slice(), [ViewerUpdate::CaughtUp { events }, ViewerUpdate::Failed { .. }] if events.is_empty()));
+        assert!(matches!(crossed(Update::CaughtUp(Vec::new())).as_slice(), [ViewerUpdate::CaughtUp { events }] if events.is_empty()), "an empty catch-up crosses: it says one ended");
+        assert!(matches!(crossed(Update::ApprovalGone("r1".into())).as_slice(), [ViewerUpdate::ApprovalGone { request_id }] if request_id == "r1"));
         assert!(matches!(crossed(Update::Attached { events: vec![newer], head: None }).as_slice(), [ViewerUpdate::Attached { events, head: None }, ViewerUpdate::Failed { .. }] if events.is_empty()));
         assert!(matches!(crossed(Update::Handoff(Err("no".into()))).as_slice(), [ViewerUpdate::HandoffRefused { detail }] if detail == "no"));
     }

@@ -76,6 +76,17 @@ struct ApprovalMappingTests {
         #expect(queue.held.isEmpty)
     }
 
+    @Test("R-PERM-2 (ticket 145): the core's approvalGone, said at a rejoin for a request resolved while the phone was away, closes it on the sheet; an empty caughtUp draws nothing")
+    func goneThroughTheSink() {
+        let queue = ApprovalQueue(sessionID: Self.session, ownerCheck: Yes())
+        let line = { (r: ApprovalRequest) in MailboxItem.viewer(.line(line: .live(.approvalRequested(r)))) }
+        _ = TranscriptUpdate.from(posted: [.viewer(.host(present: true)), line(Self.request("r1")), line(Self.request("r2"))], approvals: queue)
+        #expect(queue.held.map(\.prompt.requestID) == ["r1", "r2"])
+        let shown = TranscriptUpdate.from(posted: [.viewer(.approvalGone(requestId: "r1")), .viewer(.caughtUp(events: []))], approvals: queue)
+        #expect(queue.held.map(\.prompt.requestID) == ["r2"])
+        #expect(shown.isEmpty)
+    }
+
     @Test("R-IOS-11: the app's owner check is LAContext's; only a DEBUG build's launch argument picks the UI tests' stub")
     func ownerCheck() {
         #expect(OwnerChecks.make(arguments: []) is DeviceOwnerCheck)

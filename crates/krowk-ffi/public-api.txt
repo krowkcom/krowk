@@ -1,4 +1,4 @@
-FFI_API_VERSION = 7
+FFI_API_VERSION = 8
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -933,6 +933,7 @@ pub enum ViewerUpdate {
     Note { text: String },
     HandoffTaken,
     HandoffRefused { detail: String },
+    ApprovalGone { request_id: String },
     Saved { cursor: CursorRecord },
 }
 
