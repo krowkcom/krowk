@@ -1244,10 +1244,14 @@ impl App {
         self.push_wrapped("", "", text, style, style);
     }
 
-    /// What a session opens on: the Krowk mark, then a stack of what this
-    /// session is — the directory, the branch, the model — then a blank
-    /// line. `branch` is empty off a branch, and its row is left out.
+    /// What a session opens on: a blank line, the Krowk mark, then a stack
+    /// of what this session is — the directory, the branch, the model —
+    /// then a blank line. `branch` is empty off a branch, and its row is
+    /// left out.
     pub fn header(&mut self, cwd: &str, branch: &str, effort: Option<&str>) {
+        // Off the top as the padding keeps it off the left: a row is about
+        // as tall as the padding's two columns are wide.
+        self.pending.push(Line::default());
         // Black on a white plate, two units to a cell: `▀` in the top
         // one's colour over the bottom one's. A unit is a column wide and
         // half a row tall, square in a cell twice as tall as it is wide.
@@ -5183,9 +5187,9 @@ mod tests {
         a.width = 40;
         a.header("~/Repositories/a-rather-long-project-name/crates", "main", Some("medium"));
         let t = text(&a.take_pending());
-        assert_eq!(&t[..4], ["▀▀▀▀▀▀", "▀▀▀▀▀▀", "▀▀▀▀▀▀", ""], "the mark, two units to a cell");
-        assert!(t[4].starts_with("Directory: …") && t[4].ends_with("crates") && t[4].chars().count() <= 40, "{:?}", t[4]);
-        assert_eq!(t[5..], ["Branch:    main", "Model:     anthropic/claude-x (medium)", ""]);
+        assert_eq!(&t[..5], ["", "▀▀▀▀▀▀", "▀▀▀▀▀▀", "▀▀▀▀▀▀", ""], "a row off the top, then the mark, two units to a cell");
+        assert!(t[5].starts_with("Directory: …") && t[5].ends_with("crates") && t[5].chars().count() <= 40, "{:?}", t[5]);
+        assert_eq!(t[6..], ["Branch:    main", "Model:     anthropic/claude-x (medium)", ""]);
     }
 
     #[test]
@@ -5195,7 +5199,7 @@ mod tests {
         a.update = Some(Update { current: "0.12.1".into(), latest: "0.13.0".into(), security: false, due: true });
         a.header("~/p", "main", None);
         let t = text(&a.take_pending());
-        assert_eq!(t[5..], ["Branch:    main", "Model:     anthropic/claude-x", "Update:    0.13.0 is out · krowk upgrade", ""]);
+        assert_eq!(t[6..], ["Branch:    main", "Model:     anthropic/claude-x", "Update:    0.13.0 is out · krowk upgrade", ""]);
         a.start_over("~/p", None);
         assert!(!text(&a.take_pending()).iter().any(|r| r.contains("Update")), "said once a run");
         a.overlay = Overlay::Details;
