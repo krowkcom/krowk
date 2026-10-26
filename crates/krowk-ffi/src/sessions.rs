@@ -431,9 +431,9 @@ fn read_failed(e: ReadError) -> KrowkError {
     if e.rolled_back { rolled_back(e.detail) } else { unreached(e) }
 }
 
-/// A read at rest that failed: `Network` when a registry call did for want
-/// of the network (as `KrowkError::from` maps one), else `Internal` with
-/// the read's words.
+/// A read at rest that failed: `Network` when a registry or storage call
+/// did for want of the network (as `KrowkError::from` maps one), else
+/// `Internal` with the read's words.
 fn unreached(e: ReadError) -> KrowkError {
     match e.registry.map(KrowkError::from) {
         Some(network @ KrowkError::Network { .. }) => network,

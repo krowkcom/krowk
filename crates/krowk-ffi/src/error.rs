@@ -39,13 +39,16 @@ impl From<uniffi::UnexpectedUniFFICallbackError> for KrowkError {
     }
 }
 
-/// A registry call's failure: no answer, a rate limit or a 5xx is
-/// `Network`; any other refusal is `Refused` with the registry's code.
+/// A registry call's failure: no answer (from the registry or the object
+/// storage it serves chunks from), a rate limit or a 5xx is `Network`; any
+/// other refusal is `Refused` with the registry's code.
 impl From<krowk_api::Error> for KrowkError {
     fn from(e: krowk_api::Error) -> KrowkError {
         let code = e.code();
         // The terminal's advice names KROWK_API_URL, which a phone has not.
-        if code == "network_unreachable" {
+        // Storage is reached through the registry's links: to the person,
+        // the same service out of reach.
+        if code == "network_unreachable" || code == "storage_unreachable" {
             return KrowkError::Network { detail: "krowk's registry cannot be reached — check the network and try again".into() };
         }
         let detail = [e.fix(), message(&e)].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| code.clone());

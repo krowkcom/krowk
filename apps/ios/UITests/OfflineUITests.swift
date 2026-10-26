@@ -54,7 +54,7 @@ final class OfflineUITests: XCTestCase {
         offline.launch()
 
         // The list: the session last seen, never live, and the footer says
-        // the list couldn't be read.
+        // the registry couldn't be reached.
         let row = FleetUI.listed(title, in: offline)
         if !row.waitForExistence(timeout: 30) { Screenshots.tree(of: offline) }
         XCTAssertTrue(row.exists, "the session was not drawn from the cache")
@@ -70,7 +70,7 @@ final class OfflineUITests: XCTestCase {
             list.swipeUp()
         }
         if !footer.exists { Screenshots.tree(of: offline) }
-        XCTAssertTrue(footer.exists, "the footer never said the list couldn't be read")
+        XCTAssertTrue(footer.exists, "the footer never said the registry couldn't be reached")
         XCTAssertTrue(footer.label.hasPrefix("krowk's registry couldn't be reached."), footer.label)
         XCTAssertFalse(offline.activityIndicators["sessions-loading"].exists, "a spinner over the cached list")
         Screenshots.keep("offline-sessions", in: offline)

@@ -457,9 +457,10 @@ fn network<T>(r: Result<T, KrowkError>) -> String {
     }
 }
 
-/// Ticket 143: the registry out of reach while the phone lists, opens,
-/// resumes or catches up on a session is `Network`, so the app says the
-/// registry couldn't be reached and tries again, rather than `Internal`.
+/// Ticket 143: the registry, or the storage its chunks are read from, out
+/// of reach while the phone lists, opens, resumes or catches up on a
+/// session is `Network`, so the app says the registry couldn't be reached
+/// and tries again, rather than `Internal`.
 #[test]
 fn r_ios_7_the_registry_out_of_reach_is_network_listing_opening_and_reading_on() {
     let w = World::new();
@@ -479,7 +480,12 @@ fn r_ios_7_the_registry_out_of_reach_is_network_listing_opening_and_reading_on()
     network(phone.resume_session(SESSION.into(), place.clone(), None, None));
     network(opened.catch_up());
 
-    *refusing.lock().unwrap() = None;
+    // The chunks listed, their bytes not: object storage out of reach.
+    *refusing.lock().unwrap() = Some("/_storage/");
     more(&mut h, 3..=3);
+    network(phone.open_session(SESSION.into(), None, None));
+    network(opened.catch_up());
+
+    *refusing.lock().unwrap() = None;
     assert_eq!(opened.catch_up().unwrap().len(), 1, "read on once the registry is back");
 }
