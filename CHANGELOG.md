@@ -574,6 +574,26 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`make bench` measures on a machine with Claude Code or Codex
+  installed.** The measured krowk inherited your `PATH`, so it found
+  `claude` and `codex` there, had three instances able to run a model,
+  and `krowk -p` refused to pick one: the engine, turn, token and redraw
+  rows failed with nothing measured. Those directories are now left off
+  its `PATH`, so it runs on the bench's own API stand-in alone.
+- **`make bench`'s `session.replay_rss` row no longer fails now and
+  then.** It looked for the turn's answer in the bytes the TUI wrote,
+  but the TUI redraws only the cells that changed, so the answer could
+  arrive in two pieces with a cursor move between them. It failed with
+  "the next turn never answered" although the answer was on screen. The
+  row now reads the screen.
+- **Three sync tests no longer fail under load.** Two of them,
+  `r_sub_12_a_viewer_answers_a_claude_agents_approval…` and
+  `r_sub_12_a_viewer_stops_one_claude_agent`, lost the turn's result when
+  it arrived in the same frame as the viewer's ack. The third,
+  `r_host_4_a_started_sessions_first_approval_waits_for_its_bridge`,
+  polled for a moment (the start's client and the bridge following the
+  session together) that lasts as little as a few milliseconds. Each now
+  waits on a condition that stays true. Nothing in krowk changed.
 - **A model switch made from another terminal or device is kept.** When
   a second terminal's `/model`, or a phone or other device synced to the
   session, moved it to another model between your turns, the TUI that
