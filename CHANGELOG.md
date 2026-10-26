@@ -596,6 +596,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   arrive in two pieces with a cursor move between them. It failed with
   "the next turn never answered" although the answer was on screen. The
   row now reads the screen.
+- **The iPhone app says when krowk's registry can't be reached.** With
+  the network down, the session list's footer read "Your sessions
+  couldn't be listed." It now reads "krowk's registry couldn't be
+  reached.", as the app's other screens do. A session whose log can't be
+  read for the same reason now says the relay can't be reached and tries
+  again, rather than stopping. The app library's `Account.listSessions`,
+  `openSession`, `resumeSession` and `OpenedSession.catchUp` now fail
+  with `Network` when the registry is out of reach, rate-limits or
+  fails, rather than `Internal` (no version change). `krowk sync
+  sessions` and `krowk sync hosts` now report a registry failure in the
+  registry's own words, rather than as `sync_failed`.
 - **A model switch made from another terminal or device is kept.** When
   a second terminal's `/model`, or a phone or other device synced to the
   session, moved it to another model between your turns, the TUI that
