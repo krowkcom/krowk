@@ -2083,8 +2083,12 @@ async fn r_net_3_a_flood_of_connections_to_the_direct_listener_leaves_a_turn_on_
     assert!(open.len() > FLOOD / 2, "only {} of the flood's connections were made", open.len());
     // B's own address was looked up already, and is kept.
     let addresses = if cfg!(target_os = "linux") { FLOOD / 4 } else { 0 };
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while ts.asked.load(Ordering::SeqCst) - asked < addresses && Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     let flooded = ts.asked.load(Ordering::SeqCst) - asked;
-    assert!(flooded <= addresses, "tailscaled was asked {flooded} times about the flood's {addresses} addresses");
+    assert_eq!(flooded, addresses, "tailscaled was asked {flooded} times about the flood's {addresses} addresses");
     // Held to the limit in the release build alone, as the doc comment says.
     let timed = !cfg!(debug_assertions);
     println!("R-LAG-9 the daemon's thread was late by at most {late:?} while {FLOOD} connections flooded the direct listener");

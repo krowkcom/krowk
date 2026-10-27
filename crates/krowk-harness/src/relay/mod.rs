@@ -382,18 +382,21 @@ const WHOIS_KEPT: Duration = Duration::from_secs(60);
 /// Addresses kept at most: past it, an answer is used and not kept.
 const WHOIS_ADDRESSES: usize = 1024;
 
-/// One address's answer: when it was given and whether it admits. Its
-/// connections wait on the one lookup while it is under way.
-type Answer = Rc<tokio::sync::OnceCell<(tokio::time::Instant, bool)>>;
+/// One address's lookup under way: its connections wait on the one.
+type Lookup = Rc<tokio::sync::OnceCell<bool>>;
 
 /// The tailnet check's lookups (R-NET-3): at most `WHOIS_AT_ONCE` at a
 /// time, one per address however many of its connections wait, each
 /// answer kept for `kept`. It fails closed: a connection that waits past
-/// its deadline, one past the `waiting` cap, a lookup that panics and
+/// its deadline, one past a cap on those waiting, a lookup that panics and
 /// tailscaled's every error are each a refusal.
 struct WhoIs {
     permits: Arc<tokio::sync::Semaphore>,
-    answers: RefCell<HashMap<std::net::IpAddr, Answer>>,
+    /// Lookups under way, by address: each has a connection waiting, so
+    /// the cap on those waiting bounds them.
+    looking: RefCell<HashMap<std::net::IpAddr, Lookup>>,
+    /// Answers given, by address: when, and whether it admits.
+    answers: RefCell<HashMap<std::net::IpAddr, (tokio::time::Instant, bool)>>,
     kept: Duration,
     /// Connections waiting on a lookup, and the most that may, in all and
     /// on one address: they are not yet counted with those not joined
@@ -405,55 +408,66 @@ struct WhoIs {
 
 impl WhoIs {
     fn new(kept: Duration, most_waiting: usize, most_per_peer: usize) -> WhoIs {
-        WhoIs { permits: Arc::new(tokio::sync::Semaphore::new(WHOIS_AT_ONCE)), answers: RefCell::new(HashMap::new()), kept, waiting: Cell::new(0), most_waiting, most_per_peer }
+        WhoIs { permits: Arc::new(tokio::sync::Semaphore::new(WHOIS_AT_ONCE)), looking: RefCell::new(HashMap::new()), answers: RefCell::new(HashMap::new()), kept, waiting: Cell::new(0), most_waiting, most_per_peer }
     }
 
-    /// The address's answer, a fresh one or one under way, else a new one
-    /// to look up: kept while there is room, or one of its own.
-    fn answer(&self, ip: std::net::IpAddr) -> Answer {
+    fn answer(&self, ip: std::net::IpAddr) -> Option<bool> {
+        self.answers.borrow().get(&ip).filter(|(at, _)| at.elapsed() < self.kept).map(|(_, ok)| *ok)
+    }
+
+    /// Keeps an answer while there is room.
+    fn keep(&self, ip: std::net::IpAddr, ok: bool) {
         let mut all = self.answers.borrow_mut();
-        let live = |a: &Answer| a.get().map_or(Rc::strong_count(a) > 1, |(at, _)| at.elapsed() < self.kept);
-        if let Some(a) = all.get(&ip).filter(|a| live(a)) {
-            return a.clone();
-        }
         if all.len() >= WHOIS_ADDRESSES {
-            all.retain(|_, a| live(a));
+            all.retain(|_, (at, _)| at.elapsed() < self.kept);
         }
-        let a = Answer::default();
         if all.len() < WHOIS_ADDRESSES || all.contains_key(&ip) {
-            all.insert(ip, a.clone());
+            all.insert(ip, (tokio::time::Instant::now(), ok));
         }
-        a
+    }
+
+    /// One connection done with `lookup`: its answer kept, and the lookup
+    /// let go once answered or once nobody else waits on it.
+    fn done(&self, ip: std::net::IpAddr, lookup: Lookup) {
+        if let Some(&ok) = lookup.get() {
+            self.keep(ip, ok);
+        }
+        let mut looking = self.looking.borrow_mut();
+        if looking.get(&ip).is_some_and(|l| Rc::ptr_eq(l, &lookup)) && (lookup.initialized() || Rc::strong_count(&lookup) == 2) {
+            looking.remove(&ip);
+        }
     }
 
     /// Whether `lookup` admits `peer`, waiting at most `wait`.
     async fn admits(&self, peer: std::net::SocketAddr, wait: Duration, lookup: impl FnOnce(std::net::SocketAddr) -> bool + Send + 'static) -> bool {
-        let answer = self.answer(peer.ip());
-        if let Some((_, ok)) = answer.get() {
-            return *ok;
+        let ip = peer.ip();
+        if let Some(ok) = self.answer(ip) {
+            return ok;
         }
-        // Each connection waiting on the address holds its answer, as do
+        let under_way = self.looking.borrow_mut().entry(ip).or_default().clone();
+        // Each connection waiting on the address holds its lookup, as do
         // this one and the map.
-        if self.waiting.get() >= self.most_waiting || Rc::strong_count(&answer) > self.most_per_peer + 1 {
+        if self.waiting.get() >= self.most_waiting || Rc::strong_count(&under_way) > self.most_per_peer + 1 {
+            self.done(ip, under_way);
             return false;
         }
         self.waiting.set(self.waiting.get() + 1);
         let permits = self.permits.clone();
         // The permit goes with the lookup's thread, so a lookup outliving
         // the wait still holds it until tailscaled answers.
-        let looked = answer.get_or_try_init(|| async move {
+        let looked = under_way.get_or_try_init(|| async move {
             let permit = permits.acquire_owned().await.map_err(|_| ())?;
-            let ok = tokio::task::spawn_blocking(move || {
+            Ok::<_, ()>(tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 lookup(peer)
             })
             .await
-            .unwrap_or(false);
-            Ok::<_, ()>((tokio::time::Instant::now(), ok))
+            .unwrap_or(false))
         });
-        let got = tokio::time::timeout(wait, looked).await;
+        let ok = matches!(tokio::time::timeout(wait, looked).await, Ok(Ok(true)));
         self.waiting.set(self.waiting.get() - 1);
-        matches!(got, Ok(Ok((_, true))))
+        self.done(ip, under_way);
+        ok
     }
 }
 
@@ -1705,6 +1719,10 @@ mod tests {
             for w in waiting {
                 assert!(w.await.unwrap());
             }
+            let before = looked.load(Ordering::SeqCst);
+            assert!(whois.admits(other, Duration::from_secs(10), lookup(true)).await, "a refusal for want of a turn is not kept");
+            assert_eq!(looked.load(Ordering::SeqCst), before + 1, "it is looked up now");
+            assert!(whois.looking.borrow().is_empty(), "no lookup left under way");
 
             // One address's waiters are capped too, and the rest still wait.
             let whois = Rc::new(WhoIs::new(KEPT, 64, 2));
@@ -1723,8 +1741,27 @@ mod tests {
                 assert!(w.await.unwrap());
             }
             assert!(elsewhere.await.unwrap(), "another address is not held to it");
-            let whois = Rc::new(WhoIs::new(KEPT, 8, 8));
-            assert!(whois.admits(other, Duration::from_secs(10), lookup(true)).await, "a refusal for want of a turn is not kept");
+
+            // With no room left to keep answers, an address's connections
+            // still share one lookup and are still held to its cap.
+            let whois = Rc::new(WhoIs::new(KEPT, 64, 2));
+            for i in 0..super::WHOIS_ADDRESSES {
+                whois.keep(std::net::IpAddr::from([10, 0, (i / 256) as u8, i as u8]), false);
+            }
+            let held = whois.permits.acquire_many(WHOIS_AT_ONCE as u32).await.unwrap();
+            let before = looked.load(Ordering::SeqCst);
+            let mut waiting = Vec::new();
+            for port in 0..2 {
+                let (whois, lookup) = (whois.clone(), lookup(true));
+                waiting.push(tokio::task::spawn_local(async move { whois.admits(std::net::SocketAddr::new(busy.ip(), 40000 + port), Duration::from_secs(10), lookup).await }));
+            }
+            tokio::task::yield_now().await;
+            assert!(!whois.admits(std::net::SocketAddr::new(busy.ip(), 40009), Duration::from_secs(10), lookup(true)).await, "past one address's cap, the cache full: refused at once");
+            drop(held);
+            for w in waiting {
+                assert!(w.await.unwrap());
+            }
+            assert_eq!(looked.load(Ordering::SeqCst), before + 1, "one lookup for both");
         });
     }
 
