@@ -157,6 +157,10 @@ pub(super) struct State {
     /// across one is read again, so no host is made with the instances
     /// the reload replaced.
     generation: u64,
+    /// The last `generation` whose reload has settled — applied, failed,
+    /// or overtaken by one that has: a command sent after a reload waits
+    /// for it, so it runs on what the reload read.
+    reloaded: tokio::sync::watch::Sender<u64>,
     /// Times a client fell behind, to be caught up from its cursor.
     caught_up: u64,
     /// The last `line.seq` given out in each session: kept when a session
@@ -244,6 +248,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         next_hub: 0,
         stopping: false,
         generation: 0,
+        reloaded: tokio::sync::watch::Sender::new(0),
         caught_up: 0,
         seqs: HashMap::new(),
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
@@ -557,7 +562,8 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             if matches!(command, Command::Prompt { .. } | Command::Continue { .. }) {
                 state.borrow().wake.notify_one();
             }
-            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
+            let after = state.borrow().generation;
+            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command, after));
         }
         ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
             // A `seq` counts only within the daemon run that numbered it.
@@ -570,8 +576,15 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             s.send(id, "", control(&f));
         }
         ClientFrame::Reload { id: cmd_id, changed, renamed_from, renamed_to } => {
-            let error = reload(state, changed.as_deref(), renamed_from.zip(renamed_to)).err().map(|e| error_info(&e));
-            state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
+            // Moved now, not once the task runs: a command dispatched after
+            // this frame waits for it, and a directory read under way is
+            // read again.
+            let generation = {
+                let mut s = state.borrow_mut();
+                s.generation += 1;
+                s.generation
+            };
+            tokio::task::spawn_local(reload(state.clone(), id, cmd_id, generation, changed, renamed_from.zip(renamed_to)));
         }
         ClientFrame::Leave { session_id } => {
             let mut s = state.borrow_mut();
@@ -757,22 +770,60 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
     Ok(host)
 }
 
-/// `reload`: every host's instances read again, the way each was made.
-fn reload(state: &Shared, changed: Option<&str>, renamed: Option<(String, String)>) -> Result<(), EngineError> {
-    state.borrow_mut().generation += 1;
-    let hosts: Vec<((PathBuf, bool), Rc<Host>)> = state.borrow().hosts.iter().map(|(k, h)| (k.clone(), h.clone())).collect();
-    let Some(((cwd, answers), _)) = hosts.first() else { return Ok(()) };
-    // The instances are the config's and the environment's, not a
-    // directory's: read once, and given to every host, or to none when the
-    // read fails.
-    let registry = (state.borrow().factory)(cwd, *answers)?.registry;
-    for (_, host) in hosts {
-        match &renamed {
-            Some((from, to)) => host.set_registry_renamed(registry.clone(), from, to),
-            None => host.set_registry(registry.clone(), changed),
+/// `reload`: every host's instances read again, the way each was made,
+/// and answered once applied.
+///
+/// The config file and the keys are read on the blocking pool, as a new
+/// directory's are (`host_for`): on a slow disk the read would stall every
+/// session's stream (R-LAG-9). What was read is applied only if no reload
+/// came after this one; one overtaken leaves it to the later read, which
+/// has whatever this one would, and is answered once that has settled.
+async fn reload(state: Shared, client: u64, id: u64, generation: u64, changed: Option<String>, renamed: Option<(String, String)>) {
+    let first = state.borrow().hosts.keys().next().cloned();
+    let result = match first {
+        None => Ok(()),
+        Some((cwd, answers)) => {
+            let factory = state.borrow().factory.clone();
+            match tokio::task::spawn_blocking(move || factory(&cwd, answers)).await {
+                Err(e) => Err(EngineError::new("host_failed", format!("the host's configuration could not be read: {e}"))),
+                Ok(Err(e)) => Err(e),
+                Ok(Ok(cfg)) => {
+                    // The instances are the config's and the environment's,
+                    // not a directory's: read once, and given to every host
+                    // there is now, or to none when the read fails.
+                    if state.borrow().generation == generation {
+                        let hosts: Vec<Rc<Host>> = state.borrow().hosts.values().cloned().collect();
+                        for host in hosts {
+                            match &renamed {
+                                Some((from, to)) => host.set_registry_renamed(cfg.registry.clone(), from, to),
+                                None => host.set_registry(cfg.registry.clone(), changed.as_deref()),
+                            }
+                        }
+                    }
+                    Ok(())
+                }
+            }
         }
-    }
-    Ok(())
+    };
+    // The last one sent settles every one before it; one overtaken is
+    // answered once a later one has applied what it read.
+    let mut settled = {
+        let s = state.borrow();
+        if s.generation == generation {
+            s.reloaded.send_replace(generation);
+        }
+        s.reloaded.subscribe()
+    };
+    let _ = settled.wait_for(|g| *g >= generation).await;
+    let error = result.err().map(|e| error_info(&e));
+    state.borrow_mut().send(client, "", control(&ServerFrame::Done { id, result: None, error }));
+}
+
+/// Waits for every reload sent before `after` was taken to settle: a
+/// command runs on what the reloads before it read.
+async fn reloaded(state: &Shared, after: u64) {
+    let mut settled = state.borrow().reloaded.subscribe();
+    let _ = settled.wait_for(|g| *g >= after).await;
 }
 
 /// The session a command names.
@@ -1003,7 +1054,7 @@ async fn register(state: &Shared, root: Option<&str>, host: &Rc<Host>, client: u
     }
 }
 
-async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
+async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
     let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
@@ -1038,6 +1089,11 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
         let mut s = state.borrow_mut();
         s.working += 1;
         s.wake.notify_one();
+    }
+    // A command sent after a reload runs on what it read; an interrupt,
+    // a steer or an answer uses no instance, and waits for nothing.
+    if !matches!(cmd, Command::Interrupt { .. } | Command::Steer { .. } | Command::Approve { .. }) {
+        reloaded(&state, after).await;
     }
     let host = match known {
         Some(h) => Ok(h),

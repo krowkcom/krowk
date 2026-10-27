@@ -33,6 +33,12 @@ struct Home {
     url: String,
     /// The daemon's thread's worst lateness, in µs, since last zeroed.
     late: Arc<AtomicU64>,
+    /// How the next configuration reads go, one each, first first: how long
+    /// each takes, and the Anthropic API it reads, when another. Reads past
+    /// these are at once, of `url`.
+    reads: Arc<Mutex<std::collections::VecDeque<(Duration, Option<String>)>>>,
+    /// Configuration reads begun.
+    begun: Arc<AtomicU64>,
 }
 
 impl Home {
@@ -41,7 +47,7 @@ impl Home {
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Home { root, url: url.into(), late: Arc::default() }
+        Home { root, url: url.into(), late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
@@ -69,8 +75,19 @@ impl Home {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let late = self.late.clone();
+        let (reads, begun) = (self.reads.clone(), self.begun.clone());
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
+                let (delay, url) = reads.lock().unwrap().pop_front().unwrap_or_default();
+                begun.fetch_add(1, Ordering::SeqCst);
+                std::thread::sleep(delay);
+                let env = {
+                    let env = env.clone();
+                    move |k: &str| match (k, &url) {
+                        ("ANTHROPIC_BASE_URL", Some(u)) => u.clone(),
+                        _ => env(k),
+                    }
+                };
                 // A directory named `slow` takes a second to read, as one
                 // on a slow disk would: a turn there is working, not yet
                 // running, for that long.
@@ -454,8 +471,8 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
                 probed = true;
                 home.lateness();
             }
-            if probed && done > 0 && late.is_zero() {
-                late = home.lateness().max(Duration::from_nanos(1));
+            if probed && done == 4 {
+                late = home.lateness();
             }
         }
         (arrivals, texts, late)
@@ -719,6 +736,96 @@ fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
     });
     drop(slow);
     daemon.join().unwrap().unwrap();
+}
+
+/// R-LAG-9: `reload` reads config.json and the credentials off the
+/// daemon's thread. Its read is made to take 40 ms, as on a slow disk; the
+/// thread, watched by the lateness probe, stays on time to within 10 ms,
+/// and the reload is answered once what it read is applied.
+#[test]
+fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("slow-reload", &m.url);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(40);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        // A host to reload.
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default) }).await;
+        done(&mut c, &[1]).await;
+        home.reads.lock().unwrap().push_back((STALL, None));
+        home.lateness();
+        let started = Instant::now();
+        c.send(&ClientFrame::Reload { id: 2, changed: Some("anthropic".into()), renamed_from: None, renamed_to: None }).await;
+        let error = done(&mut c, &[2]).await.remove(&2).unwrap();
+        let took = started.elapsed();
+        let late = home.lateness();
+        assert!(error.is_none(), "the reload succeeded: {error:?}");
+        assert!(took >= STALL, "answered once its slow read was applied: {took:?}");
+        assert!(home.reads.lock().unwrap().is_empty(), "the reload read the configuration");
+        assert!(late < Duration::from_millis(10), "the daemon's thread was held {late:?} while the reload read");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// Two reloads one after the other, the first's read slower than the
+/// second's: the second's, read last, is the one applied, whichever comes
+/// back first, and a prompt sent right after them, before either is
+/// answered, runs on it.
+#[test]
+fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let old = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("old")));
+    let new = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("new")));
+    let home = Home::new("two-reloads", &old.url);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default) }).await;
+        done(&mut c, &[1]).await;
+        // The first reads what was there before, slowly; the second what
+        // is there now, sooner, but not before the prompt could reach the
+        // provider were it not held for it.
+        home.reads.lock().unwrap().extend([(Duration::from_millis(300), Some(old.url.clone())), (Duration::from_millis(100), Some(new.url.clone()))]);
+        let before = home.begun.load(Ordering::SeqCst);
+        c.send(&ClientFrame::Reload { id: 2, changed: None, renamed_from: None, renamed_to: None }).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while home.begun.load(Ordering::SeqCst) == before {
+            assert!(Instant::now() < deadline, "the first reload never read");
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        c.send(&ClientFrame::Reload { id: 3, changed: None, renamed_from: None, renamed_to: None }).await;
+        c.send(&ClientFrame::Execute { id: 4, command: home.prompt("again", PermissionMode::Default) }).await;
+        let answers = done(&mut c, &[2, 3, 4]).await;
+        assert!(answers.values().all(Option::is_none), "every one answered without error: {answers:?}");
+        assert_eq!(old.seen.lock().unwrap().len(), 1, "the first prompt alone went to the old API");
+        assert_eq!(new.seen.lock().unwrap().len(), 1, "the one after the reloads went to the new");
+        // And it stays applied once the slow read is back.
+        c.send(&ClientFrame::Execute { id: 5, command: home.prompt("once more", PermissionMode::Default) }).await;
+        done(&mut c, &[5]).await;
+        assert_eq!(new.seen.lock().unwrap().len(), 2, "the slow first read did not replace the second's");
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// Reads until each of `ids` is answered by `done`: each one's error.
+async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<String>> {
+    let mut got = std::collections::HashMap::new();
+    while got.len() < ids.len() {
+        let next = tokio::time::timeout(Duration::from_secs(10), c.next()).await.expect("answered in time").expect("the connection stayed up");
+        let Got::Batch(_, frames) = next else { continue };
+        for f in frames {
+            if let ServerFrame::Done { id, error, .. } = f {
+                if ids.contains(&id) {
+                    got.insert(id, error.map(|e| e.message));
+                }
+            }
+        }
+    }
+    got
 }
 
 /// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
