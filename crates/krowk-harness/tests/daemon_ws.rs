@@ -744,7 +744,11 @@ fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
 /// R-LAG-9: `reload` reads config.json and the credentials off the
 /// daemon's thread. Its read is made to take 40 ms, as on a slow disk; the
 /// thread, watched by the lateness probe, stays on time to within 10 ms,
-/// and the reload is answered once what it read is applied.
+/// and the reload is answered once what it read is applied. Three times:
+/// on Linux the probe takes off what the thread spent waiting for a CPU,
+/// and each is held to it; elsewhere a loaded machine holds the thread as
+/// long with nothing on it (`r_lag_9_a_turn_on_a_stalling_disk…`), so one
+/// of the three is, where a read on the thread would hold up all three.
 #[test]
 fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -758,25 +762,33 @@ fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
         // A host to reload.
         c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default) }).await;
         done(&mut c, &[1]).await;
-        home.reads.lock().unwrap().push_back((STALL, None));
-        home.lateness();
-        let started = Instant::now();
-        c.send(&ClientFrame::Reload { id: 2, changed: Some("anthropic".into()), renamed_from: None, renamed_to: None }).await;
-        let error = done(&mut c, &[2]).await.remove(&2).unwrap();
-        let took = started.elapsed();
-        let late = home.lateness();
-        assert!(error.is_none(), "the reload succeeded: {error:?}");
-        assert!(took >= STALL, "answered once its slow read was applied: {took:?}");
-        assert!(home.reads.lock().unwrap().is_empty(), "the reload read the configuration");
-        assert!(late < Duration::from_millis(10), "the daemon's thread was held {late:?} while the reload read");
+        let mut lates = Vec::new();
+        for id in 2..5 {
+            home.reads.lock().unwrap().push_back((STALL, None));
+            home.lateness();
+            let started = Instant::now();
+            c.send(&ClientFrame::Reload { id, changed: Some("anthropic".into()), renamed_from: None, renamed_to: None }).await;
+            let error = done(&mut c, &[id]).await.remove(&id).unwrap();
+            let took = started.elapsed();
+            lates.push(home.lateness());
+            assert!(error.is_none(), "the reload succeeded: {error:?}");
+            assert!(took >= STALL, "answered once its slow read was applied: {took:?}");
+            assert!(home.reads.lock().unwrap().is_empty(), "the reload read the configuration");
+        }
+        let limit = Duration::from_millis(10);
+        if Path::new("/proc/thread-self/schedstat").exists() {
+            assert!(lates.iter().all(|l| *l < limit), "the daemon's thread was held while a reload read: {lates:?}");
+        } else {
+            assert!(lates.iter().any(|l| *l < limit), "the daemon's thread was held while each reload read: {lates:?}");
+        }
     });
     daemon.join().unwrap().unwrap();
 }
 
-/// Two reloads one after the other, the first's read slower than the
-/// second's: the second's, read last, is the one applied, whichever comes
-/// back first, and a prompt sent right after them, before either is
-/// answered, runs on it.
+/// Two reloads one after the other, the second sent while the first is
+/// read, slowly: the second's read, made once the first's is back, is the
+/// one applied, never put back by the first's, and a prompt sent right
+/// after them, before either is answered, runs on it.
 #[test]
 fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
@@ -817,8 +829,9 @@ fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
 /// Reads until each of `ids` is answered by `done`: each one's error.
 async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<String>> {
     let mut got = std::collections::HashMap::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while got.len() < ids.len() {
-        let next = tokio::time::timeout(Duration::from_secs(10), c.next()).await.expect("answered in time").expect("the connection stayed up");
+        let next = tokio::time::timeout_at(deadline, c.next()).await.unwrap_or_else(|_| panic!("{ids:?} answered in time: only {got:?}")).expect("the connection stayed up");
         let Got::Batch(_, frames) = next else { continue };
         for f in frames {
             if let ServerFrame::Done { id, error, .. } = f

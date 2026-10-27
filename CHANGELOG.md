@@ -586,11 +586,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   slow disk (ticket 154).** The daemon's `reload`, which re-reads
   config.json and the credentials after `/connect`, used to do that
   read on the thread that streams every session. It now reads off that
-  thread, and answers once what it read is applied. Two reloads close
-  together apply the second's read, even if the first's comes back
-  later. A prompt sent right after a reload, before it is answered (as
-  the TUI sends one), still runs on what the reload read: the daemon
-  holds the prompt until the reload has settled. Tests now also check
+  thread, one read at a time, and answers once what it read is applied.
+  Reloads sent while one is read share the next read, each still
+  applying its own sign-out or rename, so the last one sent always wins
+  and a flood of them cannot hold anything up for long. A command sent
+  right after a reload, before it is answered (as the TUI sends a
+  prompt), still runs on what the reload read: the daemon holds it
+  until the reload has settled. Tests now also check
   that a resumed turn sends its prompt to the provider only once, and
   the four-session load test measures the daemon's lateness until all
   four sessions end, not only the first.
