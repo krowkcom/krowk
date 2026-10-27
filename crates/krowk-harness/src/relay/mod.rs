@@ -306,7 +306,7 @@ pub fn run_changing(listeners: Vec<std::net::TcpListener>, config: Config, mut s
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined);
+        let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined, config.limits.unjoined_per_peer);
         let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois });
         // Each listener by the origin it answers as, `ws://` and its own
         // address: what `Change::Remove` names.
@@ -395,15 +395,17 @@ struct WhoIs {
     permits: Arc<tokio::sync::Semaphore>,
     answers: RefCell<HashMap<std::net::IpAddr, Answer>>,
     kept: Duration,
-    /// Connections waiting on a lookup, and the most that may: they are
-    /// not yet counted with those not joined (`Limits::unjoined`).
+    /// Connections waiting on a lookup, and the most that may, in all and
+    /// on one address: they are not yet counted with those not joined
+    /// (`Limits::unjoined`, `Limits::unjoined_per_peer`).
     waiting: Cell<usize>,
     most_waiting: usize,
+    most_per_peer: usize,
 }
 
 impl WhoIs {
-    fn new(kept: Duration, most_waiting: usize) -> WhoIs {
-        WhoIs { permits: Arc::new(tokio::sync::Semaphore::new(WHOIS_AT_ONCE)), answers: RefCell::new(HashMap::new()), kept, waiting: Cell::new(0), most_waiting }
+    fn new(kept: Duration, most_waiting: usize, most_per_peer: usize) -> WhoIs {
+        WhoIs { permits: Arc::new(tokio::sync::Semaphore::new(WHOIS_AT_ONCE)), answers: RefCell::new(HashMap::new()), kept, waiting: Cell::new(0), most_waiting, most_per_peer }
     }
 
     /// The address's answer, a fresh one or one under way, else a new one
@@ -430,7 +432,9 @@ impl WhoIs {
         if let Some((_, ok)) = answer.get() {
             return *ok;
         }
-        if self.waiting.get() >= self.most_waiting {
+        // Each connection waiting on the address holds its answer, as do
+        // this one and the map.
+        if self.waiting.get() >= self.most_waiting || Rc::strong_count(&answer) > self.most_per_peer + 1 {
             return false;
         }
         self.waiting.set(self.waiting.get() + 1);
@@ -464,7 +468,7 @@ async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::f
         Some((lock, channels)) => (Some(lock), channels),
         None => (None, HashMap::new()),
     };
-    let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined);
+    let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined, config.limits.unjoined_per_peer);
     let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois });
     loop {
         match listener.accept().await {
@@ -1618,7 +1622,7 @@ mod tests {
     fn r_net_3_whois_lookups_are_four_at_a_time() {
         let (now, most, looked) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
         let admitted = local(async {
-            let whois = Rc::new(WhoIs::new(WHOIS_KEPT, 1024));
+            let whois = Rc::new(WhoIs::new(WHOIS_KEPT, 1024, 32));
             let mut all = Vec::new();
             for i in 0..64u8 {
                 let (whois, now, most, looked) = (whois.clone(), now.clone(), most.clone(), looked.clone());
@@ -1651,12 +1655,13 @@ mod tests {
     /// of its connections at once share the one lookup; past the time kept
     /// it is looked up again. A connection that waits past its deadline for
     /// a turn is refused without a lookup, and that refusal is not kept.
-    /// Past the cap on those waiting, a connection is refused at once.
+    /// Past the cap on those waiting, in all or on one address, a connection
+    /// is refused at once.
     #[test]
     fn r_net_3_a_whois_answer_is_kept_and_a_wait_too_long_is_a_refusal() {
         local(async {
             const KEPT: Duration = Duration::from_secs(2);
-            let whois = Rc::new(WhoIs::new(KEPT, 8));
+            let whois = Rc::new(WhoIs::new(KEPT, 8, 8));
             let looked = Arc::new(AtomicUsize::new(0));
             let lookup = |ok: bool| {
                 let looked = looked.clone();
@@ -1700,6 +1705,25 @@ mod tests {
             for w in waiting {
                 assert!(w.await.unwrap());
             }
+
+            // One address's waiters are capped too, and the rest still wait.
+            let whois = Rc::new(WhoIs::new(KEPT, 64, 2));
+            let held = whois.permits.acquire_many(WHOIS_AT_ONCE as u32).await.unwrap();
+            let busy = std::net::SocketAddr::from(([100, 64, 3, 0], 50000));
+            let mut waiting = Vec::new();
+            for port in 0..2 {
+                let (whois, lookup) = (whois.clone(), lookup(true));
+                waiting.push(tokio::task::spawn_local(async move { whois.admits(std::net::SocketAddr::new(busy.ip(), 40000 + port), Duration::from_secs(10), lookup).await }));
+            }
+            tokio::task::yield_now().await;
+            assert!(!whois.admits(std::net::SocketAddr::new(busy.ip(), 40009), Duration::from_secs(10), lookup(true)).await, "past one address's cap: refused at once");
+            let elsewhere = { let (whois, lookup) = (whois.clone(), lookup(true)); tokio::task::spawn_local(async move { whois.admits(std::net::SocketAddr::from(([100, 64, 3, 1], 50000)), Duration::from_secs(10), lookup).await }) };
+            drop(held);
+            for w in waiting {
+                assert!(w.await.unwrap());
+            }
+            assert!(elsewhere.await.unwrap(), "another address is not held to it");
+            let whois = Rc::new(WhoIs::new(KEPT, 8, 8));
             assert!(whois.admits(other, Duration::from_secs(10), lookup(true)).await, "a refusal for want of a turn is not kept");
         });
     }

@@ -731,10 +731,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   tailnet lookups (ticket 155).** With the same-user check on
   (`KROWK_TAILSCALE_SAME_USER=1`), the host's direct listener asks
   tailscaled who is at the far end of each connection. It now asks at
-  most four at a time and once per address, and keeps each answer, a
-  refusal too, for a minute. A connection that waits past its join
-  deadline for a turn is refused as `not_same_tailnet_user`, as is any
-  lookup that fails.
+  most four at a time, once for all the connections an address has
+  waiting, and keeps up to 1024 addresses' answers, refusals too, for a
+  minute. A connection is refused as `not_same_tailnet_user` if it waits
+  past its join deadline, if too many are already waiting (1024 in all,
+  32 from one address), or if the lookup fails.
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
   bomb (RUSTSEC-2026-0344), where a tiny zstd input could exhaust memory.
   krowk decompresses with it when it restores a vintage and when it reads
