@@ -28,6 +28,9 @@ use tokio_tungstenite::tungstenite::Message;
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
+/// How long a configuration read takes, and the Anthropic API it reads.
+type Read = (Duration, Option<String>);
+
 struct Home {
     root: PathBuf,
     url: String,
@@ -36,7 +39,7 @@ struct Home {
     /// How the next configuration reads go, one each, first first: how long
     /// each takes, and the Anthropic API it reads, when another. Reads past
     /// these are at once, of `url`.
-    reads: Arc<Mutex<std::collections::VecDeque<(Duration, Option<String>)>>>,
+    reads: Arc<Mutex<std::collections::VecDeque<Read>>>,
     /// Configuration reads begun.
     begun: Arc<AtomicU64>,
 }
@@ -818,10 +821,10 @@ async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<
         let next = tokio::time::timeout(Duration::from_secs(10), c.next()).await.expect("answered in time").expect("the connection stayed up");
         let Got::Batch(_, frames) = next else { continue };
         for f in frames {
-            if let ServerFrame::Done { id, error, .. } = f {
-                if ids.contains(&id) {
-                    got.insert(id, error.map(|e| e.message));
-                }
+            if let ServerFrame::Done { id, error, .. } = f
+                && ids.contains(&id)
+            {
+                got.insert(id, error.map(|e| e.message));
             }
         }
     }
