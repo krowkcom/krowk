@@ -1737,10 +1737,11 @@ fn ticket_roster() -> krowk_harness::relay::Roster {
 
 /// A stand-in `tailscaled`: its LocalAPI on a unix socket, answering
 /// `status` with this machine on 127.0.0.1 as tailnet user 1 and a peer,
-/// and `whois` with whichever user `whois` holds.
+/// and `whois` with whichever user `whois` holds, counted in `asked`.
 struct FakeTailscale {
     socket: PathBuf,
     whois: Arc<std::sync::atomic::AtomicU64>,
+    asked: Arc<AtomicUsize>,
 }
 
 impl FakeTailscale {
@@ -1749,6 +1750,8 @@ impl FakeTailscale {
         let l = std::os::unix::net::UnixListener::bind(&socket).unwrap();
         let whois = Arc::new(std::sync::atomic::AtomicU64::new(1));
         let w = whois.clone();
+        let asked = Arc::new(AtomicUsize::new(0));
+        let ask = asked.clone();
         std::thread::spawn(move || {
             for mut c in l.incoming().flatten() {
                 let mut raw = Vec::new();
@@ -1760,6 +1763,9 @@ impl FakeTailscale {
                     }
                 }
                 let req = String::from_utf8_lossy(&raw).to_string();
+                if req.starts_with("GET /localapi/v0/whois") {
+                    ask.fetch_add(1, Ordering::SeqCst);
+                }
                 let body = if req.starts_with("GET /localapi/v0/status") {
                     serde_json::json!({"BackendState": "Running", "Self": {"HostName": "a", "DNSName": "localhost.", "TailscaleIPs": ["127.0.0.1"], "Addrs": [], "UserID": 1, "Online": true},
                         "Peer": {"k": {"HostName": "b", "DNSName": "b.tail.ts.net.", "TailscaleIPs": ["100.64.0.2"], "Online": true}}}).to_string()
@@ -1772,7 +1778,7 @@ impl FakeTailscale {
                 let _ = write!(c, "HTTP/1.0 200 OK\r\nContent-Type: application/json\r\n\r\n{body}");
             }
         });
-        FakeTailscale { socket, whois }
+        FakeTailscale { socket, whois, asked }
     }
 }
 
@@ -2028,6 +2034,55 @@ async fn r_net_3_on_the_tailnet_without_the_registrys_ticket_nobody_joins_the_di
         }
     }
     join_direct(&via, &session, &b, &real, &b.signing).await.expect("B's own ticket and key join, so each refusal above was the ticket's or the key's");
+}
+
+/// R-NET-3, R-LAG-9 (ticket 155): with the same-user check on, two
+/// hundred connections at once to A's direct listener, each from an
+/// address of its own where the OS lets it (Linux's 127/8), leave a turn
+/// on the direct path on time: A's daemon's thread is held to the 30 ms
+/// lateness probe meanwhile, in the release build, as `make bench` runs
+/// it. tailscaled is asked about each address once, B's included: the
+/// lookups wait their turn and their answers are kept.
+#[tokio::test]
+async fn r_net_3_a_flood_of_connections_to_the_direct_listener_leaves_a_turn_on_time() {
+    const FLOOD: usize = 200;
+    let w = World::new("whoisflood");
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    let got = until(&mut v, Duration::from_secs(15), &mut frames, direct_path).await;
+    let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
+    let at: std::net::SocketAddr = via.trim_start_matches("ws://").split('/').next().unwrap().parse().unwrap();
+
+    w.lateness();
+    let flood = tokio::spawn(async move {
+        let mut open = Vec::new();
+        for i in 0..FLOOD {
+            let from = if cfg!(target_os = "linux") { std::net::Ipv4Addr::new(127, 1, (i / 250) as u8, (i % 250) as u8 + 1) } else { std::net::Ipv4Addr::LOCALHOST };
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket.bind((from, 0).into()).unwrap();
+            if let Ok(c) = socket.connect(at).await {
+                open.push(c);
+            }
+        }
+        open
+    });
+    v.commands.send(w.prompt(Some(&session), "while the listener is flooded")).unwrap();
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let late = w.lateness();
+    let open = flood.await.unwrap();
+    assert!(open.len() > FLOOD / 2, "only {} of the flood's connections were made", open.len());
+    let addresses = if cfg!(target_os = "linux") { FLOOD + 1 } else { 1 };
+    assert!(ts.asked.load(Ordering::SeqCst) <= addresses, "tailscaled was asked {} times about {addresses} addresses", ts.asked.load(Ordering::SeqCst));
+    // Held to the limit in the release build alone, as the doc comment says.
+    let timed = !cfg!(debug_assertions);
+    println!("R-LAG-9 the daemon's thread was late by at most {late:?} while {FLOOD} connections flooded the direct listener");
+    assert!(!timed || late < Duration::from_millis(30), "something blocked the daemon's thread {late:?} while the direct listener was flooded");
 }
 
 /// R-NET-2, R-NET-3 (ticket 27): with no Tailscale on A, A offers the LAN

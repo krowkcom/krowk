@@ -305,7 +305,7 @@ pub fn run_changing(listeners: Vec<std::net::TcpListener>, config: Config, mut s
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()) });
+        let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois: WhoIs::new() });
         // Each listener by the origin it answers as, `ws://` and its own
         // address: what `Change::Remove` names.
         let mut accepting: HashMap<String, tokio::task::AbortHandle> = HashMap::new();
@@ -363,12 +363,63 @@ fn accept_on(l: std::net::TcpListener, relay: &Rc<Relay>) -> Result<tokio::task:
 /// The tailnet check, when there is one, then the connection.
 async fn admitted(stream: TcpStream, peer: std::net::SocketAddr, relay: Rc<Relay>) {
     if let Some(same) = relay.config.whois.clone()
-        && !tokio::task::spawn_blocking(move || same.admits(peer)).await.unwrap_or(false)
+        && !relay.whois.admits(peer, relay.config.limits.join_wait, move |p| same.admits(p)).await
     {
         record("join", None, None, "not_same_tailnet_user");
         return;
     }
     connection(stream, peer.ip(), relay).await
+}
+
+/// WhoIs lookups at once: each holds a blocking thread and a call to
+/// tailscaled, so a flood of connections waits its turn instead of taking
+/// the pool (R-LAG-9).
+const WHOIS_AT_ONCE: usize = 4;
+/// How long tailscaled's answer for one address is kept, a refusal too.
+const WHOIS_KEPT: Duration = Duration::from_secs(60);
+/// Addresses kept at most: past it, an answer is used and not kept.
+const WHOIS_ADDRESSES: usize = 1024;
+
+/// The tailnet check's lookups (R-NET-3): at most `WHOIS_AT_ONCE` at a
+/// time, each answer kept per address for `WHOIS_KEPT`. It fails closed: a
+/// connection that waits too long for its turn, a lookup that panics, and
+/// tailscaled's every error are each a refusal.
+struct WhoIs {
+    permits: tokio::sync::Semaphore,
+    kept: RefCell<HashMap<std::net::IpAddr, (tokio::time::Instant, bool)>>,
+}
+
+impl WhoIs {
+    fn new() -> WhoIs {
+        WhoIs { permits: tokio::sync::Semaphore::new(WHOIS_AT_ONCE), kept: RefCell::new(HashMap::new()) }
+    }
+
+    fn kept(&self, ip: std::net::IpAddr) -> Option<bool> {
+        self.kept.borrow().get(&ip).filter(|(at, _)| at.elapsed() < WHOIS_KEPT).map(|(_, ok)| *ok)
+    }
+
+    /// Whether `lookup` admits `peer`, waiting at most `wait` for a turn.
+    async fn admits(&self, peer: std::net::SocketAddr, wait: Duration, lookup: impl FnOnce(std::net::SocketAddr) -> bool + Send + 'static) -> bool {
+        let ip = peer.ip();
+        if let Some(ok) = self.kept(ip) {
+            return ok;
+        }
+        let Ok(Ok(_permit)) = tokio::time::timeout(wait, self.permits.acquire()).await else { return false };
+        // Another connection from the same address may have looked it up
+        // while this one waited.
+        if let Some(ok) = self.kept(ip) {
+            return ok;
+        }
+        let ok = tokio::task::spawn_blocking(move || lookup(peer)).await.unwrap_or(false);
+        let mut kept = self.kept.borrow_mut();
+        if kept.len() >= WHOIS_ADDRESSES {
+            kept.retain(|_, (at, _)| at.elapsed() < WHOIS_KEPT);
+        }
+        if kept.len() < WHOIS_ADDRESSES || kept.contains_key(&ip) {
+            kept.insert(ip, (tokio::time::Instant::now(), ok));
+        }
+        ok
+    }
 }
 
 /// Accepts connections for ever. Inside a `LocalSet`.
@@ -382,7 +433,7 @@ async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::f
         Some((lock, channels)) => (Some(lock), channels),
         None => (None, HashMap::new()),
     };
-    let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()) });
+    let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois: WhoIs::new() });
     loop {
         match listener.accept().await {
             Ok((stream, peer)) => {
@@ -411,6 +462,8 @@ struct Relay {
     added: RefCell<Vec<String>>,
     /// Origins of `config.origins` it let go (`Change::Remove`).
     removed: RefCell<Vec<String>>,
+    /// The tailnet check's lookups, bounded and kept (`config.whois`).
+    whois: WhoIs,
 }
 
 struct Pending {
@@ -1519,7 +1572,88 @@ pub fn parse_uuid(s: &str) -> Option<[u8; 16]> {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_port, peer_bucket};
+    use super::{WHOIS_AT_ONCE, WhoIs, has_port, peer_bucket};
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Duration;
+
+    /// R-NET-3, R-LAG-9: sixty-four connections at once, each from its own
+    /// address and each lookup half a second, never have more than four
+    /// lookups in flight; and every one gets its answer, the wait for a turn
+    /// being long enough.
+    #[test]
+    fn r_net_3_whois_lookups_are_four_at_a_time() {
+        let (now, most, looked) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let admitted = tokio::task::LocalSet::new().block_on(&rt, async {
+            let whois = Rc::new(WhoIs::new());
+            let mut all = Vec::new();
+            for i in 0..64u8 {
+                let (whois, now, most, looked) = (whois.clone(), now.clone(), most.clone(), looked.clone());
+                all.push(tokio::task::spawn_local(async move {
+                    let peer = std::net::SocketAddr::from(([100, 64, 0, i], 7791));
+                    whois.admits(peer, Duration::from_secs(60), move |_| {
+                        let n = now.fetch_add(1, Ordering::SeqCst) + 1;
+                        most.fetch_max(n, Ordering::SeqCst);
+                        looked.fetch_add(1, Ordering::SeqCst);
+                        std::thread::sleep(Duration::from_millis(500));
+                        now.fetch_sub(1, Ordering::SeqCst);
+                        true
+                    }).await
+                }));
+            }
+            let mut admitted = 0;
+            for a in all {
+                admitted += usize::from(a.await.unwrap());
+            }
+            admitted
+        });
+        assert_eq!(looked.load(Ordering::SeqCst), 64, "each address looked up");
+        assert_eq!(admitted, 64);
+        assert!(most.load(Ordering::SeqCst) <= WHOIS_AT_ONCE, "{} lookups in flight at once", most.load(Ordering::SeqCst));
+        assert_eq!(most.load(Ordering::SeqCst), WHOIS_AT_ONCE, "the four ran together");
+    }
+
+    /// R-NET-3: an address seen twice within the minute is looked up once,
+    /// its refusal kept as an admission is, from any port; past the minute
+    /// it is looked up again. A connection that waits past its deadline for
+    /// a turn is refused, without a lookup.
+    #[test]
+    fn r_net_3_a_whois_answer_is_kept_a_minute_and_a_wait_too_long_is_a_refusal() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        tokio::task::LocalSet::new().block_on(&rt, async {
+            let whois = WhoIs::new();
+            let looked = Arc::new(AtomicUsize::new(0));
+            let lookup = |ok: bool| {
+                let looked = looked.clone();
+                move |_| {
+                    looked.fetch_add(1, Ordering::SeqCst);
+                    ok
+                }
+            };
+            let (yes, no) = (std::net::SocketAddr::from(([100, 64, 0, 2], 50000)), std::net::SocketAddr::from(([100, 64, 0, 3], 50000)));
+            assert!(whois.admits(yes, Duration::from_secs(10), lookup(true)).await);
+            assert!(!whois.admits(no, Duration::from_secs(10), lookup(false)).await);
+            assert_eq!(looked.load(Ordering::SeqCst), 2);
+            // The minute passes as the entries are aged.
+            let age = |by: u64| whois.kept.borrow_mut().values_mut().for_each(|(at, _)| *at -= Duration::from_secs(by));
+            age(59);
+            assert!(whois.admits(std::net::SocketAddr::new(yes.ip(), 50001), Duration::from_secs(10), lookup(false)).await, "kept, from another port");
+            assert!(!whois.admits(std::net::SocketAddr::new(no.ip(), 50001), Duration::from_secs(10), lookup(true)).await, "a refusal kept too");
+            assert_eq!(looked.load(Ordering::SeqCst), 2, "each looked up once");
+            age(2);
+            assert!(!whois.admits(yes, Duration::from_secs(10), lookup(false)).await, "past the minute, looked up again");
+            assert_eq!(looked.load(Ordering::SeqCst), 3);
+
+            let held = whois.permits.acquire_many(WHOIS_AT_ONCE as u32).await.unwrap();
+            let other = std::net::SocketAddr::from(([100, 64, 0, 4], 50000));
+            assert!(!whois.admits(other, Duration::from_millis(50), lookup(true)).await, "no turn before the deadline: refused");
+            assert_eq!(looked.load(Ordering::SeqCst), 3, "and never looked up");
+            drop(held);
+            assert!(whois.admits(other, Duration::from_secs(10), lookup(true)).await, "a refusal for want of a turn is not kept");
+        });
+    }
 
     /// R-NET-2: a `Host` with its port is taken as it is; one without (as
     /// Network.framework's WebSocket sends it) is given the port the

@@ -114,6 +114,9 @@ bench: ## Hold the release builds to the performance and size budgets
 	# the daemon's thread on time and the lease calls under the registry's
 	# ceilings, over 75 seconds (tests/sync_attach.rs).
 	cargo test --release --locked -p krowk-harness --test sync_attach r_lag_9_fifty_auto_synced_sessions
+	# R-LAG-9 with the direct listener flooded under the same-user check
+	# (ticket 155): the daemon's thread on time through a turn.
+	cargo test --release --locked -p krowk-harness --test sync_attach r_net_3_a_flood_of_connections
 
 schema: ## Regenerate the harness protocol's JSON Schema after a type change
 	KROWK_SCHEMA_UPDATE=1 cargo test -p krowk-harness --test schema
