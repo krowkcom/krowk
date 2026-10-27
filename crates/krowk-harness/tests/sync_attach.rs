@@ -2037,12 +2037,15 @@ async fn r_net_3_on_the_tailnet_without_the_registrys_ticket_nobody_joins_the_di
 }
 
 /// R-NET-3, R-LAG-9 (ticket 155): with the same-user check on, two
-/// hundred connections at once to A's direct listener, each from an
-/// address of its own where the OS lets it (Linux's 127/8), leave a turn
-/// on the direct path on time: A's daemon's thread is held to the 30 ms
-/// lateness probe meanwhile, in the release build, as `make bench` runs
-/// it. tailscaled is asked about each address once, B's included: the
-/// lookups wait their turn and their answers are kept.
+/// hundred connections at once to A's direct listener, four from each of
+/// fifty addresses where the OS lets them (Linux's 127/8), leave a turn on
+/// the direct path on time. tailscaled is asked about each address once,
+/// however many of its connections come: the lookups wait their turn, the
+/// connections of an address share one, and its answer is kept. The
+/// listener runs on a thread and a runtime of its own, so this also holds
+/// that none of its work lands on A's daemon's thread: it stays within the
+/// 30 ms lateness probe meanwhile, in the release build, as `make bench`
+/// runs it.
 #[tokio::test]
 async fn r_net_3_a_flood_of_connections_to_the_direct_listener_leaves_a_turn_on_time() {
     const FLOOD: usize = 200;
@@ -2059,11 +2062,12 @@ async fn r_net_3_a_flood_of_connections_to_the_direct_listener_leaves_a_turn_on_
     let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
     let at: std::net::SocketAddr = via.trim_start_matches("ws://").split('/').next().unwrap().parse().unwrap();
 
+    let asked = ts.asked.load(Ordering::SeqCst);
     w.lateness();
     let flood = tokio::spawn(async move {
         let mut open = Vec::new();
         for i in 0..FLOOD {
-            let from = if cfg!(target_os = "linux") { std::net::Ipv4Addr::new(127, 1, (i / 250) as u8, (i % 250) as u8 + 1) } else { std::net::Ipv4Addr::LOCALHOST };
+            let from = if cfg!(target_os = "linux") { std::net::Ipv4Addr::new(127, 1, 0, (i / 4) as u8 + 1) } else { std::net::Ipv4Addr::LOCALHOST };
             let socket = tokio::net::TcpSocket::new_v4().unwrap();
             socket.bind((from, 0).into()).unwrap();
             if let Ok(c) = socket.connect(at).await {
@@ -2077,8 +2081,10 @@ async fn r_net_3_a_flood_of_connections_to_the_direct_listener_leaves_a_turn_on_
     let late = w.lateness();
     let open = flood.await.unwrap();
     assert!(open.len() > FLOOD / 2, "only {} of the flood's connections were made", open.len());
-    let addresses = if cfg!(target_os = "linux") { FLOOD + 1 } else { 1 };
-    assert!(ts.asked.load(Ordering::SeqCst) <= addresses, "tailscaled was asked {} times about {addresses} addresses", ts.asked.load(Ordering::SeqCst));
+    // B's own address was looked up already, and is kept.
+    let addresses = if cfg!(target_os = "linux") { FLOOD / 4 } else { 0 };
+    let flooded = ts.asked.load(Ordering::SeqCst) - asked;
+    assert!(flooded <= addresses, "tailscaled was asked {flooded} times about the flood's {addresses} addresses");
     // Held to the limit in the release build alone, as the doc comment says.
     let timed = !cfg!(debug_assertions);
     println!("R-LAG-9 the daemon's thread was late by at most {late:?} while {FLOOD} connections flooded the direct listener");
