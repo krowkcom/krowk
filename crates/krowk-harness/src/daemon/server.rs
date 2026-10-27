@@ -820,8 +820,12 @@ async fn reload(state: Shared, client: u64, id: u64, generation: u64, changed: O
 }
 
 /// Waits for every reload sent before `after` was taken to settle: a
-/// command runs on what the reloads before it read.
-async fn reloaded(state: &Shared, after: u64) {
+/// command runs on what the reloads before it read. An interrupt, a steer
+/// or an answer uses no instance, and waits for nothing.
+async fn reloaded(state: &Shared, cmd: &Command, after: u64) {
+    if matches!(cmd, Command::Interrupt { .. } | Command::Steer { .. } | Command::Approve { .. }) {
+        return;
+    }
     let mut settled = state.borrow().reloaded.subscribe();
     let _ = settled.wait_for(|g| *g >= after).await;
 }
@@ -1090,11 +1094,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) 
         s.working += 1;
         s.wake.notify_one();
     }
-    // A command sent after a reload runs on what it read; an interrupt,
-    // a steer or an answer uses no instance, and waits for nothing.
-    if !matches!(cmd, Command::Interrupt { .. } | Command::Steer { .. } | Command::Approve { .. }) {
-        reloaded(&state, after).await;
-    }
+    reloaded(&state, &cmd, after).await;
     let host = match known {
         Some(h) => Ok(h),
         None => host_for(&state, &cwd, answers).await,
