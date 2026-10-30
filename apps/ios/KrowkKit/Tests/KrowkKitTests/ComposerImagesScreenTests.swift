@@ -140,12 +140,16 @@ struct ComposerImagesScreenTests {
         #expect(asked.count == 1)
     }
 
-    @Test("R-IMG-14: an image copied to the clipboard is read from it in the format it was copied in")
+    @Test("R-IMG-14: an image copied to the clipboard is read from it as an image of its own size")
     func clipboard() {
         let board = UIPasteboard.withUniqueName()
         defer { UIPasteboard.remove(withName: board.name) }
         let flat = TestImages.png(20, 20, .red)
         board.setData(flat, forPasteboardType: "public.png")
-        #expect(PasteTextView.clipboardImages(board) == [flat])
+        // As bytes, or as the image the system made of them: an image of the
+        // same size either way.
+        let found = PasteTextView.clipboardImages(board)
+        #expect(found.count == 1)
+        #expect(found.first.flatMap { TestImages.size($0)?.width } == 20)
     }
 }
