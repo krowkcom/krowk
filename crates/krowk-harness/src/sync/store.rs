@@ -241,7 +241,7 @@ impl Writer {
                 Some(Ok(b)) if crate::images::sha256(&b) == sha && b.len() + e2e::IMAGE_OVERHEAD <= krowk_api::sync::MAX_IMAGE_OBJECT_BYTES as usize => b,
                 _ => continue,
             };
-            let hash: [u8; 32] = e2e::unhex(&sha).and_then(|h| h.try_into().ok()).ok_or("an image's sha256 is not 64 hex digits")?;
+            let Some(hash) = e2e::unhex(&sha).and_then(|h| <[u8; 32]>::try_from(h).ok()) else { continue };
             let sealed = e2e::seal_image(&self.key, &self.session, &hash, &bytes);
             self.client.put_image_object(&self.id, &e2e::image_name(&self.key, &hash), &sealed, token).map_err(api)?;
             self.put.insert(sha);

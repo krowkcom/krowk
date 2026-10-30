@@ -647,7 +647,9 @@ pub const IMAGE_OVERHEAD: usize = IMAGE_HEAD + NONCE + TAG;
 /// base64url — 43 characters. The registry learns which objects are the same
 /// image and nothing of the image's own hash. Keyed under epoch 0's key, which
 /// every key ring holds and a rotation never changes, so an image is one
-/// object for the life of its session and every device names it alike.
+/// object for the life of its session and every device names it alike. A
+/// device removed since holds that key too, so could tell whether a guessed
+/// image was added after it left; it reads no image sealed since.
 pub fn image_name(keys: &SessionKeys, sha256: &[u8; 32]) -> String {
     use hmac::Mac as _;
     let first = keys.at(0).expect("a session has a key");

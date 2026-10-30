@@ -482,8 +482,8 @@ pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place:
 /// put it yet, or never will (an image logged before sync, or the session
 /// gone) — which a device shows as its `[Image #N]` placeholder and asks
 /// for again later, never of the host. A hash that is not 64 hex digits, or
-/// an object that does not open as that image, is permanent; the network
-/// and the registry's errors are transient, as for the chunks.
+/// an object that does not open as that image, is permanent; the registry's
+/// other answers are as for the chunks (410, the session gone, permanent).
 pub fn fetch_image(client: &Client, keys: &SessionKeys, id: &str, sha256: &str) -> Result<Option<Vec<u8>>, ReadError> {
     let hash: [u8; 32] = match e2e::unhex(sha256).map(<[u8; 32]>::try_from) {
         Some(Ok(h)) => h,
@@ -492,7 +492,7 @@ pub fn fetch_image(client: &Client, keys: &SessionKeys, id: &str, sha256: &str) 
     let blob = match client.get_image_object(id, &e2e::image_name(keys, &hash)) {
         Ok(b) => b,
         Err(e) if e.status == 404 => return Ok(None),
-        Err(e) => return Err(ReadError { registry: Some(e.clone()), ..ReadError::transient(e.to_string()) }),
+        Err(e) => return Err(ReadError::registry(e)),
     };
     e2e::open_image(&blob, &crate::sync::uuid(id), &hash, keys).map(Some).map_err(|e| ReadError::permanent(e.0))
 }
