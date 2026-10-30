@@ -432,6 +432,26 @@ pub struct Chunk {
     pub url: String,
 }
 
+/// One sealed image object of a session, as the registry holds it: named by
+/// the keyed hash the client derived, so the registry never learns the
+/// image's own hash. `upload` from a declare of one not yet ready, `url`
+/// from a read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct ImageObject {
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub byte_size: u64,
+    #[serde(default, deserialize_with = "nullable")]
+    pub checksum: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub upload: Option<Upload>,
+    #[serde(default, deserialize_with = "nullable")]
+    pub url: String,
+}
+
 /// A page of a session's ready chunks, in log order; `next` is the index to
 /// pass back as `after`, absent on the last page.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -540,6 +560,10 @@ pub const MAX_TRANSPORT_BYTES: u64 = 256 << 20;
 /// The most a vintage read back may be: the registry's own cap on one.
 pub const MAX_VINTAGE_BYTES: u64 = 256 << 20;
 
+/// The most an image object may be: the registry's own cap on one, an
+/// image of at most 2.75 MiB with the sealing's overhead.
+pub const MAX_IMAGE_OBJECT_BYTES: u64 = 3 << 20;
+
 /// The most a chunk read back may be: a chunk is a slice of a log, and a
 /// registry listing a larger one is not handed the memory for it.
 pub const MAX_CHUNK_BYTES: u64 = 64 << 20;
@@ -585,6 +609,37 @@ impl Client {
         let bytes = self.get_blob(&chunk.url, MAX_CHUNK_BYTES)?;
         if crate::client::sha256_hex(&bytes) != chunk.checksum {
             return Err(crate::fail("checksum_mismatch", format!("chunk {} read back does not match its digest — read it again", chunk.index)));
+        }
+        Ok(bytes)
+    }
+
+    /// The lease holder stores a session's sealed image under `name`, the
+    /// keyed hash it derived from the image's sha256 under the session key:
+    /// declared, put straight to storage and finalized, each presenting the
+    /// lease token. Declaring a name the session has is a no-op on the
+    /// registry, so a retry after a lost answer is fine; a name that is
+    /// already ready is returned as it is, with nothing to put.
+    pub fn put_image_object(&self, session: &str, name: &str, sealed: &[u8], lease_token: &str) -> Result<ImageObject, Error> {
+        let base = format!("/sessions/{}/images", slug_path(session));
+        let body = json!({ "image": { "name": name, "byte_size": sealed.len(), "checksum": crate::client::sha256_hex(sealed), "lease_token": lease_token } });
+        let declared: ImageObject = self.call_as_device("POST", &base, Some(body), ATTEMPTS, None)?.0;
+        if declared.state == "ready" {
+            return Ok(declared);
+        }
+        let upload = declared.upload.as_ref().filter(|u| !u.url.is_empty()).ok_or_else(|| crate::fail("no_upload_url", "the registry declared the image but did not say where to put its bytes"))?;
+        self.put_blob(upload, sealed)?;
+        let fin = json!({ "image": { "lease_token": lease_token } });
+        Ok(self.call_as_device("PUT", &format!("{base}/{}/finalization", slug_path(name)), Some(fin), ATTEMPTS, None)?.0)
+    }
+
+    /// A session's sealed image object by name: the presigned GET from the
+    /// registry (signed, as every session read is), then the bytes, checked
+    /// against the digest the registry recorded before anything opens them.
+    pub fn get_image_object(&self, session: &str, name: &str) -> Result<Vec<u8>, Error> {
+        let image: ImageObject = self.get_as_device(&format!("/sessions/{}/images/{}", slug_path(session), slug_path(name)))?;
+        let bytes = self.get_blob(&image.url, MAX_IMAGE_OBJECT_BYTES)?;
+        if crate::client::sha256_hex(&bytes) != image.checksum {
+            return Err(crate::fail("checksum_mismatch", "an image object read back does not match its digest — read it again"));
         }
         Ok(bytes)
     }

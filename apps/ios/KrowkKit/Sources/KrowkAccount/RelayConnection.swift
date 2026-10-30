@@ -199,6 +199,15 @@ public actor RelayConnection: LiveSession {
 
     // MARK: LiveSession
 
+    public func image(sha256: String) async throws -> Data? {
+        guard let session else { return nil }
+        return try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .utility).async {
+                continuation.resume(with: Result { try session.image(sha256: sha256) })
+            }
+        }
+    }
+
     public nonisolated func follow(status: @escaping @MainActor @Sendable (RelayStatus) -> Void) {
         queue.async { self.assumeIsolated { $0.start(status) } }
     }

@@ -233,6 +233,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// What VoiceOver was last told of the move: each line once.
     private var moveSaid: String?
 
+    /// Fetches the images the prompts name (R-IMG-13).
+    public let images: TranscriptImages
+
     public init(
         row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
         kept: (any KeptTranscript)? = nil, hosts: (any HostSource)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
@@ -247,6 +250,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let model = model ?? TranscriptModel(sessionID: row.id)
         self.model = model
         self.driver = session.map { FrameDriver(session: $0, model: model) }
+        // The images the prompts name: the device's copy, else the session's
+        // sealed store; the placeholder stays until the bytes are there.
+        self.images = TranscriptImages(model: model) { [session] sha in try await session?.image(sha256: sha) }
         self.opener = open ?? { UIApplication.shared.open($0) }
         super.init(nibName: nil, bundle: nil)
         title = row.title
@@ -306,6 +312,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             defer { FrameCosts.end("configure text", configuring) }
             #endif
             cell.openLink = open
+            cell.openImage = { [weak self] state, number in self?.showImage(state, number) }
             cell.show(state)
         }
         let tool = UICollectionView.CellRegistration<TranscriptToolCell, String> { [weak self] cell, _, id in
@@ -1878,6 +1885,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         snapshot.reconfigureItems([id])
         dataSource.apply(snapshot, animatingDifferences: false)
         snapshotApplies += 1
+    }
+
+    /// A prompt's image, full screen (R-IMG-15).
+    func showImage(_ state: ItemState, _ number: UInt32) {
+        guard let picture = state.pictures[number] ?? state.thumbnails[number], presentedViewController == nil else { return }
+        present(ImageViewerController(image: picture, number: number), animated: true)
     }
 
     /// A link tapped: a sheet naming the whole URL, and only its "Open"

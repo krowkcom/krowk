@@ -13,6 +13,9 @@ class TranscriptCell: UICollectionViewListCell {
     private(set) var state: ItemState?
     /// A link tapped: the screen asks before anything opens.
     var openLink: (@MainActor (URL) -> Void)?
+    /// A prompt's thumbnail tapped: the screen opens that image full
+    /// screen (R-IMG-15).
+    var openImage: (@MainActor (ItemState, UInt32) -> Void)?
 
     override init(frame: CGRect) {
         super.init(frame: frame)
@@ -296,6 +299,12 @@ final class TranscriptTextCell: TranscriptCell {
     private let bubble = UIView()
     private var shown: NSAttributedString?
     private var userLayout: [NSLayoutConstraint] = []
+    /// A prompt's thumbnails, one under another beneath its text, once the
+    /// device holds an image's bytes (R-IMG-15).
+    private let thumbs = UIStackView()
+    private var textBottom: NSLayoutConstraint!
+    private var thumbsLayout: [NSLayoutConstraint] = []
+    private var thumbsShown: [UInt32] = []
     private var answerLayout: [NSLayoutConstraint] = []
     /// The text's width, set as the cell is sized: a non-scrolling text
     /// view's height follows the width it is given, never a stale one.
@@ -330,10 +339,21 @@ final class TranscriptTextCell: TranscriptCell {
         textWidth = text.view.widthAnchor.constraint(equalToConstant: 200)
         textWidth.priority = .required - 1
         textWidth.isActive = true
+        thumbs.axis = .vertical
+        thumbs.alignment = .leading
+        thumbs.spacing = 6
+        thumbs.translatesAutoresizingMaskIntoConstraints = false
+        bubble.addSubview(thumbs)
+        textBottom = text.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8)
+        thumbsLayout = [
+            thumbs.topAnchor.constraint(equalTo: text.view.bottomAnchor, constant: 6),
+            thumbs.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
+            thumbs.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
+            thumbs.trailingAnchor.constraint(lessThanOrEqualTo: bubble.trailingAnchor, constant: -12),
+        ]
         userLayout = [
             bubble.leadingAnchor.constraint(greaterThanOrEqualTo: margins.leadingAnchor, constant: 48),
             text.view.topAnchor.constraint(equalTo: bubble.topAnchor, constant: 8),
-            text.view.bottomAnchor.constraint(equalTo: bubble.bottomAnchor, constant: -8),
             text.view.leadingAnchor.constraint(equalTo: bubble.leadingAnchor, constant: 12),
             text.view.trailingAnchor.constraint(equalTo: bubble.trailingAnchor, constant: -12),
         ]
@@ -365,8 +385,10 @@ final class TranscriptTextCell: TranscriptCell {
             textView.view.accessibilityLabel = user ? "Your prompt" : "Answer"
         }
         if text.openLink == nil { text.openLink = { [weak self] in self?.openLink?($0) } }
+        showThumbnails(state)
         guard state.done else { return stream(state, font: font) }
-        if let finished, finished.item == ObjectIdentifier(state), finished.font == font, finished.text == state.text { return }
+        let source = state.displayText
+        if let finished, finished.item == ObjectIdentifier(state), finished.font == font, finished.text == source { return }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font {
             // Its last deltas may have come in the frame that completed it:
             // appended first, as any frame's are, so a whole text that only
@@ -379,13 +401,13 @@ final class TranscriptTextCell: TranscriptCell {
         }
         if let streamed = text.streamed, streamed.item == ObjectIdentifier(state), streamed.font == font,
            text.finish(state.text, font: font) {
-            finished = (ObjectIdentifier(state), font, state.text)
+            finished = (ObjectIdentifier(state), font, source)
             shown = nil
             return
         }
         finished = nil
-        let drawn = state.drawing("text", source: state.text, font: font) {
-            SafeText.capped(state.text, font: font)
+        let drawn = state.drawing("text", source: source, font: font) {
+            SafeText.capped(source, font: font)
         }
         // Unchanged text keeps its layout.
         guard shown !== drawn else { return }
@@ -400,6 +422,47 @@ final class TranscriptTextCell: TranscriptCell {
         shown = drawn
         textView.attributedText = drawn
         sizeText(toFit: bounds.width)
+    }
+
+    /// The prompt's thumbnails, in image order, under its text; none for
+    /// an answer or while no image's bytes are held.
+    private func showThumbnails(_ state: ItemState) {
+        let numbers = user ? state.thumbnails.keys.sorted() : []
+        let drawn = !numbers.isEmpty
+        NSLayoutConstraint.deactivate(thumbsLayout + [textBottom])
+        NSLayoutConstraint.activate(drawn ? thumbsLayout : (user ? [textBottom] : []))
+        guard numbers != thumbsShown else { return }
+        thumbsShown = numbers
+        for view in thumbs.arrangedSubviews {
+            thumbs.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        for number in numbers {
+            guard let image = state.thumbnails[number] else { continue }
+            let view = UIImageView(image: image)
+            view.contentMode = .scaleAspectFit
+            view.layer.cornerRadius = 8
+            view.layer.cornerCurve = .continuous
+            view.clipsToBounds = true
+            view.isUserInteractionEnabled = true
+            view.widthAnchor.constraint(lessThanOrEqualToConstant: TranscriptImages.thumbnailSide).isActive = true
+            view.heightAnchor.constraint(lessThanOrEqualToConstant: TranscriptImages.thumbnailSide).isActive = true
+            view.accessibilityIdentifier = "transcript-image-\(number)"
+            view.accessibilityLabel = "Image \(number)"
+            view.accessibilityTraits = .button
+            view.isAccessibilityElement = true
+            let tap = ImageTap(target: self, action: #selector(imageTapped(_:)))
+            tap.number = number
+            view.addGestureRecognizer(tap)
+            thumbs.addArrangedSubview(view)
+        }
+        thumbs.isHidden = numbers.isEmpty
+        sizeText(toFit: bounds.width)
+        invalidateIntrinsicContentSize()
+    }
+
+    @objc private func imageTapped(_ tap: ImageTap) {
+        if let state { openImage?(state, tap.number) }
     }
 
     /// An item under way (R-LAG-7): its new text appended in place, only
@@ -441,6 +504,8 @@ final class TranscriptTextCell: TranscriptCell {
             } else {
                 target = most
             }
+            // Room for a thumbnail under it.
+            if !thumbsShown.isEmpty { target = min(most, max(target, TranscriptImages.thumbnailSide)) }
         }
         if abs(textWidth.constant - target) > 0.5 { textWidth.constant = target }
     }
@@ -450,7 +515,18 @@ final class TranscriptTextCell: TranscriptCell {
         shown = nil
         finished = nil
         text.end()
+        thumbsShown = []
+        for view in thumbs.arrangedSubviews {
+            thumbs.removeArrangedSubview(view)
+            view.removeFromSuperview()
+        }
+        thumbs.isHidden = true
     }
+}
+
+/// A thumbnail's tap, with the image it is.
+private final class ImageTap: UITapGestureRecognizer {
+    var number: UInt32 = 0
 }
 
 /// A tool call (`<name> <summary>`, then `✓`/`✗` and its result's first

@@ -56,6 +56,15 @@ public final class ItemState {
     /// A tool call waiting on an approval (ticket 91), until its result:
     /// "waiting for approval", "allowed — sending…", "allowed", "denied".
     public var verdict = ""
+    /// A prompt's images by number, and the sha256 of those the log names
+    /// one for (R-IMG-15): what the fetcher is asked for.
+    public var imageHashes: [UInt32: String] = [:]
+    /// The thumbnails of the images whose bytes the device holds (R-IMG-13,
+    /// R-IMG-15), by number: the cell draws them, and their `[Image #N]`
+    /// leaves the text. Bytes only ever come from the session's own store.
+    public var thumbnails: [UInt32: UIImage] = [:]
+    /// The same images whole, for the full-screen viewer.
+    public var pictures: [UInt32: UIImage] = [:]
 
     @ObservationIgnored private var summarized: (input: String, summary: String)?
     /// The cell drawing it now, if one is: redrawn on each change (the
@@ -74,9 +83,24 @@ public final class ItemState {
         self.done = done
     }
 
+    /// What a prompt's cell draws as its text: the text, less the
+    /// `[Image #N]` of each image drawn as a thumbnail instead.
+    var displayText: String {
+        guard kind == .user, !thumbnails.isEmpty else { return text }
+        var shown = text
+        for number in thumbnails.keys {
+            let token = "[Image #\(number)]"
+            // The token and one space beside it; the rest as typed.
+            if let range = shown.range(of: token + " ") ?? shown.range(of: " " + token) ?? shown.range(of: token) {
+                shown.removeSubrange(range)
+            }
+        }
+        return shown
+    }
+
     /// Reads every property a cell draws, so one observation covers them.
     func touch() {
-        _ = (text, toolName, toolInput, output, isError, alarming, done, running, expanded, caption, refused, verdict)
+        _ = (thumbnails, text, toolName, toolInput, output, isError, alarming, done, running, expanded, caption, refused, verdict)
     }
 
     /// `source` drawn as `role` at `size`, from the last drawing if neither
@@ -175,7 +199,9 @@ public enum TurnEnd: Equatable, Sendable {
 public enum TranscriptChange: Equatable, Sendable {
     /// A prompt or steer, with its turn: the first of a turn is its prompt,
     /// which a rate-limit offer sends again (ticket 135).
-    case userText(item: String, text: String, images: [UInt32], turn: String? = nil)
+    /// `hashes`: the sha256 of each image the log names one for (R-IMG-13),
+    /// by number; an image without one is only ever `[Image #N]`.
+    case userText(item: String, text: String, images: [UInt32], turn: String? = nil, hashes: [UInt32: String] = [:])
     case assistantText(item: String, text: String)
     case reasoning(item: String, text: String)
     case toolCall(item: String, callID: String, name: String, input: String)
@@ -306,6 +332,9 @@ public struct FrameApplied {
 @Observable
 public final class TranscriptModel {
     public nonisolated let sessionID: String
+    /// Asked for each image a prompt names a hash for, as the prompt is
+    /// drawn (`TranscriptImages`).
+    @ObservationIgnored public var imageWanted: ((ItemState, UInt32, String) -> Void)?
     /// The rows, top to bottom: the session's, then the bubbles of what
     /// was typed here and not yet logged. Never holds an id twice: the
     /// diffable data source traps on one.
@@ -1128,17 +1157,27 @@ public final class TranscriptModel {
     /// `change` applied: the id of the row it adds, if it adds one.
     private func take(_ change: TranscriptChange, event: String, at time: Int64?) -> String? {
         switch change {
-        case .userText(let item, let text, let images, let turn):
+        case .userText(let item, let text, let images, let turn, let hashes):
             if let turn { keepPrompt(turn, text) }
             // Logged live or caught up (never read at rest, nor kept): the
             // oldest bubble typed with this text gives way to it (ticket 90).
             if live || placing == .afterParent, !history, let token = commands.logged(text) { dropBubble(token) }
-            // An image's bytes are never drawn: "[Image #N]", which the text
-            // names it by; one the text doesn't name is added.
+            // An image the text doesn't name by "[Image #N]" is added. The
+            // placeholder stays until the image's bytes arrive (R-IMG-13).
             let missing = images.filter { !text.contains("[Image #\($0)]") }.map { "[Image #\($0)]" }
             let shown = missing.isEmpty ? text : ([text] + missing).filter { !$0.isEmpty }.joined(separator: " ")
-            if case .settled(let row) = settle("item:\(item)", text: shown) { return row }
-            return add(ItemState(id: "item:\(item)", kind: .user, text: shown))
+            let id = "item:\(item)"
+            let row: String?
+            if case .settled(let settled) = settle(id, text: shown) {
+                row = settled
+            } else {
+                row = add(ItemState(id: id, kind: .user, text: shown))
+            }
+            if !hashes.isEmpty, let state = items[id], state.imageHashes.isEmpty {
+                state.imageHashes = hashes
+                for (number, sha) in hashes.sorted(by: { $0.key < $1.key }) { imageWanted?(state, number, sha) }
+            }
+            return row
         case .assistantText(let item, let text):
             if case .settled(let row) = settle("item:\(item)", text: text) { return row }
             // An empty answer beside a tool call: no row.

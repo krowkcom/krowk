@@ -783,6 +783,11 @@ impl OpenedSession {
 
 #[uniffi::export]
 impl OpenedSession {
+    pub fn image(&self, sha256: String) -> Result<Option<Vec<u8>>, KrowkError> {}
+}
+
+#[uniffi::export]
+impl OpenedSession {
     pub fn relay_ticket(&self) -> Result<String, KrowkError> {}
 }
 

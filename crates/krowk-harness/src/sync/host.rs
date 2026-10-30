@@ -282,7 +282,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
     let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
-    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?;
+    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?.with_images(o.sessions.join(id));
     Ok((keys, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
 }
 
