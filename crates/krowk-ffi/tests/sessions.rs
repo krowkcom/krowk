@@ -490,3 +490,32 @@ fn r_ios_7_the_registry_out_of_reach_is_network_listing_opening_and_reading_on()
     *refusing.lock().unwrap() = None;
     assert_eq!(opened.catch_up().unwrap().len(), 1, "read on once the registry is back");
 }
+
+/// R-IMG-11: the phone gets an image's bytes by the sha256 its event
+/// names, once the host has put it; before, and for an image never put,
+/// "not yet". A hash that is no sha256 is the app's mistake.
+#[test]
+fn r_img_11_the_phone_gets_an_images_bytes_by_its_sha256_or_not_yet() {
+    use krowk_harness::images;
+    let w = World::new();
+    let (key, wrapped, index) = w.record(SESSION, "t", (w.host_device.id(), &w.host_signing));
+    let keys = e2e::SessionKeys::from(key);
+    let lease = w.host.acquire_lease(SESSION, &w.host_device.id().to_string(), 60, "development").unwrap();
+    let dir = std::env::temp_dir().join(format!("krowk-ffi-images-{}", std::process::id())).join(SESSION);
+    let _ = std::fs::remove_dir_all(&dir);
+    let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01"[..], b"from the laptop"].concat();
+    let kept = images::save(&dir, &[images::Decoded { number: 1, media_type: "image/png", bytes: png.clone().into() }]).unwrap().remove(0);
+    let sha = kept.sha256.clone().unwrap();
+    let writer = krowk_harness::sync::store::Writer::take_up(w.host.clone(), keys.clone(), SESSION, wrapped.clone(), index, lease.fence).unwrap().with_images(dir.clone());
+    let mut host = Hosted { writer, token: lease.token, keys, wrapped };
+    host.write(&[event(SESSION, 1, "before")]);
+
+    let opened = w.phone.open_session(SESSION.into(), None, None).unwrap();
+    assert_eq!(opened.image(sha.clone()).unwrap(), None, "not yet");
+    host.write(&[json!({"id": "01a0ec7b-2222-7000-8000-000000000002", "sessionId": SESSION, "timeMs": 2, "type": "item.completed", "turnId": "t1", "itemId": "i1", "item": {"kind": "userText", "text": "[Image #1]", "images": [kept]}})]);
+    assert_eq!(opened.catch_up().unwrap().len(), 1, "the event decodes");
+    assert_eq!(opened.image(sha.clone()).unwrap(), Some(png));
+    assert_eq!(opened.image(images::sha256(b"never pasted")).unwrap(), None);
+    assert!(matches!(opened.image("../etc".into()), Err(KrowkError::InvalidInput { .. })));
+    let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+}
