@@ -492,7 +492,7 @@ fn r_img_12_a_move_fetches_the_images_the_log_names_and_fails_without_them() {
 
     // Nothing put yet: the restore fails, and B holds no image.
     let err = handoff::fetch_images(&mb.client, &keys, &session, &on_b, &events).unwrap_err();
-    assert!(err.contains("image #1") && err.contains("nothing was moved"), "{err}");
+    assert!(err.contains("image #1") && err.contains("host it again where it was"), "{err}");
     assert!(images::path(&on_b, &kept).is_some_and(|p| !p.exists()));
 
     let laptop = Arc::new(ma.client);

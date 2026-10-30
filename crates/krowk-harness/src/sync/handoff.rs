@@ -323,8 +323,8 @@ pub fn fetch_images(client: &krowk_api::Client, keys: &krowk_client::e2e::Sessio
     for r in refs.filter(|r| r.sha256.is_some()) {
         match super::store::fetch_image(client, keys, id, session_dir, &r) {
             Ok(true) => {}
-            Ok(false) => return Err(format!("image #{} ({}) of session {id} is not in the registry yet; nothing was moved — take the session again in a moment", r.number, r.file)),
-            Err(e) => return Err(format!("could not fetch image #{} ({}) of session {id}: {e}; nothing was moved", r.number, r.file)),
+            Ok(false) => return Err(format!("image #{} ({}) of session {id} is not in the registry yet — the session's lease was given back; host it again where it was", r.number, r.file)),
+            Err(e) => return Err(format!("could not fetch image #{} ({}) of session {id}: {e} — the session's lease was given back; host it again where it was", r.number, r.file)),
         }
     }
     Ok(())
