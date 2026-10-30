@@ -2192,7 +2192,19 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     // Untracked before the session started: not the session's to move.
     std::fs::write(repo.join("old.txt"), "from before").unwrap();
     std::thread::sleep(Duration::from_millis(20));
-    let (_d, session) = first_turn(&w).await;
+    // The first turn carries an image (R-IMG-12).
+    w.serve();
+    let d0 = w.daemon().await;
+    let (tx, mut rx) = mpsc::channel(1024);
+    tokio::spawn(async move { while rx.recv().await.is_some() {} });
+    let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01"[..], b"seen on machine a"].concat();
+    let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
+    let mut first = w.prompt(None, "look at [Image #1]");
+    if let Command::Prompt { images, .. } = &mut first {
+        images.push(krowk_harness::protocol::ImageInput { number: 1, media_type: "image/png".into(), data: data.clone(), sha256: None });
+    }
+    let session = d0.execute(first, tx).await.unwrap().unwrap().session_id;
+    let _d = d0;
     // The session's work, uncommitted.
     std::fs::write(repo.join("tracked.txt"), "one\ntwo\n").unwrap();
     std::fs::create_dir_all(repo.join("notes")).unwrap();
@@ -2233,7 +2245,9 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         let k = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
         let index = krowk_harness::sync::store::open_index(&k, &id, &s.sealed_index).unwrap();
         let events = krowk_harness::sync::store::attach(&api, &k, &id, index, None).unwrap().events;
-        handoff::restore_log(&log::sessions_dir(&b_env2).unwrap(), &id, &events, &applied.cwd, &me, &from).unwrap();
+        let dir = log::sessions_dir(&b_env2).unwrap();
+        handoff::fetch_images(&api, &k, &id, &dir.join(&id), &events).unwrap();
+        handoff::restore_log(&dir, &id, &events, &applied.cwd, &me, &from).unwrap();
         applied
     })
     .await
@@ -2275,6 +2289,13 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     cv.commands.send(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: ApprovalDecision::Allow, answers: Vec::new() }).unwrap();
     until(&mut cv, Duration::from_secs(20), &mut frames, result_of).await;
     assert!(applied.cwd.join("approved.txt").exists(), "the turn ran on B, in B's worktree");
+    {
+        let seen = w._mock.seen.lock().unwrap();
+        let last = seen.last().expect("B called the model");
+        let sent = last.body["messages"].to_string();
+        assert!(sent.contains(&data), "R-IMG-12: B's call carries the image A's first turn named");
+        assert!(!sent.contains("file is gone"), "and does not call it gone");
+    }
     assert!(!repo.join("approved.txt").exists(), "not on A");
     let b_log = std::fs::read_to_string(log::sessions_dir(&b_env).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(b_log.contains("session.moved"), "B logged the move");

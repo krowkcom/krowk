@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A moved session keeps its images.** When you move a synced session to
+  another machine, that machine now fetches every image the earlier turns
+  named before its first turn, so the model still sees them instead of
+  being told the file is gone. If an image can't be fetched, the move
+  fails with a message and nothing is moved. Images logged before krowk
+  named them by hash can't be fetched and are labelled as they were.
+
 - **Images reach remote and synced sessions, however many there are.**
   A prompt or steer with several screenshots used to carry them all in
   one message, and a remote daemon or a synced session refuses a message
