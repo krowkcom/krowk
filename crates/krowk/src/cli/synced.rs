@@ -580,6 +580,11 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     // The log as the host left it, checkpoint and all.
     let events = read_log(&api).map_err(undo)?;
+    // The images its turns name, before the log is written back: a session
+    // is never left here to start a turn without them.
+    let s = api.show_sync_session(&session).map_err(&undo)?;
+    let skeys = store::open_session_key(&s, &session, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).map_err(|e| undo(fail("sync_failed", e)))?;
+    handoff::fetch_images(&api, &skeys, &session, &sessions.join(&session), &events).map_err(|e| undo(fail("handoff_failed", e)))?;
     handoff::restore_log(&sessions, &session, &events, &applied.cwd, &me, &handed.from_device).map_err(|e| undo(fail("handoff_failed", e)))?;
     // Its start, `moved_line`, is what the host daemon's watcher of a take
     // another device asked for reads as moved.

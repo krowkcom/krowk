@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A moved session keeps its images.** When you move a synced session to
+  another machine, that machine now fetches every image the earlier turns
+  named before its first turn, so the model still sees them instead of
+  being told the file is gone. If an image can't be fetched, the move
+  fails with a message and nothing is moved. Images logged before krowk
+  named them by hash can't be fetched and are labelled as they were.
+
 - **A synced session's images reach your other devices.** When you paste
   an image into a synced session, its host now stores the image in the
   registry before the part of the log that names it. The image is sealed

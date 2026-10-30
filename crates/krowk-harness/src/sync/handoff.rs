@@ -312,6 +312,24 @@ pub fn restore_log(sessions: &Path, id: &str, events: &[Value], cwd: &Path, devi
     Ok(())
 }
 
+/// Fetches the images the session's events name into this machine's copy of
+/// the session (R-IMG-12), so the first turn here sends them as the old host
+/// would have. A log reference with no sha256 (written before images were
+/// named by it) can't be fetched and is passed over, as it always was. An
+/// image the registry can't give fails the move: better no turn than one
+/// that tells the model its image is gone.
+pub fn fetch_images(client: &krowk_api::Client, keys: &krowk_client::e2e::SessionKeys, id: &str, session_dir: &Path, events: &[Value]) -> Result<(), String> {
+    let refs = events.iter().filter_map(|e| e.pointer("/item/images")).filter_map(|i| serde_json::from_value::<Vec<crate::protocol::ImageRef>>(i.clone()).ok()).flatten();
+    for r in refs.filter(|r| r.sha256.is_some()) {
+        match super::store::fetch_image(client, keys, id, session_dir, &r) {
+            Ok(true) => {}
+            Ok(false) => return Err(format!("image #{} ({}) of session {id} is not in the registry yet; nothing was moved — take the session again in a moment", r.number, r.file)),
+            Err(e) => return Err(format!("could not fetch image #{} ({}) of session {id}: {e}; nothing was moved", r.number, r.file)),
+        }
+    }
+    Ok(())
+}
+
 /// Refuses a log of the session this machine holds with an event `events`,
 /// the synced log, does not: it went on here after it left, and taking the
 /// session would replace that history. Asked before anything moves.
