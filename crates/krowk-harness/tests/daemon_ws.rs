@@ -283,6 +283,85 @@ fn r_proto_1_a_websocket_client_runs_a_turn_and_one_without_the_token_is_refused
     daemon.join().unwrap().unwrap();
 }
 
+/// R-IMG-1 to R-IMG-4: three images that together are past the 4 MiB message
+/// cap each go as a `putImage` of their own, ahead of the prompt that names
+/// them by hash, and the model call carries all three; a repeat is taken, and
+/// a prompt naming a hash the host holds nothing for is refused with nothing
+/// logged.
+#[test]
+fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_message() {
+    use base64::Engine as _;
+    use krowk_harness::protocol::ImageInput;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("Three dots.")));
+    let home = Home::new("images", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
+    let images: Vec<Vec<u8>> = (1u8..=3).map(|n| [&header[..], &vec![n; 1_800_000][..]].concat()).collect();
+    assert!(images.iter().map(Vec::len).sum::<usize>() > 4 << 20, "past one message's cap");
+    let shas: Vec<String> = images.iter().map(|b| krowk_harness::images::sha256(b)).collect();
+    let b64 = |b: &[u8]| base64::engine::general_purpose::STANDARD.encode(b);
+    let put = |n: usize| Command::PutImage { session_id: None, sha256: shas[n].clone(), media_type: "image/png".into(), data: b64(&images[n]) };
+    let named = |ns: &[usize]| ns.iter().map(|&n| ImageInput { number: n as u32 + 1, media_type: "image/png".into(), data: String::new(), sha256: Some(shas[n].clone()) }).collect::<Vec<_>>();
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        fn with(cmd: Command, named: Vec<ImageInput>) -> Command {
+            match cmd {
+                Command::Prompt { session_id, text, model, permission_mode, toolset, effort, budget, .. } => Command::Prompt { session_id, text, images: named, model, permission_mode, toolset, effort, budget },
+                _ => unreachable!(),
+            }
+        }
+        let mut id = 0;
+        let mut run = |cmd: Command| {
+            id += 1;
+            (id, cmd)
+        };
+        async fn done(c: &mut Ws, want: u64) -> (Option<krowk_harness::protocol::RunResult>, Option<krowk_harness::protocol::ErrorInfo>) {
+            while let Some(got) = c.next().await {
+                if let Got::Batch(_, frames) = got {
+                    for f in frames {
+                        if let ServerFrame::Done { id, result, error } = f
+                            && id == want
+                        {
+                            return (result, error);
+                        }
+                    }
+                }
+            }
+            panic!("the daemon closed before it answered");
+        }
+        // A hash nothing was put under: refused, and no session made.
+        let (i, cmd) = run(with(home.prompt("look at [Image #1]", PermissionMode::Default), named(&[0])));
+        c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+        let (result, error) = done(&mut c, i).await;
+        assert!(result.is_none());
+        let e = error.expect("refused");
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("image_missing", "the host has no copy of image #1; send the prompt again"));
+        assert!(krowk_harness::log::list(&krowk_harness::log::sessions_dir(&home.env()).unwrap()).unwrap_or_default().is_empty(), "nothing logged");
+        // Each, one message; the first twice.
+        for n in [0, 0, 1, 2] {
+            let (i, cmd) = run(put(n));
+            c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+            let (_, error) = done(&mut c, i).await;
+            assert!(error.is_none(), "{error:?}");
+        }
+        let (i, cmd) = run(with(home.prompt("what are [Image #1], [Image #2] and [Image #3]?", PermissionMode::Default), named(&[0, 1, 2])));
+        c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+        let (result, error) = done(&mut c, i).await;
+        assert!(error.is_none(), "{error:?}");
+        let session = result.unwrap().session_id;
+        let held: Vec<_> = std::fs::read_dir(krowk_harness::log::sessions_dir(&home.env()).unwrap().join(&session).join("images")).unwrap().collect();
+        assert_eq!(held.len(), 3, "one file each");
+    });
+    let seen = m.seen.lock().unwrap();
+    let content = seen[0].body["messages"][0]["content"].as_array().unwrap();
+    let sent = content.iter().filter(|b| b["type"] == "image").count();
+    assert_eq!(sent, 3, "the model call carries all three: {}", content.len());
+    drop(seen);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-LAG-1: while the model types, nothing under krowk's home is written —
 /// neither the log nor krowk.db nor anything else: the deltas go from the
 /// provider's stream to the socket through memory alone, and only the

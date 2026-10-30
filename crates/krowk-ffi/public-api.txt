@@ -1,4 +1,4 @@
-FFI_API_VERSION = 9
+FFI_API_VERSION = 10
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -370,6 +370,12 @@ pub enum Command {
         effort: Option<Effort>,
         budget: Option<BudgetLimits>,
     },
+    PutImage {
+        session_id: Option<String>,
+        sha256: String,
+        media_type: String,
+        data: String,
+    },
     Interrupt { session_id: String },
     Steer { session_id: String, text: String, images: Vec<ImageInput> },
     Approve {
@@ -430,6 +436,7 @@ pub struct ImageInput {
     pub number: u32,
     pub media_type: String,
     pub data: String,
+    pub sha256: Option<String>,
 }
 
 #[uniffi::remote(Record)]

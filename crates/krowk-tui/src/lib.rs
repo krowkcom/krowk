@@ -141,6 +141,8 @@ const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
 const SLOW: &str = "host_slow";
 /// How long a control command sent from a key is waited for.
 const COMMAND_WAIT: Duration = Duration::from_secs(2);
+/// How long a steer with images waits: each goes ahead as a message of its own.
+const IMAGE_WAIT: Duration = Duration::from_secs(120);
 
 /// How long a synced session's switch waits on the host's ack, which a
 /// key waits on: `FLUSH_WAIT`'s bound, under the hang-up watchdog's.
@@ -1382,6 +1384,12 @@ impl<'h> Ui<'h> {
 
     /// A line of the turn's stream.
     async fn on_stream_line(&mut self, app: &mut App, line: &StreamLine, reach: &mut Reach) {
+        // Which image is going ahead of the prompt: the status line's, not
+        // the turn's.
+        if let Some(text) = link::sending(line) {
+            app.flash = Some(text.to_string()).filter(|t| !t.is_empty());
+            return;
+        }
         reach.last_activity = Instant::now();
         if matches!(line, StreamLine::Live(krowk_harness::protocol::LiveEvent::ItemDelta { .. })) {
             // Bytes are arriving from the model: it is reachable,
@@ -1439,7 +1447,7 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
-        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == link::HOST_READS_NO_IMAGES);
+        let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == "image_missing" || e.code == link::IMAGE_NOT_SENT || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
         // news, nor one another client following the session runs: nor
         // does it touch how the turn that did run ended.
@@ -2134,7 +2142,9 @@ impl<'h> Ui<'h> {
                 break;
             }
             let images = app.images_for(&text);
-            if !self.command_within(Command::Steer { session_id: id.clone(), text: text.clone(), images }, left()).await.is_ok_or_slow() {
+            // Images go ahead one message each: more time than a word takes.
+            let wait = if images.is_empty() { left() } else { IMAGE_WAIT };
+            if !self.command_within(Command::Steer { session_id: id.clone(), text: text.clone(), images }, wait).await.is_ok_or_slow() {
                 break;
             }
             app.unsent_steers.remove(0);
