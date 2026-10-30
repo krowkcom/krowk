@@ -57,7 +57,7 @@ fn log_bodies() -> Vec<LogBody> {
     let items = vec![
         Item::UserText {
             text: "look at this".into(),
-            images: vec![ImageRef { number: 1, media_type: "image/png".into(), file: "img/1.png".into() }],
+            images: vec![ImageRef { number: 1, media_type: "image/png".into(), file: "img/1.png".into(), sha256: None }],
         },
         Item::AssistantText { text: "done".into() },
         Item::Reasoning {

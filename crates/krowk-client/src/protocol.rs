@@ -199,6 +199,10 @@ pub struct ImageRef {
     pub media_type: String,
     /// The file's name in `images/`, never a path.
     pub file: String,
+    /// The sha256 of the image's bytes, lowercase hex. None in a log
+    /// written before images were named by it, whose `file` is an older name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 impl Item {

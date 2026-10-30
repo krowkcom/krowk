@@ -6491,7 +6491,7 @@ mod tests {
     fn a_pasted_image_numbers_on_from_the_log_and_goes_with_the_text_that_names_it() {
         let image = || crate::paste::Image { media_type: "image/png", bytes: b"\x89PNG\r\n\x1a\n".to_vec().into(), width: 1, height: 1 };
         let mut a = app();
-        let r = |n| krowk_harness::protocol::ImageRef { number: n, media_type: "image/png".into(), file: format!("{n}.png") };
+        let r = |n| krowk_harness::protocol::ImageRef { number: n, media_type: "image/png".into(), file: format!("{n}.png"), sha256: None };
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::UserText { text: "[Image #1] [Image #2]".into(), images: vec![r(1), r(2)] } }));
         a.editor.insert_str("compare");
         assert_eq!(a.attach(image(), None), 3, "on from the log's highest");

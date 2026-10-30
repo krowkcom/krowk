@@ -309,6 +309,7 @@ pub struct ImageRef {
     pub number: u32,
     pub media_type: String,
     pub file: String,
+    pub sha256: Option<String>,
 }
 
 #[uniffi::remote(Enum)]
