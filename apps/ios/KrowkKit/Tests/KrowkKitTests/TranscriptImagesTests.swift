@@ -41,11 +41,12 @@ struct TranscriptImagesTests {
         TranscriptEvent(id: "e1", sessionID: "s1", change: .userText(item: "u1", text: "Look at [Image #1] please", images: [1], hashes: hashes))
     }
 
-    private func waitForImage(_ done: () -> Bool) async throws {
+    /// Waits up to 3 s for `done`; a miss is reported at the caller's line.
+    private func waitForImage(_ done: () -> Bool, sourceLocation: SourceLocation = #_sourceLocation) async throws {
         for _ in 0..<300 where !done() {
             try await Task.sleep(for: .milliseconds(10))
         }
-        #expect(done())
+        #expect(done(), sourceLocation: sourceLocation)
     }
 
     @Test("The placeholder stays while the bytes are not there, then the thumbnail replaces it")
@@ -158,6 +159,9 @@ struct TranscriptImagesTests {
         try await waitForImage { screen.presentedViewController is ImageViewerController }
         let viewer = try #require(screen.presentedViewController as? ImageViewerController)
         #expect(viewer.imageView.image === picture)
+        // Closed only once it has finished appearing: a dismiss sent while
+        // the presentation still animates is dropped.
+        try await waitForImage { viewer.view.window != nil && !viewer.isBeingPresented && screen.transitionCoordinator == nil }
         viewer.closeButton.sendActions(for: .primaryActionTriggered)
         try await waitForImage { screen.presentedViewController == nil }
     }
