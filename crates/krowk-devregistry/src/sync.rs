@@ -155,6 +155,8 @@ const CHUNK_CONTENT_TYPE: &str = "application/octet-stream";
 const MAX_CHUNK_BYTES: i64 = 64 << 20;
 /// The registry's Artifact::MAX_VINTAGE_BYTES, and krowk-api's read limit.
 const MAX_VINTAGE_BYTES: i64 = 256 << 20;
+/// The registry's Artifact::MAX_IMAGE_OBJECT_BYTES, and krowk-api's read limit.
+const MAX_IMAGE_OBJECT_BYTES: i64 = 3 << 20;
 /// The registry's SyncSession::MAX_CHUNKS.
 const MAX_CHUNKS: usize = 100_000;
 
@@ -162,6 +164,9 @@ const MAX_CHUNKS: usize = 100_000;
 pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
+    /// Workspace, session id and name → a sealed image object: a chunk's
+    /// upload with no place in a log (index and fence 0).
+    pub images: HashMap<(String, String, String), Chunk>,
     /// Workspace and slug → a vintage: its ISO week, and its bytes' upload,
     /// which is a chunk's with no place in a log (index and fence 0).
     pub vintages: HashMap<(String, String), (String, Chunk)>,
@@ -1022,21 +1027,23 @@ pub fn declare_chunk(app: &App, req: &mut Req, id: &str, site: &str, signer: &st
 
 fn declared_chunk(c: &Chunk, site: &str) -> Json {
     let mut out = serialize_chunk(c);
+    out.push(("upload".to_owned(), upload_json(c, site)));
+    Json::map_of(out)
+}
+
+/// The presigned PUT a declare hands out.
+fn upload_json(c: &Chunk, site: &str) -> Json {
     let headers = Json::map([
         ("Content-Type", Json::str(CHUNK_CONTENT_TYPE)),
         ("Content-Length", Json::str(c.byte_size.to_string())),
         ("x-amz-checksum-sha256", Json::str(crate::store::base64_sum(&c.checksum))),
     ]);
-    out.push((
-        "upload".to_owned(),
-        Json::map([
-            ("method", Json::str("PUT")),
-            ("url", Json::str(format!("{site}/_storage/{}?upload_token={}", c.storage_key, c.upload_tok))),
-            ("headers", headers),
-            ("expires_at", Json::str(rfc3339_nano(c.upload_til))),
-        ]),
-    ));
-    Json::map_of(out)
+    Json::map([
+        ("method", Json::str("PUT")),
+        ("url", Json::str(format!("{site}/_storage/{}?upload_token={}", c.storage_key, c.upload_tok))),
+        ("headers", headers),
+        ("expires_at", Json::str(rfc3339_nano(c.upload_til))),
+    ])
 }
 
 /// Whose upload a storage key is.
@@ -1044,6 +1051,7 @@ enum Owner {
     Chunk((String, String, u64)),
     Vintage((String, String)),
     Transport((String, String)),
+    Image((String, String, String)),
 }
 
 /// Storage's PUT for a chunk's key, with a real signature's checks: the
@@ -1055,6 +1063,7 @@ pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
         let at = |c: &Chunk| (c.upload_tok.clone(), c.checksum.clone(), c.byte_size, c.upload_til, c.ready);
         s.sync.chunks.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (Owner::Chunk(k.clone()), at(c)))
             .or_else(|| s.sync.vintages.iter().find(|(_, (_, c))| c.storage_key == key).map(|(k, (_, c))| (Owner::Vintage(k.clone()), at(c))))
+            .or_else(|| s.sync.images.iter().find(|(_, c)| c.storage_key == key).map(|(k, c)| (Owner::Image(k.clone()), at(c))))
             .or_else(|| s.sync.transports.iter().find(|(_, t)| t.chunk.storage_key == key).map(|(k, t)| (Owner::Transport(k.clone()), at(&t.chunk))))
     };
     let (ck, (token, sum, size, until, ready)) = found?;
@@ -1080,6 +1089,7 @@ pub fn put_chunk_object(app: &App, req: &mut Req, key: &str) -> Option<Resp> {
         Owner::Chunk(k) => s.sync.chunks.get_mut(k),
         Owner::Vintage(k) => s.sync.vintages.get_mut(k).map(|(_, c)| c),
         Owner::Transport(k) => s.sync.transports.get_mut(k).map(|t| &mut t.chunk),
+        Owner::Image(k) => s.sync.images.get_mut(k),
     };
     if let Some(c) = c {
         c.uploaded_sum = Some(got);
@@ -1165,6 +1175,141 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
         })
         .collect();
     Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
+}
+
+fn serialize_image(name: &str, c: &Chunk) -> Vec<(String, Json)> {
+    let mut out = serialize_chunk(c);
+    out.retain(|(k, _)| k != "index" && k != "slug");
+    out.insert(0, ("name".to_owned(), Json::str(name)));
+    out
+}
+
+/// A name the registry takes: url-safe, 16 to 128 characters (its
+/// `Artifact::IMAGE_NAME`).
+fn image_name(name: &str) -> bool {
+    (16..=128).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// The holder's declare of a sealed image object (the registry's
+/// `Sessions::ImagesController#create`): a name the session has is a no-op,
+/// a pending one taking this declare's size and digest with a fresh URL.
+pub fn declare_image(app: &App, req: &mut Req, id: &str, site: &str, signer: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let v = body(req, "image")?;
+        let mut f = v.fields();
+        let name = f.string("name");
+        let byte_size = whole(&f, "byte_size").ok_or_else(|| invalid("byte_size", "must be a whole number"))?;
+        let checksum = f.string("checksum").to_ascii_lowercase();
+        let token = f.string("lease_token");
+        let mut s = app.lock();
+        let now = s.now();
+        let x = s.sync.sessions.get(&(workspace.clone(), id.clone())).ok_or_else(not_found)?;
+        if token.is_empty() {
+            return Err(lease_token_missing());
+        }
+        holder(x, &token, now, signer)?;
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
+        }
+        if !image_name(&name) {
+            return Err(invalid("image_name", "must be 16 to 128 url-safe characters"));
+        }
+        if byte_size <= 0 || byte_size > MAX_IMAGE_OBJECT_BYTES {
+            return Err(invalid("byte_size", &format!("must be between 1 and {MAX_IMAGE_OBJECT_BYTES} bytes")));
+        }
+        if checksum.len() != 64 || !checksum.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(invalid("checksum", "must be a lowercase hex SHA-256"));
+        }
+        burst(&mut s.sync, &caller(req), "image_declares", now)?;
+        let ik = (workspace, id, name.clone());
+        if let Some(c) = s.sync.images.get_mut(&ik) {
+            if !c.ready {
+                c.byte_size = byte_size;
+                c.checksum = checksum;
+                c.uploaded_sum = None;
+                c.upload_tok = crate::store::random_token();
+                c.upload_til = now + crate::store::UPLOAD_URL_LIFETIME;
+            }
+            return Ok(Resp::json(200, &declared_image(&name, c, site)));
+        }
+        let c = Chunk {
+            slug: generate_slug("art"),
+            index: 0,
+            fence: 0,
+            byte_size,
+            checksum,
+            storage_key: format!("{}/{}/image.bin", crate::store::ARTIFACT_REGION, crate::store::random_base36()),
+            upload_tok: crate::store::random_token(),
+            upload_til: now + crate::store::UPLOAD_URL_LIFETIME,
+            uploaded_sum: None,
+            ready: false,
+            created_at: now,
+        };
+        let resp = Resp::json(201, &declared_image(&name, &c, site));
+        s.sync.images.insert(ik, c);
+        Ok(resp)
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// A declare's answer: the image, with a presigned PUT unless it is ready.
+fn declared_image(name: &str, c: &Chunk, site: &str) -> Json {
+    let mut out = serialize_image(name, c);
+    if !c.ready {
+        out.push(("upload".to_owned(), upload_json(c, site)));
+    }
+    Json::map_of(out)
+}
+
+/// The holder's confirmation that an image object landed. Idempotent.
+pub fn finalize_image(app: &App, req: &mut Req, id: &str, name: &str, signer: &str) -> Resp {
+    let mut run = || -> Result<Resp, Resp> {
+        let workspace = gate(req)?;
+        let id = session_id(id).ok_or_else(not_found)?;
+        let token = match decode(req, 1 << 16)? {
+            Decoded::Value(v) => v.get("image").map(|m| m.value.fields().string("lease_token")).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let mut s = app.lock();
+        let now = s.now();
+        let x = s.sync.sessions.get(&(workspace.clone(), id.clone())).ok_or_else(not_found)?;
+        if token.is_empty() {
+            return Err(lease_token_missing());
+        }
+        holder(x, &token, now, signer)?;
+        if let Some(refused) = revoked_holder(&s.sync, x) {
+            return Err(crate::devices::revoked(&refused));
+        }
+        let c = s.sync.images.get_mut(&(workspace, id, name.to_owned())).ok_or_else(not_found)?;
+        if !c.ready {
+            match &c.uploaded_sum {
+                None => return Err(error(409, "upload_missing", &format!("nothing uploaded for {name} yet"), None)),
+                Some(sum) if *sum != c.checksum => return Err(error(422, "checksum_mismatch", "what was uploaded does not match the declared checksum", None)),
+                Some(_) => {}
+            }
+            c.ready = true;
+            c.upload_tok.clear();
+        }
+        Ok(Resp::json(200, &Json::map_of(serialize_image(name, c))))
+    };
+    run().unwrap_or_else(|r| r)
+}
+
+/// A ready image object with the URL its bytes are read from, for any
+/// device of the person.
+pub fn show_image(app: &App, req: &Req, id: &str, name: &str, site: &str) -> Resp {
+    let workspace = match gate(req) {
+        Ok(w) => w,
+        Err(r) => return r,
+    };
+    let Some(id) = session_id(id) else { return not_found() };
+    let s = app.lock();
+    let Some(c) = s.sync.images.get(&(workspace, id, name.to_owned())).filter(|c| c.ready) else { return not_found() };
+    let mut j = serialize_image(name, c);
+    j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", c.storage_key))));
+    Resp::json(200, &Json::map_of(j))
 }
 
 fn serialize_vintage(week: &str, c: &Chunk) -> Vec<(String, Json)> {
