@@ -249,7 +249,10 @@ where
         let (sink, _) = mpsc::channel(1);
         if let Err(e) = send(put, sink).await {
             say(out, String::new());
-            return Err(EngineError::new(IMAGE_NOT_SENT, format!("image #{} was not sent: {}", i.number, e.message)));
+            // A host that cannot be reached is told as that, for the
+            // reachability check; the rest send the prompt back.
+            let code = if e.code == "network_unreachable" { e.code.as_str() } else { IMAGE_NOT_SENT };
+            return Err(EngineError::new(code, format!("image #{} was not sent: {}", i.number, e.message)));
         }
     }
     say(out, String::new());

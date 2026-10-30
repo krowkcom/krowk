@@ -254,7 +254,26 @@ pub fn put(sessions_dir: &Path, session: Option<&str>, sha256: &str, media_type:
     }
     // The same checks a prompt's inline image meets.
     let decoded = decode(&[ImageInput { number: 1, media_type: media_type.into(), data: data.into(), sha256: None }]).map_err(|e| EngineError::new("bad_image", e.message.replace("[Image #1]", "the image")))?;
-    save(&home(sessions_dir, session)?, &decoded).map(drop)
+    let home = home(sessions_dir, session)?;
+    if session.is_none() {
+        sweep_staged(&home.join(DIR));
+    }
+    save(&home, &decoded).map(drop)
+}
+
+/// How long an image staged for a session-to-be is kept: a prompt follows
+/// its images at once, so one older is of a prompt that never came. Shared
+/// by every client, so a prompt's use of it never removes it.
+const STAGED_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn sweep_staged(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STAGED_FOR);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// The images a prompt or steer names by sha256 alone, filled in with their
@@ -262,12 +281,11 @@ pub fn put(sessions_dir: &Path, session: Option<&str>, sha256: &str, media_type:
 /// are the inline ones'. A hash the host holds nothing for refuses the whole
 /// prompt. `take`: those staged for a session-to-be are used up, for the
 /// session now holds them.
-pub fn resolve(sessions_dir: &Path, session: Option<&str>, inputs: Vec<ImageInput>, take: bool) -> Result<Vec<ImageInput>, EngineError> {
+pub fn resolve(sessions_dir: &Path, session: Option<&str>, inputs: Vec<ImageInput>) -> Result<Vec<ImageInput>, EngineError> {
     if inputs.len() > MAX_IMAGES || inputs.iter().all(|i| !i.data.is_empty()) {
         return Ok(inputs);
     }
     let dir = home(sessions_dir, session).ok().map(|d| d.join(DIR));
-    let mut used = Vec::new();
     let resolved = inputs
         .into_iter()
         .map(|mut i| {
@@ -279,15 +297,9 @@ pub fn resolve(sessions_dir: &Path, session: Option<&str>, inputs: Vec<ImageInpu
             let file = dir.as_ref().map(|d| d.join(format!("{sha}.{}", extension(&i.media_type)))).ok_or_else(missing)?;
             let bytes = std::fs::read(&file).map_err(|_| missing())?;
             i.data = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            used.push(file);
             Ok(i)
         })
         .collect::<Result<Vec<_>, EngineError>>()?;
-    if take && session.is_none() {
-        for f in used {
-            let _ = std::fs::remove_file(f);
-        }
-    }
     Ok(resolved)
 }
 
@@ -471,8 +483,8 @@ mod tests {
         put(&dir, Some(&session), &sha, "image/png", &data).unwrap();
         assert_eq!(std::fs::read_dir(dir.join(&session).join(DIR)).unwrap().count(), 1);
         let by_name = |sha: &str| vec![ImageInput { number: 2, media_type: "image/png".into(), data: String::new(), sha256: Some(sha.into()) }];
-        assert_eq!(resolve(&dir, Some(&session), by_name(&sha), false).unwrap()[0].data, data);
-        assert_eq!(resolve(&dir, Some(&session), by_name(&"0".repeat(64)), false).unwrap_err().message, "the host has no copy of image #2; send the prompt again");
+        assert_eq!(resolve(&dir, Some(&session), by_name(&sha)).unwrap()[0].data, data);
+        assert_eq!(resolve(&dir, Some(&session), by_name(&"0".repeat(64))).unwrap_err().message, "the host has no copy of image #2; send the prompt again");
         // Not the bytes' hash, not an image, not a session's.
         assert_eq!(put(&dir, Some(&session), &"0".repeat(64), "image/png", &data).unwrap_err().code, "bad_image");
         assert_eq!(put(&dir, Some("../x"), &sha, "image/png", &data).unwrap_err().code, "no_session");
