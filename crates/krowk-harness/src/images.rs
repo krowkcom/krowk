@@ -5,6 +5,10 @@
 //! native turn reads them back for its model calls, a backend is handed
 //! the file.
 //!
+//! Files are named by the sha256 of their bytes (`<sha256>.<ext>`), so the
+//! same image is the same name on every device; files an older host named
+//! `<number>-<fnv>.<ext>` are still read, by the name the log gives.
+//!
 //! A client is expected to have made them small enough for any provider
 //! already (the TUI does, as it pastes them); the host holds them to the
 //! limits below and never resizes. Every image in a session's history
@@ -23,9 +27,15 @@ use std::sync::Arc;
 /// The directory in a session's own.
 pub const DIR: &str = "images";
 
-/// The most bytes one image may have: what the providers take of one, with
-/// room for its base64.
-pub const MAX_BYTES: usize = 5 * 1024 * 1024 * 3 / 4;
+/// The most bytes one image may have, in every kind of session: it is one
+/// message on the wire after base64 and sealing (the daemon's and the
+/// relay's cap is 4 MiB), and well within what the providers take of one.
+pub const MAX_BYTES: usize = 2816 * 1024;
+
+/// [`MAX_BYTES`] in MB, as a person is told it: `2.75`.
+pub fn max_mb() -> f64 {
+    MAX_BYTES as f64 / (1024.0 * 1024.0)
+}
 
 /// The longest side an image may have: what the providers read.
 pub const MAX_SIDE: u32 = 8000;
@@ -128,20 +138,21 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
     if inputs.len() > MAX_IMAGES {
         return Err(refused(format!("{} images were attached, and a prompt takes at most {MAX_IMAGES}", inputs.len())));
     }
+    let too_big = |n: u32, bytes: usize| refused(format!("image #{n} is {:.1} MB; the most one image may be is {} MB", bytes as f64 / (1024.0 * 1024.0), max_mb()));
+    // Measured before it is decoded, base64 being four bytes for three, and
+    // before the total, so one image too big is named as that.
+    if let Some(i) = inputs.iter().find(|i| i.data.len() / 4 * 3 > MAX_BYTES + 3) {
+        return Err(too_big(i.number, i.data.len() / 4 * 3));
+    }
     // What one model call sends of them all: a prompt always fits whole.
     let total: usize = inputs.iter().map(|i| i.data.len()).sum();
     if total > SENT_BYTES {
         return Err(refused(format!("the images come to {} MB, and a prompt's may come to at most {} MB", total / (1024 * 1024), SENT_BYTES / (1024 * 1024))));
     }
-    let too_big = |n: u32, bytes: usize| refused(format!("[Image #{n}] is {} KB, and an image may be at most {} KB", bytes / 1024, MAX_BYTES / 1024));
     inputs
         .iter()
         .map(|i| {
             let n = i.number;
-            // Measured before it is decoded: base64 is four bytes for three.
-            if i.data.len() / 4 * 3 > MAX_BYTES + 3 {
-                return Err(too_big(n, i.data.len() / 4 * 3));
-            }
             let bytes = base64::engine::general_purpose::STANDARD.decode(i.data.as_bytes()).map_err(|_| refused(format!("[Image #{n}] is not base64")))?;
             if bytes.len() > MAX_BYTES {
                 return Err(too_big(n, bytes.len()));
@@ -160,15 +171,18 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
         .collect()
 }
 
-/// FNV-1a: a name for the bytes, so the same image kept twice (a prompt
-/// rolled over to another instance, steering sent again) is one file.
-fn digest(b: &[u8]) -> u64 {
-    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| (h ^ u64::from(*x)).wrapping_mul(0x0100_0000_01b3))
+/// The sha256 of the bytes, in lowercase hex: the image's name, so the same
+/// image kept twice (a prompt rolled over to another instance, steering
+/// sent again) is one file.
+pub fn sha256(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Keeps the images in `session_dir`'s `images/`, private to the person,
-/// each named by its number and its bytes: written whole under another name
-/// first, so a file of that name is always the whole image.
+/// each named by the sha256 of its bytes: written whole under another name
+/// first, so a file of that name is always the whole image. Bytes already
+/// held are not written again.
 pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, EngineError> {
     if images.is_empty() {
         return Ok(Vec::new());
@@ -179,7 +193,11 @@ pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, Eng
     images
         .iter()
         .map(|i| {
-            let file = format!("{}-{:016x}.{}", i.number, digest(&i.bytes), extension(i.media_type));
+            let sha256 = sha256(&i.bytes);
+            let file = format!("{sha256}.{}", extension(i.media_type));
+            if dir.join(&file).is_file() {
+                return Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file, sha256: Some(sha256) });
+            }
             let part = dir.join(format!(".{file}.{}", krowk_store::new_id()));
             let mut o = std::fs::OpenOptions::new();
             o.write(true).create_new(true);
@@ -190,7 +208,7 @@ pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, Eng
                 let _ = std::fs::remove_file(&part);
                 return Err(failed(e));
             }
-            Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file })
+            Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file, sha256: Some(sha256) })
         })
         .collect()
 }
@@ -307,7 +325,12 @@ mod tests {
         assert_eq!(decode(&[input(1, "image/png", b"hello")]).unwrap_err().code, "bad_image");
         assert_eq!(decode(&[ImageInput { number: 1, media_type: "image/png".into(), data: "!!".into() }]).unwrap_err().code, "bad_image");
         let big = [PNG, &vec![0; MAX_BYTES]].concat();
-        assert_eq!(decode(&[input(1, "image/png", &big)]).unwrap_err().code, "bad_image");
+        let e = decode(&[input(3, "image/png", &big)]).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("bad_image", "image #3 is 2.8 MB; the most one image may be is 2.75 MB"));
+        let edge = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
+        assert!(decode(&[input(1, "image/png", &edge)]).is_ok(), "exactly the cap is taken");
+        let huge = [PNG, &vec![0; SENT_BYTES]].concat();
+        assert!(decode(&[input(2, "image/png", &huge)]).unwrap_err().message.starts_with("image #2 is 20.0 MB;"), "one image over both caps is named as too big itself");
         let many: Vec<ImageInput> = (0..=MAX_IMAGES as u32).map(|n| input(n, "image/png", PNG)).collect();
         assert_eq!(decode(&many).unwrap_err().code, "bad_image");
         let heavy = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
@@ -327,7 +350,7 @@ mod tests {
         assert_eq!(dimensions(&webp), Some((800, 600)));
         let wide = [&PNG[..16], &9000u32.to_be_bytes(), &1u32.to_be_bytes()].concat();
         assert!(decode(&[input(1, "image/png", &wide)]).unwrap_err().message.contains("9000x1"));
-        let colon = ImageRef { number: 1, media_type: "image/png".into(), file: "C:x.png".into() };
+        let colon = ImageRef { number: 1, media_type: "image/png".into(), file: "C:x.png".into(), sha256: None };
         assert!(path(Path::new("/s"), &colon).is_none());
     }
 
@@ -339,6 +362,9 @@ mod tests {
         let other = [PNG, b"x"].concat();
         let refs = save(dir, &decode(&[input(1, "image/png", PNG), input(1, "image/png", &other)]).unwrap()).unwrap();
         assert_ne!(refs[0].file, refs[1].file, "two images numbered alike are two files");
+        assert_eq!(refs[0].file, format!("{}.png", sha256(PNG)));
+        assert_eq!(refs[0].sha256.as_deref(), Some(sha256(PNG).as_str()));
+        assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         let again = save(dir, &decode(&[input(1, "image/png", PNG)]).unwrap()).unwrap();
         assert_eq!(again[0].file, refs[0].file, "the same image kept again is the same file");
         assert_eq!(std::fs::read_dir(dir.join(DIR)).unwrap().count(), 2, "and nothing half-written is left");
@@ -349,9 +375,9 @@ mod tests {
         load(dir, &all, false, &mut loaded);
         assert!(sent(&refs, &loaded, &mut Default::default()).into_iter().all(|(_, label, data)| data.is_none() && label.contains("reads no images")), "a model that reads none is sent their names");
         for file in ["../events.jsonl", "/etc/passwd", ".hidden", ""] {
-            assert!(path(dir, &ImageRef { number: 1, media_type: "image/png".into(), file: file.into() }).is_none(), "{file}");
+            assert!(path(dir, &ImageRef { number: 1, media_type: "image/png".into(), file: file.into(), sha256: None }).is_none(), "{file}");
         }
-        let gone = ImageRef { number: 2, media_type: "image/png".into(), file: "2-x.png".into() };
+        let gone = ImageRef { number: 2, media_type: "image/png".into(), file: "2-x.png".into(), sha256: None };
         load(dir, &[&gone], true, &mut loaded);
         assert_eq!(sent(std::slice::from_ref(&gone), &loaded, &mut Default::default()).remove(0).1, "[Image #2: the file is gone]");
         let _ = std::fs::remove_dir_all(&root);

@@ -137,7 +137,7 @@ pub fn normalise(bytes: &[u8]) -> Result<Image, String> {
             return Ok(Image { media_type: "image/jpeg", bytes: jpeg.into(), width: img.width(), height: img.height() });
         }
     }
-    Err(format!("the image is too big to send, even made smaller (over {} MB)", MAX_BYTES / (1024 * 1024)))
+    Err(format!("the image is too big to send, even made smaller (over {} MB)", krowk_harness::images::max_mb()))
 }
 
 fn encode(img: &image::DynamicImage, format: image::ImageFormat, quality: u8) -> Result<Vec<u8>, String> {

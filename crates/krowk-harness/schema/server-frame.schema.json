@@ -984,6 +984,13 @@
         "file": {
           "description": "The file's name in `images/`, never a path.",
           "type": "string"
+        },
+        "sha256": {
+          "description": "The sha256 of the image's bytes, lowercase hex. None in a log\nwritten before images were named by it, whose `file` is an older name.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

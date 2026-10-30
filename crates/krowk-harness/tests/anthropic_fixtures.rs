@@ -233,7 +233,7 @@ fn r_prov_2_effort_none_is_thinking_off_and_any_other_rung_is_the_apis_effort() 
 
 /// A prompt naming two images: one whose bytes were read, one whose file is gone.
 fn with_images() -> ModelRequest {
-    let r = |n: u32, file: &str| ImageRef { number: n, media_type: "image/png".into(), file: file.into() };
+    let r = |n: u32, file: &str| ImageRef { number: n, media_type: "image/png".into(), file: file.into(), sha256: None };
     let item = Item::UserText { text: "what differs between [Image #1] and [Image #2]?".into(), images: vec![r(1, "1-a.png"), r(2, "2-b.png")] };
     let mut req = ModelRequest { model: "m".into(), system: "s".into(), history: vec![HistoryItem { item, response: None }], ..ModelRequest::default() };
     req.images.insert("1-a.png".into(), "iVBORw0K".into());
