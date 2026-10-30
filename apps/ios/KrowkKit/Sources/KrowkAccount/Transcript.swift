@@ -282,7 +282,9 @@ extension TranscriptEvent {
         case .itemCompleted(let turnId, let itemId, let item):
             switch item {
             case .userText(let text, let images):
-                return .userText(item: itemId, text: text, images: images.map(\.number), turn: turnId)
+                var hashes: [UInt32: String] = [:]
+                for image in images { if let sha = image.sha256, ImageCache.isHash(sha) { hashes[image.number] = sha } }
+                return .userText(item: itemId, text: text, images: images.map(\.number), turn: turnId, hashes: hashes)
             case .assistantText(let text):
                 return .assistantText(item: itemId, text: text)
             case .reasoning(let text, _):
