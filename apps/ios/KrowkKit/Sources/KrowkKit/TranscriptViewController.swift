@@ -135,6 +135,8 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     private var stopRefused: String?
     /// The images going to the host ahead of a prompt (R-IMG-2).
     private var uploads: Task<Void, Never>?
+    /// Whether the text field had the keyboard when the uploads began.
+    private var refocus = false
     private lazy var photoPicker = PhotoPickerDelegate { [weak self] photos in
         await self?.composer.attach(photos)
     }
@@ -270,6 +272,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     isolated deinit {
         frames?.invalidate()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        uploads?.cancel()
         session?.stop()
     }
 
@@ -798,6 +801,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         guard let session, composer.sending == nil else { return }
         composer.imageNote = nil
         composer.sending = 1
+        refocus = composer.textView.isFirstResponder
         composer.textView.isEditable = false
         uploads = Task { @MainActor [weak self] in
             var kept = Set<String>()
@@ -807,7 +811,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
                     composer.sending = at + 1
                     updateComposer()
                     // The same image twice is kept once.
-                    if kept.insert(image.sha256).inserted { try await session.putImage(image) }
+                    if kept.insert(image.sha256).inserted { try await Self.put(image, to: session) }
                 }
             } catch {
                 self?.uploadFailed(error)
@@ -818,9 +822,45 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         updateComposer()
     }
 
+    /// How long a host has to keep one image before the send gives up on it.
+    static let uploadSeconds = 90
+
+    /// `image` put to `session`, or an error if the host doesn't answer in
+    /// time: a link lost after the image went would otherwise hold the
+    /// composer for good.
+    private static func put(_ image: PreparedImage, to session: any LiveSession) async throws {
+        // Unstructured, first answer wins: the upload may never return, and
+        // a group would wait for it.
+        let (answers, answer) = AsyncStream<Result<Void, any Error>>.makeStream()
+        let upload = Task {
+            do {
+                try await session.putImage(image)
+                answer.yield(.success(()))
+            } catch {
+                answer.yield(.failure(error))
+            }
+        }
+        let timer = Task {
+            guard (try? await Task.sleep(for: .seconds(uploadSeconds))) != nil else { return }
+            answer.yield(.failure(ImageUploadError("The host didn't answer. Check the connection and send again.")))
+        }
+        defer {
+            upload.cancel()
+            timer.cancel()
+        }
+        for await result in answers { return try result.get() }
+        throw CancellationError()
+    }
+
+    /// The text field editable again, and focused if it was.
+    private func resumeTyping() {
+        composer.textView.isEditable = true
+        if refocus { composer.textView.becomeFirstResponder() }
+    }
+
     private func uploadFailed(_ error: any Error) {
         composer.sending = nil
-        composer.textView.isEditable = true
+        resumeTyping()
         composer.imageNote = (error as? ImageUploadError)?.message ?? "The image didn't go: \(error.localizedDescription)"
         updateComposer()
     }
@@ -829,7 +869,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// stands now, and the composer emptied.
     private func uploaded(_ typed: String, _ images: [PreparedImage]) {
         composer.sending = nil
-        composer.textView.isEditable = true
+        resumeTyping()
         updateComposer()
         guard composerState.canSend else {
             composer.imageNote = composerState.note.isEmpty ? "Not sent: the session changed. Send it again." : composerState.note
@@ -839,7 +879,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let message = ComposerImages.message(typed, images: images)
         let command: LiveCommand = composerState.steers ? .steer(message.text, images: message.images) : .prompt(message.text, images: message.images)
         composer.text = ""
-        composer.attachments.clear()
+        for image in images { composer.attachments.remove(image.id) }
         sendBubble(command)
     }
 

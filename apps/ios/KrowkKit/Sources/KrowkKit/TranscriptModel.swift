@@ -455,11 +455,12 @@ public final class TranscriptModel {
     public func issue(_ command: LiveCommand) -> UInt64 {
         let token: UInt64
         switch command {
-        case .prompt(let text, _):
+        case .prompt(let text, let images):
             token = commands.add(.prompt, text: text)
             // A prompt of the person's own answers an offer with a no, and
-            // is the one a later offer sends again.
-            lastPrompt = text
+            // is the one a later offer sends again: not one with images,
+            // which a resend of its text would leave behind.
+            lastPrompt = images.isEmpty ? text : nil
             if offer != nil { offer = nil }
         case .steer(let text, _): token = commands.add(.steer, text: text)
         case .interrupt: return commands.add(.interrupt)

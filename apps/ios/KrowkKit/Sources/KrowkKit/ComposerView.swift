@@ -123,6 +123,8 @@ public final class ComposerView: UIView, UITextViewDelegate {
     /// Attaches images read from the clipboard or the picker, and says
     /// what went wrong with any of them.
     public func attach(_ sources: [Data]) async {
+        // Images go as they were when Send was tapped: no more join them.
+        guard sending == nil else { return }
         let added = await attachments.add(sources)
         imageNote = added.problem
     }
@@ -427,12 +429,12 @@ public final class PasteTextView: UITextView {
     }
 
     override public func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        if action == #selector(paste(_:)), pastedImages != nil, Self.holdsOnlyImages { return true }
+        if action == #selector(paste(_:)), pastedImages != nil, isEditable, Self.holdsOnlyImages { return true }
         return super.canPerformAction(action, withSender: sender)
     }
 
     override public func paste(_ sender: Any?) {
-        guard let pastedImages, Self.holdsOnlyImages else { return super.paste(sender) }
+        guard let pastedImages, isEditable, Self.holdsOnlyImages else { return super.paste(sender) }
         let images = Self.clipboardImages()
         if images.isEmpty { return super.paste(sender) }
         pastedImages(images)
