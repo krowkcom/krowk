@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A synced session's images reach your other devices.** When you paste
+  an image into a synced session, its host now stores the image in the
+  registry before the part of the log that names it. The image is sealed
+  under the session key and named by a hash keyed under that key, so the
+  registry learns only its size. Your other devices fetch it when they need
+  it, check it against the hash the log gives, and keep their own copy.
+  Until it arrives they show `[Image #N]`, as now. Local and remote-daemon
+  sessions that aren't synced store nothing in the registry. The app
+  library adds `OpenedSession.image(sha256:)`, which returns an image's
+  bytes or nothing yet (no version change).
+
 - **The iPhone app moves a session to another of your machines.** A
   session's navigation bar menu has **Move to…**, which lists your other
   online hosts and the directories each offers. Pick a host and a clone

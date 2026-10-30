@@ -415,3 +415,52 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     let as_revoked = krowk_api::Client::new(&api, &mb.token).signed_by(signer.clone());
     assert_eq!(as_revoked.acquire_lease(&uuid(&id), &a.id().to_string(), 60, "production").unwrap_err().code(), "device_revoked");
 }
+
+/// A pasted image's log event, as a host logs it: `item.completed` with the
+/// prompt's `userText`, naming `r`.
+fn image_event(session: &str, r: &krowk_harness::protocol::ImageRef) -> serde_json::Value {
+    serde_json::json!({"id": "01a0ec7b-4444-7000-8000-000000000001", "sessionId": session, "timeMs": 1, "type": "item.completed", "turnId": "t1", "itemId": "i1", "item": {"kind": "userText", "text": "[Image #1]", "images": [r]}})
+}
+
+/// R-IMG-9, R-IMG-11: the laptop's host keeps a pasted image and puts it in
+/// the registry, sealed under the session key and named by a keyed hash,
+/// before the chunk naming it; the desktop fetches it by that name, opens
+/// it and keeps it, its sha256 the log's. The registry holds nothing under
+/// the image's own hash.
+#[test]
+fn r_img_9_a_hosts_image_reaches_another_device_sealed_under_a_keyed_name() {
+    use krowk_harness::{images, sync::store};
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let (ma, mb) = two_machines(&api, "images");
+    let id: [u8; 16] = e2e::random();
+    let session = uuid(&id);
+    let key = SessionKey::generate();
+    let keys: e2e::SessionKeys = key.clone().into();
+    let wrapped = e2e::hex(&e2e::wrap_session_key(&key, &id, &UserKey::first()));
+    ma.client.put_sync_session(&session, &wrapped, None, None, None).unwrap();
+    let held = ma.client.acquire_lease(&session, &ma.device.id().to_string(), 60, "production").unwrap();
+
+    let r = root("images-dirs");
+    let (on_laptop, on_desktop) = (r.join("laptop").join(&session), r.join("desktop").join(&session));
+    let png = [&b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01"[..], b"a pasted screenshot"].concat();
+    let kept = images::save(&on_laptop, &[images::Decoded { number: 1, media_type: "image/png", bytes: png.clone().into() }]).unwrap().remove(0);
+    let sha = kept.sha256.clone().unwrap();
+    assert!(!store::fetch_image(&mb.client, &keys, &session, &on_desktop, &kept).unwrap(), "not yet: nothing put");
+
+    let laptop = Arc::new(ma.client);
+    let mut w = store::Writer::take_up(laptop.clone(), keys.clone(), &session, wrapped, store::Index::default(), held.fence).unwrap().with_images(on_laptop);
+    w.push(image_event(&session, &kept));
+    w.flush(&held.token).unwrap();
+    assert_eq!(laptop.list_chunks(&session, None, 10).unwrap().chunks.len(), 1);
+
+    assert!(store::fetch_image(&mb.client, &keys, &session, &on_desktop, &kept).unwrap());
+    let fetched = std::fs::read(images::path(&on_desktop, &kept).unwrap()).unwrap();
+    assert_eq!((images::sha256(&fetched), fetched), (sha.clone(), png.clone()), "the desktop's own copy, under the same name");
+    let name = e2e::image_name(&keys, &e2e::unhex(&sha).unwrap().try_into().unwrap());
+    let sealed = mb.client.get_image_object(&session, &name).unwrap();
+    assert_eq!(sealed.len(), png.len() + e2e::IMAGE_OVERHEAD, "the registry learns the size");
+    assert!(!sealed.windows(8).any(|w| png.windows(8).any(|p| p == w)), "and none of the bytes");
+    assert_eq!(mb.client.get_image_object(&session, &sha).unwrap_err().status, 404, "nor the image's hash");
+    let _ = std::fs::remove_dir_all(&r);
+}

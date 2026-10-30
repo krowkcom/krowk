@@ -634,6 +634,86 @@ pub fn open_transport(blob: &[u8], session: &[u8; 16], key: &[u8; KEY]) -> Resul
     cipher(key).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())
 }
 
+/// The format byte of a sealed image object.
+pub const IMAGE_V1: u8 = 1;
+/// `version | suite | key epoch (4, big-endian)`, then the nonce.
+const IMAGE_HEAD: usize = 2 + 4;
+/// The most sealing adds to an image's bytes.
+pub const IMAGE_OVERHEAD: usize = IMAGE_HEAD + NONCE + TAG;
+
+/// The name a session's image object is stored under in the registry: the
+/// HMAC-SHA-256 of the image's sha256 under a key derived from the session's
+/// first key (HKDF-SHA-256, info `krowk/image-name/v1`), in unpadded
+/// base64url — 43 characters. The registry learns which objects are the same
+/// image and nothing of the image's own hash. Keyed under epoch 0's key, which
+/// every key ring holds and a rotation never changes, so an image is one
+/// object for the life of its session and every device names it alike.
+pub fn image_name(keys: &SessionKeys, sha256: &[u8; 32]) -> String {
+    use hmac::Mac as _;
+    let first = keys.at(0).expect("a session has a key");
+    let mut name_key = zeroize::Zeroizing::new([0u8; KEY]);
+    hkdf::Hkdf::<Sha256>::new(None, &first.0).expand(b"krowk/image-name/v1", &mut name_key[..]).expect("32 bytes is a valid HKDF length");
+    let mut m = hmac::Hmac::<Sha256>::new_from_slice(&name_key[..]).expect("HMAC takes any key length");
+    m.update(sha256);
+    base64url(&m.finalize().into_bytes())
+}
+
+/// Unpadded base64url (RFC 4648 §5): the alphabet the registry takes in a name.
+fn base64url(b: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let mut s = String::with_capacity(b.len().div_ceil(3) * 4);
+    for c in b.chunks(3) {
+        let n = u32::from(c[0]) << 16 | u32::from(*c.get(1).unwrap_or(&0)) << 8 | u32::from(*c.get(2).unwrap_or(&0));
+        for i in 0..=c.len() {
+            s.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+        }
+    }
+    s
+}
+
+fn image_aad(head: &[u8], session: &[u8; 16], sha256: &[u8; 32]) -> Vec<u8> {
+    [&b"krowk/image/v1"[..], head, session, sha256].concat()
+}
+
+/// An image sealed for the registry to hold (crypto.md → image objects):
+/// `version | suite | key epoch | nonce | ciphertext + tag`, under the ring's
+/// current key, a fresh random nonce. The associated data is a label, the
+/// six header bytes, the session id and the image's sha256 — so an object
+/// moved to another session, or served under another image's name, does not
+/// open. One message, written once and never replaced, so there is no chain
+/// to bind; what it reveals is its length, the image's plus
+/// [`IMAGE_OVERHEAD`].
+pub fn seal_image(keys: &SessionKeys, session: &[u8; 16], sha256: &[u8; 32], image: &[u8]) -> Vec<u8> {
+    let mut head = vec![IMAGE_V1, SUITE_XCHACHA20_POLY1305];
+    head.extend_from_slice(&keys.epoch().to_be_bytes());
+    let nonce: [u8; NONCE] = random();
+    let aad = image_aad(&head, session, sha256);
+    let sealed = cipher(&keys.current().0).encrypt(&XNonce::from(nonce), Payload { msg: image, aad: &aad }).expect("an image is far below XChaCha's limit");
+    [&head[..], &nonce, &sealed].concat()
+}
+
+/// Opens an image object as the image whose sha256 is `sha256`, and holds
+/// the bytes to that hash: what opens is that image, or nothing does.
+pub fn open_image(blob: &[u8], session: &[u8; 16], sha256: &[u8; 32], keys: &SessionKeys) -> Result<Vec<u8>, Error> {
+    let refused = || err("the image does not open with this session's key: it was changed, or is another session's or another image's");
+    if blob.len() < IMAGE_OVERHEAD || blob[0] != IMAGE_V1 || blob[1] != SUITE_XCHACHA20_POLY1305 {
+        return Err(match blob.first() {
+            Some(&v) if v > IMAGE_V1 => err(format!("the image is format {v}, newer than this krowk reads — upgrade krowk")),
+            _ => refused(),
+        });
+    }
+    let epoch = u32::from_be_bytes(blob[2..IMAGE_HEAD].try_into().expect("four bytes"));
+    let key = keys.at(epoch).ok_or_else(|| err(format!("the image is sealed under session key epoch {epoch}, newer than this device has the key for — {ROTATED_SINCE_OPENED}; open it again")))?;
+    let nonce: [u8; NONCE] = blob[IMAGE_HEAD..IMAGE_HEAD + NONCE].try_into().expect("24 bytes");
+    let aad = image_aad(&blob[..IMAGE_HEAD], session, sha256);
+    let plain = cipher(&key.0).decrypt(&XNonce::from(nonce), Payload { msg: &blob[IMAGE_HEAD + NONCE..], aad: &aad }).map_err(|_| refused())?;
+    // Bound by the associated data already; checked again, since it costs a hash.
+    if <[u8; 32]>::from(Sha256::digest(&plain)) != *sha256 {
+        return Err(refused());
+    }
+    Ok(plain)
+}
+
 /// The format byte of a sealed chunk.
 pub const CHUNK_V1: u8 = 1;
 /// A chunk sealed under a rotated session key: version 1's header and the
@@ -1314,6 +1394,38 @@ impl SigningPublic {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// R-IMG-9, R-IMG-11: an image object opens only as its own image in its
+    /// own session, under any later ring, and its name is the same under
+    /// every ring and says nothing of the hash.
+    #[test]
+    fn r_img_9_an_image_object_opens_only_as_its_image_and_its_name_outlives_a_rotation() {
+        assert_eq!((base64url(b""), base64url(b"f"), base64url(b"fo"), base64url(b"foo"), base64url(&[0xfb, 0xff])), (String::new(), "Zg".into(), "Zm8".into(), "Zm9v".into(), "-_8".into()), "RFC 4648, url-safe, unpadded");
+        let keys = SessionKeys::from(SessionKey::generate());
+        let (session, image) = ([5u8; 16], b"\x89PNG\r\n\x1a\nbytes".to_vec());
+        let sha: [u8; 32] = Sha256::digest(&image).into();
+        let name = image_name(&keys, &sha);
+        assert!(name.len() == 43 && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{name}");
+        assert!(!name.contains(&base64url(&sha)[..8]) && name != image_name(&SessionKeys::from(SessionKey::generate()), &sha), "keyed, not the hash");
+        let rotated = keys.rotated().unwrap();
+        assert_eq!(image_name(&rotated, &sha), name, "one name for the session's life");
+
+        let blob = seal_image(&keys, &session, &sha, &image);
+        assert_eq!(blob.len(), image.len() + IMAGE_OVERHEAD);
+        assert_eq!(open_image(&blob, &session, &sha, &rotated).unwrap(), image, "a later ring opens it");
+        let newer = seal_image(&rotated, &session, &sha, &image);
+        assert_eq!(open_image(&newer, &session, &sha, &rotated).unwrap(), image);
+        assert!(open_image(&newer, &session, &sha, &keys).unwrap_err().0.contains(ROTATED_SINCE_OPENED));
+        assert!(open_image(&blob, &[6u8; 16], &sha, &keys).is_err(), "another session's");
+        assert!(open_image(&blob, &session, &[0u8; 32], &keys).is_err(), "served under another image's name");
+        let mut changed = blob.clone();
+        *changed.last_mut().unwrap() ^= 1;
+        assert!(open_image(&changed, &session, &sha, &keys).is_err());
+        let mut relabelled = newer.clone();
+        relabelled[5] = 0;
+        assert!(open_image(&relabelled, &session, &sha, &rotated).is_err(), "the epoch is bound");
+        assert!(open_image(&[2, 2], &session, &sha, &keys).unwrap_err().0.contains("upgrade krowk"));
+    }
 
     /// R-RELAY-1: a join's signature verifies only for its own role,
     /// session, nonce, device and origin, and only under its own key.

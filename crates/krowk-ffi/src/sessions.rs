@@ -374,6 +374,23 @@ impl OpenedSession {
         Ok(decoded)
     }
 
+    /// The bytes of the image whose `sha256` (lowercase hex) an `ImageRef`
+    /// of this session names (R-IMG-11), from the session's sealed image
+    /// objects: opened under the session's keys and held to that hash.
+    /// `None` is "not yet": the host has not put it (or never will, for an
+    /// image logged before sync) — show `[Image #N]` and ask again later,
+    /// never the host. Nothing is kept here: the app keeps the bytes in its
+    /// caches folder and asks again should the system clear it. A hash that
+    /// is not 64 hex digits is `InvalidInput`; an object that does not open
+    /// as that image `Internal`; `Network` as for `catch_up`. Blocking: two
+    /// round trips; call it off the main thread.
+    pub fn image(&self, sha256: String) -> Result<Option<Vec<u8>>, KrowkError> {
+        if sha256.len() != 64 || !sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(KrowkError::InvalidInput { detail: format!("{sha256:?} is not an image's sha256: 64 hex digits") });
+        }
+        store::fetch_image(&self.client, &self.keys, &self.id, &sha256).map_err(unreached)
+    }
+
     /// A relay ticket for this device to join the session as a viewer, from
     /// the registry. Blocking: one round trip.
     pub fn relay_ticket(&self) -> Result<String, KrowkError> {
