@@ -10,10 +10,11 @@ import Foundation
 /// session. Never a mode, toolset, effort or budget: a remote client may
 /// switch the model, nothing else.
 public enum LiveCommand: Equatable, Sendable {
-    /// A new turn, with this text.
-    case prompt(String)
-    /// This text added to the running turn, which goes on.
-    case steer(String)
+    /// A new turn, with this text and these images, which went ahead in
+    /// `LiveSession.putImage` (R-IMG-2).
+    case prompt(String, images: [SentImage] = [])
+    /// This text and these images added to the running turn, which goes on.
+    case steer(String, images: [SentImage] = [])
     /// The running turn stopped, keeping what it produced.
     case interrupt
     /// An approval answered: allowed once or for the session, or denied

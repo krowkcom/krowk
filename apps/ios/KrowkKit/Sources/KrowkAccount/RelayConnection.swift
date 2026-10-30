@@ -112,7 +112,18 @@ public actor RelayConnection: LiveSession {
     /// Commands handed to the viewer whose `sent` it hasn't shown yet, in
     /// the order handed: the core shows them on a later `tick`, one `sent`
     /// per command in that order, so the oldest token is the next `sent`'s.
-    private var unminted: [UInt64] = []
+    private var unminted: [Minting] = []
+    /// Who a command handed to the viewer is for: a bubble's token, or an
+    /// image upload waiting for its ack.
+    private enum Minting {
+        case bubble(UInt64)
+        case upload(CheckedContinuation<Void, any Error>)
+    }
+    /// The uploads the viewer showed `sent`, by command id, until acked.
+    private var uploading: [String: CheckedContinuation<Void, any Error>] = [:]
+    /// Ids of upload commands, whose `sent` and `acked` the screen never
+    /// sees: they are no bubble's.
+    private var uploadIDs: Set<String> = []
     /// The session's id, once open: what its commands name.
     private var sessionID: String?
 
@@ -233,6 +244,16 @@ public actor RelayConnection: LiveSession {
     /// it never goes, and the screen hears why.
     public nonisolated func send(_ command: LiveCommand, token: UInt64) {
         queue.async { self.assumeIsolated { $0.issue(command, token: token) } }
+    }
+
+    /// One image to the host ahead of its prompt (R-IMG-2): a `putImage`
+    /// for the viewer, on the queue; returns when the host acks it. Not
+    /// queued for a host that is away: that throws, and the composer
+    /// stays as it was.
+    public nonisolated func putImage(_ image: PreparedImage) async throws {
+        try await withCheckedThrowingContinuation { (waiting: CheckedContinuation<Void, any Error>) in
+            queue.async { self.assumeIsolated { $0.upload(image, waiting) } }
+        }
     }
 
     /// The scene is coming forward (`willEnterForeground`, R-IOS-2): before
@@ -479,8 +500,17 @@ public actor RelayConnection: LiveSession {
             early.append((command, token))
             return
         }
-        unminted.append(token)
+        unminted.append(.bubble(token))
         run(viewer.command(command: command.command(session: sessionID), nowMs: now()))
+    }
+
+    private func upload(_ image: PreparedImage, _ waiting: CheckedContinuation<Void, any Error>) {
+        guard !done else { return waiting.resume(throwing: ImageUploadError(Self.stoppedWhy)) }
+        guard let viewer, let sessionID else {
+            return waiting.resume(throwing: ImageUploadError("Not connected to the session yet; try again in a moment."))
+        }
+        unminted.append(.upload(waiting))
+        run(viewer.command(command: image.command(session: sessionID), nowMs: now()))
     }
 
     /// A `Show`'s updates for the mailbox: each `sent` preceded by the id
@@ -490,8 +520,29 @@ public actor RelayConnection: LiveSession {
         var items: [MailboxItem] = []
         items.reserveCapacity(updates.count)
         for update in updates {
-            if case .sent(let id, _) = update, !unminted.isEmpty {
-                items.append(.minted(token: unminted.removeFirst(), id: id))
+            if case .sent(let id, let queued) = update, !unminted.isEmpty {
+                switch unminted.removeFirst() {
+                case .bubble(let token):
+                    items.append(.minted(token: token, id: id))
+                case .upload(let waiting):
+                    uploadIDs.insert(id)
+                    if queued {
+                        // No host to take it: the core holds it for the next
+                        // welcome, and the composer is not made to wait.
+                        waiting.resume(throwing: ImageUploadError("Your laptop is offline; try again when it is back."))
+                    } else {
+                        uploading[id] = waiting
+                    }
+                    continue
+                }
+            }
+            if case .acked(let id, let error) = update, uploadIDs.remove(id) != nil {
+                if let error {
+                    uploading.removeValue(forKey: id)?.resume(throwing: ImageUploadError(error))
+                } else {
+                    uploading.removeValue(forKey: id)?.resume()
+                }
+                continue
             }
             items.append(.viewer(update))
         }
@@ -501,9 +552,18 @@ public actor RelayConnection: LiveSession {
     /// Commands that will never reach the core, or never be shown by it
     /// (the viewer ended): said, so their bubbles don't wait forever.
     private func unsendEarly() {
-        let waiting = early.map(\.token) + unminted
+        var waiting = early.map(\.token)
         early = []
+        for minting in unminted {
+            switch minting {
+            case .bubble(let token): waiting.append(token)
+            case .upload(let upload): upload.resume(throwing: ImageUploadError(Self.stoppedWhy))
+            }
+        }
         unminted = []
+        for upload in uploading.values { upload.resume(throwing: ImageUploadError(Self.stoppedWhy)) }
+        uploading = [:]
+        uploadIDs = []
         if !waiting.isEmpty { mailbox.post(waiting.map { .unsent(token: $0, why: Self.stoppedWhy) }) }
     }
 

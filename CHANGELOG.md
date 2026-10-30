@@ -26,6 +26,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   saying to update krowk there or send fewer images. Protocol version 2;
   the FFI (API version 10) gains `putImage` and `ImageInput.sha256`, for
   the iPhone app.
+- **The iPhone can attach images to a prompt.** Paste a screenshot into
+  the message field, or tap the photo button beside it to pick up to
+  20 photos (the camera is not offered). Each shows as a thumbnail above
+  the field with a button to remove it. HEIC photos are converted, every
+  image is scaled to at most 2000 px on its longest side, and one still
+  over 2.75 MiB is saved as a JPEG; the re-encode also drops a photo's
+  location data. Send puts the images to the host one after another
+  (`Sending image 2 of 3…` under the field), then the prompt, whose text
+  starts with `[Image #N]` for each. An image that fails to send leaves
+  the message as you left it, with the reason; to a laptop that is offline
+  the images wait, as they cannot be queued.
 
 - **The iPhone shows the images in your prompts.** A prompt's bubble draws
   a thumbnail of each image the phone holds, in place of its
