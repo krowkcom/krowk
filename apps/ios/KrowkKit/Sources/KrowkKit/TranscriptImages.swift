@@ -18,18 +18,25 @@ public struct ImageCache: Sendable {
         return ImageCache(root: caches.appendingPathComponent("session-images", isDirectory: true))
     }
 
-    private func file(_ session: String, _ sha256: String) -> URL {
-        root.appendingPathComponent(session, isDirectory: true).appendingPathComponent(sha256)
+    /// Whether `text` is a sha256 in lowercase or uppercase hex: the only
+    /// name a file is kept under (a hash from the log is hostile input).
+    public static func isHash(_ text: String) -> Bool {
+        text.utf8.count == 64 && text.utf8.allSatisfy { ($0 >= 0x30 && $0 <= 0x39) || ($0 >= 0x41 && $0 <= 0x46) || ($0 >= 0x61 && $0 <= 0x66) }
+    }
+
+    private func file(_ session: String, _ sha256: String) -> URL? {
+        guard Self.isHash(sha256), !session.isEmpty, !session.contains("/"), session != ".", session != ".." else { return nil }
+        return root.appendingPathComponent(session, isDirectory: true).appendingPathComponent(sha256)
     }
 
     /// The bytes kept for `sha256`, if any.
     public func data(session: String, sha256: String) -> Data? {
-        try? Data(contentsOf: file(session, sha256))
+        file(session, sha256).flatMap { try? Data(contentsOf: $0) }
     }
 
     /// Keeps `data`; a failure only means it is fetched again.
     public func store(_ data: Data, session: String, sha256: String) {
-        let url = file(session, sha256)
+        guard let url = file(session, sha256) else { return }
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try? data.write(to: url, options: .atomic)
     }
@@ -54,6 +61,11 @@ public final class TranscriptImages {
     /// Hashes being fetched now, each with the prompts waiting on it.
     private var waiting: [String: [(ItemState, UInt32)]] = [:]
     private var tasks: [String: Task<Void, Never>] = [:]
+    /// Hashes held back until a fetch in flight ends: each asks the core
+    /// on a thread of its own, which blocks.
+    private var queued: [String] = []
+    private var running = 0
+    private let limit = 4
 
     /// `retry`: the wait before asking again for an image that is not
     /// there yet; it doubles up to `most`.
@@ -77,8 +89,21 @@ public final class TranscriptImages {
     public var pending: Int { tasks.count }
 
     private func want(_ state: ItemState, _ number: UInt32, _ sha: String) {
+        guard ImageCache.isHash(sha) else { return }
         waiting[sha, default: []].append((state, number))
-        guard tasks[sha] == nil else { return }
+        guard tasks[sha] == nil, !queued.contains(sha) else { return }
+        queued.append(sha)
+        startQueued()
+    }
+
+    private func startQueued() {
+        while running < limit, !queued.isEmpty {
+            running += 1
+            start(queued.removeFirst())
+        }
+    }
+
+    private func start(_ sha: String) {
         let session = model.sessionID
         let cache = self.cache
         let fetch = self.fetch
@@ -118,6 +143,8 @@ public final class TranscriptImages {
 
     private func arrived(_ sha: String, _ pictures: (UIImage, UIImage)) {
         tasks[sha] = nil
+        running -= 1
+        startQueued()
         for (state, number) in waiting.removeValue(forKey: sha) ?? [] {
             state.pictures[number] = pictures.0
             state.thumbnails[number] = pictures.1

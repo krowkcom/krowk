@@ -88,9 +88,14 @@ public final class ItemState {
     var displayText: String {
         guard kind == .user, !thumbnails.isEmpty else { return text }
         var shown = text
-        for number in thumbnails.keys { shown = shown.replacingOccurrences(of: "[Image #\(number)]", with: "") }
-        return shown.split(separator: " ", omittingEmptySubsequences: true).joined(separator: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        for number in thumbnails.keys {
+            let token = "[Image #\(number)]"
+            // The token and one space beside it; the rest as typed.
+            if let range = shown.range(of: token + " ") ?? shown.range(of: " " + token) ?? shown.range(of: token) {
+                shown.removeSubrange(range)
+            }
+        }
+        return shown
     }
 
     /// Reads every property a cell draws, so one observation covers them.

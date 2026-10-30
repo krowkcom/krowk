@@ -10,6 +10,12 @@ import Testing
 import UIKit
 @testable import KrowkKit
 
+/// A value the fetch closures change and the test reads.
+final class Locked<Value: Sendable>: Sendable {
+    let value: Mutex<Value>
+    init(_ initial: Value) { value = Mutex(initial) }
+}
+
 @MainActor
 @Suite("R-IMG-13, R-IMG-15: images in a prompt's bubble")
 struct TranscriptImagesTests {
@@ -42,12 +48,12 @@ struct TranscriptImagesTests {
 
     @Test("The placeholder stays while the bytes are not there, then the thumbnail replaces it")
     func swap() async throws {
-        let answers = Mutex<[Data?]>([nil, nil, Self.png()])
-        let asked = Mutex(0)
+        let answers = Locked<[Data?]>([nil, nil, Self.png()])
+        let asked = Locked(0)
         let model = TranscriptModel(sessionID: "s1")
         let images = TranscriptImages(model: model, cache: Self.cache(), retry: .milliseconds(20), most: .milliseconds(20)) { _ in
-            asked.withLock { $0 += 1 }
-            return answers.withLock { $0.isEmpty ? nil : $0.removeFirst() }
+            asked.value.withLock { $0 += 1 }
+            return answers.value.withLock { $0.isEmpty ? nil : $0.removeFirst() }
         }
         model.apply([Self.prompt()])
         let state = try #require(model.item("item:u1"))
@@ -59,7 +65,7 @@ struct TranscriptImagesTests {
         #expect(state.displayText.contains("[Image #1]"))
 
         try await waitForImage { !state.thumbnails.isEmpty }
-        #expect(asked.withLock { $0 } == 3, "asked again later until the bytes came")
+        #expect(asked.value.withLock { $0 } == 3, "asked again later until the bytes came")
         #expect(state.thumbnails[1] != nil)
         #expect(state.pictures[1]?.size == CGSize(width: 40, height: 30))
         #expect(!state.displayText.contains("[Image #1]"))
@@ -71,23 +77,23 @@ struct TranscriptImagesTests {
     @Test("An image without a hash, or whose bytes never come, stays a placeholder and nothing is shown as an error")
     func placeholderStays() async throws {
         let model = TranscriptModel(sessionID: "s1")
-        let asked = Mutex(0)
+        let asked = Locked(0)
         let images = TranscriptImages(model: model, cache: Self.cache(), retry: .milliseconds(10), most: .milliseconds(10)) { _ in
-            asked.withLock { $0 += 1 }
+            asked.value.withLock { $0 += 1 }
             return nil
         }
         model.apply([Self.prompt(hashes: [:])])
         try await Task.sleep(for: .milliseconds(50))
-        #expect(asked.withLock { $0 } == 0, "no hash: nothing to ask for")
+        #expect(asked.value.withLock { $0 } == 0, "no hash: nothing to ask for")
         #expect(model.item("item:u1")?.thumbnails.isEmpty == true)
 
         let other = TranscriptModel(sessionID: "s1")
         let again = TranscriptImages(model: other, cache: Self.cache(), retry: .milliseconds(10), most: .milliseconds(10)) { _ in
-            asked.withLock { $0 += 1 }
+            asked.value.withLock { $0 += 1 }
             return nil
         }
         other.apply([Self.prompt()])
-        try await waitForImage { asked.withLock { $0 } >= 2 }
+        try await waitForImage { asked.value.withLock { $0 } >= 2 }
         let state = try #require(other.item("item:u1"))
         #expect(state.thumbnails.isEmpty)
         #expect(state.displayText == "Look at [Image #1] please")
@@ -99,20 +105,20 @@ struct TranscriptImagesTests {
     func cached() async throws {
         let cache = Self.cache()
         cache.store(Self.png(), session: "s1", sha256: Self.sha)
-        let asked = Mutex(0)
+        let asked = Locked(0)
         let model = TranscriptModel(sessionID: "s1")
         let images = TranscriptImages(model: model, cache: cache) { _ in
-            asked.withLock { $0 += 1 }
+            asked.value.withLock { $0 += 1 }
             return nil
         }
         model.apply([Self.prompt()])
         let state = try #require(model.item("item:u1"))
         try await waitForImage { !state.thumbnails.isEmpty }
-        #expect(asked.withLock { $0 } == 0)
+        #expect(asked.value.withLock { $0 } == 0)
 
         let fresh = Self.cache()
         let other = TranscriptModel(sessionID: "s1")
-        let fetching = TranscriptImages(model: other, cache: fresh) { _ in Self.png() }
+        let fetching = TranscriptImages(model: other, cache: fresh) { [bytes = Self.png()] _ in bytes }
         other.apply([Self.prompt()])
         let second = try #require(other.item("item:u1"))
         try await waitForImage { !second.thumbnails.isEmpty }

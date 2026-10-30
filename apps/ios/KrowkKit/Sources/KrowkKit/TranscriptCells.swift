@@ -429,7 +429,7 @@ final class TranscriptTextCell: TranscriptCell {
     private func showThumbnails(_ state: ItemState) {
         let numbers = user ? state.thumbnails.keys.sorted() : []
         let drawn = !numbers.isEmpty
-        NSLayoutConstraint.deactivate(drawn ? [textBottom] : thumbsLayout)
+        NSLayoutConstraint.deactivate(thumbsLayout + [textBottom])
         NSLayoutConstraint.activate(drawn ? thumbsLayout : (user ? [textBottom] : []))
         guard numbers != thumbsShown else { return }
         thumbsShown = numbers
