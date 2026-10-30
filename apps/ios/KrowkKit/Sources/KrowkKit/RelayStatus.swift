@@ -185,10 +185,16 @@ public protocol LiveSession: AnyObject, Sendable {
     /// The scene became active, or the person pulled to refresh. Never
     /// blocks.
     func wake()
+    /// The bytes of the image whose sha256 a prompt names, from the
+    /// session's own sealed store (R-IMG-11): nil while it is not there
+    /// yet, or the session is not open. Blocks in the core, so never on
+    /// the main thread.
+    func image(sha256: String) async throws -> Data?
 }
 
 /// A session that follows no lifecycle (a test's stand-in) ignores it.
 public extension LiveSession {
+    func image(sha256: String) async throws -> Data? { nil }
     func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void) {}
     func foreground() {}
     func background() {}
