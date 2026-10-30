@@ -3744,7 +3744,7 @@ impl App {
             if let Some(i) = self.images.get(&n)
                 && !out.iter().any(|o| o.number == n)
             {
-                out.push(ImageInput { number: n, media_type: i.media_type.to_string(), data: i.base64() });
+                out.push(ImageInput { number: n, media_type: i.media_type.to_string(), data: i.base64(), sha256: Some(krowk_harness::images::sha256(&i.bytes)) });
             }
         }
         out

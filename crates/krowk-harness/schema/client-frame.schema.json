@@ -292,6 +292,38 @@
           ]
         },
         {
+          "description": "Keep one image's bytes on the host, ahead of the `prompt` or `steer`\nthat names it by `sha256`: the host accepts it only when the hash\nmatches the bytes, the format is png, jpeg, gif or webp and it is at\nmost 2.75 MiB, and a repeat of a hash it holds succeeds without\nwriting. With no `sessionId` (a prompt that will start a session) the\nimage waits for that prompt. One image a message, so none goes over\na transport's 4 MiB cap. Protocol 2.",
+          "type": "object",
+          "properties": {
+            "sessionId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "sha256": {
+              "type": "string"
+            },
+            "mediaType": {
+              "type": "string"
+            },
+            "data": {
+              "description": "The bytes, base64.",
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "const": "putImage"
+            }
+          },
+          "required": [
+            "type",
+            "sha256",
+            "mediaType",
+            "data"
+          ]
+        },
+        {
           "description": "Stop the running turn, keeping what it produced so far.",
           "type": "object",
           "properties": {
@@ -440,7 +472,7 @@
       ]
     },
     "ImageInput": {
-      "description": "An image as a client sends it with a prompt or a steer: its bytes, which\nthe engine keeps beside the session's log, and the number its\n`[Image #N]` in the text carries.",
+      "description": "An image as a client sends it with a prompt or a steer, and the number\nits `[Image #N]` in the text carries. Either its bytes (`data`, which the\nengine keeps beside the session's log), or, since protocol 2, only its\n`sha256` and no `data`: the bytes went ahead in a `putImage`, and the\nhost refuses the prompt when it holds none by that name.",
       "type": "object",
       "properties": {
         "number": {
@@ -453,14 +485,20 @@
           "type": "string"
         },
         "data": {
-          "description": "The bytes, base64.",
+          "description": "The bytes, base64. Empty when the image is named by `sha256` alone.",
           "type": "string"
+        },
+        "sha256": {
+          "description": "The sha256 of the bytes, lowercase hex. Required when `data` is empty.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "number",
-        "mediaType",
-        "data"
+        "mediaType"
       ]
     },
     "ModelRef": {

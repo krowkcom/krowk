@@ -507,18 +507,18 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     let sessions = log::sessions_dir(&home.env()).unwrap();
     // A file that is not the image it says is refused before any session is made.
     let (tx, _rx) = mpsc::channel(1024);
-    let bad = ImageInput { number: 1, media_type: "image/jpeg".into(), data: data.clone() };
+    let bad = ImageInput { number: 1, media_type: "image/jpeg".into(), data: data.clone(), sha256: None };
     assert_eq!(rt.block_on(host.execute(prompt(vec![bad]), tx)).unwrap_err().code, "bad_image");
     assert!(log::list(&sessions).unwrap_or_default().is_empty(), "no session for a refused prompt");
     // Nor for one the catalog says the model cannot read.
     let blind = Host::new(HostConfig { catalog: Arc::new(|_, _| Some(ModelInfo { images: Some(false), ..ModelInfo::default() })), ..home.config() });
     let (tx, _rx) = mpsc::channel(1024);
-    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone() };
+    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone(), sha256: None };
     assert_eq!(rt.block_on(blind.execute(prompt(vec![image]), tx)).unwrap_err().code, "model_reads_no_images");
     assert!(log::list(&sessions).unwrap_or_default().is_empty(), "no session for a refused prompt");
 
     let (tx, mut rx) = mpsc::channel(1024);
-    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone() };
+    let image = ImageInput { number: 1, media_type: "image/png".into(), data: data.clone(), sha256: None };
     let result = rt.block_on(host.execute(prompt(vec![image]), tx)).unwrap().unwrap();
     assert_eq!(result.status, TurnStatus::Completed);
     let mut logged = None;

@@ -11,6 +11,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Images reach remote and synced sessions, however many there are.**
+  A prompt or steer with several screenshots used to carry them all in
+  one message, and a remote daemon or a synced session refuses a message
+  over 4 MiB, so two or three images failed the prompt. Each image now
+  goes to the host ahead of the prompt as a `putImage` command of its
+  own, and the prompt names it by its sha256. The status line reads
+  `Sending image 2 of 3…` while they go, and an image that cannot be sent
+  stops the prompt, leaves it in the composer and says why. A prompt
+  naming an image the host holds nothing for is refused with `the host
+  has no copy of image #N; send the prompt again`, and nothing is logged.
+  Toward a host on an older protocol the images still go inline when the
+  prompt fits one message, and otherwise it is refused before sending,
+  saying to update krowk there or send fewer images. Protocol version 2;
+  the FFI (API version 10) gains `putImage` and `ImageInput.sha256`, for
+  the iPhone app.
 - **The iPhone app moves a session to another of your machines.** A
   session's navigation bar menu has **Move to…**, which lists your other
   online hosts and the directories each offers. Pick a host and a clone

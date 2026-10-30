@@ -650,7 +650,7 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
 /// child is steered or prompted by nobody but the host.
 fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool) -> bool {
     match c {
-        Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
+        Command::Prompt { session_id, .. } | Command::PutImage { session_id, .. } => session_id.as_deref() == Some(session),
         Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session || is_child(session_id),
         Command::Steer { session_id, .. } => session_id == session,
         Command::SwitchModel { session_id, .. } => session_id.as_deref() == Some(session),
