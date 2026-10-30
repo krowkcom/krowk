@@ -24,7 +24,9 @@ struct TranscriptImagesTests {
 
     /// A small PNG.
     static func png() -> Data {
-        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30))
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let renderer = UIGraphicsImageRenderer(size: CGSize(width: 40, height: 30), format: format)
         return renderer.pngData { context in
             UIColor.red.setFill()
             context.fill(CGRect(x: 0, y: 0, width: 40, height: 30))
@@ -116,13 +118,14 @@ struct TranscriptImagesTests {
         try await waitForImage { !state.thumbnails.isEmpty }
         #expect(asked.value.withLock { $0 } == 0)
 
+        let bytes = Self.png()
         let fresh = Self.cache()
         let other = TranscriptModel(sessionID: "s1")
-        let fetching = TranscriptImages(model: other, cache: fresh) { [bytes = Self.png()] _ in bytes }
+        let fetching = TranscriptImages(model: other, cache: fresh) { _ in bytes }
         other.apply([Self.prompt()])
         let second = try #require(other.item("item:u1"))
         try await waitForImage { !second.thumbnails.isEmpty }
-        #expect(fresh.data(session: "s1", sha256: Self.sha) == Self.png())
+        #expect(fresh.data(session: "s1", sha256: Self.sha) == bytes)
         _ = (images, fetching)
     }
 

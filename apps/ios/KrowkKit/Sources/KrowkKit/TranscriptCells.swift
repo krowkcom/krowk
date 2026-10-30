@@ -445,6 +445,8 @@ final class TranscriptTextCell: TranscriptCell {
             view.layer.cornerCurve = .continuous
             view.clipsToBounds = true
             view.isUserInteractionEnabled = true
+            view.widthAnchor.constraint(lessThanOrEqualToConstant: TranscriptImages.thumbnailSide).isActive = true
+            view.heightAnchor.constraint(lessThanOrEqualToConstant: TranscriptImages.thumbnailSide).isActive = true
             view.accessibilityIdentifier = "transcript-image-\(number)"
             view.accessibilityLabel = "Image \(number)"
             view.accessibilityTraits = .button

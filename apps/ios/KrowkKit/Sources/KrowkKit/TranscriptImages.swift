@@ -34,6 +34,11 @@ public struct ImageCache: Sendable {
         file(session, sha256).flatMap { try? Data(contentsOf: $0) }
     }
 
+    /// Forgets the copy of `sha256`, if any.
+    public func remove(session: String, sha256: String) {
+        if let url = file(session, sha256) { try? FileManager.default.removeItem(at: url) }
+    }
+
     /// Keeps `data`; a failure only means it is fetched again.
     public func store(_ data: Data, session: String, sha256: String) {
         guard let url = file(session, sha256) else { return }
@@ -66,6 +71,8 @@ public final class TranscriptImages {
     private var queued: [String] = []
     private var running = 0
     private let limit = 4
+    /// The wait before each hash is asked for again.
+    private var delays: [String: Duration] = [:]
 
     /// `retry`: the wait before asking again for an image that is not
     /// there yet; it doubles up to `most`.
@@ -103,48 +110,61 @@ public final class TranscriptImages {
         }
     }
 
+    /// One attempt for `sha`, holding one of the `limit` slots only while
+    /// it runs; one that finds nothing waits, off the slot, and queues again.
     private func start(_ sha: String) {
         let session = model.sessionID
         let cache = self.cache
         let fetch = self.fetch
-        let first = self.first
-        let most = self.most
         tasks[sha] = Task { [weak self] in
-            var wait = first
-            while !Task.isCancelled {
-                let data = await Task.detached { () -> Data? in
-                    if let kept = cache.data(session: session, sha256: sha) { return kept }
-                    guard let fetched = try? await fetch(sha) else { return nil }
-                    cache.store(fetched, session: session, sha256: sha)
-                    return fetched
-                }.value
-                if let data, let pictures = await Self.decode(data) {
-                    self?.arrived(sha, pictures)
-                    return
-                }
-                // Not there yet, or not an image: asked again later.
-                try? await Task.sleep(for: wait)
-                wait = min(wait * 2, most)
+            let found = await Self.find(sha, session: session, cache: cache, fetch: fetch)
+            guard let self, !Task.isCancelled else { return }
+            running -= 1
+            if let found {
+                arrived(sha, found)
+                startQueued()
+                return
             }
+            startQueued()
+            // Not there yet, or not an image: asked again later.
+            let wait = delays[sha] ?? first
+            delays[sha] = min(wait * 2, most)
+            try? await Task.sleep(for: wait)
+            guard !Task.isCancelled else { return }
+            queued.append(sha)
+            startQueued()
         }
     }
 
-    /// The whole picture and its thumbnail, made off the main thread, from
-    /// the bytes alone (`UIImage(data:)`, R-IOS-10).
-    private nonisolated static func decode(_ data: Data) async -> (UIImage, UIImage)? {
+    /// The image's pictures: from the device's copy, else fetched (blocking
+    /// in the core: off the main thread) and kept. Bytes that aren't an
+    /// image are dropped, and not kept.
+    private nonisolated static func find(
+        _ sha: String, session: String, cache: ImageCache, fetch: @escaping @Sendable (String) async throws -> Data?
+    ) async -> (UIImage, UIImage)? {
         await Task.detached { () -> (UIImage, UIImage)? in
-            guard let whole = UIImage(data: data) else { return nil }
-            let side = thumbnailSide
-            let scale = min(1, side / max(whole.size.width, whole.size.height))
-            let size = CGSize(width: max(1, whole.size.width * scale), height: max(1, whole.size.height * scale))
-            return (whole, whole.preparingThumbnail(of: size) ?? whole)
+            if let kept = cache.data(session: session, sha256: sha) {
+                if let pictures = decode(kept) { return pictures }
+                cache.remove(session: session, sha256: sha)
+            }
+            guard let fetched = try? await fetch(sha), let pictures = decode(fetched) else { return nil }
+            cache.store(fetched, session: session, sha256: sha)
+            return pictures
         }.value
+    }
+
+    /// The whole picture and its thumbnail, from the bytes alone
+    /// (`UIImage(data:)`, R-IOS-10).
+    private nonisolated static func decode(_ data: Data) -> (UIImage, UIImage)? {
+        guard let whole = UIImage(data: data) else { return nil }
+        let scale = min(1, thumbnailSide / max(whole.size.width, whole.size.height))
+        let size = CGSize(width: max(1, whole.size.width * scale), height: max(1, whole.size.height * scale))
+        return (whole, whole.preparingThumbnail(of: size) ?? whole)
     }
 
     private func arrived(_ sha: String, _ pictures: (UIImage, UIImage)) {
         tasks[sha] = nil
-        running -= 1
-        startQueued()
+        delays[sha] = nil
         for (state, number) in waiting.removeValue(forKey: sha) ?? [] {
             state.pictures[number] = pictures.0
             state.thumbnails[number] = pictures.1
