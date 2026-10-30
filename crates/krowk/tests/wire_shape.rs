@@ -144,6 +144,11 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     let listed = client.list_chunks(id, None, 50).unwrap();
     assert_eq!(client.read_chunk(&listed.chunks[0]).unwrap(), sealed);
     assert_eq!(chunk.index, 0);
+    let image = "A".repeat(43);
+    let object = client.put_image_object(id, &image, b"sealed image stand-in", &lease.token).unwrap();
+    assert_eq!(object.state, "ready");
+    assert_eq!(client.put_image_object(id, &image, b"sealed image stand-in", &lease.token).unwrap().state, "ready", "a repeated name is a no-op");
+    assert_eq!(client.get_image_object(id, &image).unwrap(), b"sealed image stand-in");
     use krowk_api::sync::NotifyKind;
     assert!(client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap());
     assert!(!client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap(), "a repeat is a duplicate");
@@ -187,6 +192,12 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "POST /v1/sessions/{id}/chunks +key +signed",
         "PUT /v1/sessions/{id}/chunks/0/finalization +signed",
         "GET /v1/sessions/{id}/chunks +signed",
+        // A sealed image object, named by a keyed hash: declared (a repeat is
+        // a no-op), put to storage, finalized, and read by name.
+        "POST /v1/sessions/{id}/images +signed",
+        "PUT /v1/sessions/{id}/images/{name}/finalization +signed",
+        "POST /v1/sessions/{id}/images +signed",
+        "GET /v1/sessions/{id}/images/{name} +signed",
         // The holder asking for the person's other devices to be rung: a
         // singular resource of the session, its dedup in the body rather
         // than an Idempotency-Key, so the repeat is a second POST.
@@ -335,7 +346,11 @@ fn wire_call(method: &str, path: &str, keyed: bool, signed: bool) -> Option<Stri
             let uuid = seg.len() == 36 && seg.bytes().filter(|b| *b == b'-').count() == 4;
             // A device by its fingerprint, 32 hex digits.
             let device = seg.len() == 32 && seg.bytes().all(|b| b.is_ascii_hexdigit());
-            if slug {
+            // A sealed image object by its keyed name: 43 url-safe characters.
+            let name = seg.len() == 43 && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+            if name {
+                "{name}".to_string()
+            } else if slug {
                 "{slug}".to_string()
             } else if uuid {
                 "{id}".to_string()
