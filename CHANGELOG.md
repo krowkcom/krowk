@@ -399,9 +399,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **An image is capped at 2.75 MB, and named by its sha256.** One image
   can be at most 2.75 MiB in every session, local ones included, so that a
   session's images can later sync or move unchanged (it was about 3.75
-  MB). The prompt composer already scales a pasted or dropped image to
-  2000 px a side; it now also re-encodes a PNG that is still too big as
-  JPEG to fit. A host refuses a larger image with `image #N is <x> MB; the
+  MB). The prompt composer shrinks a pasted or dropped image to fit, as
+  before: 2000 px a side, then JPEG if a PNG is still too big. A host refuses a larger image with `image #N is <x> MB; the
   most one image may be is 2.75 MB`, and no turn starts. New images are
   saved in the session's `images/` folder as `<sha256>.<ext>`, and the
   same bytes are one file. The log's image reference gains a `sha256`
