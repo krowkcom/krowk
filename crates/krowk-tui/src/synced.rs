@@ -229,7 +229,7 @@ impl SyncLink {
             // A rule for the project is written on the host, into its
             // repository's settings: not a viewer's to make.
             Command::Approve { decision: ApprovalDecision::AllowProject, .. } => return Err(EngineError::new("not_on_sync", "a viewer allows a call once or for the session; a rule for the project is made on the host")),
-            Command::Prompt { .. } | Command::Approve { .. } | Command::Interrupt { .. } | Command::Steer { .. } | Command::SwitchModel { session_id: Some(_), .. } => {}
+            Command::Prompt { .. } | Command::PutImage { .. } | Command::Approve { .. } | Command::Interrupt { .. } | Command::Steer { .. } | Command::SwitchModel { session_id: Some(_), .. } => {}
             // A turn a backend began by itself is the host's to run.
             Command::Continue { .. } => return Err(EngineError::new("nothing_pending", "the host runs the turns it begins")),
             _ => return Err(EngineError::new("not_on_sync", "this session runs on another machine: this TUI prompts, steers, interrupts, answers approvals and takes a rate-limit offer, and nothing else")),

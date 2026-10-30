@@ -853,6 +853,29 @@ async fn r_relay_1_a_viewer_past_its_rate_ceiling_is_refused() {
 async fn r_relay_1_a_message_past_the_size_cap_is_refused() {
     let t = "size";
     let (mut h, _) = joined(t, &host(t)).await;
+    // A viewer's three images, each its own sealed frame (`putImage`) of
+    // about what the biggest image comes to after base64 and sealing, and
+    // together past one message's cap: each is carried whole. One a second,
+    // a viewer's link taking 4 MiB/s.
+    let (mut v, _) = joined(t, &viewer(t, "viewer")).await;
+    h.expect("viewer").await;
+    for n in 0u8..3 {
+        let image = vec![n; 3_900_000];
+        let f = v.sealed(KIND_FRAME, 0, &image);
+        v.send(f).await;
+        loop {
+            match h.next().await {
+                In::Env(e) if e.kind == KIND_ROUTED => {
+                    assert!(e.payload.ends_with(&image), "image {n} arrived whole");
+                    break;
+                }
+                In::Env(_) | In::Text(_) => continue,
+                other => panic!("expected image {n}, got {other:?}"),
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+    drop(v);
     let big = vec![7u8; (4 << 20) + 1];
     let e = h.sealed(KIND_BATCH, 1, &big);
     let _ = h.ws.send(Message::Binary(e.encode().into())).await;

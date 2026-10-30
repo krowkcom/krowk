@@ -77,6 +77,11 @@ impl Remote {
         self.current().krowk_version.clone()
     }
 
+    /// The protocol version the daemon announced.
+    pub fn protocol_version(&self) -> u32 {
+        self.current().protocol_version
+    }
+
     pub async fn execute(&self, cmd: Command, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let streams = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
         let r = self.fresh().await?.execute_or_cut(cmd, out.clone()).await;

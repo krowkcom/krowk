@@ -221,15 +221,15 @@ public enum MailboxItem: Sendable {
 
 extension LiveCommand {
     /// The generated `Command` for session `session` (R-CLIENT-1: never
-    /// its JSON): a prompt with no images, model, toolset, effort or
+    /// its JSON): a prompt with its images named by sha256 (no bytes) and no model, toolset, effort or
     /// budget and the default permission mode, which the host's bridge
     /// sets from the session anyway.
     public func command(session: String) -> Command {
         switch self {
-        case .prompt(let text):
-            .prompt(sessionId: session, text: text, images: [], model: nil, permissionMode: .default, toolset: nil, effort: nil, budget: nil)
-        case .steer(let text):
-            .steer(sessionId: session, text: text, images: [])
+        case .prompt(let text, let images):
+            .prompt(sessionId: session, text: text, images: images.map(\.input), model: nil, permissionMode: .default, toolset: nil, effort: nil, budget: nil)
+        case .steer(let text, let images):
+            .steer(sessionId: session, text: text, images: images.map(\.input))
         case .interrupt:
             .interrupt(sessionId: session)
         case .approve(let reply):
@@ -242,6 +242,21 @@ extension LiveCommand {
             // toolset, effort or budget, and the command has no field for one.
             .switchModel(sessionId: session, model: ModelRef(instance: choice.instance, model: choice.model))
         }
+    }
+}
+
+extension SentImage {
+    /// The generated `ImageInput` naming the image by its sha256, with no
+    /// bytes: they went ahead in a `putImage`.
+    var input: ImageInput {
+        ImageInput(number: UInt32(number), mediaType: mediaType, data: "", sha256: sha256)
+    }
+}
+
+extension PreparedImage {
+    /// The generated `putImage` for session `session`.
+    func command(session: String) -> Command {
+        .putImage(sessionId: session, sha256: sha256, mediaType: mediaType, data: data.base64EncodedString())
     }
 }
 
@@ -282,7 +297,9 @@ extension TranscriptEvent {
         case .itemCompleted(let turnId, let itemId, let item):
             switch item {
             case .userText(let text, let images):
-                return .userText(item: itemId, text: text, images: images.map(\.number), turn: turnId)
+                var hashes: [UInt32: String] = [:]
+                for image in images { if let sha = image.sha256, ImageCache.isHash(sha) { hashes[image.number] = sha } }
+                return .userText(item: itemId, text: text, images: images.map(\.number), turn: turnId, hashes: hashes)
             case .assistantText(let text):
                 return .assistantText(item: itemId, text: text)
             case .reasoning(let text, _):

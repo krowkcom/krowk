@@ -2201,7 +2201,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let data = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &png);
     let mut first = w.prompt(None, "look at [Image #1]");
     if let Command::Prompt { images, .. } = &mut first {
-        images.push(krowk_harness::protocol::ImageInput { number: 1, media_type: "image/png".into(), data: data.clone() });
+        images.push(krowk_harness::protocol::ImageInput { number: 1, media_type: "image/png".into(), data: data.clone(), sha256: None });
     }
     let session = d0.execute(first, tx).await.unwrap().unwrap().session_id;
     let _d = d0;

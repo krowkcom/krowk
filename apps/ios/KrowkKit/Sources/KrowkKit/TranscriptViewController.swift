@@ -1,4 +1,5 @@
 import Observation
+import PhotosUI
 import UIKit
 
 /// A session's transcript (ticket 88, R-IOS-10, R-IOS-1): its turns top to
@@ -132,6 +133,13 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public private(set) var composerState = ComposerState(text: "", running: false, stopping: false, status: .connecting)
     /// The host's last refusal of a stop, until the next stop or turn.
     private var stopRefused: String?
+    /// The images going to the host ahead of a prompt (R-IMG-2).
+    private var uploads: Task<Void, Never>?
+    /// Whether the text field had the keyboard when the uploads began.
+    private var refocus = false
+    private lazy var photoPicker = PhotoPickerDelegate { [weak self] photos in
+        await self?.composer.attach(photos)
+    }
     /// Where the screen goes when it's left with commands still out.
     public weak var parking: ParkedScreens?
     /// Left with commands out: kept by `parking`, its session still
@@ -225,6 +233,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// What VoiceOver was last told of the move: each line once.
     private var moveSaid: String?
 
+    /// Fetches the images the prompts name (R-IMG-13).
+    public let images: TranscriptImages
+
     public init(
         row: SessionRow, session: (any LiveSession)? = nil, model: TranscriptModel? = nil, approvals: ApprovalQueue? = nil,
         kept: (any KeptTranscript)? = nil, hosts: (any HostSource)? = nil, open: (@MainActor (URL) -> Void)? = nil, lifecycle: LiveSessions = .shared
@@ -239,6 +250,9 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         let model = model ?? TranscriptModel(sessionID: row.id)
         self.model = model
         self.driver = session.map { FrameDriver(session: $0, model: model) }
+        // The images the prompts name: the device's copy, else the session's
+        // sealed store; the placeholder stays until the bytes are there.
+        self.images = TranscriptImages(model: model) { [session] sha in try await session?.image(sha256: sha) }
         self.opener = open ?? { UIApplication.shared.open($0) }
         super.init(nibName: nil, bundle: nil)
         title = row.title
@@ -264,6 +278,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     isolated deinit {
         frames?.invalidate()
         if let focusObserver { NotificationCenter.default.removeObserver(focusObserver) }
+        uploads?.cancel()
         session?.stop()
     }
 
@@ -297,6 +312,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             defer { FrameCosts.end("configure text", configuring) }
             #endif
             cell.openLink = open
+            cell.openImage = { [weak self] state, number in self?.showImage(state, number) }
             cell.show(state)
         }
         let tool = UICollectionView.CellRegistration<TranscriptToolCell, String> { [weak self] cell, _, id in
@@ -392,6 +408,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             composer.changed = { [weak self] in self?.updateComposer() }
             composer.send = { [weak self] in self?.sendTyped() ?? false }
             composer.stop = { [weak self] in self?.stopTurn() }
+            composer.addPhoto = { [weak self] in self?.pickPhotos() }
         } else {
             bottom = view.bottomAnchor
         }
@@ -751,7 +768,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// and the bar.
     func updateComposer() {
         guard session != nil else { return }
-        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused, hostAway: hostAway)
+        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused, hostAway: hostAway, images: composer.attachments.images.count, sending: composer.sending, imageNote: composer.imageNote)
         composerState = state
         composer.show(state)
     }
@@ -765,6 +782,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public func sendTyped() -> Bool {
         updateComposer()
         guard session != nil, composerState.canSend else { return false }
+        let images = composer.attachments.images
+        guard images.isEmpty else {
+            sendWithImages(composer.text, images)
+            return false
+        }
         let text = composer.text
         let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
         composer.text = ""
@@ -773,6 +795,115 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
         }
         return true
+    }
+
+    /// Send with images attached (R-IMG-2, R-IMG-14): each goes to the host
+    /// as a `put_image`, one after another, `Sending image 2 of 3…` in the
+    /// composer, which stays as it is; only once the host has them all does
+    /// the prompt go, naming them by number and sha256, and the bubble
+    /// show. A failed upload leaves the composer as it was, with the
+    /// reason. Not a tap that shows a bubble in its own run-loop turn: the
+    /// bubble waits on the uploads.
+    private func sendWithImages(_ typed: String, _ images: [PreparedImage]) {
+        guard let session, composer.sending == nil else { return }
+        composer.imageNote = nil
+        composer.sending = 1
+        refocus = composer.textView.isFirstResponder
+        composer.textView.isEditable = false
+        uploads = Task { @MainActor [weak self] in
+            var kept = Set<String>()
+            do {
+                for (at, image) in images.enumerated() {
+                    guard let self, !Task.isCancelled else { return }
+                    composer.sending = at + 1
+                    updateComposer()
+                    // The same image twice is kept once.
+                    if kept.insert(image.sha256).inserted { try await Self.put(image, to: session) }
+                }
+            } catch {
+                self?.uploadFailed(error)
+                return
+            }
+            self?.uploaded(typed, images)
+        }
+        updateComposer()
+    }
+
+    /// How long a host has to keep one image before the send gives up on it.
+    static let uploadSeconds = 90
+
+    /// `image` put to `session`, or an error if the host doesn't answer in
+    /// time: a link lost after the image went would otherwise hold the
+    /// composer for good.
+    private static func put(_ image: PreparedImage, to session: any LiveSession) async throws {
+        // Unstructured, first answer wins: the upload may never return, and
+        // a group would wait for it.
+        let (answers, answer) = AsyncStream<Result<Void, any Error>>.makeStream()
+        let upload = Task {
+            do {
+                try await session.putImage(image)
+                answer.yield(.success(()))
+            } catch {
+                answer.yield(.failure(error))
+            }
+        }
+        let timer = Task {
+            guard (try? await Task.sleep(for: .seconds(uploadSeconds))) != nil else { return }
+            answer.yield(.failure(ImageUploadError("The host didn't answer. Check the connection and send again.")))
+        }
+        defer {
+            upload.cancel()
+            timer.cancel()
+        }
+        for await result in answers { return try result.get() }
+        throw CancellationError()
+    }
+
+    /// The text field editable again, and focused if it was.
+    private func resumeTyping() {
+        composer.textView.isEditable = true
+        if refocus { composer.textView.becomeFirstResponder() }
+    }
+
+    private func uploadFailed(_ error: any Error) {
+        composer.sending = nil
+        resumeTyping()
+        composer.imageNote = (error as? ImageUploadError)?.message ?? "The image didn't go: \(error.localizedDescription)"
+        updateComposer()
+    }
+
+    /// Every image is with the host: the prompt or steer, as the turn
+    /// stands now, and the composer emptied.
+    private func uploaded(_ typed: String, _ images: [PreparedImage]) {
+        composer.sending = nil
+        resumeTyping()
+        updateComposer()
+        guard composerState.canSend else {
+            composer.imageNote = composerState.note.isEmpty ? "Not sent: the session changed. Send it again." : composerState.note
+            updateComposer()
+            return
+        }
+        let message = ComposerImages.message(typed, images: images)
+        let command: LiveCommand = composerState.steers ? .steer(message.text, images: message.images) : .prompt(message.text, images: message.images)
+        composer.text = ""
+        for image in images { composer.attachments.remove(image.id) }
+        sendBubble(command)
+    }
+
+    /// The photo button: the system's picker, for what room is left.
+    func pickPhotos() {
+        let room = composer.attachments.room
+        guard room > 0 else {
+            composer.imageNote = ComposerImages.Added(overCap: 1).problem
+            updateComposer()
+            return
+        }
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = room
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = photoPicker
+        present(picker, animated: true)
     }
 
     /// A prompt or steer shown as a bubble now and handed to the core.
@@ -1754,6 +1885,12 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
         snapshot.reconfigureItems([id])
         dataSource.apply(snapshot, animatingDifferences: false)
         snapshotApplies += 1
+    }
+
+    /// A prompt's image, full screen (R-IMG-15).
+    func showImage(_ state: ItemState, _ number: UInt32) {
+        guard let picture = state.pictures[number] ?? state.thumbnails[number], presentedViewController == nil else { return }
+        present(ImageViewerController(image: picture, number: number), animated: true)
     }
 
     /// A link tapped: a sheet naming the whole URL, and only its "Open"
