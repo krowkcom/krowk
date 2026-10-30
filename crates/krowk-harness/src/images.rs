@@ -32,6 +32,11 @@ pub const DIR: &str = "images";
 /// relay's cap is 4 MiB), and well within what the providers take of one.
 pub const MAX_BYTES: usize = 2816 * 1024;
 
+/// [`MAX_BYTES`] in MB, as a person is told it: `2.75`.
+pub fn max_mb() -> f64 {
+    MAX_BYTES as f64 / (1024.0 * 1024.0)
+}
+
 /// The longest side an image may have: what the providers read.
 pub const MAX_SIDE: u32 = 8000;
 
@@ -133,20 +138,21 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
     if inputs.len() > MAX_IMAGES {
         return Err(refused(format!("{} images were attached, and a prompt takes at most {MAX_IMAGES}", inputs.len())));
     }
+    let too_big = |n: u32, bytes: usize| refused(format!("image #{n} is {:.1} MB; the most one image may be is {} MB", bytes as f64 / (1024.0 * 1024.0), max_mb()));
+    // Measured before it is decoded, base64 being four bytes for three, and
+    // before the total, so one image too big is named as that.
+    if let Some(i) = inputs.iter().find(|i| i.data.len() / 4 * 3 > MAX_BYTES + 3) {
+        return Err(too_big(i.number, i.data.len() / 4 * 3));
+    }
     // What one model call sends of them all: a prompt always fits whole.
     let total: usize = inputs.iter().map(|i| i.data.len()).sum();
     if total > SENT_BYTES {
         return Err(refused(format!("the images come to {} MB, and a prompt's may come to at most {} MB", total / (1024 * 1024), SENT_BYTES / (1024 * 1024))));
     }
-    let too_big = |n: u32, bytes: usize| refused(format!("image #{n} is {:.1} MB; the most one image may be is 2.75 MB", bytes as f64 / (1024.0 * 1024.0)));
     inputs
         .iter()
         .map(|i| {
             let n = i.number;
-            // Measured before it is decoded: base64 is four bytes for three.
-            if i.data.len() / 4 * 3 > MAX_BYTES + 3 {
-                return Err(too_big(n, i.data.len() / 4 * 3));
-            }
             let bytes = base64::engine::general_purpose::STANDARD.decode(i.data.as_bytes()).map_err(|_| refused(format!("[Image #{n}] is not base64")))?;
             if bytes.len() > MAX_BYTES {
                 return Err(too_big(n, bytes.len()));
@@ -323,6 +329,8 @@ mod tests {
         assert_eq!((e.code.as_str(), e.message.as_str()), ("bad_image", "image #3 is 2.8 MB; the most one image may be is 2.75 MB"));
         let edge = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
         assert!(decode(&[input(1, "image/png", &edge)]).is_ok(), "exactly the cap is taken");
+        let huge = [PNG, &vec![0; SENT_BYTES]].concat();
+        assert!(decode(&[input(2, "image/png", &huge)]).unwrap_err().message.starts_with("image #2 is 20.0 MB;"), "one image over both caps is named as too big itself");
         let many: Vec<ImageInput> = (0..=MAX_IMAGES as u32).map(|n| input(n, "image/png", PNG)).collect();
         assert_eq!(decode(&many).unwrap_err().code, "bad_image");
         let heavy = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
