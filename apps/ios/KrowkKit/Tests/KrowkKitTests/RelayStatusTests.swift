@@ -201,6 +201,18 @@ final class StubSession: LiveSession {
 
     func send(_ command: LiveCommand, token: UInt64) {
         commands.withLock { $0.append(Sent(command: command, token: token)) }
+        order.withLock { $0.append("send") }
+    }
+
+    /// What reached the link, in order: `put <sha256>` for each image the
+    /// host kept and `send` for each command.
+    let order = Mutex<[String]>([])
+    /// Why the next `putImage` fails, if it should.
+    let uploadFailure = Mutex<String?>(nil)
+
+    func putImage(_ image: PreparedImage) async throws {
+        if let why = uploadFailure.withLock({ $0 }) { throw ImageUploadError(why) }
+        order.withLock { $0.append("put \(image.sha256)") }
     }
 
     func say(_ status: RelayStatus) {

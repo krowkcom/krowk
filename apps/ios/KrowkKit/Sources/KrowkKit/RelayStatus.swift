@@ -177,6 +177,10 @@ public protocol LiveSession: AnyObject, Sendable {
     /// main thread, which mints its id (a `commandMinted` frame update),
     /// then reports it sent or queued and acked. Never kept or resent here.
     func send(_ command: LiveCommand, token: UInt64)
+    /// One image's bytes to the host, ahead of the prompt or steer that
+    /// names it by sha256 (R-IMG-2): returns once the host has kept it
+    /// (acked), throws why it didn't. Images go one after another.
+    func putImage(_ image: PreparedImage) async throws
     /// The scene is coming forward (ticket 86, R-IOS-2): the connection is
     /// checked before any view appears. Never blocks.
     func foreground()
@@ -189,6 +193,9 @@ public protocol LiveSession: AnyObject, Sendable {
 
 /// A session that follows no lifecycle (a test's stand-in) ignores it.
 public extension LiveSession {
+    func putImage(_ image: PreparedImage) async throws {
+        throw ImageUploadError("This session can't take images")
+    }
     func onPath(_ path: @escaping @MainActor @Sendable (String) -> Void) {}
     func foreground() {}
     func background() {}

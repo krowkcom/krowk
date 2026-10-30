@@ -1,4 +1,5 @@
 import Observation
+import PhotosUI
 import UIKit
 
 /// A session's transcript (ticket 88, R-IOS-10, R-IOS-1): its turns top to
@@ -132,6 +133,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public private(set) var composerState = ComposerState(text: "", running: false, stopping: false, status: .connecting)
     /// The host's last refusal of a stop, until the next stop or turn.
     private var stopRefused: String?
+    /// The images going to the host ahead of a prompt (R-IMG-2).
+    private var uploads: Task<Void, Never>?
+    private lazy var photoPicker = PhotoPickerDelegate { [weak self] photos in
+        await self?.composer.attach(photos)
+    }
     /// Where the screen goes when it's left with commands still out.
     public weak var parking: ParkedScreens?
     /// Left with commands out: kept by `parking`, its session still
@@ -392,6 +398,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             composer.changed = { [weak self] in self?.updateComposer() }
             composer.send = { [weak self] in self?.sendTyped() ?? false }
             composer.stop = { [weak self] in self?.stopTurn() }
+            composer.addPhoto = { [weak self] in self?.pickPhotos() }
         } else {
             bottom = view.bottomAnchor
         }
@@ -751,7 +758,7 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     /// and the bar.
     func updateComposer() {
         guard session != nil else { return }
-        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused, hostAway: hostAway)
+        let state = ComposerState(text: composer.text, running: model.isTurnRunning, stopping: model.stopping, status: statusBar.status, stopRefused: stopRefused, hostAway: hostAway, images: composer.attachments.images.count, sending: composer.sending, imageNote: composer.imageNote)
         composerState = state
         composer.show(state)
     }
@@ -765,6 +772,11 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
     public func sendTyped() -> Bool {
         updateComposer()
         guard session != nil, composerState.canSend else { return false }
+        let images = composer.attachments.images
+        guard images.isEmpty else {
+            sendWithImages(composer.text, images)
+            return false
+        }
         let text = composer.text
         let command: LiveCommand = composerState.steers ? .steer(text) : .prompt(text)
         composer.text = ""
@@ -773,6 +785,78 @@ public final class TranscriptViewController: UIViewController, UICollectionViewD
             UIAccessibility.post(notification: .announcement, argument: "Queued: it sends when your laptop is back")
         }
         return true
+    }
+
+    /// Send with images attached (R-IMG-2, R-IMG-14): each goes to the host
+    /// as a `put_image`, one after another, `Sending image 2 of 3…` in the
+    /// composer, which stays as it is; only once the host has them all does
+    /// the prompt go, naming them by number and sha256, and the bubble
+    /// show. A failed upload leaves the composer as it was, with the
+    /// reason. Not a tap that shows a bubble in its own run-loop turn: the
+    /// bubble waits on the uploads.
+    private func sendWithImages(_ typed: String, _ images: [PreparedImage]) {
+        guard let session, composer.sending == nil else { return }
+        composer.imageNote = nil
+        composer.sending = 1
+        composer.textView.isEditable = false
+        uploads = Task { @MainActor [weak self] in
+            var kept = Set<String>()
+            do {
+                for (at, image) in images.enumerated() {
+                    guard let self, !Task.isCancelled else { return }
+                    composer.sending = at + 1
+                    updateComposer()
+                    // The same image twice is kept once.
+                    if kept.insert(image.sha256).inserted { try await session.putImage(image) }
+                }
+            } catch {
+                self?.uploadFailed(error)
+                return
+            }
+            self?.uploaded(typed, images)
+        }
+        updateComposer()
+    }
+
+    private func uploadFailed(_ error: any Error) {
+        composer.sending = nil
+        composer.textView.isEditable = true
+        composer.imageNote = (error as? ImageUploadError)?.message ?? "The image didn't go: \(error.localizedDescription)"
+        updateComposer()
+    }
+
+    /// Every image is with the host: the prompt or steer, as the turn
+    /// stands now, and the composer emptied.
+    private func uploaded(_ typed: String, _ images: [PreparedImage]) {
+        composer.sending = nil
+        composer.textView.isEditable = true
+        updateComposer()
+        guard composerState.canSend else {
+            composer.imageNote = composerState.note.isEmpty ? "Not sent: the session changed. Send it again." : composerState.note
+            updateComposer()
+            return
+        }
+        let message = ComposerImages.message(typed, images: images)
+        let command: LiveCommand = composerState.steers ? .steer(message.text, images: message.images) : .prompt(message.text, images: message.images)
+        composer.text = ""
+        composer.attachments.clear()
+        sendBubble(command)
+    }
+
+    /// The photo button: the system's picker, for what room is left.
+    func pickPhotos() {
+        let room = composer.attachments.room
+        guard room > 0 else {
+            composer.imageNote = ComposerImages.Added(overCap: 1).problem
+            updateComposer()
+            return
+        }
+        var configuration = PHPickerConfiguration()
+        configuration.filter = .images
+        configuration.selectionLimit = room
+        let picker = PHPickerViewController(configuration: configuration)
+        picker.delegate = photoPicker
+        present(picker, animated: true)
     }
 
     /// A prompt or steer shown as a bubble now and handed to the core.
