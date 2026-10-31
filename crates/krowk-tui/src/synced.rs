@@ -163,6 +163,8 @@ pub struct Opened {
     pub title: String,
     /// The host's device name, when the verified device list holds it.
     pub host: Option<String>,
+    /// Joined under the development env.
+    pub dev: bool,
 }
 
 /// Attaches to the session: its history read from the chunks, then the
@@ -170,6 +172,7 @@ pub struct Opened {
 pub async fn open(o: Options) -> Result<Opened, String> {
     use krowk_harness::sync::viewer::{self, Update};
     let id = o.session.clone();
+    let dev = o.env == "development";
     let mut v = viewer::attach(o).await?;
     let (title, host) = (std::mem::take(&mut v.title), v.host.take());
     let mut history = Vec::new();
@@ -198,7 +201,7 @@ pub async fn open(o: Options) -> Result<Opened, String> {
         }
         pump.gone("the link to the synced session ended");
     });
-    Ok(Opened { link: SyncLink { commands: v.commands, state, children, watch, events: Mutex::new(Some(events)) }, id, history, title, host })
+    Ok(Opened { link: SyncLink { commands: v.commands, state, children, watch, events: Mutex::new(Some(events)) }, id, history, title, host, dev })
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -482,6 +485,22 @@ mod tests {
 
     /// D11: a reconnect's catch-up replays a turn that finished: drawn as
     /// history, never opened as a running turn that no `result` will close.
+    /// A move to another path (`Update::Path`) reaches the status line,
+    /// as `on_sync` applies it.
+    #[tokio::test]
+    async fn d11_a_new_path_changes_the_status_line() {
+        use crate::app::{App, Synced};
+        use crate::settings::{Item as StatusItem, Settings};
+        let mut a = App::new(crate::editor::Editor::new(None), 100, Settings { status_items: vec![StatusItem::Help], ..Settings::default() }, None, None);
+        a.sync = Some(Synced { name: "elvinas-arch".into(), host: Some(true), path: Some("relay".into()), ..Synced::default() });
+        assert_eq!(a.status_bar(), "● elvinas-arch · relay | ? help");
+        let (p, mut rx, _) = pump();
+        p.update(Update::Path { path: "direct over Tailscale".into(), via: Some("100.64.0.2".into()) }).await;
+        let Ok(Event::Path(path)) = rx.try_recv() else { panic!("the path said") };
+        a.sync.as_mut().unwrap().path = Some(path);
+        assert_eq!(a.status_bar(), "● elvinas-arch · direct over Tailscale | ? help", "the address is not shown");
+    }
+
     #[tokio::test]
     async fn d11_a_finished_turn_caught_up_after_a_reconnect_stays_closed() {
         let (p, mut rx, state) = pump();
