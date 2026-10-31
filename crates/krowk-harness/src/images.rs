@@ -5,6 +5,10 @@
 //! native turn reads them back for its model calls, a backend is handed
 //! the file.
 //!
+//! Files are named by the sha256 of their bytes (`<sha256>.<ext>`), so the
+//! same image is the same name on every device; files an older host named
+//! `<number>-<fnv>.<ext>` are still read, by the name the log gives.
+//!
 //! A client is expected to have made them small enough for any provider
 //! already (the TUI does, as it pastes them); the host holds them to the
 //! limits below and never resizes. Every image in a session's history
@@ -23,9 +27,15 @@ use std::sync::Arc;
 /// The directory in a session's own.
 pub const DIR: &str = "images";
 
-/// The most bytes one image may have: what the providers take of one, with
-/// room for its base64.
-pub const MAX_BYTES: usize = 5 * 1024 * 1024 * 3 / 4;
+/// The most bytes one image may have, in every kind of session: it is one
+/// message on the wire after base64 and sealing (the daemon's and the
+/// relay's cap is 4 MiB), and well within what the providers take of one.
+pub const MAX_BYTES: usize = 2816 * 1024;
+
+/// [`MAX_BYTES`] in MB, as a person is told it: `2.75`.
+pub fn max_mb() -> f64 {
+    MAX_BYTES as f64 / (1024.0 * 1024.0)
+}
 
 /// The longest side an image may have: what the providers read.
 pub const MAX_SIDE: u32 = 8000;
@@ -128,20 +138,21 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
     if inputs.len() > MAX_IMAGES {
         return Err(refused(format!("{} images were attached, and a prompt takes at most {MAX_IMAGES}", inputs.len())));
     }
+    let too_big = |n: u32, bytes: usize| refused(format!("image #{n} is {:.1} MB; the most one image may be is {} MB", bytes as f64 / (1024.0 * 1024.0), max_mb()));
+    // Measured before it is decoded, base64 being four bytes for three, and
+    // before the total, so one image too big is named as that.
+    if let Some(i) = inputs.iter().find(|i| i.data.len() / 4 * 3 > MAX_BYTES + 3) {
+        return Err(too_big(i.number, i.data.len() / 4 * 3));
+    }
     // What one model call sends of them all: a prompt always fits whole.
     let total: usize = inputs.iter().map(|i| i.data.len()).sum();
     if total > SENT_BYTES {
         return Err(refused(format!("the images come to {} MB, and a prompt's may come to at most {} MB", total / (1024 * 1024), SENT_BYTES / (1024 * 1024))));
     }
-    let too_big = |n: u32, bytes: usize| refused(format!("[Image #{n}] is {} KB, and an image may be at most {} KB", bytes / 1024, MAX_BYTES / 1024));
     inputs
         .iter()
         .map(|i| {
             let n = i.number;
-            // Measured before it is decoded: base64 is four bytes for three.
-            if i.data.len() / 4 * 3 > MAX_BYTES + 3 {
-                return Err(too_big(n, i.data.len() / 4 * 3));
-            }
             let bytes = base64::engine::general_purpose::STANDARD.decode(i.data.as_bytes()).map_err(|_| refused(format!("[Image #{n}] is not base64")))?;
             if bytes.len() > MAX_BYTES {
                 return Err(too_big(n, bytes.len()));
@@ -160,15 +171,18 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
         .collect()
 }
 
-/// FNV-1a: a name for the bytes, so the same image kept twice (a prompt
-/// rolled over to another instance, steering sent again) is one file.
-fn digest(b: &[u8]) -> u64 {
-    b.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, x| (h ^ u64::from(*x)).wrapping_mul(0x0100_0000_01b3))
+/// The sha256 of the bytes, in lowercase hex: the image's name, so the same
+/// image kept twice (a prompt rolled over to another instance, steering
+/// sent again) is one file.
+pub fn sha256(b: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect()
 }
 
 /// Keeps the images in `session_dir`'s `images/`, private to the person,
-/// each named by its number and its bytes: written whole under another name
-/// first, so a file of that name is always the whole image.
+/// each named by the sha256 of its bytes: written whole under another name
+/// first, so a file of that name is always the whole image. Bytes already
+/// held are not written again.
 pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, EngineError> {
     if images.is_empty() {
         return Ok(Vec::new());
@@ -179,7 +193,11 @@ pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, Eng
     images
         .iter()
         .map(|i| {
-            let file = format!("{}-{:016x}.{}", i.number, digest(&i.bytes), extension(i.media_type));
+            let sha256 = sha256(&i.bytes);
+            let file = format!("{sha256}.{}", extension(i.media_type));
+            if dir.join(&file).is_file() {
+                return Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file, sha256: Some(sha256) });
+            }
             let part = dir.join(format!(".{file}.{}", krowk_store::new_id()));
             let mut o = std::fs::OpenOptions::new();
             o.write(true).create_new(true);
@@ -190,9 +208,99 @@ pub fn save(session_dir: &Path, images: &[Decoded]) -> Result<Vec<ImageRef>, Eng
                 let _ = std::fs::remove_file(&part);
                 return Err(failed(e));
             }
-            Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file })
+            Ok(ImageRef { number: i.number, media_type: i.media_type.to_string(), file, sha256: Some(sha256) })
         })
         .collect()
+}
+
+/// Where `put` keeps an image that no session is waiting for yet, under the
+/// sessions directory: a prompt that will start a session names its images
+/// before the session has an id. Never a session's own name, so no listing
+/// of sessions sees it.
+const STAGED: &str = "staged";
+
+/// The directory whose `images/` holds the images of `session`, or the
+/// staged ones when none: refused for an id that is not a session's, so
+/// none walks out of the sessions directory.
+fn home(sessions_dir: &Path, session: Option<&str>) -> Result<PathBuf, EngineError> {
+    match session {
+        Some(id) if crate::log::valid_id(id) => {
+            let dir = sessions_dir.join(id);
+            dir.is_dir().then_some(dir).ok_or_else(|| EngineError::new("no_session", format!("session {id} is not on this host, so it can hold no image")))
+        }
+        Some(id) => Err(EngineError::new("no_session", format!("{id} is not a session id"))),
+        None => Ok(sessions_dir.join(STAGED)),
+    }
+}
+
+fn is_sha256(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `put_image`: keeps one image the prompt that follows will name by its
+/// sha256. Refused unless the hash is the bytes', the format is one of the
+/// four and the image is within `MAX_BYTES`; bytes already held succeed
+/// without being written again.
+pub fn put(sessions_dir: &Path, session: Option<&str>, sha256: &str, media_type: &str, data: &str) -> Result<(), EngineError> {
+    if data.len() / 4 * 3 > MAX_BYTES + 3 {
+        return Err(refused(format!("an image is {:.1} MB; the most one image may be is {} MB", (data.len() / 4 * 3) as f64 / (1024.0 * 1024.0), max_mb())));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.as_bytes()).map_err(|_| refused("the image is not base64".into()))?;
+    if bytes.len() > MAX_BYTES {
+        return Err(refused(format!("an image is {:.1} MB; the most one image may be is {} MB", bytes.len() as f64 / (1024.0 * 1024.0), max_mb())));
+    }
+    if !is_sha256(sha256) || self::sha256(&bytes) != sha256 {
+        return Err(refused("the image's sha256 is not that of its bytes".into()));
+    }
+    // The same checks a prompt's inline image meets.
+    let decoded = decode(&[ImageInput { number: 1, media_type: media_type.into(), data: data.into(), sha256: None }]).map_err(|e| EngineError::new("bad_image", e.message.replace("[Image #1]", "the image")))?;
+    let home = home(sessions_dir, session)?;
+    if session.is_none() {
+        sweep_staged(&home.join(DIR));
+    }
+    save(&home, &decoded).map(drop)
+}
+
+/// How long an image staged for a session-to-be is kept: a prompt follows
+/// its images at once, so one older is of a prompt that never came. Shared
+/// by every client, so a prompt's use of it never removes it.
+const STAGED_FOR: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn sweep_staged(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.filter_map(Result::ok) {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > STAGED_FOR);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
+/// The images a prompt or steer names by sha256 alone, filled in with their
+/// bytes from what `put` kept for `session`, so the checks and the keeping
+/// are the inline ones'. A hash the host holds nothing for refuses the whole
+/// prompt. `take`: those staged for a session-to-be are used up, for the
+/// session now holds them.
+pub fn resolve(sessions_dir: &Path, session: Option<&str>, inputs: Vec<ImageInput>) -> Result<Vec<ImageInput>, EngineError> {
+    if inputs.len() > MAX_IMAGES || inputs.iter().all(|i| !i.data.is_empty()) {
+        return Ok(inputs);
+    }
+    let dir = home(sessions_dir, session).ok().map(|d| d.join(DIR));
+    let resolved = inputs
+        .into_iter()
+        .map(|mut i| {
+            if !i.data.is_empty() {
+                return Ok(i);
+            }
+            let missing = || EngineError::new("image_missing", format!("the host has no copy of image #{}; send the prompt again", i.number));
+            let sha = i.sha256.as_deref().filter(|s| is_sha256(s)).ok_or_else(missing)?;
+            let file = dir.as_ref().map(|d| d.join(format!("{sha}.{}", extension(&i.media_type)))).ok_or_else(missing)?;
+            let bytes = std::fs::read(&file).map_err(|_| missing())?;
+            i.data = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            Ok(i)
+        })
+        .collect::<Result<Vec<_>, EngineError>>()?;
+    Ok(resolved)
 }
 
 /// Where a logged image's file is, or none for a name that is not a plain
@@ -297,7 +405,7 @@ mod tests {
     const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
 
     fn input(n: u32, t: &str, b: &[u8]) -> ImageInput {
-        ImageInput { number: n, media_type: t.into(), data: base64::engine::general_purpose::STANDARD.encode(b) }
+        ImageInput { number: n, media_type: t.into(), data: base64::engine::general_purpose::STANDARD.encode(b), sha256: None }
     }
 
     #[test]
@@ -305,9 +413,14 @@ mod tests {
         assert_eq!(decode(&[input(1, "image/png", PNG)]).unwrap()[0].media_type, "image/png");
         assert_eq!(decode(&[input(1, "image/jpeg", PNG)]).unwrap_err().code, "bad_image");
         assert_eq!(decode(&[input(1, "image/png", b"hello")]).unwrap_err().code, "bad_image");
-        assert_eq!(decode(&[ImageInput { number: 1, media_type: "image/png".into(), data: "!!".into() }]).unwrap_err().code, "bad_image");
+        assert_eq!(decode(&[ImageInput { number: 1, media_type: "image/png".into(), data: "!!".into(), sha256: None }]).unwrap_err().code, "bad_image");
         let big = [PNG, &vec![0; MAX_BYTES]].concat();
-        assert_eq!(decode(&[input(1, "image/png", &big)]).unwrap_err().code, "bad_image");
+        let e = decode(&[input(3, "image/png", &big)]).unwrap_err();
+        assert_eq!((e.code.as_str(), e.message.as_str()), ("bad_image", "image #3 is 2.8 MB; the most one image may be is 2.75 MB"));
+        let edge = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
+        assert!(decode(&[input(1, "image/png", &edge)]).is_ok(), "exactly the cap is taken");
+        let huge = [PNG, &vec![0; SENT_BYTES]].concat();
+        assert!(decode(&[input(2, "image/png", &huge)]).unwrap_err().message.starts_with("image #2 is 20.0 MB;"), "one image over both caps is named as too big itself");
         let many: Vec<ImageInput> = (0..=MAX_IMAGES as u32).map(|n| input(n, "image/png", PNG)).collect();
         assert_eq!(decode(&many).unwrap_err().code, "bad_image");
         let heavy = [PNG, &vec![0; MAX_BYTES - PNG.len()]].concat();
@@ -327,7 +440,7 @@ mod tests {
         assert_eq!(dimensions(&webp), Some((800, 600)));
         let wide = [&PNG[..16], &9000u32.to_be_bytes(), &1u32.to_be_bytes()].concat();
         assert!(decode(&[input(1, "image/png", &wide)]).unwrap_err().message.contains("9000x1"));
-        let colon = ImageRef { number: 1, media_type: "image/png".into(), file: "C:x.png".into() };
+        let colon = ImageRef { number: 1, media_type: "image/png".into(), file: "C:x.png".into(), sha256: None };
         assert!(path(Path::new("/s"), &colon).is_none());
     }
 
@@ -339,6 +452,9 @@ mod tests {
         let other = [PNG, b"x"].concat();
         let refs = save(dir, &decode(&[input(1, "image/png", PNG), input(1, "image/png", &other)]).unwrap()).unwrap();
         assert_ne!(refs[0].file, refs[1].file, "two images numbered alike are two files");
+        assert_eq!(refs[0].file, format!("{}.png", sha256(PNG)));
+        assert_eq!(refs[0].sha256.as_deref(), Some(sha256(PNG).as_str()));
+        assert_eq!(sha256(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
         let again = save(dir, &decode(&[input(1, "image/png", PNG)]).unwrap()).unwrap();
         assert_eq!(again[0].file, refs[0].file, "the same image kept again is the same file");
         assert_eq!(std::fs::read_dir(dir.join(DIR)).unwrap().count(), 2, "and nothing half-written is left");
@@ -349,12 +465,30 @@ mod tests {
         load(dir, &all, false, &mut loaded);
         assert!(sent(&refs, &loaded, &mut Default::default()).into_iter().all(|(_, label, data)| data.is_none() && label.contains("reads no images")), "a model that reads none is sent their names");
         for file in ["../events.jsonl", "/etc/passwd", ".hidden", ""] {
-            assert!(path(dir, &ImageRef { number: 1, media_type: "image/png".into(), file: file.into() }).is_none(), "{file}");
+            assert!(path(dir, &ImageRef { number: 1, media_type: "image/png".into(), file: file.into(), sha256: None }).is_none(), "{file}");
         }
-        let gone = ImageRef { number: 2, media_type: "image/png".into(), file: "2-x.png".into() };
+        let gone = ImageRef { number: 2, media_type: "image/png".into(), file: "2-x.png".into(), sha256: None };
         load(dir, &[&gone], true, &mut loaded);
         assert_eq!(sent(std::slice::from_ref(&gone), &loaded, &mut Default::default()).remove(0).1, "[Image #2: the file is gone]");
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_put_image_stores_one_file_twice_and_a_prompt_names_it_by_hash() {
+        let dir = std::env::temp_dir().join(format!("krowk-put-{}", krowk_store::new_id()));
+        let session = krowk_store::new_id();
+        std::fs::create_dir_all(dir.join(&session)).unwrap();
+        let (sha, data) = (sha256(PNG), base64::engine::general_purpose::STANDARD.encode(PNG));
+        put(&dir, Some(&session), &sha, "image/png", &data).unwrap();
+        put(&dir, Some(&session), &sha, "image/png", &data).unwrap();
+        assert_eq!(std::fs::read_dir(dir.join(&session).join(DIR)).unwrap().count(), 1);
+        let by_name = |sha: &str| vec![ImageInput { number: 2, media_type: "image/png".into(), data: String::new(), sha256: Some(sha.into()) }];
+        assert_eq!(resolve(&dir, Some(&session), by_name(&sha)).unwrap()[0].data, data);
+        assert_eq!(resolve(&dir, Some(&session), by_name(&"0".repeat(64))).unwrap_err().message, "the host has no copy of image #2; send the prompt again");
+        // Not the bytes' hash, not an image, not a session's.
+        assert_eq!(put(&dir, Some(&session), &"0".repeat(64), "image/png", &data).unwrap_err().code, "bad_image");
+        assert_eq!(put(&dir, Some("../x"), &sha, "image/png", &data).unwrap_err().code, "no_session");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,6 +1,6 @@
 {
-  "binaryBytes": {"max": 7888865, "measured": 7171696, "why": "the Release Krowk.app/Krowk on macos-26 (Xcode 26), 2026-10-25 (ticket 134: starting a session from the phone, its four screens and krowk-ffi's listHosts and startSession, which link krowk-client's presence and host-command sealing; main measured 6738304 before it); the ceiling is that + 10%"},
-  "appKilobytes": {"max": 7713, "measured": 7012, "why": "du -sk of the Release Krowk.app on macos-26 (Xcode 26), 2026-10-25 (ticket 134, as binaryBytes; main measured 6592 before it); the ceiling is that + 10%"},
+  "binaryBytes": {"max": 8729318, "measured": 7935744, "why": "the Release Krowk.app/Krowk on macos-26 (Xcode 26), 2026-10-30 (Images everywhere, IMG7 and IMG8: the composer's photo picker and image preparation, and the transcript's thumbnails and full-screen viewer; 7171696 on 2026-10-25 before them); the ceiling is that + 10%"},
+  "appKilobytes": {"max": 8536, "measured": 7760, "why": "du -sk of the Release Krowk.app on macos-26 (Xcode 26), 2026-10-30 (Images everywhere, as binaryBytes; 7012 on 2026-10-25 before them); the ceiling is that + 10%"},
   "memoryScrollMB": {"max": 144.5, "measured": 131.4, "why": "peak physical memory over BudgetUITests' five passes through 10,000 items on macos-26's iPhone simulator (iOS 26), 2026-10-24 (ticket 127); the ceiling is that + 10%"},
   "stall": {"baselineMs": 74.5, "factor": 2, "why": "the median longest frame gap of five macos-26 CI runs of StallBudgetTests (70.1, 70.9, 74.5, 106.0, 129.4 ms), 2026-10-25 (ticket 127); a run with KROWK_TEST_STALL_MS=250 measured 317-379 ms"}
 }

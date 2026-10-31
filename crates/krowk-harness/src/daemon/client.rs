@@ -41,6 +41,8 @@ pub struct Client {
     /// The daemon's pid and version, from its welcome.
     pub pid: u32,
     pub krowk_version: String,
+    /// The protocol version the daemon announced in its welcome.
+    pub protocol_version: u32,
     /// The daemon run its `seq`s are numbered within (`welcome.epoch`).
     epoch: u64,
     lines: broadcast::Sender<StreamLine>,
@@ -192,8 +194,8 @@ impl Client {
             Ok(Err(e)) => return Err(fail(e)),
             Err(_) => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("the host daemon on {} did not answer in {} s", path.display(), HELLO_WAIT.as_secs())))),
         };
-        let (pid, krowk_version, epoch) = match serde_json::from_str::<ServerFrame>(&first) {
-            Ok(ServerFrame::Welcome { pid, krowk_version, epoch, .. }) => (pid, krowk_version, epoch),
+        let (pid, krowk_version, epoch, protocol_version) = match serde_json::from_str::<ServerFrame>(&first) {
+            Ok(ServerFrame::Welcome { pid, krowk_version, epoch, protocol_version }) => (pid, krowk_version, epoch, protocol_version),
             Ok(ServerFrame::Refused { code, message, fix }) => return Err(ConnectError::Failed(EngineError::new(&code, format!("{message} — {fix}")))),
             _ => return Err(ConnectError::Failed(EngineError::new("host_unavailable", format!("{} answered with something that is not a welcome", path.display())))),
         };
@@ -285,7 +287,7 @@ impl Client {
                 i.waiting.clear();
             });
         }
-        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, krowk_version, epoch, lines: lines_tx })
+        Ok(Client { tx, inner, next: AtomicU64::new(1), pid, krowk_version, protocol_version, epoch, lines: lines_tx })
     }
 
     /// Frames of a followed session that arrive while no turn of this

@@ -8,6 +8,7 @@
 use krowk_api::Client;
 use krowk_client::e2e::{self, ChunkSealer, SessionKeys};
 use krowk_client::sync::store::read_all;
+use crate::protocol::ImageRef;
 use serde_json::Value;
 
 /// The shapes of the index and the chunks, and the at-rest reader, shared
@@ -16,6 +17,23 @@ pub use krowk_client::sync::store::{attach, catch_up, open_index, open_session_k
 
 fn api(e: krowk_api::Error) -> String {
     e.to_string()
+}
+
+/// R-IMG-11: the image `r` names, fetched from session `id`'s image objects
+/// and kept in `session_dir`'s `images/` under its sha256, as the host
+/// keeps it — a device's own copy, which the next host after a move reads
+/// as its own. True once the file is there (already, or now); false while
+/// the registry holds no object for it, or the log names it by an older
+/// name with no hash. Blocking.
+pub fn fetch_image(client: &Client, keys: &SessionKeys, id: &str, session_dir: &std::path::Path, r: &ImageRef) -> Result<bool, String> {
+    let Some(sha) = r.sha256.as_deref() else { return Ok(false) };
+    if crate::images::path(session_dir, r).is_some_and(|p| p.is_file()) {
+        return Ok(true);
+    }
+    let Some(bytes) = krowk_client::sync::store::fetch_image(client, keys, id, sha).map_err(String::from)? else { return Ok(false) };
+    let media_type = crate::images::sniff(&bytes).ok_or("an image object opened to bytes that are no image krowk reads")?;
+    crate::images::save(session_dir, &[crate::images::Decoded { number: r.number, media_type, bytes: bytes.into() }]).map_err(|e| e.message)?;
+    Ok(true)
 }
 
 /// A chunk sealed and not yet stored: kept, bytes and all, and put again
@@ -52,6 +70,12 @@ pub struct Writer {
     staged: Option<Staged>,
     /// The index write failed and is owed.
     index_owed: bool,
+    /// The session's directory on this machine, whose `images/` the events
+    /// name: set by the host (`with_images`), which puts each image as a
+    /// sealed object before the chunk naming it.
+    dir: Option<std::path::PathBuf>,
+    /// The sha256s this writer has put, so each goes once.
+    put: std::collections::HashSet<String>,
 }
 
 impl Writer {
@@ -63,7 +87,12 @@ impl Writer {
         let mut index = index;
         index.head = head;
         let sealer = ChunkSealer::new(&key, session, reader.next(), reader.previous(), fence);
-        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new(), staged: None, index_owed: false })
+        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new(), staged: None, index_owed: false, dir: None, put: Default::default() })
+    }
+
+    /// Puts the images the events name from `session_dir`'s `images/`.
+    pub fn with_images(self, session_dir: std::path::PathBuf) -> Writer {
+        Writer { dir: Some(session_dir), ..self }
     }
 
     /// The lease moved on (a lapse and a new acquire): the log is read
@@ -173,6 +202,7 @@ impl Writer {
     pub fn flush(&mut self, token: &str) -> Result<(), String> {
         self.put_staged(token)?;
         if !self.pending.is_empty() {
+            self.put_images(token)?;
             let events = std::mem::take(&mut self.pending);
             self.stage(&Chunk::Events { events: events.clone() }, events, None)?;
             self.put_staged(token)?;
@@ -192,6 +222,31 @@ impl Writer {
         let cp = Checkpoint { events: self.events.clone(), log_offset: self.events.len() as u64, worktree, chunk: before };
         self.stage(&Chunk::Checkpoint(cp), Vec::new(), Some(mark))?;
         self.flush(token)
+    }
+
+    /// R-IMG-9: each image the waiting events name, put as a sealed image
+    /// object before the chunk naming it is sealed, so a reader of the log
+    /// finds every image it names. Once per image: this writer remembers
+    /// what it put, and the registry takes a name it holds as a no-op. An
+    /// image this machine has no file of (an older log's, named by number)
+    /// is passed over: a reader shows its placeholder.
+    fn put_images(&mut self, token: &str) -> Result<(), String> {
+        let Some(dir) = self.dir.clone() else { return Ok(()) };
+        let refs: Vec<ImageRef> = self.pending.iter().filter_map(|e| e.pointer("/item/images")).filter_map(|i| serde_json::from_value::<Vec<ImageRef>>(i.clone()).ok()).flatten().collect();
+        for r in refs {
+            let Some(sha) = r.sha256.clone().filter(|s| !self.put.contains(s)) else { continue };
+            // One kept before the cap was 2.75 MiB may be too large for an
+            // object: passed over too, rather than holding the log up.
+            let bytes = match crate::images::path(&dir, &r).map(std::fs::read) {
+                Some(Ok(b)) if crate::images::sha256(&b) == sha && b.len() + e2e::IMAGE_OVERHEAD <= krowk_api::sync::MAX_IMAGE_OBJECT_BYTES as usize => b,
+                _ => continue,
+            };
+            let Some(hash) = e2e::unhex(&sha).and_then(|h| <[u8; 32]>::try_from(h).ok()) else { continue };
+            let sealed = e2e::seal_image(&self.key, &self.session, &hash, &bytes);
+            self.client.put_image_object(&self.id, &e2e::image_name(&self.key, &hash), &sealed, token).map_err(api)?;
+            self.put.insert(sha);
+        }
+        Ok(())
     }
 
     fn write_index(&mut self, token: &str) -> Result<(), String> {

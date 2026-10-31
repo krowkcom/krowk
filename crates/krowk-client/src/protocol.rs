@@ -32,7 +32,7 @@ use serde_json::Value;
 
 /// Bumped on any change a client written against the previous version
 /// would misread. Additive fields are not such a change.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A canonical lowercase UUIDv7, as the schema pins every event id.
 pub const UUID7_PATTERN: &str = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -177,17 +177,23 @@ pub enum Item {
     ToolResult { call_id: String, output: String, is_error: bool },
 }
 
-/// An image as a client sends it with a prompt or a steer: its bytes, which
-/// the engine keeps beside the session's log, and the number its
-/// `[Image #N]` in the text carries.
+/// An image as a client sends it with a prompt or a steer, and the number
+/// its `[Image #N]` in the text carries. Either its bytes (`data`, which the
+/// engine keeps beside the session's log), or, since protocol 2, only its
+/// `sha256` and no `data`: the bytes went ahead in a `putImage`, and the
+/// host refuses the prompt when it holds none by that name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ImageInput {
     pub number: u32,
     /// `image/png`, `image/jpeg`, `image/gif` or `image/webp`.
     pub media_type: String,
-    /// The bytes, base64.
+    /// The bytes, base64. Empty when the image is named by `sha256` alone.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub data: String,
+    /// The sha256 of the bytes, lowercase hex. Required when `data` is empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 /// An image in the log: its `[Image #N]`, and its file in the session's
@@ -199,6 +205,10 @@ pub struct ImageRef {
     pub media_type: String,
     /// The file's name in `images/`, never a path.
     pub file: String,
+    /// The sha256 of the image's bytes, lowercase hex. None in a log
+    /// written before images were named by it, whose `file` is an older name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
 }
 
 impl Item {
@@ -516,6 +526,21 @@ pub enum Command {
         /// limit when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         budget: Option<BudgetLimits>,
+    },
+    /// Keep one image's bytes on the host, ahead of the `prompt` or `steer`
+    /// that names it by `sha256`: the host accepts it only when the hash
+    /// matches the bytes, the format is png, jpeg, gif or webp and it is at
+    /// most 2.75 MiB, and a repeat of a hash it holds succeeds without
+    /// writing. With no `sessionId` (a prompt that will start a session) the
+    /// image waits for that prompt. One image a message, so none goes over
+    /// a transport's 4 MiB cap. Protocol 2.
+    PutImage {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+        sha256: String,
+        media_type: String,
+        /// The bytes, base64.
+        data: String,
     },
     /// Stop the running turn, keeping what it produced so far.
     Interrupt { session_id: String },

@@ -57,7 +57,7 @@ fn log_bodies() -> Vec<LogBody> {
     let items = vec![
         Item::UserText {
             text: "look at this".into(),
-            images: vec![ImageRef { number: 1, media_type: "image/png".into(), file: "img/1.png".into() }],
+            images: vec![ImageRef { number: 1, media_type: "image/png".into(), file: "img/1.png".into(), sha256: None }],
         },
         Item::AssistantText { text: "done".into() },
         Item::Reasoning {
@@ -351,14 +351,16 @@ fn command_index(c: &Command) -> usize {
         Command::SwitchModel { .. } => 4,
         Command::Fork { .. } => 5,
         Command::Continue { .. } => 6,
+        Command::PutImage { .. } => 7,
     }
 }
-const COMMANDS: usize = 7;
+const COMMANDS: usize = 8;
 
 fn commands() -> Vec<Command> {
-    let image = || ImageInput { number: 1, media_type: "image/jpeg".into(), data: "aGk=".into() };
+    let image = || ImageInput { number: 1, media_type: "image/jpeg".into(), data: "aGk=".into(), sha256: None };
     let budget = || Some(BudgetLimits { max_usd: Some(2.5), max_tokens: Some(100_000) });
     vec![
+        Command::PutImage { session_id: Some(SESSION.into()), sha256: "a".repeat(64), media_type: "image/jpeg".into(), data: "aGk=".into() },
         Command::Prompt {
             session_id: Some(SESSION.into()),
             text: "fix the build".into(),

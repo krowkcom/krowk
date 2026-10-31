@@ -225,6 +225,12 @@ pub enum Command {
         effort: Option<Effort>,
         budget: Option<BudgetLimits>,
     },
+    PutImage {
+        session_id: Option<String>,
+        sha256: String,
+        media_type: String,
+        data: String,
+    },
     Interrupt {
         session_id: String,
     },
@@ -302,6 +308,7 @@ pub struct ImageInput {
     pub number: u32,
     pub media_type: String,
     pub data: String,
+    pub sha256: Option<String>,
 }
 
 #[uniffi::remote(Record)]
@@ -309,6 +316,7 @@ pub struct ImageRef {
     pub number: u32,
     pub media_type: String,
     pub file: String,
+    pub sha256: Option<String>,
 }
 
 #[uniffi::remote(Enum)]

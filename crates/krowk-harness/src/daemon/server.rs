@@ -478,7 +478,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
         }
     }
     let (cwd, answers, background) = match hello {
-        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, background, .. }) if protocol_version == PROTOCOL_VERSION => (PathBuf::from(cwd), answers_approvals, background),
+        Some(ClientFrame::Hello { protocol_version, cwd, answers_approvals, background, .. }) if (1..=PROTOCOL_VERSION).contains(&protocol_version) => (PathBuf::from(cwd), answers_approvals, background),
         Some(ClientFrame::Hello { protocol_version, .. }) => {
             let pid = std::process::id();
             return Err(refuse(
@@ -850,7 +850,7 @@ async fn reloaded(state: &Shared, after: u64) {
 /// The session a command names.
 fn named(cmd: &Command) -> Option<&str> {
     match cmd {
-        Command::Prompt { session_id, .. } | Command::SwitchModel { session_id, .. } => session_id.as_deref(),
+        Command::Prompt { session_id, .. } | Command::SwitchModel { session_id, .. } | Command::PutImage { session_id, .. } => session_id.as_deref(),
         Command::Interrupt { session_id } | Command::Steer { session_id, .. } | Command::Approve { session_id, .. } | Command::Fork { session_id, .. } | Command::Continue { session_id, .. } => Some(session_id),
     }
 }

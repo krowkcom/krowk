@@ -11,6 +11,58 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A moved session keeps its images.** When you move a synced session to
+  another machine, that machine now fetches every image the earlier turns
+  named before its first turn, so the model still sees them instead of
+  being told the file is gone. If an image can't be fetched, the move
+  fails with a message and nothing is moved. Images logged before krowk
+  named them by hash can't be fetched and are labelled as they were.
+
+- **Images reach remote and synced sessions, however many there are.**
+  A prompt or steer with several screenshots used to carry them all in
+  one message, and a remote daemon or a synced session refuses a message
+  over 4 MiB, so two or three images failed the prompt. Each image now
+  goes to the host ahead of the prompt as a `putImage` command of its
+  own, and the prompt names it by its sha256. The status line reads
+  `Sending image 2 of 3…` while they go, and an image that cannot be sent
+  stops the prompt, leaves it in the composer and says why. A prompt
+  naming an image the host holds nothing for is refused with `the host
+  has no copy of image #N; send the prompt again`, and nothing is logged.
+  Toward a host on an older protocol the images still go inline when the
+  prompt fits one message, and otherwise it is refused before sending,
+  saying to update krowk there or send fewer images. Protocol version 2;
+  the FFI (API version 10) gains `putImage` and `ImageInput.sha256`, for
+  the iPhone app.
+- **The iPhone can attach images to a prompt.** Paste a screenshot into
+  the message field, or tap the photo button beside it to pick up to
+  20 photos (the camera is not offered). Each shows as a thumbnail above
+  the field with a button to remove it. HEIC photos are converted, every
+  image is scaled to at most 2000 px on its longest side, and one still
+  over 2.75 MiB is saved as a JPEG; the re-encode also drops a photo's
+  location data. Send puts the images to the host one after another
+  (`Sending image 2 of 3…` under the field), then the prompt, whose text
+  starts with `[Image #N]` for each. An image that fails to send leaves
+  the message as you left it, with the reason; to a laptop that is offline
+  the images wait, as they cannot be queued.
+
+- **The iPhone shows the images in your prompts.** A prompt's bubble draws
+  a thumbnail of each image the phone holds, in place of its
+  `[Image #N]`, and a tap opens the image full screen. The bytes come from
+  the session's own sealed copy in the registry, are kept in the app's
+  caches folder and fetched again if the system clears it. Until they
+  arrive the bubble keeps `[Image #N]`, with no error. The phone never
+  loads an image from a URL.
+
+- **A synced session's images reach your other devices.** When you paste
+  an image into a synced session, its host now stores the image in the
+  registry before the part of the log that names it. The image is sealed
+  under the session key and named by a hash keyed under that key, so the
+  registry learns only its size. Another of your devices can fetch it by
+  the hash the log gives, and gets exactly that image or nothing. The app
+  library adds `OpenedSession.image(sha256:)`, which returns an image's
+  bytes or nothing yet (no version change). Local and remote-daemon
+  sessions that aren't synced store nothing in the registry.
+
 - **The iPhone app moves a session to another of your machines.** A
   session's navigation bar menu has **Move to…**, which lists your other
   online hosts and the directories each offers. Pick a host and a clone
@@ -395,6 +447,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   yourself.
 
 ### Changed
+
+- **An image is capped at 2.75 MB, and named by its sha256.** One image
+  can be at most 2.75 MiB in every session, local ones included, so that a
+  session's images can later sync or move unchanged (it was about 3.75
+  MB). The prompt composer shrinks a pasted or dropped image to fit, as
+  before: 2000 px a side, then JPEG if a PNG is still too big. A host refuses a larger image with `image #N is <x> MB; the
+  most one image may be is 2.75 MB`, and no turn starts. New images are
+  saved in the session's `images/` folder as `<sha256>.<ext>`, and the
+  same bytes are one file. The log's image reference gains a `sha256`
+  field; sessions logged before keep their old file names and still
+  resume with their images.
 
 - **Closing the fullscreen TUI leaves the shell's screen as it was.** The
   conversation is no longer printed onto it on the way out, where it came

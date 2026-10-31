@@ -282,7 +282,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
     }
     let (keys, wrapped) = rotate_if_behind(o, keys, wrapped, &index, &lease.token)?;
-    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?;
+    let writer = Writer::take_up(o.api.clone(), keys.clone(), id, wrapped, index, lease.fence)?.with_images(o.sessions.join(id));
     Ok((keys, writer, Held { token: lease.token, fence: lease.fence, ticket: lease.relay_ticket }))
 }
 
@@ -650,7 +650,7 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
 /// child is steered or prompted by nobody but the host.
 fn for_this_session(c: &Command, session: &str, is_child: impl Fn(&str) -> bool) -> bool {
     match c {
-        Command::Prompt { session_id, .. } => session_id.as_deref() == Some(session),
+        Command::Prompt { session_id, .. } | Command::PutImage { session_id, .. } => session_id.as_deref() == Some(session),
         Command::Interrupt { session_id } | Command::Approve { session_id, .. } => session_id == session || is_child(session_id),
         Command::Steer { session_id, .. } => session_id == session,
         Command::SwitchModel { session_id, .. } => session_id.as_deref() == Some(session),
