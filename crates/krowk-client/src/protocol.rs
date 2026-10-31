@@ -1195,7 +1195,16 @@ pub enum ClientFrame {
     },
     /// Runs a command; answered by `done` with the same `id`. The session a
     /// `prompt` or `continue` runs in is followed from its first line.
-    Execute { id: u64, command: Command },
+    Execute {
+        id: u64,
+        command: Command,
+        /// The client's own name for this command (a uuid), on a prompt
+        /// that starts a session: a connection cut before its first line
+        /// named the session finds it again by this (`attach.clientRef`).
+        /// Kept by the daemon for 10 minutes.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_ref: Option<String>,
+    },
     /// Follows a session: what its log holds after `afterEventId` (all of
     /// it when absent), the running turn's frames so far, then every frame
     /// as it happens — the same ones each other client following it gets.
@@ -1216,6 +1225,14 @@ pub enum ClientFrame {
         /// `afterEventId` alone.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         epoch: Option<u64>,
+        /// Follows, from its start, the session the `execute` with this
+        /// `clientRef` started, in place of `sessionId` (sent empty): a
+        /// prompt whose connection was cut before its first line. Answered
+        /// once the prompt has named its session; with its error when it
+        /// ended without one, and `bad_session` when the daemon has no such
+        /// prompt.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        client_ref: Option<String>,
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },

@@ -653,6 +653,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A first prompt survives a dropped connection to the host daemon
+  (ticket 162).** If the connection went after the daemon took a prompt
+  that starts a new session but before its first line came back, krowk
+  used to report `host_gone` while the turn ran on unseen. The client now
+  tags such a prompt with an id of its own, and on the next connection
+  asks the daemon for the session that prompt started, then follows it
+  from the start to its result. The prompt is never sent twice. A daemon
+  from before this change still answers `host_gone`, as before. The
+  protocol gains an optional `clientRef` on `execute` and `attach`; the
+  protocol version is unchanged.
+
 - **`/connect` no longer stalls the host daemon's other sessions on a
   slow disk (ticket 154).** The daemon's `reload`, which re-reads
   config.json and the credentials after `/connect`, used to do that

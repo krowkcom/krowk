@@ -14,7 +14,7 @@
 use super::absent;
 use crate::engine::EngineError;
 use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -59,6 +59,9 @@ pub struct Resume {
     /// And its last `line.seq`, within `epoch`.
     pub after_seq: u64,
     pub epoch: u64,
+    /// A prompt cut before its first line named its session (`session_id`
+    /// empty): its `execute.clientRef`, to find that session by.
+    pub client_ref: Option<String>,
 }
 
 /// Why a command or follow did not answer.
@@ -90,6 +93,9 @@ struct Inner {
     cursors: HashMap<String, (u64, Option<String>)>,
     /// The session each streaming command's lines named.
     sessions: HashMap<u64, String>,
+    /// Every session a stream of this client's was opened for or named:
+    /// lines of one no stream wants are not a lost prompt's to claim.
+    asked: HashSet<String>,
 }
 
 /// A stream to open with a request: its session, where its lines go, and
@@ -109,6 +115,9 @@ struct Sink {
     q: mpsc::UnboundedSender<Item>,
     /// A `follow`: it ends at the session's result, or when it settles.
     follow: bool,
+    /// Following a lost prompt's session by its `clientRef`: named by the
+    /// first line of a session this client never asked for.
+    claims: bool,
 }
 
 /// What a stream's task hands on, in order.
@@ -144,7 +153,7 @@ impl Sink {
                 }
             }
         });
-        Sink { cmd, session, q, follow }
+        Sink { cmd, session, q, follow, claims: false }
     }
 }
 
@@ -158,7 +167,20 @@ impl Inner {
             self.sinks[i].session.get_or_insert_with(|| session.to_string());
             return Some(i);
         }
-        self.sinks.iter().rposition(|s| s.session.as_deref() == Some(session))
+        if let Some(i) = self.sinks.iter().rposition(|s| s.session.as_deref() == Some(session)) {
+            return Some(i);
+        }
+        // Only the daemon knows a lost prompt's session: the first one
+        // this client never asked for is it. A line of a command of this
+        // client's own is never a lost one's.
+        if cmd.is_some() || self.asked.contains(session) {
+            return None;
+        }
+        let i = self.sinks.iter().position(|s| s.claims && s.session.is_none())?;
+        self.sinks[i].session = Some(session.to_string());
+        self.sessions.insert(self.sinks[i].cmd, session.to_string());
+        self.asked.insert(session.to_string());
+        Some(i)
     }
 }
 
@@ -239,6 +261,7 @@ impl Client {
                             }
                             if let Some(c) = cmd {
                                 i.sessions.entry(c).or_insert_with(|| key.clone());
+                                i.asked.insert(key.clone());
                             }
                             match i.sink_for(&key, cmd) {
                                 Some(n) => {
@@ -305,7 +328,7 @@ impl Client {
     fn resume_of(&self, session: &str) -> Resume {
         let i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let (after_seq, after_event_id) = i.cursors.get(session).cloned().unwrap_or_default();
-        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch }
+        Resume { session_id: session.to_string(), after_event_id, after_seq, epoch: self.epoch, client_ref: None }
     }
 
     fn ask_id(&self, frame: impl FnOnce(u64) -> ClientFrame, sink: Option<NewSink>) -> Result<(u64, oneshot::Receiver<ServerFrame>), EngineError> {
@@ -318,6 +341,9 @@ impl Client {
             }
             i.waiting.insert(id, tx);
             if let Some((session, tx, until)) = sink {
+                if let Some(s) = &session {
+                    i.asked.insert(s.clone());
+                }
                 i.sinks.push(Sink::open(id, session, tx, until));
             }
         }
@@ -341,13 +367,19 @@ impl Client {
             _ => None,
         };
         let known = session.clone().flatten();
-        let (id, rx) = self.ask_id(|id| ClientFrame::Execute { id, command: cmd }, session.map(|s| (s, out, None))).map_err(Cut::Failed)?;
+        // A prompt that starts a session is named by the client too, so a
+        // cut before its first line still finds what it started.
+        let client_ref = matches!(session, Some(None)).then(krowk_store::new_id);
+        let (id, rx) = self.ask_id(|id| ClientFrame::Execute { id, command: cmd, client_ref: client_ref.clone() }, session.map(|s| (s, out, None))).map_err(Cut::Failed)?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(Cut::Failed(engine_error(e))),
             Ok(ServerFrame::Done { result, .. }) => Ok(result),
             _ => {
                 let named = self.inner.lock().unwrap_or_else(|e| e.into_inner()).sessions.get(&id).cloned().or(known);
-                Err(named.map_or(Cut::Failed(gone()), |s| Cut::Dropped(self.resume_of(&s))))
+                match named {
+                    Some(s) => Err(Cut::Dropped(self.resume_of(&s))),
+                    None => Err(client_ref.map_or(Cut::Failed(gone()), |r| Cut::Dropped(lost(r)))),
+                }
             }
         }
     }
@@ -356,7 +388,7 @@ impl Client {
     /// running turn so far, then each frame live, to `out`. Answers whether
     /// a turn is running once caught up.
     pub async fn attach(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<bool, EngineError> {
-        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, Some((Some(session_id.to_string()), out, None)))?;
+        let rx = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None, client_ref: None }, Some((Some(session_id.to_string()), out, None)))?;
         match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Attached { running, .. }) => Ok(running),
@@ -370,7 +402,8 @@ impl Client {
     /// resuming a session asks when work of its goes on between turns — a
     /// backend's agent run in the background.
     pub fn attach_later(&self, session_id: &str, after: Option<&str>) {
-        let _ = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None }, None);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).asked.insert(session_id.to_string());
+        let _ = self.ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: None, epoch: None, client_ref: None }, None);
     }
 
     /// Follows a session's running turn to its end, as though this client
@@ -379,7 +412,7 @@ impl Client {
     /// turn is running, or the session settles without one. What the TUI
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
-        let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
+        let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0, client_ref: None };
         self.resume(&from, out).await.map_err(Cut::into_error)
     }
 
@@ -388,6 +421,9 @@ impl Client {
     /// turn after its last `seq` — when the same daemon numbered it — then
     /// live. A turn no longer running by then answers none.
     pub async fn resume(&self, from: &Resume, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
+        if let (true, Some(r)) = (from.session_id.is_empty(), &from.client_ref) {
+            return self.refind(r, out).await;
+        }
         let session_id = from.session_id.as_str();
         {
             // Where a second cut resumes from, should one come.
@@ -401,7 +437,7 @@ impl Client {
         let (utx, urx) = oneshot::channel();
         let (after_seq, epoch) = if from.epoch == 0 { (None, None) } else { (Some(from.after_seq), Some(from.epoch)) };
         let rx = self
-            .ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: from.after_event_id.clone(), after_seq, epoch }, Some((Some(session_id.to_string()), out, Some(utx))))
+            .ask(|id| ClientFrame::Attach { id, session_id: session_id.to_string(), after_event_id: from.after_event_id.clone(), after_seq, epoch, client_ref: None }, Some((Some(session_id.to_string()), out, Some(utx))))
             .map_err(Cut::Failed)?;
         let running = match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => return Err(Cut::Failed(engine_error(e))),
@@ -414,6 +450,47 @@ impl Client {
             return Ok(None);
         }
         urx.await.map_err(|_| Cut::Dropped(self.resume_of(session_id)))
+    }
+
+    /// `resume` of a prompt cut before its first line: its session, found
+    /// by its `clientRef`, followed from the start to its turn's result.
+    /// Never sent again. A daemon that has no such prompt — an older one,
+    /// or another daemon than ran it — answers `host_gone`.
+    async fn refind(&self, client_ref: &str, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
+        let (utx, urx) = oneshot::channel();
+        let (id, rx) = {
+            let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+            // Two lost prompts at once could not be told apart.
+            if i.closed || i.sinks.iter().any(|s| s.claims && s.session.is_none()) {
+                return Err(Cut::Failed(gone()));
+            }
+            let id = self.next.fetch_add(1, Ordering::Relaxed);
+            let (tx, rx) = oneshot::channel();
+            i.waiting.insert(id, tx);
+            let mut sink = Sink::open(id, None, out, Some(utx));
+            sink.claims = true;
+            i.sinks.push(sink);
+            (id, rx)
+        };
+        let cut = |c: &Client| {
+            let named = c.inner.lock().unwrap_or_else(|e| e.into_inner()).sessions.get(&id).cloned();
+            Cut::Dropped(named.map_or_else(|| lost(client_ref.to_string()), |s| c.resume_of(&s)))
+        };
+        let frame = ClientFrame::Attach { id, session_id: String::new(), after_event_id: None, after_seq: None, epoch: None, client_ref: Some(client_ref.to_string()) };
+        self.tx.send(frame).map_err(|_| Cut::Failed(gone()))?;
+        let running = match rx.await {
+            Ok(ServerFrame::Attached { error: Some(e), .. }) => {
+                self.inner.lock().unwrap_or_else(|e| e.into_inner()).sinks.retain(|s| s.cmd != id);
+                return Err(Cut::Failed(if e.code == "bad_session" { gone() } else { engine_error(e) }));
+            }
+            Ok(ServerFrame::Attached { running, .. }) => running,
+            _ => return Err(cut(self)),
+        };
+        if !running {
+            self.inner.lock().unwrap_or_else(|e| e.into_inner()).sinks.retain(|s| s.cmd != id);
+            return Ok(None);
+        }
+        urx.await.map_err(|_| cut(self))
     }
 
     /// `reload`, not waited for: a client that must not stop for it (the
@@ -465,6 +542,11 @@ impl Client {
             _ => Err(gone()),
         }
     }
+}
+
+/// Where a prompt cut before its first line is followed again from.
+fn lost(client_ref: String) -> Resume {
+    Resume { session_id: String::new(), after_event_id: None, after_seq: 0, epoch: 0, client_ref: Some(client_ref) }
 }
 
 /// Counts the `seq` of a `line` this client could not read in its session's
@@ -523,6 +605,52 @@ mod tests {
         assert_eq!(c.resume_of("s").after_seq, 4, "the last line, unread, is counted all the same");
         drop(c);
         daemon.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A daemon older than `clientRef`, its connection cut before a new
+    /// session's first line: the client asks the next one after the prompt
+    /// by its ref, is answered as an older daemon answers an empty session
+    /// id, and says `host_gone` — the prompt is never sent again.
+    #[tokio::test]
+    async fn a_prompt_lost_on_a_daemon_that_ignores_its_client_ref_is_host_gone_not_sent_twice() {
+        let dir = std::env::temp_dir().join(format!("krowk-client-ref-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("host.sock");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let daemon = tokio::spawn(async move {
+            let mut frames = Vec::new();
+            for _ in 0..2 {
+                let (s, _) = listener.accept().await.unwrap();
+                let (r, mut w) = s.into_split();
+                let mut lines = BufReader::new(r).lines();
+                lines.next_line().await.unwrap();
+                w.write_all(format!("{}\n", json!({"type": "welcome", "protocolVersion": PROTOCOL_VERSION, "krowkVersion": "old", "pid": 1, "epoch": 7})).as_bytes()).await.unwrap();
+                let f: serde_json::Value = serde_json::from_str(&lines.next_line().await.unwrap().unwrap()).unwrap();
+                if f["type"] == "attach" {
+                    // What a daemon that does not know `clientRef` answers.
+                    let a = json!({"type": "attached", "id": f["id"], "sessionId": "", "running": false, "error": {"code": "bad_session", "message": "\"\" is not a session id"}});
+                    w.write_all(format!("{a}\n").as_bytes()).await.unwrap();
+                    lines.next_line().await.ok();
+                }
+                frames.push(f);
+            }
+            frames
+        });
+        let cmd = Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None };
+        let first = Client::connect(&sock, &dir, "test", false).await.ok().expect("connected");
+        let (tx, _rx) = mpsc::channel(8);
+        let Err(Cut::Dropped(from)) = first.execute_or_cut(cmd, tx.clone()).await else { panic!("a cut prompt is to be found again") };
+        assert!(from.session_id.is_empty() && from.client_ref.is_some(), "{from:?}");
+        let next = Client::connect(&sock, &dir, "test", false).await.ok().expect("connected");
+        let Err(Cut::Failed(e)) = next.resume(&from, tx).await else { panic!("an older daemon finds nothing") };
+        assert_eq!(e.code, "host_gone");
+        drop((first, next));
+        let frames = daemon.await.unwrap();
+        assert_eq!(frames[0]["type"], "execute");
+        assert_eq!(frames[0]["clientRef"], frames[1]["clientRef"]);
+        assert_eq!((frames[1]["type"].as_str(), frames[1]["sessionId"].as_str()), (Some("attach"), Some("")), "asked after, never sent again");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

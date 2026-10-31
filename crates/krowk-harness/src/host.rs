@@ -1203,6 +1203,8 @@ impl Shared {
                     }
                     _ => krowk_store::new_id(),
                 };
+                #[cfg(feature = "test-hooks")]
+                held(HoldAt::Open).await;
                 let (log, root) = SessionLog::create_child_off(&self.cfg.sessions_dir, &id, &self.cfg.cwd, &self.cfg.krowk_version, None, None).await.map_err(log_failure)?;
                 // WT9: what kept worktrees left behind, cleared at most
                 // once a day, on a thread of its own the session never
@@ -1705,10 +1707,12 @@ pub enum HoldAt {
     Start,
     /// After its `turn.completed` is logged, before its result goes out.
     Result,
+    /// Before a new session's log is made: no line of it sent yet.
+    Open,
 }
 
 #[cfg(feature = "test-hooks")]
-static HOLDS: [std::sync::LazyLock<watch::Sender<bool>>; 2] = [std::sync::LazyLock::new(|| watch::channel(false).0), std::sync::LazyLock::new(|| watch::channel(false).0)];
+static HOLDS: [std::sync::LazyLock<watch::Sender<bool>>; 3] = [const { std::sync::LazyLock::new(|| watch::channel(false).0) }; 3];
 
 /// For tests (`test-hooks`): holds every turn that reaches `at` from here
 /// on, until the guard goes. Process-wide, as `log::simulate_slow_disk`.

@@ -175,6 +175,23 @@ pub(super) struct State {
     pub(super) epoch: u64,
     /// WebSocket connections that have not said an authenticated hello yet.
     pub(super) unauthenticated: usize,
+    /// Each `execute.clientRef` seen in the last `REF_KEPT`: what its
+    /// prompt has named, for a client cut before it learned (`attach.clientRef`).
+    refs: HashMap<String, Ref>,
+}
+
+/// How long a prompt's `clientRef` is kept.
+const REF_KEPT: Duration = Duration::from_secs(600);
+
+/// What a prompt's `clientRef` stands for.
+struct Ref {
+    at: Instant,
+    /// The session its prompt named with its first line.
+    session: Option<String>,
+    /// Why it ended without naming one.
+    failed: Option<ErrorInfo>,
+    /// Attaches asked before either: (client, attach id).
+    waiting: Vec<(u64, u64)>,
 }
 
 struct Hub {
@@ -285,6 +302,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         seqs: HashMap::new(),
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
         unauthenticated: 0,
+        refs: HashMap::new(),
         working: 0,
         started: Instant::now(),
         opts,
@@ -581,7 +599,7 @@ async fn connection(stream: UnixStream, state: Shared) {
 /// One frame from client `id`, after its hello.
 pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
     match frame {
-        ClientFrame::Execute { id: cmd_id, command } => {
+        ClientFrame::Execute { id: cmd_id, command, client_ref } => {
             // Stopping: a turn begun now would end after the syncs were
             // waited for, or not at all.
             if state.borrow().stopping {
@@ -595,9 +613,29 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 state.borrow().wake.notify_one();
             }
             let after = state.borrow().generation;
-            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command, after));
+            if let Some(r) = &client_ref {
+                let mut s = state.borrow_mut();
+                s.refs.retain(|_, x| x.at.elapsed() < REF_KEPT);
+                s.refs.insert(r.clone(), Ref { at: Instant::now(), session: named(&command).map(String::from), failed: None, waiting: Vec::new() });
+            }
+            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command, after, client_ref));
         }
-        ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
+        ClientFrame::Attach { id: cmd_id, client_ref: Some(r), .. } => {
+            // From the start: the client was cut before its first line.
+            let mut s = state.borrow_mut();
+            let error = match s.refs.get_mut(&r) {
+                Some(Ref { session: Some(session), .. }) => {
+                    let session = session.clone();
+                    drop(s);
+                    return attach(state, id, cmd_id, session, None, 0);
+                }
+                Some(Ref { failed: Some(e), .. }) => e.clone(),
+                Some(x) => return x.waiting.push((id, cmd_id)),
+                None => error_info(&EngineError::new("bad_session", format!("this host daemon ran no prompt {r:?} in the last {} minutes", REF_KEPT.as_secs() / 60))),
+            };
+            s.send(id, "", control(&ServerFrame::Attached { id: cmd_id, session_id: String::new(), running: false, error: Some(error) }));
+        }
+        ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch, client_ref: None } => {
             // A `seq` counts only within the daemon run that numbered it.
             let after_seq = if epoch == Some(state.borrow().epoch) { after_seq.unwrap_or(0) } else { 0 };
             attach(state, id, cmd_id, session_id, after_event_id, after_seq);
@@ -882,6 +920,31 @@ fn named(cmd: &Command) -> Option<&str> {
 }
 
 impl State {
+    /// A prompt's first line named its session: whoever lost it on the way
+    /// follows it by its `clientRef` now. Answers the attaches waiting.
+    fn name_ref(&mut self, client_ref: Option<&str>, session: &str) -> Vec<(u64, u64)> {
+        match client_ref.and_then(|c| self.refs.get_mut(c)) {
+            Some(x) if x.session.is_none() => {
+                x.session = Some(session.to_string());
+                std::mem::take(&mut x.waiting)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// A prompt ended, or never ran: one that named no session tells the
+    /// attaches waiting on its `clientRef` why — `error`, else that no turn
+    /// began — and every later one.
+    fn settle_ref(&mut self, client_ref: Option<&str>, error: Option<ErrorInfo>) {
+        let Some(x) = client_ref.and_then(|c| self.refs.get_mut(c)).filter(|x| x.session.is_none()) else { return };
+        let e = error.unwrap_or_else(|| error_info(&EngineError::new("not_started", "the prompt ended before a turn started — send it again")));
+        x.failed = Some(e.clone());
+        let waiting = std::mem::take(&mut x.waiting);
+        for (c, a) in waiting {
+            self.send(c, "", control(&ServerFrame::Attached { id: a, session_id: String::new(), running: false, error: Some(e.clone()) }));
+        }
+    }
+
     /// The session's hub, made on first need, with `client` following it.
     fn follow(&mut self, session: &str, host: &Rc<Host>, client: u64) -> &mut Hub {
         let seen = self.next_hub;
@@ -1110,8 +1173,11 @@ async fn register(state: &Shared, root: Option<&str>, host: &Rc<Host>, client: u
     }
 }
 
-async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) {
-    let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
+async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64, client_ref: Option<String>) {
+    let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else {
+        // Gone before it ran: never run, so nothing for its ref to find.
+        return state.borrow_mut().settle_ref(client_ref.as_deref(), None);
+    };
     let mut root = named(&cmd).map(String::from);
     let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
     // Commands that log to the session they name before they publish it —
@@ -1167,6 +1233,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) 
                 s.working -= 1;
                 s.wake.notify_one();
             }
+            s.settle_ref(client_ref.as_deref(), Some(error_info(&e)));
             return s.send(client, "", control(&ServerFrame::Done { id, result: None, error: Some(error_info(&e)) }));
         }
     };
@@ -1205,6 +1272,11 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) 
             counted = true;
         }
         s.publish(&r, &host, client, id, line);
+        let waiting = s.name_ref(client_ref.as_deref(), &r);
+        drop(s);
+        for (c, a) in waiting {
+            attach(&state, c, a, r.clone(), None, 0);
+        }
     };
     let r = loop {
         tokio::select! {
@@ -1230,6 +1302,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) 
         Ok(r) => (r, None),
         Err(e) => (None, Some(error_info(&e))),
     };
+    s.settle_ref(client_ref.as_deref(), error.clone());
     // In the session's queue, behind its lines: a turn's `done` comes after
     // them, however far behind its client is.
     s.send(client, root.as_deref().unwrap_or(""), control(&ServerFrame::Done { id, result, error }));

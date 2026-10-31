@@ -940,6 +940,68 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
     daemon.join().unwrap().unwrap();
 }
 
+/// R-LAG-4: a prompt that starts a session, its connection cut before its
+/// first line named the session, is found again on the next connection by
+/// the `clientRef` it was sent with: followed from the start, it answers
+/// its turn's result. The prompt went to the provider once, and there is
+/// no `host_gone`.
+#[test]
+fn r_lag_4_a_new_session_prompt_cut_before_its_first_line_is_found_again_by_its_client_ref() {
+    use krowk_harness::host::{HoldAt, hold_turns};
+    let gate = mock::Gate::default();
+    let m = { let g = gate.clone(); mock::serve(move |_, _| mock::Reply { hold: Some(("message_stop", g.clone())), ..mock::Reply::paced(mock::text_stream("found again"), Duration::from_millis(1)) }) };
+    let home = Home::new("refind", &m.url);
+    let kick = Arc::new(tokio::sync::Notify::new());
+    let daemon = home.serve_with(Some(Duration::from_millis(300)), Some(kick.clone()));
+    let rt = rt();
+    rt.block_on(async {
+        let spawn: Box<daemon::Spawn<'static>> = Box::new(|| Err("the daemon runs; none is to be started".into()));
+        let r = daemon::remote::Remote::connect(Box::new(home.env()), home.repo(), "test".into(), true, spawn).await.unwrap();
+        // Accepted, and held before its session is made: no line of it sent.
+        let held = hold_turns(HoldAt::Open);
+        let (tx, mut rx) = mpsc::channel(1 << 12);
+        let exec = r.execute(home.prompt("hi"), tx);
+        tokio::pin!(exec);
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        macro_rules! drive {
+            ($d:expr) => {
+                tokio::select! {
+                    r = &mut exec => panic!("the prompt ended early: {r:?}"),
+                    () = tokio::time::sleep($d) => {}
+                }
+            };
+        }
+        while held.waiting() == 0 {
+            assert!(std::time::Instant::now() < deadline, "the prompt never reached the hold");
+            drive!(Duration::from_millis(5));
+        }
+        kick.notify_one();
+        // Cut, reconnected, and asking after it before it names its session.
+        drive!(Duration::from_millis(300));
+        assert!(rx.try_recv().is_err(), "no line came before the cut");
+        drop(held);
+        while m.seen.lock().unwrap().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "the provider was never asked");
+            drive!(Duration::from_millis(5));
+        }
+        gate.open();
+        let result = exec.await.expect("found again, not host_gone").expect("and answered");
+        assert_eq!(result.status, TurnStatus::Completed);
+        assert!(r.take_note().is_some_and(|n| n.contains("reconnected")), "on a connection of its own");
+        let mut started = 0;
+        while let Ok(l) = rx.try_recv() {
+            if let StreamLine::Log(LogEvent { body: LogBody::SessionStarted { .. }, session_id, .. }) = l {
+                assert_eq!(session_id, result.session_id);
+                started += 1;
+            }
+        }
+        assert_eq!(started, 1, "its session followed from the start, once");
+        assert_eq!(m.seen.lock().unwrap().len(), 1, "the prompt was sent once");
+    });
+    drop(rt);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-HOST-1: a background client — an automatic sync bridge, always on —
 /// never holds the daemon up: with only it connected the daemon exits after
 /// its window and takes its socket, as with nobody connected. (An ordinary
