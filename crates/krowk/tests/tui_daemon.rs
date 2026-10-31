@@ -177,6 +177,69 @@ fn a_closed_terminal_ends_the_tui_mid_reply_and_the_turn_runs_on() {
     assert!(b.wait(Duration::from_secs(10)).is_some());
 }
 
+/// The turn.completed statuses the daemon logged for `session`.
+fn ended(d: &Daemon, session: &str) -> Vec<String> {
+    let log = d.sandbox.root.join("home/.krowk/sessions").join(session).join("events.jsonl");
+    let text = std::fs::read_to_string(log).unwrap_or_default();
+    text.lines().filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok()).filter(|e| e["type"] == "turn.completed").map(|e| e["status"].as_str().unwrap_or_default().to_string()).collect()
+}
+
+/// Ctrl-D twice mid-turn in the daemon stops the turn, waits for its
+/// end, and says so on the way out: a deliberate exit leaves nothing
+/// running that nobody watches.
+#[test]
+fn ctrl_d_twice_stops_a_daemon_turn_and_says_so() {
+    const ANSWER: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(120)));
+    let d = Daemon::new("ctrld");
+    let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 120, 30);
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"say the alphabet\r");
+    assert!(a.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"\x04");
+    assert!(a.wait_on_screen("Press Ctrl-D again to stop the turn and exit — /detach leaves it running", Duration::from_secs(5)).is_some(), "{}", a.screen());
+    a.write(b"\x04");
+    assert!(a.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "{:?}", a.text());
+    let out = a.text();
+    assert!(out.contains("! the running turn was interrupted — its work so far is in the session"), "{out:?}");
+    assert!(out.contains("resume this session with: krowk --resume"), "{out:?}");
+    assert!(!out.contains("papa"), "it was stopped mid-reply: {out:?}");
+    assert_eq!(ended(&d, &d.session()), ["interrupted"]);
+}
+
+/// `/detach` mid-turn leaves at once, the turn left running in the daemon
+/// to its end, uninterrupted, and `krowk --resume` replays it whole.
+#[test]
+fn detach_leaves_a_daemon_turn_running_and_resume_replays_it_whole() {
+    const ANSWER: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(120)));
+    let d = Daemon::new("detach");
+    let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 120, 30);
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"say the alphabet\r");
+    assert!(a.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    a.write(b"/detach");
+    std::thread::sleep(Duration::from_millis(200));
+    a.write(b"\r");
+    assert!(a.wait(Duration::from_secs(2)).is_some_and(|s| s.success()), "the TUI left at once: {:?}", a.text());
+    let out = a.text();
+    let session = d.session();
+    assert!(out.contains(&format!("! the turn runs on in the host daemon with no client to answer it — its approvals are denied until one follows; follow it with: krowk --resume {session}")), "{out:?}");
+    assert!(!out.contains("resume this session with"), "the follow line replaces it: {out:?}");
+    assert!(!out.contains("papa"), "it left mid-reply: {out:?}");
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while ended(&d, &session).is_empty() {
+        assert!(Instant::now() < deadline, "the turn never ended");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(ended(&d, &session), ["completed"], "it ran on, uninterrupted");
+    let mut b = pty::Pty::spawn(d.command(&m.url, &["--resume", &session]), 120, 30);
+    assert!(b.wait_for("papa", Duration::from_secs(10)).is_some(), "replayed whole: {:?}", b.text());
+    assert!(b.text().contains("alpha"), "{:?}", b.text());
+    b.write(b"\x04\x04");
+    assert!(b.wait(Duration::from_secs(10)).is_some());
+}
+
 /// R-PROTO-1: two TUIs on one session show the same reply — the second
 /// follows the first's turn in the daemon.
 #[test]

@@ -104,6 +104,7 @@ pub const COMMANDS: &[(&str, &str)] = &[
     ("trust", "Trust this repository after all — its hooks, MCP servers, allow rules and extra directories"),
     ("help", "Keys and what they do"),
     ("exit", "Leave krowk"),
+    ("detach", "Leave krowk with the running turn left on in the host daemon"),
 ];
 
 /// Whether `typed` (the prompt, `/` and all) is one of `ALIASES`, whole:

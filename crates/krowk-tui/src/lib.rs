@@ -615,7 +615,7 @@ async fn session(opts: Options) -> Outcome {
         effort_label,
         runs_in: runs_in.clone(),
         started_in,
-        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), prompted_turn: None, ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
+        permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget, target, keys: None, turn: None, rx: None, abandoned: false, parting: None, hung_up_at: None, quit_armed: None, copied: None, last_prompt: String::new(), prompted_turn: None, ended: None, presence: presence::Presence::from_env(&|k| std::env::var(k).unwrap_or_default()), project: opts.project, restore: opts.restore, restoring: None };
     if let Some(id) = opts.resume.clone()
         && has_daemon
     {
@@ -640,8 +640,18 @@ async fn session(opts: Options) -> Outcome {
     if let Some(line) = krowk_harness::jobs::stopped_line(&host.running_jobs(), app.session_id.as_deref(), "with this krowk") {
         let _ = write!(out, "! {line}\r\n");
     }
+    // A daemon's turn the person left: stopped (Ctrl-D twice), or left
+    // running (`/detach`), when the resume line becomes how to follow it.
+    let parting = ui.parting.filter(|_| !ui.abandoned);
+    if parting == Some(Parting::Interrupted) {
+        let _ = write!(out, "! the running turn was interrupted — its work so far is in the session\r\n");
+    }
     if let Some(id) = &app.session_id {
-        let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
+        if parting == Some(Parting::Detached) {
+            let _ = write!(out, "! the turn runs on in the host daemon with no client to answer it — its approvals are denied until one follows; follow it with: krowk --resume {id}\r\n");
+        } else {
+            let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
+        }
     }
     let _ = out.flush();
     // A backend's process (Claude Code, Codex) is let go cleanly, and
@@ -655,6 +665,57 @@ async fn session(opts: Options) -> Outcome {
     }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+}
+
+/// How the person left a turn running in the host daemon.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Parting {
+    /// Ctrl-D twice: interrupted, and its end waited for.
+    Interrupted,
+    /// `/detach`: left running, for `krowk --resume` to follow.
+    Detached,
+}
+
+/// What the first Ctrl-C or Ctrl-D that asks to leave says the second
+/// does: with a turn running, whether it stops (`daemon`) or runs on
+/// (`viewing` a synced session, on the host it names).
+fn leave_flash(key: char, running: bool, viewing: Option<&str>, daemon: bool) -> String {
+    let key = key.to_ascii_uppercase();
+    match viewing {
+        Some(host) if running => format!("Press `Ctrl-{key}` again to leave — the turn keeps running on {host}"),
+        _ if running && daemon => format!("Press `Ctrl-{key}` again to stop the turn and exit — /detach leaves it running"),
+        _ => format!("Press `Ctrl-{key}` again to exit"),
+    }
+}
+
+/// What `/detach` does.
+#[derive(Debug, PartialEq, Eq)]
+enum Detach {
+    /// `/exit`: no turn runs.
+    Exit,
+    /// Ctrl-D twice on a synced viewer: the turn is the host's.
+    Leave,
+    /// Nothing, and why.
+    Refuse(&'static str),
+    /// Leaves the daemon's turn running.
+    Detach,
+}
+
+/// What `/detach` does: refused while a request waits on the person, whom
+/// leaving would deny it, and for a turn this process runs, which cannot
+/// outlive it.
+fn detach_as(running: bool, synced: bool, daemon: bool, waiting: bool) -> Detach {
+    if !running {
+        Detach::Exit
+    } else if synced {
+        Detach::Leave
+    } else if !daemon {
+        Detach::Refuse("/detach leaves a turn running in the host daemon, and this one runs in this krowk — `esc` stops it, /exit waits for it")
+    } else if waiting {
+        Detach::Refuse("that would deny the waiting request — answer it first, or `esc` stops the turn")
+    } else {
+        Detach::Detach
+    }
 }
 
 /// A session followed only for its background agents: its id, and, once
@@ -771,6 +832,8 @@ struct Ui<'h> {
     rx: Option<mpsc::Receiver<StreamLine>>,
     /// Set to leave now, without the running turn's end.
     abandoned: bool,
+    /// What the way out says of a daemon's turn the person left.
+    parting: Option<Parting>,
     /// When SIGHUP or SIGTERM interrupted the local turn the loop now waits
     /// to end (`HANGUP_WAIT`).
     hung_up_at: Option<Instant>,
@@ -2459,17 +2522,40 @@ impl<'h> Ui<'h> {
     async fn ask_to_leave(&mut self, app: &mut App, key: char, armed: Option<char>, quitting: &mut bool) {
         if armed != Some(key) {
             self.quit_armed = Some((key, Instant::now()));
-            app.flash = Some(format!("Press `Ctrl-{}` again to exit", key.to_ascii_uppercase()));
+            let viewing = app.sync.as_ref().filter(|_| self.host.synced().is_some()).map(|s| s.name.as_str());
+            app.flash = Some(leave_flash(key, app.running(), viewing, self.host.remote().is_some()));
         } else if app.running() && self.host.synced().is_some() {
-            // The turn is the host's: leaving the viewer leaves it running.
-            self.turn = None;
-            self.rx = None;
-            app.quit = true;
+            self.leave_now(app);
         } else if app.running() {
             *quitting = true;
+            if self.host.remote().is_some() {
+                self.parting = Some(Parting::Interrupted);
+            }
             self.interrupt(app).await;
         } else {
             app.quit = true;
+        }
+    }
+
+    /// Leaves without the running turn, which is another process's — a
+    /// synced session's host, or the daemon — and runs on there.
+    fn leave_now(&mut self, app: &mut App) {
+        self.turn = None;
+        self.rx = None;
+        app.quit = true;
+    }
+
+    /// `/detach`: leaves at once, a daemon's turn left running for
+    /// `krowk --resume` to follow.
+    fn detach(&mut self, app: &mut App) {
+        match detach_as(app.running(), self.host.synced().is_some(), self.host.remote().is_some(), !app.approvals.is_empty()) {
+            Detach::Exit => app.quit = true,
+            Detach::Leave => self.leave_now(app),
+            Detach::Refuse(why) => app.notice_keys(why),
+            Detach::Detach => {
+                self.parting = Some(Parting::Detached);
+                self.leave_now(app);
+            }
         }
     }
 
@@ -3549,6 +3635,11 @@ impl<'h> Ui<'h> {
                 app.quit = true;
                 return false;
             }
+            "/detach" => {
+                app.editor.clear();
+                self.detach(app);
+                return false;
+            }
             "/help" => {
                 app.editor.clear();
                 app.toggle_help();
@@ -4045,6 +4136,29 @@ fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), Engi
 
 #[cfg(test)]
 mod tests {
+    /// `/detach` leaves a daemon's turn running, but never with a request
+    /// waiting on the person; with no turn it is `/exit`, and on a synced
+    /// viewer Ctrl-D twice.
+    #[test]
+    fn the_first_press_to_leave_says_what_the_second_does() {
+        use super::leave_flash;
+        assert_eq!(leave_flash('d', true, None, true), "Press `Ctrl-D` again to stop the turn and exit — /detach leaves it running");
+        assert_eq!(leave_flash('d', true, Some("studio"), false), "Press `Ctrl-D` again to leave — the turn keeps running on studio");
+        assert_eq!(leave_flash('d', false, Some("studio"), false), "Press `Ctrl-D` again to exit");
+        assert_eq!(leave_flash('c', false, None, true), "Press `Ctrl-C` again to exit");
+        assert_eq!(leave_flash('d', true, None, false), "Press `Ctrl-D` again to exit");
+    }
+
+    #[test]
+    fn detach_is_refused_while_a_request_waits() {
+        use super::{Detach, detach_as};
+        assert_eq!(detach_as(true, false, true, false), Detach::Detach);
+        assert!(matches!(detach_as(true, false, true, true), Detach::Refuse(w) if w.starts_with("that would deny the waiting request")));
+        assert!(matches!(detach_as(true, false, false, false), Detach::Refuse(_)));
+        assert_eq!(detach_as(false, false, true, true), Detach::Exit);
+        assert_eq!(detach_as(true, true, false, true), Detach::Leave);
+    }
+
     /// R-PRES-3: done with the topic, error with the failure's first
     /// line from either kind of failure, the topic when it has none, and
     /// idle for an interrupt or no result.
