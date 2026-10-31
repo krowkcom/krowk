@@ -2133,6 +2133,130 @@ async fn join_direct(via: &str, session: &str, b: &Device, ticket: &str, signing
     krowk_harness::sync::join(j).await.map(|_| ())
 }
 
+/// A hosting session with its direct listener up, on the tailnet, with
+/// whois passing, and B's own viewer ticket for it.
+struct OnDirect {
+    _w: World,
+    b: Device,
+    session: String,
+    via: String,
+    real: String,
+    _keep: (Arc<Client>, FakeTailscale, watch::Sender<bool>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)),
+}
+
+async fn on_direct(name: &str) -> OnDirect {
+    let w = World::new(name);
+    let ts = FakeTailscale::start(&w.root);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (d, session) = first_turn(&w).await;
+    let (kill, kill_rx) = watch::channel(false);
+    let bridge = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let got = until(&mut v, Duration::from_secs(15), &mut Vec::new(), direct_path).await;
+    let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
+    let (api, id, device) = (w.as_device(&b), session.clone(), b.key.id().to_string());
+    let real = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, "development").unwrap().relay_ticket).await.unwrap();
+    OnDirect { _w: w, b, session, via, real, _keep: (d, ts, kill, bridge) }
+}
+
+/// `real` changed by `edit` and signed again with the stand-in registry's
+/// own ticket key: a ticket the registry could have issued, so only the
+/// listener's own checks can turn it away.
+fn reissued(real: &str, edit: impl FnOnce(&mut krowk_client::relay_ticket::Ticket)) -> String {
+    let keys = [(krowk_devregistry::TICKET_KID, krowk_devregistry::ticket_public_key())];
+    let mut t = krowk_client::relay_ticket::verify(real, &keys, krowk_client::relay_ticket::now()).unwrap();
+    edit(&mut t);
+    t.sign(&krowk_devregistry::TICKET_SEED)
+}
+
+/// A session id no one hosts here.
+fn another_session() -> String {
+    let h = e2e::hex(&e2e::random::<16>());
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
+/// Joins as `b` the way a client that dialed `dialed` would, its `Host`
+/// and signed origin both `dialed`'s, over a connection to `via`'s
+/// listener.
+async fn join_dialed(via: &str, dialed: &str, session: &str, b: &Device, ticket: &str) -> Result<(), String> {
+    use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+    let dial = krowk_client::sync::join::dial(dialed, session, "development", ticket);
+    let mut req = dial.url.into_client_request().unwrap();
+    req.headers_mut().insert("x-krowk-ticket", dial.ticket.parse().unwrap());
+    let mut joining = krowk_client::sync::join::Joining::new(dialed, session, "development", b.key.id(), e2e::RELAY_ROLE_VIEWER, serde_json::json!({}))?;
+    let tcp = tokio::net::TcpStream::connect(via.trim_start_matches("ws://")).await.unwrap();
+    let (mut ws, _) = tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(tcp)).await.map_err(|e| e.to_string())?;
+    loop {
+        let bytes = match tokio::time::timeout(Duration::from_secs(10), krowk_harness::sync::recv(&mut ws)).await {
+            Err(_) => return Err("the listener said nothing for 10 seconds".into()),
+            Ok(krowk_harness::sync::In::Control(v)) => krowk_client::sync::join::control(&v),
+            Ok(krowk_harness::sync::In::Closed) => return Err("the listener closed the connection".into()),
+            Ok(_) => continue,
+        };
+        match joining.message(&b.signing, &bytes)? {
+            krowk_client::sync::join::Step::Wait => {}
+            krowk_client::sync::join::Step::Send(m) => assert!(krowk_harness::sync::send(&mut ws, m).await),
+            krowk_client::sync::join::Step::Joined(_) => return Ok(()),
+        }
+    }
+}
+
+/// R-NET-3: a host's direct listener carries its one session. B's ticket
+/// for another session, signed by the registry, is refused there, dialed
+/// as that session or as this one; B's own ticket for this one joins.
+#[tokio::test]
+async fn r_net_3_the_direct_listener_refuses_a_ticket_for_another_session() {
+    let o = on_direct("other-session").await;
+    let other = another_session();
+    let theirs = reissued(&o.real, |t| t.session = krowk_harness::daemon::ws::uuid(&other));
+    for (what, dialed, want) in [("dialed as the other session", &other, "a session this host's direct listener does not carry"), ("dialed as this session", &o.session, "the ticket is for another session")] {
+        match join_direct(&o.via, dialed, &o.b, &theirs, &o.b.signing).await {
+            Ok(()) => panic!("{what}: a ticket for another session joined the direct path"),
+            Err(e) => assert!(e.contains("bad_ticket") && e.contains(want), "{what}: {e}"),
+        }
+    }
+    join_direct(&o.via, &o.session, &o.b, &o.real, &o.b.signing).await.expect("B's own ticket joins, so each refusal above was the session's");
+}
+
+/// R-NET-3: only the device whose listener it is hosts on it. B, holding
+/// a host ticket the registry signed for this session at a fence above
+/// A's, is refused as host on A's direct listener; B joins as a viewer.
+#[tokio::test]
+async fn r_net_3_the_direct_listener_refuses_hosting_by_another_device() {
+    let o = on_direct("other-host").await;
+    let fence = 1u64 << 40;
+    let hosting = reissued(&o.real, |t| {
+        t.role = e2e::RELAY_ROLE_HOST;
+        t.fence = fence;
+    });
+    let extra = serde_json::json!({"fence": fence, "stream": e2e::hex(&e2e::random::<16>())});
+    let j = krowk_harness::sync::Join { relay: &o.via, session: &o.session, env: "development", ticket: &hosting, device: o.b.key.id(), signing: &o.b.signing, role: e2e::RELAY_ROLE_HOST, extra };
+    match krowk_harness::sync::join(j).await {
+        Ok(_) => panic!("B hosted on A's direct listener"),
+        Err(e) => assert!(e.contains("bad_ticket") && e.contains("hosting on another device's direct listener"), "{e}"),
+    }
+    join_direct(&o.via, &o.session, &o.b, &o.real, &o.b.signing).await.expect("B's own viewer ticket joins, so the refusal above was the hosting");
+}
+
+/// R-NET-3: a direct listener answers only as the addresses it published.
+/// A client that dialed it by another name, or by its address at another
+/// port, signing that origin, is refused before any challenge; dialed as
+/// published, the same client joins.
+#[tokio::test]
+async fn r_net_3_the_direct_listener_refuses_an_origin_it_did_not_publish() {
+    let o = on_direct("other-origin").await;
+    let port: u16 = o.via.rsplit(':').next().unwrap().parse().unwrap();
+    for dialed in ["ws://unpublished.example:80".to_string(), format!("ws://127.0.0.1:{}", port.wrapping_add(1))] {
+        match join_dialed(&o.via, &dialed, &o.session, &o.b, &o.real).await {
+            Ok(()) => panic!("{dialed}: joined the direct path as an origin it did not publish"),
+            Err(e) => assert!(e.contains("bad_origin") && e.contains("is not an address this host published"), "{dialed}: {e}"),
+        }
+    }
+    join_dialed(&o.via, &o.via, &o.session, &o.b, &o.real).await.expect("dialed as published, the same client joins, so each refusal above was the origin's");
+    join_direct(&o.via, &o.session, &o.b, &o.real, &o.b.signing).await.expect("B's correct join");
+}
+
 
 /// R-OFF-2: the relay drops every batch of a whole turn to B, and B sees
 /// the gap only when a later turn's batch arrives. The catch-up asks from
