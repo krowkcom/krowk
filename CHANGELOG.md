@@ -396,6 +396,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **The host says which tailnet user the same-user check holds to.** With
+  `KROWK_TAILSCALE_SAME_USER=1`, hosting prints
+  `krowk: the same-user check admits only nodes of <login> (tailnet user <id>)`.
+  One login can carry two tailnet user ids, and a device signed in under
+  the other one is refused; the id on this line is how to tell. Nothing
+  changes with the check off.
 - **Closing the fullscreen TUI leaves the shell's screen as it was.** The
   conversation is no longer printed onto it on the way out, where it came
   out without the layout the TUI drew it in. The session is saved, and the

@@ -283,6 +283,9 @@ pub struct Status {
     pub me: Node,
     #[serde(default)]
     pub peer: Option<std::collections::BTreeMap<String, Node>>,
+    /// The tailnet's users this node knows, by their id.
+    #[serde(default)]
+    pub user: Option<std::collections::BTreeMap<String, Profile>>,
 }
 
 impl Status {

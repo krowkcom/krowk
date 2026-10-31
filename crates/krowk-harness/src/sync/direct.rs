@@ -113,6 +113,17 @@ pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
     Ok(status.me.user_id)
 }
 
+/// The host's line for a person diagnosing a refused device: the tailnet
+/// user the same-user check holds to, by login and id, since one login can
+/// carry two ids and a device under the other is turned away.
+pub fn same_user_line(status: &tailscale::Status, user: u64) -> String {
+    let login = status.user.as_ref().and_then(|u| u.get(&user.to_string())).map(|p| p.login_name.as_str()).filter(|l| !l.is_empty());
+    match login {
+        Some(login) => format!("krowk: the same-user check admits only nodes of {login} (tailnet user {user})"),
+        None => format!("krowk: the same-user check admits only nodes of tailnet user {user}"),
+    }
+}
+
 /// Reads this node from tailscaled and listens on its tailnet address (and
 /// LAN address), on one port; with the LAN offered, Tailscale not running
 /// leaves the LAN alone, advertised over mDNS too. Errors say why there is
@@ -138,7 +149,11 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         // ws:// on every network, past KROWK_DIRECT_LAN.
         let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
         let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
-        whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(status)? }) } else { None };
+        if c.same_user {
+            let user = same_user(status)?;
+            eprintln!("{}", same_user_line(status, user));
+            whois = Some(SameUser { socket: c.socket.clone(), user });
+        }
         let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
         port = first.local_addr().map_err(|e| e.to_string())?.port();
         listeners.push(first);
@@ -473,5 +488,14 @@ mod tests {
         let tagged = same_user(&status(serde_json::json!({"UserID": 478457612062579_u64, "Tags": ["tag:ops"]}))).unwrap_err();
         assert!(tagged.contains("tag:ops") && tagged.contains("KROWK_TAILSCALE_SAME_USER"), "{tagged}");
         assert!(same_user(&status(serde_json::json!({}))).is_err());
+    }
+
+    /// The host names the user the same-user check holds to, so a device
+    /// re-logged under the login's other tailnet id can be told apart.
+    #[test]
+    fn the_same_user_line_names_the_login_and_its_id() {
+        let status: tailscale::Status = serde_json::from_value(serde_json::json!({"BackendState": "Running", "Self": {"UserID": 7}, "User": {"7": {"ID": 7, "LoginName": "ada@example.com"}, "8": {"ID": 8, "LoginName": "ada@example.com"}}})).unwrap();
+        assert_eq!(same_user_line(&status, 7), "krowk: the same-user check admits only nodes of ada@example.com (tailnet user 7)");
+        assert_eq!(same_user_line(&status, 9), "krowk: the same-user check admits only nodes of tailnet user 9");
     }
 }
