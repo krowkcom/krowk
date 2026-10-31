@@ -418,3 +418,197 @@ async fn r_relay_1_a_workspace_spread_over_its_own_sessions_evicts_only_itself()
         held.extend(burst.await.unwrap());
     }
 }
+
+/// One host machine of a reconnect storm: its device, its key, the address
+/// it dials from (its own on Linux; macOS has only 127.0.0.1), and the
+/// fifty sessions it bridges, all of workspace `ws_storm`, with a ticket
+/// for each signed ahead, as the bridge holds its own from the lease.
+struct StormHost {
+    device: [u8; 16],
+    key: SigningKey,
+    from: std::net::Ipv4Addr,
+    sessions: Vec<String>,
+    tickets: Vec<String>,
+}
+
+impl StormHost {
+    fn new(f: &Value, n: u8) -> StormHost {
+        let sessions: Vec<String> = (0..50).map(|i| format!("{:08x}-0000-7000-8000-{i:012x}", 0x5707_0000 + u32::from(n))).collect();
+        let mut h = StormHost { device: [0x50 + n; 16], key: SigningKey::generate(), from: std::net::Ipv4Addr::new(127, 0, 0, if cfg!(target_os = "linux") { 1 + n } else { 1 }), sessions, tickets: Vec::new() };
+        h.tickets = h.sessions.iter().map(|s| h.ticket(f, s)).collect();
+        h
+    }
+
+    fn ticket(&self, f: &Value, session: &str) -> String {
+        let seed: [u8; 32] = e2e::unhex(f["ticketSeed"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let kid: [u8; 8] = e2e::unhex(f["ticketKeys"].as_object().unwrap().keys().next().unwrap()).unwrap().try_into().unwrap();
+        let now = relay_ticket::now();
+        Ticket {
+            kid,
+            role: RELAY_ROLE_HOST,
+            env: relay_ticket::ENV_PRODUCTION,
+            session: krowk_harness::daemon::ws::uuid(session),
+            device: self.device,
+            signing_key: self.key.public().0,
+            fence: 1,
+            iat: now,
+            exp: now + 300,
+            workspace: "ws_storm".into(),
+        }
+        .sign(&seed)
+    }
+
+    /// Its host join on session `i`, from its own address, answering the
+    /// challenge after `delay`: what the relay answered, or None when the
+    /// relay let the connection go before it joined, with the refusal it
+    /// gives one it evicts (`join_timeout`) or without.
+    async fn join(&self, url: &str, i: usize, delay: Duration) -> Option<(Value, Ws)> {
+        let session = &self.sessions[i];
+        let mut req = format!("{url}/v1/relay/{session}").into_client_request().unwrap();
+        req.headers_mut().insert("x-krowk-ticket", self.tickets[i].parse().unwrap());
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        sock.bind((self.from, 0).into()).unwrap();
+        let stream = sock.connect(url.trim_start_matches("ws://").parse().unwrap()).await.ok()?;
+        let (mut ws, _) = tokio_tungstenite::client_async(req, tokio_tungstenite::MaybeTlsStream::Plain(stream)).await.ok()?;
+        async fn next(ws: &mut Ws) -> Option<Value> {
+            loop {
+                match ws.next().await? {
+                    Ok(Message::Binary(b)) => {
+                        let e = Envelope::decode(&b).unwrap();
+                        if e.kind == KIND_RELAY {
+                            return Some(serde_json::from_slice(&e.payload).unwrap());
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(_) => return None,
+                }
+            }
+        }
+        let first = next(&mut ws).await?;
+        assert_eq!(first["type"], "challenge", "{first}");
+        tokio::time::sleep(delay).await;
+        let nonce: [u8; 32] = e2e::unhex(first["nonce"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let device = e2e::DeviceId(self.device);
+        let sig = self.key.sign_relay_join(RELAY_ROLE_HOST, &krowk_harness::daemon::ws::uuid(session), &nonce, &device, url).unwrap();
+        let join = json!({"type": "join", "role": "host", "device": device.to_string(), "signature": e2e::hex(&sig), "fence": 1, "stream": "11".repeat(16)});
+        ws.send(Message::Binary(control(&join).into())).await.ok()?;
+        let answer = next(&mut ws).await?;
+        (answer["code"] != "join_timeout").then_some((answer, ws))
+    }
+
+    /// Every one of its sessions joined at once, spread over 50 ms, each
+    /// answering its challenge after `delay`.
+    async fn storm(self: &std::sync::Arc<Self>, url: &str, delay: Duration) -> Vec<Option<(Value, Ws)>> {
+        futures_util::future::join_all((0..self.sessions.len()).map(|i| {
+            let (h, url) = (self.clone(), url.to_string());
+            async move {
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(i as u64)).await;
+                    h.join(&url, i, delay).await
+                })
+                .await
+                .unwrap()
+            }
+        }))
+        .await
+    }
+}
+
+/// The relay's `joined` for a storm join, the join made.
+fn joined(answer: Option<(Value, Ws)>, who: &str) -> (Value, Ws) {
+    let (v, ws) = answer.unwrap_or_else(|| panic!("{who}: let go before it joined"));
+    assert_eq!(v["type"], "joined", "{who}: {v}");
+    (v, ws)
+}
+
+/// The decision behind cli: 165: one host bridging fifty sessions comes
+/// back to the relay with all fifty within 50 ms, from one address, each
+/// slow enough to answer its challenge that all fifty wait unjoined at
+/// once, and under `Limits::default()` every one joins: neither the
+/// per-address cap on connections not yet upgraded (32) nor the
+/// workspace's on ticketed ones (64) lets any go.
+#[tokio::test]
+async fn r_relay_1_a_fifty_session_host_coming_back_at_once_all_joins() {
+    let f: Value = serde_json::from_str(FIXTURE).unwrap();
+    let url = start(Default::default(), None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let host = std::sync::Arc::new(StormHost::new(&f, 0));
+    let all = host.storm(&url, Duration::from_millis(100)).await;
+    let _held: Vec<_> = all.into_iter().enumerate().map(|(i, a)| joined(a, &format!("session {i}"))).collect();
+}
+
+/// Two fifty-session hosts of one workspace, each with a batch on the
+/// relay, both come back at once and slow to answer their challenges, so
+/// all hundred wait unjoined together: past the workspace's 64 the oldest
+/// are let go, at most 36, each joins on its next try, and every channel
+/// still holds its batch.
+#[tokio::test]
+async fn r_relay_1_two_fifty_session_hosts_coming_back_at_once_lose_nothing() {
+    let f: Value = serde_json::from_str(FIXTURE).unwrap();
+    let url = start(Default::default(), None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let hosts = [std::sync::Arc::new(StormHost::new(&f, 1)), std::sync::Arc::new(StormHost::new(&f, 2))];
+    for h in &hosts {
+        for (i, a) in h.storm(&url, Duration::ZERO).await.into_iter().enumerate() {
+            let (v, mut ws) = joined(a, &format!("first join {i}"));
+            assert_eq!(v["seq"], 0, "{v}");
+            let batch = Envelope { kind: krowk_harness::daemon::ws::KIND_BATCH, flags: 0, enc: krowk_harness::daemon::ws::ENC_XCHACHA20_POLY1305, session: krowk_harness::daemon::ws::uuid(&h.sessions[i]), seq: 1, payload: vec![7; 64] };
+            ws.send(Message::Binary(batch.encode().into())).await.unwrap();
+            ws.close(None).await.unwrap();
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let slow = Duration::from_millis(400);
+    let (a, b) = tokio::join!(hosts[0].storm(&url, slow), hosts[1].storm(&url, slow));
+    let mut held = Vec::new();
+    let mut evicted = Vec::new();
+    for (h, all) in [(0, a), (1, b)] {
+        for (i, answer) in all.into_iter().enumerate() {
+            match answer {
+                Some(a) => held.push(joined(Some(a), &format!("host {h} session {i}"))),
+                None => evicted.push((h, i)),
+            }
+        }
+    }
+    // All hundred wait at once, so exactly the 36 past the cap go.
+    assert_eq!(evicted.len(), 36, "{evicted:?}");
+    // The bridge's next try, a second or two later.
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    for (h, i) in evicted {
+        held.push(joined(hosts[h].join(&url, i, Duration::ZERO).await, &format!("host {h} session {i} again")));
+    }
+    assert_eq!(held.len(), 100);
+    for (v, _) in &held {
+        assert_eq!(v["seq"], 1, "a batch was lost: {v}");
+    }
+}
+
+/// Fifty connections from one address that never send their upgrade: the
+/// per-address cap (32) lets the oldest go, and an honest host's upgrade
+/// from the same address still joins.
+#[tokio::test]
+async fn r_relay_1_stalled_upgrades_from_one_address_let_the_oldest_go() {
+    use tokio::io::AsyncReadExt as _;
+    let f: Value = serde_json::from_str(FIXTURE).unwrap();
+    let url = start(Default::default(), None);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let host = StormHost::new(&f, 3);
+    let target: std::net::SocketAddr = url.trim_start_matches("ws://").parse().unwrap();
+    let mut stalled = Vec::new();
+    for _ in 0..50 {
+        let sock = tokio::net::TcpSocket::new_v4().unwrap();
+        sock.bind((host.from, 0).into()).unwrap();
+        stalled.push(sock.connect(target).await.unwrap());
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let mut closed = Vec::new();
+    for (i, s) in stalled.iter_mut().enumerate() {
+        let mut b = [0u8; 1];
+        if let Ok(Ok(0) | Err(_)) = tokio::time::timeout(Duration::from_millis(20), s.read(&mut b)).await {
+            closed.push(i);
+        }
+    }
+    assert_eq!(closed, (0..18).collect::<Vec<_>>(), "the 18 oldest are let go, the rest held");
+    let (_v, _ws) = joined(host.join(&url, 0, Duration::ZERO).await, "the honest upgrade");
+}

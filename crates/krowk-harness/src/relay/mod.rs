@@ -541,20 +541,53 @@ fn peer_bucket(ip: std::net::IpAddr) -> std::net::IpAddr {
     }
 }
 
+/// The pools a pending connection is let go from (`Relay::evict`), each
+/// with its count of evictions since the relay started.
+#[derive(Clone, Copy)]
+enum Pool {
+    Peer,
+    Unjoined,
+    Device,
+    Channel,
+    Workspace,
+    Ticketed,
+}
+
+impl Pool {
+    fn as_str(self) -> &'static str {
+        match self {
+            Pool::Peer => "per_peer",
+            Pool::Unjoined => "unjoined",
+            Pool::Device => "per_device",
+            Pool::Channel => "per_channel",
+            Pool::Workspace => "per_workspace",
+            Pool::Ticketed => "ticketed",
+        }
+    }
+}
+
+/// Evictions by pool. `krowk relay serve` runs one relay a process and has
+/// no status but stderr, so the count rides each `evict` line.
+static EVICTED: [std::sync::atomic::AtomicU64; 6] = [const { std::sync::atomic::AtomicU64::new(0) }; 6];
+
 impl Relay {
-    /// Lets go the oldest pending connection `which` picks.
-    fn evict(&self, which: impl Fn(&Pending) -> bool) {
+    /// Lets go the oldest pending connection `which` picks, recorded as
+    /// one line naming the pool and the workspace its ticket names, if it
+    /// showed one.
+    fn evict(&self, pool: Pool, which: impl Fn(&Pending) -> bool) {
         let mut p = self.pending.borrow_mut();
         if let Some(i) = p.iter().position(which) {
             let gone = p.remove(i).expect("found");
             gone.kill.notify_one();
+            let n = EVICTED[pool as usize].fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            eprintln!("{}", json!({"event": "evict", "pool": pool.as_str(), "workspace": gone.workspace.as_deref(), "evicted": n}));
         }
     }
 
     /// Lets go one ticketed pending connection among those `within` picks:
     /// from its fullest channel, a viewer's before a host's, the oldest
     /// first.
-    fn evict_fullest_channel(&self, within: impl Fn(&Pending) -> bool) {
+    fn evict_fullest_channel(&self, pool: Pool, within: impl Fn(&Pending) -> bool) {
         let mut counts: HashMap<Key, usize> = HashMap::new();
         for p in self.pending.borrow().iter().filter(|p| p.device.is_some() && within(p)) {
             if let Some(k) = p.session {
@@ -565,9 +598,9 @@ impl Relay {
         let in_fullest = |p: &Pending| p.session == Some(fullest) && p.device.is_some() && within(p);
         let viewer = |p: &Pending| in_fullest(p) && p.device.is_some_and(|(_, r)| r == RELAY_ROLE_VIEWER);
         if self.pending.borrow().iter().any(viewer) {
-            self.evict(viewer);
+            self.evict(pool, viewer);
         } else {
-            self.evict(in_fullest);
+            self.evict(pool, in_fullest);
         }
     }
 
@@ -584,7 +617,7 @@ impl Relay {
             }
         }
         let Some((fullest, _)) = counts.into_iter().max_by_key(|(_, n)| *n) else { return };
-        self.evict_fullest_channel(|p| p.workspace.as_deref() == Some(&*fullest));
+        self.evict_fullest_channel(Pool::Ticketed, |p| p.workspace.as_deref() == Some(&*fullest));
     }
 
     /// A new pending connection, room made for it under the caps.
@@ -599,10 +632,10 @@ impl Relay {
         let limits = &self.config.limits;
         let peer = peer_bucket(peer);
         if self.pending.borrow().iter().filter(|p| p.peer == peer && p.device.is_none()).count() >= limits.unjoined_per_peer {
-            self.evict(|p| p.peer == peer && p.device.is_none());
+            self.evict(Pool::Peer, |p| p.peer == peer && p.device.is_none());
         }
         if self.pending.borrow().iter().filter(|p| p.device.is_none()).count() >= limits.unjoined {
-            self.evict(|p| p.device.is_none());
+            self.evict(Pool::Unjoined, |p| p.device.is_none());
         }
         let id = self.pending_ids.get() + 1;
         self.pending_ids.set(id);
@@ -621,14 +654,14 @@ impl Relay {
         let device = (device, role);
         let workspace: Rc<str> = workspace.into();
         if self.pending.borrow().iter().filter(|p| p.session == Some(session) && p.device == Some(device)).count() >= limits.unjoined_per_device {
-            self.evict(|p| p.session == Some(session) && p.device == Some(device));
+            self.evict(Pool::Device, |p| p.session == Some(session) && p.device == Some(device));
         }
         if self.pending.borrow().iter().filter(|p| p.session == Some(session)).count() >= limits.unjoined_per_channel {
-            self.evict(|p| p.session == Some(session));
+            self.evict(Pool::Channel, |p| p.session == Some(session));
         }
         // A workspace at its own cap makes room among its own.
         if self.pending.borrow().iter().filter(|p| p.device.is_some() && p.workspace.as_deref() == Some(&*workspace)).count() >= limits.unjoined_per_workspace {
-            self.evict_fullest_channel(|p| p.workspace.as_deref() == Some(&*workspace));
+            self.evict_fullest_channel(Pool::Workspace, |p| p.workspace.as_deref() == Some(&*workspace));
         }
         if self.pending.borrow().iter().filter(|p| p.device.is_some()).count() >= limits.unjoined_ticketed {
             self.evict_from_fullest();
