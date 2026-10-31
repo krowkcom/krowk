@@ -420,9 +420,9 @@ async fn r_relay_1_a_workspace_spread_over_its_own_sessions_evicts_only_itself()
 }
 
 /// One host machine of a reconnect storm: its device, its key, the address
-/// it dials from, and the fifty sessions it bridges, all of workspace
-/// `ws_storm`, with a ticket for each signed ahead, as the bridge holds its
-/// own from the lease.
+/// it dials from (its own on Linux; macOS has only 127.0.0.1), and the
+/// fifty sessions it bridges, all of workspace `ws_storm`, with a ticket
+/// for each signed ahead, as the bridge holds its own from the lease.
 struct StormHost {
     device: [u8; 16],
     key: SigningKey,
@@ -434,7 +434,7 @@ struct StormHost {
 impl StormHost {
     fn new(f: &Value, n: u8) -> StormHost {
         let sessions: Vec<String> = (0..50).map(|i| format!("{:08x}-0000-7000-8000-{i:012x}", 0x5707_0000 + u32::from(n))).collect();
-        let mut h = StormHost { device: [0x50 + n; 16], key: SigningKey::generate(), from: std::net::Ipv4Addr::new(127, 0, 0, 1 + n), sessions, tickets: Vec::new() };
+        let mut h = StormHost { device: [0x50 + n; 16], key: SigningKey::generate(), from: std::net::Ipv4Addr::new(127, 0, 0, if cfg!(target_os = "linux") { 1 + n } else { 1 }), sessions, tickets: Vec::new() };
         h.tickets = h.sessions.iter().map(|s| h.ticket(f, s)).collect();
         h
     }
@@ -522,17 +522,18 @@ fn joined(answer: Option<(Value, Ws)>, who: &str) -> (Value, Ws) {
 }
 
 /// The decision behind cli: 165: one host bridging fifty sessions comes
-/// back to the relay with all fifty within 50 ms, from one address, and
-/// under `Limits::default()` every one joins: neither the per-address cap
-/// on connections not yet upgraded (32) nor the workspace's on ticketed
-/// ones (64) lets any go.
+/// back to the relay with all fifty within 50 ms, from one address, each
+/// slow enough to answer its challenge that all fifty wait unjoined at
+/// once, and under `Limits::default()` every one joins: neither the
+/// per-address cap on connections not yet upgraded (32) nor the
+/// workspace's on ticketed ones (64) lets any go.
 #[tokio::test]
 async fn r_relay_1_a_fifty_session_host_coming_back_at_once_all_joins() {
     let f: Value = serde_json::from_str(FIXTURE).unwrap();
     let url = start(Default::default(), None);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let host = std::sync::Arc::new(StormHost::new(&f, 0));
-    let all = host.storm(&url, Duration::ZERO).await;
+    let all = host.storm(&url, Duration::from_millis(100)).await;
     let _held: Vec<_> = all.into_iter().enumerate().map(|(i, a)| joined(a, &format!("session {i}"))).collect();
 }
 
@@ -569,9 +570,8 @@ async fn r_relay_1_two_fifty_session_hosts_coming_back_at_once_lose_nothing() {
             }
         }
     }
-    // All hundred wait at once, so the cap binds: some go, and no more
-    // than the 36 past it.
-    assert!((1..=36).contains(&evicted.len()), "{} of 100 let go: {evicted:?}", evicted.len());
+    // All hundred wait at once, so exactly the 36 past the cap go.
+    assert_eq!(evicted.len(), 36, "{evicted:?}");
     // The bridge's next try, a second or two later.
     tokio::time::sleep(Duration::from_secs(1)).await;
     for (h, i) in evicted {

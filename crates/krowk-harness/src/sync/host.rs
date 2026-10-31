@@ -1230,7 +1230,7 @@ impl Hosting {
         if self.kept.len() > self.o.keep.max(1) { self.kept.pop_front(); }
         self.unacked_since.get_or_insert_with(Instant::now);
         if let Some(w) = self.dws.as_mut() && !super::send(w, sealed.clone()).await { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); }
-        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.ws = None; }
+        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.let_go(false); }
         Ok(())
     }
 
@@ -1399,7 +1399,7 @@ impl Hosting {
         let gap = beaten.elapsed();
         *beaten = Instant::now();
         let waited = self.unacked_since.map(|t| t.elapsed());
-        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.ws = None; }
+        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.let_go(false); }
         if let Some(w) = self.dws.as_mut() && (link_dead(gap, self.dheard.elapsed(), 0, None) || !super::ping(w).await) { self.dws = None; }
     }
 
@@ -1848,7 +1848,7 @@ fn rejoin_wait(rng: &mut u64) -> Duration {
 mod tests {
     use super::*;
 
-    /// Fifty bridges seeded as they are, by session, draw their rejoins
+    /// Fifty bridges, each seeded by its session, draw their rejoins
     /// spread over the second past the first: they share a 10 ms window
     /// about as often as chance has them (C(50, 2) / 100, about 12 pairs),
     /// where in lockstep all 1225 pairs would.
