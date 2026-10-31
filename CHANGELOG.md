@@ -21,6 +21,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   while an approval or question waits, since nobody would be there to
   answer it. On a synced viewer the first Ctrl-D now says the turn keeps
   running on the host.
+- **A synced session finds the direct path again when your network
+  changes.** A terminal viewing a synced session now checks this
+  machine's addresses every 2 seconds. When they change (another Wi-Fi,
+  a VPN up or down), it races for the direct path at once instead of
+  waiting out a backoff that can reach 5 minutes, as the iPhone app
+  already did. Loopback and link-local addresses don't count, and it
+  races at most once every 10 seconds. The check runs only while a
+  session is being viewed, so an idle daemon does no extra work.
 
 - **A moved session keeps its images.** When you move a synced session to
   another machine, that machine now fetches every image the earlier turns

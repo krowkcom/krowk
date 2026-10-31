@@ -482,6 +482,7 @@ impl World {
             chain: self.chain(),
             session: session.into(),
             known: None,
+            addrs: None,
         }
     }
 
@@ -2002,6 +2003,37 @@ async fn r_net_3_with_whois_on_another_tailnet_user_is_refused_and_stays_on_the_
     }
     v.commands.send(w.prompt(Some(&session), "still by the relay")).unwrap();
     until(&mut v, Duration::from_secs(15), &mut frames, result_of).await;
+}
+
+/// R-NET-2 (ticket 160): B on the relay has lost its race (A's listener
+/// turns it away as another tailnet user); then A's listener lets B in and
+/// B's addresses change. B races again on its 2 s address check and moves
+/// to the direct path well before its next race was due, `REPROBE` after
+/// the one it lost.
+#[tokio::test]
+async fn r_net_2_a_viewer_whose_addresses_change_races_again_before_reprobe() {
+    let w = World::new("addrs");
+    let ts = FakeTailscale::start(&w.root);
+    ts.whois.store(2, Ordering::SeqCst);
+    let (a, b) = (w.device("machine-a"), w.device("machine-b"));
+    let (_d, session) = first_turn(&w).await;
+    let (_kill, kill_rx) = watch::channel(false);
+    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    w.synced(&session).await;
+    let moved = Arc::new(AtomicBool::new(false));
+    let m = moved.clone();
+    let mut o = w.viewer(&b, &session);
+    o.addrs = Some(Arc::new(move || vec![if m.load(Ordering::SeqCst) { [10, 0, 0, 3] } else { [10, 0, 0, 2] }.into()]));
+    let mut v = viewer::attach(o).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(15), &mut frames, relay_path).await;
+    let welcomed = Instant::now();
+    // The race is over by now, refused; the next would be `REPROBE` after it.
+    tokio::time::sleep(viewer::PROBE + Duration::from_millis(500)).await;
+    ts.whois.store(1, Ordering::SeqCst);
+    moved.store(true, Ordering::SeqCst);
+    until(&mut v, viewer::REPROBE, &mut frames, direct_path).await;
+    assert!(welcomed.elapsed() < viewer::REPROBE, "B moved only at its next race, {:?} after the welcome", welcomed.elapsed());
 }
 
 /// R-NET-3: being on the tailnet admits nobody. A connection to the direct
