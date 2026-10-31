@@ -30,16 +30,81 @@ const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
 /// the host daemon's one thread, which every other session streams on
 /// (R-LAG-9). The client itself is made per engine, on the runtime that
 /// uses it, since its connection pool belongs to that runtime.
+///
+/// In the host daemon a connection is also made off its thread
+/// (`OffThread`): the handshake checks the server's certificate
+/// synchronously, and on macOS that is `SecTrustEvaluateWithError`, which
+/// can take as long as the system's trust service does (R-LAG-9).
 pub fn client() -> Result<reqwest::Client, EngineError> {
-    let tls = tls(!WARM_ONLY.load(std::sync::atomic::Ordering::Relaxed))
-        .map_err(|e| EngineError::new("tls_unavailable", format!("the TLS configuration could not be built: {e}")))?;
-    reqwest::Client::builder()
-        .use_preconfigured_tls(tls)
-        .connect_timeout(CONNECT_TIMEOUT)
-        .read_timeout(IDLE_TIMEOUT)
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| EngineError::new("tls_unavailable", format!("the HTTP client could not be built: {e}")))
+    let daemon = WARM_ONLY.load(std::sync::atomic::Ordering::Relaxed);
+    let tls = tls(!daemon).map_err(|e| EngineError::new("tls_unavailable", format!("the TLS configuration could not be built: {e}")))?;
+    let mut b = reqwest::Client::builder().use_preconfigured_tls(tls).connect_timeout(CONNECT_TIMEOUT).read_timeout(IDLE_TIMEOUT).redirect(reqwest::redirect::Policy::none());
+    if daemon && let Some(io) = connect_io() {
+        b = b.connector_layer(OffThread(io));
+    }
+    b.build().map_err(|e| EngineError::new("tls_unavailable", format!("the HTTP client could not be built: {e}")))
+}
+
+/// The runtime a connection made off the daemon's thread is registered
+/// with: one thread of its own that does nothing but wait on its sockets
+/// and timers, so no handshake under way ever holds up a stream already
+/// open. None when its thread could not be started; connections are then
+/// made where they are asked for.
+fn connect_io() -> Option<tokio::runtime::Handle> {
+    static IO: std::sync::OnceLock<Option<tokio::runtime::Handle>> = std::sync::OnceLock::new();
+    IO.get_or_init(|| {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+        let handle = rt.handle().clone();
+        std::thread::Builder::new().name("krowk-connect-io".into()).spawn(move || rt.block_on(std::future::pending::<()>())).ok()?;
+        Some(handle)
+    })
+    .clone()
+}
+
+/// Makes each connection — DNS, TCP, the TLS handshake and its certificate
+/// check — on a blocking thread, its sockets on `connect_io`'s runtime,
+/// rather than on the thread that asked. The timeouts and the pool are
+/// reqwest's as before: the connect timeout wraps this layer, and the
+/// connection, once made, is read and pooled on the asker's runtime.
+#[derive(Clone)]
+struct OffThread(tokio::runtime::Handle);
+
+impl<S> tower_layer::Layer<S> for OffThread {
+    type Service = OffThreadService<S>;
+    fn layer(&self, inner: S) -> Self::Service {
+        OffThreadService { inner, io: self.0.clone() }
+    }
+}
+
+#[derive(Clone)]
+struct OffThreadService<S> {
+    inner: S,
+    io: tokio::runtime::Handle,
+}
+
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+
+impl<S, R> tower_service::Service<R> for OffThreadService<S>
+where
+    S: tower_service::Service<R, Error = BoxError>,
+    S::Future: Send + 'static,
+    S::Response: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = BoxError;
+    type Future = std::pin::Pin<Box<dyn std::future::Future<Output = Result<S::Response, BoxError>> + Send>>;
+
+    fn poll_ready(&mut self, cx: &mut std::task::Context<'_>) -> std::task::Poll<Result<(), BoxError>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, req: R) -> Self::Future {
+        // Lazy: nothing of the connection is made until it is polled, on
+        // the blocking thread, inside `io`'s runtime.
+        let connect = self.inner.call(req);
+        let io = self.io.clone();
+        Box::pin(async move { tokio::task::spawn_blocking(move || io.block_on(connect)).await.map_err(|e| BoxError::from(format!("the connection could not be made: {e}")))? })
+    }
 }
 
 /// Only a configuration that was built is kept: a failure — the platform's
@@ -98,7 +163,14 @@ fn tls(build: bool) -> Result<rustls::ClientConfig, String> {
     let built = (|| {
         let provider = Arc::new(rustls::crypto::ring::default_provider());
         let tls = rustls::ClientConfig::builder_with_provider(provider).with_safe_default_protocol_versions().map_err(|e| e.to_string())?;
-        Ok::<_, String>(rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?.with_no_client_auth())
+        #[cfg(feature = "test-hooks")]
+        let tls = {
+            let platform = rustls_platform_verifier::Verifier::new(tls.crypto_provider().clone()).map_err(|e| e.to_string())?;
+            tls.dangerous().with_custom_certificate_verifier(Arc::new(SlowVerifier(platform)))
+        };
+        #[cfg(not(feature = "test-hooks"))]
+        let tls = rustls_platform_verifier::BuilderVerifierExt::with_platform_verifier(tls).map_err(|e| e.to_string())?;
+        Ok::<_, String>(tls.with_no_client_auth())
     })();
     match built {
         Ok(built) => {
@@ -132,6 +204,74 @@ pub fn tls_config() -> Result<rustls::ClientConfig, String> {
 /// rather than building it on the thread (R-LAG-9).
 pub fn warmed() -> bool {
     TLS.get().is_some()
+}
+
+/// For tests (`test-hooks`): how long, in µs, each check of a server's
+/// certificate takes on top of the platform's own — a trust service that
+/// stalls, as `SecTrustEvaluateWithError` can on macOS.
+#[cfg(feature = "test-hooks")]
+static SLOW_VERIFY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// For tests (`test-hooks`): makes every certificate check take `d` longer
+/// until the guard goes.
+#[cfg(feature = "test-hooks")]
+#[must_use = "the check is slow only while the guard lives"]
+pub fn simulate_slow_verify(d: Duration) -> SlowVerify {
+    SLOW_VERIFY.store(d.as_micros() as u64, std::sync::atomic::Ordering::Relaxed);
+    SlowVerify(())
+}
+
+/// Certificate checks are slow while this lives (`simulate_slow_verify`).
+#[cfg(feature = "test-hooks")]
+pub struct SlowVerify(());
+
+#[cfg(feature = "test-hooks")]
+impl Drop for SlowVerify {
+    fn drop(&mut self) {
+        SLOW_VERIFY.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// The platform verifier, its every check of a certificate first sleeping
+/// `SLOW_VERIFY` on whichever thread makes it. It decides as the platform
+/// does.
+#[cfg(feature = "test-hooks")]
+#[derive(Debug)]
+struct SlowVerifier(rustls_platform_verifier::Verifier);
+
+#[cfg(feature = "test-hooks")]
+impl rustls::client::danger::ServerCertVerifier for SlowVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls::pki_types::CertificateDer<'_>,
+        intermediates: &[rustls::pki_types::CertificateDer<'_>],
+        server_name: &rustls::pki_types::ServerName<'_>,
+        ocsp_response: &[u8],
+        now: rustls::pki_types::UnixTime,
+    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        std::thread::sleep(Duration::from_micros(SLOW_VERIFY.load(std::sync::atomic::Ordering::Relaxed)));
+        self.0.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now)
+    }
+
+    fn verify_tls12_signature(&self, message: &[u8], cert: &rustls::pki_types::CertificateDer<'_>, dss: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.0.verify_tls12_signature(message, cert, dss)
+    }
+
+    fn verify_tls13_signature(&self, message: &[u8], cert: &rustls::pki_types::CertificateDer<'_>, dss: &rustls::DigitallySignedStruct) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        self.0.verify_tls13_signature(message, cert, dss)
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.0.supported_verify_schemes()
+    }
+
+    fn requires_raw_public_keys(&self) -> bool {
+        self.0.requires_raw_public_keys()
+    }
+
+    fn root_hint_subjects(&self) -> Option<&[rustls::DistinguishedName]> {
+        self.0.root_hint_subjects()
+    }
 }
 
 /// Who a request went to, for the words of a failure.
