@@ -968,6 +968,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         ws: None,
         heard: Instant::now(),
         retry: Instant::now(),
+        rejoin_rng: std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), &o.session),
         unjoined: None,
         listening,
         candidates,
@@ -1098,6 +1099,9 @@ struct Hosting {
     ws: Option<super::Ws>,
     heard: Instant,
     retry: Instant,
+    /// This bridge's own draws of `rejoin_wait`, seeded apart from every
+    /// other bridge's.
+    rejoin_rng: u64,
     /// The last reason the relay could not be joined, said once on stderr
     /// when it first comes or changes, not every second: a host that never
     /// reaches the relay otherwise looks exactly like one nobody watches.
@@ -1226,7 +1230,7 @@ impl Hosting {
         if self.kept.len() > self.o.keep.max(1) { self.kept.pop_front(); }
         self.unacked_since.get_or_insert_with(Instant::now);
         if let Some(w) = self.dws.as_mut() && !super::send(w, sealed.clone()).await { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); }
-        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.ws = None; }
+        if let Some(w) = self.ws.as_mut() && !super::send(w, sealed).await { self.let_go(false); }
         Ok(())
     }
 
@@ -1395,7 +1399,7 @@ impl Hosting {
         let gap = beaten.elapsed();
         *beaten = Instant::now();
         let waited = self.unacked_since.map(|t| t.elapsed());
-        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.ws = None; }
+        if let Some(w) = self.ws.as_mut() && (link_dead(gap, self.heard.elapsed(), self.kept.len(), waited) || !super::ping(w).await) { self.let_go(false); }
         if let Some(w) = self.dws.as_mut() && (link_dead(gap, self.dheard.elapsed(), 0, None) || !super::ping(w).await) { self.dws = None; }
     }
 
@@ -1457,15 +1461,15 @@ impl Hosting {
                     // viewer that left while this link was down is not.
                     self.unreached.relay_lost();
                 } else {
-                    self.retry = Instant::now() + Duration::from_secs(1);
+                    self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng);
                 }
             }
             Err(e) => {
                 if self.unjoined.as_deref() != Some(e.as_str()) {
-                    eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second", self.o.session, self.o.relay);
+                    eprintln!("krowk: session {} is not on the relay {}: {e}; trying again every second or two", self.o.session, self.o.relay);
                     self.unjoined = Some(e);
                 }
-                self.retry = Instant::now() + Duration::from_secs(1);
+                self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng);
             }
         }
     }
@@ -1479,9 +1483,10 @@ impl Hosting {
         true
     }
 
-    /// Lets an uplink go, to be joined again in a second.
+    /// Lets an uplink go, to be joined again in a second, the relay's in
+    /// one or two (`rejoin_wait`).
     fn let_go(&mut self, direct: bool) {
-        if direct { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); } else { self.ws = None; self.retry = Instant::now() + Duration::from_secs(1); }
+        if direct { self.dws = None; self.dretry = Instant::now() + Duration::from_secs(1); } else { self.ws = None; self.retry = Instant::now() + rejoin_wait(&mut self.rejoin_rng); }
     }
 
     /// What came on an uplink.
@@ -1826,9 +1831,42 @@ pub async fn interrupted() {
     tokio::select! { _ = tokio::signal::ctrl_c() => {}, _ = t => {} }
 }
 
+/// How long the bridge waits before it tries the relay again: a second and
+/// up to another, drawn afresh each time from `rng` (splitmix64). A host
+/// bridging fifty sessions that all lost the relay at once then comes back
+/// spread over a second, not as one burst against the relay's caps on
+/// connections not yet joined.
+fn rejoin_wait(rng: &mut u64) -> Duration {
+    *rng = rng.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    let mut z = *rng;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    Duration::from_millis(1_000 + (z ^ (z >> 31)) % 1_001)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Fifty bridges, each seeded by its session, draw their rejoins
+    /// spread over the second past the first: they share a 10 ms window
+    /// about as often as chance has them (C(50, 2) / 100, about 12 pairs),
+    /// where in lockstep all 1225 pairs would.
+    #[test]
+    fn fifty_bridges_rejoin_spread_over_a_second() {
+        let seeded = std::hash::BuildHasherDefault::<std::collections::hash_map::DefaultHasher>::default();
+        let mut rngs: Vec<u64> = (0..50).map(|i| std::hash::BuildHasher::hash_one(&seeded, format!("0190c0de-0000-7000-8000-{i:012x}"))).collect();
+        for _ in 0..20 {
+            let waits: Vec<Duration> = rngs.iter_mut().map(rejoin_wait).collect();
+            assert!(waits.iter().all(|w| (Duration::from_secs(1)..=Duration::from_secs(2)).contains(w)), "{waits:?}");
+            let mut windows = [0usize; 101];
+            for w in &waits {
+                windows[(w.as_millis() as usize - 1_000) / 10] += 1;
+            }
+            let pairs: usize = windows.iter().map(|n| n * n.saturating_sub(1) / 2).sum();
+            assert!(pairs <= 30, "{pairs} pairs of the 50 rejoin within the same 10 ms: {waits:?}");
+        }
+    }
 
     fn prompt(mode: PermissionMode) -> Command {
         Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, budget: None }

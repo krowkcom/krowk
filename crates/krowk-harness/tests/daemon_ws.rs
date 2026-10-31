@@ -271,7 +271,7 @@ fn r_proto_1_a_websocket_client_runs_a_turn_and_one_without_the_token_is_refused
 
         let (mut c, welcome) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         assert!(matches!(welcome, ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, .. }));
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
         let (mut typed, mut seqs, mut compressed) = (String::new(), Vec::new(), 0);
         let mut result_seen = false;
         'turn: while let Some(got) = c.next().await {
@@ -353,7 +353,7 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
         }
         // A hash nothing was put under: refused, and no session made.
         let (i, cmd) = run(with(home.prompt("look at [Image #1]", PermissionMode::Default), named(&[0])));
-        c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+        c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
         let (result, error) = done(&mut c, i).await;
         assert!(result.is_none());
         let e = error.expect("refused");
@@ -362,12 +362,12 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
         // Each, one message; the first twice.
         for n in [0, 0, 1, 2] {
             let (i, cmd) = run(put(n));
-            c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+            c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
             let (_, error) = done(&mut c, i).await;
             assert!(error.is_none(), "{error:?}");
         }
         let (i, cmd) = run(with(home.prompt("what are [Image #1], [Image #2] and [Image #3]?", PermissionMode::Default), named(&[0, 1, 2])));
-        c.send(&ClientFrame::Execute { id: i, command: cmd }).await;
+        c.send(&ClientFrame::Execute { id: i, command: cmd, client_ref: None }).await;
         let (result, error) = done(&mut c, i).await;
         assert!(error.is_none(), "{error:?}");
         let session = result.unwrap().session_id;
@@ -419,7 +419,7 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
         let (mut typed, mut first, mut deltas) = (String::new(), None, 0);
         'turn: while let Some(got) = c.next().await {
             let Got::Batch(_, frames) = got else { continue };
@@ -521,7 +521,7 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         for (id, what) in [(1, "paced one"), (2, "paced two"), (3, "paced three"), (4, "flood")] {
-            c.send(&ClientFrame::Execute { id, command: home.prompt(what, PermissionMode::Default) }).await;
+            c.send(&ClientFrame::Execute { id, command: home.prompt(what, PermissionMode::Default), client_ref: None }).await;
         }
         // For each session: when each batch with its typing arrived, and
         // what it typed.
@@ -594,7 +594,7 @@ fn r_lag_4_r_lag_10_a_slow_websocket_client_is_caught_up_from_its_cursor_in_boun
         let (addr, token) = home.websocket().await;
         let watcher = home.client().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
         // Asleep: nothing read, nothing acknowledged, while the turn runs.
         let mut most = 0u64;
         let until = Instant::now() + Duration::from_millis(1200);
@@ -646,7 +646,7 @@ fn r_lag_4_r_lag_10_a_suspended_unix_client_is_caught_up_from_its_cursor_in_boun
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
     let hello = ClientFrame::Hello { protocol_version: PROTOCOL_VERSION, cwd: home.repo().display().to_string(), krowk_version: "test".into(), answers_approvals: false, token: None, background: false };
-    let exec = ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default) };
+    let exec = ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None };
     writeln!(s, "{}\n{}", serde_json::to_string(&hello).unwrap(), serde_json::to_string(&exec).unwrap()).unwrap();
     // Suspended: not a byte read, while a second client watches the
     // daemon's queues.
@@ -707,7 +707,7 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         let started = Instant::now();
         home.lateness();
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("sleep", PermissionMode::BypassPermissions), client_ref: None }).await;
         let (mut pings, mut rtts, mut asked) = (Vec::new(), Vec::new(), None::<Instant>);
         // The thread's lateness a beat at a time, so a failure says when in
         // the turn the thread was held: at its start (the host's setup, the
@@ -783,7 +783,7 @@ fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         let started = Instant::now();
         home.lateness();
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("run true, then talk", PermissionMode::BypassPermissions) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("run true, then talk", PermissionMode::BypassPermissions), client_ref: None }).await;
         let (mut logged, mut when) = (0, Vec::new());
         let mut ask = tokio::time::interval(Duration::from_millis(50));
         loop {
@@ -839,7 +839,7 @@ fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         // A host to reload.
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default), client_ref: None }).await;
         done(&mut c, &[1]).await;
         let mut lates = Vec::new();
         for id in 2..5 {
@@ -878,7 +878,7 @@ fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
-        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hi", PermissionMode::Default), client_ref: None }).await;
         done(&mut c, &[1]).await;
         // The first reads what was there before, slowly; the second what
         // is there now, sooner, but not before the prompt could reach the
@@ -892,13 +892,13 @@ fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         c.send(&ClientFrame::Reload { id: 3, changed: None, renamed_from: None, renamed_to: None }).await;
-        c.send(&ClientFrame::Execute { id: 4, command: home.prompt("again", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 4, command: home.prompt("again", PermissionMode::Default), client_ref: None }).await;
         let answers = done(&mut c, &[2, 3, 4]).await;
         assert!(answers.values().all(Option::is_none), "every one answered without error: {answers:?}");
         assert_eq!(old.seen.lock().unwrap().len(), 1, "the first prompt alone went to the old API");
         assert_eq!(new.seen.lock().unwrap().len(), 1, "the one after the reloads went to the new");
         // And it stays applied once the slow read is back.
-        c.send(&ClientFrame::Execute { id: 5, command: home.prompt("once more", PermissionMode::Default) }).await;
+        c.send(&ClientFrame::Execute { id: 5, command: home.prompt("once more", PermissionMode::Default), client_ref: None }).await;
         done(&mut c, &[5]).await;
         assert_eq!(new.seen.lock().unwrap().len(), 2, "the slow first read did not replace the second's");
     });
@@ -921,6 +921,74 @@ async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<
         }
     }
     got
+}
+
+/// A TLS server on loopback that takes every handshake as far as the
+/// client lets it, with a certificate no platform trusts, counting them.
+fn tls_server() -> (String, Arc<AtomicU64>) {
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(include_bytes!("fixtures/tls/key.der").to_vec().into());
+    let cert = rustls::pki_types::CertificateDer::from(include_bytes!("fixtures/tls/cert.der").to_vec());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let cfg = Arc::new(rustls::ServerConfig::builder_with_provider(provider).with_safe_default_protocol_versions().unwrap().with_no_client_auth().with_single_cert(vec![cert], key).unwrap());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("https://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(AtomicU64::new(0));
+    let count = seen.clone();
+    std::thread::spawn(move || {
+        for sock in listener.incoming() {
+            let (Ok(mut sock), cfg) = (sock, cfg.clone()) else { continue };
+            count.fetch_add(1, Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let mut conn = rustls::ServerConnection::new(cfg).unwrap();
+                while conn.is_handshaking() && conn.complete_io(&mut sock).is_ok() {}
+            });
+        }
+    });
+    (url, seen)
+}
+
+/// R-LAG-9: a turn whose TLS handshake stalls — the check of the server's
+/// certificate takes 100 ms, as `SecTrustEvaluateWithError` can on macOS —
+/// leaves the daemon's thread on time: the connection, handshake and all,
+/// is made off it. The certificate is one no platform trusts, so each of
+/// the turn's attempts is refused after its stall and the turn fails.
+#[test]
+fn r_lag_9_a_turn_whose_tls_handshake_stalls_leaves_the_daemon_thread_on_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (url, handshakes) = tls_server();
+    let home = Home::new("slow-tls", &url);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(100);
+    let slow = krowk_harness::http::simulate_slow_verify(STALL);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        let started = Instant::now();
+        home.lateness();
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hello", PermissionMode::BypassPermissions), client_ref: None }).await;
+        let mut when = Vec::new();
+        let mut ask = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            tokio::select! {
+                _ = ask.tick() => when.push((started.elapsed(), home.lateness())),
+                got = c.next() => if let Got::Batch(_, frames) = got.expect("the connection stayed up")
+                    && frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. }))
+                {
+                    break;
+                },
+            }
+        }
+        let took = started.elapsed();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
+        let tried = handshakes.load(Ordering::SeqCst);
+        assert!(tried >= 1, "the turn tried the TLS server");
+        assert!(took >= STALL * tried as u32, "each handshake waited out its stalled check: {took:?} for {tried}");
+        assert!(late < Duration::from_millis(10), "the daemon's thread was held {late:?} by a stalled certificate check — held {held:?}");
+    });
+    drop(slow);
+    daemon.join().unwrap().unwrap();
 }
 
 /// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
@@ -1030,7 +1098,7 @@ fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_fr
     let home = Home::new("seq", &m.url);
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let mut a = Raw::connect(&home);
-    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
     let first = a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
     let session = first.iter().find_map(|f| if let ServerFrame::Line { session, .. } = f { Some(session.clone()) } else { None }).unwrap();
     let top = *seqs_of(&first).iter().max().unwrap();
@@ -1038,12 +1106,12 @@ fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_fr
     drop(a);
     std::thread::sleep(Duration::from_millis(100));
     let mut b = Raw::connect(&home);
-    b.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "two") });
+    b.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "two"), client_ref: None });
     // Mid-turn, a client with a cursor from another daemon run attaches:
     // a `seq` past anything, which this daemon must not trust.
     let mut c = Raw::connect(&home);
     let early = b.until(|f| typed_of(std::slice::from_ref(f)).contains("w20 "));
-    c.send(&ClientFrame::Attach { id: 7, session_id: session.clone(), after_event_id: None, after_seq: Some(1_000_000), epoch: Some(c.epoch - 1) });
+    c.send(&ClientFrame::Attach { id: 7, session_id: session.clone(), after_event_id: None, after_seq: Some(1_000_000), epoch: Some(c.epoch - 1), client_ref: None });
     let rest = b.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
     let second: Vec<ServerFrame> = early.into_iter().chain(rest).collect();
     assert!(seqs_of(&second).iter().all(|s| *s > top), "numbered on from {top}, never again from 1: {:?}", &seqs_of(&second)[..3]);
@@ -1067,7 +1135,7 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     // X runs the first turn and stops reading; Y runs the next one in the
     // same session while X is still behind.
     let mut x = Raw::connect(&home);
-    x.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    x.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
     let head = x.until(|f| matches!(f, ServerFrame::Line { .. }));
     let ServerFrame::Line { session, .. } = &head[0] else { unreachable!() };
     let session = session.clone();
@@ -1082,14 +1150,14 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     // refused as busy, and there is no second turn. An attach's `running`
     // is the whole command, and `settled` its end.
     let mut w = Raw::connect(&home);
-    w.send(&ClientFrame::Attach { id: 3, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None });
+    w.send(&ClientFrame::Attach { id: 3, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None, client_ref: None });
     let attached = w.until(|f| matches!(f, ServerFrame::Attached { id: 3, .. }));
     let Some(ServerFrame::Attached { running, error: None, .. }) = attached.last() else { panic!("attached: {:?}", attached.last()) };
     if *running {
         w.until(|f| matches!(f, ServerFrame::Settled { session: s } if *s == session));
     }
     drop(w);
-    y.send(&ClientFrame::Execute { id: 9, command: prompt_in(&home, Some(&session), "two") });
+    y.send(&ClientFrame::Execute { id: 9, command: prompt_in(&home, Some(&session), "two"), client_ref: None });
     let taken = y.until(|f| matches!(f, ServerFrame::Done { id: 9, .. }));
     if let Some(ServerFrame::Done { error: Some(e), .. }) = taken.last() {
         panic!("the second prompt was taken, not refused: {} ({})", e.code, e.message);
@@ -1132,12 +1200,12 @@ fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     // Twelve turns: a log several times the cap.
     let mut a = Raw::connect(&home);
-    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn") });
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn"), client_ref: None });
     let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
     let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
     let session = session.clone();
     for id in 1..12 {
-        a.send(&ClientFrame::Execute { id, command: prompt_in(&home, Some(&session), "turn") });
+        a.send(&ClientFrame::Execute { id, command: prompt_in(&home, Some(&session), "turn"), client_ref: None });
         a.until(|f| matches!(f, ServerFrame::Done { id: d, .. } if *d == id));
     }
     let log = std::fs::read(log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE)).unwrap();
@@ -1145,7 +1213,7 @@ fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
     let events = log.iter().filter(|b| **b == b'\n').count();
     // A slow reader attaches.
     let mut c = Raw::connect(&home);
-    c.send(&ClientFrame::Attach { id: 5, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None });
+    c.send(&ClientFrame::Attach { id: 5, session_id: session.clone(), after_event_id: None, after_seq: None, epoch: None, client_ref: None });
     let watch = std::thread::spawn({
         let socket = home.socket();
         let repo = home.repo();
@@ -1179,6 +1247,91 @@ fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
     sorted.dedup();
     assert_eq!(sorted.len(), ids.len());
     drop((a, c));
+    daemon.join().unwrap().unwrap();
+}
+
+/// A page near the end of a long log reads the end, not the log: an attach
+/// from a cursor among the last turn's events, in a log of 50,000 events,
+/// reads under 64 KiB of it; and a last line caught half written is read
+/// again, from there, until it is whole.
+#[test]
+fn a_page_near_the_end_of_a_long_log_reads_from_its_cursor() {
+    use krowk_harness::protocol::{LogBody, LogEvent, Usage};
+    use std::io::Write;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, n| mock::Reply::sse(&mock::text_stream(&format!("answer {n}"))));
+    let home = Home::new("offset", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 1 << 20, control_bytes: 1 << 20 });
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn"), client_ref: None });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
+    let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
+    let session = session.clone();
+    let path = log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE);
+    // 50,000 events no turn replays, hung from the log's head.
+    let filler = |i: usize, parent: String| LogEvent {
+        id: format!("01900000-0000-7000-8000-{i:012x}"),
+        parent_id: Some(parent),
+        session_id: session.clone(),
+        time_ms: 0,
+        body: LogBody::SubagentResponse { turn_id: "t".into(), response_id: None, model: "m".into(), usage: Usage::default() },
+    };
+    let head = log::read_events(&path).unwrap().last().unwrap().id.clone();
+    let mut parent = head;
+    let mut text = String::new();
+    for i in 0..50_000 {
+        let ev = filler(i, parent);
+        text.push_str(&serde_json::to_string(&ev).unwrap());
+        text.push('\n');
+        parent = ev.id;
+    }
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(text.as_bytes()).unwrap();
+    // A turn on it: the hub notes where each of its events starts.
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "turn"), client_ref: None });
+    a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let events = log::read_events(&path).unwrap();
+    assert!(events.len() > 50_000);
+    let started = events.iter().rposition(|e| matches!(e.body, LogBody::TurnStarted { .. })).unwrap();
+    assert!(events.len() - started <= 10, "the cursor is among the last 10 events");
+    let cursor = events[started].id.clone();
+    let ids_of = |got: &[ServerFrame]| -> Vec<String> { got.iter().filter_map(|f| if let ServerFrame::Line { line: StreamLine::Log(e), .. } = f { Some(e.id.clone()) } else { None }).collect() };
+    let attach = |id: u64| {
+        let mut c = Raw::connect(&home);
+        c.send(&ClientFrame::Attach { id, session_id: session.clone(), after_event_id: Some(cursor.clone()), after_seq: None, epoch: None, client_ref: None });
+        c
+    };
+    let attached = |c: &mut Raw, id: u64| {
+        let got = c.until(|f| matches!(f, ServerFrame::Attached { id: i, .. } if *i == id));
+        let Some(ServerFrame::Attached { error: None, .. }) = got.last() else { panic!("attached: {:?}", got.last()) };
+        got
+    };
+    let after: Vec<String> = events[started + 1..].iter().map(|e| e.id.clone()).collect();
+    let before = log::bytes_read();
+    let mut c = attach(5);
+    let got = attached(&mut c, 5);
+    let read = log::bytes_read() - before;
+    assert_eq!(ids_of(&got), after, "the log after the cursor");
+    let size = std::fs::metadata(&path).unwrap().len();
+    assert!(read < 64 * 1024, "the page read {read} bytes of a {size}-byte log");
+    // Its last line half written as the next attach reads, whole a little
+    // later: read again, from the cursor, until it is.
+    let torn = serde_json::to_string(&filler(50_000, events.last().unwrap().id.clone())).unwrap();
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(&torn.as_bytes()[..torn.len() / 2]).unwrap();
+    let before = log::bytes_read();
+    let mut d = attach(6);
+    // Read twice while torn, then whole.
+    let until = Instant::now() + Duration::from_secs(10);
+    while log::bytes_read() - before <= 2 * read && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    writeln!(f, "{}", &torn[torn.len() / 2..]).unwrap();
+    let got = attached(&mut d, 6);
+    let again = log::bytes_read() - before;
+    let want: Vec<String> = after.iter().cloned().chain([filler(50_000, String::new()).id]).collect();
+    assert_eq!(ids_of(&got), want, "the torn line once whole, after the rest");
+    assert!(again > 2 * read && again < size / 10, "the torn line was read again from the cursor, not the top: {again} bytes");
+    drop((a, c, d));
     daemon.join().unwrap().unwrap();
 }
 
@@ -1241,11 +1394,11 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     std::fs::create_dir_all(slow.join(".git")).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let mut a = Raw::connect(&home);
-    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
     let mut seen = a.until(|f| delta_text(f).is_some());
     // A turn in a new directory whose configuration is still being read.
     let mut b = Raw::connect_in(&home, &slow);
-    b.send(&ClientFrame::Execute { id: 2, command: prompt_in(&home, None, "two") });
+    b.send(&ClientFrame::Execute { id: 2, command: prompt_in(&home, None, "two"), client_ref: None });
     std::thread::sleep(Duration::from_millis(200));
     let signalled = Instant::now();
     assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
@@ -1254,7 +1407,7 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
     assert!(interrupted, "the running turn was interrupted and logged its end");
     // Stopping, and still up while the slow read holds it: a new turn is
     // refused, and so is the one whose read the signal overtook.
-    a.send(&ClientFrame::Execute { id: 3, command: prompt_in(&home, None, "three") });
+    a.send(&ClientFrame::Execute { id: 3, command: prompt_in(&home, None, "three"), client_ref: None });
     let refused = |f: &ServerFrame, want: u64| matches!(f, ServerFrame::Done { id, error: Some(e), .. } if *id == want && e.code == "host_stopping");
     let three = a.until(|f| matches!(f, ServerFrame::Done { id: 3, .. }));
     assert!(refused(three.last().unwrap(), 3), "{:?}", three.last());
@@ -1279,7 +1432,7 @@ fn r_lag_9_a_second_sigterm_exits_at_once() {
     std::fs::create_dir_all(stuck.join(".git")).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let mut a = Raw::connect_in(&home, &stuck);
-    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one") });
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
     std::thread::sleep(Duration::from_millis(200));
     let term = || assert!(std::process::Command::new("kill").args(["-TERM", &std::process::id().to_string()]).status().unwrap().success());
     term();

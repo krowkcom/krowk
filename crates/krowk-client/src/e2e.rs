@@ -1226,7 +1226,7 @@ impl SigningKey {
 /// device (canon, engineering/crypto.md → Signed registry requests): what
 /// `krowk_api::Client::signed_by` takes. krowk-api builds the lines; the
 /// key and the signature stay here (R-E2E-2). The lines begin with their
-/// own label, `krowk/registry/v1`, so a registry signature is never a
+/// own label, `krowk/registry/v2`, so a registry signature is never a
 /// relay join's and one is never the other's.
 pub struct DeviceSigner {
     device: DeviceId,

@@ -21,6 +21,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   while an approval or question waits, since nobody would be there to
   answer it. On a synced viewer the first Ctrl-D now says the turn keeps
   running on the host.
+- **A synced session finds the direct path again when your network
+  changes.** A terminal viewing a synced session now checks this
+  machine's addresses every 2 seconds. When they change (another Wi-Fi,
+  a VPN up or down), it races for the direct path at once instead of
+  waiting out a backoff that can reach 5 minutes, as the iPhone app
+  already did. Loopback and link-local addresses don't count, and it
+  races at most once every 10 seconds. The check runs only while a
+  session is being viewed, so an idle daemon does no extra work.
 
 - **A moved session keeps its images.** When you move a synced session to
   another machine, that machine now fetches every image the earlier turns
@@ -465,6 +473,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   iPhone uses, and `dev` when krowk joined the relay's development env
   (a host in the other env is never met). On a narrow terminal the
   connection gives way first; the host's name and `dev` stay.
+- **A host bridging many sessions no longer floods the relay when it
+  comes back.** Each session's bridge used to retry the relay every second
+  in lockstep, so a host with fifty synced sessions came back as one burst
+  against the relay's caps on connections not yet joined. A retry now
+  waits one to two seconds, drawn per session. The reference relay
+  (`krowk relay serve`) writes one `evict` line to stderr for every
+  waiting connection it lets go, naming the pool, the workspace and that
+  pool's running count.
+- **Catching up on a long session reads only its end.** A client that
+  falls behind or reattaches during a turn used to make the daemon read
+  the session's whole log for every page, and starting a turn read it
+  once more just to count it. The daemon now notes where each of the
+  turn's recent events starts in the log and reads from the client's
+  place, so catching up costs the same whether the log is a hundred
+  events or fifty thousand.
 
 - **An image is capped at 2.75 MB, and named by its sha256.** One image
   can be at most 2.75 MiB in every session, local ones included, so that a
@@ -477,6 +500,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   field; sessions logged before keep their old file names and still
   resume with their images.
 
+- **The host says which tailnet user the same-user check holds to.** With
+  `KROWK_TAILSCALE_SAME_USER=1`, hosting prints
+  `krowk: the same-user check admits only nodes of <login> (tailnet user <id>)`.
+  One login can carry two tailnet user ids, and a device signed in under
+  the other one is refused; the id on this line is how to tell. Nothing
+  changes with the check off.
 - **Closing the fullscreen TUI leaves the shell's screen as it was.** The
   conversation is no longer printed onto it on the way out, where it came
   out without the layout the TUI drew it in. The session is saved, and the
@@ -663,6 +692,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **A first prompt survives a dropped connection to the host daemon
+  (ticket 162).** If the connection went after the daemon took a prompt
+  that starts a new session but before its first line came back, krowk
+  used to report `host_gone` while the turn ran on unseen. The client now
+  tags such a prompt with an id of its own, and on the next connection
+  asks the daemon for the session that prompt started, then follows it
+  from the start to its result. The prompt is never sent twice. A daemon
+  from before this change still answers `host_gone`, as before. The
+  protocol gains an optional `clientRef` on `execute` and `attach`; the
+  protocol version is unchanged.
+
 - **`/connect` no longer stalls the host daemon's other sessions on a
   slow disk (ticket 154).** The daemon's `reload`, which re-reads
   config.json and the credentials after `/connect`, used to do that
@@ -677,6 +717,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   that a resumed turn sends its prompt to the provider only once, and
   the four-session load test measures the daemon's lateness until all
   four sessions end, not only the first.
+- **`/sessions` follows a session another client started after the TUI
+  opened.** With sessions in the host daemon, picking one that another
+  terminal began while this TUI was open used to only replay it, as though
+  it had ended. The TUI now asks the daemon whether it is running and
+  follows the turn live to its end. A session that has ended is still only
+  replayed.
+- **A slow certificate check no longer stalls the host daemon.** Each
+  turn opens a new connection to the provider, and checking its TLS
+  certificate is a blocking call (on macOS, the system trust service). The
+  daemon made it on the one thread every session streams on, so a slow
+  check held up every other session's output and heartbeats. The daemon
+  now makes connections on a separate thread. `krowk -p` is unchanged.
+
 - **The iPhone app closes three gaps left by earlier tickets (ticket
   145).** An approval request answered on another device while the
   phone was disconnected now leaves the approval sheet when the phone
@@ -831,6 +884,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   addresses' answers, refusals too, for a minute. A connection is refused as `not_same_tailnet_user` if it waits
   past its join deadline, if too many are already waiting (1024 in all,
   32 from one address), or if the lookup fails.
+- **Signed registry calls now name the device and the registry.** Every
+  call that acts as this machine's device is signed over v2 lines, sent
+  with `X-Krowk-Signature-Version: 2`, which add the device's id and the
+  API origin (`https://api.krowk.com` by default). A signature can no
+  longer be passed off as another device's or checked by a registry it
+  wasn't made for. Nothing changes for you. The `krowk-devregistry`
+  stand-in checks v2 the same way and still takes v1 without the header.
+- **Ready for the registry retiring v1 signing.** Once it does, a krowk
+  from before v2 is refused with `signature_version_retired` and a message
+  naming the release to upgrade to. This release signs v2, so nothing
+  changes for you; should it meet that refusal, it shows the registry's
+  message once, whole, as the fix, and the iOS app asks to be updated.
+  The `krowk-devregistry` stand-in retires v1 the same way with
+  `KROWK_DEVREGISTRY_V1_UNTIL` (an ISO date; v1 is still taken on that UTC
+  day) and names the release from `KROWK_DEVREGISTRY_V2_RELEASE`.
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
   bomb (RUSTSEC-2026-0344), where a tiny zstd input could exhaust memory.
   krowk decompresses with it when it restores a vintage and when it reads

@@ -148,7 +148,14 @@ fn bind(addr: &str) -> io::Result<TcpListener> {
 fn serve(w: &mut dyn Write, ln: TcpListener, asked: &str, site: &str, limit_bytes: i64) -> RunError {
     let bound = ln.local_addr().map(|a| a.to_string()).unwrap_or_default();
     let _ = w.write_all(banner(&bound, asked).as_bytes()).and_then(|_| w.flush());
-    let config = Config { limit_bytes, site: site.to_owned(), clock: None, max_sessions: 0, login_person: None };
+    let env = |name: &str| std::env::var(name).unwrap_or_default();
+    let config = Config {
+        limit_bytes,
+        site: site.to_owned(),
+        v1_until: env("KROWK_DEVREGISTRY_V1_UNTIL"),
+        v2_release: env("KROWK_DEVREGISTRY_V2_RELEASE"),
+        ..Config::default()
+    };
     RunError::Stopped(asked.to_owned(), krowk_devregistry::serve(ln, config))
 }
 

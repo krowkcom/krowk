@@ -921,6 +921,10 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
         if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled") {
             continue;
         }
+        // A fix that is the registry's message whole says it once.
+        if k == "message" && body.get("fix") == Some(v) {
+            continue;
+        }
         if let (Value::Object(fields), "details") = (v, k.as_str()) {
             let mut names: Vec<&String> = fields.keys().collect();
             names.sort();

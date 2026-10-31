@@ -132,7 +132,7 @@ fn direct(ctx: &mut Ctx, api: &Client) -> Result<Option<krowk_harness::sync::dir
             return Ok(None);
         }
     };
-    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: None, stop: None }))
+    Ok(Some(krowk_harness::sync::direct::Config { socket, roster, same_user, lan, lan_at: None, stop: None, whois_kept: None }))
 }
 
 /// Where the registry's ticket keys are kept between hostings, in krowk's
@@ -539,7 +539,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // The host checkpoints, ships the bundle and hands the lease over.
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let v = keys(ctx)?;
-    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api: api.clone(), device: v.device, signing: v.signing, keys: v.user, chain: v.chain, session: session.clone(), known: None };
+    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api: api.clone(), device: v.device, signing: v.signing, keys: v.user, chain: v.chain, session: session.clone(), known: None, addrs: None };
     let _ = writeln!(ctx.io.stderr, "krowk: asking the session's host to hand it over…");
     let handed = match krowk_harness::sync::ask_handoff(o, std::time::Duration::from_secs(300)) {
         Ok(h) => h,
@@ -624,7 +624,7 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
-    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None };
+    let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None, addrs: None };
     if on_a_terminal(ctx) {
         return super::tui::run_synced(ctx, o);
     }

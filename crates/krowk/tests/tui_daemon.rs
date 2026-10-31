@@ -264,6 +264,32 @@ fn r_proto_1_two_tuis_on_one_session_show_the_same_reply() {
     }
 }
 
+/// A session another client started after this TUI opened, picked from
+/// `/sessions`, is followed live to its end: the daemon is asked whether it
+/// runs, not the list this TUI took at start.
+#[test]
+fn a_session_another_client_started_after_the_tui_opened_is_followed_from_sessions() {
+    const ANSWER: &str = "alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa";
+    let m = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(ANSWER), Duration::from_millis(120)));
+    let d = Daemon::new("later");
+    let mut a = pty::Pty::spawn(d.command(&m.url, &[]), 100, 30);
+    assert!(a.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    let mut b = pty::Pty::spawn(d.command(&m.url, &[]), 100, 30);
+    assert!(b.wait_for(" help", Duration::from_secs(10)).is_some(), "{:?}", b.text());
+    b.write(b"say the alphabet\r");
+    assert!(b.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", b.text());
+    a.write(format!("/sessions {}\r", d.session()).as_bytes());
+    assert!(a.wait_for("following it", Duration::from_secs(10)).is_some(), "{:?}", a.text());
+    assert!(a.wait_for("papa", Duration::from_secs(15)).is_some(), "followed live: {:?}", a.text());
+    assert!(a.wait_for("tokens", Duration::from_secs(10)).is_some(), "to the turn's end: {:?}", a.text());
+    let text = a.text();
+    assert!(!text.contains("host_gone") && !text.contains("link to the synced session ended"), "{text:?}");
+    for t in [&mut a, &mut b] {
+        t.write(b"\x04\x04");
+        assert!(t.wait(Duration::from_secs(10)).is_some());
+    }
+}
+
 /// R-SWITCH-4: a `/model` another terminal gives the session between the
 /// first TUI's turns is kept by that TUI's next prompt — it runs on the
 /// model the session moved to, and nothing switches it back: with both in

@@ -18,7 +18,7 @@
 //! (with mDNS) are the harness's; what is shown, sent and when is the core's.
 
 use super::store::{self, Head};
-use super::direct::Candidate;
+use super::direct::{Candidate, LanAt};
 use super::Join;
 use crate::protocol::Command;
 use futures_util::StreamExt;
@@ -29,7 +29,8 @@ use krowk_client::session_record::Signer;
 use krowk_client::user_key::UserKeys;
 use krowk_client::sync::viewer::{Effect, ViewerCore};
 pub use krowk_client::sync::viewer::{Update, HELD_MAX, PROBE, REPROBE, REPROBE_MAX};
-use std::collections::{HashSet, VecDeque};
+use std::collections::{BTreeSet, HashSet, VecDeque};
+use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -59,6 +60,65 @@ pub struct Options {
     /// The highest head this device has seen of the session before: a log
     /// served shorter is refused.
     pub known: Option<Head>,
+    /// Where this machine's addresses are read every `ADDR_CHECK`; None
+    /// for its interfaces' own.
+    pub addrs: Option<LanAt>,
+}
+
+/// How often an attached viewer reads this machine's addresses: a set
+/// that changed (another Wi-Fi, a VPN up or down) races for the direct
+/// path again at once, its backoff started over (R-NET-2), as the phone
+/// does on a network change.
+pub const ADDR_CHECK: Duration = Duration::from_secs(2);
+
+/// The least time between two races an address change starts: a network
+/// that flaps races once in it, the change seen meanwhile raced at its end.
+pub const ADDR_RACE_EVERY: Duration = Duration::from_secs(10);
+
+/// This machine's interface addresses (`getifaddrs`).
+fn own_addrs() -> Vec<IpAddr> {
+    if_addrs::get_if_addrs().unwrap_or_default().into_iter().map(|i| i.ip()).collect()
+}
+
+/// The addresses a viewer follows, and whether a change awaits its race.
+struct Addrs {
+    at: LanAt,
+    seen: BTreeSet<IpAddr>,
+    changed: bool,
+    raced_ms: Option<u64>,
+}
+
+impl Addrs {
+    fn new(at: LanAt) -> Addrs {
+        let seen = Addrs::read(&at);
+        Addrs { at, seen, changed: false, raced_ms: None }
+    }
+
+    /// What `at` reads, loopback and link-local left out: those change
+    /// with no network moved.
+    fn read(at: &LanAt) -> BTreeSet<IpAddr> {
+        let link_local = |ip: &IpAddr| match ip {
+            IpAddr::V4(v4) => v4.is_link_local(),
+            IpAddr::V6(v6) => v6.segments()[0] & 0xffc0 == 0xfe80,
+        };
+        at().into_iter().filter(|ip| !ip.is_loopback() && !ip.is_unspecified() && !link_local(ip)).collect()
+    }
+
+    /// Reads the addresses at `now_ms`: true when a race is due for a
+    /// change, at most once an `ADDR_RACE_EVERY`.
+    fn check(&mut self, now_ms: u64) -> bool {
+        let now = Addrs::read(&self.at);
+        if now != self.seen {
+            self.seen = now;
+            self.changed = true;
+        }
+        let every = u64::try_from(ADDR_RACE_EVERY.as_millis()).unwrap_or(u64::MAX);
+        if !self.changed || self.raced_ms.is_some_and(|r| now_ms < r.saturating_add(every)) {
+            return false;
+        }
+        (self.changed, self.raced_ms) = (false, Some(now_ms));
+        true
+    }
 }
 
 /// A running viewer: `send` a command, read `updates` a frame at a time.
@@ -107,7 +167,8 @@ pub async fn attach(o: Options) -> Result<Viewer, String> {
     let start = tokio::time::Instant::now();
     let (core, first) = ViewerCore::new(key.clone(), &o.session, o.device, &o.relay, attached, 0);
     let (won_tx, won) = mpsc::unbounded_channel();
-    let mut d = Driver { o, key, core, start, ws: None, leaving: None, pending: None, out: tx, handed: handed.clone(), won_tx };
+    let addrs = Addrs::new(o.addrs.clone().unwrap_or_else(|| Arc::new(own_addrs)));
+    let mut d = Driver { o, key, core, start, ws: None, leaving: None, pending: None, out: tx, handed: handed.clone(), won_tx, race: 0, racing: None, addrs };
     // The session as read at rest goes out before `attach` answers, and
     // the first join is set for now.
     if d.carry_out(first).await {
@@ -157,7 +218,11 @@ struct Driver {
     pending: Option<(serde_json::Value, u64)>,
     out: mpsc::Sender<Vec<Update>>,
     handed: Arc<std::sync::Mutex<Vec<Instant>>>,
-    won_tx: mpsc::UnboundedSender<Won>,
+    won_tx: mpsc::UnboundedSender<(u64, Won)>,
+    /// The race out's number: a race's end under an older one is let go.
+    race: u64,
+    racing: Option<tokio::task::AbortHandle>,
+    addrs: Addrs,
 }
 
 impl Driver {
@@ -173,7 +238,10 @@ impl Driver {
         }
     }
 
-    async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut handoff: mpsc::UnboundedReceiver<()>, mut won: mpsc::UnboundedReceiver<Won>) {
+    async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>, mut handoff: mpsc::UnboundedReceiver<()>, mut won: mpsc::UnboundedReceiver<(u64, Won)>) {
+        // Only while a viewer runs: an idle daemon reads no addresses.
+        let mut check = tokio::time::interval_at(tokio::time::Instant::now() + ADDR_CHECK, ADDR_CHECK);
+        check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             let wake = self.core.next_wake();
             let (woken, joining) = (self.at(wake), self.at(self.pending.as_ref().map(|p| p.1)));
@@ -185,7 +253,13 @@ impl Driver {
                 Some(()) = handoff.recv() => self.core.ask_handoff(self.now()),
                 _ = tokio::time::sleep_until(woken), if wake.is_some() => self.core.tick(self.now()),
                 _ = tokio::time::sleep_until(joining), if self.pending.is_some() => self.join().await,
-                Some(w) = won.recv() => self.won(w),
+                Some((n, w)) = won.recv() => if n == self.race { self.won(w) } else { Vec::new() },
+                _ = check.tick() => {
+                    if self.addrs.check(self.now()) {
+                        self.race_now();
+                    }
+                    Vec::new()
+                }
                 m = next(&mut self.leaving) => match m {
                     Msg::Binary(b) => self.core.leaving(&b, self.now()),
                     Msg::Other => Vec::new(),
@@ -227,10 +301,22 @@ impl Driver {
         }
     }
 
+    /// The next race as soon as one may run, its backoff started over
+    /// (`ViewerCore::race_now`): a race out is let go uncounted, its
+    /// candidates dropped.
+    fn race_now(&mut self) {
+        if let Some(r) = self.racing.take() {
+            r.abort();
+        }
+        self.race += 1;
+        self.core.race_now(self.now());
+    }
+
     /// A race's end. A candidate the core moves to (its hello the `Send`
     /// back) is the current connection from here, the relay's the leaving
     /// one; any other is dropped.
     fn won(&mut self, w: Won) -> Vec<Effect> {
+        self.racing = None;
         let Some((c, dw, joined)) = w else {
             self.core.probe_lost(self.now());
             return Vec::new();
@@ -285,7 +371,9 @@ impl Driver {
                     self.pending = Some((extra, at_ms));
                 }
                 Effect::Probe => {
-                    tokio::spawn(race(self.o.clone(), self.core.candidates().to_vec(), self.core.cursor_extra(), self.won_tx.clone()));
+                    self.race += 1;
+                    let r = tokio::spawn(race(self.o.clone(), self.core.candidates().to_vec(), self.core.cursor_extra(), self.race, self.won_tx.clone()));
+                    self.racing = Some(r.abort_handle());
                 }
                 Effect::Leave => self.leaving = None,
                 Effect::End => return false,
@@ -298,11 +386,11 @@ impl Driver {
 /// Races every candidate: joins each, at the viewer's cursor, with a fresh
 /// ticket, and hands on the first that joins, or None when none does. The
 /// rest are dropped as it returns.
-async fn race(o: Arc<Options>, candidates: Vec<Candidate>, extra: serde_json::Value, won: mpsc::UnboundedSender<Won>) {
+async fn race(o: Arc<Options>, candidates: Vec<Candidate>, extra: serde_json::Value, n: u64, won: mpsc::UnboundedSender<(u64, Won)>) {
     let api = o.api.clone();
     let (id, device, env) = (o.session.clone(), o.device.to_string(), o.env.clone());
     let Ok(Ok(ticket)) = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, &env)).await else {
-        let _ = won.send(None);
+        let _ = won.send((n, None));
         return;
     };
     let ticket = ticket.relay_ticket;
@@ -343,7 +431,7 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, extra: serde_json::Va
         tokio::select! {
             r = set.join_next(), if !set.is_empty() => {
                 if let Some(Ok(Ok(w))) = r {
-                    let _ = won.send(Some(w));
+                    let _ = won.send((n, Some(w)));
                     return;
                 }
                 welcomed_failed = welcomed_failed || set.is_empty();
@@ -356,5 +444,40 @@ async fn race(o: Arc<Options>, candidates: Vec<Candidate>, extra: serde_json::Va
             else => break,
         }
     }
-    let _ = won.send(None);
+    let _ = won.send((n, None));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU8, Ordering};
+
+    /// R-NET-2: a change of this machine's addresses is a race due at the
+    /// next check, one an `ADDR_RACE_EVERY`, a change seen meanwhile raced
+    /// at its end; loopback and link-local addresses coming and going are
+    /// no change.
+    #[test]
+    fn r_net_2_an_address_change_races_once_in_ten_seconds() {
+        let at = Arc::new(AtomicU8::new(0));
+        let a = at.clone();
+        let src: LanAt = Arc::new(move || {
+            let mut v: Vec<IpAddr> = vec![[192, 168, 1, a.load(Ordering::SeqCst) / 2 + 5].into()];
+            if a.load(Ordering::SeqCst) % 2 == 1 {
+                v.extend::<[IpAddr; 3]>([[127, 0, 0, 2].into(), [169, 254, 3, 4].into(), "fe80::1".parse().unwrap()]);
+            }
+            v
+        });
+        let mut w = Addrs::new(src);
+        assert!(!w.check(2_000), "nothing moved");
+        at.store(1, Ordering::SeqCst);
+        assert!(!w.check(4_000), "loopback and link-local are no change");
+        at.store(2, Ordering::SeqCst);
+        assert!(w.check(6_000), "a new address races");
+        assert!(!w.check(8_000), "once");
+        at.store(4, Ordering::SeqCst);
+        assert!(!w.check(10_000), "not twice in ten seconds");
+        assert!(!w.check(14_000));
+        assert!(w.check(16_000), "the change seen meanwhile races at the end of them");
+        assert!(!w.check(28_000));
+    }
 }

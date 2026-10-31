@@ -105,7 +105,7 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     b.client(&f.api).claim_key_device().unwrap();
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: f.session.clone(), known: None };
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: f.session.clone(), known: None, addrs: None };
     let request = f.request.clone().unwrap();
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     let got = rt.block_on(until(&mut v, Duration::from_secs(10), |all| {
@@ -191,7 +191,7 @@ fn r_hand_4_a_prompt_queued_with_no_host_runs_once_when_the_fleet_hosts_the_sess
     f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
     b.client(&f.api).claim_key_device().unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None, addrs: None };
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(false)))));
 
@@ -249,7 +249,7 @@ fn streams(prompt: &str, lines_streamed: usize) {
     f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
     b.client(&f.api).claim_key_device().unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None, addrs: None };
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(true)))));
 
@@ -308,7 +308,7 @@ fn r_net_2_r_ios_15_a_direct_lan_fleet_moves_a_viewer_onto_its_loopback_listener
     f.host.client(&f.api).append_device_list(&fleet::post(&batch)).unwrap();
     b.client(&f.api).claim_key_device().unwrap();
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None };
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys: UserKeys::new(f.user.clone(), []).unwrap(), chain, session: id.clone(), known: None, addrs: None };
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     let direct = |u: &viewer::Update| match u {
         viewer::Update::Path { path, via: Some(via) } if path == "direct over LAN" => Some(via.clone()),
@@ -765,7 +765,7 @@ fn r_switch_4_r_inst_7_a_viewer_switches_a_fleet_session_between_host_as_instanc
     assert_eq!(ready, ["anthropic", fleet::PERSONAL], "both instances ready: {:?}", announced.instances);
 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys, chain, session: id.clone(), known: None };
+    let o = viewer::Options { relay: f.relay.clone(), env: f.env.clone(), api: b.client(&f.api), device: b.key.id(), signing: b.signing_copy(), keys, chain, session: id.clone(), known: None, addrs: None };
     let mut v = rt.block_on(viewer::attach(o)).unwrap();
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(true)))));
     let anthropic = ModelRef { instance: "anthropic".into(), model: "claude-sonnet-4-6".into() };

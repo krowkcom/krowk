@@ -39,6 +39,11 @@ tokio = { version = "1", default-features = false, features = ["rt", "time", "pr
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-manual-roots"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-platform-verifier = "0.7"
+# The host daemon's connector layer (http::OffThread), which makes each
+# connection off its thread: the two trait crates reqwest's own `tower`
+# links already, so no new crate.
+tower-layer = "0.3"
+tower-service = "0.3"
 sha2 = "0.11"
 # The SuperGrok OAuth login: the PKCE verifier and state come from ring's
 # system RNG, are base64url-encoded, and the sign-in URL and the loopback

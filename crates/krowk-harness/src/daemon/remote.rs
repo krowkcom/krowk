@@ -90,7 +90,7 @@ impl Remote {
 
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let c = self.fresh().await?;
-        let from = super::client::Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0 };
+        let from = super::client::Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0, client_ref: None };
         let r = c.resume(&from, out.clone()).await;
         self.carry_on(r, out, false).await
     }

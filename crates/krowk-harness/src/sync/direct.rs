@@ -44,6 +44,9 @@ pub struct Config {
     /// Stops the listener when it turns true; without it the listener goes
     /// with the bridge.
     pub stop: Option<watch::Receiver<bool>>,
+    /// How long the same-user check keeps tailscaled's answer for one
+    /// address; None for `Limits`' own. For a test to look again at once.
+    pub whois_kept: Option<Duration>,
 }
 
 /// A source of LAN addresses, for a test to move them.
@@ -113,6 +116,17 @@ pub fn same_user(status: &tailscale::Status) -> Result<u64, String> {
     Ok(status.me.user_id)
 }
 
+/// The host's line for a person diagnosing a refused device: the tailnet
+/// user the same-user check holds to, by login and id, since one login can
+/// carry two ids and a device under the other is turned away.
+pub fn same_user_line(status: &tailscale::Status, user: u64) -> String {
+    let login = status.user.as_ref().and_then(|u| u.get(&user.to_string())).map(|p| p.login_name.as_str()).filter(|l| !l.is_empty());
+    match login {
+        Some(login) => format!("krowk: the same-user check admits only nodes of {login} (tailnet user {user})"),
+        None => format!("krowk: the same-user check admits only nodes of tailnet user {user}"),
+    }
+}
+
 /// Reads this node from tailscaled and listens on its tailnet address (and
 /// LAN address), on one port; with the LAN offered, Tailscale not running
 /// leaves the LAN alone, advertised over mDNS too. Errors say why there is
@@ -141,6 +155,10 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(status)? }) } else { None };
         let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
         port = first.local_addr().map_err(|e| e.to_string())?.port();
+        // Once listening, so the line never names a check that isn't held.
+        if let Some(w) = &whois {
+            eprintln!("{}", same_user_line(status, w.user));
+        }
         listeners.push(first);
         candidates.push(Candidate { url: url(ip, port), via: "tailscale".into() });
         if let Some(name) = status.magic_dns() {
@@ -183,7 +201,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     }
     let dial = origins.first().unwrap_or(&candidates[0].url).clone();
     origins.extend(candidates.iter().map(|c| c.url.clone()));
-    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins, whois, pin: Some((session, host)) };
+    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, whois_kept: c.whois_kept.unwrap_or(Limits::default().whois_kept), ..Limits::default() }, state: None, origins, whois, pin: Some((session, host)) };
     let (stop, rx) = match c.stop.clone() {
         Some(rx) => (None, rx),
         None => {
@@ -473,5 +491,14 @@ mod tests {
         let tagged = same_user(&status(serde_json::json!({"UserID": 478457612062579_u64, "Tags": ["tag:ops"]}))).unwrap_err();
         assert!(tagged.contains("tag:ops") && tagged.contains("KROWK_TAILSCALE_SAME_USER"), "{tagged}");
         assert!(same_user(&status(serde_json::json!({}))).is_err());
+    }
+
+    /// The host names the user the same-user check holds to, so a device
+    /// re-logged under the login's other tailnet id can be told apart.
+    #[test]
+    fn the_same_user_line_names_the_login_and_its_id() {
+        let status: tailscale::Status = serde_json::from_value(serde_json::json!({"BackendState": "Running", "Self": {"UserID": 7}, "User": {"7": {"ID": 7, "LoginName": "ada@example.com"}, "8": {"ID": 8, "LoginName": "ada@example.com"}}})).unwrap();
+        assert_eq!(same_user_line(&status, 7), "krowk: the same-user check admits only nodes of ada@example.com (tailnet user 7)");
+        assert_eq!(same_user_line(&status, 9), "krowk: the same-user check admits only nodes of tailnet user 9");
     }
 }

@@ -1950,6 +1950,8 @@ dependencies = [
  "sha2 0.11.0",
  "tokio",
  "tokio-tungstenite",
+ "tower-layer",
+ "tower-service",
  "url",
 ]
 
