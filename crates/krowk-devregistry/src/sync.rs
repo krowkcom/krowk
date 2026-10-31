@@ -184,9 +184,6 @@ pub struct SyncStore {
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
     pub max_sessions: usize,
-    /// `--site`: the API origin a v2 signature binds when given, else the
-    /// request's host, as links do.
-    pub site: String,
     /// A person's device list, user key and the devices it names, by
     /// person (`devices.rs`): a person's, not a workspace's.
     pub people: HashMap<String, crate::devices::Person>,
@@ -339,7 +336,9 @@ pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, sig
     let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
     let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
     let lines = format!("{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
-    let origin = crate::site(req, &s.site).to_ascii_lowercase();
+    // The origin the client addressed: the stand-in serves plain HTTP on
+    // the host it was called by. `--site` rebrands links only, so not it.
+    let origin = format!("http://{}", req.host).to_ascii_lowercase();
     let message = if v2 { format!("krowk/registry/v2\n{lines}\n{device}\n{origin}") } else { format!("krowk/registry/v1\n{lines}") };
     if !krowk_client::e2e::verify_registry_request(key, &signature, message.as_bytes()) {
         let made_for = if v2 { format!(" for {origin}") } else { String::new() };
