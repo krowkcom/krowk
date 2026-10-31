@@ -640,19 +640,7 @@ async fn session(opts: Options) -> Outcome {
     if let Some(line) = krowk_harness::jobs::stopped_line(&host.running_jobs(), app.session_id.as_deref(), "with this krowk") {
         let _ = write!(out, "! {line}\r\n");
     }
-    // A daemon's turn the person left: stopped (Ctrl-D twice), or left
-    // running (`/detach`), when the resume line becomes how to follow it.
-    let parting = ui.parting.filter(|_| !ui.abandoned);
-    if parting == Some(Parting::Interrupted) {
-        let _ = write!(out, "! the running turn was interrupted — its work so far is in the session\r\n");
-    }
-    if let Some(id) = &app.session_id {
-        if parting == Some(Parting::Detached) {
-            let _ = write!(out, "! the turn runs on in the host daemon with no client to answer it — its approvals are denied until one follows; follow it with: krowk --resume {id}\r\n");
-        } else {
-            let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
-        }
-    }
+    goodbye(&mut out, ui.parting.filter(|_| !ui.abandoned), app.session_id.as_deref());
     let _ = out.flush();
     // A backend's process (Claude Code, Codex) is let go cleanly, and
     // whatever it started with it — unless the person left without waiting
@@ -665,6 +653,21 @@ async fn session(opts: Options) -> Outcome {
     }
     app.left.retain(|id| app.session_id.as_ref() != Some(id));
     Outcome { session_id: app.session_id.clone(), left: std::mem::take(&mut app.left), error: result.err().map(|e| e.to_string()), abandoned: ui.abandoned }
+}
+
+/// The way out's last lines: what became of a daemon's turn the person
+/// left, stopped (Ctrl-D twice) or left running (`/detach`), and how to
+/// come back — for a turn left running, how to follow it.
+fn goodbye(out: &mut impl Write, parting: Option<Parting>, session: Option<&str>) {
+    if parting == Some(Parting::Interrupted) {
+        let _ = write!(out, "! the running turn was interrupted — its work so far is in the session\r\n");
+    }
+    let Some(id) = session else { return };
+    if parting == Some(Parting::Detached) {
+        let _ = write!(out, "! the turn runs on in the host daemon with no client to answer it — its approvals are denied until one follows; follow it with: krowk --resume {id}\r\n");
+    } else {
+        let _ = write!(out, "\x1b[2mresume this session with: krowk --resume {id}\x1b[0m\r\n");
+    }
 }
 
 /// How the person left a turn running in the host daemon.
@@ -690,7 +693,7 @@ fn leave_flash(key: char, running: bool, viewing: Option<&str>, daemon: bool) ->
 
 /// What `/detach` does.
 #[derive(Debug, PartialEq, Eq)]
-enum Detach {
+enum DetachAs {
     /// `/exit`: no turn runs.
     Exit,
     /// Ctrl-D twice on a synced viewer: the turn is the host's.
@@ -704,17 +707,17 @@ enum Detach {
 /// What `/detach` does: refused while a request waits on the person, whom
 /// leaving would deny it, and for a turn this process runs, which cannot
 /// outlive it.
-fn detach_as(running: bool, synced: bool, daemon: bool, waiting: bool) -> Detach {
+fn detach_as(running: bool, synced: bool, daemon: bool, waiting: bool) -> DetachAs {
     if !running {
-        Detach::Exit
+        DetachAs::Exit
     } else if synced {
-        Detach::Leave
+        DetachAs::Leave
     } else if !daemon {
-        Detach::Refuse("/detach leaves a turn running in the host daemon, and this one runs in this krowk — `esc` stops it, /exit waits for it")
+        DetachAs::Refuse("/detach leaves a turn running in the host daemon, and this one runs in this krowk — `esc` stops it, /exit waits for it")
     } else if waiting {
-        Detach::Refuse("that would deny the waiting request — answer it first, or `esc` stops the turn")
+        DetachAs::Refuse("that would deny the waiting request — answer it first, or `esc` stops the turn")
     } else {
-        Detach::Detach
+        DetachAs::Detach
     }
 }
 
@@ -2549,10 +2552,10 @@ impl<'h> Ui<'h> {
     /// `krowk --resume` to follow.
     fn detach(&mut self, app: &mut App) {
         match detach_as(app.running(), self.host.synced().is_some(), self.host.remote().is_some(), !app.approvals.is_empty()) {
-            Detach::Exit => app.quit = true,
-            Detach::Leave => self.leave_now(app),
-            Detach::Refuse(why) => app.notice_keys(why),
-            Detach::Detach => {
+            DetachAs::Exit => app.quit = true,
+            DetachAs::Leave => self.leave_now(app),
+            DetachAs::Refuse(why) => app.notice_keys(why),
+            DetachAs::Detach => {
                 self.parting = Some(Parting::Detached);
                 self.leave_now(app);
             }
@@ -4151,12 +4154,12 @@ mod tests {
 
     #[test]
     fn detach_is_refused_while_a_request_waits() {
-        use super::{Detach, detach_as};
-        assert_eq!(detach_as(true, false, true, false), Detach::Detach);
-        assert!(matches!(detach_as(true, false, true, true), Detach::Refuse(w) if w.starts_with("that would deny the waiting request")));
-        assert!(matches!(detach_as(true, false, false, false), Detach::Refuse(_)));
-        assert_eq!(detach_as(false, false, true, true), Detach::Exit);
-        assert_eq!(detach_as(true, true, false, true), Detach::Leave);
+        use super::{DetachAs, detach_as};
+        assert_eq!(detach_as(true, false, true, false), DetachAs::Detach);
+        assert!(matches!(detach_as(true, false, true, true), DetachAs::Refuse(w) if w.starts_with("that would deny the waiting request")));
+        assert!(matches!(detach_as(true, false, false, false), DetachAs::Refuse(_)));
+        assert_eq!(detach_as(false, false, true, true), DetachAs::Exit);
+        assert_eq!(detach_as(true, true, false, true), DetachAs::Leave);
     }
 
     /// R-PRES-3: done with the topic, error with the failure's first
