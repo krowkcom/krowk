@@ -677,6 +677,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   that a resumed turn sends its prompt to the provider only once, and
   the four-session load test measures the daemon's lateness until all
   four sessions end, not only the first.
+- **`/sessions` follows a session another client started after the TUI
+  opened.** With sessions in the host daemon, picking one that another
+  terminal began while this TUI was open used to only replay it, as though
+  it had ended. The TUI now asks the daemon whether it is running and
+  follows the turn live to its end. A session that has ended is still only
+  replayed.
+
 - **The iPhone app closes three gaps left by earlier tickets (ticket
   145).** An approval request answered on another device while the
   phone was disconnected now leaves the approval sheet when the phone
