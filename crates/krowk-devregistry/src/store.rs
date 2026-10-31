@@ -171,7 +171,7 @@ impl App {
                 objects: HashMap::new(),
                 authorizations: HashMap::new(),
                 idempotent: HashMap::new(),
-                sync: crate::sync::SyncStore::default(),
+                sync: crate::sync::SyncStore { site: site.to_owned(), ..Default::default() },
                 created: 0,
                 runs_open: 0,
                 clock,

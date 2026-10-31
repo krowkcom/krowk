@@ -158,7 +158,7 @@ fn respond(app: &Arc<App>, rq: &conn::Head, body: &mut dyn Read) -> conn::Answer
 }
 
 /// The origin baked into links: `--site` when given, else the request's host.
-fn site(req: &Req, over: &str) -> String {
+pub(crate) fn site(req: &Req, over: &str) -> String {
     if over.is_empty() { format!("http://{}", req.host) } else { over.trim_end_matches('/').to_owned() }
 }
 

@@ -283,11 +283,11 @@ fn two_machines(api: &str, name: &str) -> (Machine, Machine) {
 fn raw_as(addr: std::net::SocketAddr, token: &str, signer: Option<&dyn RequestSigner>, method: &str, path: &str, body: &str) -> String {
     let signed = signer.map_or(String::new(), |s| {
         let at = jiff::Timestamp::now().as_millisecond().to_string();
-        let signature = e2e::hex(&s.sign(&krowk_api::client::signing_input(method, path, &at, body.as_bytes())));
-        format!("X-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\n", s.device())
+        let signature = e2e::hex(&s.sign(&krowk_api::client::signing_input(method, path, &at, body.as_bytes(), &s.device(), &format!("http://{addr}"))));
+        format!("X-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\nX-Krowk-Signature-Version: 2\r\n", s.device())
     });
     let mut conn = TcpStream::connect(addr).unwrap();
-    write!(conn, "{method} {path} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\n{signed}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+    write!(conn, "{method} {path} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {token}\r\n{signed}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
     let mut answer = String::new();
     conn.read_to_string(&mut answer).unwrap();
     answer
@@ -392,19 +392,32 @@ fn signed_calls_refuse_the_api_key_alone_a_replay_a_stale_signature_and_a_revoke
     assert!(raw_as(registry.addr(), &ma.token, Some(&stranger), "GET", &ticket, "").contains("signature_invalid"));
 
     // The same signed request twice: the second is a replay.
-    let at = jiff::Timestamp::now().as_millisecond().to_string();
-    let send = |at: &str| {
-        let signature = e2e::hex(&signer.sign(&krowk_api::client::signing_input("GET", &ticket, at, b"")));
-        let mut conn = TcpStream::connect(registry.addr()).unwrap();
-        write!(conn, "GET {ticket} HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", ma.token, a.id()).unwrap();
+    let (addr, origin) = (registry.addr(), registry.url());
+    let v2 = |at: &str, device: &str| krowk_api::client::signing_input("GET", &ticket, at, b"", device, &origin);
+    let send = |at: &str, lines: &[u8]| {
+        let signature = e2e::hex(&signer.sign(lines));
+        let version = if lines.starts_with(b"krowk/registry/v2\n") { "X-Krowk-Signature-Version: 2\r\n" } else { "" };
+        let mut conn = TcpStream::connect(addr).unwrap();
+        write!(conn, "GET {ticket} HTTP/1.1\r\nHost: {addr}\r\nAuthorization: Bearer {}\r\nX-Krowk-Device: {}\r\nX-Krowk-Timestamp: {at}\r\nX-Krowk-Signature: {signature}\r\n{version}Content-Length: 0\r\nConnection: close\r\n\r\n", ma.token, a.id()).unwrap();
         let mut answer = String::new();
         conn.read_to_string(&mut answer).unwrap();
         answer
     };
-    assert!(send(&at).starts_with("HTTP/1.1 200"));
-    assert!(send(&at).contains("signature_replayed"));
+    let now = || jiff::Timestamp::now().as_millisecond().to_string();
+    let at = now();
+    assert!(send(&at, &v2(&at, &a.id().to_string())).starts_with("HTTP/1.1 200"));
+    assert!(send(&at, &v2(&at, &a.id().to_string())).contains("signature_replayed"));
     let stale = (jiff::Timestamp::now().as_millisecond() - 6 * 60 * 1000).to_string();
-    assert!(send(&stale).contains("signature_stale"));
+    assert!(send(&stale, &v2(&stale, &a.id().to_string())).contains("signature_stale"));
+
+    // Ticket 163: a v2 signature names its device, so the laptop's key over
+    // lines naming the desktop is refused under the laptop's own header.
+    // v1's lines, without the version header, are still taken.
+    let at = now();
+    assert!(send(&at, &v2(&at, &mb.device.id().to_string())).contains("signature_invalid"));
+    let at = now();
+    let v1 = format!("krowk/registry/v1\nGET\n{ticket}\n{at}\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert!(send(&at, v1.as_bytes()).starts_with("HTTP/1.1 200"));
 
     // Revoked by the dashboard's Revoke: its own signed calls are refused,
     // the key it holds revoked with it.

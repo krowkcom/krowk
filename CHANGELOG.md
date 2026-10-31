@@ -790,6 +790,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Security
 
+- **Signed registry calls now name the device and the registry.** Every
+  call that acts as this machine's device is signed over v2 lines, sent
+  with `X-Krowk-Signature-Version: 2`, which add the device's id and the
+  API origin (`https://api.krowk.com` by default). A signature can no
+  longer be passed off as another device's or checked by a registry it
+  wasn't made for. Nothing changes for you. The `krowk-devregistry`
+  stand-in checks v2 the same way and still takes v1 without the header.
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
   bomb (RUSTSEC-2026-0344), where a tiny zstd input could exhaust memory.
   krowk decompresses with it when it restores a vintage and when it reads

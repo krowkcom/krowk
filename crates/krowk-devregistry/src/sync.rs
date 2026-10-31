@@ -184,6 +184,9 @@ pub struct SyncStore {
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
     pub max_sessions: usize,
+    /// `--site`: the API origin a v2 signature binds when given, else the
+    /// request's host, as links do.
+    pub site: String,
     /// A person's device list, user key and the devices it names, by
     /// person (`devices.rs`): a person's, not a workspace's.
     pub people: HashMap<String, crate::devices::Person>,
@@ -318,18 +321,29 @@ pub fn signature_headers(req: &Req) -> Result<(String, String, String), Resp> {
 
 /// A signed request's timestamp within five minutes, its signature by `key`
 /// over the request's lines, and not seen before (SignedRequest): what every
-/// signed call checks, whichever list the key came from.
+/// signed call checks, whichever list the key came from. With
+/// `X-Krowk-Signature-Version: 2` the lines are v2's, which add the device
+/// and the origin; without it, v1's; any other version is refused.
 pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, signature: &str, key: &[u8], body: &[u8]) -> Result<(), Resp> {
     let refused = |code: &str, message: &str| error(401, code, message, None);
     let millis: i64 = at.parse().map_err(|_| refused("signature_invalid", "X-Krowk-Timestamp is not Unix milliseconds"))?;
     if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
         return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
     }
+    // v2 names the device and the origin; no header is v1, until it retires.
+    let v2 = match req.header("X-Krowk-Signature-Version") {
+        None => false,
+        Some("2") => true,
+        Some(_) => return Err(refused("signature_invalid", "X-Krowk-Signature-Version must be 2, or absent for v1")),
+    };
     let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
     let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
-    let message = format!("krowk/registry/v1\n{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
+    let lines = format!("{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
+    let origin = crate::site(req, &s.site).to_ascii_lowercase();
+    let message = if v2 { format!("krowk/registry/v2\n{lines}\n{device}\n{origin}") } else { format!("krowk/registry/v1\n{lines}") };
     if !krowk_client::e2e::verify_registry_request(key, &signature, message.as_bytes()) {
-        return Err(refused("signature_invalid", &format!("the signature is not device {device}'s over this request")));
+        let made_for = if v2 { format!(" for {origin}") } else { String::new() };
+        return Err(refused("signature_invalid", &format!("the signature is not device {device}'s over this request{made_for}")));
     }
     let now = Timestamp::now();
     s.signed.retain(|_, until| *until > now);
