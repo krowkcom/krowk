@@ -813,7 +813,7 @@ impl Hosting {
                 let (stop, stopped) = watch::channel(false);
                 self.directs.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(session.into(), stop);
                 let lan_at: krowk_harness::sync::direct::LanAt = Arc::new(|| vec![std::net::Ipv4Addr::LOCALHOST.into()]);
-                krowk_harness::sync::direct::Config { socket: socket.clone().into(), roster: roster(), same_user: false, lan: true, lan_at: Some(lan_at), stop: Some(stopped) }
+                krowk_harness::sync::direct::Config { socket: socket.clone().into(), roster: roster(), same_user: false, lan: true, lan_at: Some(lan_at), stop: Some(stopped), whois_kept: None }
             }),
             tailnet: None,
             handed: None,

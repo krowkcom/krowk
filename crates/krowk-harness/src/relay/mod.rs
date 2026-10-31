@@ -122,6 +122,8 @@ pub struct Limits {
     /// far past the relay's own numbers, so the two relays a host is on at
     /// once never name two viewers alike to its one set of chains.
     pub first_link: u64,
+    /// How long tailscaled's answer for one address is kept, a refusal too.
+    pub whois_kept: Duration,
 }
 
 impl Default for Limits {
@@ -154,6 +156,7 @@ impl Default for Limits {
             join_wait: Duration::from_secs(10),
             heartbeat: crate::daemon::ws::HEARTBEAT,
             first_link: 0,
+            whois_kept: WHOIS_KEPT,
         }
     }
 }
@@ -306,7 +309,7 @@ pub fn run_changing(listeners: Vec<std::net::TcpListener>, config: Config, mut s
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| format!("the async runtime could not start: {e}"))?;
     let local = tokio::task::LocalSet::new();
     local.block_on(&rt, async move {
-        let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined, config.limits.unjoined_per_peer);
+        let whois = WhoIs::new(config.limits.whois_kept, config.limits.unjoined, config.limits.unjoined_per_peer);
         let relay = Rc::new(Relay { config, channels: RefCell::new(HashMap::new()), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois });
         // Each listener by the origin it answers as, `ws://` and its own
         // address: what `Change::Remove` names.
@@ -482,7 +485,7 @@ async fn serve_with(listener: TcpListener, config: Config, state: Option<(std::f
         Some((lock, channels)) => (Some(lock), channels),
         None => (None, HashMap::new()),
     };
-    let whois = WhoIs::new(WHOIS_KEPT, config.limits.unjoined, config.limits.unjoined_per_peer);
+    let whois = WhoIs::new(config.limits.whois_kept, config.limits.unjoined, config.limits.unjoined_per_peer);
     let relay = Rc::new(Relay { config, channels: RefCell::new(channels), pending: RefCell::new(VecDeque::new()), pending_ids: Cell::new(0), links: Cell::new(0), added: RefCell::new(Vec::new()), removed: RefCell::new(Vec::new()), whois });
     loop {
         match listener.accept().await {

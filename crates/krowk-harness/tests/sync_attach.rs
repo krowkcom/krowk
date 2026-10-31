@@ -414,7 +414,7 @@ impl World {
     /// A's bridge with a direct listener, reading this node from a fake
     /// tailscaled at `ts`; `stop` kills the listener.
     fn bridge_direct(&self, a: &Device, session: &str, daemon: Arc<Client>, ts: &FakeTailscale, same_user: bool, stop: watch::Receiver<bool>) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user, lan: false, lan_at: None, stop: Some(stop) };
+        let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user, lan: false, lan_at: None, stop: Some(stop), whois_kept: None };
         let tailnet = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet());
         self.bridge_with_direct(a, session, daemon, config, tailnet)
     }
@@ -427,7 +427,7 @@ impl World {
 
     /// `bridge_lan`, its LAN addresses read from `at` as they move.
     fn bridge_lan_at(&self, a: &Device, session: &str, daemon: Arc<Client>, stop: watch::Receiver<bool>, at: direct::LanAt) -> (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>) {
-        let config = direct::Config { socket: self.root.join("no-tailscaled.sock").into(), roster: ticket_roster(), same_user: false, lan: true, lan_at: Some(at), stop: Some(stop) };
+        let config = direct::Config { socket: self.root.join("no-tailscaled.sock").into(), roster: ticket_roster(), same_user: false, lan: true, lan_at: Some(at), stop: Some(stop), whois_kept: None };
         self.bridge_with_direct(a, session, daemon, config, None)
     }
 
@@ -2009,7 +2009,9 @@ async fn r_net_3_with_whois_on_another_tailnet_user_is_refused_and_stays_on_the_
 /// turns it away as another tailnet user); then A's listener lets B in and
 /// B's addresses change. B races again on its 2 s address check and moves
 /// to the direct path well before its next race was due, `REPROBE` after
-/// the one it lost.
+/// the one it lost. Every connection here comes from 127.0.0.1, where a
+/// real address change brings a new one, so the listener keeps no answer
+/// (ticket 155's cache) and asks tailscaled again.
 #[tokio::test]
 async fn r_net_2_a_viewer_whose_addresses_change_races_again_before_reprobe() {
     let w = World::new("addrs");
@@ -2018,7 +2020,9 @@ async fn r_net_2_a_viewer_whose_addresses_change_races_again_before_reprobe() {
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));
     let (_d, session) = first_turn(&w).await;
     let (_kill, kill_rx) = watch::channel(false);
-    let (_stop, _cp, _bridge) = w.bridge_direct(&a, &session, w.daemon().await, &ts, true, kill_rx);
+    let config = direct::Config { socket: ts.socket.clone().into(), roster: ticket_roster(), same_user: true, lan: false, lan_at: None, stop: Some(kill_rx), whois_kept: Some(Duration::ZERO) };
+    let tailnet = krowk_harness::sync::tailscale::status(&ts.socket.clone().into()).ok().and_then(|s| s.tailnet());
+    let (_stop, _cp, _bridge) = w.bridge_with_direct(&a, &session, w.daemon().await, config, tailnet);
     w.synced(&session).await;
     let moved = Arc::new(AtomicBool::new(false));
     let m = moved.clone();

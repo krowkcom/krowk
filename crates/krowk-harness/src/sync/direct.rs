@@ -44,6 +44,9 @@ pub struct Config {
     /// Stops the listener when it turns true; without it the listener goes
     /// with the bridge.
     pub stop: Option<watch::Receiver<bool>>,
+    /// How long the same-user check keeps tailscaled's answer for one
+    /// address; None for `Limits`' own. For a test to look again at once.
+    pub whois_kept: Option<Duration>,
 }
 
 /// A source of LAN addresses, for a test to move them.
@@ -198,7 +201,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     }
     let dial = origins.first().unwrap_or(&candidates[0].url).clone();
     origins.extend(candidates.iter().map(|c| c.url.clone()));
-    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, ..Limits::default() }, state: None, origins, whois, pin: Some((session, host)) };
+    let config = relay::Config { roster: c.roster.clone(), origin: None, limits: Limits { first_link: FIRST_LINK, whois_kept: c.whois_kept.unwrap_or(Limits::default().whois_kept), ..Limits::default() }, state: None, origins, whois, pin: Some((session, host)) };
     let (stop, rx) = match c.stop.clone() {
         Some(rx) => (None, rx),
         None => {
