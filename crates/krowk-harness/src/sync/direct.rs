@@ -149,13 +149,13 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
         // ws:// on every network, past KROWK_DIRECT_LAN.
         let ips: Vec<IpAddr> = status.me.tailscale_ips.iter().copied().filter(tailscale::is_tailnet).collect();
         let ip = ips.iter().find(|i| i.is_ipv4()).or(ips.first()).copied().ok_or("Tailscale gives this machine no tailnet address")?;
-        if c.same_user {
-            let user = same_user(status)?;
-            eprintln!("{}", same_user_line(status, user));
-            whois = Some(SameUser { socket: c.socket.clone(), user });
-        }
+        whois = if c.same_user { Some(SameUser { socket: c.socket.clone(), user: same_user(status)? }) } else { None };
         let first = TcpListener::bind((ip, 0)).map_err(|e| format!("the tailnet address {ip} could not be listened on: {e}"))?;
         port = first.local_addr().map_err(|e| e.to_string())?.port();
+        // Once listening, so the line never names a check that isn't held.
+        if let Some(w) = &whois {
+            eprintln!("{}", same_user_line(status, w.user));
+        }
         listeners.push(first);
         candidates.push(Candidate { url: url(ip, port), via: "tailscale".into() });
         if let Some(name) = status.magic_dns() {
