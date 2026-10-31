@@ -2134,14 +2134,18 @@ async fn join_direct(via: &str, session: &str, b: &Device, ticket: &str, signing
 }
 
 /// A hosting session with its direct listener up, on the tailnet, with
-/// whois passing, and B's own viewer ticket for it.
+/// whois passing, and B's own viewer ticket for it. Fields drop in order,
+/// so the world, whose root holds the rest, goes last.
 struct OnDirect {
-    _w: World,
     b: Device,
     session: String,
     via: String,
     real: String,
-    _keep: (Arc<Client>, FakeTailscale, watch::Sender<bool>, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)),
+    _bridge: (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>),
+    _kill: watch::Sender<bool>,
+    _daemon: Arc<Client>,
+    _ts: FakeTailscale,
+    _w: World,
 }
 
 async fn on_direct(name: &str) -> OnDirect {
@@ -2157,7 +2161,7 @@ async fn on_direct(name: &str) -> OnDirect {
     let via = got.iter().find_map(|u| if let viewer::Update::Path { via: Some(via), .. } = u { Some(via.clone()) } else { None }).unwrap();
     let (api, id, device) = (w.as_device(&b), session.clone(), b.key.id().to_string());
     let real = tokio::task::spawn_blocking(move || api.relay_ticket(&id, &device, "development").unwrap().relay_ticket).await.unwrap();
-    OnDirect { _w: w, b, session, via, real, _keep: (d, ts, kill, bridge) }
+    OnDirect { b, session, via, real, _bridge: bridge, _kill: kill, _daemon: d, _ts: ts, _w: w }
 }
 
 /// `real` changed by `edit` and signed again with the stand-in registry's
