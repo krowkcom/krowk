@@ -184,6 +184,10 @@ pub struct SyncStore {
     pub bursts: HashMap<(String, &'static str), (Timestamp, usize)>,
     /// 0 is MAX_SESSIONS.
     pub max_sessions: usize,
+    /// `Config::v1_until` and `Config::v2_release`: the last UTC day v1's
+    /// lines are taken, and the release a refused client is told to get.
+    pub v1_until: Option<jiff::civil::Date>,
+    pub v2_release: String,
     /// A person's device list, user key and the devices it names, by
     /// person (`devices.rs`): a person's, not a workspace's.
     pub people: HashMap<String, crate::devices::Person>,
@@ -324,15 +328,20 @@ pub fn signature_headers(req: &Req) -> Result<(String, String, String), Resp> {
 pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, signature: &str, key: &[u8], body: &[u8]) -> Result<(), Resp> {
     let refused = |code: &str, message: &str| error(401, code, message, None);
     let millis: i64 = at.parse().map_err(|_| refused("signature_invalid", "X-Krowk-Timestamp is not Unix milliseconds"))?;
-    if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
-        return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
-    }
     // v2 names the device and the origin; no header is v1, until it retires.
     let v2 = match req.header("X-Krowk-Signature-Version") {
         None => false,
         Some("2") => true,
         Some(_) => return Err(refused("signature_invalid", "X-Krowk-Signature-Version must be 2, or absent for v1")),
     };
+    // Past the v1_until date, in UTC: the date itself is still v1's.
+    if !v2 && s.v1_until.is_some_and(|until| jiff::tz::Offset::UTC.to_datetime(Timestamp::now()).date() > until) {
+        let to = if s.v2_release.is_empty() { String::new() } else { format!(" to {} or newer", s.v2_release) };
+        return Err(refused("signature_version_retired", &format!("this krowk signs registry requests with the retired v1 lines — upgrade krowk{to} (krowk upgrade)")));
+    }
+    if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
+        return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
+    }
     let signature = unhex(signature).ok_or_else(|| refused("signature_invalid", "X-Krowk-Signature is not hex"))?;
     let target = if req.query.is_empty() { req.path.clone() } else { format!("{}?{}", req.path, req.query) };
     let lines = format!("{}\n{target}\n{at}\n{}", req.method, hex(&Sha256::digest(body)));
@@ -1799,5 +1808,29 @@ mod tests {
         assert!(!resealable(&people, &session(1), "old", ("bb", "me"), "me"), "the key unchanged");
         assert!(!resealable(&people, &session(1), "new", ("aa", "me"), "me"), "the record unchanged");
         assert!(!resealable(&people, &session(1), "new", ("bb", "someone-else"), "me"), "the record names another device");
+    }
+
+    /// Ticket 168, as the registry has it: v1 is taken through the
+    /// v1_until date, in UTC, and refused as retired from the day after;
+    /// v2 is never refused so.
+    #[test]
+    fn v1_is_retired_the_day_after_v1_until() {
+        let today = jiff::tz::Offset::UTC.to_datetime(Timestamp::now()).date();
+        let code = |until: jiff::civil::Date, version: Option<&str>| {
+            let mut s = SyncStore { v1_until: Some(until), v2_release: "0.42.0".into(), ..SyncStore::default() };
+            let mut headers = vec![];
+            if let Some(v) = version {
+                headers.push(("X-Krowk-Signature-Version".to_string(), v.to_string()));
+            }
+            let mut body: &[u8] = b"";
+            let req = Req { method: "GET".into(), path: "/v1/x".into(), query: String::new(), headers, host: "h".into(), remote: String::new(), body: &mut body };
+            let at = Timestamp::now().as_millisecond().to_string();
+            let resp = check_signature(&mut s, &req, "ab", &at, "00", &[0; 32], b"").unwrap_err();
+            String::from_utf8_lossy(&resp.body).into_owned()
+        };
+        assert!(code(today, None).contains("signature_invalid"), "the date itself is still v1's");
+        let retired = code(today.yesterday().unwrap(), None);
+        assert!(retired.contains("signature_version_retired") && retired.contains("upgrade krowk to 0.42.0 or newer (krowk upgrade)"), "{retired}");
+        assert!(code(today.yesterday().unwrap(), Some("2")).contains("signature_invalid"));
     }
 }

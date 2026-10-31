@@ -39,6 +39,11 @@ fn registry() -> (krowk_devregistry::Running, String) {
 /// build's stand-in for the person at the terminal answering `answers` in
 /// turn, and `input` on stdin.
 fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str) -> Output {
+    krowk_with(home, api, token, args, answers, input, &[])
+}
+
+/// `krowk`, with `env` set as well.
+fn krowk_with(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, input: &str, env: &[(&str, &str)]) -> Output {
     let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
     c.args(args)
         .env_clear()
@@ -53,7 +58,8 @@ fn krowk(home: &Path, api: &str, token: &str, args: &[&str], answers: &str, inpu
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .stderr(Stdio::piped())
+        .envs(env.iter().copied());
     let mut child = c.spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
     child.wait_with_output().unwrap()
@@ -245,5 +251,39 @@ fn d6_a_skipped_kit_is_warned_about_once() {
     let said = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert_eq!(said.matches("no recovery kit").count(), 1, "{said}");
     assert!(said.contains("sync is set up"), "{said}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// Ticket 168: past the registry's v1_until date, a krowk that signs v1's
+/// lines (forced, in a test build) is refused. It says the registry's words
+/// whole and once, exits non-zero, and names the code to search for.
+#[test]
+fn a_krowk_signing_retired_v1_lines_is_told_to_upgrade() {
+    let config = krowk_devregistry::Config { v1_until: "2000-01-01".into(), v2_release: "0.42.0".into(), ..Default::default() };
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), config).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("retired");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    let kit = r.join("kit.txt");
+    let init = ["sync", "init", "--save", kit.to_str().unwrap()];
+    let v1 = [("KROWK_TEST_SIGN_V1", "1")];
+
+    let out = krowk_with(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", "", &v1);
+    // The envelope follows what init said of the kit before it was refused.
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let err: Value = stderr.find("{\n").and_then(|at| serde_json::from_str(&stderr[at..]).ok()).unwrap_or_else(|| panic!("{stderr}"));
+    assert!(!out.status.success());
+    let said = "this krowk signs registry requests with the retired v1 lines — upgrade krowk to 0.42.0 or newer (krowk upgrade)";
+    assert_eq!((err["error"]["error"].as_str(), err["error"]["fix"].as_str()), (Some("signature_version_retired"), Some(said)), "{err}");
+
+    let out = krowk_with(&desktop, &api, DESKTOP, &[&init[..], &["--format", "human"]].concat(), "", "", &v1);
+    let human = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && human.contains("Upgrade krowk to 0.42.0 or newer (krowk upgrade)"), "{human}");
+    assert_eq!(human.matches("0.42.0").count(), 1, "{human}");
+    assert!(human.contains("Code: signature_version_retired"), "{human}");
+
+    // Unforced, the same machine signs v2 and is served.
+    let _ = std::fs::remove_file(&kit);
+    ok(&krowk(&laptop, &api, LAPTOP, &[&init[..], &["--json"]].concat(), "", ""));
     let _ = std::fs::remove_dir_all(&r);
 }

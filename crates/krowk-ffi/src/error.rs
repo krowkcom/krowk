@@ -51,6 +51,11 @@ impl From<krowk_api::Error> for KrowkError {
         if code == "network_unreachable" || code == "storage_unreachable" {
             return KrowkError::Network { detail: "krowk's registry cannot be reached — check the network and try again".into() };
         }
+        // The registry's words send the person to `krowk upgrade`, a
+        // terminal's command; on a phone it is the app that is too old.
+        if code == "signature_version_retired" {
+            return KrowkError::Refused { code, detail: "this version of the app is too old for krowk's registry — update the app and try again".into() };
+        }
         let detail = [e.fix(), message(&e)].into_iter().find(|s| !s.is_empty()).unwrap_or_else(|| code.clone());
         let detail = detail.replace("KROWK_API_URL", "the app's registry address");
         if e.status == 429 || e.status >= 500 {
@@ -65,5 +70,25 @@ fn message(e: &krowk_api::Error) -> String {
     match e.body.get("message") {
         Some(serde_json::Value::String(s)) => s.clone(),
         _ => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Ticket 168: the registry's refusal of v1 signing reaches the app
+    /// typed, in the app's words rather than the terminal's.
+    #[test]
+    fn a_retired_signature_version_is_a_typed_refusal_to_update_the_app() {
+        let mut e = krowk_api::fail("signature_version_retired", "upgrade krowk to 0.42.0 or newer (krowk upgrade)");
+        e.status = 401;
+        match KrowkError::from(e) {
+            KrowkError::Refused { code, detail } => {
+                assert_eq!(code, "signature_version_retired");
+                assert!(detail.contains("update the app") && !detail.contains("krowk upgrade"), "{detail}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
