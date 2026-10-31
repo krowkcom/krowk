@@ -885,6 +885,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   longer be passed off as another device's or checked by a registry it
   wasn't made for. Nothing changes for you. The `krowk-devregistry`
   stand-in checks v2 the same way and still takes v1 without the header.
+- **Ready for the registry retiring v1 signing.** Once it does, a krowk
+  from before v2 is refused with `signature_version_retired` and a message
+  naming the release to upgrade to. This release signs v2, so nothing
+  changes for you; should it meet that refusal, it shows the registry's
+  message once, whole, as the fix, and the iOS app asks to be updated.
+  The `krowk-devregistry` stand-in retires v1 the same way with
+  `KROWK_DEVREGISTRY_V1_UNTIL` (an ISO date; v1 is still taken on that UTC
+  day) and names the release from `KROWK_DEVREGISTRY_V2_RELEASE`.
 - **Two dependency advisories fixed.** ruzstd 0.9.1 fixes a decompression
   bomb (RUSTSEC-2026-0344), where a tiny zstd input could exhaust memory.
   krowk decompresses with it when it restores a vintage and when it reads

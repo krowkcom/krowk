@@ -514,12 +514,20 @@ impl Client {
                 let at = signing_ms().to_string();
                 let device = signer.device().to_ascii_lowercase();
                 let origin = api_origin(&self.base_url);
-                let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default(), &device, &origin));
-                req = req
-                    .header("X-Krowk-Device", device)
-                    .header("X-Krowk-Timestamp", at)
-                    .header("X-Krowk-Signature", hex(&signature))
-                    .header("X-Krowk-Signature-Version", "2");
+                let (target, body) = (request_target(&url), payload.unwrap_or_default());
+                // A test build signs v1's lines when told to, so a test can
+                // see a registry refuse a krowk from before v2 (ticket 168).
+                let v1 = cfg!(debug_assertions) && std::env::var("KROWK_TEST_SIGN_V1").is_ok_and(|v| v == "1");
+                let lines = if v1 {
+                    format!("krowk/registry/v1\n{method}\n{target}\n{at}\n{}", sha256_hex(body)).into_bytes()
+                } else {
+                    signing_input(method, target, &at, body, &device, &origin)
+                };
+                let signature = signer.sign(&lines);
+                req = req.header("X-Krowk-Device", device).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
+                if !v1 {
+                    req = req.header("X-Krowk-Signature-Version", "2");
+                }
             }
             let req = req.body(payload.map(<[u8]>::to_vec).unwrap_or_default()).map_err(|e| fail("bad_request", e.to_string()))?;
             let mut res = self.agent.run(req).map_err(|e| self.transport(method, &url, e, "network_unreachable"))?;
@@ -953,7 +961,14 @@ fn response_error(status: u16, payload: &[u8], retry_after: &str) -> Error {
     }
     let mut err = Error { status, body };
     let code = err.code();
-    let fix = fix_for(&code, status);
+    let mut fix = fix_for(&code, status);
+    // The registry's own words name the release to upgrade to, which this
+    // build cannot know, so they are the fix whole.
+    if code == "signature_version_retired"
+        && let Some(Value::String(m)) = err.body.get("message")
+    {
+        fix = m.clone();
+    }
     if !fix.is_empty() {
         err.body.insert("fix".into(), json!(fix));
     }
@@ -1012,6 +1027,7 @@ fn fix_for(code: &str, status: u16) -> String {
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "key_has_no_device" => "this key speaks for no device yet — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`",
+        "signature_version_retired" => "this krowk signs registry requests in a way the registry no longer accepts — run `krowk upgrade`",
         "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
         "too_many_requests" => "the registry is limiting these calls for a moment — wait out its Retry-After (about a minute) and try again",
         "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a KROWK_TOKEN copied from another machine, or run `krowk auth login` here)",

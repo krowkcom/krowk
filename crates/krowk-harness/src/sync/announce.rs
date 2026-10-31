@@ -453,6 +453,8 @@ pub fn words(e: &krowk_api::Error) -> String {
         ("", f) if f.is_empty() => format!("the registry answered {}", e.status),
         (m, f) if f.is_empty() => m.to_string(),
         ("", f) => f,
+        // A fix that is the registry's message whole, said once.
+        (m, f) if m == f => f,
         (m, f) => format!("{m} — {f}"),
     }
 }

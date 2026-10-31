@@ -74,6 +74,14 @@ pub struct Config {
     /// person a login lands in and nothing about what is refused; no flag
     /// of `devregistry`'s sets it.
     pub login_person: Option<String>,
+    /// The registry's `signed_requests.v1_until`, an ISO date: after it, in
+    /// UTC, a request signed with v1's lines is refused as
+    /// `signature_version_retired`. Empty, v1 is accepted. `devregistry`
+    /// reads it from KROWK_DEVREGISTRY_V1_UNTIL.
+    pub v1_until: String,
+    /// The registry's `signed_requests.v2_release`, the krowk release that
+    /// refusal names; KROWK_DEVREGISTRY_V2_RELEASE for `devregistry`.
+    pub v2_release: String,
 }
 
 /// A registry serving on its own thread, stopped when dropped.
@@ -114,7 +122,22 @@ fn app(config: Config) -> Arc<App> {
     let clock = config.clock.unwrap_or_else(|| Arc::new(jiff::Timestamp::now));
     let mut app = App::new(config.limit_bytes, &config.site, clock);
     app.login_person = config.login_person;
-    app.lock().sync.max_sessions = config.max_sessions;
+    {
+        let mut s = app.lock();
+        s.sync.max_sessions = config.max_sessions;
+        // As the registry does, a value that is not a date keeps v1
+        // accepted, loudly, rather than failing every client.
+        let until = config.v1_until.trim();
+        s.sync.v1_until = match until.parse() {
+            _ if until.is_empty() => None,
+            Ok(date) => Some(date),
+            Err(_) => {
+                eprintln!("v1_until is not an ISO date ({until:?}); v1 is still accepted");
+                None
+            }
+        };
+        s.sync.v2_release = config.v2_release.trim().to_owned();
+    }
     Arc::new(app)
 }
 
