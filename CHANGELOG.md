@@ -723,6 +723,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it had ended. The TUI now asks the daemon whether it is running and
   follows the turn live to its end. A session that has ended is still only
   replayed.
+- **A slow certificate check no longer stalls the host daemon.** Each
+  turn opens a new connection to the provider, and checking its TLS
+  certificate is a blocking call (on macOS, the system trust service). The
+  daemon made it on the one thread every session streams on, so a slow
+  check held up every other session's output and heartbeats. The daemon
+  now makes connections on a separate thread. `krowk -p` is unchanged.
 
 - **The iPhone app closes three gaps left by earlier tickets (ticket
   145).** An approval request answered on another device while the

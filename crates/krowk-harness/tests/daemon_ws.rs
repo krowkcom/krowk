@@ -923,6 +923,74 @@ async fn done(c: &mut Ws, ids: &[u64]) -> std::collections::HashMap<u64, Option<
     got
 }
 
+/// A TLS server on loopback that takes every handshake as far as the
+/// client lets it, with a certificate no platform trusts, counting them.
+fn tls_server() -> (String, Arc<AtomicU64>) {
+    let key = rustls::pki_types::PrivateKeyDer::Pkcs8(include_bytes!("fixtures/tls/key.der").to_vec().into());
+    let cert = rustls::pki_types::CertificateDer::from(include_bytes!("fixtures/tls/cert.der").to_vec());
+    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let cfg = Arc::new(rustls::ServerConfig::builder_with_provider(provider).with_safe_default_protocol_versions().unwrap().with_no_client_auth().with_single_cert(vec![cert], key).unwrap());
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("https://{}", listener.local_addr().unwrap());
+    let seen = Arc::new(AtomicU64::new(0));
+    let count = seen.clone();
+    std::thread::spawn(move || {
+        for sock in listener.incoming() {
+            let (Ok(mut sock), cfg) = (sock, cfg.clone()) else { continue };
+            count.fetch_add(1, Ordering::SeqCst);
+            std::thread::spawn(move || {
+                let mut conn = rustls::ServerConnection::new(cfg).unwrap();
+                while conn.is_handshaking() && conn.complete_io(&mut sock).is_ok() {}
+            });
+        }
+    });
+    (url, seen)
+}
+
+/// R-LAG-9: a turn whose TLS handshake stalls — the check of the server's
+/// certificate takes 100 ms, as `SecTrustEvaluateWithError` can on macOS —
+/// leaves the daemon's thread on time: the connection, handshake and all,
+/// is made off it. The certificate is one no platform trusts, so each of
+/// the turn's attempts is refused after its stall and the turn fails.
+#[test]
+fn r_lag_9_a_turn_whose_tls_handshake_stalls_leaves_the_daemon_thread_on_time() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (url, handshakes) = tls_server();
+    let home = Home::new("slow-tls", &url);
+    let daemon = home.serve(Duration::from_millis(100), Caps::default());
+    const STALL: Duration = Duration::from_millis(100);
+    let slow = krowk_harness::http::simulate_slow_verify(STALL);
+    rt().block_on(async {
+        let (addr, token) = home.websocket().await;
+        let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
+        let started = Instant::now();
+        home.lateness();
+        c.send(&ClientFrame::Execute { id: 1, command: home.prompt("hello", PermissionMode::BypassPermissions), client_ref: None }).await;
+        let mut when = Vec::new();
+        let mut ask = tokio::time::interval(Duration::from_millis(50));
+        loop {
+            tokio::select! {
+                _ = ask.tick() => when.push((started.elapsed(), home.lateness())),
+                got = c.next() => if let Got::Batch(_, frames) = got.expect("the connection stayed up")
+                    && frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. }))
+                {
+                    break;
+                },
+            }
+        }
+        let took = started.elapsed();
+        when.push((took, home.lateness()));
+        let late = when.iter().map(|(_, l)| *l).max().unwrap();
+        let held: Vec<String> = when.iter().filter(|(_, l)| *l >= Duration::from_millis(5)).map(|(at, l)| format!("{l:?} by {at:?}")).collect();
+        let tried = handshakes.load(Ordering::SeqCst);
+        assert!(tried >= 1, "the turn tried the TLS server");
+        assert!(took >= STALL * tried as u32, "each handshake waited out its stalled check: {took:?} for {tried}");
+        assert!(late < Duration::from_millis(10), "the daemon's thread was held {late:?} by a stalled certificate check — held {held:?}");
+    });
+    drop(slow);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-LAG-9's other half: a peer that has gone — nothing heard, not even a
 /// pong, for three beats — is let go by the daemon, however long TCP would
 /// take to notice.
