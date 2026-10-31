@@ -1513,6 +1513,10 @@ impl<'h> Ui<'h> {
             Err(e) => e.code == "network_unreachable",
         };
         let completed = matches!(&r, Ok(Some(res)) if res.status == TurnStatus::Completed);
+        // Done before the interrupt took: nothing was stopped to say so.
+        if completed && self.parting == Some(Parting::Interrupted) {
+            self.parting = None;
+        }
         let refused_images = matches!(&r, Err(e) if e.code == "model_reads_no_images" || e.code == "bad_image" || e.code == "image_missing" || e.code == link::IMAGE_NOT_SENT || e.code == link::HOST_READS_NO_IMAGES);
         // A `continue` whose turn a prompt already ran is no
         // news, nor one another client following the session runs: nor
