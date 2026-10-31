@@ -65,3 +65,12 @@ debug = "line-tables-only"
 
 [profile.dev.package."*"]
 debug = false
+
+# The signatures every relay join checks twice, optimized even here: at
+# opt-level 0 one costs milliseconds, so a test relay meeting fifty hosts
+# at once falls behind as no built relay would.
+[profile.dev.package.curve25519-dalek]
+opt-level = 3
+
+[profile.dev.package.ed25519-dalek]
+opt-level = 3

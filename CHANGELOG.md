@@ -448,6 +448,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A host bridging many sessions no longer floods the relay when it
+  comes back.** Each session's bridge used to retry the relay every second
+  in lockstep, so a host with fifty synced sessions came back as one burst
+  against the relay's caps on connections not yet joined. A retry now
+  waits one to two seconds, drawn per session. The reference relay
+  (`krowk relay serve`) writes one `evict` line to stderr for every
+  waiting connection it lets go, naming the pool, the workspace and that
+  pool's running count.
+
 - **An image is capped at 2.75 MB, and named by its sha256.** One image
   can be at most 2.75 MiB in every session, local ones included, so that a
   session's images can later sync or move unchanged (it was about 3.75
