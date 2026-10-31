@@ -601,7 +601,10 @@ impl Host {
                 // Images named by hash are the ones `putImage` kept: a missing
                 // one refuses the prompt before anything is logged.
                 let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
-                let images = tokio::task::spawn_blocking(move || images::resolve(&dir, id.as_deref(), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
+                let images = match images::needs_disk(&images) {
+                    true => tokio::task::spawn_blocking(move || images::resolve(&dir, id.as_deref(), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                    false => images,
+                };
                 let images = images::decode(&images)?;
                 shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, budget.unwrap_or_default(), out).await.map(Some)
             }
@@ -640,7 +643,10 @@ impl Host {
                     return Err(EngineError::new("empty_prompt", "the steering text is empty"));
                 }
                 let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
-                let images = tokio::task::spawn_blocking(move || images::resolve(&dir, Some(&id), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
+                let images = match images::needs_disk(&images) {
+                    true => tokio::task::spawn_blocking(move || images::resolve(&dir, Some(&id), images)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??,
+                    false => images,
+                };
                 let decoded = images::decode(&images)?;
                 let steers = shared.running.lock().unwrap_or_else(|e| e.into_inner()).get(&session_id).map(|r| (r.backend_child.is_some(), r.steers.clone()));
                 if let Some((true, _)) = steers {

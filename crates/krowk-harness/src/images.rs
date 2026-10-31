@@ -276,13 +276,19 @@ fn sweep_staged(dir: &Path) {
     }
 }
 
+/// Whether `resolve` would read anything from disk: callers skip the
+/// blocking pool otherwise, so a prompt without images starts no thread.
+pub fn needs_disk(inputs: &[ImageInput]) -> bool {
+    inputs.len() <= MAX_IMAGES && inputs.iter().any(|i| i.data.is_empty())
+}
+
 /// The images a prompt or steer names by sha256 alone, filled in with their
 /// bytes from what `put` kept for `session`, so the checks and the keeping
 /// are the inline ones'. A hash the host holds nothing for refuses the whole
 /// prompt. `take`: those staged for a session-to-be are used up, for the
 /// session now holds them.
 pub fn resolve(sessions_dir: &Path, session: Option<&str>, inputs: Vec<ImageInput>) -> Result<Vec<ImageInput>, EngineError> {
-    if inputs.len() > MAX_IMAGES || inputs.iter().all(|i| !i.data.is_empty()) {
+    if !needs_disk(&inputs) {
         return Ok(inputs);
     }
     let dir = home(sessions_dir, session).ok().map(|d| d.join(DIR));
@@ -483,6 +489,9 @@ mod tests {
         put(&dir, Some(&session), &sha, "image/png", &data).unwrap();
         assert_eq!(std::fs::read_dir(dir.join(&session).join(DIR)).unwrap().count(), 1);
         let by_name = |sha: &str| vec![ImageInput { number: 2, media_type: "image/png".into(), data: String::new(), sha256: Some(sha.into()) }];
+        // Only a prompt naming an image by hash goes to the disk (and so
+        // the blocking pool); none, or all inline, starts no thread.
+        assert!(needs_disk(&by_name(&sha)) && !needs_disk(&[]) && !needs_disk(&[input(1, "image/png", PNG)]));
         assert_eq!(resolve(&dir, Some(&session), by_name(&sha)).unwrap()[0].data, data);
         assert_eq!(resolve(&dir, Some(&session), by_name(&"0".repeat(64))).unwrap_err().message, "the host has no copy of image #2; send the prompt again");
         // Not the bytes' hash, not an image, not a session's.
