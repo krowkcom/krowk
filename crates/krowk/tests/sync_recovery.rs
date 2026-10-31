@@ -273,13 +273,13 @@ fn a_krowk_signing_retired_v1_lines_is_told_to_upgrade() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let err: Value = stderr.find("{\n").and_then(|at| serde_json::from_str(&stderr[at..]).ok()).unwrap_or_else(|| panic!("{stderr}"));
     assert!(!out.status.success());
-    let said = "this krowk signs registry requests with the retired v1 lines — upgrade krowk to 0.42.0 or newer (krowk upgrade)";
+    let said = "this krowk is older than 0.42.0 and signs registry requests with the retired v1 lines — run `krowk upgrade`";
     assert_eq!((err["error"]["error"].as_str(), err["error"]["fix"].as_str()), (Some("signature_version_retired"), Some(said)), "{err}");
 
     let out = krowk_with(&desktop, &api, DESKTOP, &[&init[..], &["--format", "human"]].concat(), "", "", &v1);
     let human = String::from_utf8_lossy(&out.stderr);
-    assert!(!out.status.success() && human.contains("Upgrade krowk to 0.42.0 or newer (krowk upgrade)"), "{human}");
-    assert_eq!(human.matches("0.42.0").count(), 1, "{human}");
+    assert!(!out.status.success() && human.contains("This krowk is older than 0.42.0 and signs registry requests with the retired v1 lines.") && human.contains("Try: krowk upgrade"), "{human}");
+    assert_eq!((human.matches("0.42.0").count(), human.matches("krowk upgrade").count()), (1, 1), "{human}");
     assert!(human.contains("Code: signature_version_retired"), "{human}");
 
     // Unforced, the same machine signs v2 and is served.

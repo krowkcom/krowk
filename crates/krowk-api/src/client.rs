@@ -1027,7 +1027,7 @@ fn fix_for(code: &str, status: u16) -> String {
         "lease_held" => "another device holds this session's lease — send it commands through that device, or wait for the lease to lapse",
         "lease_stale" => "this device does not hold the session's lease — another device took it, it lapsed, or the token is not the holder's; acquire it again before writing",
         "key_has_no_device" => "this key speaks for no device yet — set sync up on this machine first: `krowk sync init`, `krowk sync join` or `krowk sync recover`",
-        "signature_version_retired" => "this krowk signs registry requests in a way the registry no longer accepts — upgrade krowk: run `krowk upgrade`",
+        "signature_version_retired" => "this krowk signs registry requests in a way the registry no longer accepts — run `krowk upgrade`",
         "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
         "too_many_requests" => "the registry is limiting these calls for a moment — wait out its Retry-After (about a minute) and try again",
         "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a KROWK_TOKEN copied from another machine, or run `krowk auth login` here)",

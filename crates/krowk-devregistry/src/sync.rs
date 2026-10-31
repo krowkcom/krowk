@@ -336,8 +336,8 @@ pub fn check_signature(s: &mut SyncStore, req: &Req, device: &str, at: &str, sig
     };
     // Past the v1_until date, in UTC: the date itself is still v1's.
     if !v2 && s.v1_until.is_some_and(|until| jiff::tz::Offset::UTC.to_datetime(Timestamp::now()).date() > until) {
-        let to = if s.v2_release.is_empty() { String::new() } else { format!(" to {} or newer", s.v2_release) };
-        return Err(refused("signature_version_retired", &format!("this krowk signs registry requests with the retired v1 lines — upgrade krowk{to} (krowk upgrade)")));
+        let older = if s.v2_release.is_empty() { String::new() } else { format!("is older than {} and ", s.v2_release) };
+        return Err(refused("signature_version_retired", &format!("this krowk {older}signs registry requests with the retired v1 lines — run `krowk upgrade`")));
     }
     if (Timestamp::now().as_millisecond() - millis).abs() > SIGNATURE_SKEW_MS {
         return Err(refused("signature_stale", "the request was signed more than 5 minutes from the registry's clock — check this machine's clock"));
@@ -1830,7 +1830,7 @@ mod tests {
         };
         assert!(code(today, None).contains("signature_invalid"), "the date itself is still v1's");
         let retired = code(today.yesterday().unwrap(), None);
-        assert!(retired.contains("signature_version_retired") && retired.contains("upgrade krowk to 0.42.0 or newer (krowk upgrade)"), "{retired}");
+        assert!(retired.contains("signature_version_retired") && retired.contains("this krowk is older than 0.42.0 and signs registry requests with the retired v1 lines — run `krowk upgrade`"), "{retired}");
         assert!(code(today.yesterday().unwrap(), Some("2")).contains("signature_invalid"));
     }
 }

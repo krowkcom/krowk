@@ -81,7 +81,7 @@ mod tests {
     /// typed, in the app's words rather than the terminal's.
     #[test]
     fn a_retired_signature_version_is_a_typed_refusal_to_update_the_app() {
-        let mut e = krowk_api::fail("signature_version_retired", "upgrade krowk to 0.42.0 or newer (krowk upgrade)");
+        let mut e = krowk_api::fail("signature_version_retired", "this krowk is older than 0.42.0 and signs registry requests with the retired v1 lines — run `krowk upgrade`");
         e.status = 401;
         match KrowkError::from(e) {
             KrowkError::Refused { code, detail } => {
