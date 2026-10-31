@@ -790,6 +790,33 @@ fn r_net_2_races_back_off_and_a_direct_welcome_resets_the_wait() {
     assert_eq!(probes(&mut r), 1, "10 s after the direct path went");
 }
 
+/// R-NET-2: a viewer that lost two races (its backoff now 40 s) races
+/// again as soon as the terminal's address check (`ADDR_CHECK`, 2 s) sees
+/// the network change and calls `race_now`, its backoff back to 10 s.
+#[test]
+fn r_net_2_a_network_change_after_two_lost_races_races_at_once() {
+    let (mut r, _) = with_a_candidate(0);
+    r.at(0).tick();
+    assert_eq!(probes(&mut r), 1);
+    r.core.probe_lost(1_000);
+    r.at(11_000).tick();
+    assert_eq!(probes(&mut r), 1, "the second race, 10 s on");
+    r.core.probe_lost(12_000);
+    r.at(12_000).tick();
+    assert_eq!(probes(&mut r), 0, "lost twice: the next race is 20 s off");
+    // The addresses change at 13 s; the check after it is at most 2 s on.
+    let seen = 13_000 + 2_000;
+    r.core.race_now(seen);
+    assert!(r.core.next_wake().is_some_and(|w| w <= seen), "woken at once");
+    r.at(seen).tick();
+    assert_eq!(probes(&mut r), 1, "raced within 3 s of the change");
+    r.core.probe_lost(seen + 500);
+    r.at(seen + 500 + 10_000 - 1).tick();
+    assert_eq!(probes(&mut r), 0);
+    r.at(seen + 500 + 10_000).tick();
+    assert_eq!(probes(&mut r), 1, "the backoff started over at 10 s");
+}
+
 /// R-NET-2: a direct welcome that has not come 3 s after the hello goes
 /// back to the relay; so do more than 1024 batches held waiting for it.
 #[test]
