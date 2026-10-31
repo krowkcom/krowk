@@ -1182,6 +1182,91 @@ fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
     daemon.join().unwrap().unwrap();
 }
 
+/// A page near the end of a long log reads the end, not the log: an attach
+/// from a cursor among the last turn's events, in a log of 50,000 events,
+/// reads under 64 KiB of it; and a last line caught half written is read
+/// again, from there, until it is whole.
+#[test]
+fn a_page_near_the_end_of_a_long_log_reads_from_its_cursor() {
+    use krowk_harness::protocol::{LogBody, LogEvent, Usage};
+    use std::io::Write;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, n| mock::Reply::sse(&mock::text_stream(&format!("answer {n}"))));
+    let home = Home::new("offset", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 1 << 20, control_bytes: 1 << 20 });
+    let mut a = Raw::connect(&home);
+    a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn") });
+    let first = a.until(|f| matches!(f, ServerFrame::Done { id: 0, .. }));
+    let ServerFrame::Line { session, .. } = &first[0] else { unreachable!() };
+    let session = session.clone();
+    let path = log::sessions_dir(&home.env()).unwrap().join(&session).join(log::EVENTS_FILE);
+    // 50,000 events no turn replays, hung from the log's head.
+    let filler = |i: usize, parent: String| LogEvent {
+        id: format!("01900000-0000-7000-8000-{i:012x}"),
+        parent_id: Some(parent),
+        session_id: session.clone(),
+        time_ms: 0,
+        body: LogBody::SubagentResponse { turn_id: "t".into(), response_id: None, model: "m".into(), usage: Usage::default() },
+    };
+    let head = log::read_events(&path).unwrap().last().unwrap().id.clone();
+    let mut parent = head;
+    let mut text = String::new();
+    for i in 0..50_000 {
+        let ev = filler(i, parent);
+        text.push_str(&serde_json::to_string(&ev).unwrap());
+        text.push('\n');
+        parent = ev.id;
+    }
+    std::fs::OpenOptions::new().append(true).open(&path).unwrap().write_all(text.as_bytes()).unwrap();
+    // A turn on it: the hub notes where each of its events starts.
+    a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, Some(&session), "turn") });
+    a.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let events = log::read_events(&path).unwrap();
+    assert!(events.len() > 50_000);
+    let started = events.iter().rposition(|e| matches!(e.body, LogBody::TurnStarted { .. })).unwrap();
+    assert!(events.len() - started <= 10, "the cursor is among the last 10 events");
+    let cursor = events[started].id.clone();
+    let ids_of = |got: &[ServerFrame]| -> Vec<String> { got.iter().filter_map(|f| if let ServerFrame::Line { line: StreamLine::Log(e), .. } = f { Some(e.id.clone()) } else { None }).collect() };
+    let attach = |id: u64| {
+        let mut c = Raw::connect(&home);
+        c.send(&ClientFrame::Attach { id, session_id: session.clone(), after_event_id: Some(cursor.clone()), after_seq: None, epoch: None });
+        c
+    };
+    let attached = |c: &mut Raw, id: u64| {
+        let got = c.until(|f| matches!(f, ServerFrame::Attached { id: i, .. } if *i == id));
+        let Some(ServerFrame::Attached { error: None, .. }) = got.last() else { panic!("attached: {:?}", got.last()) };
+        got
+    };
+    let after: Vec<String> = events[started + 1..].iter().map(|e| e.id.clone()).collect();
+    let before = log::bytes_read();
+    let mut c = attach(5);
+    let got = attached(&mut c, 5);
+    let read = log::bytes_read() - before;
+    assert_eq!(ids_of(&got), after, "the log after the cursor");
+    let size = std::fs::metadata(&path).unwrap().len();
+    assert!(read < 64 * 1024, "the page read {read} bytes of a {size}-byte log");
+    // Its last line half written as the next attach reads, whole a little
+    // later: read again, from the cursor, until it is.
+    let torn = serde_json::to_string(&filler(50_000, events.last().unwrap().id.clone())).unwrap();
+    let mut f = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+    f.write_all(&torn.as_bytes()[..torn.len() / 2]).unwrap();
+    let before = log::bytes_read();
+    let mut d = attach(6);
+    // Read twice while torn, then whole.
+    let until = Instant::now() + Duration::from_secs(10);
+    while log::bytes_read() - before <= 2 * read && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    writeln!(f, "{}", &torn[torn.len() / 2..]).unwrap();
+    let got = attached(&mut d, 6);
+    let again = log::bytes_read() - before;
+    let want: Vec<String> = after.iter().cloned().chain([filler(50_000, String::new()).id]).collect();
+    assert_eq!(ids_of(&got), want, "the torn line once whole, after the rest");
+    assert!(again > 2 * read && again < size / 10, "the torn line was read again from the cursor, not the top: {again} bytes");
+    drop((a, c, d));
+    daemon.join().unwrap().unwrap();
+}
+
 /// What a client without the token can learn and cost: nothing about the
 /// daemon (not even its pid or version, whatever protocol it claims), no
 /// decompression, and no connection at all from a browser page.

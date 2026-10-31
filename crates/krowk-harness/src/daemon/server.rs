@@ -39,7 +39,7 @@ use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::replay::{self, Tail};
 use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -195,12 +195,38 @@ struct Hub {
     /// Its subagents' sessions seen on its stream: their approval requests
     /// are its followers' to answer too.
     children: HashSet<String>,
-    /// How many events its log held when the streaming command under way
-    /// registered: all of them were written before it, so none comes live,
-    /// and catching up replays them whatever else it cannot tell yet.
-    base: usize,
+    /// How long, in bytes, its log was when the streaming command under way
+    /// registered: every event in that much was written before it, so none
+    /// comes live, and catching up replays them whatever else it cannot
+    /// tell yet.
+    base: u64,
+    /// Where in its log its next own event starts, when known: from the
+    /// log's length at `register`, each event sent live adds its line.
+    end: Option<u64>,
+    /// Where its recent events start in its log, newest last, at most
+    /// `OFFSETS`: a page from a cursor among them reads from there, not the
+    /// whole log. A guess, checked by the read (`page`).
+    offsets: VecDeque<(Rc<str>, u64)>,
     /// When it was first seen, for the status listing's order.
     seen: u64,
+}
+
+/// How many of a hub's recent events it keeps the offsets of.
+const OFFSETS: usize = 256;
+
+impl Hub {
+    /// Notes where event `id` starts in the log.
+    fn mark(&mut self, id: Rc<str>, at: u64) {
+        if self.offsets.len() == OFFSETS {
+            self.offsets.pop_front();
+        }
+        self.offsets.push_back((id, at));
+    }
+
+    /// Where event `id` starts in the log, when it is a recent one.
+    fn offset(&self, id: &str) -> Option<u64> {
+        self.offsets.iter().rev().find(|(i, _)| &**i == id).map(|(_, at)| *at)
+    }
 }
 
 struct Client {
@@ -869,6 +895,8 @@ impl State {
             head: None,
             children: HashSet::new(),
             base: 0,
+            end: None,
+            offsets: VecDeque::new(),
             seen,
         });
         if hub.seen == seen {
@@ -1010,6 +1038,12 @@ impl State {
         {
             hub.head = Some(ev.id.clone());
             own_log = Some(Rc::from(ev.id.as_str()));
+            // The log has the event as it is sent, a line of its own: a
+            // `StreamLine::Log` is its event's JSON.
+            if let (Some(at), Some(id)) = (hub.end, &own_log) {
+                hub.mark(id.clone(), at);
+                hub.end = Some(at + json.len() as u64 + 1);
+            }
             let over = matches!(ev.body, LogBody::TurnCompleted { .. });
             match ev.body {
                 // The host that runs it is the one whose turn started —
@@ -1053,23 +1087,24 @@ impl State {
 }
 
 /// Registers a command that logs to the session it names with that
-/// session's hub, counting the log first so nothing it writes is in the
-/// count (see `execute`).
+/// session's hub, measuring the log first so nothing it writes is in the
+/// length (see `execute`).
 async fn register(state: &Shared, root: Option<&str>, host: &Rc<Host>, client: u64) {
     let dir = state.borrow().sessions_dir.clone();
     let base = match (root, dir) {
         (Some(r), Some(dir)) if log::valid_id(r) => {
             let p = dir.join(r).join(log::EVENTS_FILE);
-            tokio::task::spawn_blocking(move || log::read_events(&p).map(|e| e.len()).unwrap_or(0)).await.unwrap_or(0)
+            tokio::task::spawn_blocking(move || std::fs::metadata(&p).map(|m| m.len()).ok()).await.ok().flatten()
         }
-        _ => 0,
+        _ => None,
     };
     let mut s = state.borrow_mut();
     s.wake.notify_one();
     if let Some(r) = root {
         let hub = s.follow(r, host, client);
         if hub.in_flight == 0 {
-            hub.base = base;
+            hub.base = base.unwrap_or(0);
+            hub.end = base;
         }
         hub.in_flight += 1;
     }
@@ -1162,6 +1197,10 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) 
         if turn && !counted {
             // A new session's hub, made by its first line.
             let hub = s.follow(&r, &host, client);
+            if hub.in_flight == 0 && hub.head.is_none() {
+                // Its log begins with this line.
+                hub.end = Some(0);
+            }
             hub.in_flight += 1;
             counted = true;
         }
@@ -1250,11 +1289,23 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
     // sent live (the hub's head): what lies beyond it is on its way, and
     // comes in order with the frames around it. A head the read does not
     // reach yet — the log grew while it read — is read again.
+    //
+    // A cursor among the hub's recent events is read from where its event
+    // starts, not from the top: a page near the end of a long log reads
+    // the end. The offset is a guess the read checks — its first event is
+    // the cursor's — and a read from it that misses or does not settle is
+    // done again from the top, as every read was, and counts as no try.
+    let mut start = cursor.log.as_deref().and_then(|c| state.borrow().hubs.get(session).and_then(|h| h.offset(c))).unwrap_or(0);
     let mut tries = 0;
     loop {
         tries += 1;
-        let p = path.clone();
-        let events = match tokio::task::spawn_blocking(move || log::read_events(&p)).await {
+        let (p, at) = (path.clone(), start);
+        let events = match tokio::task::spawn_blocking(move || log::read_events_from(&p, at)).await {
+            Ok(Ok(e)) if at > 0 && e.first().map(|(e, _)| e.id.as_str()) != cursor.log.as_deref() => {
+                start = 0;
+                tries -= 1;
+                continue;
+            }
             Ok(Ok(e)) => e,
             // A log there that does not read whole: its last line caught
             // half written, as a turn appends a large event. Not yet
@@ -1265,8 +1316,14 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
             }
             _ => return Err(EngineError::new("no_session", format!("there is no session {session} — `krowk sessions` lists them"))),
         };
-        if decide(state, client, session, &host, events, tries, &cursor) {
+        if decide(state, client, session, &host, start, events, tries, &cursor) {
             return Ok(());
+        }
+        if start > 0 {
+            // A head not in the read may be before where it starts.
+            start = 0;
+            tries -= 1;
+            continue;
         }
         tokio::time::sleep(READ_GAP).await;
     }
@@ -1275,8 +1332,9 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
 /// How much of a read of `session`'s log a page may replay, matched
 /// against its hub as it is now: `under_way` whether a turn runs or a
 /// streaming command is registered, `head` the last of its own events sent
-/// live, `base` what the log held when the command registered. `Ok(None)`:
-/// the read is behind what was sent live, and is to be read again.
+/// live, `base` the log's length when the command registered, and each
+/// event read with the offset its line ends at. `Ok(None)`: the read is
+/// behind what was sent live, and is to be read again.
 ///
 /// The read ran on the blocking pool while the daemon's thread went on, so
 /// the session may have moved past it — a turn may even have ended — and
@@ -1293,13 +1351,13 @@ async fn page(state: &Shared, client: u64, session: &str, cursor: outbox::Cursor
 /// has not reached the head in `MAX_READS` — a page from it could have a
 /// gap, so the client is let go instead, to re-follow from its cursor
 /// (fail closed; `daemon::remote`).
-fn extent(under_way: bool, head: Option<&str>, base: usize, events: &[crate::protocol::LogEvent], tries: u32) -> Result<Option<(usize, bool)>, ()> {
+fn extent(under_way: bool, head: Option<&str>, base: u64, events: &[(crate::protocol::LogEvent, u64)], tries: u32) -> Result<Option<(usize, bool)>, ()> {
     let n = events.len();
-    let at = head.and_then(|h| events.iter().position(|e| e.id == h));
+    let at = head.and_then(|h| events.iter().position(|(e, _)| e.id == h));
     Ok(match (head, at) {
         // Nothing sent live: the log as it was before the command, all of
         // which is history, or all of it when none is under way.
-        (None, _) if under_way => Some((base.min(n), false)),
+        (None, _) if under_way => Some((events.partition_point(|(_, end)| *end <= base), false)),
         (None, _) => Some((n, false)),
         (Some(_), Some(at)) if under_way => Some((at + 1, true)),
         (Some(_), Some(_)) => Some((n, false)),
@@ -1318,7 +1376,8 @@ const READ_GAP: Duration = Duration::from_millis(10);
 /// client's outbox the next page, with the control frames it held put back
 /// at their places — false when the read is behind what was sent live, and
 /// is to be read again.
-fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: Vec<crate::protocol::LogEvent>, tries: u32, cursor: &outbox::Cursor) -> bool {
+#[allow(clippy::too_many_arguments)]
+fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, start: u64, events: Vec<(crate::protocol::LogEvent, u64)>, tries: u32, cursor: &outbox::Cursor) -> bool {
     let mut s = state.borrow_mut();
     let hub = s.hubs.get(session);
     // Under way: `running` from its `turn.started`, or a command registered
@@ -1344,7 +1403,7 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     if !outbox.expects(session) {
         return true;
     }
-    let from = cursor.log.as_deref().and_then(|a| events.iter().position(|e| e.id == a)).map_or(0, |i| i + 1);
+    let from = cursor.log.as_deref().and_then(|a| events.iter().position(|(e, _)| e.id == a)).map_or(0, |i| i + 1);
     let cap = s.opts.caps.session_bytes;
     // The page: the log from the cursor up to the cap, and once the log is
     // all in, the running turn's frames. `at` is each frame's place — its
@@ -1353,7 +1412,7 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     let mut bytes = 0;
     let mut next = from;
     while next < upto && (bytes < cap || frames.is_empty()) {
-        let ev = events[next].clone();
+        let ev = events[next].0.clone();
         let id: Rc<str> = Rc::from(ev.id.as_str());
         let line = StreamLine::Log(ev);
         let json = serde_json::to_string(&line).expect("a stream line serializes");
@@ -1377,7 +1436,9 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
     let mut rest = Vec::new();
     let mut placed: Vec<(usize, Out)> = Vec::new();
     for h in outbox.held(session) {
-        let li = h.mark.log.as_deref().and_then(|m| events.iter().position(|e| e.id == m));
+        // A read from the cursor's event (`start`) has every mark from
+        // there on: one not in it is at or before the cursor.
+        let li = h.mark.log.as_deref().and_then(|m| events.iter().position(|(e, _)| e.id == m)).or(h.mark.log.as_ref().filter(|_| start > 0).map(|_| 0));
         let before = |a: &Result<usize, u64>| match a {
             Ok(i) => li.is_some_and(|li| *i <= li),
             Err(q) => li.is_none_or(|li| li + 1 >= upto) && *q <= h.mark.seq,
@@ -1398,6 +1459,16 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, events: V
         page.push(f);
     }
     page.extend(placed.map(|(_, h)| h));
+    // The next page's cursor is this one's last event: noted, so that page
+    // reads on from it.
+    if !last && next > from {
+        let at = if next >= 2 { events[next - 2].1 } else { start };
+        if let Some(h) = s.hubs.get_mut(session)
+            && h.offset(&events[next - 1].0.id).is_none()
+        {
+            h.mark(Rc::from(events[next - 1].0.id.as_str()), at);
+        }
+    }
     if last {
         // The status line's count is sent only as it changes: a client
         // that comes to the session meanwhile is told it now, once caught up.
@@ -1427,8 +1498,13 @@ mod tests {
         LogEvent { id: id.into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::AssistantText { text: id.into() } } }
     }
 
-    fn ex(under_way: bool, head: Option<&str>, base: usize, events: &[LogEvent], tries: u32) -> Option<(usize, bool)> {
-        extent(under_way, head, base, events, tries).expect("under the cap")
+    /// Each event a byte of the log, so a length in bytes is a count.
+    fn read(events: &[LogEvent]) -> Vec<(LogEvent, u64)> {
+        events.iter().cloned().zip(1..).collect()
+    }
+
+    fn ex(under_way: bool, head: Option<&str>, base: u64, events: &[LogEvent], tries: u32) -> Option<(usize, bool)> {
+        extent(under_way, head, base, &read(events), tries).expect("under the cap")
     }
 
     /// R-LAG-4: the interleaving that lost a turn's last logged events. A
@@ -1466,7 +1542,7 @@ mod tests {
         // A head never reached: the client is let go after the last read,
         // under way or not, rather than paged with a gap.
         assert_eq!(ex(true, Some("gone"), 2, &whole, MAX_READS - 1), None);
-        assert_eq!(extent(true, Some("gone"), 2, &whole, MAX_READS), Err(()));
-        assert_eq!(extent(false, Some("gone"), 2, &whole, MAX_READS), Err(()));
+        assert_eq!(extent(true, Some("gone"), 2, &read(&whole), MAX_READS), Err(()));
+        assert_eq!(extent(false, Some("gone"), 2, &read(&whole), MAX_READS), Err(()));
     }
 }

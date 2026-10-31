@@ -385,6 +385,7 @@ pub fn read_events(path: &Path) -> Result<Vec<LogEvent>, LogError> {
     let mut out = Vec::new();
     for (n, line) in BufReader::new(f).lines().enumerate() {
         let line = line.map_err(|e| io(format_args!("read {}", path.display()), e))?;
+        read_bytes(line.len() + 1);
         if line.trim().is_empty() {
             continue;
         }
@@ -392,6 +393,57 @@ pub fn read_events(path: &Path) -> Result<Vec<LogEvent>, LogError> {
         out.push(ev);
     }
     Ok(out)
+}
+
+/// The events of a log file from byte `offset` on, each with the offset
+/// its line ends at: where the next one starts. An `offset` that is not
+/// where a line starts reads nothing, rather than an error a torn line
+/// would be.
+pub fn read_events_from(path: &Path, offset: u64) -> Result<Vec<(LogEvent, u64)>, LogError> {
+    use std::io::{Read, Seek, SeekFrom};
+    slow_disk();
+    let mut f = File::open(path).map_err(|e| io(format_args!("open {}", path.display()), e))?;
+    if offset > 0 {
+        let mut b = [0u8];
+        f.seek(SeekFrom::Start(offset - 1)).map_err(|e| io(format_args!("seek {}", path.display()), e))?;
+        let n = f.read(&mut b).map_err(|e| io(format_args!("read {}", path.display()), e))?;
+        if n == 0 || b[0] != b'\n' {
+            return Ok(Vec::new());
+        }
+    }
+    f.seek(SeekFrom::Start(offset)).map_err(|e| io(format_args!("seek {}", path.display()), e))?;
+    let (mut r, mut at, mut line, mut out) = (BufReader::new(f), offset, String::new(), Vec::new());
+    loop {
+        line.clear();
+        let n = r.read_line(&mut line).map_err(|e| io(format_args!("read {}", path.display()), e))?;
+        if n == 0 {
+            return Ok(out);
+        }
+        read_bytes(n);
+        at += n as u64;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let ev: LogEvent = serde_json::from_str(&line).map_err(|e| LogError::Io(format!("{} at byte {}: {e}", path.display(), at - n as u64)))?;
+        out.push((ev, at));
+    }
+}
+
+/// For tests (`test-hooks`): bytes read from logs by `read_events` and
+/// `read_events_from`, process-wide.
+#[cfg(feature = "test-hooks")]
+static BYTES_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// For tests (`test-hooks`): how many bytes of logs have been read.
+#[cfg(feature = "test-hooks")]
+pub fn bytes_read() -> u64 {
+    BYTES_READ.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[cfg_attr(not(feature = "test-hooks"), allow(unused_variables))]
+fn read_bytes(n: usize) {
+    #[cfg(feature = "test-hooks")]
+    BYTES_READ.fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The branch ending at `head`, root first.
@@ -548,6 +600,27 @@ mod tests {
         assert!(started.elapsed() >= std::time::Duration::from_millis(100), "waited for the sync queued behind the busy pool");
         assert!(DONE.load(std::sync::atomic::Ordering::SeqCst) > done, "and the sync ran");
         drop((busy, rt));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A read from where a line starts has every event from there, each
+    /// with where its line ends; one from inside a line reads nothing, so
+    /// a wrong guess is told from a torn last line.
+    #[test]
+    fn a_read_from_an_offset_starts_at_a_line_or_reads_nothing() {
+        let dir = std::env::temp_dir().join(format!("krowk-harness-log-from-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut log, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        let a = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user("hi") }).unwrap();
+        let path = log.dir.join(EVENTS_FILE);
+        let whole = read_events_from(&path, 0).unwrap();
+        assert_eq!(whole.len(), 2);
+        assert_eq!(whole[1].1, std::fs::metadata(&path).unwrap().len());
+        let from = read_events_from(&path, whole[0].1).unwrap();
+        assert_eq!((from.len(), from[0].0.id.as_str()), (1, a.id.as_str()));
+        assert!(read_events_from(&path, whole[0].1 + 1).unwrap().is_empty(), "inside a line");
+        assert!(read_events_from(&path, whole[1].1 + 9).unwrap().is_empty(), "past the end");
+        drop(log);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

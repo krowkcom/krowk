@@ -481,6 +481,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   (`krowk relay serve`) writes one `evict` line to stderr for every
   waiting connection it lets go, naming the pool, the workspace and that
   pool's running count.
+- **Catching up on a long session reads only its end.** A client that
+  falls behind or reattaches during a turn used to make the daemon read
+  the session's whole log for every page, and starting a turn read it
+  once more just to count it. The daemon now notes where each of the
+  turn's recent events starts in the log and reads from the client's
+  place, so catching up costs the same whether the log is a hundred
+  events or fifty thousand.
 
 - **An image is capped at 2.75 MB, and named by its sha256.** One image
   can be at most 2.75 MiB in every session, local ones included, so that a
