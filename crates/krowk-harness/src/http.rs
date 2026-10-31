@@ -103,7 +103,28 @@ where
         // the blocking thread, inside `io`'s runtime.
         let connect = self.inner.call(req);
         let io = self.io.clone();
-        Box::pin(async move { tokio::task::spawn_blocking(move || io.block_on(connect)).await.map_err(|e| BoxError::from(format!("the connection could not be made: {e}")))? })
+        // Dropped with the future that asked — the connect timeout, an
+        // interrupted turn — and the connection under way is dropped with
+        // it, rather than holding a blocking thread to its end.
+        let (asked, gone) = tokio::sync::oneshot::channel::<()>();
+        Box::pin(async move {
+            let made = tokio::task::spawn_blocking(move || {
+                io.block_on(async {
+                    tokio::select! {
+                        made = connect => Some(made),
+                        _ = gone => None,
+                    }
+                })
+            })
+            .await;
+            drop(asked);
+            match made {
+                Ok(Some(made)) => made,
+                Ok(None) => Err("the connection was given up".into()),
+                // A panic in the connector, said as a failed connection.
+                Err(e) => Err(format!("the connection could not be made: {e}").into()),
+            }
+        })
     }
 }
 
