@@ -83,6 +83,7 @@ pub mod synced {
         pub history: Vec<LogEvent>,
         pub title: String,
         pub host: Option<String>,
+        pub dev: bool,
     }
     pub async fn open(o: Options) -> Result<Opened, String> {
         match o {}
@@ -495,7 +496,7 @@ async fn session(opts: Options) -> Outcome {
                 // opening here, not one picked up mid-way.
                 let title = app::clean(&s.title);
                 // The name goes on the status line, which draws its text as given.
-                app.sync = Some(app::Synced { name: s.host.as_deref().map(app::clean).unwrap_or_else(|| "the host".into()), title, ..app::Synced::default() });
+                app.sync = Some(app::Synced { name: s.host.as_deref().map(app::clean).unwrap_or_else(|| "the host".into()), title, dev: s.dev, ..app::Synced::default() });
                 opened = Some(s.link);
             }
             Err(e) => return Outcome { session_id: None, left: Vec::new(), abandoned: false, error: Some(format!("the synced session could not be attached: {e}")) },

@@ -448,6 +448,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **A synced session's status line says how it is connected.** Beside
+  the host's name it now reads `direct over LAN`, `direct over
+  Tailscale` or `relay` while the host is there, the same words the
+  iPhone uses, and `dev` when krowk joined the relay's development env
+  (a host in the other env is never met). On a narrow terminal the
+  connection gives way first; the host's name and `dev` stay.
+
 - **An image is capped at 2.75 MB, and named by its sha256.** One image
   can be at most 2.75 MiB in every session, local ones included, so that a
   session's images can later sync or move unchanged (it was about 3.75

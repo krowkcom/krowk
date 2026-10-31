@@ -93,6 +93,9 @@ pub struct Synced {
     /// The host's device name, or `the host` where the device list does
     /// not name it.
     pub name: String,
+    /// Joined under the development env (relay.md → The env): a host
+    /// under the other is never met, so it is said.
+    pub dev: bool,
     /// The session's title; empty where it has none.
     pub title: String,
     /// The attach line is drawn once, when the relay first says whether
@@ -103,14 +106,18 @@ pub struct Synced {
 impl Synced {
     /// `● <host>` while it is there, `○ <host>` away (prompts wait), `◌
     /// <host>` before the relay has said either: the glyph says it, the
-    /// attach line once in words. And the style the glyph takes.
-    fn said(&self) -> (String, Style) {
+    /// attach line once in words. Then `· dev` under the development env,
+    /// and the style the glyph takes. And while the host is there, the
+    /// path it comes by (` · direct over LAN`), which gives way first.
+    fn said(&self) -> (String, Style, Option<String>) {
         let (glyph, style) = match self.host {
             None => ("◌", dim()),
             Some(true) => ("●", look::accent()),
             Some(false) => ("○", dim()),
         };
-        (format!("{glyph} {}", self.name), style)
+        let dev = if self.dev { " · dev" } else { "" };
+        let path = self.path.as_ref().filter(|_| self.host == Some(true)).map(|p| format!(" · {p}"));
+        (format!("{glyph} {}{dev}", self.name), style, path)
     }
 
     /// The line drawn once on attaching, and its glyph's style: the session
@@ -138,6 +145,9 @@ struct Part {
     /// The style of the text's first character, a glyph, where it is not
     /// the text's: a synced host's `●` in the accent, its name in ink.
     mark: Option<Style>,
+    /// Drawn dim after the text, and the first thing to give way: a synced
+    /// session's path.
+    tail: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -590,11 +600,15 @@ fn model_name(model: &str) -> String {
     words.join(" ") + tag
 }
 
-/// A row of the status line, under the prompt's arrow. Narrow, the items give way one at a time — the
-/// pull request first, then the branch, the device, the subagents, the tasks
-/// and the cost — then the model is cut short; `? help` stays.
+/// A row of the status line, under the prompt's arrow. Narrow, the items give way one at a time — a
+/// synced session's path first, then the pull request, the branch, the
+/// device, the subagents, the tasks and the cost — then the model is cut
+/// short; `? help` stays.
 fn hint_row(mut parts: Vec<Part>, room: usize) -> Line<'static> {
-    let used = |parts: &[Part]| parts.iter().map(|p| look::unmarked(&p.text).width()).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
+    let used = |parts: &[Part]| parts.iter().map(|p| look::unmarked(&p.text).width() + p.tail.as_ref().map_or(0, |t| t.width())).sum::<usize>() + parts.len().saturating_sub(1) * BAR_SEP.len();
+    if used(&parts) > room {
+        parts.iter_mut().for_each(|p| p.tail = None);
+    }
     while used(&parts) > room {
         // The one to give way next: the lowest rank below the model's.
         let Some(i) = (0..parts.len()).filter(|&i| parts[i].rank < Rank::Model).min_by_key(|&i| parts[i].rank) else { break };
@@ -629,6 +643,7 @@ fn hint_row(mut parts: Vec<Part>, room: usize) -> Line<'static> {
                     let mut chars = text.chars();
                     spans.extend(chars.next().map(|c| Span::styled(c.to_string(), mark)));
                     spans.push(Span::styled(chars.as_str().to_string(), p.style));
+                    spans.extend(p.tail.map(|t| Span::styled(t, dim())));
                 }
                 // A key it names (`?`) in white.
                 None => spans.extend(clip_spans(look::keys(&p.text, p.style), room)),
@@ -3266,7 +3281,7 @@ impl App {
     /// The status line as text, every item it has room for at any width:
     /// a row a line.
     pub fn status_bar(&self) -> String {
-        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| look::unmarked(&p.text)).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
+        self.status_parts().into_iter().filter(|r| !r.is_empty()).map(|r| r.into_iter().map(|p| look::unmarked(&p.text) + p.tail.as_deref().unwrap_or("")).collect::<Vec<_>>().join(BAR_SEP)).collect::<Vec<_>>().join("\n")
     }
 
     /// The status line's items, in the order drawn: `<instance>/<model> |
@@ -3275,7 +3290,7 @@ impl App {
     /// the counts only while there is something to count and `offline`
     /// before the help while the API cannot be reached.
     fn status_parts(&self) -> [Vec<Part>; 2] {
-        let part = |rank, text: String| Part { rank, text, style: dim(), url: None, mark: None };
+        let part = |rank, text: String| Part { rank, text, style: dim(), url: None, mark: None, tail: None };
         let (mut first, mut second): (Vec<Part>, Vec<Part>) = (Vec::new(), Vec::new());
         for item in &self.settings.status_items {
             let parts = if item.second_row() { &mut second } else { &mut first };
@@ -3292,7 +3307,7 @@ impl App {
                     if let Some(m) = &self.model {
                         let name = model_name(&m.model);
                         match self.instances.get(&m.instance).and_then(InstanceUsage::limit_brief) {
-                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{name} ({}, {w})", m.instance), style: yellow(), url: None, mark: None }),
+                            Some(w) => parts.push(Part { rank: Rank::Model, text: format!("{name} ({}, {w})", m.instance), style: yellow(), url: None, mark: None, tail: None }),
                             None => parts.push(part(Rank::Model, format!("{name} ({})", m.instance))),
                         }
                     }
@@ -3331,7 +3346,7 @@ impl App {
                             PrState::Closed => red(),
                             PrState::Draft => dim(),
                         };
-                        parts.push(Part { rank: Rank::Pr, text: format!("#{}↗", pr.number), style, url: Some(pr.url.clone()), mark: None });
+                        parts.push(Part { rank: Rank::Pr, text: format!("#{}↗", pr.number), style, url: Some(pr.url.clone()), mark: None, tail: None });
                     }
                 }
                 StatusItem::Help => {}
@@ -3340,17 +3355,17 @@ impl App {
         // Whatever the list says, until there is a kit: losing every device
         // without one loses every session.
         if self.no_recovery_kit {
-            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None });
+            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None, tail: None });
         }
         // Whatever the list says: where a synced session's host is decides
         // whether a prompt runs now or waits.
         if let Some(sync) = &self.sync {
-            let (text, mark) = sync.said();
-            first.push(Part { rank: Rank::Sync, text, style: Style::default(), url: None, mark: Some(mark) });
+            let (text, mark, tail) = sync.said();
+            first.push(Part { rank: Rank::Sync, text, style: Style::default(), url: None, mark: Some(mark), tail });
         }
         // Whatever the list says: being offline is news (R-OFF-1).
         if self.offline.is_some() {
-            first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None, mark: None });
+            first.push(Part { rank: Rank::Offline, text: "offline".into(), style: yellow(), url: None, mark: None, tail: None });
         }
         if self.settings.status_items.contains(&StatusItem::Help) {
             first.push(part(Rank::Help, "`?` help".into()));
@@ -4813,20 +4828,30 @@ mod tests {
     fn d11_a_synced_sessions_host_is_named_on_the_status_line_and_the_attach_line() {
         let mut a = app();
         a.settings.status_items = vec![StatusItem::Help];
-        a.width = 100;
+        a.set_width(100);
         a.sync = Some(Synced { name: "elvinas-arch".into(), title: "fix the parser".into(), ..Synced::default() });
         assert_eq!(a.status_bar(), "◌ elvinas-arch | ? help");
         a.say_attached();
         assert!(a.take_pending().is_empty(), "nothing said before the relay says");
         let s = a.sync.as_mut().unwrap();
         (s.host, s.path) = (Some(true), Some("direct over LAN".into()));
-        assert_eq!(a.status_bar(), "● elvinas-arch | ? help");
+        assert_eq!(a.status_bar(), "● elvinas-arch · direct over LAN | ? help");
         let (rows, _) = a.view(Instant::now());
         let bar = rows.iter().find(|r| r.spans.iter().any(|s| s.content == "●")).expect("the glyph a span of its own");
         let dot = bar.spans.iter().position(|s| s.content == "●").unwrap();
         assert_eq!(bar.spans[dot].style, look::accent());
         assert_eq!(bar.spans[dot + 1].content, " elvinas-arch");
         assert_eq!(bar.spans[dot + 1].style, Style::default(), "the name in ink");
+        assert_eq!((bar.spans[dot + 2].content.as_ref(), bar.spans[dot + 2].style), (" · direct over LAN", dim()), "the path dim");
+        a.sync.as_mut().unwrap().dev = true;
+        assert_eq!(a.status_bar(), "● elvinas-arch · dev · direct over LAN | ? help");
+        // Narrow, the path gives way before anything else; the host and
+        // the env stay.
+        a.set_width(40);
+        let (rows, _) = a.view(Instant::now());
+        assert!(text(&rows).contains(&"● elvinas-arch · dev | ? help".to_string()), "{:?}", text(&rows));
+        a.set_width(100);
+        a.sync.as_mut().unwrap().dev = false;
         a.say_attached();
         a.say_attached();
         a.release();
@@ -4835,7 +4860,7 @@ mod tests {
         let line = said.iter().find(|l| l.width() > 0).unwrap();
         assert_eq!((line.spans[0].style, line.spans[1].style), (look::accent(), Style::default()));
         a.sync.as_mut().unwrap().host = Some(false);
-        assert_eq!(a.status_bar(), "○ elvinas-arch | ? help");
+        assert_eq!(a.status_bar(), "○ elvinas-arch | ? help", "away, no path");
 
         let mut a = app();
         a.width = 100;
