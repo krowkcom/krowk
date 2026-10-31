@@ -3017,6 +3017,9 @@ impl<'h> Ui<'h> {
             }
             return;
         }
+        // Asked before the log is read: a turn that ends meanwhile is then
+        // in the log, or followed to its end, never lost between the two.
+        let running = self.running_now(id).await;
         // Read before anything is let go: a log that cannot be read leaves
         // the session shown as it was.
         let events = match read_session(&self.sessions_dir, id) {
@@ -3042,7 +3045,7 @@ impl<'h> Ui<'h> {
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry(), Some(&self.sessions_dir));
-        if self.running_now(id).await {
+        if running {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {

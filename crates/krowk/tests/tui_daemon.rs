@@ -216,6 +216,7 @@ fn a_session_another_client_started_after_the_tui_opened_is_followed_from_sessio
     b.write(b"say the alphabet\r");
     assert!(b.wait_for("charlie", Duration::from_secs(10)).is_some(), "{:?}", b.text());
     a.write(format!("/sessions {}\r", d.session()).as_bytes());
+    assert!(a.wait_for("following it", Duration::from_secs(10)).is_some(), "{:?}", a.text());
     assert!(a.wait_for("papa", Duration::from_secs(15)).is_some(), "followed live: {:?}", a.text());
     assert!(a.wait_for("tokens", Duration::from_secs(10)).is_some(), "to the turn's end: {:?}", a.text());
     let text = a.text();
