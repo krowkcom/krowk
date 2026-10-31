@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`/detach` leaves a turn running in the host daemon.** Ctrl-D twice
+  mid-turn still stops the turn before krowk exits, and now says so: the
+  first press reads `Press Ctrl-D again to stop the turn and exit —
+  /detach leaves it running`, and the way out says the turn was
+  interrupted and its work so far is in the session. To leave a turn
+  running on purpose, type `/detach`: krowk exits at once and prints the
+  `krowk --resume` command that follows the turn again. It is refused
+  while an approval or question waits, since nobody would be there to
+  answer it. On a synced viewer the first Ctrl-D now says the turn keeps
+  running on the host.
+
 - **A moved session keeps its images.** When you move a synced session to
   another machine, that machine now fetches every image the earlier turns
   named before its first turn, so the model still sees them instead of
