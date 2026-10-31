@@ -90,12 +90,24 @@ pub trait RequestSigner: Send + Sync {
     fn sign(&self, message: &[u8]) -> [u8; 64];
 }
 
-/// What a device signs for a registry call, as the registry rebuilds it:
-/// the label, the method, the request target (path and query, exactly as
-/// sent), the timestamp's digits and the hex SHA-256 of the body, one per
-/// line. None of them can hold a newline, so the lines read one way only.
-pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8]) -> Vec<u8> {
-    format!("krowk/registry/v1\n{method}\n{target}\n{timestamp}\n{}", sha256_hex(body)).into_bytes()
+/// What a device signs for a registry call, as the registry rebuilds it
+/// (`X-Krowk-Signature-Version: 2`): the label, the method, the request
+/// target (path and query, exactly as sent), the timestamp's digits, the hex
+/// SHA-256 of the body, the device's id in lowercase hex and the API origin,
+/// one per line. The last two bind the signature to the device it is sent
+/// as and the registry it is sent to. None of them can hold a newline, so
+/// the lines read one way only.
+pub fn signing_input(method: &str, target: &str, timestamp: &str, body: &[u8], device: &str, origin: &str) -> Vec<u8> {
+    format!("krowk/registry/v2\n{method}\n{target}\n{timestamp}\n{}\n{device}\n{origin}", sha256_hex(body)).into_bytes()
+}
+
+/// The origin of an API base, as the registry spells its own: scheme, host
+/// and a port only when it is not the scheme's default, lowercase, no path.
+fn api_origin(base_url: &str) -> String {
+    let Some(u) = parse(base_url) else { return String::new() };
+    let host = if u.host.contains(':') { format!("[{}]", u.host) } else { u.host };
+    let default = (u.scheme == "https" && u.port == 443) || (u.scheme == "http" && u.port == 80);
+    if default { format!("{}://{host}", u.scheme) } else { format!("{}://{host}:{}", u.scheme, u.port) }
 }
 
 /// The millisecond a signed request carries: now, or one past the last this
@@ -500,8 +512,14 @@ impl Client {
                 // and never a millisecond this process has signed with, so
                 // two of its tasks reading alike at once are two as well.
                 let at = signing_ms().to_string();
-                let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default()));
-                req = req.header("X-Krowk-Device", signer.device()).header("X-Krowk-Timestamp", at).header("X-Krowk-Signature", hex(&signature));
+                let device = signer.device().to_ascii_lowercase();
+                let origin = api_origin(&self.base_url);
+                let signature = signer.sign(&signing_input(method, request_target(&url), &at, payload.unwrap_or_default(), &device, &origin));
+                req = req
+                    .header("X-Krowk-Device", device)
+                    .header("X-Krowk-Timestamp", at)
+                    .header("X-Krowk-Signature", hex(&signature))
+                    .header("X-Krowk-Signature-Version", "2");
             }
             let req = req.body(payload.map(<[u8]>::to_vec).unwrap_or_default()).map_err(|e| fail("bad_request", e.to_string()))?;
             let mut res = self.agent.run(req).map_err(|e| self.transport(method, &url, e, "network_unreachable"))?;
@@ -1810,16 +1828,22 @@ mod boundary {
         }
     }
 
-    /// Ticket 16c: the lines a device signs are the registry's, byte for
-    /// byte — label, method, the request target as sent, the timestamp and
-    /// the body's digest — and the target is the path and query alone.
+    /// Tickets 16c and 163: the lines a device signs are the registry's v2,
+    /// byte for byte — label, method, the request target as sent, the
+    /// timestamp, the body's digest, the device and the API origin — and the
+    /// target is the path and query alone.
     #[test]
     fn a_signed_call_signs_the_registrys_lines_over_the_target_as_sent() {
-        let lines = String::from_utf8(signing_input("GET", "/v1/sessions/x/relay_ticket?device=ab&env=production", "1790000000000", b"")).unwrap();
+        let target = "/v1/sessions/x/relay_ticket?device=ab&env=production";
+        let lines = String::from_utf8(signing_input("GET", target, "1790000000000", b"", "0123456789abcdef0123456789abcdef", "https://api.krowk.com")).unwrap();
         assert_eq!(
             lines,
-            "krowk/registry/v1\nGET\n/v1/sessions/x/relay_ticket?device=ab&env=production\n1790000000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "krowk/registry/v2\nGET\n/v1/sessions/x/relay_ticket?device=ab&env=production\n1790000000000\ne3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n0123456789abcdef0123456789abcdef\nhttps://api.krowk.com"
         );
+        assert_eq!(api_origin(crate::DEFAULT_BASE_URL), "https://api.krowk.com");
+        assert_eq!(api_origin("HTTPS://API.krowk.com:443/v1"), "https://api.krowk.com");
+        assert_eq!(api_origin("http://api.krowk.localhost:3000/v1"), "http://api.krowk.localhost:3000");
+        assert_eq!(api_origin("http://[::1]:4000/v1"), "http://[::1]:4000");
         assert_eq!(request_target("https://api.krowk.com/v1/devices"), "/v1/devices");
         assert_eq!(request_target("http://127.0.0.1:4000/v1/sessions/x?after=1"), "/v1/sessions/x?after=1");
         assert_eq!(request_target("https://api.krowk.com"), "/");

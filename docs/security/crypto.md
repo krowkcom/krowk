@@ -50,7 +50,7 @@ session content: batches, frames, chunks
 Why each layer is there, and what a person does with it, is `devices.md` → Keys. What each is, exactly:
 
 - **Device key.** An X25519 keypair per machine and krowk home: RFC 9180's `DeriveKeyPair` over 32 bytes from the operating system. The private half never leaves the machine. A new krowk home is a new device. A device's id is the first 16 bytes of `SHA-256("krowk/device-id/v1" ‖ X25519 public key)`.
-- **Signing key.** An Ed25519 keypair per device (`e2e::SigningKey`), in `signing.json` beside `device.json`. It signs three things, each under its own label: a relay join (`krowk/relay/v1`, `relay.md` → Joining), a registry request (`krowk/registry/v1`, below) and a device-list entry (`krowk/device-list/v1`, below). No key is wrapped to it.
+- **Signing key.** An Ed25519 keypair per device (`e2e::SigningKey`), in `signing.json` beside `device.json`. It signs three things, each under its own label: a relay join (`krowk/relay/v1`, `relay.md` → Joining), a registry request (`krowk/registry/v2`, below) and a device-list entry (`krowk/device-list/v1`, below). No key is wrapped to it.
 - **User key.** 32 random bytes per person, not per workspace, with a generation that starts at 1 and goes up by one on every rotation (a removal, a kit replacement). Its id is the first 16 bytes of `SHA-256("krowk/user-key-id/v1" ‖ generation (u32, big-endian) ‖ key)`, so two generations never share an id. It is held only wrapped: each generation to devices (HPKE), and each generation g under g+1 (XChaCha20-Poly1305), so a device holding the newest opens any older one by walking down one step at a time (`UserKeys::open`). It is not the kit, and nothing but a device holds it.
 - **Adopting a generation.** HPKE Base mode doesn't say who wrapped a key: the registry, holding a device's public key, can wrap a key of its own to it. So a device takes generation g only when the opened key's computed id is the id its verified device list names for g — never the id in the blob's header, which is the sender's claim — and, when it already holds an older generation, only when the new one opens back down to exactly the one it holds (`UserKeys::adopt`).
 - **Recovery device.** The kit's 16 bytes through HKDF-SHA256 with no salt and `info` `"krowk/recovery-device/v1"`, expanded to 64 bytes: the first 32 are `DeriveKeyPair`'s input for the X25519 key, the last 32 the Ed25519 seed. The same words give the same device on every machine; it sits on the device list with kind `recovery` and is wrapped to like any other device, so a rotation never makes the kit stale. Known answers for two kits are frozen in `recovery.rs`'s tests: a change to the label or the split fails them, since it would orphan every kit written.
@@ -293,23 +293,28 @@ An API key says only which workspace, and which person, is asking; a CI job and 
 - a viewer's relay ticket (`GET /v1/sessions/:id/relay_ticket`), and so, with the lease calls, every relay ticket.
 - reading sessions: listing them, showing one, listing a session's chunks (`GET /v1/sessions`, `/v1/sessions/:id`, `…/chunks`). The key alone, copied off a machine without its signing key, reads none of them, not even their sizes and times.
 
-Each carries three headers beside the bearer key:
+Each carries four headers beside the bearer key:
 
 | Header | Value |
 | --- | --- |
 | `X-Krowk-Device` | the device's id, 32 hex characters |
 | `X-Krowk-Timestamp` | when it was signed, Unix milliseconds, decimal |
 | `X-Krowk-Signature` | pure Ed25519 (RFC 8032), 64 bytes in hex |
+| `X-Krowk-Signature-Version` | `2` |
 
-The signature is over five lines joined by `\n`:
+The signature is over seven lines joined by `\n`:
 
 ```
-krowk/registry/v1
+krowk/registry/v2
 METHOD
 /v1/path?query          the request target, exactly as sent
 TIMESTAMP               the header's digits, verbatim
 hex(SHA-256(body))      of the empty string for a call with no body
+DEVICE                  the X-Krowk-Device id, lowercase hex
+ORIGIN                  the API base's origin: scheme, host, and a port only when not the default
 ```
+
+The last two bind a signature to the device it is presented as and the registry it was made for (`https://api.krowk.com` for the public one). Before v2 a client signed v1: the first five lines under `krowk/registry/v1`, with no version header. The registry still accepts that, until v1 retires, and refuses any version header other than `2`.
 
 None of the fields can hold a newline — a method is a token, a request target has none, the timestamp is digits and the digest hex — so the lines read one way only. The label keeps a registry signature from ever being a relay join's, or the reverse.
 
