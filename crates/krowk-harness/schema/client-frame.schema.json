@@ -136,7 +136,7 @@
       ]
     },
     {
-      "description": "Reads the instances again — config.json and the credentials file —\nfor every host, after a client connected or signed one out\n(`/connect`): `changed` is that instance, whose backend processes are\nnot reused; `renamedFrom` and `renamedTo` a rename, whose are.\nAnswered by `done`.",
+      "description": "Reads the instances again — config.json and the credentials file —\nfor every host, after a client connected or signed one out\n(`/connect`): `changed` is that instance, whose backend processes are\nnot reused; `renamedFrom` and `renamedTo` a rename, whose are.\nAnswered by `done` once applied; a command sent after it runs on\nwhat it read, answered or not.",
       "type": "object",
       "properties": {
         "id": {

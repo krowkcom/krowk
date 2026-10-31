@@ -157,6 +157,14 @@ pub(super) struct State {
     /// across one is read again, so no host is made with the instances
     /// the reload replaced.
     generation: u64,
+    /// The last `generation` whose reload has settled, applied or failed:
+    /// a command sent after a reload waits for it, so it runs on what the
+    /// reload read.
+    reloaded: tokio::sync::watch::Sender<u64>,
+    /// Reloads not read yet, in the order sent: the next read's.
+    reloads: Vec<Reload>,
+    /// A reload is being read: those sent meanwhile wait for the next read.
+    reading: bool,
     /// Times a client fell behind, to be caught up from its cursor.
     caught_up: u64,
     /// The last `line.seq` given out in each session: kept when a session
@@ -244,6 +252,9 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
         next_hub: 0,
         stopping: false,
         generation: 0,
+        reloaded: tokio::sync::watch::Sender::new(0),
+        reloads: Vec::new(),
+        reading: false,
         caught_up: 0,
         seqs: HashMap::new(),
         epoch: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_millis() as u64),
@@ -557,7 +568,8 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             if matches!(command, Command::Prompt { .. } | Command::Continue { .. }) {
                 state.borrow().wake.notify_one();
             }
-            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command));
+            let after = state.borrow().generation;
+            tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command, after));
         }
         ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch } => {
             // A `seq` counts only within the daemon run that numbered it.
@@ -570,8 +582,16 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             s.send(id, "", control(&f));
         }
         ClientFrame::Reload { id: cmd_id, changed, renamed_from, renamed_to } => {
-            let error = reload(state, changed.as_deref(), renamed_from.zip(renamed_to)).err().map(|e| error_info(&e));
-            state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
+            // Moved now, not once it is read: a command dispatched after
+            // this frame waits for it, and a directory read under way is
+            // read again.
+            let mut s = state.borrow_mut();
+            s.generation += 1;
+            let generation = s.generation;
+            s.reloads.push(Reload { client: id, id: cmd_id, generation, changed, renamed: renamed_from.zip(renamed_to) });
+            if !std::mem::replace(&mut s.reading, true) {
+                tokio::task::spawn_local(reload(state.clone()));
+            }
         }
         ClientFrame::Leave { session_id } => {
             let mut s = state.borrow_mut();
@@ -757,22 +777,74 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
     Ok(host)
 }
 
-/// `reload`: every host's instances read again, the way each was made.
-fn reload(state: &Shared, changed: Option<&str>, renamed: Option<(String, String)>) -> Result<(), EngineError> {
-    state.borrow_mut().generation += 1;
-    let hosts: Vec<((PathBuf, bool), Rc<Host>)> = state.borrow().hosts.iter().map(|(k, h)| (k.clone(), h.clone())).collect();
-    let Some(((cwd, answers), _)) = hosts.first() else { return Ok(()) };
-    // The instances are the config's and the environment's, not a
-    // directory's: read once, and given to every host, or to none when the
-    // read fails.
-    let registry = (state.borrow().factory)(cwd, *answers)?.registry;
-    for (_, host) in hosts {
-        match &renamed {
-            Some((from, to)) => host.set_registry_renamed(registry.clone(), from, to),
-            None => host.set_registry(registry.clone(), changed),
+/// A `reload` sent and not yet answered.
+struct Reload {
+    client: u64,
+    id: u64,
+    generation: u64,
+    changed: Option<String>,
+    renamed: Option<(String, String)>,
+}
+
+/// `reload`: every host's instances read again, the way each was made,
+/// each reload answered once what was read for it is applied.
+///
+/// The config file and the keys are read on the blocking pool, as a new
+/// directory's are (`host_for`): on a slow disk the read would stall every
+/// session's stream (R-LAG-9). One read at a time, so none applies over a
+/// later one: those sent while one is read share the next, which has
+/// everything each would, and each applies its own `changed` or rename on
+/// it in the order sent. However many are sent, at most one is read and
+/// one batch waits, so a command held for them waits two reads at most.
+async fn reload(state: Shared) {
+    loop {
+        let (batch, first, factory) = {
+            let mut s = state.borrow_mut();
+            let batch = std::mem::take(&mut s.reloads);
+            if batch.is_empty() {
+                s.reading = false;
+                return;
+            }
+            (batch, s.hosts.keys().next().cloned(), s.factory.clone())
+        };
+        // The instances are the config's and the environment's, not a
+        // directory's: read once, and given to every host there is once
+        // it is back, or to none when the read fails.
+        let read = match first {
+            None => Ok(None),
+            Some((cwd, answers)) => match tokio::task::spawn_blocking(move || factory(&cwd, answers)).await {
+                Err(e) => Err(EngineError::new("host_failed", format!("the host's configuration could not be read: {e}"))),
+                Ok(cfg) => cfg.map(|c| Some(c.registry)),
+            },
+        };
+        let mut s = state.borrow_mut();
+        if let Ok(Some(registry)) = &read {
+            for r in &batch {
+                for host in s.hosts.values() {
+                    match &r.renamed {
+                        Some((from, to)) => host.set_registry_renamed(registry.clone(), from, to),
+                        None => host.set_registry(registry.clone(), r.changed.as_deref()),
+                    }
+                }
+            }
+        }
+        if let Some(last) = batch.last() {
+            s.reloaded.send_replace(last.generation);
+        }
+        let error = read.err().map(|e| error_info(&e));
+        for r in batch {
+            s.send(r.client, "", control(&ServerFrame::Done { id: r.id, result: None, error: error.clone() }));
         }
     }
-    Ok(())
+}
+
+/// Waits for every reload sent before `after` was taken to settle: a
+/// command runs on what the reloads before it read, in the order sent —
+/// an interrupt too, which would otherwise find no turn from a prompt
+/// still held, and let it run.
+async fn reloaded(state: &Shared, after: u64) {
+    let mut settled = state.borrow().reloaded.subscribe();
+    let _ = settled.wait_for(|g| *g >= after).await;
 }
 
 /// The session a command names.
@@ -1003,7 +1075,7 @@ async fn register(state: &Shared, root: Option<&str>, host: &Rc<Host>, client: u
     }
 }
 
-async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
+async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64) {
     let Some((cwd, answers)) = state.borrow().clients.get(&client).map(|c| (c.cwd.clone(), c.answers)) else { return };
     let mut root = named(&cmd).map(String::from);
     let turn = matches!(cmd, Command::Prompt { .. } | Command::Continue { .. });
@@ -1014,6 +1086,19 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
     // comes once, live, rather than in the page and again after it.
     let switch = matches!(cmd, Command::SwitchModel { .. });
     let registers = turn || switch;
+    // Working from here: a `stop` while a reload or a new directory's
+    // configuration is read, or the log is counted below, must not end the
+    // daemon under a prompt it accepted.
+    // And the idle window looks again: a background client's turn holds
+    // the daemon up from here, however long the setup below takes.
+    if turn {
+        let mut s = state.borrow_mut();
+        s.working += 1;
+        s.wake.notify_one();
+    }
+    // Before the session's host is looked up: an interrupt held behind a
+    // reload finds the turn a prompt sent before it began.
+    reloaded(&state, after).await;
     // A turn runs on the host of the client that asks for it — its
     // directory, and whether it answers approvals; the rest go to the host
     // running the session, and a subagent's (an interrupt of one child) to
@@ -1029,16 +1114,6 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command) {
             s.hubs.get(r).filter(|h| h.running).or_else(|| s.hubs.values().find(|h| h.children.contains(r))).or_else(|| s.hubs.get(r)).map(|h| h.host.clone())
         })
     };
-    // Working from here: a `stop` while a new directory's configuration is
-    // read, or the log is counted below, must not end the daemon under a
-    // prompt it accepted.
-    // And the idle window looks again: a background client's turn holds
-    // the daemon up from here, however long the setup below takes.
-    if turn {
-        let mut s = state.borrow_mut();
-        s.working += 1;
-        s.wake.notify_one();
-    }
     let host = match known {
         Some(h) => Ok(h),
         None => host_for(&state, &cwd, answers).await,

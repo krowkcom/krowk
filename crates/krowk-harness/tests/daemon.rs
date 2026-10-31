@@ -933,6 +933,8 @@ fn r_lag_4_a_remote_let_go_mid_turn_resumes_from_its_cursor_with_no_gap_or_dupli
         assert_eq!(ids.len(), logged.len(), "no logged event twice");
         let finished = logged.iter().filter(|e| matches!(&e.body, LogBody::ItemCompleted { item: Item::AssistantText { .. }, .. })).count();
         assert_eq!(finished, 1, "the finished item once");
+        // Resumed, not run again: the prompt went to the provider once.
+        assert_eq!(m.seen.lock().unwrap().len(), 1, "the prompt was sent once");
     });
     drop(rt);
     daemon.join().unwrap().unwrap();

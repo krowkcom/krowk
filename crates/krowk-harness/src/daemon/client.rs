@@ -417,8 +417,9 @@ impl Client {
     }
 
     /// `reload`, not waited for: a client that must not stop for it (the
-    /// TUI, just after `/connect`). The daemon takes frames in order, so a
-    /// prompt sent after it runs on what it read.
+    /// TUI, just after `/connect`). A prompt sent after it runs on what it
+    /// read: the daemon holds a command back until the reloads before it
+    /// have settled.
     pub fn reload_later(&self, changed: Option<String>, renamed: Option<(String, String)>) {
         let (renamed_from, renamed_to) = renamed.map_or((None, None), |(a, b)| (Some(a), Some(b)));
         let _ = self.ask(|id| ClientFrame::Reload { id, changed, renamed_from, renamed_to }, None);

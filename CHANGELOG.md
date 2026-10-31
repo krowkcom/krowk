@@ -645,6 +645,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Fixed
 
+- **`/connect` no longer stalls the host daemon's other sessions on a
+  slow disk (ticket 154).** The daemon's `reload`, which re-reads
+  config.json and the credentials after `/connect`, used to do that
+  read on the thread that streams every session. It now reads off that
+  thread, one read at a time, and answers once what it read is applied.
+  Reloads sent while one is read share the next read, each still
+  applying its own sign-out or rename, so the last one sent always wins
+  and a flood of them cannot hold anything up for long. A command sent
+  right after a reload, before it is answered (as the TUI sends a
+  prompt), still runs on what the reload read: the daemon holds it
+  until the reload has settled. Tests now also check
+  that a resumed turn sends its prompt to the provider only once, and
+  the four-session load test measures the daemon's lateness until all
+  four sessions end, not only the first.
 - **The iPhone app closes three gaps left by earlier tickets (ticket
   145).** An approval request answered on another device while the
   phone was disconnected now leaves the approval sheet when the phone

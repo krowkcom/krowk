@@ -1223,7 +1223,8 @@ pub enum ClientFrame {
     /// for every host, after a client connected or signed one out
     /// (`/connect`): `changed` is that instance, whose backend processes are
     /// not reused; `renamedFrom` and `renamedTo` a rename, whose are.
-    /// Answered by `done`.
+    /// Answered by `done` once applied; a command sent after it runs on
+    /// what it read, answered or not.
     Reload {
         id: u64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
