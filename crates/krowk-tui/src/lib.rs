@@ -1996,6 +1996,18 @@ impl<'h> Ui<'h> {
         self.follow_background(app, id, replayed_to.as_deref()).await;
     }
 
+    /// Whether session `id` runs in the daemon now: asked there, as one
+    /// another client started after this TUI opened is not in `live`.
+    /// No daemon, or none that answers in time, and `live` says.
+    async fn running_now(&self, id: &str) -> bool {
+        if let Some(remote) = self.host.remote()
+            && let Ok(Ok(st)) = tokio::time::timeout(STATUS_WAIT, remote.status()).await
+        {
+            return st.sessions.iter().any(|s| s.running && s.session_id == id);
+        }
+        self.live.iter().any(|l| l == id)
+    }
+
     /// A resumed session whose backend's agents its log leaves at work
     /// between turns, in the daemon. Kept running only while the daemon
     /// says work of the session still goes on there; then the daemon is
@@ -3030,7 +3042,7 @@ impl<'h> Ui<'h> {
         app.model = None;
         app.gap_say(&format!("continuing session {id}"));
         replay(app, id, &events, &self.host.registry(), Some(&self.sessions_dir));
-        if self.live.iter().any(|l| l == id) {
+        if self.running_now(id).await {
             self.live.retain(|l| l != id);
             self.reattach(app, id, events.last().map(|e| e.id.clone()));
         } else {
