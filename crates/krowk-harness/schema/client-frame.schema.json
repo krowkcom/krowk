@@ -58,6 +58,13 @@
         "command": {
           "$ref": "#/$defs/Command"
         },
+        "clientRef": {
+          "description": "The client's own name for this command (a uuid), on a prompt\nthat starts a session: a connection cut before its first line\nnamed the session finds it again by this (`attach.clientRef`).\nKept by the daemon for 10 minutes.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "type": {
           "type": "string",
           "const": "execute"
@@ -104,6 +111,13 @@
           ],
           "format": "uint64",
           "minimum": 0
+        },
+        "clientRef": {
+          "description": "Follows, from its start, the session the `execute` with this\n`clientRef` started, in place of `sessionId` (sent empty): a\nprompt whose connection was cut before its first line. Answered\nonce the prompt has named its session; with its error when it\nended without one, and `bad_session` when the daemon has no such\nprompt.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "type": {
           "type": "string",
