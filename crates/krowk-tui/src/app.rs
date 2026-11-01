@@ -21,7 +21,7 @@ use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
-    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, McpServer, McpState, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage, Waiting,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The `/` menu shows this many entries at most, scrolling past them.
-const SLASH_ROWS: usize = 12;
+const SLASH_ROWS: usize = 13;
 /// The help menu shows this many entries at most, scrolling past them: with
 /// the prompt box and the status line it fits a 24-row terminal whole.
 const HELP_ROWS: usize = 16;
@@ -172,6 +172,8 @@ pub enum Overlay {
     /// `/sessions` (and `/resume`): the earlier sessions started here
     /// (`App::resumable`).
     Sessions,
+    /// `/mcp`: the session's MCP servers (`App::mcp`).
+    Mcp,
 }
 
 /// Whether an instance can run a turn, as the pickers mark it: the
@@ -1028,6 +1030,11 @@ pub struct App {
     pub resumable: Vec<Recent>,
     pub resume_at: usize,
     resumable_at_ms: i64,
+    /// `/mcp`: what the host last said of the session's servers (or why it
+    /// cannot), the chosen row, and the server whose tools are listed.
+    pub mcp: Result<Vec<McpServer>, String>,
+    pub mcp_at: usize,
+    pub mcp_open: Option<String>,
     /// `permissions.defaultMode` as config.json has it, for `/settings`;
     /// none when it names nothing.
     pub default_mode: Option<String>,
@@ -1150,6 +1157,9 @@ impl App {
             resumable: Vec::new(),
             resume_at: 0,
             resumable_at_ms: 0,
+            mcp: Ok(Vec::new()),
+            mcp_at: 0,
+            mcp_open: None,
             default_mode: None,
             default_mode_overridden: None,
             setting_at: 0,
@@ -3194,6 +3204,7 @@ impl App {
             Overlay::Copy => rows.extend(self.copy_overlay(width)),
             Overlay::Settings => rows.extend(self.settings_overlay(width)),
             Overlay::Sessions => rows.extend(self.sessions_overlay(width)),
+            Overlay::Mcp => rows.extend(self.mcp_overlay(width)),
             Overlay::Connect => {
                 if let Some(f) = &self.flow {
                     let (overlay, at) = f.rows(width);
@@ -3619,6 +3630,89 @@ impl App {
         let rows: Vec<[String; 3]> = self.resumable.iter().map(|r| [flat(&r.prompt.chars().take(200).collect::<String>()), ago(r.last_ms, self.resumable_at_ms), if r.archived { "archived".into() } else { String::new() }]).collect();
         out.extend(menu(&rows, self.resume_at, width, SLASH_ROWS));
         out
+    }
+
+    fn mcp_overlay(&self, width: usize) -> Vec<Line<'static>> {
+        let keys = |hint: &str| Line::from(clip_spans(look::keys(hint, dim()), width));
+        let servers = match &self.mcp {
+            Err(why) => return vec![Line::from(Span::styled(clip(why, width), dim())), keys("`esc` closes this")],
+            Ok(s) => s,
+        };
+        let mut out = vec![Line::from(Span::styled("MCP servers", bold()))];
+        if servers.is_empty() {
+            out.push(Line::from(Span::styled(clip("no MCP servers in this session yet — they start with its first prompt", width), dim())));
+            out.push(keys("`esc` closes this"));
+            return out;
+        }
+        let w = |f: &dyn Fn(&McpServer) -> usize| servers.iter().map(f).max().unwrap_or(0);
+        let (name_w, source_w) = (w(&|s| s.name.width()).min(24), w(&|s| s.source.width()).min(28));
+        for (i, s) in servers.iter().enumerate() {
+            let (status, style) = match (&s.state, &s.reason) {
+                (McpState::Connecting, _) => ("connecting".to_string(), dim()),
+                (McpState::Connected, _) => ("connected".to_string(), Style::new()),
+                (McpState::NeedsSignIn, _) => ("needs sign-in".to_string(), yellow()),
+                (McpState::Failed, Some(r)) => (format!("failed: {}", r.lines().next().unwrap_or_default()), red()),
+                (McpState::Failed, None) => ("failed".to_string(), red()),
+            };
+            let tools = if s.state == McpState::Connected { format!("   {} tool{}", s.tools.len(), if s.tools.len() == 1 { "" } else { "s" }) } else { String::new() };
+            let mark = if i == self.mcp_at { "› " } else { "  " };
+            let name = format!("{:<name_w$}", clip(&s.name, name_w));
+            let source = format!("{:<source_w$}", clip(&s.source, source_w));
+            let used = 2 + name_w + 2 + source_w + 2;
+            let rest = clip(&format!("{status}{tools}"), width.saturating_sub(used));
+            let name = if i == self.mcp_at { Span::styled(name, bold()) } else { Span::raw(name) };
+            out.push(Line::from(vec![Span::styled(mark, bold()), name, Span::raw("  "), Span::styled(source, dim()), Span::raw("  "), Span::styled(rest, style)]));
+            if self.mcp_open.as_deref() == Some(s.name.as_str()) {
+                if s.tools.is_empty() {
+                    out.push(Line::from(Span::styled(clip("    no tools listed", width), dim())));
+                }
+                for t in &s.tools {
+                    let line = if t.description.is_empty() { t.name.clone() } else { format!("{} — {}", t.name, t.description) };
+                    out.push(Line::from(Span::styled(clip(&format!("    {}", flat(&line)), width), dim())));
+                }
+            }
+        }
+        out.push(keys("`↑` `↓` choose · `enter` tools · `r` reconnect · `esc` close"));
+        out
+    }
+
+    /// Shows what the host says of the session's servers, the chosen row
+    /// staying on its server.
+    pub fn set_mcp(&mut self, now: Result<Vec<McpServer>, String>) {
+        if let (Ok(old), Ok(new)) = (&self.mcp, &now)
+            && let Some(name) = old.get(self.mcp_at).map(|s| &s.name)
+        {
+            self.mcp_at = new.iter().position(|s| &s.name == name).unwrap_or(0);
+        }
+        if let Ok(new) = &now {
+            self.mcp_at = self.mcp_at.min(new.len().saturating_sub(1));
+            if self.mcp_open.as_ref().is_some_and(|o| !new.iter().any(|s| &s.name == o)) {
+                self.mcp_open = None;
+            }
+        }
+        self.mcp = now;
+        self.dirty = true;
+    }
+
+    /// The server `/mcp` has chosen.
+    pub fn mcp_selected(&self) -> Option<&McpServer> {
+        self.mcp.as_ref().ok().and_then(|s| s.get(self.mcp_at))
+    }
+
+    /// Opens `/mcp` on what the host said.
+    pub fn open_mcp(&mut self, now: Result<Vec<McpServer>, String>) {
+        self.mcp = Ok(Vec::new());
+        self.mcp_at = 0;
+        self.mcp_open = None;
+        self.set_mcp(now);
+        self.overlay = Overlay::Mcp;
+    }
+
+    /// Enter in `/mcp`: the chosen server's tools shown, or hidden again.
+    pub fn toggle_mcp_tools(&mut self) {
+        let Some(name) = self.mcp_selected().map(|s| s.name.clone()) else { return };
+        self.mcp_open = if self.mcp_open.as_ref() == Some(&name) { None } else { Some(name) };
+        self.dirty = true;
     }
 
     /// Opens `/sessions` on `sessions`, read at `now_ms`.
@@ -6481,6 +6575,49 @@ mod tests {
         assert_eq!(help::slash("/mode", &[]).first().map(|s| s.name.as_str()), Some("mode"));
         assert!(help::slash("/perm", &[]).iter().any(|s| s.name == "mode"));
         assert!(help::unlisted("/permission-mode") && help::unlisted("/quit") && !help::unlisted("/mode") && !help::unlisted("/permission-mode plan"));
+    }
+
+    #[test]
+    fn r_mcp_21_the_mcp_view_lists_servers_expands_tools_and_keeps_its_row_as_status_refreshes() {
+        use krowk_harness::protocol::{McpServer, McpState, McpTool};
+        let server = |name: &str, source: &str, state, reason: Option<&str>, tools: usize| McpServer {
+            name: name.into(),
+            source: source.into(),
+            state,
+            reason: reason.map(String::from),
+            tools: (0..tools).map(|i| McpTool { name: format!("tool_{i}"), description: format!("does thing {i}") }).collect(),
+        };
+        let mut a = app();
+        a.set_width(100);
+        a.open_mcp(Ok(Vec::new()));
+        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("no MCP servers in this session yet")));
+        let all = vec![
+            server("mobbin", "config.json", McpState::Connected, None, 8),
+            server("github", ".mcp.json", McpState::NeedsSignIn, None, 0),
+            server("local-db", "~/.claude.json", McpState::Failed, Some("process exited (1)"), 0),
+        ];
+        a.open_mcp(Ok(all.clone()));
+        assert_eq!(a.overlay, Overlay::Mcp);
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().any(|r| r.contains("› mobbin") && r.contains("config.json") && r.contains("connected") && r.contains("8 tools")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("github") && r.contains(".mcp.json") && r.contains("needs sign-in")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("local-db") && r.contains("failed: process exited (1)")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("enter") && r.contains("reconnect")), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("tool_0")), "tools stay folded until enter");
+        a.toggle_mcp_tools();
+        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("tool_0 — does thing 0")));
+        a.toggle_mcp_tools();
+        assert!(!text(&a.view(Instant::now()).0).iter().any(|r| r.contains("tool_0")));
+        // A refresh keeps the chosen server chosen, though another came first.
+        a.mcp_at = 2;
+        let mut now = all.clone();
+        now.insert(0, server("new", "config.json", McpState::Connecting, None, 0));
+        now[3] = server("local-db", "~/.claude.json", McpState::Connecting, None, 0);
+        a.set_mcp(Ok(now));
+        assert_eq!(a.mcp_selected().map(|s| s.name.as_str()), Some("local-db"));
+        // A host that cannot say shows why, in the view's place.
+        a.set_mcp(Err("/mcp needs krowk 0.16.0 or later on the host daemon, which runs 0.15.0".into()));
+        assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("/mcp needs krowk 0.16.0 or later")));
     }
 
     #[test]

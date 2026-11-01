@@ -112,7 +112,7 @@ impl Home {
                     credentials: credentials.clone(),
                     trust: krowk_harness::trust::allow_all(),
                     publisher: None,
-                    permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
+                    permissions: krowk_harness::permissions::Config { approvals: answers, trusted: Some(Arc::new(|_: &Path| true)), ..Default::default() },
                     agents: krowk_harness::subagent::AgentsConfig::none(),
                     session: Default::default(),
                 })
@@ -1444,4 +1444,36 @@ fn r_lag_9_a_second_sigterm_exits_at_once() {
     daemon.join().unwrap().unwrap();
     assert!(again.elapsed() < Duration::from_secs(2), "a second signal exits at once, not in {:?}", again.elapsed());
     drop(a);
+}
+
+/// R-MCP-21: a daemon-hosted session's servers are asked and restarted over
+/// the protocol as a local host's are.
+#[test]
+fn r_mcp_21_a_daemon_hosted_session_reports_its_servers_and_reconnects_one() {
+    use krowk_harness::protocol::McpState;
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
+    let home = Home::new("mcp", &m.url);
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
+    std::fs::write(home.repo().join(".mcp.json"), serde_json::json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": "2"}}}}).to_string()).unwrap();
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    rt().block_on(async {
+        let c = home.client().await;
+        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+        let r = c.execute(home.prompt("hi", PermissionMode::Default), tx).await.unwrap().unwrap();
+        let mut servers = Vec::new();
+        for _ in 0..200 {
+            servers = c.mcp_status(&r.session_id).await.unwrap();
+            if servers.iter().all(|s| s.state == McpState::Connected) && !servers.is_empty() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        assert_eq!((servers[0].name.as_str(), servers[0].source.as_str(), servers[0].state, servers[0].tools.len()), ("fake", ".mcp.json", McpState::Connected, 2), "{servers:?}");
+        c.mcp_reconnect(&r.session_id, "fake").await.unwrap();
+        assert_eq!(c.mcp_reconnect(&r.session_id, "nope").await.unwrap_err().code, "no_such_server");
+        assert!(c.mcp_status("no-such-session").await.unwrap().is_empty());
+        c.stop(true).await.ok();
+    });
+    let _ = daemon.join();
 }

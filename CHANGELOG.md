@@ -34,6 +34,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   images yet; MCP image results build on this. The FFI mirror and the iOS
   transcript follow.
 
+- **`/mcp` shows the session's MCP servers, live.** Each server is listed
+  with where it is configured, whether it is connecting, connected, needs a
+  sign-in or failed (and why), and how many tools it has; enter lists a
+  server's tools with the first line of each description, and `r` starts a
+  failed one again. The status refreshes while the view is open, and works
+  the same on a session the host daemon runs. The client–host protocol is
+  now version 3 (`mcpStatus` and `mcpReconnect` requests); against a host
+  daemon on an older krowk the view says it needs a newer krowk there.
+
 - **`krowk mcp add`, `remove` and `list` manage the MCP servers krowk's own
   agent uses.** `krowk mcp add mobbin https://api.mobbin.com/mcp` adds a
   remote server (`--header "Name: value"`, repeatable);

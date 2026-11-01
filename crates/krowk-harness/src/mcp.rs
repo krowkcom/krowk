@@ -407,6 +407,8 @@ pub enum Status {
 #[derive(Debug, Clone)]
 pub struct ServerStatus {
     pub name: String,
+    /// Where it is configured (`Server::source`).
+    pub source: String,
     pub status: Status,
     /// Its tools, as `(name, description)`; none until it has connected.
     pub tools: Vec<(String, String)>,
@@ -508,7 +510,7 @@ impl Pool {
     /// Each server's status and tools, in configuration order.
     pub fn status(&self) -> Vec<ServerStatus> {
         let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
-        kept.iter().map(|(s, slot)| status_of(&s.name, slot.current(None).get())).collect()
+        kept.iter().map(|(s, slot)| status_of(&s.name, &s.source, slot.current(None).get())).collect()
     }
 
     /// Starts `name` again at once, ending its connection first; it connects
@@ -599,8 +601,8 @@ impl Live {
     }
 }
 
-fn status_of(name: &str, live: Option<&Live>) -> ServerStatus {
-    let Some(l) = live else { return ServerStatus { name: name.into(), status: Status::Connecting, tools: Vec::new() } };
+fn status_of(name: &str, source: &str, live: Option<&Live>) -> ServerStatus {
+    let Some(l) = live else { return ServerStatus { name: name.into(), source: source.into(), status: Status::Connecting, tools: Vec::new() } };
     let status = if l.needs_sign_in() {
         Status::NeedsSignIn
     } else if l.dead() {
@@ -608,7 +610,7 @@ fn status_of(name: &str, live: Option<&Live>) -> ServerStatus {
     } else {
         Status::Connected
     };
-    ServerStatus { name: name.into(), status, tools: l.tools.iter().map(|t| (t.name.clone(), t.description.lines().next().unwrap_or_default().to_string())).collect() }
+    ServerStatus { name: name.into(), source: source.into(), status, tools: l.tools.iter().map(|t| (t.name.clone(), t.description.lines().next().unwrap_or_default().to_string())).collect() }
 }
 
 impl std::fmt::Debug for Mcp {
