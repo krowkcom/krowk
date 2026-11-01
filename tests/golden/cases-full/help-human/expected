@@ -34,7 +34,7 @@ Account
   workspaces    Switch between stored keys
 
 Other
-  providers     Low-level instance config (add, list, rename, remove)
+  mcp           MCP servers for krowk's own agent (add, remove, list)
   worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
@@ -117,6 +117,9 @@ Other
   providers list    List every instance, and whether it is ready
   providers remove  Remove an instance's definition, and forget its login
   providers rename  Rename an instance; its login and sessions follow
+  mcp add           Add an MCP server to krowk's config.json
+  mcp remove        Remove a server from config.json, and its stored sign-in
+  mcp list          List the servers krowk would load here, without connecting
   worktrees list    Each one: branch, commits ahead, changes, session, age
   worktrees remove  Remove one, its branch kept; not while its session runs
   worktrees apply   Bring one's changes into a checkout, uncommitted
