@@ -788,9 +788,8 @@ impl Shared {
             let stale: Vec<String> = mcp.iter().filter(|(id, (_, used))| used.elapsed() >= self.backend_idle && !running.contains(id)).map(|(id, _)| id.clone()).collect();
             stale.iter().filter_map(|id| mcp.remove(id)).map(|(p, _)| p).collect()
         };
-        for p in pools {
-            p.close().await;
-        }
+        let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(p.close()) });
+        crate::native::join_all(closes.collect()).await;
     }
 
     /// Puts the session's kept MCP connections under the configuration the

@@ -715,7 +715,7 @@ enum Conn {
     /// at a time. A request cut off by an interrupt may leave half a line
     /// either way, so the connection is not used again (`cut`).
     /// `junked` when it was stopped for writing what is not JSON-RPC.
-    Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
+    Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, reaped: AtomicBool, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
     Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64, lost: AtomicBool },
@@ -785,7 +785,7 @@ impl Conn {
                 let pid = child.id();
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                Ok(Conn::Stdio { io: Box::new(tokio::sync::Mutex::new(StdioIo { stdin, stdout, child })), pid, next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
+                Ok(Conn::Stdio { io: Box::new(tokio::sync::Mutex::new(StdioIo { stdin, stdout, child })), pid, reaped: AtomicBool::new(false), next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
             }
             (kind, ..) => Err(format!("it names neither a command nor a url for its transport ({})", kind.unwrap_or("stdio"))),
         }
@@ -796,7 +796,12 @@ impl Conn {
     /// An HTTP server that no longer knows its session (404) counts too.
     fn dead(&self) -> bool {
         match self {
-            Conn::Stdio { cut, io, .. } => cut.load(Ordering::Acquire) || io.try_lock().is_ok_and(|mut io| io.child.try_wait().map_or(true, |s| s.is_some())),
+            Conn::Stdio { cut, io, reaped, .. } => {
+                let exited = io.try_lock().is_ok_and(|mut io| io.child.try_wait().map_or(true, |s| s.is_some()));
+                // An exited server is reaped: its pid is no longer ours to signal.
+                reaped.fetch_or(exited, Ordering::AcqRel);
+                cut.load(Ordering::Acquire) || exited
+            }
             Conn::Http { lost, .. } => lost.load(Ordering::Acquire),
         }
     }
@@ -806,9 +811,11 @@ impl Conn {
     /// HTTP session with an id is ended with DELETE.
     async fn close(&self) {
         match self {
-            Conn::Stdio { pid, cut, .. } => {
+            Conn::Stdio { pid, cut, reaped, .. } => {
                 cut.store(true, Ordering::Release);
-                kill_group(*pid);
+                if !reaped.load(Ordering::Acquire) {
+                    kill_group(*pid);
+                }
             }
             Conn::Http { client, url, headers, session, .. } => {
                 let Some(id) = session.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
