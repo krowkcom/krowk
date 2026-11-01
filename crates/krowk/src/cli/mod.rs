@@ -18,6 +18,8 @@ mod devices;
 mod host;
 mod machine;
 #[cfg(feature = "harness")]
+mod mcp;
+#[cfg(feature = "harness")]
 mod own_worktree;
 #[cfg(feature = "harness")]
 mod pairing;
@@ -25,8 +27,6 @@ mod pairing;
 mod prompt;
 #[cfg(all(feature = "harness", unix))]
 mod relay;
-#[cfg(feature = "harness")]
-mod mcp;
 #[cfg(feature = "harness")]
 mod providers;
 #[cfg(feature = "sessions")]
@@ -362,6 +362,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["mcp"] | ["mcp", "list", ..] => mcp::list(ctx),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
+        #[cfg(feature = "harness")]
+        ["mcp", "login", ..] => mcp::login(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["mcp", "logout", ..] => mcp::logout(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["host"] => host::status(ctx),
         #[cfg(all(feature = "harness", unix))]

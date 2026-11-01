@@ -68,14 +68,16 @@ fn add_list_and_remove_round_trip_through_config_json() {
     let bad = s.krowk(&["mcp", "add", "a__b", "https://x.example/mcp"]);
     assert!(!bad.status.success() && text(&bad).contains("no __"), "{}", text(&bad));
 
+    assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "not signed in");
     // A stored sign-in goes with it; the credentials file's other keys stay.
     let creds = s.root.join("home/.krowk/credentials.json");
-    std::fs::write(&creds, json!({"mcp": {"mobbin": {"url": "https://other.example/mcp"}, "keep": {}}, "other": 1}).to_string()).unwrap();
+    let entry = |url: &str| json!({"url": url, "issuer": "i", "clientId": "c", "tokenEndpoint": "t", "accessToken": "a", "obtainedAtMs": 1});
+    std::fs::write(&creds, json!({"mcp": {"mobbin": entry("https://other.example/mcp"), "keep": entry("https://k.example/mcp")}, "other": 1}).to_string()).unwrap();
     assert_eq!(s.list().iter().find(|r| r["name"] == "mobbin").unwrap()["sign_in"], "signed in");
     let out = s.krowk(&["mcp", "remove", "mobbin"]);
     assert!(out.status.success(), "{}", text(&out));
     let after: Value = serde_json::from_slice(&std::fs::read(&creds).unwrap()).unwrap();
-    assert_eq!(after, json!({"mcp": {"keep": {}}, "other": 1}));
+    assert_eq!(after, json!({"mcp": {"keep": entry("https://k.example/mcp")}, "other": 1}));
     assert!(s.list().iter().all(|r| r["name"] != "mobbin"));
 }
 
@@ -95,5 +97,5 @@ fn other_sources_are_listed_and_not_removed() {
     // Nothing was written, and a server nobody has is not found.
     assert!(!s.root.join("home/.krowk/config.json").exists());
     assert!(text(&s.krowk(&["mcp", "remove", "ghost"])).contains("no MCP server named ghost"));
-    assert!(text(&s.krowk(&["help"])).contains("mcp"));
+    assert!(text(&s.krowk(&["help", "--all"])).contains("mcp add"));
 }

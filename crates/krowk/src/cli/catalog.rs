@@ -532,8 +532,6 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(feature = "harness")]
     c.commands.push(providers_command());
     #[cfg(feature = "harness")]
-    c.commands.push(mcp_command());
-    #[cfg(feature = "harness")]
     c.commands.push(cmd("status", "krowk status", "What's connected, and whether each is ready"));
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(host_command());
@@ -545,6 +543,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
     c.commands.push(devices_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(mcp_command());
     #[cfg(feature = "harness")]
     c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
@@ -689,6 +689,42 @@ fn worktrees_command() -> Command {
     }
 }
 
+/// `krowk mcp`: the MCP servers krowk's own agent talks to.
+#[cfg(feature = "harness")]
+fn mcp_command() -> Command {
+    Command {
+        subcommands: vec![
+            Command {
+                args: vec![arg("name", "The server's name in your MCP config", true)],
+                flags: vec![flag("no-browser", BOOL, "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display")],
+                ..cmd("login", "krowk mcp login <name> [--no-browser]", "Sign in to a remote MCP server that asks for OAuth")
+            },
+            Command {
+                args: vec![arg("name", "The server's name", true)],
+                ..cmd("logout", "krowk mcp logout <name>", "Forget a server's sign-in")
+            },
+            Command {
+                args: vec![
+                    arg("name", "The server's name: letters, digits, - and _, no __, no _ at either end", true),
+                    arg("url-or-command", "An https URL for a remote server; for a local one, put `--` before its command and arguments", true),
+                ],
+                flags: vec![
+                    repeatable("header", "A header an HTTP server is sent, \"Name: value\" — repeat for more than one; ${VAR} reads a variable when the server starts, keeping a token out of config.json"),
+                    repeatable("env", "An environment variable a stdio server starts with, K=V — repeat for more than one"),
+                    flag("force", BOOL, "Replace a server of that name already in config.json"),
+                ],
+                ..cmd("add", "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]", "Add an MCP server to krowk's config.json")
+            },
+            Command {
+                args: vec![arg("name", "The server to remove", true)],
+                ..cmd("remove", "krowk mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
+            },
+            cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
+        ],
+        ..cmd("mcp", "", "The MCP servers krowk's own agent uses (add, remove, list, login, logout)")
+    }
+}
+
 /// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
 /// `serve` is what the first `krowk` that needs the daemon starts, and what
 /// the service runs; it is not listed.
@@ -826,33 +862,6 @@ fn providers_command() -> Command {
             },
         ],
         ..cmd("providers", "", "Low-level instance config (add, list, rename, remove)")
-    }
-}
-
-/// `krowk mcp`: the MCP servers krowk's own agent loads from its config.json.
-#[cfg(feature = "harness")]
-fn mcp_command() -> Command {
-    Command {
-        subcommands: vec![
-            Command {
-                args: vec![
-                    arg("name", "The server's name: letters, digits, - and _, no __, no _ at either end", true),
-                    arg("url-or-command", "An https URL for a remote server; for a local one, put `--` before its command and arguments", true),
-                ],
-                flags: vec![
-                    repeatable("header", "A header an HTTP server is sent, \"Name: value\" — repeat for more than one"),
-                    repeatable("env", "An environment variable a stdio server starts with, K=V — repeat for more than one"),
-                    flag("force", BOOL, "Replace a server of that name already in config.json"),
-                ],
-                ..cmd("add", "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]", "Add an MCP server to krowk's config.json")
-            },
-            Command {
-                args: vec![arg("name", "The server to remove", true)],
-                ..cmd("remove", "krowk mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
-            },
-            cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
-        ],
-        ..cmd("mcp", "", "MCP servers for krowk's own agent (add, remove, list)")
     }
 }
 
@@ -1088,9 +1097,9 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(feature = "harness")]
             "providers",
             #[cfg(feature = "harness")]
-            "mcp",
-            #[cfg(feature = "harness")]
             "worktrees",
+            #[cfg(feature = "harness")]
+            "mcp",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
@@ -1110,13 +1119,13 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, help itself, the relay, which a person runs only to host
-/// one, and `providers`, the low-level layer under `connect`.
+/// already lists, help itself, and the relay, which a person runs only to
+/// host one.
 pub const ALL_ONLY: &[&str] = &[
     "auth",
     "help",
     #[cfg(feature = "harness")]
-    "providers",
+    "mcp",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.

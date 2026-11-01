@@ -41,14 +41,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// A token this close to expiring is refreshed before it is used.
 const EXPIRY_MARGIN_MS: i64 = 60_000;
 /// How long a login waits for the browser, or the device code, at most.
-const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
+pub(crate) const LOGIN_TIMEOUT: Duration = Duration::from_secs(600);
 /// A request to the authorization server — metadata, a token — answers
 /// within this or fails: the client's own read timeout is the five minutes
 /// a model stream may sit silent, far too long for a token.
-const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+pub(crate) const AUTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const LOCK_POLL: Duration = Duration::from_millis(50);
 
-fn fail(message: impl Into<String>) -> EngineError {
+pub(crate) fn fail(message: impl Into<String>) -> EngineError {
     EngineError::new("oauth_failed", message)
 }
 
@@ -233,7 +233,7 @@ impl Store {
 /// `n` random bytes from the operating system, URL-safe base64. An OS that
 /// cannot give them fails the login rather than signing in with a
 /// guessable verifier.
-fn random_token(n: usize) -> Result<String, EngineError> {
+pub(crate) fn random_token(n: usize) -> Result<String, EngineError> {
     use base64::Engine as _;
     let mut b = vec![0u8; n];
     ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut b).map_err(|_| fail("the operating system gave no random bytes for the login"))?;
@@ -271,7 +271,7 @@ pub struct Endpoints {
 
 /// An endpoint krowk will send a secret to: https, or http on a loopback
 /// address (a local stand-in).
-fn trusted(url: &str) -> Result<url::Url, EngineError> {
+pub(crate) fn trusted(url: &str) -> Result<url::Url, EngineError> {
     let u = url::Url::parse(url).map_err(|e| fail(format!("{url:?} is not a URL ({e})")))?;
     let loopback = matches!(u.host(), Some(url::Host::Ipv4(ip)) if ip.is_loopback()) || matches!(u.host(), Some(url::Host::Ipv6(ip)) if ip.is_loopback()) || u.host_str() == Some("localhost");
     if u.scheme() == "https" || (u.scheme() == "http" && loopback) {
@@ -281,7 +281,7 @@ fn trusted(url: &str) -> Result<url::Url, EngineError> {
     }
 }
 
-async fn get_json(http: &reqwest::Client, url: &str) -> Result<Option<Value>, EngineError> {
+pub(crate) async fn get_json(http: &reqwest::Client, url: &str) -> Result<Option<Value>, EngineError> {
     let r = http.get(url).header("accept", "application/json").timeout(AUTH_REQUEST_TIMEOUT).send().await.map_err(|e| fail(format!("{url} could not be reached: {e}")))?;
     if !r.status().is_success() {
         return Ok(None);
@@ -319,12 +319,18 @@ pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<Endpoints,
 }
 
 /// An OAuth error answer's words: `error` and `error_description`.
-fn oauth_error(v: &Value) -> (String, String) {
-    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+/// Text a server sent, as one line a terminal can show: control characters
+/// (an escape sequence among them) dropped.
+pub(crate) fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).take(300).collect()
+}
+
+pub(crate) fn oauth_error(v: &Value) -> (String, String) {
+    let s = |k: &str| clean(v.get(k).and_then(Value::as_str).unwrap_or_default());
     (s("error"), s("error_description"))
 }
 
-async fn post_form(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), EngineError> {
+pub(crate) async fn post_form(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> Result<(u16, Value), EngineError> {
     let body = url::form_urlencoded::Serializer::new(String::new()).extend_pairs(form).finish();
     let r = http
         .post(url)
@@ -341,7 +347,7 @@ async fn post_form(http: &reqwest::Client, url: &str, form: &[(&str, &str)]) -> 
 }
 
 /// A token answer as what is stored.
-fn stored_from(v: &Value, e: &Endpoints, client_id: &str, scope: &str, old_refresh: Option<String>) -> Result<Stored, EngineError> {
+pub(crate) fn stored_from(v: &Value, e: &Endpoints, client_id: &str, scope: &str, old_refresh: Option<String>) -> Result<Stored, EngineError> {
     let access = v.get("access_token").and_then(Value::as_str).filter(|t| !t.is_empty()).ok_or_else(|| fail("the token endpoint answered without an access token"))?;
     let now = now_ms();
     Ok(Stored {
@@ -351,7 +357,7 @@ fn stored_from(v: &Value, e: &Endpoints, client_id: &str, scope: &str, old_refre
         access_token: access.into(),
         // A server that does not rotate the refresh token keeps the old one.
         refresh_token: v.get("refresh_token").and_then(Value::as_str).filter(|t| !t.is_empty()).map(String::from).or(old_refresh),
-        expires_at_ms: v.get("expires_in").and_then(Value::as_i64).map(|s| now + s * 1000),
+        expires_at_ms: v.get("expires_in").and_then(Value::as_i64).map(|s| now.saturating_add(s.saturating_mul(1000))),
         scope: v.get("scope").and_then(Value::as_str).unwrap_or(scope).into(),
         obtained_at_ms: now,
     })
@@ -483,7 +489,7 @@ pub async fn login_pkce(http: &reqwest::Client, login: &Login, open: &mut dyn Fn
 /// Waits for the browser's redirect and answers it. Anything that is not
 /// the callback, or carries another state, is answered 404 and ignored: a
 /// page on this machine probing the port cannot end the login.
-async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<String, EngineError> {
+pub(crate) async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<String, EngineError> {
     loop {
         let Ok((mut conn, _)) = listener.accept().await else { continue };
         let mut buf = vec![0u8; 8192];
@@ -514,8 +520,8 @@ async fn callback(listener: &tokio::net::TcpListener, state: &str) -> Result<Str
         let (page, result) = match (q.get("code"), q.get("error")) {
             (Some(code), None) => ("krowk is signed in. You can close this tab.", Ok(code.clone())),
             (_, err) => {
-                let err = err.cloned().unwrap_or_else(|| "no code".into());
-                let desc = q.get("error_description").cloned().unwrap_or_default();
+                let err = clean(&err.cloned().unwrap_or_else(|| "no code".into()));
+                let desc = clean(q.get("error_description").map(String::as_str).unwrap_or_default());
                 ("The sign-in did not complete. You can close this tab and look at the terminal.", Err(fail(format!("the sign-in was refused ({err} {desc})"))))
             }
         };
