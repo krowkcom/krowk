@@ -1006,7 +1006,7 @@ mod tests {
         use crate::protocol::{ApprovalDecision, ApprovalRequest};
         let mut w = ChildWatch::backend("k");
         let call = Item::ToolCall { call_id: "c1".into(), name: "Bash".into(), input: serde_json::json!({}) };
-        let result = Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false };
+        let result = Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false, images: Vec::new() };
         let frame = |w: &ChildWatch| match w.frame(ChildState::Running) {
             LiveEvent::SubagentStatus { tool, waiting, tokens, .. } => (tool.map(|t| (t.name, t.started_ms)), waiting, tokens),
             other => panic!("{other:?}"),

@@ -23,6 +23,29 @@ the versions are the `v*` tags a release is cut from. Entries land under
   3). A server that turns out to need a sign-in is mentioned once per
   session: `<name> needs sign-in: run krowk mcp login <name> or open /mcp`.
 
+- **The README now walks through MCP with Mobbin, and `krowk help mcp` shows
+  it.** Two commands, `krowk mcp add mobbin https://api.mobbin.com/mcp` and
+  `krowk mcp login mobbin`, then krowk's own agent searches Mobbin and sees the
+  screens; the docs also cover `list`, `logout`, `remove` and the TUI's `/mcp`
+  view. An end-to-end test now runs that whole path against Mobbin-shaped fakes.
+
+- **Images an MCP server returns now reach the model.** A tool
+  result's `image` blocks, and embedded resources with an `image/*` type and a
+  blob, are kept in the session's `images/` and sent inside the `tool_result`
+  beside its text (on OpenAI Responses, as `input_image` parts of the
+  call's output; on Chat Completions, in a labelled `user` message right after
+  the step's tool messages), so the model sees what Mobbin-style servers return. They
+  keep the usual image limits (size, side, format, how many a call sends); one
+  over a limit, or not a PNG, JPEG, GIF or WebP, becomes a text note saying
+  why, and so does every image for a model that reads none.
+
+- **A tool result can carry images.** The session log's tool-result item
+  gains an optional `images` list of references into the session's `images/`
+  directory (omitted when empty), so a resumed session replays them and a
+  client that predates the field still reads the text. Nothing produces
+  images yet; MCP image results build on this. The FFI mirror and the iOS
+  transcript follow.
+
 - **`/mcp` shows the session's MCP servers, live.** Each server is listed
   with where it is configured, whether it is connecting, connected, needs a
   sign-in or failed (and why), and how many tools it has; enter lists a

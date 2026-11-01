@@ -99,7 +99,7 @@ fn r_log_3_encrypted_reasoning_round_trips_through_the_log_unmodified() {
         .collect();
     let mut items = vec![(Item::user("reword the README"), None)];
     items.extend(read_back.into_iter().map(|i| (i, Some(0))));
-    items.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "patched README.md".into(), is_error: false }, None));
+    items.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "patched README.md".into(), is_error: false, images: Vec::new() }, None));
     let req = ModelRequest { model: "gpt-5.4".into(), system: "s".into(), tools: gpt_tools(), history: history(&items), session_id: "sess".into(), reasoning: true, ..ModelRequest::default() };
     let body = request_body(&req, "openai");
     let input = body["input"].as_array().unwrap();
@@ -175,7 +175,7 @@ fn r_prov_3_every_call_is_stateless_keyed_to_the_session_and_appends_to_one_pref
     let (d, _) = decode("openai/turn1_apply_patch.sse", 1 << 20);
     let mut turn2 = turn1.clone();
     turn2.extend(d.items.iter().map(|(_, i)| (i.clone(), Some(0))));
-    turn2.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "ok".into(), is_error: false }, None));
+    turn2.push((Item::ToolResult { call_id: "call_01ApplyPatch".into(), output: "ok".into(), is_error: false, images: Vec::new() }, None));
     turn2.push((Item::user("what language is it written in?"), None));
     let second = request_body(&req(&turn2), "openai");
     let (a, b) = (first["input"].as_array().unwrap(), second["input"].as_array().unwrap());
@@ -195,7 +195,7 @@ fn r_prov_1_a_call_the_turn_stopped_before_answering_is_answered() {
         (Item::user("q"), None),
         (Item::ToolCall { call_id: "call_a".into(), name: "read".into(), input: json!({"path": "x"}) }, Some(0)),
         (Item::ToolCall { call_id: "call_b".into(), name: "apply_patch".into(), input: json!(PATCH) }, Some(0)),
-        (Item::ToolResult { call_id: "call_a".into(), output: "x".into(), is_error: false }, None),
+        (Item::ToolResult { call_id: "call_a".into(), output: "x".into(), is_error: false, images: Vec::new() }, None),
         (Item::user("go on"), None),
     ];
     let body = request_body(&ModelRequest { model: "gpt-5.4".into(), history: history(&items), ..ModelRequest::default() }, "openai");

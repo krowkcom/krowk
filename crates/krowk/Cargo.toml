@@ -75,3 +75,8 @@ krowk-ffi = { path = "../krowk-ffi" }
 # while its siblings run; the harness already links tokio, so no crate is
 # added.
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "time"] }
+# tests/harness_mcp_mobbin.rs shares the Mobbin-shaped fake with the harness tests,
+# which checks PKCE and reads forms. Test-only, versions as in krowk-harness.
+base64 = "0.22"
+sha2 = "0.11"
+url = "2"

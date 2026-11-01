@@ -2717,7 +2717,7 @@ impl App {
                 self.follow.call(name, input);
                 self.calls.push(Call { call_id: call_id.clone(), name: name.clone(), input: input.clone() });
             }
-            Item::ToolResult { call_id, output, is_error } => {
+            Item::ToolResult { call_id, output, is_error, .. } => {
                 if streamed {
                     self.live = None;
                 }
@@ -4672,7 +4672,7 @@ mod tests {
         let (rows, _) = a.view(Instant::now());
         let row = rows.iter().find(|r| r.spans.first().is_some_and(|s| s.content == look::TOOL)).expect("the call is live");
         assert_eq!(row.spans[0].style, look::running());
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\n".into(), is_error: false } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\n".into(), is_error: false, images: Vec::new() } }));
         let (rows, _) = a.view(Instant::now());
         let row = rows.iter().find(|r| r.spans.first().is_some_and(|s| s.content == look::TOOL)).expect("the call is held");
         assert_eq!(row.spans[0].style, dim());
@@ -4683,7 +4683,7 @@ mod tests {
         let mut a = app();
         a.start_turn(Instant::now());
         let call = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }));
-        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
+        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false, images: Vec::new() } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "p".into(), item: Item::user("hi") }));
         assert_eq!(text(&a.take_pending()), ["", "hi", ""]);
         call(&mut a, "1");
@@ -4817,7 +4817,7 @@ mod tests {
         let mut a = app();
         a.start_turn(Instant::now());
         let call = |a: &mut App, id: &str, name: &str, input: serde_json::Value| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: id.into(), item: Item::ToolCall { call_id: id.into(), name: name.into(), input } }));
-        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{id}"), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false } }));
+        let back = |a: &mut App, id: &str| a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{id}"), item: Item::ToolResult { call_id: id.into(), output: "x".into(), is_error: false, images: Vec::new() } }));
         for id in ["1", "2"] {
             call(&mut a, id, "bash", serde_json::json!({"command": "ls"}));
             back(&mut a, id);
@@ -4908,7 +4908,7 @@ mod tests {
             ev(LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("hi") }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }),
-            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\nmore\n".into(), is_error: false } }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\nmore\n".into(), is_error: false, images: Vec::new() } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It is a CLI.".into() } }),
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 1200, ..Usage::default() }, duration_ms: 1500, error: None, reported_cost_usd: None, reported_tokens: None }),
         ];
@@ -5557,7 +5557,7 @@ mod tests {
             let ev = |body: LogBody| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
             a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ic".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "survey", "prompt": "look around", "run_in_background": true}) } }), live);
             a.on_log(&ev(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "survey".into(), agent: Some("general-purpose".into()), model: model.clone(), ran_by: RanBy::Claude, backend_id: Some("a_bg_1".into()) }), live);
-            a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ir".into(), item: Item::ToolResult { call_id: "c1".into(), output: "Async agent launched successfully.".into(), is_error: false } }), live);
+            a.on_log(&ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "ir".into(), item: Item::ToolResult { call_id: "c1".into(), output: "Async agent launched successfully.".into(), is_error: false, images: Vec::new() } }), live);
             a.on_log(&ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 9, error: None, reported_cost_usd: None, reported_tokens: None }), live);
         };
         let mut a = App::new(Editor::new(None), 100, Settings::default(), Some(model.clone()), None);
@@ -5632,10 +5632,10 @@ mod tests {
         a.agent_move(1);
         assert_eq!(a.agent_selected_running(), None, "the interrupted one has nothing left to interrupt");
         // Answered, each goes to scrollback once.
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false, images: Vec::new() } }));
         let done = text(&a.take_pending());
         assert!(done.iter().any(|l| l.starts_with("◆ Agent find the tests · explorer · done in") && l.contains("2.0k tokens")), "{done:?}");
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent was interrupted".into(), is_error: true } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent was interrupted".into(), is_error: true, images: Vec::new() } }));
         let done = text(&a.take_pending());
         assert!(done.iter().any(|l| l.contains("Agent read the docs · explorer · interrupted")) && done.iter().any(|l| l.contains("the subagent was interrupted")), "{done:?}");
         assert_eq!(listed(&a).len(), 2, "still the overlay's, which lists every child");
@@ -5652,7 +5652,7 @@ mod tests {
         a.session_id = Some("s".into());
         let model = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
         a.on_line(&log(LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "kid".into(), description: "review the store".into(), agent: None, model, ran_by: Default::default(), backend_id: None }));
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "moved to background as agent kid".into(), is_error: false } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "moved to background as agent kid".into(), is_error: false, images: Vec::new() } }));
         a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "n".into(), item: Item::user("<background-done id=\"kid\" status=\"completed\">\nfine\n</background-done>") }));
         let shown = text(&a.take_pending());
         let all = shown.join(" ");
@@ -5672,8 +5672,8 @@ mod tests {
             evs.push(at(ms, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("i{call}"), item: Item::ToolCall { call_id: call.into(), name: "subagent".into(), input: serde_json::json!({"description": what, "prompt": "…"}) } }));
             evs.push(at(ms + 1, LogBody::SubagentStarted { turn_id: "t".into(), call_id: call.into(), subagent_session_id: child.into(), description: what.into(), agent: None, model: model.clone(), ran_by: Default::default(), backend_id: None }));
         }
-        evs.push(at(10_001, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false } }));
-        evs.push(at(20_003, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: "the subagent was interrupted before it said anything".into(), is_error: true } }));
+        evs.push(at(10_001, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "found them".into(), is_error: false, images: Vec::new() } }));
+        evs.push(at(20_003, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: "the subagent was interrupted before it said anything".into(), is_error: true, images: Vec::new() } }));
         evs
     }
 
@@ -5763,7 +5763,7 @@ mod tests {
         a.on_line(&said("k1", "h2", "TASK-1"));
         a.on_line(&ev("k1", "h3", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h3".into(), item: Item::ToolCall { call_id: "r1".into(), name: "bash".into(), input: serde_json::json!({"command": "ls"}) } }));
         a.on_line(&said("k2", "x1", "SIBLING"));
-        a.on_line(&ev("k1", "h4", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h4".into(), item: Item::ToolResult { call_id: "r1".into(), output: "README.md".into(), is_error: false } }));
+        a.on_line(&ev("k1", "h4", LogBody::ItemCompleted { turn_id: "t".into(), item_id: "h4".into(), item: Item::ToolResult { call_id: "r1".into(), output: "README.md".into(), is_error: false, images: Vec::new() } }));
         a.on_line(&live(LiveEvent::ItemStarted { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), item: ItemKind::AssistantText }));
         a.on_line(&live(LiveEvent::ItemDelta { session_id: "k1".into(), turn_id: "t".into(), item_id: "m1".into(), delta: Delta::Text { text: "WHOLE line\nstreaming tai".into() } }));
         let rows = text(&a.child_rows(40, 20, None).unwrap());
@@ -6095,7 +6095,7 @@ mod tests {
         let mut a = fresh();
         let mut evs = three_children();
         evs.truncate(evs.len() - 2);
-        evs.push(at(2500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "moved to background as agent k2".into(), is_error: false } }));
+        evs.push(at(2500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "moved to background as agent k2".into(), is_error: false, images: Vec::new() } }));
         evs.push(at(62_002, LogBody::ItemCompleted { turn_id: "t2".into(), item_id: "n".into(), item: Item::user("<background-done id=\"k2\" status=\"failed\">\nboom\n</background-done>") }));
         a.replay(&evs.iter().collect::<Vec<_>>());
         a.open_agents();
@@ -6106,7 +6106,7 @@ mod tests {
         let mut evs = three_children();
         evs.push(at(4000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i4".into(), item: Item::ToolCall { call_id: "c4".into(), name: "subagent".into(), input: serde_json::json!({"description": "review the store"}) } }));
         evs.push(at(4001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c4".into(), subagent_session_id: "k4".into(), description: "review the store".into(), agent: None, model: ModelRef { instance: "anthropic".into(), model: "claude-haiku".into() }, ran_by: Default::default(), backend_id: None }));
-        evs.push(at(4500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r4".into(), item: Item::ToolResult { call_id: "c4".into(), output: "started background agent k4".into(), is_error: false } }));
+        evs.push(at(4500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r4".into(), item: Item::ToolResult { call_id: "c4".into(), output: "started background agent k4".into(), is_error: false, images: Vec::new() } }));
         evs.push(at(30_001, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 30_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         for (local, running) in [(false, true), (true, false)] {
             let mut a = fresh();
@@ -6136,7 +6136,7 @@ mod tests {
                 at(0, LogBody::SessionStarted { cwd: "/r".into(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None }),
                 at(1000, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i1".into(), item: Item::ToolCall { call_id: "c1".into(), name: "Agent".into(), input: serde_json::json!({"description": "sleeper", "prompt": "sleep 120"}) } }),
                 at(1001, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c1".into(), subagent_session_id: "k1".into(), description: "sleeper".into(), agent: None, model: model.clone(), ran_by, backend_id: None }),
-                at(13_001, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "[Request interrupted by user for tool use]".into(), is_error: true } }),
+                at(13_001, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r1".into(), item: Item::ToolResult { call_id: "c1".into(), output: "[Request interrupted by user for tool use]".into(), is_error: true, images: Vec::new() } }),
             ];
             let mut a = App::new(Editor::new(None), 100, Settings { content_width: ContentWidth::FullWidth, ..Settings::default() }, None, None);
             a.replay(&evs.iter().collect::<Vec<_>>());
@@ -6167,7 +6167,7 @@ mod tests {
         // The batch answered whole when its last child ended, 100 s in.
         let answers = [("c1", "the subagent was interrupted", true), ("c2", "counted", false), ("c3", "read", false), ("c4", "[Request interrupted by user for tool use]", true), ("c5", "done", false)];
         for (i, (call, output, is_error)) in answers.into_iter().enumerate() {
-            evs.push(at(101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{call}"), item: Item::ToolResult { call_id: call.into(), output: output.into(), is_error } }));
+            evs.push(at(101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{call}"), item: Item::ToolResult { call_id: call.into(), output: output.into(), is_error, images: Vec::new() } }));
         }
         evs.push(at(102_000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 101_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         let end = |status, took_ms: u64, tokens| ChildEnd { status, at_ms: 1100 + took_ms as i64, took_ms, tokens, reason: None };
@@ -6249,7 +6249,7 @@ mod tests {
         a.agent_move(-1);
         assert_eq!(a.agent_selected_running().as_deref(), Some("k3"), "the one above it");
         // An answered call does not move it either.
-        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent failed: the tool was interrupted by a signal".into(), is_error: true } }));
+        a.on_line(&log(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r2".into(), item: Item::ToolResult { call_id: "c2".into(), output: "the subagent failed: the tool was interrupted by a signal".into(), is_error: true, images: Vec::new() } }));
         assert_eq!(a.agent_selected_running().as_deref(), Some("k3"));
         assert!(listed(&a).iter().any(|r| r.contains("Agent read the docs · failed after")), "an error that names an interruption is still a failure: {:?}", listed(&a));
     }
@@ -6880,7 +6880,7 @@ mod tests {
             ev(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("find where the config is read and say what it does with a missing file") }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "src/config.rs"}) } }),
-            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "fn read()\n".into(), is_error: false } }),
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "fn read()\n".into(), is_error: false, images: Vec::new() } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "4".into(), item: Item::AssistantText { text: "It reads the file once at start, and a missing one is taken as empty:\n\n```rust\nlet text = std::fs::read_to_string(path).unwrap_or_default();\n```\n\n- defaults fill the rest\n- nothing is written back".into() } }),
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 900, ..Usage::default() }, duration_ms: 2500, error: None, reported_cost_usd: None, reported_tokens: None }),
         ]

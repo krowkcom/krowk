@@ -460,7 +460,7 @@ fn tool_result(b: &Value) -> Vec<EngineEvent> {
             .join("\n"),
         _ => String::new(),
     };
-    let item = Item::ToolResult { call_id: call_id.clone(), output, is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false) };
+    let item = Item::ToolResult { call_id: call_id.clone(), output, is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false), images: Vec::new() };
     let item_id = krowk_store::new_id();
     vec![EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::ToolResult { call_id } }, EngineEvent::ItemCompleted { item_id, item }]
 }
@@ -546,7 +546,7 @@ mod tests {
         let Item::Reasoning { blob: Some(b), .. } = &items[0] else { panic!("{items:?}") };
         assert_eq!((b.wire_api, b.data["signature"].as_str()), (WireApi::ClaudeCode, Some("c2ln")), "the signature whole, replayable only to Claude Code");
         assert!(matches!(&items[1], Item::ToolCall { name, call_id, .. } if name == "mcp__krowk__session_info" && call_id == "toolu_1"));
-        assert_eq!(items[2], Item::ToolResult { call_id: "toolu_1".into(), output: "krowk session: s-1".into(), is_error: false });
+        assert_eq!(items[2], Item::ToolResult { call_id: "toolu_1".into(), output: "krowk session: s-1".into(), is_error: false, images: Vec::new() });
         assert_eq!(items[3], Item::AssistantText { text: "s-1".into() });
         // The result is logged after the response that called the tool.
         let order: Vec<&str> = evs
