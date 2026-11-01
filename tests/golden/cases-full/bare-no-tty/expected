@@ -1403,7 +1403,7 @@ stdout:
     },
     {
       "name": "mcp",
-      "summary": "The MCP servers krowk's own agent uses",
+      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
@@ -1436,6 +1436,62 @@ stdout:
               "required": true
             }
           ]
+        },
+        {
+          "name": "add",
+          "usage": "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]",
+          "summary": "Add an MCP server to krowk's config.json",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name: letters, digits, - and _, no __, no _ at either end",
+              "required": true
+            },
+            {
+              "name": "url-or-command",
+              "summary": "An https URL for a remote server; for a local one, put `--` before its command and arguments",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "header",
+              "type": "string",
+              "default": "",
+              "usage": "A header an HTTP server is sent, \"Name: value\" — repeat for more than one; ${VAR} reads a variable when the server starts, keeping a token out of config.json",
+              "repeatable": true
+            },
+            {
+              "name": "env",
+              "type": "string",
+              "default": "",
+              "usage": "An environment variable a stdio server starts with, K=V — repeat for more than one",
+              "repeatable": true
+            },
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace a server of that name already in config.json"
+            }
+          ]
+        },
+        {
+          "name": "remove",
+          "usage": "krowk mcp remove <name>",
+          "summary": "Remove a server from config.json, and its stored sign-in",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server to remove",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "list",
+          "usage": "krowk mcp list",
+          "summary": "List the servers krowk would load here, without connecting"
         }
       ]
     },
@@ -3109,7 +3165,7 @@ tty:
     },
     {
       "name": "mcp",
-      "summary": "The MCP servers krowk's own agent uses",
+      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
@@ -3142,6 +3198,62 @@ tty:
               "required": true
             }
           ]
+        },
+        {
+          "name": "add",
+          "usage": "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]",
+          "summary": "Add an MCP server to krowk's config.json",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name: letters, digits, - and _, no __, no _ at either end",
+              "required": true
+            },
+            {
+              "name": "url-or-command",
+              "summary": "An https URL for a remote server; for a local one, put `--` before its command and arguments",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "header",
+              "type": "string",
+              "default": "",
+              "usage": "A header an HTTP server is sent, \"Name: value\" — repeat for more than one; ${VAR} reads a variable when the server starts, keeping a token out of config.json",
+              "repeatable": true
+            },
+            {
+              "name": "env",
+              "type": "string",
+              "default": "",
+              "usage": "An environment variable a stdio server starts with, K=V — repeat for more than one",
+              "repeatable": true
+            },
+            {
+              "name": "force",
+              "type": "bool",
+              "default": "false",
+              "usage": "Replace a server of that name already in config.json"
+            }
+          ]
+        },
+        {
+          "name": "remove",
+          "usage": "krowk mcp remove <name>",
+          "summary": "Remove a server from config.json, and its stored sign-in",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server to remove",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "list",
+          "usage": "krowk mcp list",
+          "summary": "List the servers krowk would load here, without connecting"
         }
       ]
     },

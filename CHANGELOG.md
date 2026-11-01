@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk mcp add`, `remove` and `list` manage the MCP servers krowk's own
+  agent uses.** `krowk mcp add mobbin https://api.mobbin.com/mcp` adds a
+  remote server (`--header "Name: value"`, repeatable);
+  `krowk mcp add files --env K=V -- npx -y some-server` adds a local one.
+  Both write the `mcpServers` in krowk's `config.json`, and refuse a name
+  already there unless you pass `--force`. `krowk mcp list` (`--json` too)
+  shows every server krowk would load in this directory, from the repo's
+  `.mcp.json`, Claude Code's files and `config.json`, with where it comes
+  from, how it connects and whether it is signed in, without connecting to
+  any; a `.mcp.json` server in a repo you have not trusted shows as
+  untrusted. `krowk mcp remove` removes a server from `config.json` and its
+  stored sign-in, and for a server configured elsewhere names the file to
+  edit and changes nothing.
+
 - **`krowk mcp login <name>` signs in to an MCP server that asks for
   OAuth.** Hosted servers such as Mobbin answer `401` and want a browser
   sign-in, which a static header cannot give. krowk follows the server's own

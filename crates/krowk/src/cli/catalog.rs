@@ -703,8 +703,25 @@ fn mcp_command() -> Command {
                 args: vec![arg("name", "The server's name", true)],
                 ..cmd("logout", "krowk mcp logout <name>", "Forget a server's sign-in")
             },
+            Command {
+                args: vec![
+                    arg("name", "The server's name: letters, digits, - and _, no __, no _ at either end", true),
+                    arg("url-or-command", "An https URL for a remote server; for a local one, put `--` before its command and arguments", true),
+                ],
+                flags: vec![
+                    repeatable("header", "A header an HTTP server is sent, \"Name: value\" — repeat for more than one; ${VAR} reads a variable when the server starts, keeping a token out of config.json"),
+                    repeatable("env", "An environment variable a stdio server starts with, K=V — repeat for more than one"),
+                    flag("force", BOOL, "Replace a server of that name already in config.json"),
+                ],
+                ..cmd("add", "krowk mcp add <name> <url> [--header \"Name: value\"] | krowk mcp add <name> [--env K=V] -- <command> [args…]", "Add an MCP server to krowk's config.json")
+            },
+            Command {
+                args: vec![arg("name", "The server to remove", true)],
+                ..cmd("remove", "krowk mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
+            },
+            cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
         ],
-        ..cmd("mcp", "", "The MCP servers krowk's own agent uses")
+        ..cmd("mcp", "", "MCP servers krowk's agent uses (add, remove, list, login)")
     }
 }
 
@@ -1008,6 +1025,12 @@ Also signs in to SuperGrok, or adds a Claude Code or Codex account (signed in
 with `claude auth login` or `codex login`).",
         #[cfg(feature = "harness")]
         "providers list" => "Where each runs, too. The same check as `krowk status`.",
+        #[cfg(feature = "harness")]
+        "mcp" => "\
+Servers live in krowk's config.json (`mcpServers`, the shape Claude Code
+uses), for every repository. Project servers stay in the repository's
+.mcp.json, behind trust; `list` shows them, and Claude Code's, too. Only
+krowk's own agent uses them, not the Claude Code or Codex backends.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]

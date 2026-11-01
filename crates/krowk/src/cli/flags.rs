@@ -125,6 +125,14 @@ pub struct Flags {
     pub remove: bool,
     #[cfg(feature = "harness")]
     pub sign_out_vendor: bool,
+    /// `mcp add`: the server's `--env K=V` and `--header "Name: value"`, and
+    /// how many positionals came before a `--` (the server's command after).
+    #[cfg(feature = "harness")]
+    pub env: Vec<String>,
+    #[cfg(feature = "harness")]
+    pub header: Vec<String>,
+    #[cfg(feature = "harness")]
+    pub dashes: Option<usize>,
     /// `connect`: a key to store, read from stdin, or referenced (`$VAR`,
     /// `!command`) — never the key itself as an argument.
     #[cfg(feature = "harness")]
@@ -159,6 +167,10 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
             let arg = &args[i];
             i += 1;
             if arg == "--" {
+                #[cfg(feature = "harness")]
+                {
+                    f.dashes = Some(positionals.len());
+                }
                 positionals.extend(args[i..].iter().cloned());
                 i = args.len();
                 break;
@@ -289,6 +301,10 @@ impl Flags {
             "reference" => self.references.push(v.into()),
             "metadata" => self.metadata.push(v.into()),
             "caption" => self.caption.push(v.into()),
+            #[cfg(feature = "harness")]
+            "env" => self.env.push(v.into()),
+            #[cfg(feature = "harness")]
+            "header" => self.header.push(v.into()),
             "destination" => text(&mut self.destination),
             "session" => text(&mut self.session),
             "title" => text(&mut self.title),
