@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A tool result can carry images.** The session log's tool-result item
+  gains an optional `images` list of references into the session's `images/`
+  directory (omitted when empty), so a resumed session replays them and a
+  client that predates the field still reads the text. Nothing produces
+  images yet; MCP image results build on this. The FFI mirror and the iOS
+  transcript follow.
+
 - **`krowk mcp add`, `remove` and `list` manage the MCP servers krowk's own
   agent uses.** `krowk mcp add mobbin https://api.mobbin.com/mcp` adds a
   remote server (`--header "Name: value"`, repeatable);

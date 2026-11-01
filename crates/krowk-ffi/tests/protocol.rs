@@ -69,7 +69,7 @@ fn log_bodies() -> Vec<LogBody> {
             }),
         },
         Item::ToolCall { call_id: "call_1".into(), name: "bash".into(), input: json!({"command": "ls -la"}) },
-        Item::ToolResult { call_id: "call_1".into(), output: "a\nb".into(), is_error: false },
+        Item::ToolResult { call_id: "call_1".into(), output: "a\nb".into(), is_error: false, images: vec![ImageRef { number: 1, media_type: "image/png".into(), file: "x.png".into(), sha256: None }] },
     ];
     let mut bodies = vec![
         LogBody::SessionStarted {

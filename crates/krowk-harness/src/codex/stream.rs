@@ -305,7 +305,7 @@ impl Translator {
                 let (output, is_error) = self.result(item, &codex_id);
                 let id = krowk_store::new_id();
                 out.push(EngineEvent::ItemStarted { item_id: id.clone(), kind: ItemKind::ToolResult { call_id: codex_id.clone() } });
-                out.push(EngineEvent::ItemCompleted { item_id: id, item: Item::ToolResult { call_id: codex_id, output, is_error } });
+                out.push(EngineEvent::ItemCompleted { item_id: id, item: Item::ToolResult { call_id: codex_id, output, is_error, images: Vec::new() } });
             }
         }
     }

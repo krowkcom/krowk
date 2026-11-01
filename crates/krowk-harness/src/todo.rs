@@ -140,7 +140,7 @@ mod tests {
     }
 
     fn result(id: &str, is_error: bool) -> HistoryItem {
-        HistoryItem { item: Item::ToolResult { call_id: id.into(), output: String::new(), is_error }, response: None }
+        HistoryItem { item: Item::ToolResult { call_id: id.into(), output: String::new(), is_error, images: Vec::new() }, response: None }
     }
 
     #[test]

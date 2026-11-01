@@ -443,7 +443,7 @@ impl<C: ModelClient> NativeEngine<C> {
                         vec![r]
                     };
                     for (((call_id, _, _), item_id), (output, is_error)) in batch.iter().zip(ids).zip(results) {
-                        let item = Item::ToolResult { call_id: call_id.clone(), output, is_error };
+                        let item = Item::ToolResult { call_id: call_id.clone(), output, is_error, images: Vec::new() };
                         let _ = events.send(EngineEvent::ItemCompleted { item_id, item: item.clone() }).await;
                         req.history.push(HistoryItem { item, response: None });
                     }

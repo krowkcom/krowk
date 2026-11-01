@@ -300,7 +300,7 @@ pub enum Item {
     AssistantText { text: String },
     Reasoning { text: String, blob: Option<ProviderBlob> },
     ToolCall { call_id: String, name: String, input: Value },
-    ToolResult { call_id: String, output: String, is_error: bool },
+    ToolResult { call_id: String, output: String, is_error: bool, images: Vec<ImageRef> },
 }
 
 #[uniffi::remote(Record)]

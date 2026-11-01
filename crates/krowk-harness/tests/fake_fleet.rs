@@ -129,7 +129,7 @@ fn r_ios_15_a_second_device_attaches_to_the_fake_fleet_and_sees_the_demo_and_its
     let items: Vec<Item> = events.filter_map(|e| if let LogBody::ItemCompleted { item, .. } = e.body { Some(item) } else { None }).collect();
     let call = items.iter().find_map(|i| if let Item::ToolCall { call_id, name, input } = i { (call_id == fleet::READ).then_some((name.as_str(), input)) } else { None });
     assert_eq!(call, Some(("read", &serde_json::json!({"path": "README.md"}))), "{transcript}");
-    let result = items.iter().find_map(|i| if let Item::ToolResult { call_id, output, is_error } = i { (call_id == fleet::READ).then_some((output, *is_error)) } else { None });
+    let result = items.iter().find_map(|i| if let Item::ToolResult { call_id, output, is_error, .. } = i { (call_id == fleet::READ).then_some((output, *is_error)) } else { None });
     let (output, is_error) = result.unwrap_or_else(|| panic!("no result for the read: {transcript}"));
     assert!(!is_error && output.contains("The demo project"), "{output}");
     let held = got.iter().find_map(|u| if let viewer::Update::Line(StreamLine::Live(LiveEvent::ApprovalRequested(r))) = u { Some(r.clone()) } else { None }).unwrap();
