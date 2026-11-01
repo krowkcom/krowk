@@ -537,7 +537,10 @@ impl Pool {
         let found = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s.name == name).cloned();
         let Some((_, slot)) = found else { return Ok(false) };
         if let Some(c) = &self.credentials {
-            crate::mcp_oauth::remove(c, name)?;
+            // Blocks on the credentials lock, which a refresh may hold across its request.
+            let c = c.clone();
+            let name = name.to_string();
+            tokio::task::spawn_blocking(move || crate::mcp_oauth::remove(&c, &name)).await.map_err(|e| crate::engine::EngineError::new("credentials_unwritable", e.to_string()))??;
         }
         let old = slot.reset();
         if let Some(conn) = old.get().and_then(|l| l.conn.as_ref()) {
@@ -708,7 +711,7 @@ impl Mcp {
     /// needed a sign-in and one is stored now.
     fn retry_after(&self, s: &Server, slot: &Cell) -> Duration {
         let signin = slot.current(None).get().is_some_and(Live::needs_sign_in);
-        let stored = || self.credentials.as_deref().zip(s.config.url.as_deref()).is_some_and(|(c, u)| crate::mcp_oauth::load(c, &s.name, u).ok().flatten().is_some());
+        let stored = || self.credentials.as_deref().zip(s.config.url.as_deref()).is_some_and(|(c, u)| crate::mcp_oauth::load(c, &s.name, u).ok().flatten().is_some_and(|t| t.refresh_token.is_some() || t.fresh(krowk_store::now_ms())));
         if signin && stored() { Duration::ZERO } else { self.retry }
     }
 

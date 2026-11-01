@@ -116,7 +116,16 @@ pub async fn bearer(http: &reqwest::Client, credentials: &Path, name: &str, url:
     let (status, v) = post_form(http, &cur.token_endpoint, &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &cur.client_id), ("resource", url)]).await?;
     if !(200..300).contains(&status) {
         // A refused refresh token is no use again; anything else (a 5xx) may pass.
-        return if matches!(status, 400 | 401 | 403) { Ok(Bearer::SignIn) } else { Err(fail(format!("{name}'s authorization server answered the token refresh with HTTP {status}"))) };
+        if matches!(status, 400 | 401 | 403) {
+            // Spent for good: dropped, so a stored sign-in that cannot refresh no longer reads as one that can.
+            krowk_api::creds::modify_locked(credentials, |f: &mut File| {
+                let spent = f.mcp.get_mut(name).filter(|e| same_url(&e.url, url) && e.stored.refresh_token.as_deref() == Some(refresh.as_str()));
+                Ok(((), spent.map(|e| e.stored.refresh_token = None).is_some()))
+            })
+            .map_err(storage)?;
+            return Ok(Bearer::SignIn);
+        }
+        return Err(fail(format!("{name}'s authorization server answered the token refresh with HTTP {status}")));
     }
     let e = Endpoints { issuer: cur.issuer.clone(), token: cur.token_endpoint.clone(), ..Endpoints::default() };
     let fresh = stored_from(&v, &e, &cur.client_id, &cur.scope, Some(refresh))?;
