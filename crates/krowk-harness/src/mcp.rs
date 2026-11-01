@@ -432,6 +432,8 @@ pub struct Mcp {
     /// One a server, in `servers`' order.
     live: Vec<Cell>,
     retry: Duration,
+    /// The credentials file the servers' sign-ins live in; none, none used.
+    credentials: Option<PathBuf>,
 }
 
 /// One server's connection, set once it has started. Shared with the
@@ -463,9 +465,9 @@ impl Slot {
 }
 
 /// Starts `s` into `cell` unless it was.
-async fn boot<'a>(cell: &'a tokio::sync::OnceCell<Live>, s: &Server) -> &'a Live {
+async fn boot<'a>(cell: &'a tokio::sync::OnceCell<Live>, s: &Server, credentials: Option<&Path>) -> &'a Live {
     cell.get_or_init(|| async {
-        let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
+        let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s, credentials)).await {
             Ok(Ok((conn, listed))) => (Some(conn), listed, None),
             Ok(Err(e)) => (None, Default::default(), Some(e)),
             Err(_) => (None, Default::default(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
@@ -481,6 +483,7 @@ async fn boot<'a>(cell: &'a tokio::sync::OnceCell<Live>, s: &Server) -> &'a Live
 pub struct Pool {
     kept: std::sync::Mutex<Vec<(Server, Cell)>>,
     retry: Duration,
+    credentials: Option<PathBuf>,
 }
 
 impl Default for Pool {
@@ -493,7 +496,13 @@ impl Pool {
     /// A pool that retries a failed server no sooner than `retry` after its
     /// last start: tests shorten it.
     pub fn with_retry(retry: Duration) -> Pool {
-        Pool { kept: Default::default(), retry }
+        Pool { kept: Default::default(), retry, credentials: None }
+    }
+
+    /// Remote servers send the sign-ins `krowk mcp login` stored in `path`.
+    pub fn with_credentials(mut self, path: PathBuf) -> Pool {
+        self.credentials = Some(path);
+        self
     }
 
     /// Each server's status and tools, in configuration order.
@@ -513,10 +522,31 @@ impl Pool {
             conn.close().await;
         }
         let fresh = slot.current(None);
+        let creds = self.credentials.clone();
         tokio::spawn(async move {
-            boot(&fresh, &server).await;
+            boot(&fresh, &server, creds.as_deref()).await;
         });
         true
+    }
+
+    /// Signs `name` out (R-MCP-12): its tokens are removed, its connection
+    /// closed, and its status becomes needs sign-in. Removing under the
+    /// credentials lock first means a refresh in flight finds the sign-in
+    /// gone and writes nothing back. False when the pool has no such server.
+    pub async fn sign_out(&self, name: &str) -> Result<bool, crate::engine::EngineError> {
+        let found = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s.name == name).cloned();
+        let Some((_, slot)) = found else { return Ok(false) };
+        if let Some(c) = &self.credentials {
+            crate::mcp_oauth::remove(c, name)?;
+        }
+        let old = slot.reset();
+        if let Some(conn) = old.get().and_then(|l| l.conn.as_ref()) {
+            conn.close().await;
+        }
+        let ended = Started::default();
+        let _ = ended.set(Live { name: name.into(), conn: None, tools: Vec::new(), error: None, left_out: None, at: std::time::Instant::now(), signin: true });
+        *slot.0.lock().unwrap_or_else(|e| e.into_inner()) = ended;
+        Ok(true)
     }
 
     /// The turn's `Mcp` over `servers`: a server unchanged since the last
@@ -533,7 +563,7 @@ impl Pool {
         }
         *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = servers.iter().cloned().zip(live.iter().cloned()).collect();
         close_all(old.into_iter().flatten().map(|(_, c)| c).collect()).await;
-        Mcp { servers, live, retry: self.retry }
+        Mcp { servers, live, retry: self.retry, credentials: self.credentials.clone() }
     }
 
     /// Closes every connection: processes stopped, HTTP sessions ended.
@@ -557,6 +587,10 @@ impl Live {
     }
 
     /// Why it cannot.
+    fn needs_sign_in(&self) -> bool {
+        self.signin || self.conn.as_ref().is_some_and(Conn::signin)
+    }
+
     fn reason(&self) -> String {
         self.error.clone().unwrap_or_else(|| "its process exited or the connection was lost".into())
     }
@@ -564,7 +598,7 @@ impl Live {
 
 fn status_of(name: &str, live: Option<&Live>) -> ServerStatus {
     let Some(l) = live else { return ServerStatus { name: name.into(), status: Status::Connecting, tools: Vec::new() } };
-    let status = if l.signin {
+    let status = if l.needs_sign_in() {
         Status::NeedsSignIn
     } else if l.dead() {
         Status::Failed(l.reason())
@@ -624,7 +658,7 @@ impl Default for Mcp {
 impl Mcp {
     pub fn new(servers: Vec<Server>) -> Mcp {
         let live = servers.iter().map(|_| Cell::default()).collect();
-        Mcp { servers, live, retry: RETRY_AFTER }
+        Mcp { servers, live, retry: RETRY_AFTER, credentials: None }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -663,11 +697,19 @@ impl Mcp {
             if cell.get().is_some() || denied(&s.name, None) {
                 continue;
             }
-            let s = s.clone();
+            let (s, creds) = (s.clone(), self.credentials.clone());
             tokio::spawn(async move {
-                boot(&cell, &s).await;
+                boot(&cell, &s, creds.as_deref()).await;
             });
         }
+    }
+
+    /// How long a failed `s` waits for another start: not at all when it
+    /// needed a sign-in and one is stored now.
+    fn retry_after(&self, s: &Server, slot: &Cell) -> Duration {
+        let signin = slot.current(None).get().is_some_and(Live::needs_sign_in);
+        let stored = || self.credentials.as_deref().zip(s.config.url.as_deref()).is_some_and(|(c, u)| crate::mcp_oauth::load(c, &s.name, u).ok().flatten().is_some());
+        if signin && stored() { Duration::ZERO } else { self.retry }
     }
 
     /// Starts every server `denied` does not cover whole — a deny rule's,
@@ -679,9 +721,9 @@ impl Mcp {
     async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<Vec<Started>, String> {
         let start_all = async {
             let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, None)).map(|(s, slot)| -> crate::engine::BoxFuture<'_, Started> {
-                let cell = slot.current(Some(self.retry));
+                let cell = slot.current(Some(self.retry_after(s, slot)));
                 Box::pin(async move {
-                    boot(&cell, s).await;
+                    boot(&cell, s, self.credentials.as_deref()).await;
                     cell
                 })
             });
@@ -779,6 +821,9 @@ impl Mcp {
             return (format!("there is no MCP server named {server:?} — the servers are {}", names.join(", ")), true);
         };
         let Some(conn) = l.conn.as_ref().filter(|c| !c.dead()) else {
+            if l.needs_sign_in() {
+                return (needs_sign_in(&server), true);
+            }
             let wait = self.retry.saturating_sub(l.at.elapsed()).as_secs();
             return (format!("the MCP server {server} is not running: {} (it is tried again by a call in {wait}s)", l.reason()), true);
         };
@@ -801,6 +846,7 @@ impl Mcp {
         };
         match answer {
             Ok(r) => render(&r),
+            Err(_) if conn.signin() => (needs_sign_in(&server), true),
             Err(e) => (format!("the MCP tool {server}:{tool} failed: {e}"), true),
         }
     }
@@ -833,8 +879,8 @@ fn render(r: &Value) -> (String, bool) {
 }
 
 /// Connects, initializes and lists the tools, following `nextCursor`.
-async fn start(s: &Server) -> Result<(Conn, (Vec<Tool>, Option<String>)), String> {
-    let conn = Conn::open(&s.config, &s.cwd)?;
+async fn start(s: &Server, credentials: Option<&Path>) -> Result<(Conn, (Vec<Tool>, Option<String>)), String> {
+    let conn = Conn::open(&s.config, &s.cwd, &s.name, credentials)?;
     conn.request("initialize", json!({"protocolVersion": MCP_VERSION, "capabilities": {}, "clientInfo": {"name": "krowk", "version": env!("CARGO_PKG_VERSION")}})).await?;
     conn.notify("notifications/initialized").await?;
     let (mut tools, mut listed, mut big, mut unnamed) = (Vec::new(), 0usize, 0usize, 0usize);
@@ -897,7 +943,33 @@ enum Conn {
     Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, reaped: AtomicBool, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
-    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64, lost: AtomicBool },
+    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64, lost: AtomicBool, auth: Option<Auth> },
+}
+
+/// A remote server's stored sign-in, used on each request (R-MCP-10).
+struct Auth {
+    name: String,
+    url: String,
+    credentials: PathBuf,
+    /// The last request found the server wanting a sign-in.
+    signin: AtomicBool,
+    /// A token was sent before: its disappearing means a logout.
+    had: AtomicBool,
+}
+
+impl Auth {
+    async fn token(&self, client: &reqwest::Client, refused: Option<&str>) -> Result<Option<String>, String> {
+        match crate::mcp_oauth::bearer(client, &self.credentials, &self.name, &self.url, refused).await {
+            Ok(crate::mcp_oauth::Bearer::Token(t)) => Ok(Some(t)),
+            Ok(crate::mcp_oauth::Bearer::SignIn) => Ok(None),
+            Err(e) => Err(e.message),
+        }
+    }
+}
+
+/// What a call to a server that needs sign-in returns (R-MCP-11).
+fn needs_sign_in(name: &str) -> String {
+    format!("{name} needs sign-in: run `krowk mcp login {name}` or open /mcp")
 }
 
 struct StdioIo {
@@ -932,12 +1004,14 @@ impl Drop for StdioIo {
 }
 
 impl Conn {
-    fn open(c: &ServerConfig, cwd: &Path) -> Result<Conn, String> {
+    fn open(c: &ServerConfig, cwd: &Path, name: &str, credentials: Option<&Path>) -> Result<Conn, String> {
         let next = AtomicU64::new(1);
         match (c.kind.as_deref(), &c.command, &c.url) {
             (Some("http" | "streamable-http") | None, None, Some(url)) => {
                 let client = crate::http::client().map_err(|e| e.message)?;
-                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next, lost: AtomicBool::new(false) })
+                // A header of the person's own named Authorization wins.
+                let auth = credentials.filter(|_| !c.headers.keys().any(|k| k.eq_ignore_ascii_case("authorization"))).map(|p| Auth { name: name.into(), url: url.clone(), credentials: p.into(), signin: AtomicBool::new(false), had: AtomicBool::new(false) });
+                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next, lost: AtomicBool::new(false), auth })
             }
             (Some("sse"), ..) => Err("the SSE transport is not supported; use a stdio or streamable-HTTP server".into()),
             (Some("stdio") | None, Some(cmd), _) => {
@@ -988,6 +1062,11 @@ impl Conn {
         }
     }
 
+    /// Whether the last request found the server wanting a sign-in.
+    fn signin(&self) -> bool {
+        matches!(self, Conn::Http { auth: Some(a), .. } if a.signin.load(Ordering::Acquire))
+    }
+
     /// Lets go of the connection when its session does: a stdio server's
     /// group is stopped without waiting on a call that holds it, and an
     /// HTTP session with an id is ended with DELETE.
@@ -999,9 +1078,14 @@ impl Conn {
                     kill_group(*pid);
                 }
             }
-            Conn::Http { client, url, headers, session, .. } => {
+            Conn::Http { client, url, headers, session, auth, .. } => {
                 let Some(id) = session.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
                 let mut req = client.delete(url).header("mcp-session-id", id).header("mcp-protocol-version", MCP_VERSION);
+                if let Some(a) = auth
+                    && let Ok(Some(t)) = a.token(client, None).await
+                {
+                    req = req.bearer_auth(t);
+                }
                 for (k, v) in headers {
                     req = req.header(k, v);
                 }
@@ -1097,10 +1181,42 @@ impl Conn {
     /// One POST; the answer to `id`, from a JSON body or from an SSE stream
     /// read only as far as the answer, since a server may keep it open.
     async fn post(&self, msg: &Value, id: Option<u64>) -> Result<Option<Value>, String> {
+        let Conn::Http { client, auth, lost, .. } = self else { unreachable!("post is HTTP's") };
+        let Some(a) = auth else { return self.post_once(msg, id, None).await };
+        let token = a.token(client, None).await?;
+        if token.is_none() && a.had.swap(false, Ordering::AcqRel) {
+            // Its sign-in was removed while this connection held it: the
+            // connection is let go, and the next call starts afresh.
+            a.signin.store(true, Ordering::Release);
+            lost.store(true, Ordering::Release);
+            return Err("its sign-in was removed".into());
+        }
+        let mut r = self.post_once(msg, id, token.as_deref()).await;
+        // A 401 on a token: one refresh, one retry.
+        if let (Some(t), Err(e)) = (&token, &r)
+            && e.starts_with("HTTP 401")
+        {
+            r = match a.token(client, Some(t)).await? {
+                Some(t2) => self.post_once(msg, id, Some(&t2)).await,
+                None => r,
+            };
+        }
+        let wants = r.as_ref().err().is_some_and(|e| e.starts_with("HTTP 401"));
+        a.signin.store(wants, Ordering::Release);
+        if token.is_some() && !wants {
+            a.had.store(true, Ordering::Release);
+        }
+        r
+    }
+
+    async fn post_once(&self, msg: &Value, id: Option<u64>, bearer: Option<&str>) -> Result<Option<Value>, String> {
         let Conn::Http { client, url, headers, session, lost, .. } = self else { unreachable!("post is HTTP's") };
         let mut req = client.post(url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").header("mcp-protocol-version", MCP_VERSION);
         for (k, v) in headers {
             req = req.header(k, v);
+        }
+        if let Some(t) = bearer {
+            req = req.bearer_auth(t);
         }
         let sent = session.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some(s) = &sent {

@@ -77,6 +77,61 @@ pub fn remove(credentials: &Path, name: &str) -> Result<bool, EngineError> {
     .map_err(storage)
 }
 
+/// What a call is to send: a token, or nothing because the server needs a
+/// sign-in (none stored, or the server refused to refresh it).
+pub enum Bearer {
+    Token(String),
+    SignIn,
+}
+
+/// The access token for a call to `name` (R-MCP-10). One within a minute of
+/// expiry, or the `refused` one (a `401` answered it), is refreshed first:
+/// under the credentials lock, re-reading the file, since refresh tokens
+/// rotate and another krowk may have spent the one read before. The refresh
+/// sends the same `resource` as the sign-in, and writes nothing if the
+/// sign-in was removed meanwhile (R-MCP-12).
+pub async fn bearer(http: &reqwest::Client, credentials: &Path, name: &str, url: &str, refused: Option<&str>) -> Result<Bearer, EngineError> {
+    let usable = |s: &Stored| s.fresh(krowk_store::now_ms()) && Some(s.access_token.as_str()) != refused;
+    match load(credentials, name, url)? {
+        None => return Ok(Bearer::SignIn),
+        Some(s) if usable(&s) => return Ok(Bearer::Token(s.access_token)),
+        Some(_) => {}
+    }
+    let until = tokio::time::Instant::now() + krowk_api::creds::LOCK_WAIT;
+    let _lock = loop {
+        if let Some(l) = krowk_api::creds::try_lock(credentials).map_err(fail)? {
+            break l;
+        }
+        if tokio::time::Instant::now() > until {
+            return Err(fail(krowk_api::creds::busy(credentials)));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    let Some(cur) = load(credentials, name, url)? else { return Ok(Bearer::SignIn) };
+    if usable(&cur) {
+        return Ok(Bearer::Token(cur.access_token));
+    }
+    let Some(refresh) = cur.refresh_token.clone() else { return Ok(Bearer::SignIn) };
+    trusted(&cur.token_endpoint)?;
+    let (status, v) = post_form(http, &cur.token_endpoint, &[("grant_type", "refresh_token"), ("refresh_token", &refresh), ("client_id", &cur.client_id), ("resource", url)]).await?;
+    if !(200..300).contains(&status) {
+        // A refused refresh token is no use again; anything else (a 5xx) may pass.
+        return if matches!(status, 400 | 401 | 403) { Ok(Bearer::SignIn) } else { Err(fail(format!("{name}'s authorization server answered the token refresh with HTTP {status}"))) };
+    }
+    let e = Endpoints { issuer: cur.issuer.clone(), token: cur.token_endpoint.clone(), ..Endpoints::default() };
+    let fresh = stored_from(&v, &e, &cur.client_id, &cur.scope, Some(refresh))?;
+    let token = fresh.access_token.clone();
+    let kept = krowk_api::creds::modify_locked(credentials, |f: &mut File| match f.mcp.get_mut(name).filter(|e| same_url(&e.url, url)) {
+        Some(e) => {
+            e.stored = fresh;
+            Ok((true, true))
+        }
+        None => Ok((false, false)),
+    })
+    .map_err(storage)?;
+    Ok(if kept { Bearer::Token(token) } else { Bearer::SignIn })
+}
+
 /// `https(what, url)`: the endpoint, or the failed check by name.
 fn https(what: &str, url: &str) -> Result<url::Url, EngineError> {
     trusted(url).map_err(|_| fail(format!("the {what} {url} is not https — krowk signs in to a server only over https (the https check on every metadata, authorization and token endpoint)")))

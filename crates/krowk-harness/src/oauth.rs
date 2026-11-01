@@ -89,7 +89,7 @@ impl std::fmt::Debug for Stored {
 }
 
 impl Stored {
-    fn fresh(&self, at_ms: i64) -> bool {
+    pub(crate) fn fresh(&self, at_ms: i64) -> bool {
         !self.access_token.is_empty() && self.expires_at_ms.is_none_or(|e| e - EXPIRY_MARGIN_MS > at_ms)
     }
 

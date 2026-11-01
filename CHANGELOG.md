@@ -35,7 +35,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
   https and the server's declared resource must match its URL. Tokens go in
   their own `mcp` section of the credentials file (`0600`), a sign-in that
   fails or is abandoned writes nothing, and `krowk mcp logout <name>` removes
-  it. The agent does not send the tokens yet; that follows.
+  it.
+
+- **krowk's agent now calls signed-in MCP servers with their tokens.** After
+  `krowk mcp login mobbin`, `mcp_call` sends the stored bearer. A token
+  within a minute of expiry, or one the server answers `401`, is refreshed
+  once under the credentials file's lock (re-read first, so two krowks
+  sharing a rotating refresh token both end with a valid one) and the call
+  is retried. When there is no sign-in, or the refresh is refused, the
+  server shows `needs sign-in` and the model gets
+  ``mobbin needs sign-in: run `krowk mcp login mobbin` or open /mcp``
+  instead of an opaque error; krowk never opens a browser mid-turn. Signing
+  a server out closes its connection, and a sign-in removed by another krowk
+  is noticed on the next call.
 
 ### Changed
 

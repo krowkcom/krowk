@@ -508,6 +508,17 @@ impl Host {
         }
     }
 
+    /// Signs the session's MCP server out (`mcp::Pool::sign_out`): its
+    /// tokens are removed and its connection closed. False when the session
+    /// has no such server.
+    pub async fn mcp_sign_out(&self, session_id: &str, server: &str) -> Result<bool, EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_out(server).await,
+            None => Ok(false),
+        }
+    }
+
     /// Keeps an idle session's backend process this long instead of
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {
@@ -841,7 +852,7 @@ impl Shared {
     /// The session's MCP pool, made on first need and marked used.
     fn mcp_pool(&self, session_id: &str) -> Arc<crate::mcp::Pool> {
         let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = mcp.entry(session_id.to_string()).or_insert_with(|| (Arc::default(), Instant::now()));
+        let entry = mcp.entry(session_id.to_string()).or_insert_with(|| (Arc::new(crate::mcp::Pool::default().with_credentials(self.cfg.credentials.clone())), Instant::now()));
         entry.1 = Instant::now();
         entry.0.clone()
     }
