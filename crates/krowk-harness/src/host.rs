@@ -796,7 +796,15 @@ impl Shared {
     /// turn just read; a session that has never had a server keeps no pool,
     /// and a backend's turn (`native` false) uses none.
     async fn adopt_mcp(&self, session_id: &str, compat: &mut compat::Compat, native: bool) {
-        if !native || compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session_id) {
+        if !native {
+            // A session moved to a backend keeps no connections.
+            let pool = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).remove(session_id);
+            if let Some((pool, _)) = pool {
+                pool.close().await;
+            }
+            return;
+        }
+        if compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session_id) {
             return;
         }
         compat.mcp = Arc::new(self.mcp_pool(session_id).adopt(compat.mcp.servers().to_vec()).await);
