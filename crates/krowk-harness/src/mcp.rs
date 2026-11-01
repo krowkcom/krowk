@@ -47,6 +47,14 @@
 //! and its subagents share the servers, and a subagent that reaches one
 //! server must neither start the others nor leave them unstarted for its
 //! parent.
+//!
+//! **Across turns.** A session's servers stay connected (`Pool`): each
+//! turn re-reads the configuration and adopts it, keeping a server whose
+//! configuration and working directory are as they were, restarting one
+//! that changed or failed, and closing one that is gone, untrusted or whose
+//! `.mcp.json` no longer matches its digest, before the turn's first model
+//! call. The host closes the pool with the session's idle sweep and at
+//! shutdown.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -66,6 +74,9 @@ const MCP_VERSION: &str = "2025-06-18";
 /// A server that has not answered `initialize` and `tools/list` by then is
 /// reported as down, so one slow server cannot hold every search.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// How long ending an HTTP session may take: a server that does not answer
+/// is let go of.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 /// How long one tool call may run.
 const CALL_TIMEOUT: Duration = Duration::from_secs(600);
 /// Search returns at most this many tools, schemas and all.
@@ -382,7 +393,56 @@ pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 pub struct Mcp {
     servers: Vec<Server>,
     /// One a server, in `servers`' order.
-    live: Vec<tokio::sync::OnceCell<Live>>,
+    live: Vec<Cell>,
+}
+
+/// One server's connection, set once it has started. Shared with the
+/// session's `Pool`, which keeps it for the next turn.
+type Cell = std::sync::Arc<tokio::sync::OnceCell<Live>>;
+
+/// A session's MCP connections, kept open across its turns (D5). Each turn
+/// `adopt`s the servers it just discovered.
+#[derive(Default)]
+pub struct Pool {
+    kept: std::sync::Mutex<Vec<(Server, Cell)>>,
+}
+
+impl Pool {
+    /// The turn's `Mcp` over `servers`: a server unchanged since the last
+    /// turn keeps its connection, one changed (its configuration or where
+    /// it starts) or that failed or was cut off starts again on first use,
+    /// and every connection left over — a server removed, untrusted, or
+    /// replaced — is closed before this returns.
+    pub async fn adopt(&self, servers: Vec<Server>) -> Mcp {
+        let mut old: Vec<Option<(Server, Cell)>> = std::mem::take(&mut *self.kept.lock().unwrap_or_else(|e| e.into_inner())).into_iter().map(Some).collect();
+        let mut live = Vec::with_capacity(servers.len());
+        for s in &servers {
+            let same = old.iter().position(|o| o.as_ref().is_some_and(|(k, cell)| k.name == s.name && k.config == s.config && k.cwd == s.cwd && !cell.get().is_some_and(Live::dead)));
+            live.push(same.and_then(|i| old[i].take()).map_or_else(Cell::default, |(_, cell)| cell));
+        }
+        *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = servers.iter().cloned().zip(live.iter().cloned()).collect();
+        close_all(old.into_iter().flatten().map(|(_, c)| c).collect()).await;
+        Mcp { servers, live }
+    }
+
+    /// Closes every connection: processes stopped, HTTP sessions ended.
+    pub async fn close(&self) {
+        let kept = std::mem::take(&mut *self.kept.lock().unwrap_or_else(|e| e.into_inner()));
+        close_all(kept.into_iter().map(|(_, c)| c).collect()).await;
+    }
+}
+
+async fn close_all(cells: Vec<Cell>) {
+    let closes = cells.iter().filter_map(|c| c.get()).filter_map(|l| l.conn.as_ref()).map(|c| -> crate::engine::BoxFuture<'_, ()> { Box::pin(c.close()) });
+    crate::native::join_all(closes.collect()).await;
+}
+
+impl Live {
+    /// Whether it cannot serve another turn: it never started, or its
+    /// process was cut off or exited.
+    fn dead(&self) -> bool {
+        self.conn.as_ref().is_none_or(Conn::dead)
+    }
 }
 
 impl std::fmt::Debug for Mcp {
@@ -428,7 +488,7 @@ pub fn arguments(input: &Value) -> Value {
 
 impl Mcp {
     pub fn new(servers: Vec<Server>) -> Mcp {
-        let live = servers.iter().map(|_| tokio::sync::OnceCell::new()).collect();
+        let live = servers.iter().map(|_| Cell::default()).collect();
         Mcp { servers, live }
     }
 
@@ -680,10 +740,10 @@ enum Conn {
     /// at a time. A request cut off by an interrupt may leave half a line
     /// either way, so the connection is not used again (`cut`).
     /// `junked` when it was stopped for writing what is not JSON-RPC.
-    Stdio { io: tokio::sync::Mutex<StdioIo>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
+    Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, reaped: AtomicBool, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
-    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64 },
+    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64, lost: AtomicBool },
 }
 
 struct StdioIo {
@@ -696,13 +756,19 @@ struct StdioIo {
 
 impl StdioIo {
     fn kill(&mut self) {
-        #[cfg(unix)]
-        if let Some(pid) = self.child.id() {
-            // The group the server leads (`process_group(0)` below).
-            unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
-        }
+        kill_group(self.child.id());
         let _ = self.child.start_kill();
     }
+}
+
+/// Stops the group a stdio server leads (`process_group(0)` below).
+fn kill_group(pid: Option<u32>) {
+    #[cfg(unix)]
+    if let Some(pid) = pid {
+        unsafe { libc::kill(-(pid as libc::pid_t), libc::SIGKILL) };
+    }
+    #[cfg(not(unix))]
+    let _ = pid;
 }
 
 impl Drop for StdioIo {
@@ -717,7 +783,7 @@ impl Conn {
         match (c.kind.as_deref(), &c.command, &c.url) {
             (Some("http" | "streamable-http") | None, None, Some(url)) => {
                 let client = crate::http::client().map_err(|e| e.message)?;
-                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next })
+                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next, lost: AtomicBool::new(false) })
             }
             (Some("sse"), ..) => Err("the SSE transport is not supported; use a stdio or streamable-HTTP server".into()),
             (Some("stdio") | None, Some(cmd), _) => {
@@ -741,11 +807,49 @@ impl Conn {
                     .kill_on_drop(true)
                     .spawn()
                     .map_err(|e| format!("{cmd} could not be started: {e}"))?;
+                let pid = child.id();
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, child }), next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
+                Ok(Conn::Stdio { io: Box::new(tokio::sync::Mutex::new(StdioIo { stdin, stdout, child })), pid, reaped: AtomicBool::new(false), next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
             }
             (kind, ..) => Err(format!("it names neither a command nor a url for its transport ({})", kind.unwrap_or("stdio"))),
+        }
+    }
+
+    /// Whether a stdio server was cut off, stopped or has exited: it is not
+    /// used again, and the next turn starts it afresh.
+    /// An HTTP server that no longer knows its session (404) counts too.
+    fn dead(&self) -> bool {
+        match self {
+            Conn::Stdio { cut, io, reaped, .. } => {
+                let exited = io.try_lock().is_ok_and(|mut io| io.child.try_wait().map_or(true, |s| s.is_some()));
+                // An exited server is reaped: its pid is no longer ours to signal.
+                reaped.fetch_or(exited, Ordering::AcqRel);
+                cut.load(Ordering::Acquire) || exited
+            }
+            Conn::Http { lost, .. } => lost.load(Ordering::Acquire),
+        }
+    }
+
+    /// Lets go of the connection when its session does: a stdio server's
+    /// group is stopped without waiting on a call that holds it, and an
+    /// HTTP session with an id is ended with DELETE.
+    async fn close(&self) {
+        match self {
+            Conn::Stdio { pid, cut, reaped, .. } => {
+                cut.store(true, Ordering::Release);
+                if !reaped.load(Ordering::Acquire) {
+                    kill_group(*pid);
+                }
+            }
+            Conn::Http { client, url, headers, session, .. } => {
+                let Some(id) = session.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+                let mut req = client.delete(url).header("mcp-session-id", id).header("mcp-protocol-version", MCP_VERSION);
+                for (k, v) in headers {
+                    req = req.header(k, v);
+                }
+                let _ = tokio::time::timeout(CLOSE_TIMEOUT, req.send()).await;
+            }
         }
     }
 
@@ -836,12 +940,13 @@ impl Conn {
     /// One POST; the answer to `id`, from a JSON body or from an SSE stream
     /// read only as far as the answer, since a server may keep it open.
     async fn post(&self, msg: &Value, id: Option<u64>) -> Result<Option<Value>, String> {
-        let Conn::Http { client, url, headers, session, .. } = self else { unreachable!("post is HTTP's") };
+        let Conn::Http { client, url, headers, session, lost, .. } = self else { unreachable!("post is HTTP's") };
         let mut req = client.post(url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").header("mcp-protocol-version", MCP_VERSION);
         for (k, v) in headers {
             req = req.header(k, v);
         }
-        if let Some(s) = session.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let sent = session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(s) = &sent {
             req = req.header("mcp-session-id", s);
         }
         let mut resp = req.body(msg.to_string()).send().await.map_err(|e| e.to_string())?;
@@ -849,6 +954,11 @@ impl Conn {
             *session.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.to_string());
         }
         let status = resp.status();
+        // 404 on a session id: the server forgot it (it restarted); the
+        // next turn starts the server afresh.
+        if sent.is_some() && status == reqwest::StatusCode::NOT_FOUND {
+            lost.store(true, Ordering::Release);
+        }
         let sse = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
         // An SSE stream is parsed as it arrives and only its unfinished
         // line is kept, so the cap is per event, however long the stream;
