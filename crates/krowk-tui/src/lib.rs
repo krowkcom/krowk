@@ -127,6 +127,11 @@ use term::Term;
 use tokio::sync::{broadcast, mpsc};
 use tokio::time::Instant;
 
+/// How often `/mcp` asks the host after its servers while it is open; the
+/// beats are counted from the first, so keys never push the next one back.
+const MCP_POLL: Duration = Duration::from_secs(1);
+static MCP_BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
 /// The shortest time between two frames: 60 per second at most (R-PERF-4),
 /// with a millisecond to spare, so a frame that reaches the terminal late
 /// and the one after it on time still never make 61 in a second.
@@ -134,10 +139,6 @@ pub const FRAME: Duration = Duration::from_millis(17);
 /// A model call silent for this long gets a connectivity probe.
 const STALL: Duration = Duration::from_millis(700);
 /// How long an approval request is on screen before a key answers it.
-/// How often `/mcp` asks the host after its servers while it is open; the
-/// beats are counted from the first, so keys never push the next one back.
-const MCP_POLL: Duration = Duration::from_secs(1);
-static MCP_BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);

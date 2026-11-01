@@ -647,17 +647,20 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
         }
         ClientFrame::McpStatus { id: cmd_id, session_id } => {
             let mut s = state.borrow_mut();
-            let servers = s.hubs.get(&session_id).map(|h| h.host.mcp_servers(&session_id)).unwrap_or_default();
+            let servers = s.mcp_hosts(&session_id).iter().map(|h| h.mcp_servers(&session_id)).find(|v| !v.is_empty()).unwrap_or_default();
             s.send(id, "", control(&ServerFrame::Mcp { id: cmd_id, servers }));
         }
         ClientFrame::McpReconnect { id: cmd_id, session_id, server } => {
-            let host = state.borrow().hubs.get(&session_id).map(|h| h.host.clone());
+            let hosts = state.borrow().mcp_hosts(&session_id);
             let state = state.clone();
             tokio::task::spawn_local(async move {
-                let found = match host {
-                    Some(h) => h.mcp_reconnect(&session_id, &server).await,
-                    None => false,
-                };
+                let mut found = false;
+                for h in hosts {
+                    if h.mcp_reconnect(&session_id, &server).await {
+                        found = true;
+                        break;
+                    }
+                }
                 let error = (!found).then(|| error_info(&EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))));
                 state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
             });
@@ -1062,6 +1065,14 @@ impl State {
     /// they outlive the client that started them, and the turns of the
     /// session that run on another host since. A count dropping to none
     /// tidies again.
+    /// The hosts that may hold `session`'s MCP pool: the one its hub runs
+    /// on, then the rest (a hub a following client made is on that client's
+    /// host, and the turns ran on another).
+    fn mcp_hosts(&self, session: &str) -> Vec<Rc<Host>> {
+        let first = self.hubs.get(session).map(|h| h.host.clone());
+        first.into_iter().chain(self.hosts.values().cloned()).collect()
+    }
+
     fn tidy(&mut self) {
         let hosts = &self.hosts;
         self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || hosts.values().any(|x| x.background_of(id) > 0));
