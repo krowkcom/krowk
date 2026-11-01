@@ -718,7 +718,7 @@ enum Conn {
     Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
-    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64 },
+    Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64, lost: AtomicBool },
 }
 
 struct StdioIo {
@@ -758,7 +758,7 @@ impl Conn {
         match (c.kind.as_deref(), &c.command, &c.url) {
             (Some("http" | "streamable-http") | None, None, Some(url)) => {
                 let client = crate::http::client().map_err(|e| e.message)?;
-                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next })
+                Ok(Conn::Http { client, url: url.clone(), headers: c.headers.clone(), session: std::sync::Mutex::new(None), next, lost: AtomicBool::new(false) })
             }
             (Some("sse"), ..) => Err("the SSE transport is not supported; use a stdio or streamable-HTTP server".into()),
             (Some("stdio") | None, Some(cmd), _) => {
@@ -793,8 +793,12 @@ impl Conn {
 
     /// Whether a stdio server was cut off, stopped or has exited: it is not
     /// used again, and the next turn starts it afresh.
+    /// An HTTP server that no longer knows its session (404) counts too.
     fn dead(&self) -> bool {
-        matches!(self, Conn::Stdio { cut, .. } if cut.load(Ordering::Acquire))
+        match self {
+            Conn::Stdio { cut, io, .. } => cut.load(Ordering::Acquire) || io.try_lock().is_ok_and(|mut io| io.child.try_wait().map_or(true, |s| s.is_some())),
+            Conn::Http { lost, .. } => lost.load(Ordering::Acquire),
+        }
     }
 
     /// Lets go of the connection when its session does: a stdio server's
@@ -904,12 +908,13 @@ impl Conn {
     /// One POST; the answer to `id`, from a JSON body or from an SSE stream
     /// read only as far as the answer, since a server may keep it open.
     async fn post(&self, msg: &Value, id: Option<u64>) -> Result<Option<Value>, String> {
-        let Conn::Http { client, url, headers, session, .. } = self else { unreachable!("post is HTTP's") };
+        let Conn::Http { client, url, headers, session, lost, .. } = self else { unreachable!("post is HTTP's") };
         let mut req = client.post(url).header("content-type", "application/json").header("accept", "application/json, text/event-stream").header("mcp-protocol-version", MCP_VERSION);
         for (k, v) in headers {
             req = req.header(k, v);
         }
-        if let Some(s) = session.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let sent = session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(s) = &sent {
             req = req.header("mcp-session-id", s);
         }
         let mut resp = req.body(msg.to_string()).send().await.map_err(|e| e.to_string())?;
@@ -917,6 +922,11 @@ impl Conn {
             *session.lock().unwrap_or_else(|e| e.into_inner()) = Some(s.to_string());
         }
         let status = resp.status();
+        // 404 on a session id: the server forgot it (it restarted); the
+        // next turn starts the server afresh.
+        if sent.is_some() && status == reqwest::StatusCode::NOT_FOUND {
+            lost.store(true, Ordering::Release);
+        }
         let sse = resp.headers().get("content-type").and_then(|v| v.to_str().ok()).is_some_and(|t| t.starts_with("text/event-stream"));
         // An SSE stream is parsed as it arrives and only its unfinished
         // line is kept, so the cap is per event, however long the stream;
