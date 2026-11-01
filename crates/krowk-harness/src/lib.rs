@@ -87,6 +87,7 @@ pub mod keys;
 pub mod log;
 pub mod mcp;
 pub mod native;
+pub mod mcp_oauth;
 pub mod oauth;
 pub mod openai;
 pub mod paste_guard;

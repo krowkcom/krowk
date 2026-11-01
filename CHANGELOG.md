@@ -9,6 +9,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`krowk mcp login <name>` signs in to an MCP server that asks for
+  OAuth.** Hosted servers such as Mobbin answer `401` and want a browser
+  sign-in, which a static header cannot give. krowk follows the server's own
+  metadata (on whatever host it names), registers itself as a public client,
+  and signs in with PKCE; the browser answers a one-shot listener on
+  `127.0.0.1`, or with `--no-browser` (the default over SSH) krowk prints the
+  page and reads the address your browser lands on. Every endpoint must be
+  https and the server's declared resource must match its URL. Tokens go in
+  their own `mcp` section of the credentials file (`0600`), a sign-in that
+  fails or is abandoned writes nothing, and `krowk mcp logout <name>` removes
+  it. The agent does not send the tokens yet; that follows.
+
 ### Changed
 
 - **MCP servers stay connected across a session's turns.** krowk's own

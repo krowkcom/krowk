@@ -1402,6 +1402,44 @@ stdout:
       ]
     },
     {
+      "name": "mcp",
+      "summary": "The MCP servers krowk's own agent uses",
+      "subcommands": [
+        {
+          "name": "login",
+          "usage": "krowk mcp login <name> [--no-browser]",
+          "summary": "Sign in to a remote MCP server that asks for OAuth",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name in your MCP config",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "no-browser",
+              "type": "bool",
+              "default": "false",
+              "usage": "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display"
+            }
+          ]
+        },
+        {
+          "name": "logout",
+          "usage": "krowk mcp logout <name>",
+          "summary": "Forget a server's sign-in",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name",
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "worktrees",
       "summary": "The git worktrees krowk made for agents, across repositories",
       "subcommands": [
@@ -3066,6 +3104,44 @@ tty:
           "name": "remove",
           "usage": "krowk devices remove NAME",
           "summary": "Take a device off your list and rotate your key"
+        }
+      ]
+    },
+    {
+      "name": "mcp",
+      "summary": "The MCP servers krowk's own agent uses",
+      "subcommands": [
+        {
+          "name": "login",
+          "usage": "krowk mcp login <name> [--no-browser]",
+          "summary": "Sign in to a remote MCP server that asks for OAuth",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name in your MCP config",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "no-browser",
+              "type": "bool",
+              "default": "false",
+              "usage": "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display"
+            }
+          ]
+        },
+        {
+          "name": "logout",
+          "usage": "krowk mcp logout <name>",
+          "summary": "Forget a server's sign-in",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The server's name",
+              "required": true
+            }
+          ]
         }
       ]
     },
