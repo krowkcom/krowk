@@ -37,7 +37,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let config = if dashed {
         if head.len() != 1 {
-            return Err(fail("bad_argument", format!("a local server takes only its name before `--`, and got `{}`", head.join(" "))));
+            return Err(fail("bad_argument", "a local server takes only its name before `--`: `krowk mcp add files -- npx -y some-server`"));
         }
         let Some((program, rest)) = command.split_first() else {
             return Err(fail("bad_argument", "name the command after `--`: `krowk mcp add files -- npx -y some-server`"));

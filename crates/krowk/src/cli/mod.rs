@@ -26,8 +26,8 @@ mod prompt;
 #[cfg(all(feature = "harness", unix))]
 mod relay;
 #[cfg(feature = "harness")]
-#[cfg(feature = "harness")]
 mod mcp;
+#[cfg(feature = "harness")]
 mod providers;
 #[cfg(feature = "sessions")]
 mod sessions;
