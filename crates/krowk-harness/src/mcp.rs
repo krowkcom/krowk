@@ -715,7 +715,7 @@ enum Conn {
     /// at a time. A request cut off by an interrupt may leave half a line
     /// either way, so the connection is not used again (`cut`).
     /// `junked` when it was stopped for writing what is not JSON-RPC.
-    Stdio { io: tokio::sync::Mutex<StdioIo>, pid: Option<u32>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
+    Stdio { io: Box<tokio::sync::Mutex<StdioIo>>, pid: Option<u32>, next: AtomicU64, cut: AtomicBool, junked: AtomicBool },
     /// Streamable HTTP: each message a POST, answered with JSON or an SSE
     /// stream, the session id carried from `initialize` on.
     Http { client: reqwest::Client, url: String, headers: BTreeMap<String, String>, session: std::sync::Mutex<Option<String>>, next: AtomicU64 },
@@ -785,7 +785,7 @@ impl Conn {
                 let pid = child.id();
                 let stdin = child.stdin.take().ok_or("no stdin")?;
                 let stdout = BufReader::new(child.stdout.take().ok_or("no stdout")?);
-                Ok(Conn::Stdio { io: tokio::sync::Mutex::new(StdioIo { stdin, stdout, child }), pid, next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
+                Ok(Conn::Stdio { io: Box::new(tokio::sync::Mutex::new(StdioIo { stdin, stdout, child })), pid, next, cut: AtomicBool::new(false), junked: AtomicBool::new(false) })
             }
             (kind, ..) => Err(format!("it names neither a command nor a url for its transport ({})", kind.unwrap_or("stdio"))),
         }

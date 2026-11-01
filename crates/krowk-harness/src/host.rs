@@ -793,6 +793,26 @@ impl Shared {
         }
     }
 
+    /// Puts the session's kept MCP connections under the configuration the
+    /// turn just read; a session that has never had a server keeps no pool,
+    /// and a backend's turn (`native` false) uses none.
+    async fn adopt_mcp(&self, session_id: &str, compat: &mut compat::Compat, native: bool) {
+        if !native || compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session_id) {
+            return;
+        }
+        compat.mcp = Arc::new(self.mcp_pool(session_id).adopt(compat.mcp.servers().to_vec()).await);
+    }
+
+    /// Marks the session's backend and MCP connections used: a turn ended.
+    fn touch(&self, session_id: &str) {
+        if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(session_id) {
+            b.used = Instant::now();
+        }
+        if let Some((_, used)) = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).get_mut(session_id) {
+            *used = Instant::now();
+        }
+    }
+
     /// The session's MCP pool, made on first need and marked used.
     fn mcp_pool(&self, session_id: &str) -> Arc<crate::mcp::Pool> {
         let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
@@ -1273,9 +1293,7 @@ impl Shared {
         // The session's MCP connections, kept from its earlier turns, under
         // the configuration just read: closed, restarted or kept before the
         // turn's first model call (D5). A backend runs none of them.
-        if spawns && !(compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&session_id)) {
-            compat.mcp = Arc::new(self.mcp_pool(&session_id).adopt(compat.mcp.servers().to_vec()).await);
-        }
+        self.adopt_mcp(&session_id, &mut compat, spawns).await;
         let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.clone()).or_default().clone();
         let plan = TurnPlan {
             log,
@@ -1582,12 +1600,7 @@ impl Shared {
         steers.put_back(notes);
         let unread_steers = unread.into_iter().map(|s| s.text).collect();
         self.approvals.forget_session(&session_id);
-        if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
-            b.used = Instant::now();
-        }
-        if let Some((_, used)) = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
-            *used = Instant::now();
-        }
+        self.touch(&session_id);
 
         let (status, mut error) = match &outcome {
             Ok(TurnEnd::Completed) => (TurnStatus::Completed, None),
