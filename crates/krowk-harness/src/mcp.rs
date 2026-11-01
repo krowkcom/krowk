@@ -51,10 +51,18 @@
 //! **Across turns.** A session's servers stay connected (`Pool`): each
 //! turn re-reads the configuration and adopts it, keeping a server whose
 //! configuration and working directory are as they were, restarting one
-//! that changed or failed, and closing one that is gone, untrusted or whose
+//! that changed, and closing one that is gone, untrusted or whose
 //! `.mcp.json` no longer matches its digest, before the turn's first model
 //! call. The host closes the pool with the session's idle sweep and at
 //! shutdown.
+//!
+//! **Status.** Each server is `connecting`, `connected`, `needs sign-in` (an
+//! HTTP server that answered 401) or `failed` with a reason (`Pool::status`).
+//! A turn starts its servers in the background (`Mcp::warm`) rather than at
+//! its first call, which waits for one still connecting. A failed server,
+//! or a stdio server whose process exited, is started again by the next call
+//! that needs it, but not within `RETRY_AFTER` of its last start, or at once
+//! by `Pool::reconnect`.
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -74,6 +82,8 @@ const MCP_VERSION: &str = "2025-06-18";
 /// A server that has not answered `initialize` and `tools/list` by then is
 /// reported as down, so one slow server cannot hold every search.
 const START_TIMEOUT: Duration = Duration::from_secs(30);
+/// A failed server is not started again by a call sooner than this.
+const RETRY_AFTER: Duration = Duration::from_secs(60);
 /// How long ending an HTTP session may take: a server that does not answer
 /// is let go of.
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -378,6 +388,34 @@ struct Live {
     tools: Vec<Tool>,
     error: Option<String>,
     left_out: Option<String>,
+    /// When it finished starting, well or not: a retry waits from here.
+    at: std::time::Instant,
+    /// It answered 401: it wants a sign-in.
+    signin: bool,
+}
+
+/// What state a server is in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Status {
+    Connecting,
+    Connected,
+    NeedsSignIn,
+    Failed(String),
+}
+
+/// One server as the host reports it.
+#[derive(Debug, Clone)]
+pub struct ServerStatus {
+    pub name: String,
+    pub status: Status,
+    /// Its tools, as `(name, description)`; none until it has connected.
+    pub tools: Vec<(String, String)>,
+}
+
+impl ServerStatus {
+    pub fn tool_count(&self) -> usize {
+        self.tools.len()
+    }
 }
 
 /// Whether a deny rule, or a subagent's allowlist, keeps the turn from
@@ -389,40 +427,113 @@ pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 /// The session's MCP servers: configured up front, each started on its
 /// first use. Once started they are read without a lock, so one long call
 /// never holds another, or a search, behind it.
-#[derive(Default)]
 pub struct Mcp {
     servers: Vec<Server>,
     /// One a server, in `servers`' order.
     live: Vec<Cell>,
+    retry: Duration,
 }
 
 /// One server's connection, set once it has started. Shared with the
 /// session's `Pool`, which keeps it for the next turn.
-type Cell = std::sync::Arc<tokio::sync::OnceCell<Live>>;
+type Cell = std::sync::Arc<Slot>;
+
+/// The current start of one server: replaced by a fresh one to retry.
+#[derive(Default)]
+struct Slot(std::sync::Mutex<std::sync::Arc<tokio::sync::OnceCell<Live>>>);
+
+type Started = std::sync::Arc<tokio::sync::OnceCell<Live>>;
+
+impl Slot {
+    /// The current start; `retry` replaces one that failed or whose
+    /// connection ended, `after` or longer ago, with a fresh one.
+    fn current(&self, retry: Option<Duration>) -> Started {
+        let mut cur = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(after) = retry
+            && cur.get().is_some_and(|l| l.dead() && l.at.elapsed() >= after)
+        {
+            *cur = Started::default();
+        }
+        cur.clone()
+    }
+
+    fn reset(&self) -> Started {
+        std::mem::take(&mut *self.0.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+}
+
+/// Starts `s` into `cell` unless it was.
+async fn boot<'a>(cell: &'a tokio::sync::OnceCell<Live>, s: &Server) -> &'a Live {
+    cell.get_or_init(|| async {
+        let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
+            Ok(Ok((conn, listed))) => (Some(conn), listed, None),
+            Ok(Err(e)) => (None, Default::default(), Some(e)),
+            Err(_) => (None, Default::default(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
+        };
+        let signin = error.as_deref().is_some_and(|e| e.starts_with("HTTP 401"));
+        Live { name: s.name.clone(), conn, tools, error, left_out, at: std::time::Instant::now(), signin }
+    })
+    .await
+}
 
 /// A session's MCP connections, kept open across its turns (D5). Each turn
 /// `adopt`s the servers it just discovered.
-#[derive(Default)]
 pub struct Pool {
     kept: std::sync::Mutex<Vec<(Server, Cell)>>,
+    retry: Duration,
+}
+
+impl Default for Pool {
+    fn default() -> Pool {
+        Pool::with_retry(RETRY_AFTER)
+    }
 }
 
 impl Pool {
+    /// A pool that retries a failed server no sooner than `retry` after its
+    /// last start: tests shorten it.
+    pub fn with_retry(retry: Duration) -> Pool {
+        Pool { kept: Default::default(), retry }
+    }
+
+    /// Each server's status and tools, in configuration order.
+    pub fn status(&self) -> Vec<ServerStatus> {
+        let kept = self.kept.lock().unwrap_or_else(|e| e.into_inner());
+        kept.iter().map(|(s, slot)| status_of(&s.name, slot.current(None).get())).collect()
+    }
+
+    /// Starts `name` again at once, ending its connection first; it connects
+    /// in the background (poll `status`). False when the pool has no such
+    /// server.
+    pub async fn reconnect(&self, name: &str) -> bool {
+        let found = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s.name == name).cloned();
+        let Some((server, slot)) = found else { return false };
+        let old = slot.reset();
+        if let Some(conn) = old.get().and_then(|l| l.conn.as_ref()) {
+            conn.close().await;
+        }
+        let fresh = slot.current(None);
+        tokio::spawn(async move {
+            boot(&fresh, &server).await;
+        });
+        true
+    }
+
     /// The turn's `Mcp` over `servers`: a server unchanged since the last
     /// turn keeps its connection, one changed (its configuration or where
-    /// it starts) or that failed or was cut off starts again on first use,
+    /// it starts) starts again on first use (a failed one waits for its retry),
     /// and every connection left over — a server removed, untrusted, or
     /// replaced — is closed before this returns.
     pub async fn adopt(&self, servers: Vec<Server>) -> Mcp {
         let mut old: Vec<Option<(Server, Cell)>> = std::mem::take(&mut *self.kept.lock().unwrap_or_else(|e| e.into_inner())).into_iter().map(Some).collect();
         let mut live = Vec::with_capacity(servers.len());
         for s in &servers {
-            let same = old.iter().position(|o| o.as_ref().is_some_and(|(k, cell)| k.name == s.name && k.config == s.config && k.cwd == s.cwd && !cell.get().is_some_and(Live::dead)));
+            let same = old.iter().position(|o| o.as_ref().is_some_and(|(k, _)| k.name == s.name && k.config == s.config && k.cwd == s.cwd));
             live.push(same.and_then(|i| old[i].take()).map_or_else(Cell::default, |(_, cell)| cell));
         }
         *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = servers.iter().cloned().zip(live.iter().cloned()).collect();
         close_all(old.into_iter().flatten().map(|(_, c)| c).collect()).await;
-        Mcp { servers, live }
+        Mcp { servers, live, retry: self.retry }
     }
 
     /// Closes every connection: processes stopped, HTTP sessions ended.
@@ -433,16 +544,34 @@ impl Pool {
 }
 
 async fn close_all(cells: Vec<Cell>) {
-    let closes = cells.iter().filter_map(|c| c.get()).filter_map(|l| l.conn.as_ref()).map(|c| -> crate::engine::BoxFuture<'_, ()> { Box::pin(c.close()) });
+    let started: Vec<Started> = cells.iter().map(|c| c.current(None)).collect();
+    let closes = started.iter().filter_map(|c| c.get()).filter_map(|l| l.conn.as_ref()).map(|c| -> crate::engine::BoxFuture<'_, ()> { Box::pin(c.close()) });
     crate::native::join_all(closes.collect()).await;
 }
 
 impl Live {
-    /// Whether it cannot serve another turn: it never started, or its
-    /// process was cut off or exited.
+    /// Whether it cannot serve a call: it never started, or its process was
+    /// cut off or exited.
     fn dead(&self) -> bool {
         self.conn.as_ref().is_none_or(Conn::dead)
     }
+
+    /// Why it cannot.
+    fn reason(&self) -> String {
+        self.error.clone().unwrap_or_else(|| "its process exited or the connection was lost".into())
+    }
+}
+
+fn status_of(name: &str, live: Option<&Live>) -> ServerStatus {
+    let Some(l) = live else { return ServerStatus { name: name.into(), status: Status::Connecting, tools: Vec::new() } };
+    let status = if l.signin {
+        Status::NeedsSignIn
+    } else if l.dead() {
+        Status::Failed(l.reason())
+    } else {
+        Status::Connected
+    };
+    ServerStatus { name: name.into(), status, tools: l.tools.iter().map(|t| (t.name.clone(), t.description.lines().next().unwrap_or_default().to_string())).collect() }
 }
 
 impl std::fmt::Debug for Mcp {
@@ -486,10 +615,16 @@ pub fn arguments(input: &Value) -> Value {
     input.get("input").cloned().filter(|v| !v.is_null()).unwrap_or_else(|| json!({}))
 }
 
+impl Default for Mcp {
+    fn default() -> Mcp {
+        Mcp::new(Vec::new())
+    }
+}
+
 impl Mcp {
     pub fn new(servers: Vec<Server>) -> Mcp {
         let live = servers.iter().map(|_| Cell::default()).collect();
-        Mcp { servers, live }
+        Mcp { servers, live, retry: RETRY_AFTER }
     }
 
     pub fn is_empty(&self) -> bool {
@@ -519,22 +654,36 @@ impl Mcp {
         ]
     }
 
+    /// Starts, in the background, each server `denied` does not cover whole
+    /// that has not started: the turn goes on, and a call to one still
+    /// connecting waits for it.
+    pub fn warm(&self, denied: Denied<'_>) {
+        for (s, slot) in self.servers.iter().zip(&self.live) {
+            let cell = slot.current(None);
+            if cell.get().is_some() || denied(&s.name, None) {
+                continue;
+            }
+            let s = s.clone();
+            tokio::spawn(async move {
+                boot(&cell, &s).await;
+            });
+        }
+    }
+
     /// Starts every server `denied` does not cover whole — a deny rule's,
     /// or one a subagent's allowlist leaves out — that is not running yet,
     /// at once, and waits for each to list its tools: those servers, in
-    /// order. An interrupt stops the wait, and the next call starts them
+    /// order. A failed one is started again if its last start was `retry`
+    /// ago. An interrupt stops the wait, and the next call starts them
     /// again.
-    async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<Vec<&Live>, String> {
+    async fn started(&self, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> Result<Vec<Started>, String> {
         let start_all = async {
-            let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, None)).map(|(s, cell)| -> crate::engine::BoxFuture<'_, &Live> {
-                Box::pin(cell.get_or_init(move || async move {
-                    let (conn, (tools, left_out), error) = match tokio::time::timeout(START_TIMEOUT, start(s)).await {
-                        Ok(Ok((conn, listed))) => (Some(conn), listed, None),
-                        Ok(Err(e)) => (None, Default::default(), Some(e)),
-                        Err(_) => (None, Default::default(), Some(format!("it did not start within {}s", START_TIMEOUT.as_secs()))),
-                    };
-                    Live { name: s.name.clone(), conn, tools, error, left_out }
-                }))
+            let starts = self.servers.iter().zip(&self.live).filter(|(s, _)| !denied(&s.name, None)).map(|(s, slot)| -> crate::engine::BoxFuture<'_, Started> {
+                let cell = slot.current(Some(self.retry));
+                Box::pin(async move {
+                    boot(&cell, s).await;
+                    cell
+                })
             });
             crate::native::join_all(starts.collect()).await
         };
@@ -557,6 +706,7 @@ impl Mcp {
             Ok(l) => l,
             Err(e) => return (e, true),
         };
+        let live: Vec<&Live> = live.iter().filter_map(|c| c.get()).collect();
         let words: Vec<&str> = query.split(|c: char| c.is_whitespace() || c == ',').filter(|w| !w.is_empty()).collect();
         let visible = || live.iter().flat_map(|l| l.tools.iter().map(move |t| (*l, t))).filter(|(l, t)| !denied(&l.name, Some(&t.name)));
         let mut hits: Vec<(usize, &Live, &Tool)> = Vec::new();
@@ -623,11 +773,15 @@ impl Mcp {
             Ok(l) => l,
             Err(e) => return (e, true),
         };
+        let live: Vec<&Live> = live.iter().filter_map(|c| c.get()).collect();
         let Some(l) = live.iter().find(|l| l.name == server) else {
             let names: Vec<&str> = live.iter().map(|l| l.name.as_str()).collect();
             return (format!("there is no MCP server named {server:?} — the servers are {}", names.join(", ")), true);
         };
-        let Some(conn) = &l.conn else { return (format!("the MCP server {server} is not running: {}", l.error.as_deref().unwrap_or_default()), true) };
+        let Some(conn) = l.conn.as_ref().filter(|c| !c.dead()) else {
+            let wait = self.retry.saturating_sub(l.at.elapsed()).as_secs();
+            return (format!("the MCP server {server} is not running: {} (it is tried again by a call in {wait}s)", l.reason()), true);
+        };
         if !l.tools.iter().any(|t| t.name == tool) {
             return (format!("the MCP server {server} has no tool named {tool:?} — find one with {SEARCH}"), true);
         }
@@ -822,7 +976,10 @@ impl Conn {
     fn dead(&self) -> bool {
         match self {
             Conn::Stdio { cut, io, reaped, .. } => {
-                let exited = io.try_lock().is_ok_and(|mut io| io.child.try_wait().map_or(true, |s| s.is_some()));
+                // A call in flight holds the lock, and has `cut` set while it
+                // waits: that is a server at work, not a dead one.
+                let Ok(mut io) = io.try_lock() else { return false };
+                let exited = io.child.try_wait().map_or(true, |s| s.is_some());
                 // An exited server is reaped: its pid is no longer ours to signal.
                 reaped.fetch_or(exited, Ordering::AcqRel);
                 cut.load(Ordering::Acquire) || exited

@@ -436,7 +436,7 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
         ("mcp_call", json!({"tool": "fake:echo", "input": {"text": "hi"}})),
     ]);
     // Whether the other server had been started when the parent's model is
-    // handed the subagent's answer: read then, before its own call starts it.
+    // handed the subagent's answer: read then, before its own call.
     let other_log: Arc<std::sync::Mutex<Option<PathBuf>>> = Arc::default();
     let started_before: Arc<std::sync::Mutex<Option<bool>>> = Arc::default();
     let (log, before) = (other_log.clone(), started_before.clone());
@@ -468,7 +468,7 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
     assert!(sent[0].contains("\"fake:echo\"") && !sent[0].contains("other"), "its search finds nothing on the other server: {}", sent[0]);
     assert_eq!(sent[1], "other:echo was not run: agent fake-only reaches only the MCP tools its definition names — fake (any tool)", "refused before it ran, even in bypass mode");
     assert_eq!(sent[2], "echo: hi", "its own server answers");
-    assert_eq!(*started_before.lock().unwrap(), Some(false), "the other server was not started for the subagent: nothing reached it before the parent's call");
+    assert_eq!(*started_before.lock().unwrap(), Some(true), "the session's own turn connects every server in the background (R-MCP-3), the subagent's allowlist or not");
     let other = std::fs::read_to_string(h.log_of("other")).unwrap_or_default();
     assert!(!other.contains("sneaked"), "the refused call never reached the other server: {other}");
     // The session that started it reaches every server still, the other
