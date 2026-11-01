@@ -173,8 +173,16 @@ pub enum Item {
     /// which the matching result repeats.
     ToolCall { call_id: String, name: String, input: Value },
     /// What running it produced. A refusal or a failure is a result too,
-    /// with `isError`, so the model can read why.
-    ToolResult { call_id: String, output: String, is_error: bool },
+    /// with `isError`, so the model can read why. `images` are the pictures
+    /// it carries, each kept in the session's `images/` directory; a client
+    /// that predates the field reads the text in `output` alone.
+    ToolResult {
+        call_id: String,
+        output: String,
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ImageRef>,
+    },
 }
 
 /// An image as a client sends it with a prompt or a steer, and the number

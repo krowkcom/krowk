@@ -306,7 +306,7 @@ extension TranscriptEvent {
                 return .reasoning(item: itemId, text: text)
             case .toolCall(let callId, let name, let input):
                 return .toolCall(item: itemId, callID: callId, name: name, input: input)
-            case .toolResult(let callId, let output, let isError):
+            case .toolResult(let callId, let output, let isError, _):
                 return .toolResult(item: itemId, callID: callId, output: output, isError: isError)
             }
         case .turnCompleted(let turnId, let status, _, _, _, _, let error):

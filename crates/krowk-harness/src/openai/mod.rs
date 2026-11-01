@@ -156,8 +156,22 @@ fn input(history: &[HistoryItem], provider: &str, images: &crate::images::Loaded
                     open.push((call_id.clone(), matches!(input, Value::String(_))));
                 }
             }
-            Item::ToolResult { call_id, output, is_error: _ } => {
-                out.push(call_output(call_id, custom.contains(call_id.as_str()), output));
+            Item::ToolResult { call_id, output, is_error, images: refs } => {
+                // Text, then each image behind its label, in the output
+                // itself. An error result is text only.
+                let mut o = json!(output);
+                if !refs.is_empty() {
+                    let mut parts = vec![json!({ "type": "input_text", "text": output })];
+                    for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
+                        parts.push(json!({ "type": "input_text", "text": label }));
+                        if let Some(data) = data.filter(|_| !is_error) {
+                            parts.push(json!({ "type": "input_image", "image_url": format!("data:{};base64,{data}", r.media_type) }));
+                        }
+                    }
+                    o = Value::Array(parts);
+                }
+                let kind = if custom.contains(call_id.as_str()) { "custom_tool_call_output" } else { "function_call_output" };
+                out.push(json!({ "type": kind, "call_id": call_id, "output": o }));
             }
         }
     }

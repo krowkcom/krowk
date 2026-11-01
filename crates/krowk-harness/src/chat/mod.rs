@@ -122,9 +122,15 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
             unanswered.extend(a.call_ids.into_iter().filter(|id| !answered.contains(id.as_str())));
         }
     };
-    let close_calls = |out: &mut Vec<Value>, unanswered: &mut Vec<String>| {
+    // The images of a step's tool results follow its tool messages in one
+    // user message: a tool message can't reliably carry them.
+    let mut pending: Vec<Value> = Vec::new();
+    let close_calls = |out: &mut Vec<Value>, unanswered: &mut Vec<String>, pending: &mut Vec<Value>| {
         for id in unanswered.drain(..) {
             out.push(json!({ "role": "tool", "tool_call_id": id, "content": "no result was recorded: the turn stopped first" }));
+        }
+        if !pending.is_empty() {
+            out.push(json!({ "role": "user", "content": std::mem::take(pending) }));
         }
     };
     let mut shown = std::collections::HashSet::new();
@@ -134,14 +140,14 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
             let same = open.as_ref().is_some_and(|a| a.response == h.response && (h.response.is_some() || a.calls.is_empty()));
             if !same {
                 flush(&mut out, &mut open, &mut unanswered);
-                close_calls(&mut out, &mut unanswered);
+                close_calls(&mut out, &mut unanswered, &mut pending);
                 open = Some(Assistant { response: h.response, ..Assistant::default() });
             }
         }
         match &h.item {
             Item::UserText { text, images: refs } => {
                 flush(&mut out, &mut open, &mut unanswered);
-                close_calls(&mut out, &mut unanswered);
+                close_calls(&mut out, &mut unanswered, &mut pending);
                 // Plain text stays a string, as every compatible server
                 // takes; only a prompt with images is sent as parts.
                 if refs.is_empty() {
@@ -157,8 +163,17 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
                     out.push(json!({ "role": "user", "content": parts }));
                 }
             }
-            Item::ToolResult { call_id, output, .. } => {
+            Item::ToolResult { call_id, output, is_error, images: refs } => {
                 flush(&mut out, &mut open, &mut unanswered);
+                if !refs.is_empty() {
+                    pending.push(json!({ "type": "text", "text": format!("Images from the result of tool call {call_id}:") }));
+                    for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
+                        pending.push(json!({ "type": "text", "text": label }));
+                        if let Some(data) = data.filter(|_| !is_error) {
+                            pending.push(json!({ "type": "image_url", "image_url": { "url": format!("data:{};base64,{data}", r.media_type) } }));
+                        }
+                    }
+                }
                 out.push(json!({ "role": "tool", "tool_call_id": call_id, "content": output }));
             }
             Item::AssistantText { text } => {
@@ -197,7 +212,7 @@ fn messages(system: &str, history: &[HistoryItem], provider: &str, images: &crat
         }
     }
     flush(&mut out, &mut open, &mut unanswered);
-    close_calls(&mut out, &mut unanswered);
+    close_calls(&mut out, &mut unanswered, &mut pending);
     out
 }
 

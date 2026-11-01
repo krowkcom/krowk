@@ -4272,7 +4272,7 @@ mod tests {
         let events = vec![
             ev("e1", None, started("codex-kid", "spawn-1", RanBy::Codex)),
             ev("e2", Some("e1"), started("claude-answered", "c1", RanBy::Claude)),
-            ev("e3", Some("e2"), LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false } }),
+            ev("e3", Some("e2"), LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r".into(), item: Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false, images: Vec::new() } }),
             ev("e4", Some("e3"), started("claude-unanswered", "c2", RanBy::Claude)),
             ev("e5", Some("e4"), started("krowk-own", "c3", RanBy::Krowk)),
             // A branch the head does not follow.
@@ -4306,10 +4306,10 @@ mod tests {
         // logged, the session's process gone before its next turn.
         parent.push(ev("s", 1500, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i3".into(), item: Item::ToolCall { call_id: "c3".into(), name: "subagent".into(), input: serde_json::json!({"run_in_background": true}) } }));
         parent.push(ev("s", 1501, LogBody::SubagentStarted { turn_id: "t".into(), call_id: "c3".into(), subagent_session_id: id(4), description: "surveyor".into(), agent: None, model: model.clone(), ran_by: RanBy::Krowk, backend_id: None }));
-        parent.push(ev("s", 1502, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: format!("started background agent {}", id(4)), is_error: false } }));
+        parent.push(ev("s", 1502, LogBody::ItemCompleted { turn_id: "t".into(), item_id: "r3".into(), item: Item::ToolResult { call_id: "c3".into(), output: format!("started background agent {}", id(4)), is_error: false, images: Vec::new() } }));
         // The batch answered together, at its end.
         for (i, is_error) in [true, false, true].into_iter().enumerate() {
-            parent.push(ev("s", 101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{i}"), item: Item::ToolResult { call_id: format!("c{i}"), output: if is_error { "the subagent was interrupted".into() } else { "ok".into() }, is_error } }));
+            parent.push(ev("s", 101_000 + i as i64, LogBody::ItemCompleted { turn_id: "t".into(), item_id: format!("r{i}"), item: Item::ToolResult { call_id: format!("c{i}"), output: if is_error { "the subagent was interrupted".into() } else { "ok".into() }, is_error, images: Vec::new() } }));
         }
         parent.push(ev("s", 102_000, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 101_000, error: None, reported_cost_usd: None, reported_tokens: None }));
         for i in 1..parent.len() {

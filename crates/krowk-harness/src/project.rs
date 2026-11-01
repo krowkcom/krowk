@@ -153,7 +153,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
             }
             LogBody::ItemCompleted { item_id, item, .. } => match item {
                 Item::UserText { text, .. } => th.messages.push(message(said_by(text), "", "", &ev.id, turn, "", vec![text_part(text)])),
-                Item::ToolResult { call_id, output, is_error } => th.messages.push(message(
+                Item::ToolResult { call_id, output, is_error, .. } => th.messages.push(message(
                     Role::Tool,
                     "",
                     "",
@@ -254,7 +254,7 @@ fn part(item: &Item) -> Part {
             ..Part::default()
         },
         Item::ToolCall { call_id, name, input } => krowk_import::new_tool_call_part(call_id, name, Some(input)),
-        Item::ToolResult { call_id, output, is_error } => krowk_import::new_tool_result_text_part(call_id, output, *is_error),
+        Item::ToolResult { call_id, output, is_error, .. } => krowk_import::new_tool_result_text_part(call_id, output, *is_error),
     }
 }
 

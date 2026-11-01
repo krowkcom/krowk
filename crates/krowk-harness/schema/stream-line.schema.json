@@ -724,7 +724,7 @@
           ]
         },
         {
-          "description": "What running it produced. A refusal or a failure is a result too,\nwith `isError`, so the model can read why.",
+          "description": "What running it produced. A refusal or a failure is a result too,\nwith `isError`, so the model can read why. `images` are the pictures\nit carries, each kept in the session's `images/` directory; a client\nthat predates the field reads the text in `output` alone.",
           "type": "object",
           "properties": {
             "callId": {
@@ -735,6 +735,12 @@
             },
             "isError": {
               "type": "boolean"
+            },
+            "images": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/ImageRef"
+              }
             },
             "kind": {
               "type": "string",

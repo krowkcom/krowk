@@ -116,7 +116,7 @@ fn r_prov_3_the_history_renders_as_one_prefix_and_every_call_is_answered() {
     assert_eq!(first["stream_options"], json!({"include_usage": true}));
     assert!(first.get("prompt_cache_key").is_none(), "xAI's cache key is a header, not a field");
     // With the result, the next call's messages begin with this one's.
-    items.push((Item::ToolResult { call_id: "call_01SearchReplace".into(), output: "edited".into(), is_error: false }, None));
+    items.push((Item::ToolResult { call_id: "call_01SearchReplace".into(), output: "edited".into(), is_error: false, images: Vec::new() }, None));
     let second = request_body(&req(&items), "xai");
     let n = second["messages"].as_array().unwrap();
     assert_eq!(m[..3], n[..3], "the prefix never moves");
