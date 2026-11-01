@@ -2,8 +2,10 @@
 # A stand-in MCP server on stdio for krowk's tests. It lists $FAKE_TOOLS
 # tools (1 by default): `echo` first, then `tool_2`, `tool_3`, … filler.
 # `echo` answers with its `text` argument. Every message it reads is
-# appended to $FAKE_LOG, so a test can see what was — and was not — sent.
+# appended to $FAKE_LOG, so a test can see what was — and was not — sent;
+# its process id is appended to $FAKE_PID, so a test can see it stopped.
 n=${FAKE_TOOLS:-1}
+[ -n "$FAKE_PID" ] && echo $$ >>"$FAKE_PID"
 tools='{"name":"echo","description":"Echo a text back, to test the connection.","inputSchema":{"type":"object","properties":{"text":{"type":"string"}},"required":["text"]}}'
 for ((i = 2; i <= n; i++)); do
   tools="$tools,{\"name\":\"tool_$i\",\"description\":\"Filler tool number $i, with a description of an ordinary length for an MCP tool.\",\"inputSchema\":{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"}}}}"

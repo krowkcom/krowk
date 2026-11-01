@@ -124,6 +124,10 @@ pub(crate) struct Shared {
     /// Each session's backend engine, with the instance it runs on: its
     /// process outlives a turn and serves the session's next one.
     backends: Mutex<HashMap<String, Backend>>,
+    /// Each native session's MCP connections, kept open across its turns
+    /// (`mcp::Pool`) and let go of with the backends' idle sweep and at
+    /// shutdown, with when a turn last used them.
+    mcp: Mutex<HashMap<String, (Arc<crate::mcp::Pool>, Instant)>>,
     /// How long a session's backend process is kept without a turn.
     backend_idle: std::time::Duration,
     /// How long the writer between turns lags each event (`SessionKids`),
@@ -425,6 +429,7 @@ impl Host {
                 running: Mutex::new(HashMap::new()),
                 readying: Mutex::new(HashMap::new()),
                 backends: Mutex::new(HashMap::new()),
+                mcp: Mutex::new(HashMap::new()),
                 backend_idle: BACKEND_IDLE,
                 #[cfg(feature = "test-hooks")]
                 between_lag: std::time::Duration::ZERO,
@@ -511,6 +516,9 @@ impl Host {
     /// go together, so the wait is the slowest one's, not their sum.
     pub async fn shutdown(&self) {
         self.shared.jobs.shutdown().await;
+        let pools: Vec<Arc<crate::mcp::Pool>> = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, (p, _))| p).collect();
+        let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(async move { let _ = tokio::time::timeout(SHUTDOWN_GRACE, p.close()).await; }) });
+        crate::native::join_all(closes.collect()).await;
         let backends: Vec<(Arc<dyn Engine>, SessionKids)> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, b)| (b.engine, b.children)).collect();
         // Each engine ends the agents it still runs, and those ends are
         // written before the host is gone: an agent's log is left with its
@@ -775,6 +783,22 @@ impl Shared {
         for e in idle {
             e.shutdown().await;
         }
+        let pools: Vec<Arc<crate::mcp::Pool>> = {
+            let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
+            let stale: Vec<String> = mcp.iter().filter(|(id, (_, used))| used.elapsed() >= self.backend_idle && !running.contains(id)).map(|(id, _)| id.clone()).collect();
+            stale.iter().filter_map(|id| mcp.remove(id)).map(|(p, _)| p).collect()
+        };
+        for p in pools {
+            p.close().await;
+        }
+    }
+
+    /// The session's MCP pool, made on first need and marked used.
+    fn mcp_pool(&self, session_id: &str) -> Arc<crate::mcp::Pool> {
+        let mut mcp = self.mcp.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = mcp.entry(session_id.to_string()).or_insert_with(|| (Arc::default(), Instant::now()));
+        entry.1 = Instant::now();
+        entry.0.clone()
     }
 
     /// The session's backend engine on `instance`: the one already running
@@ -1246,6 +1270,12 @@ impl Shared {
         let first_here = self.started.lock().unwrap_or_else(|e| e.into_inner()).insert(session_id.clone());
         compat.session_start = first_here.then_some(if past.items.is_empty() { "startup" } else { "resume" });
         compat.transcript = self.cfg.sessions_dir.join(&session_id).join(log::EVENTS_FILE).display().to_string();
+        // The session's MCP connections, kept from its earlier turns, under
+        // the configuration just read: closed, restarted or kept before the
+        // turn's first model call (D5). A backend runs none of them.
+        if spawns && !(compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(&session_id)) {
+            compat.mcp = Arc::new(self.mcp_pool(&session_id).adopt(compat.mcp.servers().to_vec()).await);
+        }
         let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.clone()).or_default().clone();
         let plan = TurnPlan {
             log,
@@ -1554,6 +1584,9 @@ impl Shared {
         self.approvals.forget_session(&session_id);
         if let Some(b) = self.backends.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
             b.used = Instant::now();
+        }
+        if let Some((_, used)) = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).get_mut(&session_id) {
+            *used = Instant::now();
         }
 
         let (status, mut error) = match &outcome {
