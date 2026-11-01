@@ -9,6 +9,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Fixed
+
+- **A turn that ends just as krowk reconnects to the host daemon answers
+  its result.** When the connection dropped mid-turn and the turn finished
+  while krowk was still catching up on the next connection, the turn
+  failed with `host_gone` even though it had completed. It now ends with
+  its result.
+
 ## [0.15.0] - 2026-11-01
 
 ### Added

@@ -226,6 +226,11 @@ struct Hub {
     offsets: VecDeque<(Rc<str>, u64)>,
     /// When it was first seen, for the status listing's order.
     seen: u64,
+    /// Its last turn's result and that line's `seq`, once the turn is over;
+    /// none while one runs. Sent live and nowhere logged: a client caught
+    /// up across the turn's end, which that line passed by, has it from
+    /// here (`decide`).
+    ended: Option<(u64, StreamLine)>,
 }
 
 /// How many of a hub's recent events it keeps the offsets of.
@@ -253,6 +258,10 @@ struct Client {
     /// Never holds the daemon up: the idle exit and `stop` do not count it
     /// (`hello.background`).
     background: bool,
+    /// Each session it is attaching to, with the session's `seq` as the
+    /// attach began: a turn result published after it is this client's,
+    /// however long the catching up takes. Its hub is kept meanwhile.
+    joined: HashMap<String, u64>,
 }
 
 pub(super) type Shared = Rc<RefCell<State>>;
@@ -538,7 +547,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
     let id = s.next_client;
     let outbox = Rc::new(Outbox::new(s.opts.caps));
     outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id(), epoch: s.epoch }));
-    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background });
+    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background, joined: HashMap::new() });
     s.wake.notify_one();
     Ok((id, outbox))
 }
@@ -662,8 +671,9 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             if let Some(h) = s.hubs.get_mut(&session_id) {
                 h.followers.retain(|f| *f != id);
             }
-            if let Some(c) = s.clients.get(&id) {
+            if let Some(c) = s.clients.get_mut(&id) {
                 c.outbox.forget(&session_id);
+                c.joined.remove(&session_id);
             }
             s.unanswerable();
             s.tidy();
@@ -961,6 +971,7 @@ impl State {
             end: None,
             offsets: VecDeque::new(),
             seen,
+            ended: None,
         });
         if hub.seen == seen {
             self.next_hub += 1;
@@ -1046,8 +1057,8 @@ impl State {
     /// session that run on another host since. A count dropping to none
     /// tidies again.
     fn tidy(&mut self) {
-        let hosts = &self.hosts;
-        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || hosts.values().any(|x| x.background_of(id) > 0));
+        let (hosts, clients) = (&self.hosts, &self.clients);
+        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || hosts.values().any(|x| x.background_of(id) > 0) || clients.values().any(|c| c.joined.contains_key(id)));
         let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1 && h.running_jobs().is_empty()).map(|(k, _)| k.clone()).collect();
         for k in idle {
             if let Some(h) = self.hosts.remove(&k) {
@@ -1116,6 +1127,7 @@ impl State {
                 LogBody::TurnStarted { .. } => {
                     hub.running = true;
                     hub.host = host.clone();
+                    hub.ended = None;
                 }
                 LogBody::TurnCompleted { .. } => hub.running = false,
                 _ => {}
@@ -1129,6 +1141,8 @@ impl State {
             hub.turn.logged(over);
         } else if hub.running {
             hub.turn.push(root, seq, line.clone(), json.len() + 64);
+        } else if matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == root) {
+            hub.ended = Some((seq, line.clone()));
         }
         let asks = matches!(&line, StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(_)));
         let followers = hub.followers.clone();
@@ -1318,7 +1332,8 @@ pub(super) fn resync(state: &Shared, client: u64, session: String, cursor: outbo
     tokio::task::spawn_local(async move {
         let Err(e) = page(&state, client, &session, cursor).await else { return };
         let mut s = state.borrow_mut();
-        let Some(c) = s.clients.get(&client) else { return };
+        let Some(c) = s.clients.get_mut(&client) else { return };
+        c.joined.remove(&session);
         let held = c.outbox.held(&session);
         match c.outbox.resynced(&session, Vec::new(), held, true) {
             Some(id) => s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) })),
@@ -1338,7 +1353,10 @@ fn attach(state: &Shared, client: u64, id: u64, session: String, after: Option<S
         let e = EngineError::new("bad_session", format!("{session:?} is not a session id — the sessionId a result names"));
         return s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) }));
     }
-    if let Some(c) = s.clients.get(&client) {
+    let at = s.seqs.get(&session).copied().unwrap_or(0);
+    if let Some(c) = s.clients.get_mut(&client) {
+        // A second attach of one session is served by the first's pages.
+        c.joined.entry(session.clone()).or_insert(at);
         c.outbox.begin(&session, outbox::Cursor { seq: after_seq, log: after.as_deref().map(Rc::from) }, id);
     }
 }
@@ -1466,11 +1484,22 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, start: u6
     }) else {
         return false;
     };
-    let running = under_way;
-    let tail = match hub {
+    let mut running = under_way;
+    let mut tail = match hub {
         Some(h) if live => h.turn.after(cursor.seq),
         _ => Vec::new(),
     };
+    // A turn that ended while the client was caught up: its result, which
+    // went by live, is the client's still when it came after the client's
+    // cursor and after its attach began — a resumed turn ends with it, not
+    // with a stream that stops short of its end (R-LAG-4). So too while
+    // its command is still winding up, or the next one registers before
+    // its turn starts: the hub is under way, and the tail has no result.
+    let since = s.clients.get(&client).and_then(|c| c.joined.get(session)).copied().unwrap_or(0).max(cursor.seq);
+    if let Some((seq, line)) = hub.and_then(|h| h.ended.as_ref()).filter(|(seq, _)| *seq > since) {
+        tail.push((*seq, line.clone()));
+        running = true;
+    }
     // Gone, or it left the session while the log was read.
     let Some(outbox) = s.clients.get(&client).map(|c| c.outbox.clone()) else { return true };
     if !outbox.expects(session) {
@@ -1555,6 +1584,9 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, start: u6
             page.push(line_out(&json, &line, session, None, 0, None));
         }
         s.follow(session, host, client);
+        if let Some(c) = s.clients.get_mut(&client) {
+            c.joined.remove(session);
+        }
     }
     if let Some(id) = outbox.resynced(session, page, rest, last) {
         s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, error: None }));
