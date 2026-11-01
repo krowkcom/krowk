@@ -45,10 +45,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   reused by its later turns and its subagents. The configuration is still
   read every turn: a server you edit restarts alone, and one you remove,
   or whose repository is no longer trusted or whose `.mcp.json` changed
-  underneath the trust check, is closed before the next model call. A
-  server that failed or was cut off is started again on the next turn.
+  underneath the trust check, is closed before the next model call.
   Connections close when the host drops an idle session and when it stops,
   ending HTTP sessions with `DELETE`.
+
+- **MCP servers connect in the background, report their state and retry
+  when they fail.** A session's servers start connecting when its first turn
+  starts instead of at the first tool call, so a slow server no longer
+  delays the model; a call to one still connecting waits for it. Each
+  server is `connecting`, `connected`, `needs sign-in` (a hosted server that
+  answered `401`) or `failed` with a reason, and the host can report that
+  with its tool count. A failed server, or a local one whose process exited,
+  fails fast and is started again by the next call that needs it after a
+  minute, or at once when asked to reconnect. The `/mcp` view that shows
+  this follows.
 
 ## [0.15.0] - 2026-11-01
 

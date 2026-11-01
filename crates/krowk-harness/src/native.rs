@@ -266,6 +266,8 @@ impl<C: ModelClient> NativeEngine<C> {
             // definition names some.
             if !ctx.compat.mcp.is_empty() && offered(crate::mcp::SEARCH) && offered(crate::mcp::CALL) {
                 tool_defs.extend(ctx.compat.mcp.definitions(&|server| reaches(&ctx, server, None)));
+                // Connecting starts now, behind this turn's first model call.
+                ctx.compat.mcp.warm(&|s, t| mcp_denied(&ctx, s, t) || !reaches(&ctx, s, t));
             }
             if let Some(run) = &ctx.agent {
                 system = crate::subagent::system_prompt(&system, run);

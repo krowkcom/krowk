@@ -271,10 +271,10 @@ fn r_tool_3_a_server_writing_only_junk_fails_the_call_long_before_its_timeout() 
     let (out, err) = call(&m, "noisy:echo");
     assert!(started.elapsed() < Duration::from_secs(20), "the call took {:?}", started.elapsed());
     assert!(err && out.contains("noisy:echo") && out.contains("not JSON-RPC") && out.contains("stopped"), "{out}");
-    // Stopped, it is not used again this turn.
+    // Stopped, it is not used again: a call fails fast until its retry.
     let (again, err) = call(&m, "noisy:echo");
     let _ = std::fs::remove_dir_all(&b);
-    assert!(err && again.contains("not used again") && again.contains("not JSON-RPC"), "{again}");
+    assert!(err && again.contains("is not running") && again.contains("tried again"), "{again}");
 }
 
 /// JSON log lines — objects with no `jsonrpc` — are no messages either: a

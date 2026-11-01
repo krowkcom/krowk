@@ -490,6 +490,24 @@ impl Host {
         }
     }
 
+    /// Each server of the session's MCP pool with its status and tools
+    /// (`mcp::ServerStatus`); empty for a session with no pool.
+    pub fn mcp_status(&self, session_id: &str) -> Vec<crate::mcp::ServerStatus> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        pool.map(|p| p.status()).unwrap_or_default()
+    }
+
+    /// Starts one of the session's MCP servers again at once, ending its
+    /// connection; it connects in the background, so poll `mcp_status`.
+    /// False when the session has no such server.
+    pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> bool {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.reconnect(server).await,
+            None => false,
+        }
+    }
+
     /// Keeps an idle session's backend process this long instead of
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {
