@@ -99,7 +99,7 @@ fn messages(history: &[HistoryItem], images: &crate::images::Loaded) -> Vec<Valu
                     }
                 }
             }
-            Item::ToolResult { call_id, output, is_error } => {
+            Item::ToolResult { call_id, output, is_error, .. } => {
                 let block = json!({ "type": "tool_result", "tool_use_id": call_id, "content": output, "is_error": is_error });
                 // Results lead their message: insert before any text already there.
                 match out.last_mut() {

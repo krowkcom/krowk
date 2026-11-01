@@ -156,7 +156,7 @@ fn input(history: &[HistoryItem], provider: &str, images: &crate::images::Loaded
                     open.push((call_id.clone(), matches!(input, Value::String(_))));
                 }
             }
-            Item::ToolResult { call_id, output, is_error: _ } => {
+            Item::ToolResult { call_id, output, .. } => {
                 out.push(call_output(call_id, custom.contains(call_id.as_str()), output));
             }
         }

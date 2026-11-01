@@ -95,7 +95,7 @@ fn r_log_3_a_thinking_signature_round_trips_through_the_log_byte_identical() {
         .collect();
     let mut history = vec![HistoryItem { item: Item::user("read README.md and summarise it in one line"), response: None }];
     history.extend(read_back.into_iter().map(|item| HistoryItem { item, response: Some(0) }));
-    history.push(HistoryItem { item: Item::ToolResult { call_id: "toolu_01ReadReadme".into(), output: "# krowk".into(), is_error: false }, response: None });
+    history.push(HistoryItem { item: Item::ToolResult { call_id: "toolu_01ReadReadme".into(), output: "# krowk".into(), is_error: false, images: Vec::new() }, response: None });
     let req = ModelRequest { model: "claude-sonnet-4-6".into(), system: "s".into(), tools: vec![], history, ..ModelRequest::default() };
     let body = request_body(&req, &instance());
     let assistant = &body["messages"][1];

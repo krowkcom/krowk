@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A tool result can carry images.** The session log's tool-result item
+  gains an optional `images` list of references into the session's `images/`
+  directory (omitted when empty), so a resumed session replays them and a
+  client that predates the field still reads the text. Nothing produces
+  images yet; MCP image results build on this. The FFI mirror and the iOS
+  transcript follow.
+
 - **`krowk mcp login <name>` signs in to an MCP server that asks for
   OAuth.** Hosted servers such as Mobbin answer `401` and want a browser
   sign-in, which a static header cannot give. krowk follows the server's own

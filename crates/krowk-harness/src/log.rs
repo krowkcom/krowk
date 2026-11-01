@@ -633,6 +633,39 @@ mod tests {
     }
 
     #[test]
+    fn a_tool_result_keeps_its_images_by_reference_across_a_resume_and_an_old_log_still_reads() {
+        use crate::images::{self, Decoded};
+        let dir = std::env::temp_dir().join(format!("krowk-harness-log-toolimg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (mut log, root) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
+        let png = b"\x89PNG\r\n\x1a\nrest".to_vec();
+        let refs = images::save(&dir.join(&root.id), &[Decoded { number: 1, media_type: "image/png", bytes: png.clone().into() }]).unwrap();
+        let item = Item::ToolResult { call_id: "c".into(), output: "a screen".into(), is_error: false, images: refs.clone() };
+        let ev = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item }).unwrap();
+        let plain = log.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "j".into(), item: Item::ToolResult { call_id: "d".into(), output: "x".into(), is_error: false, images: Vec::new() } }).unwrap();
+        drop(log);
+        let mut opened = SessionLog::open(&dir, &root.id);
+        for _ in 0..100 {
+            if !matches!(opened, Err(LogError::Busy(_))) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            opened = SessionLog::open(&dir, &root.id);
+        }
+        let (_log, events) = opened.unwrap();
+        let LogBody::ItemCompleted { item: Item::ToolResult { images, .. }, .. } = &events.iter().find(|e| e.id == ev.id).unwrap().body else { panic!() };
+        assert_eq!(images, &refs);
+        assert_eq!(std::fs::read(images::path(&dir.join(&root.id), &images[0]).unwrap()).unwrap(), png);
+        // Omitted from the line when empty, so a client that predates the field reads it as before.
+        let line = std::fs::read_to_string(dir.join(&root.id).join(EVENTS_FILE)).unwrap();
+        let plain_line = line.lines().find(|l| l.contains(&plain.id)).unwrap();
+        assert!(!plain_line.contains("images"));
+        let old: Item = serde_json::from_str(r#"{"kind":"toolResult","callId":"c","output":"o","isError":false}"#).unwrap();
+        assert_eq!(old, Item::ToolResult { call_id: "c".into(), output: "o".into(), is_error: false, images: Vec::new() });
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn r_log_1_events_carry_uuidv7_ids_and_a_parent_chain_from_the_root() {
         let dir = std::env::temp_dir().join(format!("krowk-harness-log-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
