@@ -1321,6 +1321,10 @@ pub enum ServerFrame {
         id: u64,
         session_id: String,
         running: bool,
+        /// An attach by `clientRef` whose prompt's turn ended before it
+        /// caught up: that turn's result, as its `done` had it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<RunResult>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         error: Option<ErrorInfo>,
     },

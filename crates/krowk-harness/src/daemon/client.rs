@@ -453,9 +453,10 @@ impl Client {
     }
 
     /// `resume` of a prompt cut before its first line: its session, found
-    /// by its `clientRef`, followed from the start to its turn's result.
-    /// Never sent again. A daemon that has no such prompt — an older one,
-    /// or another daemon than ran it — answers `host_gone`.
+    /// by its `clientRef`, followed from the start to its turn's result —
+    /// kept by the daemon when the turn ended first. Never sent again. A
+    /// daemon that has no such prompt — an older one, or another daemon
+    /// than ran it — answers `host_gone`.
     async fn refind(&self, client_ref: &str, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, Cut> {
         let (utx, urx) = oneshot::channel();
         let (id, rx) = {
@@ -478,17 +479,22 @@ impl Client {
         };
         let frame = ClientFrame::Attach { id, session_id: String::new(), after_event_id: None, after_seq: None, epoch: None, client_ref: Some(client_ref.to_string()) };
         self.tx.send(frame).map_err(|_| Cut::Failed(gone()))?;
-        let running = match rx.await {
+        match rx.await {
             Ok(ServerFrame::Attached { error: Some(e), .. }) => {
                 self.inner.lock().unwrap_or_else(|e| e.into_inner()).sinks.retain(|s| s.cmd != id);
                 return Err(Cut::Failed(if e.code == "bad_session" { gone() } else { engine_error(e) }));
             }
-            Ok(ServerFrame::Attached { running, .. }) => running,
+            // Over before this caught up: the daemon kept its result (none
+            // from an older one), answered once the lines caught up are
+            // handed on.
+            Ok(ServerFrame::Attached { running: false, result, .. }) => {
+                let mut i = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(n) = i.sinks.iter().position(|s| s.cmd == id) {
+                    let _ = i.sinks.remove(n).q.send(Item::End(result));
+                }
+            }
+            Ok(ServerFrame::Attached { .. }) => {}
             _ => return Err(cut(self)),
-        };
-        if !running {
-            self.inner.lock().unwrap_or_else(|e| e.into_inner()).sinks.retain(|s| s.cmd != id);
-            return Ok(None);
         }
         urx.await.map_err(|_| cut(self))
     }

@@ -1187,6 +1187,33 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     daemon.join().unwrap().unwrap();
 }
 
+/// R-LAG-4: a prompt whose client comes back by its `clientRef` only once
+/// the turn is over is caught up on its session from the start and gets
+/// that turn's result with `attached`, as its `done` had it: not a turn
+/// "no longer running" with its answer lost.
+#[test]
+fn r_lag_4_an_attach_by_client_ref_after_the_turn_ended_answers_its_result() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("over already")));
+    let home = Home::new("late-ref", &m.url);
+    let daemon = home.serve(ws::HEARTBEAT, Caps::default());
+    let mut x = Raw::connect(&home);
+    x.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "hi"), client_ref: Some("ref-late".into()) });
+    let ran = x.until(|f| matches!(f, ServerFrame::Done { id: 1, .. }));
+    let Some(ServerFrame::Done { result: Some(done), error: None, .. }) = ran.last() else { panic!("done: {:?}", ran.last()) };
+    drop(x);
+    let mut y = Raw::connect(&home);
+    y.send(&ClientFrame::Attach { id: 2, session_id: String::new(), after_event_id: None, after_seq: None, epoch: None, client_ref: Some("ref-late".into()) });
+    let got = y.until(|f| matches!(f, ServerFrame::Attached { id: 2, .. }));
+    let Some(ServerFrame::Attached { running: false, result: Some(r), error: None, session_id, .. }) = got.last() else { panic!("attached: {:?}", got.last()) };
+    assert_eq!(r, done, "the turn's result, as its done had it");
+    assert_eq!(*session_id, done.session_id);
+    use krowk_harness::protocol::{LogBody, LogEvent};
+    assert!(got.iter().any(|f| matches!(f, ServerFrame::Line { line: StreamLine::Log(LogEvent { body: LogBody::SessionStarted { .. }, .. }), .. })), "caught up from the start");
+    drop(y);
+    daemon.join().unwrap().unwrap();
+}
+
 /// R-LAG-10: catching up is paged. A client attaching to a session whose
 /// log is many times the cap, and reading slowly, costs the daemon about a
 /// page at a time, not the log — and gets the whole log once, in order,

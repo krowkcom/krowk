@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Fixed
+
+- **A new session's first prompt, cut from the host daemon before its
+  first line, no longer ends in `host_gone` when the turn finishes before
+  krowk is caught up again.** The daemon now keeps that turn's result
+  with the prompt's `clientRef` for its 10 minutes and hands it back once
+  the session is caught up, so the turn answers as though nothing had
+  happened. The protocol's `attached` frame gains an optional `result`;
+  the protocol version is unchanged.
+
 ## [0.15.0] - 2026-11-01
 
 ### Added
