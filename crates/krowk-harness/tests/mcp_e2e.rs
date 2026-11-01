@@ -658,3 +658,38 @@ fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
     assert!(gone(second), "shutdown stopped the other's process");
     assert_eq!(http_count(&web, "DELETE"), 2);
 }
+
+/// R-MCP-21: the host reports a session's servers — name, where each is
+/// configured, status and tools — and starts one again on request.
+#[test]
+fn r_mcp_21_the_host_reports_the_sessions_servers_and_reconnects_one() {
+    use krowk_harness::protocol::McpState;
+    let m = mock::serve(script(vec![]));
+    let h = Home::new("view", &m.url);
+    h.mcp_json(2);
+    let host = h.host(true, json!({}));
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let r = host.execute(prompt(PermissionMode::Default), tx).await.unwrap().unwrap();
+        while rx.try_recv().is_ok() {}
+        let connected = async |host: &Host| {
+            for _ in 0..200 {
+                let s = host.mcp_servers(&r.session_id);
+                if s.iter().all(|s| s.state == McpState::Connected) && !s.is_empty() {
+                    return s;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            panic!("never connected: {:?}", host.mcp_servers(&r.session_id));
+        };
+        let s = connected(&host).await;
+        assert_eq!((s[0].name.as_str(), s[0].source.as_str(), s[0].tools.len()), ("fake", ".mcp.json", 2), "{s:?}");
+        assert_eq!(s[0].tools[0].name, "echo");
+        assert!(host.mcp_reconnect(&r.session_id, "fake").await);
+        assert!(!host.mcp_reconnect(&r.session_id, "nope").await);
+        assert_eq!(connected(&host).await.len(), 1);
+        assert!(host.mcp_servers("no-such-session").is_empty());
+        host.shutdown().await;
+    });
+}

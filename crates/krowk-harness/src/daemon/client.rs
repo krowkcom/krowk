@@ -13,7 +13,7 @@
 
 use super::absent;
 use crate::engine::EngineError;
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostStatus, McpServer, LiveEvent, RunResult, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -286,7 +286,7 @@ impl Client {
                                 let _ = i.sinks.remove(n).q.send(Item::End(None));
                             }
                         }
-                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } => {
+                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::Mcp { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             let Some(w) = i.waiting.remove(&id) else { continue };
                             // A turn's `done` comes after its lines: handed
@@ -539,6 +539,25 @@ impl Client {
         let rx = self.ask(|id| ClientFrame::Status { id }, None)?;
         match rx.await {
             Ok(ServerFrame::Status { status, .. }) => Ok(status),
+            _ => Err(gone()),
+        }
+    }
+
+    /// The session's MCP servers (`ClientFrame::McpStatus`).
+    pub async fn mcp_status(&self, session_id: &str) -> Result<Vec<McpServer>, EngineError> {
+        let rx = self.ask(|id| ClientFrame::McpStatus { id, session_id: session_id.to_string() }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Mcp { servers, .. }) => Ok(servers),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Starts one of the session's MCP servers again (`ClientFrame::McpReconnect`).
+    pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::McpReconnect { id, session_id: session_id.to_string(), server: server.to_string() }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
             _ => Err(gone()),
         }
     }

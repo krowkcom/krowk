@@ -201,6 +201,32 @@
       ]
     },
     {
+      "description": "The answer to `mcpStatus`: each server of the session, in the order\nit is configured.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/McpServer"
+          }
+        },
+        "type": {
+          "type": "string",
+          "const": "mcp"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "servers"
+      ]
+    },
+    {
       "description": "A followed session has no command streaming in it any more: its\nturn is over (its `result` came first), or the command was refused\nbefore a turn began. A client following it, not running it, stops\nwaiting here.",
       "type": "object",
       "properties": {
@@ -2160,6 +2186,65 @@
         "sessionId",
         "running",
         "clients"
+      ]
+    },
+    "McpServer": {
+      "description": "One MCP server of a session, as its host holds it.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "source": {
+          "description": "Where it is configured: `.mcp.json`, `config.json`, `~/.claude.json`.",
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/McpState"
+        },
+        "reason": {
+          "description": "Why it is `failed`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tools": {
+          "description": "Its tools; none until it has connected.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/McpTool"
+          }
+        }
+      },
+      "required": [
+        "name",
+        "source",
+        "state"
+      ]
+    },
+    "McpState": {
+      "type": "string",
+      "enum": [
+        "connecting",
+        "connected",
+        "needsSignIn",
+        "failed"
+      ]
+    },
+    "McpTool": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "description": {
+          "description": "The first line of its description.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name"
       ]
     }
   }

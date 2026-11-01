@@ -134,6 +134,10 @@ pub const FRAME: Duration = Duration::from_millis(17);
 /// A model call silent for this long gets a connectivity probe.
 const STALL: Duration = Duration::from_millis(700);
 /// How long an approval request is on screen before a key answers it.
+/// How often `/mcp` asks the host after its servers while it is open; the
+/// beats are counted from the first, so keys never push the next one back.
+const MCP_POLL: Duration = Duration::from_secs(1);
+static MCP_BASE: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
 const APPROVAL_SETTLE: Duration = Duration::from_millis(400);
 /// How often an interrupt the host could not take yet is asked again.
 const INTERRUPT_RETRY: Duration = Duration::from_millis(50);
@@ -1245,6 +1249,8 @@ struct Due {
     copied: Option<Instant>,
     /// When an interrupted turn stops being waited for (`HANGUP_WAIT`).
     hung_up: Option<Instant>,
+    /// `/mcp` open: when its servers are asked after again.
+    mcp: Option<Instant>,
 }
 
 /// Whether the model's provider can be reached, as the loop finds out:
@@ -1308,7 +1314,7 @@ impl<'h> Ui<'h> {
             #[cfg(unix)]
             hangup::beat();
             let due = self.due(app, &reach);
-            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied, due.hung_up].into_iter().flatten().min();
+            let wake = [frames.at, due.tick, due.stall, due.retry, reach.probe_at, due.quit, due.copied, due.hung_up, due.mcp].into_iter().flatten().min();
             tokio::select! {
                 biased;
                 // The terminal hung up: nobody is left to answer, nor any
@@ -1425,6 +1431,7 @@ impl<'h> Ui<'h> {
             quit: self.quit_armed.map(|(_, t)| t + QUIT_CONFIRM),
             copied: self.copied.as_ref().map(|(_, t)| *t),
             hung_up: self.hung_up_at.map(|t| t + HANGUP_WAIT),
+            mcp: (app.overlay == Overlay::Mcp).then(|| next_tick(*MCP_BASE.get_or_init(Instant::now), now, MCP_POLL)),
         }
     }
 
@@ -1621,6 +1628,10 @@ impl<'h> Ui<'h> {
         }
         if due.retry.is_some_and(|t| t <= now) {
             self.flush_requests(app).await;
+        }
+        if due.mcp.is_some_and(|t| t <= now) && app.overlay == Overlay::Mcp {
+            let servers = self.mcp_servers(app).await;
+            app.set_mcp(servers);
         }
         // The second press never came: its hint goes.
         if due.quit.is_some_and(|t| t <= now) {
@@ -2615,6 +2626,9 @@ impl<'h> Ui<'h> {
         if app.overlay == Overlay::Sessions && plain && let Some(done) = self.sessions_key(app, k).await {
             return done;
         }
+        if app.overlay == Overlay::Mcp && plain && let Some(done) = self.mcp_key(app, k).await {
+            return done;
+        }
         if app.overlay == Overlay::Models && plain && let Some(done) = self.models_key(app, k).await {
             return done;
         }
@@ -2871,6 +2885,7 @@ impl<'h> Ui<'h> {
             help::Action::Settings => self.open_settings(app),
             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
+            help::Action::Mcp => self.open_mcp(app).await,
             help::Action::New => self.new_session(app),
             help::Action::Sessions => self.open_resume(app),
             help::Action::Todos => app.overlay = Overlay::Todos,
@@ -2912,6 +2927,41 @@ impl<'h> Ui<'h> {
             }
             _ => return None,
         }
+        Some(false)
+    }
+
+    /// `/mcp`: the host's word on the session's servers, asked of it now.
+    async fn open_mcp(&mut self, app: &mut App) {
+        let now = self.mcp_servers(app).await;
+        app.open_mcp(now);
+    }
+
+    async fn mcp_servers(&self, app: &App) -> Result<Vec<krowk_harness::protocol::McpServer>, String> {
+        match app.session_id.as_deref() {
+            Some(id) => self.host.mcp_status(id).await,
+            None => Ok(Vec::new()),
+        }
+    }
+
+    /// `/mcp` takes the arrows, enter (tools) and `r` (reconnect) while it
+    /// is open; esc closes it as any overlay.
+    async fn mcp_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        match k.code {
+            KeyCode::Up => app.mcp_at = app.mcp_at.saturating_sub(1),
+            KeyCode::Down => app.mcp_at = (app.mcp_at + 1).min(app.mcp.as_ref().map_or(0, |s| s.len()).saturating_sub(1)),
+            KeyCode::Enter => app.toggle_mcp_tools(),
+            KeyCode::Char('r') => {
+                if let (Some(id), Some(s)) = (app.session_id.clone(), app.mcp_selected().map(|s| s.name.clone())) {
+                    if let Err(why) = self.host.mcp_reconnect(&id, &s).await {
+                        app.notice(&why);
+                    }
+                    let now = self.mcp_servers(app).await;
+                    app.set_mcp(now);
+                }
+            }
+            _ => return None,
+        }
+        app.touch();
         Some(false)
     }
 
@@ -3692,6 +3742,11 @@ impl<'h> Ui<'h> {
                     return false;
                 }
                 self.new_session(app);
+                return false;
+            }
+            "/mcp" => {
+                app.editor.clear();
+                self.open_mcp(app).await;
                 return false;
             }
             "/sessions" => {

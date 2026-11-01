@@ -645,6 +645,23 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             let f = ServerFrame::Status { id: cmd_id, status: status(&s) };
             s.send(id, "", control(&f));
         }
+        ClientFrame::McpStatus { id: cmd_id, session_id } => {
+            let mut s = state.borrow_mut();
+            let servers = s.hubs.get(&session_id).map(|h| h.host.mcp_servers(&session_id)).unwrap_or_default();
+            s.send(id, "", control(&ServerFrame::Mcp { id: cmd_id, servers }));
+        }
+        ClientFrame::McpReconnect { id: cmd_id, session_id, server } => {
+            let host = state.borrow().hubs.get(&session_id).map(|h| h.host.clone());
+            let state = state.clone();
+            tokio::task::spawn_local(async move {
+                let found = match host {
+                    Some(h) => h.mcp_reconnect(&session_id, &server).await,
+                    None => false,
+                };
+                let error = (!found).then(|| error_info(&EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))));
+                state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
+            });
+        }
         ClientFrame::Reload { id: cmd_id, changed, renamed_from, renamed_to } => {
             // Moved now, not once it is read: a command dispatched after
             // this frame waits for it, and a directory read under way is

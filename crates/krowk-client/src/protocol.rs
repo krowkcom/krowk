@@ -32,7 +32,7 @@ use serde_json::Value;
 
 /// Bumped on any change a client written against the previous version
 /// would misread. Additive fields are not such a change.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// A canonical lowercase UUIDv7, as the schema pins every event id.
 pub const UUID7_PATTERN: &str = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
@@ -1236,6 +1236,13 @@ pub enum ClientFrame {
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
+    /// Asks the MCP servers of a session, as its host holds them; answered
+    /// by `mcp`, with none for a session that has no servers. Protocol 3.
+    McpStatus { id: u64, session_id: String },
+    /// Starts one of a session's MCP servers again at once; answered by
+    /// `done`, with `no_such_server` when the session has no such server. It
+    /// connects in the background: ask `mcpStatus` to see. Protocol 3.
+    McpReconnect { id: u64, session_id: String, server: String },
     /// Reads the instances again — config.json and the credentials file —
     /// for every host, after a client connected or signed one out
     /// (`/connect`): `changed` is that instance, whose backend processes are
@@ -1325,11 +1332,48 @@ pub enum ServerFrame {
         error: Option<ErrorInfo>,
     },
     Status { id: u64, status: HostStatus },
+    /// The answer to `mcpStatus`: each server of the session, in the order
+    /// it is configured.
+    Mcp { id: u64, servers: Vec<McpServer> },
     /// A followed session has no command streaming in it any more: its
     /// turn is over (its `result` came first), or the command was refused
     /// before a turn began. A client following it, not running it, stops
     /// waiting here.
     Settled { session: String },
+}
+
+/// One MCP server of a session, as its host holds it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServer {
+    pub name: String,
+    /// Where it is configured: `.mcp.json`, `config.json`, `~/.claude.json`.
+    pub source: String,
+    pub state: McpState,
+    /// Why it is `failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    /// Its tools; none until it has connected.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tools: Vec<McpTool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpTool {
+    pub name: String,
+    /// The first line of its description.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum McpState {
+    Connecting,
+    Connected,
+    NeedsSignIn,
+    Failed,
 }
 
 /// How the host daemon is: `krowk host status`.

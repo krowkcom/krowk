@@ -497,6 +497,24 @@ impl Host {
         pool.map(|p| p.status()).unwrap_or_default()
     }
 
+    /// `mcp_status` as the protocol carries it (`mcpStatus`).
+    pub fn mcp_servers(&self, session_id: &str) -> Vec<crate::protocol::McpServer> {
+        use crate::mcp::Status;
+        use crate::protocol::{McpServer, McpState, McpTool};
+        self.mcp_status(session_id)
+            .into_iter()
+            .map(|s| {
+                let (state, reason) = match s.status {
+                    Status::Connecting => (McpState::Connecting, None),
+                    Status::Connected => (McpState::Connected, None),
+                    Status::NeedsSignIn => (McpState::NeedsSignIn, None),
+                    Status::Failed(r) => (McpState::Failed, Some(r)),
+                };
+                McpServer { name: s.name, source: s.source, state, reason, tools: s.tools.into_iter().map(|(name, description)| McpTool { name, description }).collect() }
+            })
+            .collect()
+    }
+
     /// Starts one of the session's MCP servers again at once, ending its
     /// connection; it connects in the background, so poll `mcp_status`.
     /// False when the session has no such server.

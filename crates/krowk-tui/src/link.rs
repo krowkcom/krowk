@@ -15,7 +15,7 @@ use krowk_harness::daemon::remote::Remote;
 use krowk_harness::engine::EngineError;
 use krowk_harness::host::Host;
 use krowk_harness::instances::{Asked, Registry};
-use krowk_harness::protocol::{Command, LiveEvent, ModelRef, RunResult, StreamLine};
+use krowk_harness::protocol::{Command, LiveEvent, McpServer, ModelRef, RunResult, StreamLine};
 pub use crate::synced::SyncLink;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc};
@@ -55,6 +55,12 @@ impl Remote {
         match *self {}
     }
     pub async fn status(&self) -> Result<krowk_harness::protocol::HostStatus, EngineError> {
+        match *self {}
+    }
+    pub async fn mcp_status(&self, _: &str) -> Result<Vec<McpServer>, EngineError> {
+        match *self {}
+    }
+    pub async fn mcp_reconnect(&self, _: &str, _: &str) -> Result<(), EngineError> {
         match *self {}
     }
     pub fn attach_later(&self, _: &str, _: Option<&str>) {
@@ -139,6 +145,29 @@ impl Link {
         }
     }
 
+    /// The session's MCP servers as its host holds them. A daemon of an
+    /// older protocol, or a session on another machine, cannot say: the
+    /// message to show in the view's place.
+    pub async fn mcp_status(&self, session_id: &str) -> Result<Vec<McpServer>, String> {
+        match self {
+            Link::Local(h) => Ok(h.mcp_servers(session_id)),
+            Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
+            Link::Remote { client, .. } => client.mcp_status(session_id).await.map_err(|e| e.message),
+            Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
+        }
+    }
+
+    /// Starts the session's MCP server again; it connects in the
+    /// background, so ask `mcp_status` after.
+    pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> Result<(), String> {
+        match self {
+            Link::Local(h) => h.mcp_reconnect(session_id, server).await.then_some(()).ok_or_else(|| format!("no MCP server {server}")),
+            Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
+            Link::Remote { client, .. } => client.mcp_reconnect(session_id, server).await.map_err(|e| e.message),
+            Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
+        }
+    }
+
     /// The daemon replaced with one of this krowk when it is of an older
     /// one and can go (`Remote::renew`): answers whether it was. `quiet`
     /// is the caller's word that nothing of its own runs there in the
@@ -181,6 +210,17 @@ impl Link {
     /// process's. The daemon's run on.
     pub fn running_jobs(&self) -> Vec<(String, String)> {
         self.host().running_jobs()
+    }
+}
+
+/// The first krowk whose host answers `/mcp` (protocol 3).
+const MCP_SINCE: &str = "0.16.0";
+
+/// What the view says in its place against a host of an older protocol.
+fn mcp_gate(protocol: u32, host_version: &str) -> Result<(), String> {
+    match protocol >= 3 {
+        true => Ok(()),
+        false => Err(format!("/mcp needs krowk {MCP_SINCE} or later on the host daemon, which runs {host_version}")),
     }
 }
 
@@ -282,10 +322,16 @@ fn reads_images(version: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{reads_images, sending, upload_images, Peer, IMAGE_NOT_SENT};
+    use super::{mcp_gate, reads_images, sending, upload_images, Peer, IMAGE_NOT_SENT};
     use krowk_harness::protocol::{Command, ImageInput, PermissionMode};
     use std::sync::Mutex;
     use tokio::sync::mpsc;
+
+    #[test]
+    fn r_mcp_21_a_host_of_protocol_2_gets_the_upgrade_message_in_place_of_the_view() {
+        assert_eq!(mcp_gate(2, "0.15.0").unwrap_err(), "/mcp needs krowk 0.16.0 or later on the host daemon, which runs 0.15.0");
+        assert!(mcp_gate(krowk_harness::protocol::PROTOCOL_VERSION, "0.16.0").is_ok());
+    }
 
     #[test]
     fn a_daemon_before_0_13_drops_images() {

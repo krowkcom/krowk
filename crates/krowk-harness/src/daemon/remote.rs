@@ -121,6 +121,14 @@ impl Remote {
         self.fresh().await?.status().await
     }
 
+    pub async fn mcp_status(&self, session_id: &str) -> Result<Vec<crate::protocol::McpServer>, EngineError> {
+        self.fresh().await?.mcp_status(session_id).await
+    }
+
+    pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> Result<(), EngineError> {
+        self.fresh().await?.mcp_reconnect(session_id, server).await
+    }
+
     /// A daemon of an older krowk than this one replaced with one of this
     /// version, when it can go with nothing of it lost: no turn running
     /// there (the daemon refuses a stop while one does), nothing in the
