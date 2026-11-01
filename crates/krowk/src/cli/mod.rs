@@ -26,6 +26,8 @@ mod prompt;
 #[cfg(all(feature = "harness", unix))]
 mod relay;
 #[cfg(feature = "harness")]
+#[cfg(feature = "harness")]
+mod mcp;
 mod providers;
 #[cfg(feature = "sessions")]
 mod sessions;
@@ -352,6 +354,12 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["mcp", "add", ..] => mcp::add(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["mcp", "remove", ..] => mcp::remove(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["mcp"] | ["mcp", "list", ..] => mcp::list(ctx),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
         #[cfg(all(feature = "harness", unix))]
@@ -685,8 +693,14 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         if f.given.contains("start-over") && !words.starts_with(&["sync", "init"]) {
             return Err(fail("bad_flag", "`--start-over` is only a flag of `krowk sync init`"));
         }
-        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) && !words.starts_with(&["worktrees", "remove"]) {
-            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop` and `krowk worktrees remove`"));
+        let mcp_add = words.starts_with(&["mcp", "add"]);
+        if f.given.contains("force") && !words.starts_with(&["host", "stop"]) && !words.starts_with(&["worktrees", "remove"]) && !mcp_add {
+            return Err(fail("bad_flag", "`--force` is only a flag of `krowk host stop`, `krowk worktrees remove` and `krowk mcp add`"));
+        }
+        for name in ["env", "header"] {
+            if f.given.contains(name) && !mcp_add {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk mcp add`")));
+            }
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];
         for (name, owner, allowed) in owners {
