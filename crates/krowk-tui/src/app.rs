@@ -48,8 +48,6 @@ pub const KEPT_LINES: usize = 20_000;
 
 pub use look::dim;
 
-/// A newer krowk release than this one, as the launcher's last check found it.
-#[derive(Clone, Debug, PartialEq)]
 /// A sign-in to an MCP server begun from `/mcp`: the page to open, whether
 /// the host listens for the browser itself, and (when it does not) the
 /// address pasted so far.
@@ -60,6 +58,8 @@ pub struct McpSignIn {
     pub paste: String,
 }
 
+/// A newer krowk release than this one, as the launcher's last check found it.
+#[derive(Clone, Debug, PartialEq)]
 pub struct Update {
     pub current: String,
     pub latest: String,
