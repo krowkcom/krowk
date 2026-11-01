@@ -286,7 +286,7 @@ impl Client {
                                 let _ = i.sinks.remove(n).q.send(Item::End(None));
                             }
                         }
-                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::Mcp { id, .. } => {
+                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::Mcp { id, .. } | ServerFrame::McpSignIn { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             let Some(w) = i.waiting.remove(&id) else { continue };
                             // A turn's `done` comes after its lines: handed
@@ -555,6 +555,38 @@ impl Client {
     /// Starts one of the session's MCP servers again (`ClientFrame::McpReconnect`).
     pub async fn mcp_reconnect(&self, session_id: &str, server: &str) -> Result<(), EngineError> {
         let rx = self.ask(|id| ClientFrame::McpReconnect { id, session_id: session_id.to_string(), server: server.to_string() }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Begins a sign-in to one of the session's MCP servers on the host:
+    /// the page to open (`ClientFrame::McpSignInStart`). The host's loopback
+    /// is never the browser's from here, so the address is pasted.
+    pub async fn mcp_sign_in_start(&self, session_id: &str, server: &str) -> Result<String, EngineError> {
+        let rx = self.ask(|id| ClientFrame::McpSignInStart { id, session_id: session_id.to_string(), server: server.to_string() }, None)?;
+        match rx.await {
+            Ok(ServerFrame::McpSignIn { url, .. }) => Ok(url),
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Finishes it with the pasted landing address (`ClientFrame::McpSignInFinish`).
+    pub async fn mcp_sign_in_finish(&self, session_id: &str, server: &str, landing: &str) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::McpSignInFinish { id, session_id: session_id.to_string(), server: server.to_string(), landing: landing.to_string() }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
+            _ => Err(gone()),
+        }
+    }
+
+    /// Signs one of the session's MCP servers out (`ClientFrame::McpSignOut`).
+    pub async fn mcp_sign_out(&self, session_id: &str, server: &str) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::McpSignOut { id, session_id: session_id.to_string(), server: server.to_string() }, None)?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Done { .. }) => Ok(()),

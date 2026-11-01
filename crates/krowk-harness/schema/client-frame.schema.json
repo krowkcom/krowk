@@ -200,6 +200,91 @@
       ]
     },
     {
+      "description": "Begins signing in to one of a session's MCP servers, on the host that\nholds its connections (so the tokens land where calls are made);\nanswered by `mcpSignIn`, or `done` with the reason it could not begin.\nProtocol 3.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpSignInStart"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "sessionId",
+        "server"
+      ]
+    },
+    {
+      "description": "Finishes the sign-in `mcpSignInStart` began, with the address the\nbrowser landed on: a secret, never logged. Answered by `done`.\nProtocol 3.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "landing": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpSignInFinish"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "sessionId",
+        "server",
+        "landing"
+      ]
+    },
+    {
+      "description": "Signs one of a session's MCP servers out: its tokens are removed and\nits connection closed. Answered by `done`, with `no_such_server` when\nthe session has no such server. Protocol 3.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "server": {
+          "type": "string"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpSignOut"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "sessionId",
+        "server"
+      ]
+    },
+    {
       "description": "Reads the instances again — config.json and the credentials file —\nfor every host, after a client connected or signed one out\n(`/connect`): `changed` is that instance, whose backend processes are\nnot reused; `renamedFrom` and `renamedTo` a rename, whose are.\nAnswered by `done` once applied; a command sent after it runs on\nwhat it read, answered or not.",
       "type": "object",
       "properties": {

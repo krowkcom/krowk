@@ -227,6 +227,33 @@
       ]
     },
     {
+      "description": "The answer to `mcpSignInStart`: the page to open, and whether the host\nis listening for the browser's redirect itself (a host on the person's\nown machine) so that nothing needs pasting.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "url": {
+          "type": "string"
+        },
+        "loopback": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "const": "mcpSignIn"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "url",
+        "loopback"
+      ]
+    },
+    {
       "description": "A followed session has no command streaming in it any more: its\nturn is over (its `result` came first), or the command was refused\nbefore a turn began. A client following it, not running it, stops\nwaiting here.",
       "type": "object",
       "properties": {

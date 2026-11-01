@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`/mcp` signs in and out of MCP servers.** `s` on a server that needs a
+  sign-in completes the OAuth flow from the TUI: on your own machine krowk
+  opens the page and finishes when the browser lands, with nothing to paste;
+  against a host daemon (or over SSH) it shows the page and takes the
+  address the browser lands on, which is never echoed. A sign-in left
+  unanswered expires after ten minutes. `o` signs the server out, and its row
+  goes back to needs sign-in. The sign-in runs on the host that holds the
+  session's connections, so the tokens live where the calls are made
+  (`mcpSignInStart`, `mcpSignInFinish` and `mcpSignOut` requests in protocol
+  3). A server that turns out to need a sign-in is mentioned once per
+  session: `<name> needs sign-in: run krowk mcp login <name> or open /mcp`.
+
 - **`/mcp` shows the session's MCP servers, live.** Each server is listed
   with where it is configured, whether it is connecting, connected, needs a
   sign-in or failed (and why), and how many tools it has; enter lists a

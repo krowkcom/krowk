@@ -1243,6 +1243,19 @@ pub enum ClientFrame {
     /// `done`, with `no_such_server` when the session has no such server. It
     /// connects in the background: ask `mcpStatus` to see. Protocol 3.
     McpReconnect { id: u64, session_id: String, server: String },
+    /// Begins signing in to one of a session's MCP servers, on the host that
+    /// holds its connections (so the tokens land where calls are made);
+    /// answered by `mcpSignIn`, or `done` with the reason it could not begin.
+    /// Protocol 3.
+    McpSignInStart { id: u64, session_id: String, server: String },
+    /// Finishes the sign-in `mcpSignInStart` began, with the address the
+    /// browser landed on: a secret, never logged. Answered by `done`.
+    /// Protocol 3.
+    McpSignInFinish { id: u64, session_id: String, server: String, landing: String },
+    /// Signs one of a session's MCP servers out: its tokens are removed and
+    /// its connection closed. Answered by `done`, with `no_such_server` when
+    /// the session has no such server. Protocol 3.
+    McpSignOut { id: u64, session_id: String, server: String },
     /// Reads the instances again — config.json and the credentials file —
     /// for every host, after a client connected or signed one out
     /// (`/connect`): `changed` is that instance, whose backend processes are
@@ -1335,6 +1348,10 @@ pub enum ServerFrame {
     /// The answer to `mcpStatus`: each server of the session, in the order
     /// it is configured.
     Mcp { id: u64, servers: Vec<McpServer> },
+    /// The answer to `mcpSignInStart`: the page to open, and whether the host
+    /// is listening for the browser's redirect itself (a host on the person's
+    /// own machine) so that nothing needs pasting.
+    McpSignIn { id: u64, url: String, loopback: bool },
     /// A followed session has no command streaming in it any more: its
     /// turn is over (its `result` came first), or the command was refused
     /// before a turn began. A client following it, not running it, stops

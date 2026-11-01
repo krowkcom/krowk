@@ -486,6 +486,32 @@ pub struct Pool {
     kept: std::sync::Mutex<Vec<(Server, Cell)>>,
     retry: Duration,
     credentials: Option<PathBuf>,
+    /// A sign-in begun from the TUI (`sign_in_start`), per server, until it
+    /// finishes, is replaced, or expires.
+    signins: std::sync::Mutex<std::collections::HashMap<String, SignIn>>,
+    signin_ttl: Duration,
+}
+
+/// A sign-in begun from the TUI: what it waits on, and since when.
+struct SignIn {
+    at: std::time::Instant,
+    wait: SignInWait,
+}
+
+enum SignInWait {
+    /// The host listens for the browser's redirect itself.
+    Loopback(#[allow(dead_code)] Abort),
+    /// The person pastes the address the browser landed on.
+    Paste(Box<crate::mcp_oauth::Pending>),
+}
+
+/// A task that ends with its handle: an abandoned sign-in stops listening.
+struct Abort(tokio::task::JoinHandle<()>);
+
+impl Drop for Abort {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 impl Default for Pool {
@@ -498,13 +524,65 @@ impl Pool {
     /// A pool that retries a failed server no sooner than `retry` after its
     /// last start: tests shorten it.
     pub fn with_retry(retry: Duration) -> Pool {
-        Pool { kept: Default::default(), retry, credentials: None }
+        Pool { kept: Default::default(), retry, credentials: None, signins: Default::default(), signin_ttl: crate::oauth::LOGIN_TIMEOUT }
     }
 
     /// Remote servers send the sign-ins `krowk mcp login` stored in `path`.
     pub fn with_credentials(mut self, path: PathBuf) -> Pool {
         self.credentials = Some(path);
         self
+    }
+
+    /// A sign-in that goes unanswered this long expires: tests shorten it.
+    pub fn with_signin_ttl(mut self, ttl: Duration) -> Pool {
+        self.signin_ttl = ttl;
+        self
+    }
+
+    /// Begins signing in to `name` (R-MCP-22): returns the page to open and
+    /// whether the host itself listens for the browser's redirect
+    /// (`loopback`, for a host on the person's own machine; else the person
+    /// pastes the address to `sign_in_finish`). Writes nothing until it
+    /// finishes; a sign-in already begun for `name` is dropped.
+    pub async fn sign_in_start(self: &std::sync::Arc<Pool>, name: &str, loopback: bool) -> Result<(String, bool), crate::engine::EngineError> {
+        use crate::engine::EngineError;
+        let found = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s.name == name).map(|(s, _)| s.config.url.clone());
+        let Some(url) = found else { return Err(EngineError::new("no_such_server", format!("this session has no MCP server {name:?}"))) };
+        let (Some(url), Some(creds)) = (url, self.credentials.clone()) else { return Err(EngineError::new("not_remote", format!("{name} is not a remote server: there is nothing to sign in to"))) };
+        let http = crate::http::client()?;
+        let pending = crate::mcp_oauth::start(&http, name, &url).await?;
+        let page = pending.authorize_url.clone();
+        let wait = if loopback {
+            let (pool, server) = (self.clone(), name.to_string());
+            SignInWait::Loopback(Abort(tokio::spawn(async move {
+                if pending.finish_loopback(&http, &creds).await.is_ok() {
+                    pool.reconnect(&server).await;
+                }
+            })))
+        } else {
+            SignInWait::Paste(Box::new(pending))
+        };
+        self.signins.lock().unwrap_or_else(|e| e.into_inner()).insert(name.to_string(), SignIn { at: std::time::Instant::now(), wait });
+        Ok((page, loopback))
+    }
+
+    /// Finishes the sign-in `sign_in_start` began with the address the
+    /// browser landed on (never logged or echoed). Refused when none is
+    /// waiting for a paste, when it expired, or when its state is not this
+    /// sign-in's; the attempt is spent either way.
+    pub async fn sign_in_finish(self: &std::sync::Arc<Pool>, name: &str, landing: &str) -> Result<(), crate::engine::EngineError> {
+        use crate::engine::EngineError;
+        let taken = self.signins.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
+        let Some(SignIn { at, wait: SignInWait::Paste(pending) }) = taken else {
+            return Err(EngineError::new("no_sign_in", format!("no sign-in to {name} is waiting for an address — start one first")));
+        };
+        if at.elapsed() > self.signin_ttl {
+            return Err(EngineError::new("sign_in_expired", format!("the sign-in to {name} expired (ten minutes) — start again")));
+        }
+        let creds = self.credentials.clone().ok_or_else(|| EngineError::new("not_remote", format!("{name} has nowhere to keep a sign-in")))?;
+        pending.finish_pasted(&crate::http::client()?, &creds, landing).await?;
+        self.reconnect(name).await;
+        Ok(())
     }
 
     /// Each server's status and tools, in configuration order.
@@ -538,6 +616,7 @@ impl Pool {
     pub async fn sign_out(&self, name: &str) -> Result<bool, crate::engine::EngineError> {
         let found = self.kept.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s.name == name).cloned();
         let Some((_, slot)) = found else { return Ok(false) };
+        self.signins.lock().unwrap_or_else(|e| e.into_inner()).remove(name);
         if let Some(c) = &self.credentials {
             // Blocks on the credentials lock, which a refresh may hold across its request.
             let c = c.clone();
@@ -573,6 +652,7 @@ impl Pool {
 
     /// Closes every connection: processes stopped, HTTP sessions ended.
     pub async fn close(&self) {
+        self.signins.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let kept = std::mem::take(&mut *self.kept.lock().unwrap_or_else(|e| e.into_inner()));
         close_all(kept.into_iter().map(|(_, c)| c).collect()).await;
     }

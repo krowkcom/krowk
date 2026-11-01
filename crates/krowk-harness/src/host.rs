@@ -537,6 +537,27 @@ impl Host {
         }
     }
 
+    /// Begins a sign-in to one of the session's MCP servers on this host
+    /// (`mcp::Pool::sign_in_start`): the page to open, and whether this host
+    /// listens for the redirect itself (`loopback`, asked of a host on the
+    /// person's own machine).
+    pub async fn mcp_sign_in_start(&self, session_id: &str, server: &str, loopback: bool) -> Result<(String, bool), EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_in_start(server, loopback).await,
+            None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+        }
+    }
+
+    /// Finishes it with the pasted landing address (`mcp::Pool::sign_in_finish`).
+    pub async fn mcp_sign_in_finish(&self, session_id: &str, server: &str, landing: &str) -> Result<(), EngineError> {
+        let pool = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).map(|(p, _)| p.clone());
+        match pool {
+            Some(p) => p.sign_in_finish(server, landing).await,
+            None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+        }
+    }
+
     /// Keeps an idle session's backend process this long instead of
     /// `BACKEND_IDLE`.
     pub fn with_backend_idle(mut self, idle: std::time::Duration) -> Host {

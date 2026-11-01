@@ -209,3 +209,75 @@ fn r_mcp_6_13_failed_checks_name_themselves_and_write_nothing_and_no_token_leaks
     assert!(e.contains("https check") && e.contains("token endpoint"), "{e}");
     assert!(!path.exists());
 }
+
+fn follow(f: &Fake, page: &str) -> String {
+    use std::io::{Read, Write};
+    let mut c = std::net::TcpStream::connect(f.auth.url.trim_start_matches("http://")).unwrap();
+    write!(c, "GET /authorize?{} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n", page.split_once('?').unwrap().1).unwrap();
+    let mut out = String::new();
+    let _ = c.read_to_string(&mut out);
+    out.lines().find_map(|l| l.strip_prefix("location: ")).unwrap().trim().to_string()
+}
+
+fn pool(f: &Fake, path: &std::path::Path, ttl: std::time::Duration) -> krowk_harness::mcp::Pool {
+    let _ = f;
+    krowk_harness::mcp::Pool::default().with_credentials(path.to_path_buf()).with_signin_ttl(ttl)
+}
+
+async fn adopted(f: &Fake, p: &krowk_harness::mcp::Pool) {
+    let config = serde_json::from_value(json!({"type": "http", "url": format!("{}/mcp", f.mcp.url)})).unwrap();
+    p.adopt(vec![krowk_harness::mcp::Server { name: "mobbin".into(), config, source: "test".into(), cwd: std::env::temp_dir() }]).await;
+}
+
+/// R-MCP-22: a sign-in begun on the host finishes with a pasted address
+/// (tokens stored), refuses another state, and expires.
+#[tokio::test]
+async fn r_mcp_22_a_host_sign_in_finishes_with_the_pasted_address_and_refuses_a_wrong_state_or_an_expired_one() {
+    let f = fake(Knobs { registration: true, ..Knobs::default() });
+    let path = creds("host-paste");
+    let url = format!("{}/mcp", f.mcp.url);
+    let p = Arc::new(pool(&f, &path, std::time::Duration::from_millis(600)));
+    adopted(&f, &p).await;
+    assert_eq!(p.sign_in_start("nope", false).await.unwrap_err().code, "no_such_server");
+    let (page, loopback) = p.sign_in_start("mobbin", false).await.unwrap();
+    assert!(!loopback && page.contains("code_challenge"));
+    let e = p.sign_in_finish("mobbin", &format!("{}?code=forged&state=wrong", query(&page)["redirect_uri"])).await.unwrap_err();
+    assert!(e.message.contains("state"), "{}", e.message);
+    assert!(mcp_oauth::load(&path, "mobbin", &url).unwrap().is_none());
+    assert_eq!(p.sign_in_finish("mobbin", "x").await.unwrap_err().code, "no_sign_in", "a refused attempt is spent");
+    // Expired.
+    let (page, _) = p.sign_in_start("mobbin", false).await.unwrap();
+    let landing = follow(&f, &page);
+    tokio::time::sleep(std::time::Duration::from_millis(700)).await;
+    assert_eq!(p.sign_in_finish("mobbin", &landing).await.unwrap_err().code, "sign_in_expired");
+    assert!(mcp_oauth::load(&path, "mobbin", &url).unwrap().is_none());
+    // In time.
+    let (page, _) = p.sign_in_start("mobbin", false).await.unwrap();
+    p.sign_in_finish("mobbin", &follow(&f, &page)).await.unwrap();
+    assert!(mcp_oauth::load(&path, "mobbin", &url).unwrap().is_some());
+    // Sign out removes it again.
+    assert!(p.sign_out("mobbin").await.unwrap());
+    assert!(mcp_oauth::load(&path, "mobbin", &url).unwrap().is_none());
+    p.close().await;
+}
+
+/// R-MCP-22: on a local host the loopback completes the sign-in with no paste.
+#[tokio::test]
+async fn r_mcp_22_a_local_host_completes_a_sign_in_on_its_loopback_without_a_paste() {
+    let f = fake(Knobs { registration: true, ..Knobs::default() });
+    let path = creds("host-loopback");
+    let url = format!("{}/mcp", f.mcp.url);
+    let p = Arc::new(pool(&f, &path, std::time::Duration::from_secs(600)));
+    adopted(&f, &p).await;
+    let (page, loopback) = p.sign_in_start("mobbin", true).await.unwrap();
+    assert!(loopback);
+    tokio::task::spawn_blocking(move || providers::browse(&page)).await.unwrap();
+    for _ in 0..100 {
+        if mcp_oauth::load(&path, "mobbin", &url).unwrap().is_some() {
+            p.close().await;
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("the loopback never completed");
+}

@@ -50,6 +50,16 @@ pub use look::dim;
 
 /// A newer krowk release than this one, as the launcher's last check found it.
 #[derive(Clone, Debug, PartialEq)]
+/// A sign-in to an MCP server begun from `/mcp`: the page to open, whether
+/// the host listens for the browser itself, and (when it does not) the
+/// address pasted so far.
+pub struct McpSignIn {
+    pub server: String,
+    pub url: String,
+    pub loopback: bool,
+    pub paste: String,
+}
+
 pub struct Update {
     pub current: String,
     pub latest: String,
@@ -1035,6 +1045,10 @@ pub struct App {
     pub mcp: Result<Vec<McpServer>, String>,
     pub mcp_at: usize,
     pub mcp_open: Option<String>,
+    /// `/mcp`: a sign-in under way, and the servers already told of as
+    /// needing one (once each, per session).
+    pub mcp_signin: Option<McpSignIn>,
+    mcp_noticed: std::collections::HashSet<(String, String)>,
     /// `permissions.defaultMode` as config.json has it, for `/settings`;
     /// none when it names nothing.
     pub default_mode: Option<String>,
@@ -1160,6 +1174,8 @@ impl App {
             mcp: Ok(Vec::new()),
             mcp_at: 0,
             mcp_open: None,
+            mcp_signin: None,
+            mcp_noticed: Default::default(),
             default_mode: None,
             default_mode_overridden: None,
             setting_at: 0,
@@ -3672,13 +3688,44 @@ impl App {
                 }
             }
         }
-        out.push(keys("`↑` `↓` choose · `enter` tools · `r` reconnect · `esc` close"));
+        if let Some(si) = &self.mcp_signin {
+            out.push(Line::default());
+            out.push(Line::from(Span::styled(clip(&format!("Open this page to sign in to {}:", si.server), width), dim())));
+            out.push(Line::from(Span::styled(si.url.chars().filter(|c| !c.is_whitespace()).collect::<String>(), look::link())));
+            if si.loopback {
+                out.push(Line::from(Span::styled("Waiting for the browser; this view updates when you are signed in.", dim())));
+                out.push(keys("`esc` cancel"));
+            } else {
+                out.push(Line::from(Span::styled("Then paste the address your browser lands on:", dim())));
+                // The address carries the sign-in's code: its length, not its text.
+                let typed = if si.paste.is_empty() { String::new() } else { format!("address pasted ({} characters)", si.paste.chars().count()) };
+                out.push(Line::from(vec![Span::styled("› ", bold()), Span::raw(typed)]));
+                out.push(keys("`enter` finish · `esc` cancel"));
+            }
+            return out;
+        }
+        out.push(keys("`↑` `↓` choose · `enter` tools · `s` sign in · `o` sign out · `r` reconnect · `esc` close"));
         out
+    }
+
+    /// Text typed or pasted for the pasted landing address: kept, never
+    /// shown.
+    pub fn mcp_paste(&mut self, text: &str) {
+        if let Some(si) = self.mcp_signin.as_mut().filter(|s| !s.loopback) {
+            si.paste.extend(text.chars().filter(|c| !c.is_control()));
+            self.dirty = true;
+        }
     }
 
     /// Shows what the host says of the session's servers, the chosen row
     /// staying on its server.
     pub fn set_mcp(&mut self, now: Result<Vec<McpServer>, String>) {
+        if let Ok(servers) = &now {
+            self.note_mcp_sign_in(servers);
+            if self.mcp_signin.as_ref().is_some_and(|si| servers.iter().any(|s| s.name == si.server && s.state == McpState::Connected)) {
+                self.mcp_signin = None;
+            }
+        }
         if let (Ok(old), Ok(new)) = (&self.mcp, &now)
             && let Some(name) = old.get(self.mcp_at).map(|s| &s.name)
         {
@@ -3694,6 +3741,17 @@ impl App {
         self.dirty = true;
     }
 
+    /// R-MCP-11: a server that needs a sign-in is told of once per session,
+    /// as one line.
+    pub fn note_mcp_sign_in(&mut self, servers: &[McpServer]) {
+        let session = self.session_id.clone().unwrap_or_default();
+        for s in servers.iter().filter(|s| s.state == McpState::NeedsSignIn) {
+            if self.mcp_noticed.insert((session.clone(), s.name.clone())) {
+                self.notice(&format!("{0} needs sign-in: run krowk mcp login {0} or open /mcp", s.name));
+            }
+        }
+    }
+
     /// The server `/mcp` has chosen.
     pub fn mcp_selected(&self) -> Option<&McpServer> {
         self.mcp.as_ref().ok().and_then(|s| s.get(self.mcp_at))
@@ -3704,6 +3762,7 @@ impl App {
         self.mcp = Ok(Vec::new());
         self.mcp_at = 0;
         self.mcp_open = None;
+        self.mcp_signin = None;
         self.set_mcp(now);
         self.overlay = Overlay::Mcp;
     }
@@ -6618,6 +6677,31 @@ mod tests {
         // A host that cannot say shows why, in the view's place.
         a.set_mcp(Err("/mcp needs krowk 0.16.0 or later on the host daemon, which runs 0.15.0".into()));
         assert!(text(&a.view(Instant::now()).0).iter().any(|r| r.contains("/mcp needs krowk 0.16.0 or later")));
+    }
+
+    #[test]
+    fn r_mcp_11_22_a_server_needing_sign_in_is_told_of_once_and_the_sign_in_shows_its_page_without_echoing_the_address() {
+        use krowk_harness::protocol::{McpServer, McpState};
+        let server = |state| McpServer { name: "github".into(), source: ".mcp.json".into(), state, reason: None, tools: Vec::new() };
+        let told = |a: &App| a.pending.iter().filter(|l| l.spans.iter().any(|s| s.content.contains("github needs sign-in: run krowk mcp login github or open /mcp"))).count();
+        let mut a = app();
+        a.set_width(100);
+        a.note_mcp_sign_in(&[server(McpState::NeedsSignIn)]);
+        a.note_mcp_sign_in(&[server(McpState::NeedsSignIn)]);
+        a.note_mcp_sign_in(&[server(McpState::Connected)]);
+        a.set_mcp(Ok(vec![server(McpState::NeedsSignIn)]));
+        assert_eq!(told(&a), 1);
+        a.open_mcp(Ok(vec![server(McpState::NeedsSignIn)]));
+        a.mcp_signin = Some(McpSignIn { server: "github".into(), url: "https://auth.example/authorize?x=1".into(), loopback: false, paste: String::new() });
+        a.mcp_paste("http://127.0.0.1:1/callback?code=SECRET&state=s");
+        let rows = text(&a.view(Instant::now()).0);
+        assert!(rows.iter().any(|r| r.contains("Open this page to sign in to github:")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("https://auth.example/authorize?x=1")), "{rows:?}");
+        assert!(rows.iter().any(|r| r.contains("Then paste the address your browser lands on:")), "{rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("SECRET")), "the address is not echoed: {rows:?}");
+        // Connected: the sign-in is over.
+        a.set_mcp(Ok(vec![server(McpState::Connected)]));
+        assert!(a.mcp_signin.is_none());
     }
 
     #[test]

@@ -63,6 +63,15 @@ impl Remote {
     pub async fn mcp_reconnect(&self, _: &str, _: &str) -> Result<(), EngineError> {
         match *self {}
     }
+    pub async fn mcp_sign_in_start(&self, _: &str, _: &str) -> Result<String, EngineError> {
+        match *self {}
+    }
+    pub async fn mcp_sign_in_finish(&self, _: &str, _: &str, _: &str) -> Result<(), EngineError> {
+        match *self {}
+    }
+    pub async fn mcp_sign_out(&self, _: &str, _: &str) -> Result<(), EngineError> {
+        match *self {}
+    }
     pub fn attach_later(&self, _: &str, _: Option<&str>) {
         match *self {}
     }
@@ -153,6 +162,38 @@ impl Link {
             Link::Local(h) => Ok(h.mcp_servers(session_id)),
             Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
             Link::Remote { client, .. } => client.mcp_status(session_id).await.map_err(|e| e.message),
+            Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
+        }
+    }
+
+    /// Begins signing in to the session's MCP server on its host: the page
+    /// to open, and whether the host listens for the browser itself (a host
+    /// in this process does; a daemon is asked for the pasted address).
+    pub async fn mcp_sign_in_start(&self, session_id: &str, server: &str) -> Result<(String, bool), String> {
+        match self {
+            Link::Local(h) => h.mcp_sign_in_start(session_id, server, true).await.map_err(|e| e.message),
+            Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
+            Link::Remote { client, .. } => client.mcp_sign_in_start(session_id, server).await.map(|u| (u, false)).map_err(|e| e.message),
+            Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
+        }
+    }
+
+    /// Finishes it with the pasted landing address, which is never echoed.
+    pub async fn mcp_sign_in_finish(&self, session_id: &str, server: &str, landing: &str) -> Result<(), String> {
+        match self {
+            Link::Local(h) => h.mcp_sign_in_finish(session_id, server, landing).await.map_err(|e| e.message),
+            Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
+            Link::Remote { client, .. } => client.mcp_sign_in_finish(session_id, server, landing).await.map_err(|e| e.message),
+            Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
+        }
+    }
+
+    /// Signs the session's MCP server out.
+    pub async fn mcp_sign_out(&self, session_id: &str, server: &str) -> Result<(), String> {
+        match self {
+            Link::Local(h) => h.mcp_sign_out(session_id, server).await.map_err(|e| e.message).and_then(|f| f.then_some(()).ok_or_else(|| format!("no MCP server {server}"))),
+            Link::Remote { client, .. } if let Err(m) = mcp_gate(client.protocol_version(), &client.krowk_version()) => Err(m),
+            Link::Remote { client, .. } => client.mcp_sign_out(session_id, server).await.map_err(|e| e.message),
             Link::Synced { .. } => Err("/mcp is the host's: this session runs on another machine".into()),
         }
     }

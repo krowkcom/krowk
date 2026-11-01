@@ -665,6 +665,52 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
             });
         }
+        ClientFrame::McpSignInStart { id: cmd_id, session_id, server } => {
+            let host = state.borrow().mcp_host_of(&session_id, &server);
+            let state = state.clone();
+            tokio::task::spawn_local(async move {
+                let answer = match host {
+                    // The browser is the client's, on another machine as far as this host knows: the address is pasted.
+                    Some(h) => h.mcp_sign_in_start(&session_id, &server, false).await,
+                    None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+                };
+                let f = match answer {
+                    Ok((url, loopback)) => ServerFrame::McpSignIn { id: cmd_id, url, loopback },
+                    Err(e) => ServerFrame::Done { id: cmd_id, result: None, error: Some(error_info(&e)) },
+                };
+                state.borrow_mut().send(id, "", control(&f));
+            });
+        }
+        ClientFrame::McpSignInFinish { id: cmd_id, session_id, server, landing } => {
+            let host = state.borrow().mcp_host_of(&session_id, &server);
+            let state = state.clone();
+            tokio::task::spawn_local(async move {
+                let done = match host {
+                    Some(h) => h.mcp_sign_in_finish(&session_id, &server, &landing).await,
+                    None => Err(EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}"))),
+                };
+                state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error: done.err().map(|e| error_info(&e)) }));
+            });
+        }
+        ClientFrame::McpSignOut { id: cmd_id, session_id, server } => {
+            let hosts = state.borrow().mcp_hosts(&session_id);
+            let state = state.clone();
+            tokio::task::spawn_local(async move {
+                let mut done = Ok(false);
+                for h in hosts {
+                    done = h.mcp_sign_out(&session_id, &server).await;
+                    if !matches!(done, Ok(false)) {
+                        break;
+                    }
+                }
+                let error = match done {
+                    Ok(true) => None,
+                    Ok(false) => Some(error_info(&EngineError::new("no_such_server", format!("session {session_id} has no MCP server {server:?}")))),
+                    Err(e) => Some(error_info(&e)),
+                };
+                state.borrow_mut().send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
+            });
+        }
         ClientFrame::Reload { id: cmd_id, changed, renamed_from, renamed_to } => {
             // Moved now, not once it is read: a command dispatched after
             // this frame waits for it, and a directory read under way is
@@ -1071,6 +1117,11 @@ impl State {
     fn mcp_hosts(&self, session: &str) -> Vec<Rc<Host>> {
         let first = self.hubs.get(session).map(|h| h.host.clone());
         first.into_iter().chain(self.hosts.values().cloned()).collect()
+    }
+
+    /// The host whose MCP pool for `session` holds `server`.
+    fn mcp_host_of(&self, session: &str, server: &str) -> Option<Rc<Host>> {
+        self.mcp_hosts(session).into_iter().find(|h| h.mcp_status(session).iter().any(|s| s.name == server))
     }
 
     fn tidy(&mut self) {
