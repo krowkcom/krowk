@@ -99,8 +99,22 @@ fn messages(history: &[HistoryItem], images: &crate::images::Loaded) -> Vec<Valu
                     }
                 }
             }
-            Item::ToolResult { call_id, output, is_error, .. } => {
-                let block = json!({ "type": "tool_result", "tool_use_id": call_id, "content": output, "is_error": is_error });
+            Item::ToolResult { call_id, output, is_error, images: refs } => {
+                // Text, then each image behind its label: the model reads
+                // the result's images where the server put them.
+                let content = if refs.is_empty() {
+                    json!(output)
+                } else {
+                    let mut c = vec![json!({ "type": "text", "text": output })];
+                    for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
+                        c.push(json!({ "type": "text", "text": label }));
+                        if let Some(data) = data {
+                            c.push(json!({ "type": "image", "source": { "type": "base64", "media_type": r.media_type, "data": data } }));
+                        }
+                    }
+                    Value::Array(c)
+                };
+                let block = json!({ "type": "tool_result", "tool_use_id": call_id, "content": content, "is_error": is_error });
                 // Results lead their message: insert before any text already there.
                 match out.last_mut() {
                     Some((r, blocks)) if r == "user" => {

@@ -171,6 +171,25 @@ pub fn decode(inputs: &[ImageInput]) -> Result<Vec<Decoded>, EngineError> {
         .collect()
 }
 
+/// An image an MCP server returned, as base64: held to the same format,
+/// size and side limits as one a person attaches, and refused with the
+/// reason a person reads in its place (R-MCP-15).
+pub fn from_base64(number: u32, data: &str) -> Result<Decoded, String> {
+    if data.len() / 4 * 3 > MAX_BYTES + 3 {
+        return Err(format!("it is {:.1} MB; the most one image may be is {} MB", data.len() as f64 / 4.0 * 3.0 / (1024.0 * 1024.0), max_mb()));
+    }
+    let bytes = base64::engine::general_purpose::STANDARD.decode(data.trim().as_bytes()).map_err(|_| "it is not base64".to_string())?;
+    if bytes.len() > MAX_BYTES {
+        return Err(format!("it is {:.1} MB; the most one image may be is {} MB", bytes.len() as f64 / (1024.0 * 1024.0), max_mb()));
+    }
+    let t = sniff(&bytes).ok_or("it is not a PNG, JPEG, GIF or WebP image")?;
+    match dimensions(&bytes) {
+        Some((w, h)) if w.max(h) <= MAX_SIDE && w > 0 && h > 0 => Ok(Decoded { number, media_type: t, bytes: bytes.into() }),
+        Some((w, h)) => Err(format!("it is {w}x{h}, and an image may be at most {MAX_SIDE} pixels a side")),
+        None => Err("its header could not be read".to_string()),
+    }
+}
+
 /// The sha256 of the bytes, in lowercase hex: the image's name, so the same
 /// image kept twice (a prompt rolled over to another instance, steering
 /// sent again) is one file.

@@ -23,6 +23,8 @@ while IFS= read -r line; do
   *'"method":"tools/call"'*)
     # $FAKE_DIE: a file that, once it exists, makes a call end the server.
     [ -n "$FAKE_DIE" ] && [ -e "$FAKE_DIE" ] && exit 1
+    # $FAKE_CONTENT: a JSON array every call answers with, as is.
+    [ -n "$FAKE_CONTENT" ] && { printf '{"jsonrpc":"2.0","id":%s,"result":{"content":%s}}\n' "$id" "$FAKE_CONTENT"; continue; }
     text=$(printf '%s' "$line" | sed -n 's/.*"text":"\([^"]*\)".*/\1/p')
     printf '{"jsonrpc":"2.0","id":%s,"result":{"content":[{"type":"text","text":"echo: %s"}]}}\n' "$id" "$text" ;;
   esac

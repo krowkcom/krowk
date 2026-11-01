@@ -658,3 +658,43 @@ fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
     assert!(gone(second), "shutdown stopped the other's process");
     assert_eq!(http_count(&web, "DELETE"), 2);
 }
+
+const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
+
+#[test]
+fn r_mcp_14_an_image_block_and_an_image_resource_reach_the_model_inside_the_tool_result() {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
+    let m = mock::serve(script(vec![(
+        "mcp_call",
+        json!({"tool": "fake:echo", "input": {"text": "x"}}),
+    )]));
+    let h = Home::new("image", &m.url);
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
+    let content = json!([
+        {"type": "text", "text": "a screen"},
+        {"type": "image", "data": b64, "mimeType": "image/png"},
+        {"type": "resource", "resource": {"uri": "x://y", "mimeType": "image/png", "blob": b64}},
+        {"type": "image", "data": "bm90IGFuIGltYWdl", "mimeType": "image/png"},
+    ]);
+    std::fs::write(h.repo().join(".mcp.json"), json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_CONTENT": content.to_string()}}}}).to_string()).unwrap();
+    let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
+    let r = run(&host, prompt(PermissionMode::Default));
+    assert_eq!(r.result, "Done.");
+    let seen = m.seen.lock().unwrap();
+    let result = seen.last().unwrap().body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|msg| msg["content"].as_array().cloned().unwrap_or_default())
+        .find(|b| b["type"] == "tool_result")
+        .unwrap();
+    let parts = result["content"].as_array().unwrap();
+    let text = parts.iter().filter_map(|p| p["text"].as_str()).collect::<Vec<_>>().join("\n");
+    assert!(text.starts_with("a screen\n[image #1]\n[image #2]\n[image not shown: it is not a PNG"), "{text}");
+    // The same bytes twice are one file, sent once and named after that.
+    assert_eq!(parts.iter().filter(|p| p["type"] == "image").count(), 1, "{parts:?}");
+    assert_eq!(parts.iter().find(|p| p["type"] == "image").unwrap()["source"]["data"], b64);
+    let id = std::fs::read_dir(log::sessions_dir(&h.env()).unwrap()).unwrap().next().unwrap().unwrap().path();
+    assert_eq!(std::fs::read_dir(id.join("images")).unwrap().count(), 1);
+}

@@ -3,7 +3,7 @@
 //! no tool, the turn is interrupted, or the step cap is hit.
 
 use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, TurnContext, TurnEnd};
-use crate::protocol::{Effort, Item, ItemKind, ProviderBlob, ToolDefinition, Usage, WireApi};
+use crate::protocol::{Effort, ImageRef, Item, ItemKind, ProviderBlob, ToolDefinition, Usage, WireApi};
 use crate::hooks;
 use crate::subagent::SUBAGENT;
 use crate::tools;
@@ -399,6 +399,7 @@ impl<C: ModelClient> NativeEngine<C> {
                     }
                     continue;
                 }
+                let kept = Kept::default();
                 let mut interrupted = false;
                 let mut at = 0;
                 while at < calls.len() {
@@ -425,7 +426,7 @@ impl<C: ModelClient> NativeEngine<C> {
                         // an interrupt: a subagent hears the parent's and
                         // stops itself, so its log ends with its turn.
                         let runs: Vec<BoxFuture<'_, (String, bool)>> =
-                            batch.iter().zip(&ids).map(|((call_id, name, input), item_id)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, (call_id, item_id), name, input)) as BoxFuture<'_, (String, bool)>).collect();
+                            batch.iter().zip(&ids).map(|((call_id, name, input), item_id)| Box::pin(call_tool(&ctx, &hooks, &tool_env, &events, (call_id, item_id, &kept), name, input)) as BoxFuture<'_, (String, bool)>).collect();
                         let out = fan_out(&ctx, runs).await;
                         interrupted = *ctx.cancel.borrow();
                         out
@@ -433,7 +434,7 @@ impl<C: ModelClient> NativeEngine<C> {
                         let (call_id, name, input) = &batch[0];
                         let mut cancel = ctx.cancel.clone();
                         let r = tokio::select! {
-                            r = call_tool(&ctx, &hooks, &tool_env, &events, (call_id, &ids[0]), name, input) => r,
+                            r = call_tool(&ctx, &hooks, &tool_env, &events, (call_id, &ids[0], &kept), name, input) => r,
                             _ = crate::engine::cancelled(&mut cancel) => ("interrupted before it finished".to_string(), true),
                         };
                         // An interrupt that landed while the call waited for
@@ -442,10 +443,16 @@ impl<C: ModelClient> NativeEngine<C> {
                         interrupted = *ctx.cancel.borrow();
                         vec![r]
                     };
+                    let mut has_images = false;
                     for (((call_id, _, _), item_id), (output, is_error)) in batch.iter().zip(ids).zip(results) {
-                        let item = Item::ToolResult { call_id: call_id.clone(), output, is_error, images: Vec::new() };
+                        let images = kept.lock().unwrap_or_else(|e| e.into_inner()).remove(call_id).unwrap_or_default();
+                        has_images |= !images.is_empty();
+                        let item = Item::ToolResult { call_id: call_id.clone(), output, is_error, images };
                         let _ = events.send(EngineEvent::ItemCompleted { item_id, item: item.clone() }).await;
                         req.history.push(HistoryItem { item, response: None });
+                    }
+                    if has_images {
+                        load_images(&ctx.session_dir, reads_images, &mut req).await;
                     }
                 }
                 if interrupted {
@@ -575,7 +582,7 @@ async fn load_images(session_dir: &std::path::Path, reads: bool, req: &mut Model
         .history
         .iter()
         .filter_map(|h| match &h.item {
-            Item::UserText { images, .. } => Some(images.iter().cloned()),
+            Item::UserText { images, .. } | Item::ToolResult { images, .. } => Some(images.iter().cloned()),
             _ => None,
         })
         .flatten()
@@ -687,11 +694,15 @@ struct SessionCall {
     hook_input: serde_json::Value,
 }
 
+/// The images the turn's MCP calls returned, by call id, until their
+/// results are logged.
+type Kept = std::sync::Mutex<std::collections::HashMap<String, Vec<ImageRef>>>;
+
 /// One tool call, whole: the skill tool, the session's own tools, or a
 /// file tool or bash — its PreToolUse hooks, its permission, the run, its
 /// PostToolUse hooks. A subagent's calls come here like any other's, under
 /// the parent's mode and rules.
-async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'_>, events: &Events, (call_id, item_id): (&str, &str), name: &str, input: &serde_json::Value) -> (String, bool) {
+async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'_>, events: &Events, (call_id, item_id, kept): (&str, &str, &Kept), name: &str, input: &serde_json::Value) -> (String, bool) {
     if !offers(ctx, name) {
         return (format!("there is no tool named {name:?} in this session — use the tools it offers"), true);
     }
@@ -740,7 +751,19 @@ async fn call_tool(ctx: &TurnContext, hooks: &Hooked<'_>, env: &tools::ToolEnv<'
             (format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"), true)
         }
         None if name == crate::mcp::SEARCH && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.search(input, &|s, t| mcp_denied(ctx, s, t) || !reaches(ctx, s, t), &ctx.cancel).await,
-        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => ctx.compat.mcp.call(input, &|s, t| mcp_denied(ctx, s, t) || !reaches(ctx, s, t), &ctx.cancel).await,
+        None if name == crate::mcp::CALL && !ctx.compat.mcp.is_empty() => {
+            let mut shown = Vec::new();
+            let (mut text, is_error) = ctx.compat.mcp.call_with_images(input, &|s, t| mcp_denied(ctx, s, t) || !reaches(ctx, s, t), &ctx.cancel, &mut shown).await;
+            // Kept in the session's `images/` and named on the logged
+            // result; one that cannot be kept is a note in its text.
+            match crate::images::save(&ctx.session_dir, &shown) {
+                Ok(refs) => {
+                    kept.lock().unwrap_or_else(|e| e.into_inner()).insert(call_id.to_string(), refs);
+                }
+                Err(e) => text.push_str(&format!("\n[the result's images could not be kept: {}]", e.message)),
+            }
+            (text, is_error)
+        }
         None if skill => crate::compat::skills::load(&ctx.compat.skills, input),
         // Its live output — a wait for a build slot — goes on its result.
         None => tools::execute(name, input, &tools::ToolEnv { live: Some((events, item_id)), ..*env }, ctx.gate.scope(opens)).await,
