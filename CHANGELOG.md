@@ -9,6 +9,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Changed
+
+- **MCP servers stay connected across a session's turns.** krowk's own
+  agent used to start every stdio server and repeat every HTTP
+  `initialize` on each prompt; now a session's servers are started once and
+  reused by its later turns and its subagents. The configuration is still
+  read every turn: a server you edit restarts alone, and one you remove,
+  or whose repository is no longer trusted or whose `.mcp.json` changed
+  underneath the trust check, is closed before the next model call. A
+  server that failed or was cut off is started again on the next turn.
+  Connections close when the host drops an idle session and when it stops,
+  ending HTTP sessions with `DELETE`.
+
 ## [0.15.0] - 2026-11-01
 
 ### Added

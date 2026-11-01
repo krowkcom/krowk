@@ -63,7 +63,7 @@ impl Home {
     /// each logging to its own file (`log_of`).
     fn mcp_json_of(&self, names: &[&str], tools: usize) {
         let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
-        let servers: serde_json::Map<String, Value> = names.iter().map(|n| (n.to_string(), json!({"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.log_of(n)}}))).collect();
+        let servers: serde_json::Map<String, Value> = names.iter().map(|n| (n.to_string(), json!({"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": tools.to_string(), "FAKE_LOG": self.log_of(n), "FAKE_PID": self.root.join(format!("{n}.pid"))}}))).collect();
         std::fs::write(self.repo().join(".mcp.json"), json!({"mcpServers": servers}).to_string()).unwrap();
     }
 
@@ -76,6 +76,10 @@ impl Home {
     }
 
     fn host(&self, trusted: bool, user: Value) -> Host {
+        self.host_by(Arc::new(move |_: &std::path::Path| trusted), user)
+    }
+
+    fn host_by(&self, trusted: Arc<dyn Fn(&std::path::Path) -> bool + Send + Sync>, user: Value) -> Host {
         Host::new(HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
@@ -90,7 +94,7 @@ impl Home {
                 home: Some(self.root.join("home")),
                 krowk_dir: Some(self.root.join("home/.krowk")),
                 user: Some(user),
-                trusted: Some(Arc::new(move |_: &std::path::Path| trusted)),
+                trusted: Some(trusted),
                 ..Config::default()
             },
             agents: krowk_harness::subagent::AgentsConfig::none(),
@@ -472,6 +476,9 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
     let parent_sent = results_in(seen.iter().rfind(|b| !is_child(b)).unwrap());
     assert_eq!(parent_sent[1], "echo: from the parent", "{parent_sent:?}");
     assert!(std::fs::read_to_string(h.log_of("other")).unwrap().contains("tools/call"));
+    // The subagent used the session's connection to `fake`, not one of its
+    // own.
+    assert_eq!(count(&h.fake_log(), "initialize"), 1, "one connection to fake, shared by the parent and its subagent");
 }
 
 /// R-SUB-1 (ticket 25): a subagent whose definition names one MCP tool,
@@ -500,4 +507,154 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_tool_cannot_call_its_sibling() {
     assert_eq!(sent[2], "echo: hi");
     let log = std::fs::read_to_string(h.fake_log()).unwrap();
     assert!(!log.contains("sneaked") && log.matches("tools/call").count() == 1, "only the allowed call reached the server: {log}");
+}
+
+/// A model that answers each prompt with one `mcp_search`, which starts
+/// every server, then "Done.": a turn that touches all the servers.
+fn search_each_turn(body: &Value, _: usize) -> Reply {
+    match body["messages"].as_array().and_then(|m| m.last()) {
+        Some(last) if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) => Reply::sse(&mock::text_stream("Done.")),
+        _ => Reply::sse(&mock::tool_use("toolu_s", "mcp_search", &json!({"query": "echo"}))),
+    }
+}
+
+/// One turn of a session, on a runtime that outlives it: the host is not
+/// shut down, so the session's MCP connections stay.
+fn turn(rt: &tokio::runtime::Runtime, host: &Host, session: Option<&str>) -> RunResult {
+    let Command::Prompt { text, model, permission_mode, .. } = prompt(PermissionMode::BypassPermissions) else { unreachable!() };
+    let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None };
+    rt.block_on(async {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
+        let r = host.execute(cmd, tx).await.unwrap().unwrap();
+        while rx.try_recv().is_ok() {}
+        r
+    })
+}
+
+fn runtime() -> tokio::runtime::Runtime {
+    tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
+}
+
+fn count(log: &std::path::Path, method: &str) -> usize {
+    std::fs::read_to_string(log).unwrap_or_default().matches(&format!("\"method\":\"{method}\"")).count()
+}
+
+/// The process ids a stand-in server logged, oldest first.
+fn pids(h: &Home, name: &str) -> Vec<i32> {
+    std::fs::read_to_string(h.root.join(format!("{name}.pid"))).unwrap_or_default().lines().map(|l| l.parse().unwrap()).collect()
+}
+
+fn alive(pid: i32) -> bool {
+    // A zombie has been killed; only its parent has yet to reap it.
+    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+        Ok(st) => st.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"),
+        Err(_) => false,
+    }
+}
+
+fn gone(pid: i32) -> bool {
+    (0..60).any(|_| {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        !alive(pid)
+    })
+}
+
+/// A streamable-HTTP stand-in that gives out session id `s-1`.
+fn http_server() -> mock::Mock {
+    mock::serve_seen(|seen, _| {
+        let id = seen.body["id"].clone();
+        match seen.body["method"].as_str() {
+            Some("initialize") => Reply { headers: vec![("mcp-session-id".into(), "s-1".into())], ..Reply::json(200, &json!({"jsonrpc": "2.0", "id": id, "result": {"protocolVersion": "2025-06-18", "capabilities": {}}})) },
+            Some("tools/list") => Reply::json(200, &json!({"jsonrpc": "2.0", "id": id, "result": {"tools": [{"name": "echo", "description": "Echo a text back.", "inputSchema": {"type": "object"}}]}})),
+            _ => Reply::status(202, ""),
+        }
+    })
+}
+
+fn http_count(server: &mock::Mock, method: &str) -> usize {
+    server.seen.lock().unwrap().iter().filter(|s| s.method == method || s.body["method"] == method).count()
+}
+
+/// D5, R-MCP-1: two turns of one session start each server once — one
+/// process and one `initialize` for the stdio server, one `initialize` for
+/// the HTTP one.
+#[test]
+fn r_mcp_1_two_turns_of_a_session_start_each_server_once() {
+    let web = http_server();
+    let m = mock::serve(search_each_turn);
+    let h = Home::new("reuse", &m.url);
+    h.mcp_json(1);
+    let host = h.host(true, json!({"mcpServers": {"web": {"type": "http", "url": web.url}}}));
+    let rt = runtime();
+    let first = turn(&rt, &host, None);
+    let second = turn(&rt, &host, Some(&first.session_id));
+    assert_eq!(second.result, "Done.");
+    assert_eq!(count(&h.fake_log(), "initialize"), 1, "the stdio server was initialized once");
+    assert_eq!(pids(&h, "fake").len(), 1, "and spawned once");
+    assert_eq!(http_count(&web, "initialize"), 1, "the HTTP server was initialized once");
+    assert_eq!(count(&h.fake_log(), "tools/list"), 1, "its tools are not listed again either");
+    rt.block_on(host.shutdown());
+}
+
+/// D5, R-MCP-2: between turns, a changed server restarts alone; a removed
+/// one and one of a repository that is no longer trusted are closed before
+/// the next model call.
+#[test]
+fn r_mcp_2_a_changed_server_restarts_alone_and_a_removed_or_untrusted_one_is_closed() {
+    let m = mock::serve(search_each_turn);
+    let h = Home::new("changes", &m.url);
+    h.mcp_json_of(&["a", "b", "c"], 1);
+    let trusted = Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let t = trusted.clone();
+    let host = h.host_by(Arc::new(move |_: &std::path::Path| t.load(std::sync::atomic::Ordering::SeqCst)), json!({}));
+    let rt = runtime();
+    let id = turn(&rt, &host, None).session_id;
+    // b's configuration changes: only b starts again.
+    let mut v: Value = serde_json::from_str(&std::fs::read_to_string(h.repo().join(".mcp.json")).unwrap()).unwrap();
+    v["mcpServers"]["b"]["env"]["FAKE_TOOLS"] = json!("2");
+    std::fs::write(h.repo().join(".mcp.json"), v.to_string()).unwrap();
+    turn(&rt, &host, Some(&id));
+    assert_eq!((count(&h.log_of("a"), "initialize"), count(&h.log_of("b"), "initialize"), count(&h.log_of("c"), "initialize")), (1, 2, 1));
+    assert!(gone(pids(&h, "b")[0]), "b's old process was stopped");
+    // c is removed: its process is gone before the turn's model call.
+    v["mcpServers"].as_object_mut().unwrap().remove("c");
+    std::fs::write(h.repo().join(".mcp.json"), v.to_string()).unwrap();
+    turn(&rt, &host, Some(&id));
+    assert!(gone(pids(&h, "c")[0]), "c was closed");
+    assert!(alive(pids(&h, "a")[0]), "a was not touched");
+    // The repository is no longer trusted: its servers are closed, and the
+    // model is offered no MCP tool.
+    trusted.store(false, std::sync::atomic::Ordering::SeqCst);
+    turn(&rt, &host, Some(&id));
+    assert!(gone(pids(&h, "a")[0]), "a was closed once its repository was untrusted");
+    let seen = m.seen.lock().unwrap();
+    let last = seen.last().unwrap().body["tools"].as_array().unwrap().iter().map(|t| t["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    assert!(!last.iter().any(|t| t.starts_with("mcp_")), "{last:?}");
+    drop(seen);
+    rt.block_on(host.shutdown());
+}
+
+/// R-MCP-5: the idle sweep closes a session's servers, and so does the
+/// host's shutdown — processes stopped, an HTTP session ended with DELETE.
+#[test]
+fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
+    let web = http_server();
+    let m = mock::serve(search_each_turn);
+    let h = Home::new("close", &m.url);
+    h.mcp_json(1);
+    let host = h.host(true, json!({"mcpServers": {"web": {"type": "http", "url": web.url}}})).with_backend_idle(std::time::Duration::ZERO);
+    let rt = runtime();
+    turn(&rt, &host, None);
+    assert_eq!(http_count(&web, "DELETE"), 0, "a session's connections stay between its turns");
+    // Another session's prompt sweeps the idle one.
+    turn(&rt, &host, None);
+    let first = pids(&h, "fake")[0];
+    assert!(gone(first), "the idle session's process was stopped");
+    assert_eq!(http_count(&web, "DELETE"), 1, "its HTTP session was ended");
+    assert!(web.seen.lock().unwrap().iter().any(|s| s.method == "DELETE" && s.header("mcp-session-id") == Some("s-1")));
+    let second = pids(&h, "fake")[1];
+    assert!(alive(second));
+    rt.block_on(host.shutdown());
+    assert!(gone(second), "shutdown stopped the other's process");
+    assert_eq!(http_count(&web, "DELETE"), 2);
 }
