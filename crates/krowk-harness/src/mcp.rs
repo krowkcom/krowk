@@ -140,8 +140,33 @@ pub struct Server {
 /// Whether a server name is one rules can name unambiguously: `mcp__a__b`
 /// must read one way, so no `__`, no `_` at either end, and nothing a rule
 /// treats as syntax.
-pub(crate) fn good_name(n: &str) -> bool {
+pub fn good_name(n: &str) -> bool {
     !n.is_empty() && !n.contains("__") && !n.starts_with('_') && !n.ends_with('_') && n.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+impl ServerConfig {
+    /// How it connects: `stdio`, `http`, `sse` (named, not spoken), or
+    /// `invalid` when it names neither a command nor a url.
+    pub fn transport(&self) -> &'static str {
+        match (self.kind.as_deref(), &self.command, &self.url) {
+            (Some("sse"), ..) => "sse",
+            (_, Some(_), _) => "stdio",
+            (_, None, Some(_)) => "http",
+            _ => "invalid",
+        }
+    }
+}
+
+/// The servers a repository's `.mcp.json` names that `discover` leaves out
+/// because the repository is not trusted, or its file changed since it was:
+/// what `krowk mcp list` shows as untrusted. None once it is trusted.
+pub fn untrusted_project(cfg: &crate::permissions::Config, cwd: &Path) -> Vec<(String, ServerConfig)> {
+    let root = crate::trust::root(cwd);
+    if cfg.trusted.as_ref().is_some_and(|t| t(&root)) {
+        return Vec::new();
+    }
+    let Some(Value::Object(m)) = read_project(&root).and_then(|v| v.get("mcpServers").cloned()) else { return Vec::new() };
+    m.into_iter().filter(|(n, _)| good_name(n)).filter_map(|(n, c)| Some((n, ServerConfig::deserialize(c).ok()?))).collect()
 }
 
 /// Every server that applies in `cwd`, lowest source first, later names

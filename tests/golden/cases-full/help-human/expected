@@ -123,6 +123,9 @@ Other
   worktrees prune   Clear what deleted worktrees left, and old snapshots
   mcp login         Sign in to a remote MCP server that asks for OAuth
   mcp logout        Forget a server's sign-in
+  mcp add           Add an MCP server to krowk's config.json
+  mcp remove        Remove a server from config.json, and its stored sign-in
+  mcp list          List the servers krowk would load here, without connecting
   host status       Whether the daemon runs: socket, pid, uptime, sessions
   host attach       Follow a session in the daemon, live, as stream-json
   host stop         Stop the daemon, once no turn runs in it
