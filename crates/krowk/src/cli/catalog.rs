@@ -544,6 +544,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(feature = "harness")]
     c.commands.push(devices_command());
     #[cfg(feature = "harness")]
+    c.commands.push(mcp_command());
+    #[cfg(feature = "harness")]
     c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
@@ -684,6 +686,25 @@ fn worktrees_command() -> Command {
             cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
         ],
         ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
+    }
+}
+
+/// `krowk mcp`: the MCP servers krowk's own agent talks to.
+#[cfg(feature = "harness")]
+fn mcp_command() -> Command {
+    Command {
+        subcommands: vec![
+            Command {
+                args: vec![arg("name", "The server's name in your MCP config", true)],
+                flags: vec![flag("no-browser", BOOL, "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display")],
+                ..cmd("login", "krowk mcp login <name> [--no-browser]", "Sign in to a remote MCP server that asks for OAuth")
+            },
+            Command {
+                args: vec![arg("name", "The server's name", true)],
+                ..cmd("logout", "krowk mcp logout <name>", "Forget a server's sign-in")
+            },
+        ],
+        ..cmd("mcp", "", "The MCP servers krowk's own agent uses")
     }
 }
 
@@ -1054,6 +1075,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "providers",
             #[cfg(feature = "harness")]
             "worktrees",
+            #[cfg(feature = "harness")]
+            "mcp",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
@@ -1078,6 +1101,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 pub const ALL_ONLY: &[&str] = &[
     "auth",
     "help",
+    #[cfg(feature = "harness")]
+    "mcp",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.

@@ -18,6 +18,8 @@ mod devices;
 mod host;
 mod machine;
 #[cfg(feature = "harness")]
+mod mcp;
+#[cfg(feature = "harness")]
 mod own_worktree;
 #[cfg(feature = "harness")]
 mod pairing;
@@ -354,6 +356,10 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["status", ..] => status::status(ctx),
+        #[cfg(feature = "harness")]
+        ["mcp", "login", ..] => mcp::login(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["mcp", "logout", ..] => mcp::logout(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["host"] => host::status(ctx),
         #[cfg(all(feature = "harness", unix))]
