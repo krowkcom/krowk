@@ -721,7 +721,7 @@ fn mcp_command() -> Command {
             },
             cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
         ],
-        ..cmd("mcp", "", "The MCP servers krowk's own agent uses (add, remove, list, login, logout)")
+        ..cmd("mcp", "", "MCP servers krowk's agent uses (add, remove, list, login)")
     }
 }
 

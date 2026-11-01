@@ -1403,7 +1403,7 @@ stdout:
     },
     {
       "name": "mcp",
-      "summary": "The MCP servers krowk's own agent uses (add, remove, list, login, logout)",
+      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
@@ -3165,7 +3165,7 @@ tty:
     },
     {
       "name": "mcp",
-      "summary": "The MCP servers krowk's own agent uses (add, remove, list, login, logout)",
+      "summary": "MCP servers krowk's agent uses (add, remove, list, login)",
       "subcommands": [
         {
           "name": "login",
