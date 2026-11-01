@@ -139,6 +139,7 @@ fn query(page: &str) -> HashMap<String, String> {
 fn r_mcp_6_7_8_9_a_loopback_sign_in_registers_a_public_client_and_stores_0600() {
     let f = fake(Knobs { registration: true, ..Knobs::default() });
     let path = creds("loopback");
+    std::fs::write(&path, r#"{"version":1,"instances":{"grok":{"issuer":"i","clientId":"c","tokenEndpoint":"t","accessToken":"keep-me","obtainedAtMs":1}}}"#).unwrap();
     let page = login(&f, &path, None).unwrap();
     let q = query(&page);
     assert_eq!(q["code_challenge_method"], "S256");
@@ -161,7 +162,8 @@ fn r_mcp_6_7_8_9_a_loopback_sign_in_registers_a_public_client_and_stores_0600() 
     assert!(mcp_oauth::load(&path, "mobbin", "https://elsewhere.example/mcp").unwrap().is_none());
     assert!(mcp_oauth::remove(&path, "mobbin").unwrap());
     assert!(!mcp_oauth::remove(&path, "mobbin").unwrap());
-    assert!(std::fs::read_to_string(&path).unwrap().find("at-secret").is_none());
+    let after = std::fs::read_to_string(&path).unwrap();
+    assert!(after.find("at-secret").is_none() && after.contains("keep-me"), "other sections survive a sign-in and a logout: {after}");
 }
 
 #[test]

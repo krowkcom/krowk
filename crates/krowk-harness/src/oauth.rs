@@ -319,8 +319,14 @@ pub async fn discover(http: &reqwest::Client, issuer: &str) -> Result<Endpoints,
 }
 
 /// An OAuth error answer's words: `error` and `error_description`.
+/// Text a server sent, as one line a terminal can show: control characters
+/// (an escape sequence among them) dropped.
+pub(crate) fn clean(text: &str) -> String {
+    text.chars().filter(|c| !c.is_control()).take(300).collect()
+}
+
 pub(crate) fn oauth_error(v: &Value) -> (String, String) {
-    let s = |k: &str| v.get(k).and_then(Value::as_str).unwrap_or_default().to_string();
+    let s = |k: &str| clean(v.get(k).and_then(Value::as_str).unwrap_or_default());
     (s("error"), s("error_description"))
 }
 
@@ -351,7 +357,7 @@ pub(crate) fn stored_from(v: &Value, e: &Endpoints, client_id: &str, scope: &str
         access_token: access.into(),
         // A server that does not rotate the refresh token keeps the old one.
         refresh_token: v.get("refresh_token").and_then(Value::as_str).filter(|t| !t.is_empty()).map(String::from).or(old_refresh),
-        expires_at_ms: v.get("expires_in").and_then(Value::as_i64).map(|s| now + s * 1000),
+        expires_at_ms: v.get("expires_in").and_then(Value::as_i64).map(|s| now.saturating_add(s.saturating_mul(1000))),
         scope: v.get("scope").and_then(Value::as_str).unwrap_or(scope).into(),
         obtained_at_ms: now,
     })
@@ -514,8 +520,8 @@ pub(crate) async fn callback(listener: &tokio::net::TcpListener, state: &str) ->
         let (page, result) = match (q.get("code"), q.get("error")) {
             (Some(code), None) => ("krowk is signed in. You can close this tab.", Ok(code.clone())),
             (_, err) => {
-                let err = err.cloned().unwrap_or_else(|| "no code".into());
-                let desc = q.get("error_description").cloned().unwrap_or_default();
+                let err = clean(&err.cloned().unwrap_or_else(|| "no code".into()));
+                let desc = clean(q.get("error_description").map(String::as_str).unwrap_or_default());
                 ("The sign-in did not complete. You can close this tab and look at the terminal.", Err(fail(format!("the sign-in was refused ({err} {desc})"))))
             }
         };

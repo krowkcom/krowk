@@ -20,7 +20,7 @@
 //! **The tokens are secrets**: never printed, logged or put in an error.
 
 use crate::engine::EngineError;
-use crate::oauth::{fail, oauth_error, post_form, stored_from, trusted, Endpoints, Pkce, Stored, AUTH_REQUEST_TIMEOUT, LOGIN_TIMEOUT};
+use crate::oauth::{clean, fail, oauth_error, post_form, stored_from, trusted, Endpoints, Pkce, Stored, AUTH_REQUEST_TIMEOUT, LOGIN_TIMEOUT};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -101,7 +101,7 @@ pub struct Pending {
 
 fn www_authenticate_metadata(headers: &reqwest::header::HeaderMap) -> Option<String> {
     for v in headers.get_all(reqwest::header::WWW_AUTHENTICATE) {
-        let v = v.to_str().ok()?;
+        let Ok(v) = v.to_str() else { continue };
         if let Some(i) = v.find("resource_metadata=\"") {
             let rest = &v[i + "resource_metadata=\"".len()..];
             return rest.split('"').next().map(String::from);
@@ -117,6 +117,7 @@ async fn json_at(http: &reqwest::Client, url: &str) -> Result<Option<Value>, Eng
 /// The server's protected-resource metadata (RFC 9728): where its 401 points,
 /// else the well-known path under its own host.
 async fn resource_metadata(http: &reqwest::Client, server: &str, url: &str) -> Result<Value, EngineError> {
+    let u = https("server URL", url)?;
     let probe = http
         .post(url)
         .header("accept", "application/json, text/event-stream")
@@ -130,7 +131,6 @@ async fn resource_metadata(http: &reqwest::Client, server: &str, url: &str) -> R
     if probe.status().as_u16() != 401 {
         return Err(fail(format!("{server} did not ask for a sign-in (HTTP {}) — it needs none, or takes a header in its config", probe.status().as_u16())));
     }
-    let u = https("server URL", url)?;
     let candidate = match www_authenticate_metadata(probe.headers()) {
         Some(m) => m,
         None => format!("{}://{}/.well-known/oauth-protected-resource{}", u.scheme(), u.host_str().map(|h| u.port().map_or(h.to_string(), |p| format!("{h}:{p}"))).unwrap_or_default(), u.path().trim_end_matches('/')),
@@ -164,10 +164,8 @@ async fn server_metadata(http: &reqwest::Client, issuer: &str) -> Result<(Endpoi
     if named.trim_end_matches('/') != iss {
         return Err(fail(format!("{iss}'s metadata names the issuer {named:?}, not itself — refusing to sign in against it (issuer check)")));
     }
-    if let Some(m) = meta.get("code_challenge_methods_supported").and_then(Value::as_array)
-        && !m.iter().any(|v| v == "S256")
-    {
-        return Err(fail(format!("{iss} does not offer PKCE S256, which krowk requires")));
+    if !meta.get("code_challenge_methods_supported").and_then(Value::as_array).is_some_and(|m| m.iter().any(|v| v == "S256")) {
+        return Err(fail(format!("{iss} does not advertise PKCE S256, which krowk requires (PKCE check)")));
     }
     let token = s("token_endpoint").ok_or_else(|| fail(format!("{iss}'s metadata names no token endpoint")))?;
     https("token endpoint", &token)?;
@@ -269,7 +267,7 @@ impl Pending {
             return Err(fail("the pasted address carries another state than this sign-in's — refused (state check); start again"));
         }
         if let Some(err) = q.get("error") {
-            return Err(fail(format!("the sign-in was refused ({err} {})", q.get("error_description").map(String::as_str).unwrap_or_default())));
+            return Err(fail(format!("the sign-in was refused ({} {})", clean(err), clean(q.get("error_description").map(String::as_str).unwrap_or_default()))));
         }
         let code = q.get("code").filter(|c| !c.is_empty()).ok_or_else(|| fail("the pasted address carries no code — paste the address the browser landed on after you signed in"))?;
         self.exchange(http, credentials, code).await
