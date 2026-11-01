@@ -156,6 +156,17 @@
         "running": {
           "type": "boolean"
         },
+        "result": {
+          "description": "An attach by `clientRef` whose prompt's turn ended before it\ncaught up: that turn's result, as its `done` had it.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunResult"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "error": {
           "anyOf": [
             {

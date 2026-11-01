@@ -37,7 +37,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::replay::{self, Tail};
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION, RunResult};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -192,6 +192,11 @@ struct Ref {
     failed: Option<ErrorInfo>,
     /// Attaches asked before either: (client, attach id).
     waiting: Vec<(u64, u64)>,
+    /// Attaches by it that follow its session: (client, attach id).
+    following: Vec<(u64, u64)>,
+    /// How its prompt ended, as its `done` said: an attach that catches
+    /// up after the turn is over answers with it.
+    ended: Option<(Option<RunResult>, Option<ErrorInfo>)>,
 }
 
 struct Hub {
@@ -616,7 +621,7 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             if let Some(r) = &client_ref {
                 let mut s = state.borrow_mut();
                 s.refs.retain(|_, x| x.at.elapsed() < REF_KEPT);
-                s.refs.insert(r.clone(), Ref { at: Instant::now(), session: named(&command).map(String::from), failed: None, waiting: Vec::new() });
+                s.refs.insert(r.clone(), Ref { at: Instant::now(), session: named(&command).map(String::from), failed: None, waiting: Vec::new(), following: Vec::new(), ended: None });
             }
             tokio::task::spawn_local(execute(state.clone(), id, cmd_id, command, after, client_ref));
         }
@@ -624,8 +629,9 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             // From the start: the client was cut before its first line.
             let mut s = state.borrow_mut();
             let error = match s.refs.get_mut(&r) {
-                Some(Ref { session: Some(session), .. }) => {
+                Some(Ref { session: Some(session), following, .. }) => {
                     let session = session.clone();
+                    following.push((id, cmd_id));
                     drop(s);
                     return attach(state, id, cmd_id, session, None, 0);
                 }
@@ -633,7 +639,7 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
                 Some(x) => return x.waiting.push((id, cmd_id)),
                 None => error_info(&EngineError::new("bad_session", format!("this host daemon ran no prompt {r:?} in the last {} minutes", REF_KEPT.as_secs() / 60))),
             };
-            s.send(id, "", control(&ServerFrame::Attached { id: cmd_id, session_id: String::new(), running: false, error: Some(error) }));
+            s.send(id, "", control(&ServerFrame::Attached { id: cmd_id, session_id: String::new(), running: false, result: None, error: Some(error) }));
         }
         ClientFrame::Attach { id: cmd_id, session_id, after_event_id, after_seq, epoch, client_ref: None } => {
             // A `seq` counts only within the daemon run that numbered it.
@@ -926,7 +932,9 @@ impl State {
         match client_ref.and_then(|c| self.refs.get_mut(c)) {
             Some(x) if x.session.is_none() => {
                 x.session = Some(session.to_string());
-                std::mem::take(&mut x.waiting)
+                let waiting = std::mem::take(&mut x.waiting);
+                x.following.extend(&waiting);
+                waiting
             }
             _ => Vec::new(),
         }
@@ -941,8 +949,25 @@ impl State {
         x.failed = Some(e.clone());
         let waiting = std::mem::take(&mut x.waiting);
         for (c, a) in waiting {
-            self.send(c, "", control(&ServerFrame::Attached { id: a, session_id: String::new(), running: false, error: Some(e.clone()) }));
+            self.send(c, "", control(&ServerFrame::Attached { id: a, session_id: String::new(), running: false, result: None, error: Some(e.clone()) }));
         }
+    }
+
+    /// A prompt that named its session ended: kept with its `clientRef`,
+    /// for an attach by it that catches up only once the turn is over.
+    fn end_ref(&mut self, client_ref: Option<&str>, result: &Option<RunResult>, error: &Option<ErrorInfo>) {
+        if let Some(x) = client_ref.and_then(|c| self.refs.get_mut(c)).filter(|x| x.session.is_some()) {
+            x.ended = Some((result.clone(), error.clone()));
+        }
+    }
+
+    /// How the prompt that attach `id` of `client` follows by its
+    /// `clientRef` ended, when it has; nothing for any other attach.
+    fn ended_for(&mut self, client: u64, id: u64) -> (Option<RunResult>, Option<ErrorInfo>) {
+        let x = self.refs.values_mut().find(|x| x.following.contains(&(client, id)));
+        let Some(x) = x else { return (None, None) };
+        x.following.retain(|f| *f != (client, id));
+        x.ended.clone().unwrap_or_default()
     }
 
     /// The session's hub, made on first need, with `client` following it.
@@ -1068,10 +1093,10 @@ impl State {
             return;
         }
         let stuck = h.running;
-        if stuck {
-            h.running = false;
-            h.turn.logged(true);
-        }
+        h.running = false;
+        // The turn's result, kept past its `turn.completed`, is not the
+        // next command's to replay.
+        h.turn.logged(true);
         let followers = h.followers.clone();
         for f in followers {
             self.send(f, session, control(&ServerFrame::Settled { session: session.to_string() }));
@@ -1127,7 +1152,9 @@ impl State {
             // replays of the turn starts after it, but for the running
             // children's state, which no log holds.
             hub.turn.logged(over);
-        } else if hub.running {
+        } else if hub.running || (hub.in_flight > 0 && matches!(&line, StreamLine::Live(LiveEvent::Result(r)) if r.session_id == root)) {
+            // The turn's result too, which comes after its `turn.completed`:
+            // an attach caught up before the command is over gets it.
             hub.turn.push(root, seq, line.clone(), json.len() + 64);
         }
         let asks = matches!(&line, StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(_)));
@@ -1303,6 +1330,7 @@ async fn execute(state: Shared, client: u64, id: u64, cmd: Command, after: u64, 
         Err(e) => (None, Some(error_info(&e))),
     };
     s.settle_ref(client_ref.as_deref(), error.clone());
+    s.end_ref(client_ref.as_deref(), &result, &error);
     // In the session's queue, behind its lines: a turn's `done` comes after
     // them, however far behind its client is.
     s.send(client, root.as_deref().unwrap_or(""), control(&ServerFrame::Done { id, result, error }));
@@ -1321,7 +1349,7 @@ pub(super) fn resync(state: &Shared, client: u64, session: String, cursor: outbo
         let Some(c) = s.clients.get(&client) else { return };
         let held = c.outbox.held(&session);
         match c.outbox.resynced(&session, Vec::new(), held, true) {
-            Some(id) => s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) })),
+            Some(id) => s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, result: None, error: Some(error_info(&e)) })),
             // Nothing to catch it up from: it cannot be given a stream
             // without a gap, so it is let go, and reconnects from its
             // cursor itself.
@@ -1336,7 +1364,7 @@ fn attach(state: &Shared, client: u64, id: u64, session: String, after: Option<S
     let mut s = state.borrow_mut();
     if !log::valid_id(&session) {
         let e = EngineError::new("bad_session", format!("{session:?} is not a session id — the sessionId a result names"));
-        return s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, error: Some(error_info(&e)) }));
+        return s.send(client, &session, control(&ServerFrame::Attached { id, session_id: session.clone(), running: false, result: None, error: Some(error_info(&e)) }));
     }
     if let Some(c) = s.clients.get(&client) {
         c.outbox.begin(&session, outbox::Cursor { seq: after_seq, log: after.as_deref().map(Rc::from) }, id);
@@ -1557,7 +1585,11 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, start: u6
         s.follow(session, host, client);
     }
     if let Some(id) = outbox.resynced(session, page, rest, last) {
-        s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, error: None }));
+        // Caught up on a lost prompt's session once its turn was over —
+        // the client came back late, or the read outlasted the turn: its
+        // result, which went to the connection that was cut.
+        let (result, error) = if running { (None, None) } else { s.ended_for(client, id) };
+        s.send(client, session, control(&ServerFrame::Attached { id, session_id: session.to_string(), running, result, error }));
     }
     true
 }
