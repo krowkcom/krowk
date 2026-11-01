@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-11-01
+
 ### Added
 
 - **`/detach` leaves a turn running in the host daemon.** Ctrl-D twice
@@ -3058,7 +3060,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/krowkcom/krowk/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/krowkcom/krowk/compare/v0.13.0...v0.14.0
 [0.13.0]: https://github.com/krowkcom/krowk/compare/v0.12.1...v0.13.0
 [0.12.1]: https://github.com/krowkcom/krowk/compare/v0.12.0...v0.12.1
