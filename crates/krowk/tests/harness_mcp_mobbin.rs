@@ -58,6 +58,10 @@ fn initializes(f: &mobbin::Fake) -> usize {
     f.mcp.seen.lock().unwrap().iter().filter(|s| s.body["method"] == "initialize" && s.header("authorization").is_some()).count()
 }
 
+fn calls(f: &mobbin::Fake) -> usize {
+    f.mcp.seen.lock().unwrap().iter().filter(|s| s.body["method"] == "tools/call").count()
+}
+
 /// The image blocks in the tool result of the latest request to the model.
 fn images(m: &mock::Mock) -> Vec<Value> {
     let seen = m.seen.lock().unwrap();
@@ -79,6 +83,8 @@ fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_ref
     // krowk mcp add, then krowk mcp login --no-browser with the address pasted.
     let out = krowk(&root, &["mcp", "add", "mobbin", &url, "--header", "X-Client: krowk-test"]).stdin(Stdio::null()).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let config_json = |root: &std::path::Path| -> Value { serde_json::from_slice(&std::fs::read(root.join("home/.krowk/config.json")).unwrap()).unwrap() };
+    assert_eq!(config_json(&root)["mcpServers"]["mobbin"]["headers"]["X-Client"], "krowk-test");
     let mut login = krowk(&root, &["mcp", "login", "mobbin", "--no-browser"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     let mut stderr = std::io::BufReader::new(login.stderr.take().unwrap());
     let page = loop {
@@ -91,13 +97,15 @@ fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_ref
     let landed = mobbin::land(&f.auth.url, &page);
     writeln!(login.stdin.take().unwrap(), "{landed}").unwrap();
     let out = login.wait_with_output().unwrap();
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stdout));
+    let mut rest = String::new();
+    std::io::Read::read_to_string(&mut stderr, &mut rest).unwrap();
+    assert!(out.status.success(), "{}{rest}", String::from_utf8_lossy(&out.stdout));
     let creds = root.join("home/.krowk/credentials.json");
     let stored = |key: &str| -> Value { serde_json::from_str::<Value>(&std::fs::read_to_string(&creds).unwrap()).unwrap()["mcp"]["mobbin"][key].clone() };
     assert_eq!(stored("accessToken"), "at-secret-1");
 
     // A native turn, in the host a session runs in, on what the binary wrote.
-    let config: Value = serde_json::from_slice(&std::fs::read(root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    let config = config_json(&root);
     let env = {
         let (home, base) = (root.join("home").display().to_string(), api.url.clone());
         move |k: &str| match k {
@@ -130,8 +138,9 @@ fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_ref
     assert_eq!(initializes(&f), 1);
 
     // The second turn reuses the connection.
-    turn(&rt, &host, Some(&first.session_id));
+    assert_eq!(turn(&rt, &host, Some(&first.session_id)).result, "Done.");
     assert_eq!(initializes(&f), 1, "one initialize across two turns");
+    assert_eq!(calls(&f), 2);
     assert_eq!(images(&api).len(), 1);
 
     // An expired token refreshes on its own, with the rotated pair stored.
@@ -140,6 +149,7 @@ fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_ref
     std::fs::write(&creds, v.to_string()).unwrap();
     let third = turn(&rt, &host, Some(&first.session_id));
     assert_eq!(third.result, "Done.");
+    assert_eq!(calls(&f), 3);
     assert_eq!(images(&api).len(), 1);
     assert_eq!(stored("accessToken"), "at-secret-2");
     let refreshes: Vec<_> = f.auth.seen.lock().unwrap().iter().filter(|s| s.raw.contains("grant_type=refresh_token")).map(|s| s.raw.clone()).collect();
