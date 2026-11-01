@@ -42,6 +42,9 @@ impl Home {
             "HOME" => self.root.join("home").display().to_string(),
             "ANTHROPIC_API_KEY" => "sk-test".into(),
             "ANTHROPIC_BASE_URL" => self.url.clone(),
+            "OPENAI_API_KEY" => "sk-openai-test".into(),
+            "OPENAI_BASE_URL" => format!("{}/v1", self.url),
+            "XAI_API_KEY" => "xai-test".into(),
             _ => String::new(),
         }
     }
@@ -75,6 +78,13 @@ impl Home {
         }
     }
 
+    /// Only the xAI instance needs its stand-in's address named.
+    fn instances(&self) -> InstancesConfig {
+        let mut cfg = InstancesConfig::default();
+        cfg.instances.insert("xai".into(), krowk_harness::instances::InstanceKind::XaiApi { api_key_env: None, base_url: Some(self.url.clone()), effort: None });
+        cfg
+    }
+
     fn host(&self, trusted: bool, user: Value) -> Host {
         self.host_by(Arc::new(move |_: &std::path::Path| trusted), user)
     }
@@ -83,7 +93,7 @@ impl Home {
         Host::new(HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
-            registry: Registry::resolve(&InstancesConfig::default(), &self.env()),
+            registry: Registry::resolve(&self.instances(), &self.env()),
             krowk_version: "test".into(),
             pricer: Arc::new(|_, _, _| None),
             catalog: Arc::new(|_, _| None),
@@ -697,4 +707,67 @@ fn r_mcp_14_an_image_block_and_an_image_resource_reach_the_model_inside_the_tool
     assert_eq!(parts.iter().find(|p| p["type"] == "image").unwrap()["source"]["data"], b64);
     let id = std::fs::read_dir(log::sessions_dir(&h.env()).unwrap()).unwrap().next().unwrap().unwrap().path();
     assert_eq!(std::fs::read_dir(id.join("images")).unwrap().count(), 1);
+}
+
+/// A model on another wire that calls `mcp_call` once, then answers; the
+/// request that answers is the one returned.
+fn image_result_request(instance: &str, model: &str, call: Reply, answer: Reply) -> Value {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
+    let (call, answer) = (std::sync::Mutex::new(Some(call)), std::sync::Mutex::new(Some(answer)));
+    let m = mock::serve(move |body, _| {
+        let answered = body.to_string().contains("a screen");
+        let slot = if answered { &answer } else { &call };
+        slot.lock().unwrap().take().unwrap_or_else(|| Reply::sse(&mock::text_stream("Done.")))
+    });
+    let h = Home::new(instance, &m.url);
+    let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
+    let content = json!([{"type": "text", "text": "a screen"}, {"type": "image", "data": b64, "mimeType": "image/png"}]);
+    std::fs::write(h.repo().join(".mcp.json"), json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_CONTENT": content.to_string()}}}}).to_string()).unwrap();
+    let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
+    let Command::Prompt { text, permission_mode, .. } = prompt(PermissionMode::Default) else { unreachable!() };
+    let cmd = Command::Prompt { session_id: None, text, images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode, toolset: None, effort: None, budget: None };
+    run(&host, cmd);
+    let seen = m.seen.lock().unwrap();
+    assert_eq!(seen.len(), 2);
+    seen[1].body.clone()
+}
+
+#[test]
+fn r_mcp_14_an_image_reaches_a_responses_model_as_an_input_image_in_the_function_call_output() {
+    let call = r#"event: response.output_item.added
+data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"mcp_call","arguments":""}}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","sequence_number":1,"output_index":0,"item":{"id":"fc_1","type":"function_call","status":"completed","call_id":"call_1","name":"mcp_call","arguments":"{\"tool\":\"fake:echo\",\"input\":{\"text\":\"x\"}}"}}
+
+event: response.completed
+data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.4","output":[],"usage":{"input_tokens":10,"output_tokens":5,"total_tokens":15}}}
+
+"#;
+    let done = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/openai/turn1_answer.sse")).unwrap();
+    let body = image_result_request("openai", "gpt-5.4", Reply::sse(call), Reply::sse(&done));
+    let out = body["input"].as_array().unwrap().iter().find(|i| i["type"] == "function_call_output").unwrap();
+    let parts = out["output"].as_array().unwrap();
+    assert_eq!(parts[0], json!({"type": "input_text", "text": parts[0]["text"]}));
+    assert!(parts[0]["text"].as_str().unwrap().starts_with("a screen"), "{parts:?}");
+    assert_eq!(parts.iter().filter(|p| p["type"] == "input_image").count(), 1, "{parts:?}");
+    let url = parts.iter().find(|p| p["type"] == "input_image").unwrap()["image_url"].as_str().unwrap();
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
+}
+
+#[test]
+fn r_mcp_14_an_image_reaches_a_chat_completions_model_in_a_user_message_after_the_tool_message() {
+    let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "grok-4.7", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}));
+    let call = chunk(json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "mcp_call", "arguments": "{\"tool\":\"fake:echo\",\"input\":{\"text\":\"x\"}}"}}]}), Value::Null) + &chunk(json!({}), json!("tool_calls")) + "data: [DONE]\n\n";
+    let done = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/chat/xai_answer.sse")).unwrap();
+    let body = image_result_request("xai", "grok-4.7", Reply::sse(&call), Reply::sse(&done));
+    let msgs = body["messages"].as_array().unwrap();
+    let roles: Vec<&str> = msgs.iter().map(|m| m["role"].as_str().unwrap()).collect();
+    assert_eq!(roles, ["system", "user", "assistant", "tool", "user"], "tool messages stay right after the call; the images follow");
+    assert!(msgs[3]["content"].as_str().unwrap().starts_with("a screen"));
+    let parts = msgs[4]["content"].as_array().unwrap();
+    assert!(parts[0]["text"].as_str().unwrap().contains("call_1"), "{parts:?}");
+    let url = parts.iter().find(|p| p["type"] == "image_url").unwrap()["image_url"]["url"].as_str().unwrap();
+    assert!(url.starts_with("data:image/png;base64,"), "{url}");
 }

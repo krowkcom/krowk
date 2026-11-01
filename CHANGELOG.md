@@ -11,14 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- **Images an MCP server returns now reach the model on Anthropic.** A tool
+- **Images an MCP server returns now reach the model.** A tool
   result's `image` blocks, and embedded resources with an `image/*` type and a
   blob, are kept in the session's `images/` and sent inside the `tool_result`
-  beside its text, so the model sees what Mobbin-style servers return. They
+  beside its text (on OpenAI Responses, as `input_image` parts of the
+  call's output; on Chat Completions, in a labelled `user` message right after
+  the step's tool messages), so the model sees what Mobbin-style servers return. They
   keep the usual image limits (size, side, format, how many a call sends); one
   over a limit, or not a PNG, JPEG, GIF or WebP, becomes a text note saying
-  why, and so does every image for a model that reads none. OpenAI and Chat
-  Completions models still get the text only.
+  why, and so does every image for a model that reads none.
 
 - **A tool result can carry images.** The session log's tool-result item
   gains an optional `images` list of references into the session's `images/`
