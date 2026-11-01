@@ -2632,7 +2632,8 @@ async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_an
     cv.commands.send(w.prompt(Some(&session), "and what did you see before the move?")).unwrap();
     until(&mut cv, Duration::from_secs(30), &mut frames, result_of).await;
     assert_eq!(sent("and what did you see before the move?"), want, "B's call carries the earlier three");
-    assert!(applied.cwd.starts_with(w.root.join("worktrees-b")));
+    // Both resolved: macOS reaches the temp folder through /var -> /private/var.
+    assert!(applied.cwd.canonicalize().unwrap().starts_with(w.root.join("worktrees-b").canonicalize().unwrap()), "the turn ran in B's worktree");
 }
 
 /// The ids of a session's events, `of` alone, in the order they came.
