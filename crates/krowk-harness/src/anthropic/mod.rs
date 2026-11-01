@@ -108,7 +108,8 @@ fn messages(history: &[HistoryItem], images: &crate::images::Loaded) -> Vec<Valu
                     let mut c = vec![json!({ "type": "text", "text": output })];
                     for (r, label, data) in crate::images::sent(refs, images, &mut shown) {
                         c.push(json!({ "type": "text", "text": label }));
-                        if let Some(data) = data {
+                        // An error result is text only on this API.
+                        if let Some(data) = data.filter(|_| !is_error) {
                             c.push(json!({ "type": "image", "source": { "type": "base64", "media_type": r.media_type, "data": data } }));
                         }
                     }
