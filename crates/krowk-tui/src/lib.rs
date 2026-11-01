@@ -1511,6 +1511,10 @@ impl<'h> Ui<'h> {
         // result (its own queue, so nothing is guessed), and what
         // was never accepted at all.
         let (acked, unsent) = app.end_turn_parts();
+        // R-MCP-11: a server a call just found signed out is told of.
+        if let Ok(servers) = self.mcp_servers(app).await {
+            app.note_mcp_sign_in(&servers);
+        }
         let mut left = match &r {
             Ok(Some(res)) => res.unread_steers.clone(),
             _ => acked,
@@ -2304,6 +2308,7 @@ impl<'h> Ui<'h> {
                             f.type_str(&s);
                         }
                     }
+                    None if app.overlay == Overlay::Mcp => app.mcp_paste(&s),
                     // Settings takes no text: a paste is dropped.
                     None if app.overlay == Overlay::Settings => {}
                     // What some terminals send for a clipboard holding only
@@ -2944,16 +2949,65 @@ impl<'h> Ui<'h> {
         }
     }
 
-    /// `/mcp` takes the arrows, enter (tools) and `r` (reconnect) while it
-    /// is open; esc closes it as any overlay.
+    /// `/mcp` takes the arrows, enter (tools), `s` and `o` (sign in and out)
+    /// and `r` (reconnect) while it is open; esc closes it as any overlay.
+    /// With a sign-in under way it takes the pasted address instead.
     async fn mcp_key(&mut self, app: &mut App, k: KeyEvent) -> Option<bool> {
+        let session = app.session_id.clone();
+        let chosen = app.mcp_selected().map(|s| s.name.clone());
+        if app.mcp_signin.is_some() {
+            match k.code {
+                KeyCode::Esc => app.mcp_signin = None,
+                KeyCode::Backspace => {
+                    if let Some(si) = app.mcp_signin.as_mut() {
+                        si.paste.pop();
+                    }
+                }
+                KeyCode::Char(c) if !k.modifiers.contains(KeyModifiers::CONTROL) => app.mcp_paste(&c.to_string()),
+                KeyCode::Enter => {
+                    if let (Some(id), Some(si)) = (&session, app.mcp_signin.take_if(|s| !s.loopback && !s.paste.is_empty())) {
+                        match self.host.mcp_sign_in_finish(id, &si.server, &si.paste).await {
+                            Ok(()) => {}
+                            Err(why) => app.notice(&why),
+                        }
+                        let now = self.mcp_servers(app).await;
+                        app.set_mcp(now);
+                    }
+                }
+                _ => return None,
+            }
+            app.touch();
+            return Some(false);
+        }
         match k.code {
             KeyCode::Up => app.mcp_at = app.mcp_at.saturating_sub(1),
             KeyCode::Down => app.mcp_at = (app.mcp_at + 1).min(app.mcp.as_ref().map_or(0, |s| s.len()).saturating_sub(1)),
             KeyCode::Enter => app.toggle_mcp_tools(),
             KeyCode::Char('r') => {
-                if let (Some(id), Some(s)) = (app.session_id.clone(), app.mcp_selected().map(|s| s.name.clone())) {
-                    if let Err(why) = self.host.mcp_reconnect(&id, &s).await {
+                if let (Some(id), Some(s)) = (&session, &chosen) {
+                    if let Err(why) = self.host.mcp_reconnect(id, s).await {
+                        app.notice(&why);
+                    }
+                    let now = self.mcp_servers(app).await;
+                    app.set_mcp(now);
+                }
+            }
+            KeyCode::Char('s') => {
+                if let (Some(id), Some(s)) = (&session, &chosen) {
+                    match self.host.mcp_sign_in_start(id, s).await {
+                        Ok((url, loopback)) => {
+                            if loopback {
+                                open_browser(&url);
+                            }
+                            app.mcp_signin = Some(app::McpSignIn { server: s.clone(), url, loopback, paste: String::new() });
+                        }
+                        Err(why) => app.notice(&why),
+                    }
+                }
+            }
+            KeyCode::Char('o') => {
+                if let (Some(id), Some(s)) = (&session, &chosen) {
+                    if let Err(why) = self.host.mcp_sign_out(id, s).await {
                         app.notice(&why);
                     }
                     let now = self.mcp_servers(app).await;
@@ -4210,6 +4264,23 @@ fn stop_answered(app: &mut App, id: &str, in_view: bool, answer: Result<(), Engi
             let why = format!("not stopped: {}", e.message);
             if in_view { app.child_say(&why) } else { app.notice(&why) }
         }
+    }
+}
+
+/// Hands the page to the desktop, started rather than waited on, for a host
+/// on this machine; the URL is one argument, no shell.
+fn open_browser(target: &str) {
+    let mut cmd = if cfg!(target_os = "macos") {
+        std::process::Command::new("open")
+    } else if cfg!(windows) {
+        let mut c = std::process::Command::new("rundll32");
+        c.arg("url.dll,FileProtocolHandler");
+        c
+    } else {
+        std::process::Command::new("xdg-open")
+    };
+    if let Ok(mut child) = cmd.arg(target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn() {
+        std::thread::spawn(move || child.wait());
     }
 }
 

@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`/mcp` signs in and out of MCP servers.** `s` on a server that needs a
+  sign-in completes the OAuth flow from the TUI: on your own machine krowk
+  opens the page and finishes when the browser lands, with nothing to paste;
+  against a host daemon (or over SSH) it shows the page and takes the
+  address the browser lands on, which is never echoed. A sign-in left
+  unanswered expires after ten minutes. `o` signs the server out, and its row
+  goes back to needs sign-in. The sign-in runs on the host that holds the
+  session's connections, so the tokens live where the calls are made
+  (`mcpSignInStart`, `mcpSignInFinish` and `mcpSignOut` requests in protocol
+  3). A server that turns out to need a sign-in is mentioned once per
+  session: `<name> needs sign-in: run krowk mcp login <name> or open /mcp`.
+
 - **The README now walks through MCP with Mobbin, and `krowk help mcp` shows
   it.** Two commands, `krowk mcp add mobbin https://api.mobbin.com/mcp` and
   `krowk mcp login mobbin`, then krowk's own agent searches Mobbin and sees the
