@@ -807,6 +807,12 @@ impl Mcp {
     /// loop refuses a subagent's call outside its allowlist before it is
     /// judged, and this holds it for any other caller.
     pub async fn call(&self, input: &Value, denied: Denied<'_>, cancel: &watch::Receiver<bool>) -> (String, bool) {
+        self.call_with_images(input, denied, cancel, &mut Vec::new()).await
+    }
+
+    /// [`Self::call`], with the images the result held (R-MCP-14) added to
+    /// `images`, numbered from 1; one over a limit is a note in the text.
+    pub async fn call_with_images(&self, input: &Value, denied: Denied<'_>, cancel: &watch::Receiver<bool>, images: &mut Vec<crate::images::Decoded>) -> (String, bool) {
         let (server, tool) = match target(input) {
             Ok(t) => t,
             Err(e) => return e,
@@ -848,7 +854,7 @@ impl Mcp {
             return (format!("{server}:{tool} {why}"), true);
         };
         match answer {
-            Ok(r) => render(&r),
+            Ok(r) => render(&r, images),
             Err(_) if conn.signin() => (needs_sign_in(&server), true),
             Err(e) => (format!("the MCP tool {server}:{tool} failed: {e}"), true),
         }
@@ -857,14 +863,27 @@ impl Mcp {
 
 /// A `tools/call` result as the model reads it: its text, and what else
 /// it held named.
-fn render(r: &Value) -> (String, bool) {
+fn render(r: &Value, images: &mut Vec<crate::images::Decoded>) -> (String, bool) {
     let mut out = String::new();
     for c in r.get("content").and_then(|c| c.as_array()).into_iter().flatten() {
         if !out.is_empty() {
             out.push('\n');
         }
+        let image = |data: Option<&Value>, images: &mut Vec<crate::images::Decoded>| match crate::images::from_base64(images.len() as u32 + 1, data.and_then(|d| d.as_str()).unwrap_or_default()) {
+            Ok(d) if images.len() < crate::images::MAX_IMAGES => {
+                let n = d.number;
+                images.push(d);
+                format!("[image #{n}]")
+            }
+            Ok(_) => format!("[image not shown: a result shows at most {} images]", crate::images::MAX_IMAGES),
+            Err(why) => format!("[image not shown: {why}]"),
+        };
         match c.get("type").and_then(|t| t.as_str()) {
             Some("text") => out.push_str(c.get("text").and_then(|t| t.as_str()).unwrap_or_default()),
+            Some("image") => out.push_str(&image(c.get("data"), images)),
+            Some("resource") if c.pointer("/resource/mimeType").and_then(|m| m.as_str()).is_some_and(|m| m.starts_with("image/")) && c.pointer("/resource/blob").is_some() => {
+                out.push_str(&image(c.pointer("/resource/blob"), images))
+            }
             Some("resource") => out.push_str(c.pointer("/resource/text").and_then(|t| t.as_str()).unwrap_or("[a resource]")),
             Some(other) => out.push_str(&format!("[{other} content omitted]")),
             None => {}
