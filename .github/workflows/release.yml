@@ -126,19 +126,49 @@ jobs:
           name: sbom
           path: sbom/
 
+  # Whether the tag's commit has already passed Full or bench: main's push
+  # runs Full on every commit, and bench can be run by hand before tagging
+  # (`gh workflow run bench.yml --ref main`). A gate that already passed on
+  # these exact bytes is not run again.
+  passed:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      full: ${{ steps.runs.outputs.full }}
+      bench: ${{ steps.runs.outputs.bench }}
+    steps:
+      - id: runs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+        run: |
+          for wf in full bench; do
+            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf.yml/runs?head_sha=$SHA&status=success&per_page=1" --jq '.total_count' || echo 0)
+            ok=$([ "${n:-0}" -gt 0 ] && echo true || echo false)
+            echo "$wf=$ok" >> "$GITHUB_OUTPUT"
+            echo "$wf.yml already passed on $SHA: $ok"
+          done
+
   # `make check` on every platform, at the tag's commit. A pull request is
   # signed off on one machine and main is checked after the merge, so this is
-  # where a release is held to all of them at once.
+  # where a release is held to all of them at once, unless main's Full has
+  # already done so for this commit.
   full:
+    needs: passed
+    if: needs.passed.outputs.full != 'true'
     uses: ./.github/workflows/full.yml
 
   # R-PERF-7: the budgets are held here rather than on every pull request.
   bench:
+    needs: passed
+    if: needs.passed.outputs.bench != 'true'
     uses: ./.github/workflows/bench.yml
 
-  # Nothing is built for release until every gate has passed.
+  # Nothing is built for release until every gate has passed, here or before.
   dist:
-    needs: [check, full, bench]
+    needs: [check, passed, full, bench]
+    if: ${{ !cancelled() && needs.check.result == 'success' && needs.passed.result == 'success' && contains(fromJSON('["success","skipped"]'), needs.full.result) && contains(fromJSON('["success","skipped"]'), needs.bench.result) }}
     uses: ./.github/workflows/dist.yml
     with:
       version: ${{ needs.check.outputs.version }}
@@ -151,6 +181,9 @@ jobs:
   # is the one rebuilt: the build most people and every container fetch.
   reproduce:
     needs: [check, dist]
+    # A gate skipped above (it passed before the tag) skips everything after
+    # it unless a job says otherwise; a failure anywhere still stops it.
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     env:
       TARGET: x86_64-unknown-linux-musl
@@ -230,6 +263,7 @@ jobs:
   # build and no third-party code but cosign runs here.
   sign:
     needs: [check, dist, reproduce]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -292,6 +326,7 @@ jobs:
   # release, not every krowk's next upgrade. Read-only, like the build.
   verify:
     needs: [check, verifier, sign]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -321,6 +356,7 @@ jobs:
 
   publish:
     needs: [check, dist, reproduce, sign, verify]
+    if: ${{ !cancelled() && !failure() }}
     runs-on: ubuntu-latest
     permissions:
       # Creates the release and uploads the archives to it.
