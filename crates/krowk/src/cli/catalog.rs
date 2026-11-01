@@ -850,7 +850,7 @@ fn mcp_command() -> Command {
                 args: vec![arg("name", "The server to remove", true)],
                 ..cmd("remove", "krowk mcp remove <name>", "Remove a server from config.json, and its stored sign-in")
             },
-            cmd("list", "krowk mcp list", "List the MCP servers krowk's agent would load here, without connecting"),
+            cmd("list", "krowk mcp list", "List the servers krowk would load here, without connecting"),
         ],
         ..cmd("mcp", "", "MCP servers for krowk's own agent (add, remove, list)")
     }
