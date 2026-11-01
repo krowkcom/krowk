@@ -1030,7 +1030,18 @@ with `claude auth login` or `codex login`).",
 Servers live in krowk's config.json (`mcpServers`, the shape Claude Code
 uses), for every repository. Project servers stay in the repository's
 .mcp.json, behind trust; `list` shows them, and Claude Code's, too. Only
-krowk's own agent uses them, not the Claude Code or Codex backends.",
+krowk's own agent uses them, not the Claude Code or Codex backends.
+
+A server that asks for OAuth, like Mobbin:
+
+  krowk mcp add mobbin https://api.mobbin.com/mcp
+  krowk mcp login mobbin
+
+`login` opens your browser, or with --no-browser (or over SSH) prints the page
+and reads the address your browser lands on. Tokens are stored in
+credentials.json and refreshed by krowk; a call to a server that needs sign-in
+says so and names this command. In the TUI, /mcp shows each server's status and
+tools, and signs in, signs out or reconnects it.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
