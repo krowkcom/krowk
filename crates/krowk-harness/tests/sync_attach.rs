@@ -2399,6 +2399,84 @@ fn git(dir: &Path, args: &[&str]) {
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// `repo` made a git repository with one commit, as a session to move needs.
+fn init_repo(repo: &Path) {
+    std::fs::remove_dir_all(repo.join(".git")).unwrap();
+    git(repo, &["init", "-q"]);
+    std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
+    git(repo, &["add", "tracked.txt"]);
+    git(repo, &["commit", "-q", "-m", "base"]);
+}
+
+/// B asks A for the session and takes it up, as `krowk sync take` does: a
+/// clone of A's repository, a home and a daemon of its own, the transport
+/// applied, the images the log names fetched, the log restored, and B's bridge
+/// hosting the session from the new worktree.
+async fn take_up(w: &World, b: &Device, session: &str, a_bridge: tokio::task::JoinHandle<Result<(), String>>, frames: &mut Vec<Instant>) -> (krowk_harness::sync::handoff::Applied, impl Fn(&str) -> String + Clone + Send + Sync + 'static, (watch::Sender<bool>, mpsc::UnboundedSender<()>, tokio::task::JoinHandle<Result<(), String>>)) {
+    use krowk_harness::sync::handoff;
+    let repo = w.repo();
+    // B: a clone of the repository, a home and a daemon of its own.
+    let b_repo = w.root.join("repo-b");
+    git(&w.root, &["clone", "-q", repo.to_str().unwrap(), b_repo.to_str().unwrap()]);
+    let b_env = w.env_at("home-b", "run-b");
+    w.serve_env(b_env.clone(), "home-b");
+
+    let mut bv = viewer::attach(w.viewer(b, session)).await.unwrap();
+    bv.handoff.send(()).unwrap();
+    let got = until(&mut bv, Duration::from_secs(30), frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
+    let handed = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().expect("A hands the session over");
+    drop(bv);
+    let ended = tokio::time::timeout(Duration::from_secs(20), a_bridge).await.expect("A's bridge stops").unwrap();
+    assert!(ended.as_ref().is_err_and(|e| e.starts_with(host::HANDED_OVER)), "{ended:?}");
+
+    // B takes it up, as `krowk sync take` does.
+    let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(b), w.keys(), w.chain(), session.to_string(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
+    let key = handoff::key_from_hex(&handed.key).unwrap();
+    let applied = tokio::task::spawn_blocking(move || {
+        let sealed = api.read_transport(&slug).unwrap();
+        let plain = e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
+        let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
+        let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
+        api.spend_transport(&slug).unwrap();
+        let gone = api.read_transport(&slug).unwrap_err();
+        assert_eq!(gone.status, 404, "R-HAND-2: a transport is read once, and gone when spent");
+        let s = api.show_sync_session(&id).unwrap();
+        let k = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
+        let index = krowk_harness::sync::store::open_index(&k, &id, &s.sealed_index).unwrap();
+        let events = krowk_harness::sync::store::attach(&api, &k, &id, index, None).unwrap().events;
+        let dir = log::sessions_dir(&b_env2).unwrap();
+        handoff::fetch_images(&api, &k, &id, &dir.join(&id), &events).unwrap();
+        handoff::restore_log(&dir, &id, &events, &applied.cwd, &me, &from).unwrap();
+        applied
+    })
+    .await
+    .unwrap();
+    let b_daemon = Arc::new(Client::connect(&daemon::socket(&b_env).unwrap(), &applied.cwd, "test", true).await.ok().expect("B's daemon answers"));
+    let o = host::Options {
+        relay: w.relay_a.clone(),
+        env: "development".into(),
+        api: w.as_device(b),
+        device: b.key.id(),
+        signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
+        keys: w.keys(),
+        chain: w.chain(),
+        session: session.to_string(),
+        title: String::new(),
+        cwd: applied.cwd.display().to_string(),
+        sessions: log::sessions_dir(&b_env).unwrap(),
+        ttl: host::LEASE_TTL,
+        keep: host::KEEP,
+        direct: None,
+        tailnet: None,
+        handed: Some(handed),
+        approval_wait: host::APPROVAL_WAIT,
+        stale: None,
+        supervised: None,
+    };
+    let bridge = w.run_bridge(o, b_daemon);
+    (applied, b_env, bridge)
+}
+
 /// R-HAND-1, R-HAND-2, R-HAND-3: a session moves from A to B mid-task.
 /// B asks A over the E2E link; A checkpoints, ships its base commit, its
 /// uncommitted change and the untracked file the session made as a
@@ -2409,15 +2487,10 @@ fn git(dir: &Path, args: &[&str]) {
 /// workspace may not store one.
 #[tokio::test]
 async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attached() {
-    use krowk_harness::sync::handoff;
     let w = World::new("handoff");
     let (a, b, c) = (w.device("machine-a"), w.device("machine-b"), w.device("machine-c"));
     let repo = w.repo();
-    std::fs::remove_dir_all(repo.join(".git")).unwrap();
-    git(&repo, &["init", "-q"]);
-    std::fs::write(repo.join("tracked.txt"), "one\n").unwrap();
-    git(&repo, &["add", "tracked.txt"]);
-    git(&repo, &["commit", "-q", "-m", "base"]);
+    init_repo(&repo);
     // Untracked before the session started: not the session's to move.
     std::fs::write(repo.join("old.txt"), "from before").unwrap();
     std::thread::sleep(Duration::from_millis(20));
@@ -2445,69 +2518,11 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let mut frames = Vec::new();
     until(&mut cv, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
 
-    // B: a clone of the repository, a home and a daemon of its own.
-    let b_repo = w.root.join("repo-b");
-    git(&w.root, &["clone", "-q", repo.to_str().unwrap(), b_repo.to_str().unwrap()]);
-    let b_env = w.env_at("home-b", "run-b");
-    w.serve_env(b_env.clone(), "home-b");
-
-    let mut bv = viewer::attach(w.viewer(&b, &session)).await.unwrap();
-    bv.handoff.send(()).unwrap();
-    let got = until(&mut bv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
-    let handed = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().expect("A hands the session over");
-    drop(bv);
-    let ended = tokio::time::timeout(Duration::from_secs(20), a_bridge).await.expect("A's bridge stops").unwrap();
-    assert!(ended.as_ref().is_err_and(|e| e.starts_with(host::HANDED_OVER)), "{ended:?}");
-
-    // B takes it up, as `krowk sync take` does.
-    let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(&b), w.keys(), w.chain(), session.clone(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
-    let key = handoff::key_from_hex(&handed.key).unwrap();
-    let applied = tokio::task::spawn_blocking(move || {
-        let sealed = api.read_transport(&slug).unwrap();
-        let plain = e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
-        let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
-        let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
-        api.spend_transport(&slug).unwrap();
-        let gone = api.read_transport(&slug).unwrap_err();
-        assert_eq!(gone.status, 404, "R-HAND-2: a transport is read once, and gone when spent");
-        let s = api.show_sync_session(&id).unwrap();
-        let k = krowk_harness::sync::store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
-        let index = krowk_harness::sync::store::open_index(&k, &id, &s.sealed_index).unwrap();
-        let events = krowk_harness::sync::store::attach(&api, &k, &id, index, None).unwrap().events;
-        let dir = log::sessions_dir(&b_env2).unwrap();
-        handoff::fetch_images(&api, &k, &id, &dir.join(&id), &events).unwrap();
-        handoff::restore_log(&dir, &id, &events, &applied.cwd, &me, &from).unwrap();
-        applied
-    })
-    .await
-    .unwrap();
+    let (applied, b_env, _b_bridge) = take_up(&w, &b, &session, a_bridge, &mut frames).await;
     assert_eq!(std::fs::read_to_string(applied.cwd.join("tracked.txt")).unwrap(), "one\ntwo\n", "the uncommitted change moved");
     assert_eq!(std::fs::read_to_string(applied.cwd.join("notes/new.txt")).unwrap(), "made mid-task", "the untracked file the session made moved");
     assert!(!applied.cwd.join("old.txt").exists(), "an untracked file from before the session did not");
 
-    let b_daemon = Arc::new(Client::connect(&daemon::socket(&b_env).unwrap(), &applied.cwd, "test", true).await.ok().expect("B's daemon answers"));
-    let o = host::Options {
-        relay: w.relay_a.clone(),
-        env: "development".into(),
-        api: w.as_device(&b),
-        device: b.key.id(),
-        signing: SigningKey::from_secret(&*b.signing.secret_bytes()).unwrap(),
-        keys: w.keys(),
-        chain: w.chain(),
-        session: session.clone(),
-        title: String::new(),
-        cwd: applied.cwd.display().to_string(),
-        sessions: log::sessions_dir(&b_env).unwrap(),
-        ttl: host::LEASE_TTL,
-        keep: host::KEEP,
-        direct: None,
-        tailnet: None,
-        handed: Some(handed),
-        approval_wait: host::APPROVAL_WAIT,
-        stale: None,
-        supervised: None,
-    };
-    let (_b_stop, _b_cp, _b_bridge) = w.run_bridge(o, b_daemon);
 
     // C never let go: the host went, came back, and runs C's prompt on B.
     until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(false))).await;
@@ -2533,6 +2548,91 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let free = krowk_api::Client::new(&w.api, "krowk_sk_free_0000000000000000000000").signed_by(signer(&b));
     let refused = tokio::task::spawn_blocking(move || free.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
     assert_eq!(refused.code(), "sync_requires_paid_plan", "{refused:?}");
+}
+
+/// R-IMG-1, R-IMG-9, R-IMG-11, R-IMG-12: the whole path of a wave of
+/// screenshots. B sends three images past one message's cap, each its own
+/// `putImage`, over the relay to A's host, and the prompt naming them; A's
+/// model call carries all three; A's writer puts each sealed to the registry
+/// under its keyed name; a third device fetches each and its sha256 is the
+/// image's; and after the session moves to B, B's next model call carries
+/// them still.
+#[tokio::test]
+async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_and_the_next_host() {
+    use base64::Engine as _;
+    use krowk_harness::{images, sync::store};
+    let w = World::new("img-wave");
+    let (a, b, c) = (w.device("machine-a"), w.device("machine-b"), w.device("machine-c"));
+    init_repo(&w.repo());
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, a_bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+
+    let header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
+    let pngs: Vec<Vec<u8>> = (1u8..=3).map(|n| [&header[..], &vec![n; 1_600_000][..]].concat()).collect();
+    assert!(pngs.iter().map(Vec::len).sum::<usize>() > 4 << 20 && pngs.iter().all(|p| p.len() <= 11 << 18), "past the cap together, each under 2.75 MiB");
+    let shas: Vec<String> = pngs.iter().map(|p| images::sha256(p)).collect();
+
+    // B, over the relay: each image alone, then the prompt naming all three.
+    let mut v = viewer::attach(w.viewer(&b, &session)).await.unwrap();
+    let mut frames = Vec::new();
+    until(&mut v, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    for (png, sha) in pngs.iter().zip(&shas) {
+        v.commands.send(Command::PutImage { session_id: Some(session.clone()), sha256: sha.clone(), media_type: "image/png".into(), data: base64::engine::general_purpose::STANDARD.encode(png) }).unwrap();
+        assert_eq!(ack(&mut v, &mut frames).await, None, "the host keeps the image");
+    }
+    let mut ask = w.prompt(Some(&session), "what are [Image #1], [Image #2] and [Image #3]?");
+    if let Command::Prompt { images, .. } = &mut ask {
+        *images = shas.iter().enumerate().map(|(n, sha)| krowk_harness::protocol::ImageInput { number: n as u32 + 1, media_type: "image/png".into(), data: String::new(), sha256: Some(sha.clone()) }).collect();
+    }
+    v.commands.send(ask).unwrap();
+    until(&mut v, Duration::from_secs(30), &mut frames, result_of).await;
+    let b64 = |p: &Vec<u8>| base64::engine::general_purpose::STANDARD.encode(p);
+    let want: Vec<String> = pngs.iter().map(b64).collect();
+    // The images the model call that carried `text` was sent.
+    let sent = |text: &str| -> Vec<String> {
+        let seen = w._mock.seen.lock().unwrap();
+        let call = seen.iter().rev().find(|r| r.body["messages"].to_string().contains(text)).expect("the model was called");
+        call.body["messages"].as_array().unwrap().iter().flat_map(|m| m["content"].as_array().cloned().unwrap_or_default()).filter(|b| b["type"] == "image").map(|b| b["source"]["data"].as_str().unwrap().to_string()).collect()
+    };
+    assert_eq!(sent("what are [Image #1]"), want, "A's model call carries all three, as sent");
+    drop(v);
+
+    // A's writer puts them; C, a third device, fetches each by its keyed name.
+    let refs: Vec<krowk_harness::protocol::ImageRef> = a_log(&w, &session).iter().flat_map(|e| e["item"]["images"].as_array().cloned().unwrap_or_default()).map(|r| serde_json::from_value(r).unwrap()).collect();
+    assert_eq!(refs.iter().map(|r| r.sha256.clone().unwrap()).collect::<Vec<_>>(), shas, "the log names the three by hash");
+    let (api, keys, chain, id, dir) = (w.as_device(&c), w.keys(), w.chain(), session.clone(), w.root.join("c-images"));
+    tokio::task::spawn_blocking(move || {
+        let s = api.show_sync_session(&id).unwrap();
+        let k = store::open_session_key(&s, &id, &keys, &chain, session_record::Signer::EverHeld).unwrap();
+        let session_keys = k;
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for (n, r) in refs.iter().enumerate() {
+            let sha = r.sha256.as_ref().unwrap();
+            let name = e2e::image_name(&session_keys, &e2e::unhex(sha).unwrap().try_into().unwrap());
+            let sealed = loop {
+                match api.get_image_object(&id, &name) {
+                    Ok(o) => break o,
+                    Err(e) => assert!(e.status == 404 && Instant::now() < deadline, "image #{} never reached the registry: {e:?}", n + 1),
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            };
+            assert!(sealed.len() > 1_600_000 + e2e::IMAGE_OVERHEAD, "sealed whole");
+            assert!(store::fetch_image(&api, &session_keys, &id, &dir, r).unwrap());
+            assert_eq!(images::sha256(&std::fs::read(images::path(&dir, r).unwrap()).unwrap()), *sha, "image #{} fetched whole", n + 1);
+        }
+    })
+    .await
+    .unwrap();
+
+    // The session moves to B; B's next call carries the three.
+    let (applied, _b_env, _b_bridge) = take_up(&w, &b, &session, a_bridge, &mut frames).await;
+    let mut cv = viewer::attach(w.viewer(&c, &session)).await.unwrap();
+    until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    cv.commands.send(w.prompt(Some(&session), "and what did you see before the move?")).unwrap();
+    until(&mut cv, Duration::from_secs(30), &mut frames, result_of).await;
+    assert_eq!(sent("and what did you see before the move?"), want, "B's call carries the earlier three");
+    assert!(applied.cwd.starts_with(w.root.join("worktrees-b")));
 }
 
 /// The ids of a session's events, `of` alone, in the order they came.
