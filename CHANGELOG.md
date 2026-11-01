@@ -11,6 +11,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The README now walks through MCP with Mobbin, and `krowk help mcp` shows
+  it.** Two commands, `krowk mcp add mobbin https://api.mobbin.com/mcp` and
+  `krowk mcp login mobbin`, then krowk's own agent searches Mobbin and sees the
+  screens; the docs also cover `list`, `logout`, `remove` and the TUI's `/mcp`
+  view. An end-to-end test now runs that whole path against Mobbin-shaped fakes.
+
 - **Images an MCP server returns now reach the model.** A tool
   result's `image` blocks, and embedded resources with an `image/*` type and a
   blob, are kept in the session's `images/` and sent inside the `tool_result`

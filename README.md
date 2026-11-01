@@ -159,6 +159,30 @@ krowk's own agent uses the MCP servers you already set up for Claude Code: `mcpS
 | `command`, `args`, `env` | A stdio server: the program krowk starts, and its arguments and environment |
 | `type: "http"`, `url`, `headers` | A streamable-HTTP server |
 
+`krowk mcp` manages the servers in `~/.krowk/config.json` without editing it by hand:
+
+| Command | Does |
+| --- | --- |
+| `krowk mcp add <name> <url> [--header "Name: value"]` | Adds a remote server; `${VAR}` in a header keeps a token out of the file |
+| `krowk mcp add <name> [--env K=V] -- <command> [args…]` | Adds a local (stdio) server |
+| `krowk mcp login <name> [--no-browser]` | Signs in to a server that asks for OAuth |
+| `krowk mcp logout <name>` | Forgets the sign-in |
+| `krowk mcp list [--json]` | Lists every server krowk would load here, with where it comes from and whether you are signed in, without connecting |
+| `krowk mcp remove <name>` | Removes a server from `config.json`, and its sign-in |
+
+`add` refuses a name already in `config.json` unless you pass `--force`. Servers in a repository's `.mcp.json` or Claude Code's files are edited there; `remove` only touches `config.json`.
+
+Mobbin, whose server asks for OAuth, takes two commands:
+
+```bash
+krowk mcp add mobbin https://api.mobbin.com/mcp
+krowk mcp login mobbin
+```
+
+`login` registers krowk with the server, opens your browser, and stores the tokens in the `mcp` section of `~/.krowk/credentials.json` (`0600`). Over SSH, or with `--no-browser`, it prints the sign-in page and waits for you to paste the address your browser lands on. krowk refreshes the tokens itself; if a refresh fails, a call to that server says "mobbin needs sign-in: run `krowk mcp login mobbin` or open /mcp". krowk never opens a browser in the middle of a turn. After that, ask krowk's agent for screens: it finds `search_screens` with `mcp_search`, and the images the server returns reach the model.
+
+Servers stay connected for the life of a session. They restart only when their configuration or the repository's trust changes, after a failure, or on reconnect. In the TUI, `/mcp` lists each server with where it is configured, its status and its tool count; open one to see its tools, and sign in, sign out or reconnect from there. It does not enable or disable servers, since that would edit files krowk does not own. MCP is for krowk's own agent only: the Claude Code and Codex backends keep blocking your servers.
+
 The model sees two tools, `mcp_search` and `mcp_call`, however many MCP tools there are, so they cost no context until one is used. No server starts until the first search. Permission rules name a tool as `Mcp(server:tool)` or `mcp__server__tool`, and `Mcp(server)` names all of a server's tools; a server denied whole is never started.
 
 ## Development
