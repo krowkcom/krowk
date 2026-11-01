@@ -1110,11 +1110,13 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 ];
 
 /// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, help itself, and the relay, which a person runs only to
-/// host one.
+/// already lists, help itself, the relay, which a person runs only to host
+/// one, and `providers`, the low-level layer under `connect`.
 pub const ALL_ONLY: &[&str] = &[
     "auth",
     "help",
+    #[cfg(feature = "harness")]
+    "providers",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.
