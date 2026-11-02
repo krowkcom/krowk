@@ -4210,11 +4210,11 @@ async fn r_off_2_a_crashed_daemons_leftover_lease_is_waited_out_and_the_session_
     let (api, id, dev) = (w.as_device(&a), session.clone(), a.key.id().to_string());
     tokio::task::spawn_blocking(move || api.acquire_lease(&id, &dev, 30, "development")).await.unwrap().expect("the crashed daemon's lease");
 
-    // The wait is a second here, not a minute (its default, kept as is);
+    // The wait is three seconds here, not a minute (its default, kept as is);
     // the lease lapses when the registry's clock moves past it, as the
     // crashed daemon's would by then.
     assert_eq!(auto::LEASE_HELD_WAIT, Duration::from_secs(60));
-    let wait = Duration::from_secs(1);
+    let wait = Duration::from_secs(3);
     let mut again = w.auto_with(&a, AutoOpts { lease_held_wait: wait, ..AutoOpts::default() });
     let d = w.daemon().await;
     let sent = Instant::now();
@@ -4224,6 +4224,9 @@ async fn r_off_2_a_crashed_daemons_leftover_lease_is_waited_out_and_the_session_
         assert!(Instant::now() < refused, "the first prompt never tried the session");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // The refusal follows the build at once; the lapse comes well before the
+    // one more try, which must find the lease free.
+    tokio::time::sleep(Duration::from_millis(500)).await;
     assert!(!again.bridged.lock().unwrap().contains(&session), "never taken from its holder");
     w.advance(Duration::from_secs(30));
     taken_up(&w, &again, &session, sent + wait + Duration::from_secs(30)).await;
