@@ -905,6 +905,10 @@ fn prompt_flags() -> Vec<Flag> {
             STRING,
             "With -p: how hard the model thinks — none, minimal, low, medium, high, xhigh or max, mapped onto the nearest the model takes. The instance's, else the provider's default, when absent",
         ),
+        repeatable(
+            "image",
+            "With -p: an image file to send with the prompt, which names it as [Image #N] — repeat for more, up to 20. Each is shrunk to fit (2000 px a side, JPEG if still over 2.75 MiB); a missing or non-image file refuses the run before any turn starts",
+        ),
         flag(
             "max-usd",
             STRING,

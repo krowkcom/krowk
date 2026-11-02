@@ -504,3 +504,82 @@ fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     assert!(!st.success() && err.contains("interrupted"), "{st}: {err:?}");
     assert_eq!(reports(&err), [root(State::Working, "wait forever"), root(State::Idle, "wait forever")], "{err:?}");
 }
+
+/// `krowk -p --image a --image b "…"` gives the model both images, named
+/// `[Image #1]` and `[Image #2]` in the prompt; a big one is shrunk to fit;
+/// a missing or non-image file is refused naming it, before any turn.
+#[test]
+fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
+    let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+    let seen = bodies.clone();
+    let m = mock::serve(move |body, _| {
+        seen.lock().unwrap().push(body.clone());
+        mock::Reply::sse(&mock::fixture("turn2_answer.sse"))
+    });
+    let b = Sandbox::new("images", &m.url);
+    let png = |w: u32, h: u32, path: &std::path::Path| {
+        // A PNG written without the image crate: 8-bit grey, stored deflate blocks.
+        let mut raw = Vec::new();
+        for y in 0..h {
+            raw.push(0u8);
+            raw.extend((0..w).map(|x| ((x ^ y) % 251) as u8));
+        }
+        let crc = |bytes: &[u8]| {
+            let mut c = !0u32;
+            for &x in bytes {
+                c ^= x as u32;
+                for _ in 0..8 {
+                    c = if c & 1 != 0 { 0xedb8_8320 ^ (c >> 1) } else { c >> 1 };
+                }
+            }
+            !c
+        };
+        let adler = {
+            let (mut a, mut s) = (1u32, 0u32);
+            for &x in &raw {
+                a = (a + x as u32) % 65521;
+                s = (s + a) % 65521;
+            }
+            (s << 16) | a
+        };
+        let mut z = vec![0x78, 0x01];
+        let chunks: Vec<&[u8]> = raw.chunks(65535).collect();
+        for (k, c) in chunks.iter().enumerate() {
+            z.push((k + 1 == chunks.len()) as u8);
+            z.extend((c.len() as u16).to_le_bytes());
+            z.extend((!(c.len() as u16)).to_le_bytes());
+            z.extend(*c);
+        }
+        z.extend(adler.to_be_bytes());
+        let mut out = b"\x89PNG\r\n\x1a\n".to_vec();
+        for (kind, data) in [(&b"IHDR"[..], [&w.to_be_bytes()[..], &h.to_be_bytes(), &[8, 0, 0, 0, 0]].concat()), (&b"IDAT"[..], z), (&b"IEND"[..], Vec::new())] {
+            out.extend((data.len() as u32).to_be_bytes());
+            let body = [kind, &data].concat();
+            out.extend(&body);
+            out.extend(crc(&body).to_be_bytes());
+        }
+        std::fs::write(path, out).unwrap();
+    };
+    let (a, big, notes) = (b.root.join("a.png"), b.root.join("big.png"), b.root.join("notes.txt"));
+    png(8, 8, &a);
+    png(3000, 100, &big);
+    std::fs::write(&notes, "hello").unwrap();
+    let (a, big, notes) = (a.to_str().unwrap(), big.to_str().unwrap(), notes.to_str().unwrap());
+
+    for bad in [notes, "/nonexistent/x.png"] {
+        let out = b.krowk(&["-p", "look", "--image", a, "--image", bad]);
+        assert_eq!(out.status.code(), Some(1), "{bad}");
+        assert!(String::from_utf8_lossy(&out.stderr).contains(bad), "names the file: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    assert!(bodies.lock().unwrap().is_empty(), "no turn started");
+
+    b.ok(&["-p", "compare these", "--image", a, "--image", big, "--model", "claude-sonnet-4-6"]);
+    let sent = bodies.lock().unwrap();
+    let content = sent[0]["messages"][0]["content"].as_array().unwrap().clone();
+    let images: Vec<&Value> = content.iter().filter(|c| c["type"] == "image").collect();
+    assert_eq!(images.len(), 2, "{content:?}");
+    let text: String = content.iter().filter_map(|c| c["text"].as_str()).collect();
+    assert!(text.contains("[Image #1]") && text.contains("[Image #2]") && text.contains("compare these"), "{text}");
+    // Shrunk to 2000 px a side: far fewer bytes than the 3000 px original's.
+    assert!(images[1]["source"]["data"].as_str().unwrap().len() < std::fs::metadata(big).unwrap().len() as usize * 4 / 3);
+}

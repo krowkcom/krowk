@@ -32,6 +32,8 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     })?;
     let flag_mode = permission_flag(ctx)?;
     let prompt = prompt_text(positionals)?;
+    // Refused before anything starts: the file named, no turn begun.
+    let (images, prompt) = image_flags(ctx, prompt)?;
     let config = config_json()?;
     let registry = Registry::resolve(&instances_from(&config)?, ctx.io.env);
     registry.check_rollover().map_err(|e| fail("bad_config", e))?;
@@ -168,7 +170,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // Its first line with text: a prompt piped in may open on a blank one.
     let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
     report(ctx, State::Working, &topic);
-    let opts = headless::Options { prompt, resume, model, permission_mode, toolset, effort, budget, format, worktree };
+    let opts = headless::Options { prompt, images, resume, model, permission_mode, toolset, effort, budget, format, worktree };
     let ran = turn(ctx, cfg, opts);
     match &ran {
         Ok(()) => report(ctx, State::Done, &topic),
@@ -385,6 +387,18 @@ fn prompt_text(positionals: &[String]) -> Result<String, Error> {
 /// The harness's part of the global config.json, whose `workspace` key the
 /// rest of krowk reads. A file that does not parse is an error: somebody
 /// wrote it meaning something.
+/// `--image`: the files' images as a prompt carries them, and the prompt
+/// with each one's `[Image #N]` put before it.
+fn image_flags(ctx: &Ctx, prompt: String) -> Result<(Vec<krowk_harness::protocol::ImageInput>, String), Error> {
+    if ctx.f.image.is_empty() {
+        return Ok((Vec::new(), prompt));
+    }
+    let paths: Vec<std::path::PathBuf> = ctx.f.image.iter().map(std::path::PathBuf::from).collect();
+    let images = krowk_harness::pasted::load(&paths).map_err(|e| fail("bad_image", format!("--image: {e}")))?;
+    let (inputs, names) = krowk_harness::pasted::inputs(&images);
+    Ok((inputs, format!("{names}{prompt}")))
+}
+
 /// `--effort`, a rung of the harness's ladder.
 pub(super) fn effort_flag(ctx: &Ctx) -> Result<Option<Effort>, Error> {
     match ctx.f.effort.trim() {

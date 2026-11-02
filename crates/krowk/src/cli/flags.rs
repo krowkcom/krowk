@@ -131,6 +131,9 @@ pub struct Flags {
     pub env: Vec<String>,
     #[cfg(feature = "harness")]
     pub header: Vec<String>,
+    /// `-p --image`, once for each file.
+    #[cfg(feature = "harness")]
+    pub image: Vec<String>,
     #[cfg(feature = "harness")]
     pub dashes: Option<usize>,
     /// `connect`: a key to store, read from stdin, or referenced (`$VAR`,
@@ -305,6 +308,8 @@ impl Flags {
             "env" => self.env.push(v.into()),
             #[cfg(feature = "harness")]
             "header" => self.header.push(v.into()),
+            #[cfg(feature = "harness")]
+            "image" => self.image.push(v.into()),
             "destination" => text(&mut self.destination),
             "session" => text(&mut self.session),
             "title" => text(&mut self.title),
