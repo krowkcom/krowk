@@ -288,7 +288,11 @@ unit = "bytes"
 # round 16,489,032 (15.73 MiB): the link's layout moves it by tens of KB.
 # Raised 15.75 -> 16.00 MiB, since main is over 15.75 without it, leaving
 # 288,184.
-max = { x86_64-linux = 16_777_216 }
+# 0.16.0's release run broke 16.00 MiB: MCP in krowk's own agent (OAuth
+# sign-in, persistent connections, the /mcp view, images in tool results)
+# and images in `krowk -p` and `krowk sync attach`, with no new crate.
+# Raised 16.00 -> 20.00 MiB at the maintainer's call, to release 0.16.0.
+max = { x86_64-linux = 20_971_520 }
 status = "enforced"
 
 # --- Startup: a new process each run, no daemon ---
