@@ -426,6 +426,15 @@ impl ServerStatus {
 /// lists can stand for all of it.
 pub type Denied<'a> = &'a (dyn Fn(&str, Option<&str>) -> bool + Sync);
 
+/// Whether a deny rule covers an MCP tool, or the whole server when `tool`
+/// is none: asked of the evaluator as the tool `*`, which only a rule naming
+/// all of the server matches; no tool is named so (`good_tool_name`).
+pub fn denied_by(gate: &crate::permissions::Gate, server: &str, tool: Option<&str>) -> bool {
+    let tool = tool.unwrap_or("*");
+    let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
+    matches!(gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
+}
+
 /// The session's MCP servers: configured up front, each started on its
 /// first use. Once started they are read without a lock, so one long call
 /// never holds another, or a search, behind it.

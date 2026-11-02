@@ -50,6 +50,75 @@ pub struct BridgeEnv<'a> {
     /// Where `publish` sends files, and where a run it opens is reported;
     /// none when the host publishes nothing.
     pub evidence: Option<(&'a Evidence, &'a Events)>,
+    /// The session's MCP servers, offered as `mcp_search` and `mcp_call`
+    /// (the native engine's two tools) when there is at least one; none for
+    /// a backend that does not carry them.
+    pub mcp: Option<&'a crate::mcp::Mcp>,
+    /// `mcp_call`s the person was asked about and allowed, by call: a call
+    /// that reaches `Ask` here without one was never asked, and is refused.
+    pub approved: Option<&'a std::sync::Mutex<Vec<String>>>,
+}
+
+/// What an approved `mcp_call` is recorded as: the tool and its arguments.
+pub fn approval_key(server: &str, tool: &str, input: &Value) -> String {
+    format!("{server}:{tool}:{}", crate::mcp::arguments(input))
+}
+
+/// The session's MCP tools as a backend lists them, when there are servers.
+fn mcp_listed(env: &BridgeEnv<'_>) -> Vec<Value> {
+    let Some(mcp) = env.mcp.filter(|m| !m.is_empty()) else { return Vec::new() };
+    mcp.definitions(&|_| true).into_iter().map(|d| json!({"name": d.name, "description": d.description, "inputSchema": d.input_schema})).collect()
+}
+
+/// Runs `mcp_search` or `mcp_call` as a `tools/call` result: text, and the
+/// images a result held as image blocks. `mcp_call` is judged here whatever
+/// the backend asked or allowed by itself, as `publish` is: a deny rule
+/// holds, and a call that needs asking runs only if `can_use_tool` asked.
+async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::mcp::Mcp) -> Value {
+    use base64::Engine as _;
+    let refuse = |m: String| json!({"content": [{"type": "text", "text": m}], "isError": true});
+    let (_keep, cancel) = match env.cancel {
+        Some(c) => (None, c.clone()),
+        None => {
+            let (tx, rx) = tokio::sync::watch::channel(false);
+            (Some(tx), rx)
+        }
+    };
+    let gate = env.gate;
+    let denied = |s: &str, t: Option<&str>| crate::mcp::denied_by(gate, s, t);
+    if name == crate::mcp::SEARCH {
+        if gate.mode() == crate::protocol::PermissionMode::Plan {
+            return refuse(format!("{name} was not run: it starts the MCP servers, and plan mode runs no commands — search for MCP tools once the plan is approved"));
+        }
+        let (text, is_error) = mcp.search(input, &denied, &cancel).await;
+        return json!({"content": [{"type": "text", "text": text}], "isError": is_error});
+    }
+    let (server, tool) = match crate::mcp::target(input) {
+        Ok(t) => t,
+        Err((m, _)) => return refuse(m),
+    };
+    let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.clone(), tool: tool.clone() }, subject: None };
+    match gate.verdict(&call, None) {
+        crate::permissions::Verdict::Allow(_) => {}
+        crate::permissions::Verdict::Deny(m) => return refuse(m),
+        crate::permissions::Verdict::Ask { reason, .. } => {
+            let key = approval_key(&server, &tool, input);
+            let said = env.approved.is_some_and(|a| {
+                let mut a = a.lock().unwrap_or_else(|e| e.into_inner());
+                a.iter().position(|k| *k == key).map(|i| a.remove(i)).is_some()
+            });
+            if !said {
+                return refuse(format!("{server}:{tool} was not run: it needs approval ({reason}), and nobody was asked"));
+            }
+        }
+    }
+    let mut images = Vec::new();
+    let (text, is_error) = mcp.call_with_images(input, &denied, &cancel, &mut images).await;
+    let mut content = vec![json!({"type": "text", "text": text})];
+    for i in &images {
+        content.push(json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&i.bytes), "mimeType": i.media_type}));
+    }
+    json!({"content": content, "isError": is_error})
 }
 
 /// A krowk tool offered to backends.
@@ -145,12 +214,13 @@ pub async fn handle(msg: &Value, env: &BridgeEnv<'_>) -> Value {
             "serverInfo": {"name": SERVER, "version": env.krowk_version},
         })),
         "tools/list" => Ok(json!({
-            "tools": EXPOSED.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": (t.input_schema)()})).collect::<Vec<_>>(),
+            "tools": EXPOSED.iter().map(|t| json!({"name": t.name, "description": t.description, "inputSchema": (t.input_schema)()})).chain(mcp_listed(env)).collect::<Vec<_>>(),
         })),
         "tools/call" => {
             let name = params.get("name").and_then(Value::as_str).unwrap_or_default();
             let args = params.get("arguments").cloned().unwrap_or(Value::Null);
             match EXPOSED.iter().find(|t| t.name == name) {
+                None if env.mcp.is_some_and(|m| !m.is_empty()) && (name == crate::mcp::SEARCH || name == crate::mcp::CALL) => Ok(mcp_tool(name, &args, env, env.mcp.expect("checked")).await),
                 Some(t) => {
                     let (text, is_error) = (t.run)(env, &args).await;
                     Ok(json!({"content": [{"type": "text", "text": text}], "isError": is_error}))
@@ -186,7 +256,7 @@ mod tests {
     fn r_back_1_the_bridge_lists_and_runs_session_info_and_refuses_what_it_lacks() {
         let model = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
         let gate = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::Default);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &gate, cancel: None, evidence: None };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &gate, cancel: None, evidence: None, mcp: None, approved: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let handle = |msg: &Value| rt.block_on(handle(msg, &env));
         let init = handle(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}));
@@ -219,7 +289,7 @@ mod tests {
         let ev = Evidence::new(publisher, "s-1", None, Default::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let accept = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::AcceptEdits);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)) };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)), mcp: None, approved: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let list = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &env));
         assert_eq!(list["result"]["tools"][1]["name"], "publish");

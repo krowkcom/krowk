@@ -300,6 +300,12 @@ pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
         if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
     };
     let path = ["file_path", "notebook_path", "path"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)).map(at);
+    // krowk's own `mcp_call` is the MCP tool it names: judged, and asked
+    // about, as `mcp__server__tool`, so `Mcp(server:tool)` rules hold.
+    let bridged = (tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)).then(|| crate::mcp::target(input).ok()).flatten();
+    if let Some((server, t)) = bridged {
+        return Call { tool: format!("mcp__{server}__{t}"), access: Access::Mcp { server, tool: t }, subject: None };
+    }
     let access = if tool.starts_with(&format!("mcp__{}__", bridge::SERVER)) {
         Access::Free
     } else if let Some(rest) = tool.strip_prefix("mcp__") {
@@ -585,6 +591,8 @@ impl Engine for ClaudeEngine {
                 krowk_version: self.krowk_version.clone(),
                 gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
                 evidence: ctx.evidence.clone(),
+                mcp: ctx.compat.mcp.clone(),
+                approved: Arc::default(),
             };
             let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
                 Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
@@ -828,6 +836,11 @@ struct Answers {
     gate: Gate,
     /// Where a bridged `publish` sends files.
     evidence: Option<crate::evidence::Evidence>,
+    /// The session's MCP servers, which the bridge offers as `mcp_search`
+    /// and `mcp_call`.
+    mcp: Arc<crate::mcp::Mcp>,
+    /// The `mcp_call`s `can_use_tool` allowed, for the bridge to match.
+    approved: Arc<Mutex<Vec<String>>>,
 }
 
 /// Where a question for a person goes while a turn runs: the turn's events,
@@ -888,7 +901,14 @@ impl Answers {
                     });
                 }
                 match self.permit(tool, &input, asking).await {
-                    Ok(()) => success(json!({"behavior": "allow", "updatedInput": input})),
+                    Ok(()) => {
+                        if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
+                            && let Ok((server, t)) = crate::mcp::target(&input)
+                        {
+                            self.approved.lock().unwrap_or_else(|e| e.into_inner()).push(bridge::approval_key(&server, &t, &input));
+                        }
+                        success(json!({"behavior": "allow", "updatedInput": input}))
+                    }
                     Err(message) => success(json!({"behavior": "deny", "message": message})),
                 }
             }
@@ -903,6 +923,8 @@ impl Answers {
                     gate: &self.gate,
                     cancel: asking.map(|(_, c)| c),
                     evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
+                    mcp: Some(&self.mcp),
+                    approved: Some(&self.approved),
                 };
                 success(json!({"mcp_response": bridge::handle(req.get("message").unwrap_or(&Value::Null), &env).await}))
             }
@@ -1942,7 +1964,7 @@ mod tests {
         use crate::protocol::{ApprovalDecision, QuestionAnswer};
         let approvals = permissions::Approvals::default();
         let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Plan, Default::default(), Some(approvals.clone()), None, "s", "t");
-        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None };
+        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None, mcp: Arc::default(), approved: Arc::default() };
         let input = json!({"questions": [
             {"question": "Which database?", "header": "DB", "multiSelect": false, "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]},
             {"question": "Which tests?", "header": "Tests", "multiSelect": true, "options": [{"label": "unit", "description": ""}, {"label": "e2e", "description": ""}]},

@@ -9,6 +9,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Fixed
+
+- **krowk's MCP servers now work in Claude subscription sessions, through
+  krowk's own tools.** On a Claude Code backend (`claude:` instances) the
+  servers from `krowk mcp add`, Claude Code's files and a trusted `.mcp.json`,
+  with their `krowk mcp login` sign-ins, were never reachable. The session
+  now has `mcp_search` and `mcp_call` (the two tools the native engine
+  uses) when it has at least one server: `Mcp(...)` rules, deny rules and
+  asking apply to each call, and images in a result reach the model. Claude
+  Code itself still loads only krowk's own tools. Codex sessions are
+  unchanged.
+
 ## [0.16.0] - 2026-11-02
 
 ### Added

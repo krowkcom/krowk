@@ -861,17 +861,10 @@ impl Shared {
     }
 
     /// Puts the session's kept MCP connections under the configuration the
-    /// turn just read; a session that has never had a server keeps no pool,
-    /// and a backend's turn (`native` false) uses none.
-    async fn adopt_mcp(&self, session_id: &str, compat: &mut compat::Compat, native: bool) {
-        if !native {
-            // A session moved to a backend keeps no connections.
-            let pool = self.mcp.lock().unwrap_or_else(|e| e.into_inner()).remove(session_id);
-            if let Some((pool, _)) = pool {
-                pool.close().await;
-            }
-            return;
-        }
+    /// turn just read; a session that has never had a server keeps no pool.
+    /// A backend's turn uses it too: its `mcp_call` runs on these connections
+    /// (and their stored sign-ins), the idle reaper closes them.
+    async fn adopt_mcp(&self, session_id: &str, compat: &mut compat::Compat) {
         if compat.mcp.is_empty() && !self.mcp.lock().unwrap_or_else(|e| e.into_inner()).contains_key(session_id) {
             return;
         }
@@ -1367,8 +1360,8 @@ impl Shared {
         compat.transcript = self.cfg.sessions_dir.join(&session_id).join(log::EVENTS_FILE).display().to_string();
         // The session's MCP connections, kept from its earlier turns, under
         // the configuration just read: closed, restarted or kept before the
-        // turn's first model call (D5). A backend runs none of them.
-        self.adopt_mcp(&session_id, &mut compat, spawns).await;
+        // turn's first model call (D5). A backend turn has them too, through the bridge.
+        self.adopt_mcp(&session_id, &mut compat).await;
         let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.clone()).or_default().clone();
         let plan = TurnPlan {
             log,
