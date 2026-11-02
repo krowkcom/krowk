@@ -185,8 +185,8 @@ clean:
 
 # The profile the golden cases and their registry are built with. The golden
 # profile (Cargo.toml) is the quick build, a link of seconds where a release
-# one takes minutes; full.yml sets GOLDEN_PROFILE=release, so the build that
-# ships is held to the cases on every platform after the merge.
+# one takes minutes; a release runs full.yml with GOLDEN_PROFILE=release, so
+# the build that ships is held to the cases on every platform.
 GOLDEN_PROFILE ?= golden
 GOLDEN_DIR := target/$(GOLDEN_PROFILE)
 

@@ -126,10 +126,14 @@ jobs:
           name: sbom
           path: sbom/
 
-  # Whether the tag's commit has already passed Full or bench: main's push
-  # runs Full on every commit, and bench can be run by hand before tagging
-  # (`gh workflow run bench.yml --ref main`). A gate that already passed on
-  # these exact bytes is not run again.
+  # Whether the tag's commit, or an earlier one that differs only by what a
+  # release commit changes (*.md and the three manifests), has already passed
+  # Full or bench: main's push runs Full on every commit, and bench can be run
+  # by hand before tagging
+  # (`gh workflow run bench.yml --ref main`). scripts/release_reuse.sh says
+  # which commit's run it reused. Full's golden cases there ran on the golden
+  # profile, not the release build; the release build's own checks are dist's
+  # and reproduce's.
   passed:
     runs-on: ubuntu-latest
     permissions:
@@ -138,16 +142,18 @@ jobs:
       full: ${{ steps.runs.outputs.full }}
       bench: ${{ steps.runs.outputs.bench }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 40
+          persist-credentials: false
+
       - id: runs
         env:
           GH_TOKEN: ${{ github.token }}
           SHA: ${{ github.sha }}
         run: |
           for wf in full bench; do
-            n=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/$wf.yml/runs?head_sha=$SHA&status=success&per_page=1" --jq '.total_count' || echo 0)
-            ok=$([ "${n:-0}" -gt 0 ] && echo true || echo false)
-            echo "$wf=$ok" >> "$GITHUB_OUTPUT"
-            echo "$wf.yml already passed on $SHA: $ok"
+            echo "$wf=$(scripts/release_reuse.sh "$wf" | tail -n 1)" >> "$GITHUB_OUTPUT"
           done
 
   # `make check` on every platform, at the tag's commit. A pull request is
@@ -158,6 +164,8 @@ jobs:
     needs: passed
     if: needs.passed.outputs.full != 'true'
     uses: ./.github/workflows/full.yml
+    with:
+      golden_profile: release
 
   # R-PERF-7: the budgets are held here rather than on every pull request.
   bench:

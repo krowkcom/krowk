@@ -27,6 +27,11 @@ on:
     types: [labeled, synchronize, reopened]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      golden_profile:
+        description: The build profile the golden cases run on; a release holds the build that ships to them
+        type: string
+        default: golden
 
 permissions:
   contents: read
@@ -60,10 +65,11 @@ jobs:
 
       # The ci profile retries a failed test twice: one that then passes is
       # reported FLAKY instead of failing the job. The golden cases run on the
-      # release build here, the one that ships; a signoff runs them on the
-      # quicker golden profile.
+      # quick golden profile (minutes cheaper than an LTO build on macOS);
+      # a release passes golden_profile: release, so the build that ships is
+      # held to them before it is tagged.
       - name: Lint, unit tests and golden cases
         run: make check
         env:
           NEXTEST_PROFILE: ci
-          GOLDEN_PROFILE: release
+          GOLDEN_PROFILE: ${{ inputs.golden_profile || 'golden' }}
