@@ -54,20 +54,22 @@ pub struct BridgeEnv<'a> {
     /// (the native engine's two tools) when there is at least one; none for
     /// a backend that does not carry them.
     pub mcp: Option<&'a crate::mcp::Mcp>,
-    /// `mcp_call`s the person was asked about and allowed, by call: a call
-    /// that reaches `Ask` here without one was never asked, and is refused.
+    /// The tool calls (by Claude Code's tool-use id) the person was asked
+    /// about and allowed: a call that reaches `Ask` here without its id in
+    /// the list was never asked, and is refused.
     pub approved: Option<&'a std::sync::Mutex<Vec<String>>>,
-}
-
-/// What an approved `mcp_call` is recorded as: the tool and its arguments.
-pub fn approval_key(server: &str, tool: &str, input: &Value) -> String {
-    format!("{server}:{tool}:{}", crate::mcp::arguments(input))
+    /// The call being answered, as Claude Code names it
+    /// (`_meta["claudecode/toolUseId"]`).
+    pub tool_use_id: Option<&'a str>,
+    /// Where the images of an `mcp_call` result are kept (R-MCP-14), and
+    /// the references, by tool-use id, for the result's item.
+    pub images: Option<(&'a Path, &'a crate::claude::stream::Kept)>,
 }
 
 /// The session's MCP tools as a backend lists them, when there are servers.
 fn mcp_listed(env: &BridgeEnv<'_>) -> Vec<Value> {
     let Some(mcp) = env.mcp.filter(|m| !m.is_empty()) else { return Vec::new() };
-    mcp.definitions(&|_| true).into_iter().map(|d| json!({"name": d.name, "description": d.description, "inputSchema": d.input_schema})).collect()
+    mcp.definitions(&|s| !crate::mcp::denied_by(env.gate, s, None)).into_iter().map(|d| json!({"name": d.name, "description": d.description, "inputSchema": d.input_schema})).collect()
 }
 
 /// Runs `mcp_search` or `mcp_call` as a `tools/call` result: text, and the
@@ -102,18 +104,29 @@ async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::m
         crate::permissions::Verdict::Allow(_) => {}
         crate::permissions::Verdict::Deny(m) => return refuse(m),
         crate::permissions::Verdict::Ask { reason, .. } => {
-            let key = approval_key(&server, &tool, input);
-            let said = env.approved.is_some_and(|a| {
+            let said = env.tool_use_id.zip(env.approved).is_some_and(|(id, a)| {
                 let mut a = a.lock().unwrap_or_else(|e| e.into_inner());
-                a.iter().position(|k| *k == key).map(|i| a.remove(i)).is_some()
+                a.iter().position(|k| k == id).map(|i| a.remove(i)).is_some()
             });
             if !said {
-                return refuse(format!("{server}:{tool} was not run: it needs approval ({reason}), and nobody was asked"));
+                return refuse(format!("{server}:{tool} was not run: it needs approval ({reason}), and krowk was not asked: Claude Code let the call through without asking (an allow rule or hook of its own on mcp__krowk__mcp_call). Add `Mcp({server}:{tool})` to krowk's allow rules, or drop Claude Code's rule"));
             }
         }
     }
     let mut images = Vec::new();
     let (text, is_error) = mcp.call_with_images(input, &denied, &cancel, &mut images).await;
+    let mut text = text;
+    // Kept in the session's `images/`, named on the result's item; one that
+    // cannot be kept is a note in its text.
+    match (env.images, env.tool_use_id) {
+        (Some((dir, kept)), Some(id)) if !images.is_empty() => match crate::images::save(dir, &images) {
+            Ok(refs) => {
+                kept.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), refs);
+            }
+            Err(e) => text.push_str(&format!("\n[the result's images could not be kept: {}]", e.message)),
+        },
+        _ => {}
+    }
     let mut content = vec![json!({"type": "text", "text": text})];
     for i in &images {
         content.push(json!({"type": "image", "data": base64::engine::general_purpose::STANDARD.encode(&i.bytes), "mimeType": i.media_type}));
@@ -256,7 +269,7 @@ mod tests {
     fn r_back_1_the_bridge_lists_and_runs_session_info_and_refuses_what_it_lacks() {
         let model = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
         let gate = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::Default);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &gate, cancel: None, evidence: None, mcp: None, approved: None };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &gate, cancel: None, evidence: None, mcp: None, approved: None, tool_use_id: None, images: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let handle = |msg: &Value| rt.block_on(handle(msg, &env));
         let init = handle(&json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {"protocolVersion": "2025-11-25"}}));
@@ -289,7 +302,7 @@ mod tests {
         let ev = Evidence::new(publisher, "s-1", None, Default::default());
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
         let accept = crate::permissions::Gate::modes_only(Path::new("/repo"), crate::protocol::PermissionMode::AcceptEdits);
-        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)), mcp: None, approved: None };
+        let env = BridgeEnv { session_id: "s-1", turn_id: "t-1", model: &model, cwd: Path::new("/repo"), backend: "claude-code", krowk_version: "test", gate: &accept, cancel: None, evidence: Some((&ev, &tx)), mcp: None, approved: None, tool_use_id: None, images: None };
         let rt = tokio::runtime::Builder::new_current_thread().build().unwrap();
         let list = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}), &env));
         assert_eq!(list["result"]["tools"][1]["name"], "publish");

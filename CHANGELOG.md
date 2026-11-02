@@ -9,7 +9,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
-### Fixed
+### Added
 
 - **krowk's MCP servers now work in Claude subscription sessions, through
   krowk's own tools.** On a Claude Code backend (`claude:` instances) the
