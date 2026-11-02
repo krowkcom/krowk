@@ -33,6 +33,9 @@ impl Image {
 }
 
 
+/// The most a file is read as.
+const LOAD_CAP: u64 = 64 << 20;
+
 /// The image files at `paths`, read and made ready, at most `MAX_IMAGES`: a
 /// file that is missing or no image refuses them all, naming the file.
 pub fn load(paths: &[PathBuf]) -> Result<Vec<Image>, String> {
@@ -46,7 +49,13 @@ pub fn load(paths: &[PathBuf]) -> Result<Vec<Image>, String> {
             if !std::fs::metadata(p).is_ok_and(|m| m.is_file()) {
                 return Err(format!("{} is not a file", p.display()));
             }
-            let bytes = std::fs::read(p).map_err(|e| format!("{} could not be read: {e}", p.display()))?;
+            // Never more than a camera's raw file: what is read is held whole.
+            let mut bytes = Vec::new();
+            let read = std::fs::File::open(p).and_then(|f| f.take(LOAD_CAP + 1).read_to_end(&mut bytes));
+            read.map_err(|e| format!("{} could not be read: {e}", p.display()))?;
+            if bytes.len() as u64 > LOAD_CAP {
+                return Err(format!("{} is over {} MB", p.display(), LOAD_CAP >> 20));
+            }
             normalise(&bytes).map_err(|e| format!("{}: {e}", p.display()))
         })
         .collect()

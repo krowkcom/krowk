@@ -304,6 +304,8 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                         Some(paths) => match with_images(&session, &paths) {
                             Ok((first, rest, prompt)) => {
                                 offered.sending(&prompt);
+                                // `/switch` could not send its images again.
+                                offered.last_prompt = None;
                                 owed.images = (rest.len() + 1, 0);
                                 owed.hand(&v.commands, first, rest.into_iter().chain([prompt]));
                             }
