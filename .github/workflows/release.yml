@@ -127,9 +127,9 @@ jobs:
           path: sbom/
 
   # Whether the tag's commit, or an earlier one that differs only by what a
-  # release commit changes (*.md, the three manifests, and for Full the bench
-  # budgets), has already passed Full or bench: main's push runs Full on every
-  # commit, and bench can be run by hand before tagging
+  # release commit changes (*.md and the three manifests), has already passed
+  # Full or bench: main's push runs Full on every commit, and bench can be run
+  # by hand before tagging
   # (`gh workflow run bench.yml --ref main`). scripts/release_reuse.sh says
   # which commit's run it reused. Full's golden cases there ran on the golden
   # profile, not the release build; the release build's own checks are dist's

@@ -5,9 +5,9 @@
 # stops at the first commit that fails the "only these files" test.
 # Prints `true` or `false` on the last line of stdout; the log goes to stderr.
 #
-# Release commits touch CHANGELOG.md (and other *.md), the three manifests and
-# sometimes crates/krowk-bench/budgets.toml. A budget change cannot alter what
-# `full` tests, but it is exactly what `bench` holds the build to.
+# Release commits touch CHANGELOG.md (and other *.md) and the three manifests.
+# crates/krowk-bench/budgets.toml is not ignorable for either workflow: bench
+# holds the build to it and the unit tests include_str! it.
 set -euo pipefail
 
 wf=${1:?workflow name}
@@ -16,8 +16,7 @@ repo=${GITHUB_REPOSITORY:?}
 max=${MAX_WALK:-30}
 
 case "$wf" in
-  full) ignorable='^(.*\.md|\.claude-plugin/plugin\.json|gemini-extension\.json|server\.json|crates/krowk-bench/budgets\.toml)$' ;;
-  bench) ignorable='^(.*\.md|\.claude-plugin/plugin\.json|gemini-extension\.json|server\.json)$' ;;
+  full | bench) ignorable='^(.*\.md|\.claude-plugin/plugin\.json|gemini-extension\.json|server\.json)$' ;;
   *) echo "unknown workflow $wf" >&2; exit 2 ;;
 esac
 
