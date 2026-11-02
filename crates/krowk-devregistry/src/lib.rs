@@ -84,6 +84,12 @@ pub struct Config {
     pub v2_release: String,
 }
 
+/// A clock that runs `shift_ms` milliseconds ahead of the real one, for a
+/// test to let a lease lapse without waiting it out.
+pub fn shifted_clock(shift_ms: Arc<std::sync::atomic::AtomicI64>) -> Clock {
+    Arc::new(move || jiff::Timestamp::now() + jiff::SignedDuration::from_millis(shift_ms.load(std::sync::atomic::Ordering::SeqCst)))
+}
+
 /// A registry serving on its own thread, stopped when dropped.
 pub struct Running {
     addr: SocketAddr,

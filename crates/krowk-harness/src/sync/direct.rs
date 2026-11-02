@@ -47,6 +47,9 @@ pub struct Config {
     /// How long the same-user check keeps tailscaled's answer for one
     /// address; None for `Limits`' own. For a test to look again at once.
     pub whois_kept: Option<Duration>,
+    /// How often the LAN addresses are read again; None for `LAN_CHECK`.
+    /// For a test not to wait out five seconds for a move.
+    pub lan_check: Option<Duration>,
 }
 
 /// A source of LAN addresses, for a test to move them.
@@ -214,7 +217,8 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
     let changes = if lan {
         let (tx, changes) = tokio::sync::mpsc::unbounded_channel();
         let (following, stopped, now) = (following.clone(), rx.clone(), now.clone());
-        std::thread::spawn(move || follow_lan(session, port, tailnet, bound, read_lan, tx, following, stopped, now));
+        let check = c.lan_check.unwrap_or(LAN_CHECK);
+        std::thread::spawn(move || follow_lan(session, check, port, tailnet, bound, read_lan, tx, following, stopped, now));
         Some(changes)
     } else {
         None
@@ -234,7 +238,7 @@ pub fn listen(c: &Config, session: [u8; 16], host: krowk_client::e2e::DeviceId) 
 /// addresses, which name only those the session started with. Ends with
 /// the listener.
 #[allow(clippy::too_many_arguments)]
-fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: Vec<IpAddr>, read_lan: LanAt, changes: tokio::sync::mpsc::UnboundedSender<relay::Change>, following: std::sync::Arc<std::sync::atomic::AtomicBool>, stopped: watch::Receiver<bool>, offered: std::sync::Arc<std::sync::Mutex<Vec<Candidate>>>) {
+fn follow_lan(session: [u8; 16], lan_check: Duration, port: u16, tailnet: Option<IpAddr>, mut bound: Vec<IpAddr>, read_lan: LanAt, changes: tokio::sync::mpsc::UnboundedSender<relay::Change>, following: std::sync::Arc<std::sync::atomic::AtomicBool>, stopped: watch::Receiver<bool>, offered: std::sync::Arc<std::sync::Mutex<Vec<Candidate>>>) {
     let url = |ip: &IpAddr| match ip {
         IpAddr::V6(v6) => format!("ws://[{v6}]:{port}"),
         IpAddr::V4(v4) => format!("ws://{v4}:{port}"),
@@ -249,7 +253,7 @@ fn follow_lan(session: [u8; 16], port: u16, tailnet: Option<IpAddr>, mut bound: 
     let mut advertised = advertise(&bound);
     let on = || following.load(std::sync::atomic::Ordering::SeqCst) && !*stopped.borrow() && !changes.is_closed();
     while on() {
-        let until = Instant::now() + LAN_CHECK;
+        let until = Instant::now() + lan_check;
         while on() && Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
         }

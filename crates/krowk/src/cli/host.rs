@@ -183,6 +183,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
         }),
         bridged,
         paid_pause: auto::PAID_PAUSE,
+        lease_held_wait: auto::LEASE_HELD_WAIT,
         parked_recheck: auto::PARKED_RECHECK,
         announce: Some(announce::Options {
             every: announce::EVERY,
