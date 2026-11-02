@@ -74,3 +74,20 @@ opt-level = 3
 
 [profile.dev.package.ed25519-dalek]
 opt-level = 3
+
+# What the image tests decode and re-encode: a pasted photo shrunk to fit,
+# the sync_attach image cases. At opt-level 0 a few megapixels take seconds.
+[profile.dev.package.image]
+opt-level = 3
+
+[profile.dev.package.png]
+opt-level = 3
+
+[profile.dev.package.fdeflate]
+opt-level = 3
+
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+
+[profile.dev.package.zune-core]
+opt-level = 3
