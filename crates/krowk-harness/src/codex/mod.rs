@@ -792,6 +792,10 @@ impl Answers {
             gate: &self.gate,
             cancel: asking.map(|(_, c)| c),
             evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
+            mcp: None,
+            approved: None,
+            tool_use_id: None,
+            images: None,
         };
         let call = json!({"jsonrpc": "2.0", "id": 0, "method": "tools/call", "params": {"name": tool, "arguments": params.get("arguments").cloned().unwrap_or(Value::Null)}});
         let answer = bridge::handle(&call, &env).await;

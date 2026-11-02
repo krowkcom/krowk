@@ -111,7 +111,13 @@ pub struct Translator {
     /// One agent's conversation (`children`), not the session's: its lines
     /// are the items, whole, and none of them is metered here.
     child: bool,
+    /// The images a bridged MCP call's result held, kept by the bridge and
+    /// named here on the result of the call (`claudecode/toolUseId`).
+    pub kept: Option<Kept>,
 }
+
+/// Image references by the tool call they belong to.
+pub type Kept = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<crate::protocol::ImageRef>>>>;
 
 /// A `rate_limit_event`'s `rate_limit_info`, as krowk's limit status:
 /// `allowed`, `allowed_warning` (near it) or `rejected` (reached), over a
@@ -212,7 +218,7 @@ impl Translator {
     /// note is not one.
     fn results(&mut self, msg: &Value, out: &mut Vec<EngineEvent>) {
         let content = msg.pointer("/message/content").and_then(Value::as_array).cloned().unwrap_or_default();
-        let results: Vec<EngineEvent> = content.iter().filter(|b| str_of(b, "type") == "tool_result").flat_map(tool_result).collect();
+        let results: Vec<EngineEvent> = content.iter().filter(|b| str_of(b, "type") == "tool_result").flat_map(|b| tool_result(b, self.kept.as_ref())).collect();
         if self.whole.is_some() {
             self.close_whole(out);
         }
@@ -239,7 +245,7 @@ impl Translator {
                     out.push(EngineEvent::ItemStarted { item_id: item_id.clone(), kind: item.kind() });
                     out.push(EngineEvent::ItemCompleted { item_id, item });
                 }
-                "tool_result" => out.extend(tool_result(b)),
+                "tool_result" => out.extend(tool_result(b, self.kept.as_ref())),
                 _ => {}
             }
         }
@@ -445,7 +451,7 @@ fn block(b: &Value) -> Option<Item> {
 /// A `tool_result` block as a started and completed result item. Its
 /// content is text, or blocks: text is kept as it is, anything else (an
 /// image, a tool reference) is named in brackets.
-fn tool_result(b: &Value) -> Vec<EngineEvent> {
+fn tool_result(b: &Value, kept: Option<&Kept>) -> Vec<EngineEvent> {
     let call_id = str_of(b, "tool_use_id").to_string();
     let output = match b.get("content") {
         Some(Value::String(s)) => s.clone(),
@@ -460,7 +466,8 @@ fn tool_result(b: &Value) -> Vec<EngineEvent> {
             .join("\n"),
         _ => String::new(),
     };
-    let item = Item::ToolResult { call_id: call_id.clone(), output, is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false), images: Vec::new() };
+    let images = kept.and_then(|k| k.lock().unwrap_or_else(|e| e.into_inner()).remove(&call_id)).unwrap_or_default();
+    let item = Item::ToolResult { call_id: call_id.clone(), output, is_error: b.get("is_error").and_then(Value::as_bool).unwrap_or(false), images };
     let item_id = krowk_store::new_id();
     vec![EngineEvent::ItemStarted { item_id: item_id.clone(), kind: ItemKind::ToolResult { call_id } }, EngineEvent::ItemCompleted { item_id, item }]
 }

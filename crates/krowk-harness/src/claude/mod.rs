@@ -83,6 +83,16 @@
 //! permission evaluator (`crate::permissions`) under Claude Code's own tool
 //! names, and asked of the person when a client is attached.
 //!
+//! **MCP servers.** Claude Code is started `--strict-mcp-config` with only
+//! krowk's bridge, so it loads none of the person's servers itself. When the
+//! session has any (`crate::mcp::discover`: the trust gate, Claude Code's
+//! approval lists), the bridge also offers `mcp_search` and `mcp_call`, run
+//! on the session's own connections and sign-ins; a call is judged as
+//! `Mcp(server:tool)` — asked by `can_use_tool`, and judged again by the
+//! bridge, which refuses a call that needed asking and was not. Subagent
+//! allowlists are krowk's native agents'; Claude Code's own agents reach
+//! the same tools under krowk's rules, not an allowlist of their own.
+//!
 //! **Compliance** (R-BACK-2) is structural: krowk starts the binary as the
 //! user installed it, sends it no system prompt and no headers, sets only
 //! `CLAUDE_CONFIG_DIR` and the instance's own environment, and never opens
@@ -194,6 +204,9 @@ pub struct Launch {
     /// `--disallowedTools`: what Claude Code would allow by itself still
     /// meets them, so deny wins on this backend too.
     pub disallowed: Vec<String>,
+    /// The names of krowk's MCP servers: the bridge lists its MCP tools once,
+    /// when the process starts, so a changed set needs a new process.
+    pub mcp: Vec<String>,
 }
 
 /// The `--mcp-config` that injects krowk's tools: one in-process (`sdk`)
@@ -300,6 +313,12 @@ pub fn call_of(tool: &str, input: &Value, cwd: &Path) -> Call {
         if p.is_absolute() { p.to_path_buf() } else { cwd.join(p) }
     };
     let path = ["file_path", "notebook_path", "path"].iter().find_map(|k| input.get(*k).and_then(Value::as_str)).map(at);
+    // krowk's own `mcp_call` is the MCP tool it names: judged, and asked
+    // about, as `mcp__server__tool`, so `Mcp(server:tool)` rules hold.
+    let bridged = (tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)).then(|| crate::mcp::target(input).ok()).flatten();
+    if let Some((server, t)) = bridged {
+        return Call { tool: format!("mcp__{server}__{t}"), access: Access::Mcp { server, tool: t }, subject: None };
+    }
     let access = if tool.starts_with(&format!("mcp__{}__", bridge::SERVER)) {
         Access::Free
     } else if let Some(rest) = tool.strip_prefix("mcp__") {
@@ -575,6 +594,7 @@ impl Engine for ClaudeEngine {
                 effort: ctx.effort.map(effort_level),
                 plan: ctx.permission_mode == PermissionMode::Plan,
                 disallowed: disallowed(&ctx.gate),
+                mcp: ctx.compat.mcp.servers().iter().map(|s| s.name.clone()).collect(),
             };
             let ask = Answers {
                 session_id: ctx.session_id.clone(),
@@ -585,7 +605,16 @@ impl Engine for ClaudeEngine {
                 krowk_version: self.krowk_version.clone(),
                 gate: ctx.gate.protecting(self.backend().home.iter().cloned()),
                 evidence: ctx.evidence.clone(),
+                mcp: ctx.compat.mcp.clone(),
+                approved: Arc::default(),
+                session_dir: ctx.session_dir.clone(),
+                images: Arc::default(),
             };
+            // Started now, so `/mcp` and a needs-sign-in notice are not left
+            // to the first call; plan mode runs no commands.
+            if ctx.permission_mode != PermissionMode::Plan {
+                ctx.compat.mcp.warm(&|s, t| crate::mcp::denied_by(&ctx.gate, s, t));
+            }
             let (prompt, images) = match ctx.history.last().map(|h| &h.item) {
                 Some(Item::UserText { text, images }) => (text.clone(), images.clone()),
                 _ => return Err(EngineError::new("empty_prompt", "a backend turn needs the prompt as its last item")),
@@ -597,6 +626,7 @@ impl Engine for ClaudeEngine {
                     return Err(EngineError::new("nothing_pending", format!("Claude Code on {} has no turn of its own waiting", self.instance.name)));
                 };
                 let outcome = p.turn(None, &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+                ask.approved.lock().unwrap_or_else(|e| e.into_inner()).clear();
                 return self.settle(slot, outcome, ask, &events).await;
             }
             // The running process serves this turn when its launch still
@@ -609,7 +639,7 @@ impl Engine for ClaudeEngine {
                 // EnterPlanMode's plan). It is launched in one of two modes,
                 // and serves only a turn that wants the one it is in.
                 let mode_fits = p.mode.is_empty() || (want.plan == (p.mode == "plan") && !looser_than(&p.mode, ctx.permission_mode));
-                let fits = p.alive() && mode_fits && p.launch.plan == want.plan && p.launch.effort == want.effort && p.launch.disallowed == want.disallowed;
+                let fits = p.alive() && mode_fits && p.launch.plan == want.plan && p.launch.effort == want.effort && p.launch.disallowed == want.disallowed && p.launch.mcp == want.mcp;
                 let switched = fits && (p.launch.model == want.model || (p.set_model && p.set_model(&want.model, &ask).await));
                 if !switched && let Some(old) = slot.take() {
                     // Its agents, and a turn it began, go with it; the
@@ -652,6 +682,8 @@ impl Engine for ClaudeEngine {
             }
             let content = user_content(&prompt, &images, &ctx.session_dir).await;
             let outcome = p.turn(Some(&content), &mut ctx, &ask, &events, self.backend(), &self.instance.name).await;
+            // What was allowed and not run does not carry into a turn Claude Code begins itself.
+            ask.approved.lock().unwrap_or_else(|e| e.into_inner()).clear();
             self.settle(slot, outcome, ask, &events).await
         })
     }
@@ -828,6 +860,15 @@ struct Answers {
     gate: Gate,
     /// Where a bridged `publish` sends files.
     evidence: Option<crate::evidence::Evidence>,
+    /// The session's MCP servers, which the bridge offers as `mcp_search`
+    /// and `mcp_call`.
+    mcp: Arc<crate::mcp::Mcp>,
+    /// The `mcp_call`s `can_use_tool` allowed, for the bridge to match.
+    approved: Arc<Mutex<Vec<String>>>,
+    /// Where an `mcp_call`'s images are kept, and their references until
+    /// the result is translated.
+    session_dir: PathBuf,
+    images: stream::Kept,
 }
 
 /// Where a question for a person goes while a turn runs: the turn's events,
@@ -888,7 +929,18 @@ impl Answers {
                     });
                 }
                 match self.permit(tool, &input, asking).await {
-                    Ok(()) => success(json!({"behavior": "allow", "updatedInput": input})),
+                    Ok(()) => {
+                        // Recorded only when krowk's rules said Ask, by
+                        // Claude Code's id for the call: what a person was
+                        // asked and allowed, once.
+                        if tool == format!("mcp__{}__{}", bridge::SERVER, crate::mcp::CALL)
+                            && let Some(id) = req.get("tool_use_id").and_then(Value::as_str)
+                            && matches!(self.gate.verdict(&call_of(tool, &input, &self.cwd), None), Verdict::Ask { .. })
+                        {
+                            self.approved.lock().unwrap_or_else(|e| e.into_inner()).push(id.to_string());
+                        }
+                        success(json!({"behavior": "allow", "updatedInput": input}))
+                    }
                     Err(message) => success(json!({"behavior": "deny", "message": message})),
                 }
             }
@@ -903,6 +955,10 @@ impl Answers {
                     gate: &self.gate,
                     cancel: asking.map(|(_, c)| c),
                     evidence: self.evidence.as_ref().zip(asking.map(|(e, _)| e)),
+                    mcp: Some(&self.mcp),
+                    approved: Some(&self.approved),
+                    tool_use_id: req.pointer("/message/params/_meta").and_then(|m| m.get("claudecode/toolUseId")).and_then(Value::as_str),
+                    images: Some((&self.session_dir, &self.images)),
                 };
                 success(json!({"mcp_response": bridge::handle(req.get("message").unwrap_or(&Value::Null), &env).await}))
             }
@@ -1237,6 +1293,7 @@ impl Proc {
     /// of it between turns.
     async fn turn(&mut self, prompt: Option<&Value>, ctx: &mut TurnContext, ask: &Answers, events: &Events, b: &Backend, instance: &str) -> Result<TurnEnd, EngineError> {
         let mut t = Translator::default();
+        t.kept = Some(ask.images.clone());
         t.meter = std::mem::take(&mut *self.status.meter());
         self.unread.clear();
         self.cancelled = None;
@@ -1942,7 +1999,7 @@ mod tests {
         use crate::protocol::{ApprovalDecision, QuestionAnswer};
         let approvals = permissions::Approvals::default();
         let gate = Gate::new(permissions::Policy::modes_only(Path::new("/repo")), PermissionMode::Plan, Default::default(), Some(approvals.clone()), None, "s", "t");
-        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None };
+        let ask = Answers { session_id: "s".into(), turn_id: "t".into(), model: ModelRef { instance: "claude:me".into(), model: "claude-opus-5-5".into() }, cwd: PathBuf::from("/repo"), mode: PermissionMode::Plan, krowk_version: "test".into(), gate, evidence: None, mcp: Arc::default(), approved: Arc::default(), session_dir: PathBuf::new(), images: Arc::default() };
         let input = json!({"questions": [
             {"question": "Which database?", "header": "DB", "multiSelect": false, "options": [{"label": "Postgres", "description": "x"}, {"label": "SQLite", "description": "y"}]},
             {"question": "Which tests?", "header": "Tests", "multiSelect": true, "options": [{"label": "unit", "description": ""}, {"label": "e2e", "description": ""}]},
@@ -1977,7 +2034,7 @@ mod tests {
 
     #[test]
     fn r_back_1_the_process_is_launched_with_the_stream_json_protocol_and_krowks_mcp_server() {
-        let l = Launch { model: "haiku".into(), resume: Some("cc-1".into()), effort: Some("high"), plan: false, disallowed: Vec::new() };
+        let l = Launch { model: "haiku".into(), resume: Some("cc-1".into()), effort: Some("high"), plan: false, disallowed: Vec::new(), mcp: Vec::new() };
         let a = args(&l, &["--add-dir".into(), "/x".into()]);
         let s = a.join(" ");
         assert!(s.starts_with("-p --input-format stream-json --output-format stream-json --verbose --include-partial-messages --replay-user-messages --permission-prompt-tool stdio --mcp-config "), "{s}");

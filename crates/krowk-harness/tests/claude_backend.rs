@@ -685,6 +685,75 @@ fn r_evid_1_claude_code_publishes_through_krowks_bridge() {
     assert!(home.fake_log().contains(r#""name":"publish""#), "tools/list offered it");
 }
 
+/// The stand-in MCP server of `mcp_e2e`, named `fake` in the person's own
+/// config (`user`), with an image in every answer.
+fn fake_mcp(home: &Home, extra: serde_json::Value) -> serde_json::Value {
+    let fake = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg==";
+    let content = format!(r#"[{{"type":"text","text":"echo: hi"}},{{"type":"image","data":"{png}","mimeType":"image/png"}}]"#);
+    let mut v = serde_json::json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_LOG": home.root.join("fake-mcp.log"), "FAKE_CONTENT": content}}}});
+    for (k, x) in extra.as_object().unwrap() {
+        v[k] = x.clone();
+    }
+    v
+}
+
+/// Runs the `mcp_call` scenario once, as `mode`, with the person's config
+/// `user`: the model's tool result, and the stand-in server's own log.
+fn mcp_turn(name: &str, scenario: &str, mode: PermissionMode, extra: serde_json::Value) -> (String, String, String, usize) {
+    let home = Home::new(name);
+    let dir = home.signed_in("cfg-work");
+    let mut cfg = home.config(vec![("claude:work", home.instance(&dir, Some(scenario)))], trust::allow_all(), None);
+    cfg.permissions.user = Some(fake_mcp(&home, extra));
+    let host = Host::new(cfg);
+    let out = rt().block_on(async {
+        let (lines, r) = run(&host, prompt(None, "echo hi through MCP", "claude:work/sonnet", mode)).await;
+        assert_eq!(r.unwrap().unwrap().status, TurnStatus::Completed);
+        host.shutdown().await;
+        completed(&lines).iter().find_map(|i| match i {
+            Item::ToolResult { output, images, .. } => Some((output.clone(), images.len())),
+            _ => None,
+        })
+        .unwrap_or_default()
+    });
+    (out.0, std::fs::read_to_string(home.root.join("fake-mcp.log")).unwrap_or_default(), home.fake_log(), out.1)
+}
+
+/// krowk's MCP servers reach a Claude Code session through the bridge: the
+/// two tools are listed only when there are servers, a call is judged as
+/// `Mcp(server:tool)`, reaches the server, and its image goes back as an
+/// image block; a deny rule holds, and a call nobody was asked about is
+/// refused even when Claude Code never asked.
+#[test]
+fn claude_code_reaches_krowks_mcp_servers_through_the_bridge_and_krowks_rules_hold() {
+    let (out, server, fake, kept) = mcp_turn("mcp-allowed", "mcp_call.jsonl", PermissionMode::Default, serde_json::json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
+    assert_eq!(out, "echo: hi\n[image #1]", "the server's answer is the tool result");
+    assert_eq!(kept, 1, "the image is kept and named on the result");
+    assert!(server.contains(r#""method":"tools/call""#), "the call reached the server: {server}");
+    assert!(fake.contains(r#""name":"mcp_search""#) && fake.contains(r#""name":"mcp_call""#), "tools/list offers them: {fake}");
+    assert!(fake.contains(r#"{"type":"image","data":"iVBOR"#) && fake.contains(r#""mimeType":"image/png""#), "the image went back as an image block: {fake}");
+    // --strict-mcp-config stays, and only the bridge is passed to Claude Code.
+    let argv = fake.lines().find(|l| l.starts_with("argv -p ")).unwrap();
+    assert!(argv.contains("--strict-mcp-config") && !argv.contains("fake-mcp") && !argv.contains("headersHelper"), "{argv}");
+
+    // A deny rule: refused at can_use_tool and again at the bridge.
+    let (out, server, _, _) = mcp_turn("mcp-denied", "mcp_call.jsonl", PermissionMode::BypassPermissions, serde_json::json!({"permissions": {"deny": ["Mcp(fake:echo)"]}}));
+    assert!(out.contains("Mcp(fake:echo)"), "{out}");
+    assert!(!server.contains("tools/call"), "a denied call never reached the server: {server}");
+
+    // Asked of nobody: the default mode asks about an MCP tool no rule
+    // allows, and there is no client to ask.
+    let (out, server, _, _) = mcp_turn("mcp-asked", "mcp_call.jsonl", PermissionMode::Default, serde_json::json!({}));
+    assert!(out.contains("approval"), "{out}");
+    assert!(!server.contains("tools/call"), "{server}");
+
+    // Claude Code skipped can_use_tool (an allow rule of its own): the
+    // bridge still refuses what needed asking.
+    let (out, server, _, _) = mcp_turn("mcp-unasked", "mcp_unasked.jsonl", PermissionMode::Default, serde_json::json!({}));
+    assert!(out.contains("krowk was not asked"), "{out}");
+    assert!(!server.contains("tools/call"), "{server}");
+}
+
 /// R-BUDGET-1 for a backend: its calls are Claude Code's to make, so the
 /// host interrupts the turn once a metered call has gone past the limit,
 /// and refuses the next turn before it starts.

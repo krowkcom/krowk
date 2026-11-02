@@ -848,9 +848,7 @@ fn reaches(ctx: &TurnContext, server: &str, tool: Option<&str>) -> bool {
 /// asked of the evaluator as its tool `*`, which only a rule naming all of
 /// the server matches; no tool is named so (`crate::mcp::good_tool_name`).
 fn mcp_denied(ctx: &TurnContext, server: &str, tool: Option<&str>) -> bool {
-    let tool = tool.unwrap_or("*");
-    let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.into(), tool: tool.into() }, subject: None };
-    matches!(ctx.gate.verdict(&call, None), crate::permissions::Verdict::Deny(_))
+    crate::mcp::denied_by(&ctx.gate, server, tool)
 }
 
 #[cfg(test)]

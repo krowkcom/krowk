@@ -1,0 +1,26 @@
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_fake_1","type":"message","role":"assistant","content":[],"usage":{"input_tokens":10,"cache_creation_input_tokens":272,"cache_read_input_tokens":24143,"output_tokens":1}}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"The person wants the screenshot published."}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EucCCrIBCBIYAipAeHt45Y7edhBi"}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_fake_1","type":"message","role":"assistant","content":[{"type":"thinking","thinking":"The person wants the screenshot published.","signature":"EucCCrIBCBIYAipAeHt45Y7edhBi"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"toolu_fake_mcp","name":"mcp__krowk__mcp_call","input":{}}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"{\"tool\":\"fake:echo\",\"input\":{\"text\":\"hi\"}}"}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_fake_1","type":"message","role":"assistant","content":[{"type":"tool_use","id":"toolu_fake_mcp","name":"mcp__krowk__mcp_call","input":{"tool":"fake:echo","input":{"text":"hi"}}}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":1},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+@ask {"subtype":"mcp_message","server_name":"krowk","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}
+@ask {"subtype":"can_use_tool","tool_name":"mcp__krowk__mcp_call","mcp_server":{"name":"krowk","source":"sdk"},"display_name":"Mcp call","input":{"tool":"fake:echo","input":{"text":"hi"}},"tool_use_id":"toolu_fake_mcp"}
+@ask {"subtype":"mcp_message","server_name":"krowk","message":{"method":"tools/call","params":{"name":"mcp_call","arguments":{"tool":"fake:echo","input":{"text":"hi"}},"_meta":{"claudecode/toolUseId":"toolu_fake_mcp"}},"jsonrpc":"2.0","id":2}}
+@tool_result toolu_fake_mcp
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"input_tokens":10,"cache_creation_input_tokens":272,"cache_read_input_tokens":24143,"output_tokens":74,"output_tokens_details":{"thinking_tokens":28}}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_stop"},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","rateLimitType":"five_hour"},"session_id":"{{SESSION}}"}
+{"type":"stream_event","event":{"type":"message_start","message":{"model":"claude-haiku-4-5-20251001","id":"msg_fake_2","type":"message","role":"assistant","content":[],"usage":{"input_tokens":8,"cache_creation_input_tokens":159,"cache_read_input_tokens":24415,"output_tokens":1}}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Published it: "}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"here is the link."}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"assistant","message":{"model":"claude-haiku-4-5-20251001","id":"msg_fake_2","type":"message","role":"assistant","content":[{"type":"text","text":"Published it: here is the link."}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"stream_event","event":{"type":"content_block_stop","index":0},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":8,"cache_creation_input_tokens":159,"cache_read_input_tokens":24415,"output_tokens":20}},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"stream_event","event":{"type":"message_stop"},"session_id":"{{SESSION}}","parent_tool_use_id":null}
+{"type":"result","subtype":"success","is_error":false,"duration_ms":4048,"num_turns":3,"result":"Published it: here is the link.","session_id":"{{SESSION}}","total_cost_usd":0.0269326}
