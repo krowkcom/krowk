@@ -66,6 +66,7 @@ impl Home {
             session: Default::default(),
         };
         let opts = headless::Options {
+            images: Vec::new(),
             prompt: prompt.into(),
             resume: resume.map(String::from),
             model: Some(reg.parse_model(model).unwrap()),
@@ -205,7 +206,7 @@ fn r_prov_4_a_grok_task_runs_signed_in_with_supergrok_and_its_token_is_refreshed
         agents: krowk_harness::subagent::AgentsConfig::none(),
         session: Default::default(),
     };
-    let opts = headless::Options { prompt: "hi".into(), resume: None, model: Some(reg.parse_model("supergrok/grok-4.7").unwrap()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None, format: OutputFormat::Json, worktree: None };
+    let opts = headless::Options { prompt: "hi".into(), images: Vec::new(), resume: None, model: Some(reg.parse_model("supergrok/grok-4.7").unwrap()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None, format: OutputFormat::Json, worktree: None };
     let outcome = headless::run(cfg, opts, &mut Vec::new());
     let e = outcome.error.unwrap();
     assert_eq!(e.code, "not_authenticated");

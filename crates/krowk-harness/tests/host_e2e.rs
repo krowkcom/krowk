@@ -81,6 +81,7 @@ impl Home {
         let mut out = Vec::new();
         let reg = Registry::resolve(&InstancesConfig::default(), &self.env());
         let opts = headless::Options {
+            images: Vec::new(),
             prompt: prompt.into(),
             resume: resume.map(String::from),
             model: Some(reg.parse_model(model).unwrap()),
@@ -261,6 +262,7 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
     // A toolset that does not exist is refused before any session is made.
     let mut out = Vec::new();
     let opts = headless::Options {
+            images: Vec::new(),
         prompt: "hello".into(),
         resume: None,
         model: None,

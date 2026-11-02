@@ -1930,6 +1930,7 @@ dependencies = [
  "base64 0.22.1",
  "futures-util",
  "if-addrs",
+ "image",
  "jsonschema",
  "krowk-api",
  "krowk-client",

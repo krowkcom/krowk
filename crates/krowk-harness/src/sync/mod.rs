@@ -242,6 +242,22 @@ fn prompt(session: &str, text: String) -> crate::protocol::Command {
     crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None }
 }
 
+/// A prompt of the images at `paths`: the first `put_image` and the others,
+/// then the prompt naming them (`[Image #N]`, by sha256, no bytes) to go last.
+fn with_images(session: &str, paths: &[std::path::PathBuf]) -> Result<(crate::protocol::Command, Vec<crate::protocol::Command>, crate::protocol::Command), String> {
+    use crate::protocol::Command;
+    let images = crate::pasted::load(paths)?;
+    let (mut inputs, names) = crate::pasted::inputs(&images);
+    let mut puts = inputs.iter().map(|i| Command::PutImage { session_id: Some(session.to_string()), sha256: i.sha256.clone().unwrap_or_default(), media_type: i.media_type.clone(), data: i.data.clone() });
+    let first = puts.next().ok_or("no image")?;
+    let rest = puts.collect();
+    for i in &mut inputs {
+        i.data.clear();
+    }
+    let Command::Prompt { session_id, model, permission_mode, toolset, effort, budget, .. } = prompt(session, names.trim_end().to_string()) else { unreachable!() };
+    Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, budget }))
+}
+
 /// `krowk sync attach`: follows a synced session, writing each update as
 /// one JSON line to `out`, and sends each line of stdin as a prompt or
 /// the command it names (`typed`). Stdin's end ends it, once every command
@@ -269,8 +285,8 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 u = v.updates.recv() => {
                     let Some(batch) = u else { return Ok(()) };
                     for u in batch {
-                        if let Some(next) = owed.saw(&u) {
-                            owed.hand(&v.commands, next, None);
+                        if let Some((next, rest)) = owed.saw(&u) {
+                            owed.hand(&v.commands, next, rest);
                         }
                         offered.saw(&session, &u);
                         let line = jsonl(u)?;
@@ -281,16 +297,31 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                     let _ = out.flush();
                 }
                 l = lines.recv(), if !owed.eof => match l {
-                    Some(text) if !text.trim().is_empty() => match typed(&session, text) {
-                        Ok(Typed::Command(c)) => {
-                            offered.sending(&c);
-                            owed.hand(&v.commands, c, None);
-                        }
-                        Ok(Typed::Switch) => match offered.switch(&session) {
-                            Ok((switch, again)) => owed.hand(&v.commands, switch, again),
+                    Some(text) if !text.trim().is_empty() => match crate::pasted::dropped(&text) {
+                        // A line of only dropped image files is a prompt with
+                        // them: each goes ahead as its own `put_image`, as the
+                        // TUI's do.
+                        Some(paths) => match with_images(&session, &paths) {
+                            Ok((first, rest, prompt)) => {
+                                offered.sending(&prompt);
+                                // `/switch` could not send its images again.
+                                offered.last_prompt = None;
+                                owed.images = (rest.len() + 1, 0);
+                                owed.hand(&v.commands, first, rest.into_iter().chain([prompt]));
+                            }
                             Err(e) => eprintln!("krowk: {e}"),
                         },
-                        Err(e) => eprintln!("krowk: {e}"),
+                        None => match typed(&session, text) {
+                            Ok(Typed::Command(c)) => {
+                                offered.sending(&c);
+                                owed.hand(&v.commands, c, None);
+                            }
+                            Ok(Typed::Switch) => match offered.switch(&session) {
+                                Ok((switch, again)) => owed.hand(&v.commands, switch, again),
+                                Err(e) => eprintln!("krowk: {e}"),
+                            },
+                            Err(e) => eprintln!("krowk: {e}"),
+                        },
                     },
                     Some(_) => {}
                     None => owed.eof = true,
@@ -310,29 +341,39 @@ struct Owed {
     eof: bool,
     /// Handed to the viewer, not yet shown as sent, in the order handed,
     /// each with the command to send once the host has taken it.
-    handed: std::collections::VecDeque<Option<crate::protocol::Command>>,
+    handed: std::collections::VecDeque<Vec<crate::protocol::Command>>,
     /// Sent (or queued) and not yet acknowledged, by id.
     unacked: std::collections::HashSet<String>,
     /// What follows a sent command once the host takes it, by its id.
-    then: std::collections::HashMap<String, crate::protocol::Command>,
+    then: std::collections::HashMap<String, Vec<crate::protocol::Command>>,
+    /// The images of the prompt being sent, and how many have gone
+    /// (`Sending image 2 of 3…`).
+    images: (usize, usize),
 }
 
 impl Owed {
     /// `c` to the viewer, and `then` once the host has taken it: the host
     /// runs a viewer's commands side by side, so a prompt sent with the
     /// switch before it could start on the model it switches from.
-    fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, c: crate::protocol::Command, then: Option<crate::protocol::Command>) {
+    /// A chain does the same, each command once the one before is taken:
+    /// a prompt's images, then the prompt, and one refused ends it.
+    fn hand(&mut self, commands: &tokio::sync::mpsc::UnboundedSender<crate::protocol::Command>, c: crate::protocol::Command, then: impl IntoIterator<Item = crate::protocol::Command>) {
+        if matches!(c, crate::protocol::Command::PutImage { .. }) {
+            self.images.1 += 1;
+            eprintln!("krowk: Sending image {} of {}…", self.images.1, self.images.0);
+        }
         if commands.send(c).is_ok() {
-            self.handed.push_back(then);
+            self.handed.push_back(then.into_iter().collect());
         }
     }
 
     /// Notes `u`, and answers the command to send now: one that waited on
     /// the command just taken. A refused one's never goes.
-    fn saw(&mut self, u: &viewer::Update) -> Option<crate::protocol::Command> {
+    fn saw(&mut self, u: &viewer::Update) -> Option<(crate::protocol::Command, Vec<crate::protocol::Command>)> {
         match u {
             viewer::Update::Sent { id, .. } => {
-                if let Some(then) = self.handed.pop_front().flatten() {
+                let then = self.handed.pop_front().unwrap_or_default();
+                if !then.is_empty() {
                     self.then.insert(id.clone(), then);
                 }
                 self.unacked.insert(id.clone());
@@ -340,7 +381,9 @@ impl Owed {
             }
             viewer::Update::Acked { id, error } => {
                 self.unacked.remove(id);
-                self.then.remove(id).filter(|_| error.is_none())
+                let mut then = self.then.remove(id).filter(|_| error.is_none())?;
+                let next = then.remove(0);
+                Some((next, then))
             }
             _ => None,
         }
@@ -639,8 +682,8 @@ mod tests {
         owed.hand(&tx, switch.clone(), again.clone());
         assert!(rx.try_recv().is_ok() && !owed.done());
         assert!(owed.saw(&Update::Sent { id: "1".into(), queued: false }).is_none());
-        let next = owed.saw(&Update::Acked { id: "1".into(), error: None }).expect("the prompt, once the switch is taken");
-        owed.hand(&tx, next, None);
+        let (next, rest) = owed.saw(&Update::Acked { id: "1".into(), error: None }).expect("the prompt, once the switch is taken");
+        owed.hand(&tx, next, rest);
         assert!(!owed.done(), "the prompt is owed too");
         owed.saw(&Update::Sent { id: "2".into(), queued: false });
         assert!(owed.saw(&Update::Acked { id: "2".into(), error: None }).is_none());
@@ -649,5 +692,48 @@ mod tests {
         owed.saw(&Update::Sent { id: "3".into(), queued: false });
         assert!(owed.saw(&Update::Acked { id: "3".into(), error: Some("refused".into()) }).is_none(), "a refused switch sends no prompt");
         assert!(owed.done());
+    }
+
+    /// A line of dropped images is each image's `put_image`, one after the
+    /// other as each is taken, and then the prompt naming them by hash with
+    /// no bytes; an upload the host refuses stops the rest.
+    #[test]
+    fn a_dropped_image_goes_ahead_of_its_prompt_one_put_at_a_time_and_a_refused_one_stops_the_send() {
+        use super::viewer::Update;
+        let dir = std::env::temp_dir().join(format!("krowk-attach-img-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let paths: Vec<_> = (0..2u8)
+            .map(|k| {
+                let p = dir.join(format!("{k}.png"));
+                image::RgbImage::from_pixel(4, 4, image::Rgb([k, 9, 9])).save(&p).unwrap();
+                p
+            })
+            .collect();
+        assert!(crate::pasted::dropped(&format!("{} '{}'", paths[0].display(), paths[1].display())).is_some());
+        let (first, rest, prompt) = super::with_images("s", &paths).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut owed = super::Owed { eof: true, images: (2, 0), ..Default::default() };
+        owed.hand(&tx, first, rest.into_iter().chain([prompt]));
+        let mut sent = vec![rx.try_recv().unwrap()];
+        for id in ["1", "2", "3"] {
+            owed.saw(&Update::Sent { id: id.into(), queued: false });
+            if let Some((next, rest)) = owed.saw(&Update::Acked { id: id.into(), error: None }) {
+                owed.hand(&tx, next, rest);
+                sent.push(rx.try_recv().unwrap());
+            }
+        }
+        let kinds: Vec<_> = sent.iter().map(|c| matches!(c, Command::PutImage { .. })).collect();
+        assert_eq!(kinds, [true, true, false], "two puts, then the prompt");
+        let Command::Prompt { text, images, .. } = &sent[2] else { panic!() };
+        assert_eq!(text, "[Image #1] [Image #2]");
+        assert!(images.iter().all(|i| i.data.is_empty() && i.sha256.is_some()), "named by hash, no bytes");
+        assert!(owed.done());
+
+        let (first, rest, prompt) = super::with_images("s", &paths).unwrap();
+        let mut owed = super::Owed { eof: true, ..Default::default() };
+        owed.hand(&tx, first, rest.into_iter().chain([prompt]));
+        owed.saw(&Update::Sent { id: "9".into(), queued: false });
+        assert!(owed.saw(&Update::Acked { id: "9".into(), error: Some("too big".into()) }).is_none(), "a refused upload sends nothing after it");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

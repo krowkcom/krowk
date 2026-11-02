@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk -p --image` and images in `krowk sync attach`.** `krowk -p
+  --image a.png --image b.png "compare these"` sends each file with the
+  prompt (up to 20), named `[Image #1]`, `[Image #2]` in it. Each is shrunk
+  the way the TUI composer shrinks a paste (2000 px a side, JPEG if still
+  over 2.75 MiB); a missing or non-image file refuses the run before any
+  turn starts, naming the file. On a daemon each image goes ahead as its own
+  `putImage`. In `krowk sync attach`, a typed line of dropped image paths is
+  sent the same way (`Sending image 1 of 2…`), and a refused upload stops
+  the prompt.
 - **`/mcp` signs in and out of MCP servers.** `s` on a server that needs a
   sign-in completes the OAuth flow from the TUI: on your own machine krowk
   opens the page and finishes when the browser lands, with nothing to paste;

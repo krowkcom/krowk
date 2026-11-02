@@ -41,6 +41,9 @@ impl OutputFormat {
 
 pub struct Options {
     pub prompt: String,
+    /// `--image`: the files' images, as `pasted::inputs` made them; the
+    /// prompt names each by its `[Image #N]`.
+    pub images: Vec<crate::protocol::ImageInput>,
     pub resume: Option<String>,
     pub model: Option<ModelRef>,
     pub permission_mode: PermissionMode,
@@ -118,6 +121,12 @@ pub trait Transport {
     /// The background jobs `shutdown` stops, as (session, id): none of the
     /// daemon's, which run on.
     fn running_jobs(&self) -> Vec<(String, String)>;
+    /// The host's krowk version and protocol when it is another process:
+    /// its prompt's images go ahead as `put_image` (`upload`). None for the
+    /// in-process host, which saves them by sha256 as they come.
+    fn remote(&self) -> Option<(String, u32)> {
+        None
+    }
 }
 
 impl Transport for Host {
@@ -145,6 +154,10 @@ impl Transport for crate::daemon::client::Client {
     fn running_jobs(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+
+    fn remote(&self) -> Option<(String, u32)> {
+        Some((self.krowk_version.clone(), self.protocol_version))
+    }
 }
 
 async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> Outcome {
@@ -155,8 +168,23 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
     let mut session_id: Option<String> = opts.resume.clone();
-    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: Vec::new(), model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget };
-    let exec = host.execute(cmd, tx);
+    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget };
+    let remote = host.remote();
+    let sink = tx.clone();
+    let exec = async {
+        // Images go ahead one by one; their notices are no turn's, so not
+        // part of the stream.
+        let cmd = match &remote {
+            Some((version, protocol)) => {
+                let peer = crate::upload::Peer { name: "the host daemon", krowk_version: version, protocol: Some(*protocol) };
+                let (notes, _) = mpsc::channel(1);
+                crate::upload::upload_images(cmd, &peer, &notes, |c, o| host.execute(c, o)).await?
+            }
+            None => cmd,
+        };
+        host.execute(cmd, sink).await
+    };
+    drop(tx);
     tokio::pin!(exec);
     let mut done: Option<Result<Option<RunResult>, EngineError>> = None;
     // One signal stream for the whole run, so a Ctrl-C that lands between
