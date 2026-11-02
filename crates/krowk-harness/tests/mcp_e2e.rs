@@ -556,8 +556,19 @@ fn pids(h: &Home, name: &str) -> Vec<i32> {
 
 fn alive(pid: i32) -> bool {
     // A zombie has been killed; only its parent has yet to reap it.
-    match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
-        Ok(st) => st.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"),
+    // macOS has no /proc, so there `ps` says the state.
+    if cfg!(target_os = "linux") {
+        return match std::fs::read_to_string(format!("/proc/{pid}/stat")) {
+            Ok(st) => st.rsplit(')').next().and_then(|r| r.split_whitespace().next()) != Some("Z"),
+            Err(_) => false,
+        };
+    }
+    match std::process::Command::new("ps").args(["-o", "stat=", "-p", &pid.to_string()]).output() {
+        Ok(o) => {
+            let st = String::from_utf8_lossy(&o.stdout);
+            let st = st.trim();
+            !st.is_empty() && !st.starts_with('Z')
+        }
         Err(_) => false,
     }
 }
