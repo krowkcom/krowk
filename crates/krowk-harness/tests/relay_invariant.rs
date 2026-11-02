@@ -156,28 +156,28 @@ fn host_ticket(f: &Value, iat: u64, life: u64, fence: u64) -> String {
 }
 
 /// R-RELAY-1: the invariant holds whatever the registry's clock reads
-/// against the relay's, as long as it runs forward. With the registry 8 s
-/// ahead (lifetime 3 s, skew 1 s, margin 1 s, so idle is 5 s), the tickets
-/// are not yet valid until 7 s from now; the holder joins then and leaves;
-/// polled every half second for 12 s after, a ticket from before the lease
+/// against the relay's, as long as it runs forward. With the registry 4 s
+/// ahead (lifetime 2 s, skew 1 s, margin 1 s, so idle is 4 s), the tickets
+/// are not yet valid until 3 s from now; the holder joins then and leaves;
+/// polled every half second for 8 s after, a ticket from before the lease
 /// moved on is never admitted: the channel keeps its fence until the
 /// relay's clock has passed the fence ticket's expiry.
 #[tokio::test]
 async fn r_relay_1_the_fence_is_kept_whatever_the_registrys_clock_reads() {
     let f: Value = serde_json::from_str(FIXTURE).unwrap();
-    let url = start(krowk_harness::relay::Limits { ticket_lifetime: 3, ticket_skew: 1, idle_margin: 1, ..Default::default() }, None);
+    let url = start(krowk_harness::relay::Limits { ticket_lifetime: 2, ticket_skew: 1, idle_margin: 1, ..Default::default() }, None);
     tokio::time::sleep(Duration::from_millis(100)).await;
     let fence = f["sessions"].as_array().unwrap().iter().find(|s| s["name"] == "idle").unwrap()["fence"].as_u64().unwrap();
-    let registry_now = relay_ticket::now() + 8;
-    let stale = host_ticket(&f, registry_now, 3, fence - 1);
-    let current = host_ticket(&f, registry_now, 3, fence);
+    let registry_now = relay_ticket::now() + 4;
+    let stale = host_ticket(&f, registry_now, 2, fence - 1);
+    let current = host_ticket(&f, registry_now, 2, fence);
     let (early, _) = host_join(&url, &f, &current, fence).await;
     assert_eq!(early["code"], "ticket_expired", "not yet valid: {early}");
-    tokio::time::sleep(Duration::from_millis(7200)).await;
+    tokio::time::sleep(Duration::from_millis(3200)).await;
     let (joined, host) = host_join(&url, &f, &current, fence).await;
     assert_eq!(joined["type"], "joined", "{joined}");
     drop(host);
-    for _ in 0..24 {
+    for _ in 0..16 {
         // A join elsewhere is when this relay sweeps its idle channels, so
         // each poll gives it the chance to forget this one.
         let (_, _other) = join(&url, &f, "auth", "auth-viewer", e2e::RELAY_ROLE_VIEWER, &viewer_ticket(&f, "auth", "auth-viewer"), 0).await;

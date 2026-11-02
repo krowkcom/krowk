@@ -326,6 +326,10 @@ pub struct Config {
     /// kept by a viewer with no turn (`PARKED_RECHECK`; a test makes it
     /// short).
     pub parked_recheck: Duration,
+    /// How long a session waits when another bridge holds its lease as its
+    /// bridge starts (`LEASE_HELD_WAIT`; a test makes it short, with a lease
+    /// it has made lapse by then).
+    pub lease_held_wait: Duration,
     /// The host's announcement of itself (R-HOST-3, `announce`): published
     /// on a thread of its own while sync is set up and on. None announces
     /// nothing.
@@ -1389,7 +1393,7 @@ impl Sup {
             // The turn that asked for it is not left unsynced: tried once
             // more when the wait runs out, by when a crashed host's lease
             // has lapsed (ticket 98). Refused again, it waits for a turn.
-            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, quiet, LEASE_HELD_WAIT, !retried, "another bridge holds its lease"),
+            Err(e) if e.starts_with(host::NOT_GRANTED) && e.contains("(lease_held)") => self.wait_for_lease(session, quiet, self.c.lease_held_wait, !retried, "another bridge holds its lease"),
             Err(e) if e.starts_with(host::LEASE_LOST) => self.wait_for_lease(session, quiet, LEASE_LOST_WAIT, false, "another device took its lease"),
             // Any other end — an error, a panic, an end it gave no reason
             // for — is this session's alone: it backs off.
@@ -1429,7 +1433,7 @@ impl Sup {
         }
         // Said once while the reason stands, not at every try: the same
         // words for the one more try and the wait after it.
-        let line = if wait == LEASE_HELD_WAIT {
+        let line = if wait == self.c.lease_held_wait {
             format!("{why}; it is left to it, tried once more in {}, then at a turn", human(wait + ONCE_MORE_SLACK))
         } else {
             format!("{why}; it is left to it, and tried again at a turn after {}", human(wait))
@@ -1850,6 +1854,7 @@ mod tests {
                 bridged: Arc::default(),
                 paid_pause: PAID_PAUSE,
                 parked_recheck: PARKED_RECHECK,
+                lease_held_wait: LEASE_HELD_WAIT,
                 announce: None,
             };
             let (turns, rx) = mpsc::unbounded_channel();
