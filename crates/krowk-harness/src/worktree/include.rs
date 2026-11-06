@@ -39,6 +39,9 @@ pub const INCLUDE_FILE: &str = ".worktreeinclude";
 
 /// The include step (see the module docs).
 pub(super) fn include(p: &Prepare<'_>) -> Option<String> {
+    if p.foreign {
+        return None;
+    }
     let wt = p.worktree;
     let dir = wt.repo_dir();
     let log = |line: &str| seed::log(dir, &wt.hex, line);

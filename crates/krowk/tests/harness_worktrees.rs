@@ -3,7 +3,7 @@
 //! directory: `list --json` flags a clean, a dirty and an ahead one;
 //! `remove` refuses a dirty one with exit 4 and changes nothing, and
 //! `--force` keeps a snapshot that brings the change back; `prune` clears
-//! what `rm -rf` of one left.
+//! what `rm -rf` of one left; `add` makes one an agent can work in.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -44,8 +44,12 @@ impl Sandbox {
     }
 
     fn krowk(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_krowk"))
-            .args(args)
+        self.command(args).output().unwrap()
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+        c.args(args)
             .env_clear()
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", self.root.join("home"))
@@ -55,9 +59,8 @@ impl Sandbox {
             .env("GIT_CONFIG_GLOBAL", "/dev/null")
             .env("GIT_CONFIG_NOSYSTEM", "1")
             .current_dir(self.repo())
-            .stdin(Stdio::null())
-            .output()
-            .unwrap()
+            .stdin(Stdio::null());
+        c
     }
 
     fn json(&self, args: &[&str]) -> Value {
@@ -248,4 +251,83 @@ fn wt13_apply_brings_a_kept_worktree_into_a_checkout_and_refuses_while_live() {
     assert!(!other.join("a.txt").exists() && w.path.is_dir());
     // `--to` belongs to `apply`.
     assert_eq!(b.krowk(&["worktrees", "prune", "--to", "x"]).status.code(), Some(1));
+}
+
+/// `add` makes a worktree from the working state, uncommitted changes
+/// included, or at `--from`, named for the session asking; `list` shows it,
+/// not live once `add` has exited; it can be applied home like any other;
+/// what it cannot start from is refused and leaves nothing.
+#[test]
+fn add_makes_a_worktree_an_agent_works_in_from_the_working_state_or_a_ref() {
+    if !has_git() {
+        return;
+    }
+    let b = Sandbox::new("add");
+    let first = git(&b.repo(), &["rev-parse", "HEAD"]);
+    std::fs::write(b.repo().join("a.txt"), "two\n").unwrap();
+    git(&b.repo(), &["commit", "-q", "-am", "two"]);
+    std::fs::write(b.repo().join("wip.txt"), "uncommitted\n").unwrap();
+
+    let o = b.command(&["worktrees", "add", "--json"]).env("CLAUDE_CODE_SESSION_ID", "the-session").output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let made: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let data = &made["data"];
+    let (hex, path) = (data["hex"].as_str().unwrap(), PathBuf::from(data["path"].as_str().unwrap()));
+    assert_eq!(data["branch"].as_str(), Some(format!("krowk/{hex}").as_str()));
+    assert_eq!(data["session"], "the-session");
+    assert_eq!(std::fs::read_to_string(path.join("wip.txt")).unwrap(), "uncommitted\n");
+
+    let listed = b.json(&["worktrees", "--json"]);
+    let r = row(&listed, hex);
+    assert_eq!((&r["live"], &r["session"], &r["ahead"], &r["dirty"]), (&Value::Bool(false), &Value::from("the-session"), &Value::from(0), &Value::Bool(false)), "{r}");
+
+    let at = b.json(&["worktrees", "add", "--from", &first, "--json"]);
+    let older = PathBuf::from(at["data"]["path"].as_str().unwrap());
+    assert_eq!(at["data"]["base"].as_str(), Some(first.as_str()));
+    assert_eq!(std::fs::read_to_string(older.join("a.txt")).unwrap(), "a\n");
+    assert!(!older.join("wip.txt").exists());
+
+    std::fs::write(path.join("work.txt"), "done\n").unwrap();
+    b.json(&["worktrees", "apply", hex, "--json"]);
+    assert_eq!(std::fs::read_to_string(b.repo().join("work.txt")).unwrap(), "done\n");
+
+    let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
+    let bad = b.krowk(&["worktrees", "add", "--from", "no-such-ref", "--json"]);
+    assert_eq!(bad.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&bad.stdout).contains("worktree_failed") || String::from_utf8_lossy(&bad.stderr).contains("worktree_failed"));
+    assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len(), before);
+    // `--from` is `add`'s here.
+    assert_eq!(b.krowk(&["worktrees", "prune", "--from", "x"]).status.code(), Some(1));
+}
+
+/// A `--from` the checkout has runs the person's setup command; one it does
+/// not have, someone's branch, does not, and says so. Words `add` does not
+/// take, and an empty `--from`, are refused, not read as the working state.
+#[test]
+fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
+    if !has_git() {
+        return;
+    }
+    let b = Sandbox::new("add-foreign");
+    let krowk_home = b.root.join("home/.krowk");
+    std::fs::create_dir_all(&krowk_home).unwrap();
+    std::fs::write(krowk_home.join("config.json"), r#"{ "worktrees": { "setup": "touch ran" } }"#).unwrap();
+    let first = git(&b.repo(), &["rev-parse", "HEAD"]);
+    git(&b.repo(), &["switch", "-q", "-c", "theirs"]);
+    git(&b.repo(), &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+    let theirs = git(&b.repo(), &["rev-parse", "HEAD"]);
+    git(&b.repo(), &["switch", "-q", "main"]);
+
+    let own = b.json(&["worktrees", "add", "--from", &first, "--json"]);
+    assert_eq!(own["data"]["notes"], serde_json::json!([]), "{own}");
+    assert!(PathBuf::from(own["data"]["path"].as_str().unwrap()).join("ran").is_file(), "{own}");
+
+    let foreign = b.json(&["worktrees", "add", "--from", &theirs, "--json"]);
+    assert!(foreign["data"]["notes"][0].as_str().unwrap().contains("did not run"), "{foreign}");
+    assert!(!PathBuf::from(foreign["data"]["path"].as_str().unwrap()).join("ran").exists(), "{foreign}");
+
+    let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
+    assert_eq!(b.krowk(&["worktrees", "add", "origin/main"]).status.code(), Some(1));
+    assert_eq!(b.krowk(&["worktrees", "add", "--from", " "]).status.code(), Some(1));
+    assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len(), before);
 }

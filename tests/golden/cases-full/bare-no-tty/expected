@@ -1505,6 +1505,19 @@ stdout:
           "summary": "Each one: branch, commits ahead, changes, session, age"
         },
         {
+          "name": "add",
+          "usage": "krowk worktrees add [--from REF]",
+          "summary": "Make one for an agent to work in, and print its directory",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)"
+            }
+          ]
+        },
+        {
           "name": "remove",
           "usage": "krowk worktrees remove <hex|path> [--force]",
           "summary": "Remove one, its branch kept; not while its session runs",
@@ -3272,6 +3285,19 @@ tty:
           "name": "list",
           "usage": "krowk worktrees list",
           "summary": "Each one: branch, commits ahead, changes, session, age"
+        },
+        {
+          "name": "add",
+          "usage": "krowk worktrees add [--from REF]",
+          "summary": "Make one for an agent to work in, and print its directory",
+          "flags": [
+            {
+              "name": "from",
+              "type": "string",
+              "default": "",
+              "usage": "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)"
+            }
+          ]
         },
         {
           "name": "remove",

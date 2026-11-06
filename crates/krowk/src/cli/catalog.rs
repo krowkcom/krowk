@@ -674,6 +674,10 @@ fn worktrees_command() -> Command {
         subcommands: vec![
             cmd("list", "krowk worktrees list", "Each one: branch, commits ahead, changes, session, age"),
             Command {
+                flags: vec![flag("from", STRING, "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)")],
+                ..cmd("add", "krowk worktrees add [--from REF]", "Make one for an agent to work in, and print its directory")
+            },
+            Command {
                 args: vec![arg("worktree", "Its 8 hex digits, its branch krowk/<hex>, or its directory", true)],
                 flags: vec![flag("force", BOOL, "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>")],
                 ..cmd("remove", "krowk worktrees remove <hex|path> [--force]", "Remove one, its branch kept; not while its session runs")
@@ -1070,6 +1074,17 @@ once; run `krowk sync join` on the new machine and type it there. The code is
 checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
 it: run `add` again for a new one. Needs a Pro workspace.",
+        #[cfg(feature = "harness")]
+        "worktrees add" => "\
+The worktree is of the repository you are in, on a new branch krowk/<hex>,
+started from your files as they are, uncommitted changes included, or at
+--from, which is not fetched first. It is readied as a `krowk --worktree`
+session's is: submodules, seeds, .worktreeinclude, worktrees.setup. A --from on
+neither this checkout nor origin's default branch skips .worktreeinclude and
+setup, so its code is not run beside your files. Agents on Claude Code or Codex
+use this rather than `git worktree add`, which krowk refuses them. A setup
+command can take minutes, and nothing prints until it ends. Nothing removes
+the worktree by itself: `krowk worktrees apply` or `remove` does.",
         #[cfg(feature = "harness")]
         "worktrees remove" => "\
 Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as

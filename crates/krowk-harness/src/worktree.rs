@@ -30,7 +30,8 @@
 //!   at once fail on its `config.lock`. So every change here holds `lock`:
 //!   a mutex for this process's threads, and `File::lock` on
 //!   `<common>/krowk-worktree.lock` for every other krowk.
-//! - **Locked while it runs**: `git worktree lock --reason krowk:<owner>`,
+//! - **Locked while it runs**, and one `krowk worktrees add` made until it
+//!   is applied or removed: `git worktree lock --reason krowk:<owner>`,
 //!   the owner being the session that works in it, so `git worktree prune`
 //!   leaves it alone and a listing can say whose it is.
 //! - **Every git through `krowk_api::git`**: hooks off, so `worktree add`
@@ -62,7 +63,8 @@
 //!   nothing is made.
 //! - **A port slot** (`setup::port_slot`) is held by whoever uses the
 //!   worktree, for as long as they do: `KROWK_PORT_BASE` for the setup
-//!   command and the agent's commands.
+//!   command and the agent's commands. `krowk worktrees add` lets go of its
+//!   slot on exit, so its setup command's base is not reserved afterwards.
 
 pub mod apply;
 pub mod disk;
@@ -192,13 +194,17 @@ pub struct Prepare<'a> {
     /// The worktree came with the heavy directories, a snapshot of a
     /// template that had them (WT11): the seed step does nothing.
     pub seeded: bool,
+    /// It was made at a commit neither this checkout nor `origin`'s default
+    /// branch has, say someone's pull request: its code is not run beside
+    /// the person's files, so the include and setup steps do nothing.
+    pub foreign: bool,
 }
 
 impl<'a> Prepare<'a> {
     /// The steps' inputs for `worktree` with `config` alone: an untrusted
     /// repository, no sandbox, no port slot, no build slots.
     pub fn new(worktree: &'a Worktree, config: &'a WorktreesConfig) -> Prepare<'a> {
-        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None, cancel: None, seeded: false }
+        Prepare { worktree, config, project: None, trusted: false, sandbox: None, port_base: None, builds: None, cancel: None, seeded: false, foreign: false }
     }
 }
 
@@ -320,6 +326,26 @@ pub struct Readying<'a> {
 /// agent's first prompt (`first_prompt`). Blocking: off the async runtime.
 pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
     let (w, held, made) = create_fastest(cwd, root, owner, r.config)?;
+    ready(w, held, made, false, r)
+}
+
+/// `open` at `commit`, which the repository must have, rather than at its
+/// working state. Always a checkout: a template is of the working state.
+pub fn open_at(cwd: &Path, root: &Path, owner: &str, commit: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
+    let (w, held) = create_at(cwd, root, owner, commit)?;
+    let foreign = !known_history(cwd, &w.base);
+    ready(w, held, Made::Checkout, foreign, r)
+}
+
+/// Whether `commit` is on this checkout's HEAD or `origin`'s default branch,
+/// whichever of `origin/HEAD`, `origin/main` and `origin/master` that is: a
+/// stale `origin/HEAD` after a rename would otherwise hide the new one.
+fn known_history(cwd: &Path, commit: &str) -> bool {
+    ["HEAD"].into_iter().chain(DEFAULT_TIPS).any(|tip| query(cwd).is_ok_and(|mut c| c.args(["merge-base", "--is-ancestor", commit, tip]).output().is_ok_and(|o| o.status.success())))
+}
+
+/// A worktree just made, with a port slot, readied by the prepare steps.
+fn ready(w: Worktree, held: manage::Held, made: Made, foreign: bool, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
     if let Some(f) = r.made {
         f();
     }
@@ -335,6 +361,7 @@ pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(I
         builds: r.builds,
         cancel: r.cancel,
         seeded: made == Made::Snapshot { seeded: true },
+        foreign,
     };
     let mut notes: Vec<String> = missing.into_iter().collect();
     notes.extend(prepare_or_discard(&prepare)?);
@@ -861,8 +888,10 @@ pub(crate) fn ahead(dir: &Path, base: &str, head: &str) -> Result<usize, Error> 
 
 /// The first of `origin/HEAD`, `origin/main` and `origin/master` that
 /// names a commit.
+const DEFAULT_TIPS: [&str; 3] = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"];
+
 fn default_tip(dir: &Path) -> Option<String> {
-    ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"].into_iter().find_map(|r| {
+    DEFAULT_TIPS.into_iter().find_map(|r| {
         let mut c = query(dir).ok()?;
         read(c.args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]), "rev-parse").ok()
     })

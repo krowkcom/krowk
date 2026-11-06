@@ -504,7 +504,7 @@ impl Removed {
 }
 
 /// `p` as one shell word.
-fn quote(p: &Path) -> String {
+pub fn quote(p: &Path) -> String {
     let s = p.to_string_lossy();
     if s.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-+:@,".contains(&b)) {
         return s.into_owned();

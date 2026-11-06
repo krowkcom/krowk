@@ -112,15 +112,26 @@ pub(super) fn start(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config
 pub(super) fn open(ctx: &mut Ctx, cwd: &Path, permissions: &permissions::Config, registry: &Registry, session: &str) -> Result<(InUse, Vec<String>), Error> {
     let root = root(ctx)?;
     let agent = agent_slot(ctx, registry);
+    let (mut in_use, notes) = make(ctx, &root, cwd, permissions, registry, session, None)?;
+    in_use.agent = agent;
+    Ok((in_use, notes))
+}
+
+/// A new worktree of the repository `cwd` is in, for `owner`, readied:
+/// from `from` when given, else from its working state. Holds no agent
+/// slot: that is for a session running in this process.
+pub(super) fn make(ctx: &Ctx, root: &Path, cwd: &Path, permissions: &permissions::Config, registry: &Registry, owner: &str, from: Option<&str>) -> Result<(InUse, Vec<String>), Error> {
     let policy = permissions::Policy::load(permissions, cwd).map_err(prompt::bad_settings)?;
     let runtime = krowk_harness::slots::runtime_dir(ctx.io.env);
     let readying = worktree::Readying { policy: &policy, config: &registry.worktrees, builds: Some(&registry.builds), cancel: None, runtime, made: None };
-    let (mut in_use, notes) = worktree::open(cwd, &root, session, &readying).map_err(|e| match e {
+    let made = match from {
+        Some(commit) => worktree::open_at(cwd, root, owner, commit, &readying),
+        None => worktree::open(cwd, root, owner, &readying),
+    };
+    made.map_err(|e| match e {
         worktree::Error::NotARepository => fail("not_a_repository", NEEDS_A_REPOSITORY),
-        e => fail("worktree_failed", format!("the session's worktree could not be made: {e}")),
-    })?;
-    in_use.agent = agent;
-    Ok((in_use, notes))
+        e => fail("worktree_failed", format!("the worktree could not be made: {e}")),
+    })
 }
 
 /// One of the machine's agent slots, waited for as long as it takes:
