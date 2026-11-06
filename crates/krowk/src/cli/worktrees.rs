@@ -176,7 +176,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     // repository's main checkout, where `apply` sends them by default.
     let top = trust::root(&cwd);
     let same = |a: &std::path::Path, b: &std::path::Path| a.canonicalize().ok().zip(b.canonicalize().ok()).is_some_and(|(a, b)| a == b);
-    let to = if same(&top, &wt.main) { String::new() } else { format!(" --to {}", top.display()) };
+    let to = if same(&top, &wt.main) { String::new() } else { format!(" --to {}", manage::quote(&top)) };
     let apply = format!("krowk worktrees apply {}{to}", wt.hex);
     if ctx.format != Format::Human {
         let data = json!({ "hex": wt.hex, "path": wt.path.display().to_string(), "repo": wt.main.display().to_string(), "branch": wt.branch(), "base": wt.base, "session": owner, "notes": notes, "apply": apply });
@@ -213,6 +213,9 @@ pub(super) fn remove(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 }
 
 pub(super) fn apply(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+    if let Some(extra) = args.get(1) {
+        return Err(fail("bad_argument", format!("`krowk worktrees apply` takes one worktree, not `{extra}` too — quote a --to path that has spaces")));
+    }
     let key = args.first().map(|a| a.trim()).filter(|a| !a.is_empty()).ok_or_else(|| fail("missing_argument", "name the worktree to apply: `krowk worktrees apply <hex|path>` — `krowk worktrees` lists them"))?;
     let root = root(ctx)?;
     let human = ctx.format == Format::Human;

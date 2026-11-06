@@ -337,9 +337,11 @@ pub fn open_at(cwd: &Path, root: &Path, owner: &str, commit: &str, r: &Readying<
     ready(w, held, Made::Checkout, foreign, r)
 }
 
-/// Whether `commit` is on this checkout's HEAD or `origin`'s default branch.
+/// Whether `commit` is on this checkout's HEAD or `origin`'s default branch,
+/// whichever of `origin/HEAD`, `origin/main` and `origin/master` that is: a
+/// stale `origin/HEAD` after a rename would otherwise hide the new one.
 fn known_history(cwd: &Path, commit: &str) -> bool {
-    ["HEAD".to_string()].into_iter().chain(default_tip(cwd)).any(|tip| query(cwd).is_ok_and(|mut c| c.args(["merge-base", "--is-ancestor", commit, &tip]).output().is_ok_and(|o| o.status.success())))
+    ["HEAD"].into_iter().chain(DEFAULT_TIPS).any(|tip| query(cwd).is_ok_and(|mut c| c.args(["merge-base", "--is-ancestor", commit, tip]).output().is_ok_and(|o| o.status.success())))
 }
 
 /// A worktree just made, with a port slot, readied by the prepare steps.
@@ -886,8 +888,10 @@ pub(crate) fn ahead(dir: &Path, base: &str, head: &str) -> Result<usize, Error> 
 
 /// The first of `origin/HEAD`, `origin/main` and `origin/master` that
 /// names a commit.
+const DEFAULT_TIPS: [&str; 3] = ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"];
+
 fn default_tip(dir: &Path) -> Option<String> {
-    ["refs/remotes/origin/HEAD", "refs/remotes/origin/main", "refs/remotes/origin/master"].into_iter().find_map(|r| {
+    DEFAULT_TIPS.into_iter().find_map(|r| {
         let mut c = query(dir).ok()?;
         read(c.args(["rev-parse", "--verify", "--quiet", &format!("{r}^{{commit}}")]), "rev-parse").ok()
     })
