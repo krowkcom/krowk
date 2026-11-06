@@ -9,6 +9,14 @@
 //!   age, and whether a live session holds it. A commit already on
 //!   `origin`'s default branch, or with an equivalent patch there (a merged
 //!   or rebase-merged PR), is not ahead (WT17).
+//! - `add [--from <ref>]`: a new worktree of the repository the current
+//!   directory is in, for an agent to work in: the way an agent on any
+//!   backend gets one, `git worktree add` being refused it
+//!   (`krowk_harness::tooling_guard`). It starts from the working state,
+//!   uncommitted changes included, or at `--from`, and is readied as a
+//!   `--worktree` session's is. Nothing finishes it: no process stays to
+//!   hold it, so it reads as not live, and it is kept until `apply` or
+//!   `remove`.
 //! - `remove <hex|path> [--force]`: refused (exit 4) while a live session
 //!   holds it (`worktree_live`), and while it has uncommitted changes or
 //!   commits ahead of its base unless forced (`worktree_has_changes`).
@@ -38,13 +46,16 @@
 //! created_ms, age_seconds, live, missing}`, every key on every row, `null`
 //! where it is not known.
 
-use super::Ctx;
+use super::{own_worktree, prompt, Ctx};
 use crate::output::Format;
 use krowk_api::{fail, Error};
+use krowk_harness::instances::Registry;
+use krowk_harness::trust;
 use krowk_harness::worktree::apply::{named, Applied};
 use krowk_harness::worktree::manage::{self, Listed, Refusal, SNAPSHOTS};
 use serde_json::{json, Value};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::SystemTime;
 
 /// Where krowk's worktrees are.
@@ -130,6 +141,32 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
         let _ = writeln!(out, "{}  {}", line.join("  "), r[7]);
     }
     let _ = writeln!(out, "{summary}");
+    Ok(())
+}
+
+pub(super) fn add(ctx: &mut Ctx) -> Result<(), Error> {
+    let root = root(ctx)?;
+    let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
+    let config = prompt::config_json()?;
+    let registry = Registry::resolve(&prompt::instances_from(&config)?, ctx.io.env);
+    let home = Some(ctx.env("HOME")).filter(|h| !h.trim().is_empty()).map(PathBuf::from);
+    let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), home);
+    let permissions = prompt::permissions_config(ctx, &config, Arc::new(move |repo: &std::path::Path| store.trusts(repo)), false);
+    // The session asking, when one is: `krowk worktrees` names it.
+    let owner = ["KROWK_SESSION", "CLAUDE_CODE_SESSION_ID"].iter().map(|k| ctx.env(k)).find(|s| !s.trim().is_empty()).unwrap_or_else(krowk_store::new_id);
+    let from = Some(ctx.f.from.trim()).filter(|f| !f.is_empty()).map(String::from);
+    let (in_use, notes) = own_worktree::make(ctx, &root, &cwd, &permissions, &registry, &owner, from.as_deref())?;
+    let wt = &in_use.worktree;
+    let summary = format!("Made {} on branch {}", wt.path.display(), wt.branch());
+    if ctx.format != Format::Human {
+        let data = json!({ "hex": wt.hex, "path": wt.path.display().to_string(), "repo": wt.main.display().to_string(), "branch": wt.branch(), "base": wt.base, "session": owner, "notes": notes });
+        return super::sessions::emit_data(ctx, data, summary);
+    }
+    let out = &mut *ctx.io.stdout;
+    let _ = writeln!(out, "{}\nBranch {}. It stays until `krowk worktrees apply {}` or `krowk worktrees remove {}`.", wt.path.display(), wt.branch(), wt.hex, wt.hex);
+    for n in &notes {
+        let _ = writeln!(out, "{n}");
+    }
     Ok(())
 }
 

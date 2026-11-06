@@ -320,6 +320,18 @@ pub struct Readying<'a> {
 /// agent's first prompt (`first_prompt`). Blocking: off the async runtime.
 pub fn open(cwd: &Path, root: &Path, owner: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
     let (w, held, made) = create_fastest(cwd, root, owner, r.config)?;
+    ready(w, held, made, r)
+}
+
+/// `open` at `commit`, which the repository must have, rather than at its
+/// working state. Always a checkout: a template is of the working state.
+pub fn open_at(cwd: &Path, root: &Path, owner: &str, commit: &str, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
+    let (w, held) = create_at(cwd, root, owner, commit)?;
+    ready(w, held, Made::Checkout, r)
+}
+
+/// A worktree just made, with a port slot, readied by the prepare steps.
+fn ready(w: Worktree, held: manage::Held, made: Made, r: &Readying<'_>) -> Result<(InUse, Vec<String>), Error> {
     if let Some(f) = r.made {
         f();
     }

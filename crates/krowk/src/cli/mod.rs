@@ -417,6 +417,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
+        ["worktrees", "add", ..] => worktrees::add(ctx),
+        #[cfg(feature = "harness")]
         ["worktrees", "remove", ..] => worktrees::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["worktrees", "apply", ..] => worktrees::apply(ctx, rest(2)),
@@ -629,7 +631,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
     );
     let owners = [
         ("dry-run", "`krowk sessions import`", import),
-        ("from", "`krowk sessions import` and `krowk sessions restore`", import || words.starts_with(&["sessions", "restore"])),
+        ("from", "`krowk sessions import`, `krowk sessions restore` and `krowk worktrees add`", import || words.starts_with(&["sessions", "restore"]) || words.starts_with(&["worktrees", "add"])),
         ("harness", "`krowk sessions`", list),
         ("worktree", WORKTREE_OWNERS, list),
         ("all", ALL_OWNERS, list),
