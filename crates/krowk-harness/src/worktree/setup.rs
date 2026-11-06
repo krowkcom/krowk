@@ -95,6 +95,10 @@ pub(super) fn setup(p: &Prepare<'_>) -> Option<String> {
     if p.cancel.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed)) {
         return None;
     }
+    if p.foreign {
+        let configured = p.config.setup().is_some() || p.project.is_some_and(|w| w.setup().is_some()) || p.worktree.main.join(super::include::INCLUDE_FILE).exists();
+        return configured.then(|| format!("worktrees.setup and .worktreeinclude did not run: {} is on neither this checkout nor origin's default branch, so its code was not run beside the person's files", p.worktree.base));
+    }
     let mut notes = Vec::new();
     let own = p.project.filter(|w| w.setup().is_some());
     let (config, from) = match own {

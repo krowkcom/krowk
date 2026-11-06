@@ -3,11 +3,13 @@
 //!
 //! - **A worktree by hand**: `git worktree add`, Claude Code's
 //!   `EnterWorktree`, or its `Agent` called with `isolation: "worktree"`. A
-//!   worktree krowk makes is locked to its session, readied (submodules,
-//!   seeds, `worktrees.setup`), held against the machine's agent slots and
-//!   finished when the work ends; one made any other way is none of that,
-//!   and `krowk worktrees` never sees it. `krowk worktrees add` is the way
-//!   an agent makes one itself. (An agent definition's own
+//!   worktree krowk makes is readied (submodules, seeds, `worktrees.setup`)
+//!   and recorded; a session's or a subagent's is also held against the
+//!   machine's agent slots and finished when the work ends. One made any
+//!   other way is none of that, and `krowk worktrees` never sees it.
+//!   `krowk worktrees add` is how an agent on Claude Code or Codex makes
+//!   one itself; krowk's own sandbox keeps `.git` read-only, so a sandboxed
+//!   agent uses `subagent`. (An agent definition's own
 //!   `isolation` frontmatter is Claude Code's to read, not the call's, and
 //!   is not seen.)
 //! - **A file sent to a paste site**: a gist made or edited (`gh gist
@@ -45,9 +47,10 @@ const PASTE_HOSTS: &[&str] = &[
 ];
 
 /// What a worktree made by hand is refused with.
-pub const WORKTREE: &str = "krowk did not run this: krowk makes the worktrees agents work in, so each is locked to its session and readied, and `krowk worktrees` lists it. \
-     Run `krowk worktrees add --json`, with `--from origin/main` to start from that ref rather than your files as they are, and work in the `path` it answers; to give a child agent one, make it first and tell the child to work in that path. \
-     In krowk's own agent, a `subagent` call with `isolation: \"worktree\"` does this for you. A person can still make one by hand at their own prompt.";
+pub const WORKTREE: &str = "krowk did not run this: krowk makes the worktrees agents work in, so each is readied and recorded, and `krowk worktrees` lists it. \
+     In krowk's own agent, a `subagent` call with `isolation: \"worktree\"` gives a child one. \
+     On Claude Code or Codex, run `krowk worktrees add --json`, with `--from origin/main` to start from that ref rather than the files as they are and a long timeout if the repository has a setup command, and work in the `path` it answers, naming that path to any child agent; it is outside the session's working directory, so unless the session bypasses permissions its commands there may ask for approval. \
+     Otherwise work where you are. A person can still make one by hand at their own prompt.";
 
 /// What a paste-site upload is refused with.
 pub const UPLOAD: &str = "krowk did not run this: files are published as krowk artifacts, not to a paste site. \

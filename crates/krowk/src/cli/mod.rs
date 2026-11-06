@@ -417,7 +417,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
-        ["worktrees", "add", ..] => worktrees::add(ctx),
+        ["worktrees", "add", ..] => worktrees::add(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["worktrees", "remove", ..] => worktrees::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]

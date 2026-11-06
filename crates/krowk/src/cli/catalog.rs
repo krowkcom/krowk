@@ -1079,9 +1079,12 @@ it: run `add` again for a new one. Needs a Pro workspace.",
 The worktree is of the repository you are in, on a new branch krowk/<hex>,
 started from your files as they are, uncommitted changes included, or at
 --from, which is not fetched first. It is readied as a `krowk --worktree`
-session's is: submodules, seeds, .worktreeinclude, worktrees.setup. Agents use
-this rather than `git worktree add`, which krowk refuses them. Nothing removes
-it by itself: `krowk worktrees apply` or `remove` does.",
+session's is: submodules, seeds, .worktreeinclude, worktrees.setup. A --from on
+neither this checkout nor origin's default branch skips .worktreeinclude and
+setup, so its code is not run beside your files. Agents on Claude Code or Codex
+use this rather than `git worktree add`, which krowk refuses them. A setup
+command can take minutes, and nothing prints until it ends. Nothing removes
+the worktree by itself: `krowk worktrees apply` or `remove` does.",
         #[cfg(feature = "harness")]
         "worktrees remove" => "\
 Its branch krowk/<hex> is kept. Forced, uncommitted changes are saved as

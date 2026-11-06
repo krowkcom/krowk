@@ -299,3 +299,35 @@ fn add_makes_a_worktree_an_agent_works_in_from_the_working_state_or_a_ref() {
     // `--from` is `add`'s here.
     assert_eq!(b.krowk(&["worktrees", "prune", "--from", "x"]).status.code(), Some(1));
 }
+
+/// A `--from` the checkout has runs the person's setup command; one it does
+/// not have, someone's branch, does not, and says so. Words `add` does not
+/// take, and an empty `--from`, are refused, not read as the working state.
+#[test]
+fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
+    if !has_git() {
+        return;
+    }
+    let b = Sandbox::new("add-foreign");
+    let krowk_home = b.root.join("home/.krowk");
+    std::fs::create_dir_all(&krowk_home).unwrap();
+    std::fs::write(krowk_home.join("config.json"), r#"{ "worktrees": { "setup": "touch ran" } }"#).unwrap();
+    let first = git(&b.repo(), &["rev-parse", "HEAD"]);
+    git(&b.repo(), &["switch", "-q", "-c", "theirs"]);
+    git(&b.repo(), &["commit", "-q", "--allow-empty", "-m", "theirs"]);
+    let theirs = git(&b.repo(), &["rev-parse", "HEAD"]);
+    git(&b.repo(), &["switch", "-q", "main"]);
+
+    let own = b.json(&["worktrees", "add", "--from", &first, "--json"]);
+    assert_eq!(own["data"]["notes"], serde_json::json!([]), "{own}");
+    assert!(PathBuf::from(own["data"]["path"].as_str().unwrap()).join("ran").is_file(), "{own}");
+
+    let foreign = b.json(&["worktrees", "add", "--from", &theirs, "--json"]);
+    assert!(foreign["data"]["notes"][0].as_str().unwrap().contains("did not run"), "{foreign}");
+    assert!(!PathBuf::from(foreign["data"]["path"].as_str().unwrap()).join("ran").exists(), "{foreign}");
+
+    let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
+    assert_eq!(b.krowk(&["worktrees", "add", "origin/main"]).status.code(), Some(1));
+    assert_eq!(b.krowk(&["worktrees", "add", "--from", " "]).status.code(), Some(1));
+    assert_eq!(b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len(), before);
+}

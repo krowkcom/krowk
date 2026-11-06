@@ -16,8 +16,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `isolation: "worktree"`, but on a Claude Code or Codex backend that left it
   no way to get a worktree mid-session. The new command makes one, readied as
   a `--worktree` session's is and listed by `krowk worktrees`, from your files
-  as they are or at `--from <ref>`, and answers its path. The refusal now
-  points to it. It stays until `krowk worktrees apply` or `remove`.
+  as they are or at `--from <ref>`, and answers its path. A ref on neither your
+  checkout nor origin's default branch skips `.worktreeinclude` and
+  `worktrees.setup`, so someone else's code isn't run next to your secrets. The
+  refusal now points to it. It stays until `krowk worktrees apply` or `remove`,
+  and sits outside the session's working directory, so unless the session
+  bypasses permissions, its commands there may ask for approval.
 
 ## [0.16.1] - 2026-11-02
 

@@ -52,7 +52,7 @@ Agents running at once can each work in a git worktree of their own, on a branch
 | Command | What it does |
 | --- | --- |
 | `krowk worktrees` | List krowk's worktrees: base, commits ahead, uncommitted changes, whose session |
-| `krowk worktrees add [--from <ref>]` | Make one for an agent to work in, on any backend, and print its directory. It stays until applied or removed |
+| `krowk worktrees add [--from <ref>]` | Make one for an agent on Claude Code or Codex to work in, and print its directory. It's outside the session's working directory, so its commands there may ask for approval. It stays until applied or removed |
 | `krowk worktrees apply <hex> [--to <dir>]` | Bring a kept worktree's changes into your checkout, uncommitted |
 | `krowk worktrees remove <hex> [--force]` | Remove one; `--force` saves its changes as a ref first, and the branch is kept |
 | `krowk worktrees prune` | Clear what deleted worktrees left, and snapshots over 30 days old (also runs daily) |
