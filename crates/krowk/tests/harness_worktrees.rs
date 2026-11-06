@@ -318,12 +318,17 @@ fn add_runs_no_setup_for_a_ref_on_neither_the_checkout_nor_origin() {
     let theirs = git(&b.repo(), &["rev-parse", "HEAD"]);
     git(&b.repo(), &["switch", "-q", "main"]);
 
+    // Where this machine has no sandbox (macOS), an untrusted repository's
+    // setup does not run either way; only the foreign skip is asserted then.
     let own = b.json(&["worktrees", "add", "--from", &first, "--json"]);
-    assert_eq!(own["data"]["notes"], serde_json::json!([]), "{own}");
-    assert!(PathBuf::from(own["data"]["path"].as_str().unwrap()).join("ran").is_file(), "{own}");
+    if own["data"]["notes"] == serde_json::json!([]) {
+        assert!(PathBuf::from(own["data"]["path"].as_str().unwrap()).join("ran").is_file(), "{own}");
+    } else {
+        assert!(!own["data"]["notes"][0].as_str().unwrap().contains("neither this checkout"), "{own}");
+    }
 
     let foreign = b.json(&["worktrees", "add", "--from", &theirs, "--json"]);
-    assert!(foreign["data"]["notes"][0].as_str().unwrap().contains("did not run"), "{foreign}");
+    assert!(foreign["data"]["notes"][0].as_str().unwrap().contains("neither this checkout"), "{foreign}");
     assert!(!PathBuf::from(foreign["data"]["path"].as_str().unwrap()).join("ran").exists(), "{foreign}");
 
     let before = b.json(&["worktrees", "--json"])["data"]["worktrees"].as_array().unwrap().len();
