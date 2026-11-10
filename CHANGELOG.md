@@ -41,6 +41,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   notice or offer now says what the target has left, as of when, and when it
   resets. An `instance/model` entry's model and an entry of another kind are
   ignored, and `krowk doctor` lists them instead of the config being refused.
+  With `rollover` at `auto`, a session also moves between turns, before one
+  dies at the hard limit: when a turn leaves its account with less than about
+  two more such turns need (under max(2, twice the turn's use) points of its
+  fullest window) and another account has at least 5 points more, the next
+  turn starts there, with a notice (on stderr with `krowk -p`) and the move
+  in the session log, so `--resume` continues on the new account. An account
+  a session was just moved to ranks after the others for 5 minutes, so
+  sessions crossing the line together do not all pile onto one account.
 
 ### Changed
 

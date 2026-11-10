@@ -845,6 +845,8 @@ fn r_inst_8_rollover_auto_moves_on_tells_every_client_and_logs_why() {
     let (from, to, reason, detail) = switched.expect("the rollover is on the record");
     assert_eq!((from.map(|m| m.instance), to.instance.as_str(), reason), (Some("claude:work".into()), "claude:personal", SwitchReason::RateLimited));
     assert!(detail.unwrap().contains("rollover is auto"));
+    let now = krowk_store::now_ms();
+    assert!(krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read().moved_recently("claude:personal", now), "a hard-limit auto move marks its target too");
     // The limited turn's thread came along whole, in the same mode.
     assert!(w.fake_log("claude-personal").contains("resume-lines 1") && w.fake_log("claude-personal").contains("permission-mode plan"));
     // And the session stays on the instance it moved to.
@@ -965,6 +967,64 @@ fn r_roll_8_auto_without_an_order_moves_to_the_most_saved_headroom_on_the_same_m
         _ => None,
     });
     assert!(detail.as_deref().is_some_and(|d| d.contains("continuing on claude:most/haiku (70% left as of ") && d.contains(", resets ")), "{detail:?}");
+}
+
+/// R-ROLL-11, D9, D19: a turn that leaves an `auto` session's login with too
+/// little for two more such turns moves the session, as logged, to a
+/// candidate with room, which is marked as moved to; `offer` and a
+/// candidate with too little more room leave it where it is.
+#[test]
+fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns() {
+    let mut w = World::new("early");
+    for (name, scenario) in [("claude:work", "low.jsonl"), ("claude:best", "switch.jsonl")] {
+        w.claude(name, &name.replace(':', "-"), Some(scenario), true);
+    }
+    w.rollover = Some(Rollover::Auto);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    let models = vec!["haiku".to_string()];
+    let seed = |instance: &str, used: f64| {
+        usage.record_instance(instance, instance, &models, now).unwrap();
+        let limit = krowk_harness::protocol::LimitStatus { status: LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
+        usage.record_limit(instance, &limit, now).unwrap();
+    };
+    let work = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
+    let run_work = |host: &Host| rt().block_on(run(host, prompt(None, "keep going", Some(work.clone()))));
+    let moves = |w: &World, id: &str| -> Vec<(ModelRef, SwitchReason, Option<String>)> {
+        w.events(id).into_iter().filter_map(|e| match e.body {
+            LogBody::ModelSwitched { to, reason, detail, .. } => Some((to, reason, detail)),
+            _ => None,
+        }).collect()
+    };
+    // Five hours at 90%, the turn takes it to 96%: 4 left is less than 12.
+    seed("claude:work", 90.0);
+    seed("claude:best", 59.0);
+    let host = w.host();
+    let (r, lines) = run_work(&host);
+    assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:work"));
+    let moved = moves(&w, &r.session_id);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    let detail = moved[0].2.clone().unwrap();
+    assert_eq!((moved[0].0.instance.as_str(), moved[0].1), ("claude:best", SwitchReason::RateLimited));
+    assert!(detail.starts_with("claude:work/haiku is 96% used; rollover is auto, continuing on claude:best/haiku (41% left as of "), "{detail}");
+    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Notice { text, .. }) if text.contains("is 96% used"))));
+    assert!(usage.read().moved_recently("claude:best", now + 1_000), "the target carries the mark");
+    // The next prompt runs there, the transcript resumed.
+    let (r2, _) = rt().block_on(run(&host, prompt(Some(&r.session_id), "and more", None)));
+    assert_eq!((r2.status, r2.model.instance.as_str()), (TurnStatus::Completed, "claude:best"));
+    assert!(w.fake_log("claude-best").contains("resume-lines"));
+    // Offer: nothing moves by itself.
+    drop(host);
+    seed("claude:work", 90.0);
+    w.rollover = Some(Rollover::Offer);
+    let (r, _) = run_work(&w.host());
+    assert!(moves(&w, &r.session_id).is_empty());
+    // Auto, but the only candidate has under 10 to spare: stays.
+    seed("claude:work", 90.0);
+    seed("claude:best", 95.0);
+    w.rollover = Some(Rollover::Auto);
+    let (r, _) = run_work(&w.host());
+    assert!(moves(&w, &r.session_id).is_empty());
 }
 
 #[test]

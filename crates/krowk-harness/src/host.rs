@@ -1014,7 +1014,7 @@ impl Shared {
                 // The next candidate, or the limit's own result.
                 (Err(e), Some(r)) => {
                     tried.push(r.to.instance.clone());
-                    match self.next_instance(&r.from, &tried, &r.cwd, Rollover::Auto).await {
+                    match self.next_instance(&r.from, &tried, &r.cwd, Rollover::Auto, None).await {
                         Some(pick) => {
                             model = Some(pick.model.clone());
                             rolling = Some(Rolling { to: pick.model, room: room_note(pick.standing), ..r });
@@ -1188,12 +1188,16 @@ impl Shared {
     /// offered; one whose login only a project's settings provide
     /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
     /// by naming it.
-    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover) -> Option<usage::Ranked> {
+    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover, at_least: Option<f64>) -> Option<usage::Ranked> {
         let registry = self.registry();
         let full = rollover == Rollover::Auto;
         let data = usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)).read();
         let candidates = registry.rollover_candidates(from, tried, &data);
         for ranked in data.rank(data.login_of(&from.instance), &candidates, krowk_store::now_ms()) {
+            // The early switch wants a known candidate with that much room.
+            if at_least.is_some_and(|h| !ranked.standing.is_some_and(|s| s.headroom >= h)) {
+                continue;
+            }
             let m = ranked.model.clone();
             let Ok(i) = registry.get(&m.instance) else { continue };
             let ok = match &i.backend {
@@ -1208,6 +1212,44 @@ impl Shared {
             }
         }
         None
+    }
+
+    /// What follows a session's own turn: after a failure, `after_failure`;
+    /// after a completed one, the early switch. A subagent's turn, nothing.
+    #[allow(clippy::type_complexity)]
+    async fn follow_up(&self, outcome: &Result<TurnEnd, EngineError>, (announce, reached, tried, cwd, rollover): (bool, Option<&ModelRef>, &Vec<String>, &PathBuf, Rollover), (w, before): (&Writer<'_>, Option<&usage::Data>), (model, session_id, calls): (&ModelRef, &str, u32), error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+        match outcome {
+            Err(e) if announce => self.after_failure(e, (reached, tried, cwd, rollover), model, session_id, calls, error).await,
+            Ok(TurnEnd::Completed) if announce => (self.early_switch(w, before, model, (tried, cwd), session_id).await, None, None),
+            _ => (None, None, None),
+        }
+    }
+
+    /// The early switch (D9, R-ROLL-11), asked as an `auto` session's turn
+    /// ends: when its login has too little left for about two more such
+    /// turns, the best ready candidate with 5 points more room, as the move
+    /// to log — and its login marked as moved to (D19). Not when the person
+    /// asked for a switch meanwhile.
+    async fn early_switch(&self, w: &Writer<'_>, before: Option<&usage::Data>, model: &ModelRef, (tried, cwd): (&[String], &std::path::Path), session_id: &str) -> Option<(ModelRef, SwitchReason, String)> {
+        let before = before?;
+        let now = krowk_store::now_ms();
+        let left = before.runs_low(before.login_of(&model.instance), &w.limits.values().cloned().collect::<Vec<_>>(), now)?;
+        let mut tried = tried.to_vec();
+        tried.push(model.instance.clone());
+        let pick = self.next_instance(model, &tried, cwd, Rollover::Auto, Some(left + 5.0)).await?;
+        if self.requested(session_id) {
+            return None;
+        }
+        w.mark_moved(&pick.model.instance).await;
+        let room = room_note(pick.standing);
+        let detail = format!("{model} is {}% used; rollover is auto, continuing on {} ({room})", (100.0 - left).round(), pick.model);
+        w.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: w.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
+        Some((pick.model, SwitchReason::RateLimited, detail))
+    }
+
+    /// Whether a switch the person asked for is waiting for `session_id`'s turn to end.
+    fn requested(&self, session_id: &str) -> bool {
+        self.running.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).is_some_and(|r| r.switch.is_some())
     }
 
     /// One turn of a `prompt`, settled: everything that can refuse it
@@ -1549,7 +1591,10 @@ impl Shared {
             handoff: None,
             kids,
             usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
+            limits: Default::default(),
         };
+        // What the login's usage read before the turn, for the early switch.
+        let read_before = w.snapshot(plan.announce && plan.rollover == Rollover::Auto);
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort, rollover: plan.session_rollover }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
         let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
@@ -1697,10 +1742,7 @@ impl Shared {
             Ok(TurnEnd::Interrupted) => (TurnStatus::Interrupted, None),
             Err(e) => (TurnStatus::Failed, Some(e.info())),
         };
-        let (after, offer, next) = match &outcome {
-            Err(e) if plan.announce => self.after_failure(e, (plan.past.reached.as_ref(), &plan.tried, &plan.cwd, plan.rollover), &model, &session_id, tally.calls, error.as_mut()).await,
-            _ => (None, None, None),
-        };
+        let (after, offer, next) = self.follow_up(&outcome, (plan.announce, plan.past.reached.as_ref(), &plan.tried, &plan.cwd, plan.rollover), (&w, read_before.as_ref()), (&model, &session_id, tally.calls), error.as_mut()).await;
         let duration_ms = plan.started.elapsed().as_millis() as u64;
         // The turn's cost is its subagents' too, as a backend's own
         // subagents' are part of its turn (R-SUB-4).
@@ -1755,7 +1797,7 @@ impl Shared {
             let mut tried = tried.to_vec();
             tried.push(model.instance.clone());
             let auto = rollover == Rollover::Auto;
-            return match self.next_instance(model, &tried, cwd, rollover).await {
+            return match self.next_instance(model, &tried, cwd, rollover, None).await {
                 Some(pick) if auto => (None, None, Some(Rolling { from: model.clone(), to: pick.model, until, room: room_note(pick.standing), cwd: cwd.clone() })),
                 Some(pick) => {
                     let (to, room) = (pick.model, room_note(pick.standing));
@@ -2225,6 +2267,8 @@ struct Writer<'a> {
     kids: Option<Kids>,
     /// Each login's last known usage, in krowk's home (R-ROLL-2).
     usage: crate::usage::Usage,
+    /// The turn's last limits report per window, for the early switch.
+    limits: std::collections::BTreeMap<String, LimitStatus>,
 }
 
 /// What a backend's agent is written with, as a child session of the
@@ -2358,6 +2402,7 @@ impl Writer<'_> {
         // A rollover is on the record only now that its turn has passed
         // every check, and every client is told: never silent (R-INST-8).
         if let Some(r) = rolling {
+            self.mark_moved(&model.instance).await;
             let detail = r.detail();
             self.log(LogBody::ModelSwitched { turn_id: None, from: Some(r.from.clone()), to: model.clone(), reason: SwitchReason::RateLimited, detail: Some(detail.clone()) }).await?;
             self.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: self.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
@@ -2629,10 +2674,11 @@ impl Writer<'_> {
 
     /// What a backend said of the account the turn runs on: saved (R-ROLL-2),
     /// and a limits report told to the clients too.
-    async fn usage_event(&self, ev: EngineEvent, session_id: &str, instance: &str) {
+    async fn usage_event(&mut self, ev: EngineEvent, session_id: &str, instance: &str) {
         match ev {
             EngineEvent::Limits(limit) => {
                 self.save_limit(instance, &limit).await;
+                self.limits.insert(limit.window.clone().unwrap_or_default(), limit.clone());
                 self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id: self.turn_id.clone(), instance: instance.into(), limit }).await;
             }
             EngineEvent::Account { login, models } => self.save_account(instance, login, models).await,
@@ -2647,6 +2693,22 @@ impl Writer<'_> {
         let _ = tokio::task::spawn_blocking(move || {
             let login = usage.read().login_of(&instance).to_string();
             usage.record_limit(&login, &limit, krowk_store::now_ms())
+        })
+        .await;
+    }
+
+    /// What every login's usage is now, when `wanted`.
+    fn snapshot(&self, wanted: bool) -> Option<usage::Data> {
+        wanted.then(|| self.usage.read())
+    }
+
+    /// Marks the login of `instance` as moved to (D19): a failed write is
+    /// not a failed turn.
+    async fn mark_moved(&self, instance: &str) {
+        let (usage, instance) = (self.usage.clone(), instance.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = usage.read().login_of(&instance).to_string();
+            usage.mark_moved(&login, krowk_store::now_ms())
         })
         .await;
     }
