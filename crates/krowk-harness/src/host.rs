@@ -1307,7 +1307,7 @@ impl Shared {
     /// just leaves the offer behind.
     fn early_answered(&self, session_id: &str, instance: &str) {
         let mut early = self.early.lock().unwrap_or_else(|e| e.into_inner());
-        let entry = early.entry(session_id.into()).or_default();
+        let Some(entry) = early.get_mut(session_id) else { return };
         if let Some(offer) = entry.offered.take().filter(|o| o.instance == instance) {
             entry.declined.insert(offer.login, offer.resets_at_ms);
         }
