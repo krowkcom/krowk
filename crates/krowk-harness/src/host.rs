@@ -149,6 +149,28 @@ pub(crate) struct Shared {
     /// Every session's background commands (R-STEER-2): they outlive the
     /// turn that started them, and end with the host.
     pub(crate) jobs: Arc<crate::jobs::Jobs>,
+    /// Each session's early offers, in memory (D14): not kept across a
+    /// daemon restart.
+    early: Mutex<HashMap<String, EarlyOffers>>,
+    /// The clock the early switch reads: the store's, except in tests
+    /// (`with_clock`).
+    clock: Arc<dyn Fn() -> i64 + Send + Sync>,
+}
+
+/// What a session's early offers come to (D14): the offer its last turn
+/// made, which its next prompt answers, and the logins it was declined for,
+/// each until that login's binding window resets (`None`: never).
+#[derive(Default)]
+struct EarlyOffers {
+    offered: Option<EarlyOffer>,
+    declined: HashMap<String, Option<i64>>,
+}
+
+/// An early offer, and the instance and login it was made from.
+struct EarlyOffer {
+    instance: String,
+    login: String,
+    resets_at_ms: Option<i64>,
 }
 
 struct Running {
@@ -439,6 +461,8 @@ impl Host {
                 started: Mutex::new(std::collections::HashSet::new()),
                 watch,
                 jobs,
+                early: Mutex::new(HashMap::new()),
+                clock: Arc::new(krowk_store::now_ms),
             }),
         }
     }
@@ -572,6 +596,14 @@ impl Host {
     #[cfg(feature = "test-hooks")]
     pub fn with_between_lag(mut self, lag: std::time::Duration) -> Host {
         Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").between_lag = lag;
+        self
+    }
+
+    /// For tests (`test-hooks`): the clock the early switch reads, in place
+    /// of the store's, to see a binding window reset.
+    #[cfg(feature = "test-hooks")]
+    pub fn with_clock(mut self, clock: impl Fn() -> i64 + Send + Sync + 'static) -> Host {
+        Arc::get_mut(&mut self.shared).expect("a new host is not shared yet").clock = Arc::new(clock);
         self
     }
 
@@ -1193,7 +1225,7 @@ impl Shared {
         let full = rollover == Rollover::Auto;
         let data = usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)).read();
         let candidates = registry.rollover_candidates(from, tried, &data);
-        for ranked in data.rank(data.login_of(&from.instance), &candidates, krowk_store::now_ms()) {
+        for ranked in data.rank(data.login_of(&from.instance), &candidates, (self.clock)()) {
             // The early switch wants a known candidate with that much room.
             if at_least.is_some_and(|h| !ranked.standing.is_some_and(|s| s.headroom >= h)) {
                 continue;
@@ -1235,8 +1267,13 @@ impl Shared {
         let none = (None, None, None);
         let (Some(before), true) = (before, rollover != Rollover::Off) else { return none };
         let auto = rollover == Rollover::Auto;
-        let now = krowk_store::now_ms();
-        let Some((left, resets_at_ms)) = before.runs_low(before.login_of(&model.instance), &w.limits.values().cloned().collect::<Vec<_>>(), now) else { return none };
+        let now = (self.clock)();
+        let login = before.login_of(&model.instance);
+        let Some((left, resets_at_ms)) = before.runs_low(login, &w.limits.values().cloned().collect::<Vec<_>>(), now) else { return none };
+        // D14: an offer this session declined for this login waits for its window to reset.
+        if !auto && self.early_declined(session_id, login, now) {
+            return none;
+        }
         let mut tried = tried.to_vec();
         tried.push(model.instance.clone());
         let Some(pick) = self.next_instance(model, &tried, cwd, rollover, Some(left + 5.0)).await else { return none };
@@ -1256,6 +1293,30 @@ impl Shared {
     /// Whether a switch the person asked for is waiting for `session_id`'s turn to end.
     fn requested(&self, session_id: &str) -> bool {
         self.running.lock().unwrap_or_else(|e| e.into_inner()).get(session_id).is_some_and(|r| r.switch.is_some())
+    }
+
+    /// Remembers an early offer made to `session_id`, for its next prompt to answer.
+    fn early_offered(&self, session_id: &str, offer: EarlyOffer) {
+        self.early.lock().unwrap_or_else(|e| e.into_inner()).entry(session_id.into()).or_default().offered = Some(offer);
+    }
+
+    /// The next prompt on the instance an early offer was made from is the
+    /// decline, since the host never hears a no (D14): its login is declined
+    /// in the session until its binding window resets. A prompt elsewhere
+    /// just leaves the offer behind.
+    fn early_answered(&self, session_id: &str, instance: &str) {
+        let mut early = self.early.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(entry) = early.get_mut(session_id) else { return };
+        if let Some(offer) = entry.offered.take().filter(|o| o.instance == instance) {
+            entry.declined.insert(offer.login, offer.resets_at_ms);
+        }
+    }
+
+    /// Whether an early offer was declined for `login` in `session_id` and
+    /// its binding window has not reset yet at `now`.
+    fn early_declined(&self, session_id: &str, login: &str, now: i64) -> bool {
+        let early = self.early.lock().unwrap_or_else(|e| e.into_inner());
+        early.get(session_id).and_then(|e| e.declined.get(login)).is_some_and(|reset| reset.is_none_or(|r| now < r))
     }
 
     /// One turn of a `prompt`, settled: everything that can refuse it
@@ -1583,6 +1644,11 @@ impl Shared {
         let engine = plan.engine.clone();
         let model = plan.model.clone();
         let session_dir = plan.log.dir.clone();
+        // The next prompt on the offer's instance is the decline (D14); a
+        // turn the backend began by itself is not a prompt.
+        if plan.announce && !plan.unprompted {
+            self.early_answered(&session_id, &model.instance);
+        }
         let kids = self.kids(&session_id, &plan).await;
         let mut w = Writer {
             log: &mut plan.log,
@@ -1755,6 +1821,11 @@ impl Shared {
         let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
         let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported, reported_tokens: None };
         let next = w.finish(completed, status, &model, after.as_ref(), &mut plan.here, next).await?;
+        // An early offer is remembered once its turn is logged, so a log
+        // that failed leaves no decline behind for an offer never made.
+        if let (Some(o), Some(before)) = (offer.as_ref().filter(|o| o.early), read_before.as_ref()) {
+            self.early_offered(&session_id, EarlyOffer { instance: model.instance.clone(), login: before.login_of(&model.instance).into(), resets_at_ms: o.resets_at_ms });
+        }
         // Off the daemon's thread, and not waited for: the result goes out
         // as soon as the turn has ended, and the daemon waits for the sync
         // on its way out (`log::synced`).

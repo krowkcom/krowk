@@ -1036,6 +1036,92 @@ fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns()
     assert!(moves(&w, &r.session_id).is_empty() && r.switch_offer.is_none());
 }
 
+/// Saves `instance`'s usage as seen at `at`: five hours at `used`, its
+/// binding window resetting an hour on.
+fn seen_at(w: &World, instance: &str, used: f64, at: i64) {
+    let usage = krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    usage.record_instance(instance, instance, &["haiku".to_string()], at).unwrap();
+    let limit = krowk_harness::protocol::LimitStatus { status: LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(at + 3_600_000) };
+    usage.record_limit(instance, &limit, at).unwrap();
+}
+
+/// R-ROLL-13, D14: an early offer that is not taken is declined by the
+/// session's next prompt on the same account, so the turn after it, still
+/// low, offers nothing.
+#[test]
+fn r_roll_13_a_declined_early_offer_is_not_made_again_in_the_session() {
+    let rt = rt();
+    let mut w = World::new("declined");
+    w.claude("claude:work", "claude-work", Some("plain_turns.jsonl"), true);
+    w.claude("claude:best", "claude-best", None, true);
+    w.rollover = Some(Rollover::Offer);
+    let now = krowk_store::now_ms();
+    seen_at(&w, "claude:work", 99.0, now);
+    seen_at(&w, "claude:best", 59.0, now);
+    let work = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
+    let host = w.host();
+    let (r1, _) = rt.block_on(run(&host, prompt(None, "keep going", Some(work))));
+    let offer = r1.switch_offer.expect("the early offer");
+    assert!(offer.early && offer.to.instance == "claude:best", "{offer:?}");
+    // Not taken: the next prompt runs on the same account, and ends still low.
+    let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "and more", None)));
+    assert_eq!((r2.status, r2.model.instance.as_str()), (TurnStatus::Completed, "claude:work"), "{:?}", r2.error);
+    assert!(r2.switch_offer.is_none(), "{:?}", r2.switch_offer);
+    assert!(w.events(&r2.session_id).iter().all(|e| !matches!(e.body, LogBody::ModelSwitched { .. })));
+}
+
+/// R-ROLL-13, D14: a declined offer comes again once its binding window has
+/// reset, by the clock the host reads.
+#[test]
+fn r_roll_13_the_early_offer_comes_again_once_the_binding_window_resets() {
+    let rt = rt();
+    let mut w = World::new("declined-reset");
+    w.claude("claude:work", "claude-work", Some("plain_turns.jsonl"), true);
+    w.claude("claude:best", "claude-best", None, true);
+    w.rollover = Some(Rollover::Offer);
+    let base = krowk_store::now_ms();
+    let at = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(base));
+    let clock = at.clone();
+    let host = w.host().with_clock(move || clock.load(std::sync::atomic::Ordering::SeqCst));
+    seen_at(&w, "claude:work", 99.0, base);
+    seen_at(&w, "claude:best", 59.0, base);
+    let work = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
+    let (r1, _) = rt.block_on(run(&host, prompt(None, "keep going", Some(work))));
+    assert!(r1.switch_offer.is_some_and(|o| o.early));
+    let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "and more", None)));
+    assert!(r2.switch_offer.is_none());
+    // The window resets an hour on; the account is low again, freshly read.
+    let reset = base + 3_600_000;
+    at.store(reset, std::sync::atomic::Ordering::SeqCst);
+    seen_at(&w, "claude:work", 99.0, reset);
+    let (r3, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "once more", None)));
+    assert!(r3.switch_offer.as_ref().is_some_and(|o| o.early && o.to.instance == "claude:best"), "{:?}", r3.switch_offer);
+}
+
+/// R-ROLL-13: a hard-limit offer still comes after an early offer was
+/// declined in the session, and is not marked early.
+#[test]
+fn r_roll_13_a_hard_limit_still_offers_after_a_declined_early_offer() {
+    let rt = rt();
+    let mut w = World::new("declined-limit");
+    w.claude("claude:work", "claude-work", Some("declined.jsonl"), true);
+    w.claude("claude:best", "claude-best", None, true);
+    w.rollover = Some(Rollover::Offer);
+    let now = krowk_store::now_ms();
+    seen_at(&w, "claude:work", 99.0, now);
+    seen_at(&w, "claude:best", 59.0, now);
+    let work = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
+    let host = w.host();
+    let (r1, _) = rt.block_on(run(&host, prompt(None, "keep going", Some(work))));
+    assert!(r1.switch_offer.is_some_and(|o| o.early));
+    let (r2, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "and more", None)));
+    assert!(r2.switch_offer.is_none());
+    let (r3, _) = rt.block_on(run(&host, prompt(Some(&r1.session_id), "and more", None)));
+    assert_eq!(r3.status, TurnStatus::Failed);
+    let offer = r3.switch_offer.expect("the hard-limit offer");
+    assert!(!offer.early && offer.to.instance == "claude:best", "{offer:?}");
+}
+
 #[test]
 fn r_inst_8_a_rollover_is_logged_only_once_its_turn_can_start() {
     let mut w = World::new("rollover-preflight");
