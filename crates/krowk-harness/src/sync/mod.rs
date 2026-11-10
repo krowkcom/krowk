@@ -423,7 +423,8 @@ impl Offered {
             viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r))) if r.session_id == session => {
                 self.offer = r.switch_offer.clone().map(|o| (r.turn_id.clone(), o));
                 if let Some((_, o)) = &self.offer {
-                    eprintln!("krowk: {} is at its limit — type /switch to continue on {}", o.from, o.to);
+                    let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+                    eprintln!("krowk: {} is at its limit — type /switch to continue on {}{room}", o.from, o.to);
                 }
             }
             viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e, true),
@@ -609,7 +610,7 @@ mod tests {
     fn offered(session: &str, turn: &str) -> super::viewer::Update {
         use crate::protocol::{LiveEvent, ModelRef, StreamLine, SwitchOffer};
         let m = |i: &str| ModelRef { instance: i.into(), model: "m".into() };
-        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None }), worktree: None };
+        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None, room: None }), worktree: None };
         super::viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r)))
     }
 

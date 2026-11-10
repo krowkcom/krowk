@@ -197,6 +197,21 @@ fn vendor_checks_run_in_parallel_so_two_slow_vendors_take_as_long_as_one() {
 }
 
 #[test]
+fn r_roll_14_doctor_names_the_rollover_order_entries_rollover_ignores() {
+    let b = Sandbox::new("rollover-doctor");
+    b.install_fakes();
+    // `auto` with an empty order is a valid config: doctor passes it.
+    b.write_config(json!({"rollover": "auto"}));
+    let d = stdout_json(&b.krowk(&["doctor", "--json"], &[]));
+    assert_eq!(d["rollover"]["status"], "pass", "{d}");
+    b.write_config(json!({"rollover": "auto", "rolloverOrder": ["claude", "claude/sonnet", "anthropic"]}));
+    let d = stdout_json(&b.krowk(&["doctor", "--json"], &[]));
+    let said = d["rollover"]["message"].as_str().unwrap_or_default();
+    assert_eq!(d["rollover"]["status"], "warn", "{d}");
+    assert!(said.contains("\"claude/sonnet\": the model") && said.contains("\"anthropic\": a "), "{said}");
+}
+
+#[test]
 fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
     let b = Sandbox::new("secrets");
     b.install_fakes();

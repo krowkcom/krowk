@@ -656,15 +656,29 @@ impl Registry {
         ModelRef { instance: self.current(&m.instance), model: m.model.clone() }
     }
 
-    /// Whether `rollover` and `rolloverOrder` say something krowk can do,
-    /// checked when the config is read so a mistake is named then, not at
-    /// the limit (R-INST-8): every entry an instance this host has, `auto`
-    /// with an order to follow, and an entry on another kind of instance
-    /// than the first naming its model — the first's id means nothing there.
+    /// Whether `rolloverOrder` says something krowk can do, checked when
+    /// the config is read so a mistake is named then, not at the limit
+    /// (R-INST-8): every entry an instance this host has. `auto` needs no
+    /// order (D4); an `instance/model` entry's model, and an entry of
+    /// another kind than the session's, are ignored (D5) —
+    /// `ignored_rollover_entries` says which.
     pub fn check_rollover(&self) -> Result<(), String> {
-        if self.rollover == Rollover::Auto && self.rollover_order.is_empty() {
-            return Err("config rollover is \"auto\" but rolloverOrder is empty — list the instances to move through, in order, e.g. [\"claude:work\", \"claude:personal\"]".into());
+        for e in &self.rollover_order {
+            let e = e.trim();
+            let name = match e.split_once('/') {
+                Some((i, _)) if self.instances.contains_key(i) => i,
+                _ => e,
+            };
+            self.get(name).map_err(|why| format!("config rolloverOrder entry {e:?}: {why}"))?;
         }
+        Ok(())
+    }
+
+    /// The `rolloverOrder` entries rollover ignores (D5), each with why: an
+    /// `instance/model` entry's model part, and an entry of another kind
+    /// than the first listed, which a session on that kind never moves to.
+    pub fn ignored_rollover_entries(&self) -> Vec<String> {
+        let mut out = Vec::new();
         let mut first_kind: Option<&'static str> = None;
         for e in &self.rollover_order {
             let e = e.trim();
@@ -672,57 +686,52 @@ impl Registry {
                 Some((i, m)) if self.instances.contains_key(i) => (i, Some(m)),
                 _ => (e, None),
             };
-            let i = self.get(name).map_err(|why| format!("config rolloverOrder entry {e:?}: {why}"))?;
-            if model.is_some_and(str::is_empty) {
-                return Err(format!("config rolloverOrder entry {e:?} names no model after the /"));
+            let Some(i) = self.instances.get(name) else { continue };
+            if model.is_some() {
+                out.push(format!("rolloverOrder entry {e:?}: the model after the / is ignored, rollover keeps the session's model"));
             }
             match first_kind {
                 None => first_kind = Some(i.kind),
-                Some(k) if k != i.kind && model.is_none() => {
-                    return Err(format!("config rolloverOrder entry {e:?} is a {} instance, unlike the first ({k}): name its model, as {name}/<model>", i.kind));
-                }
+                Some(k) if k != i.kind => out.push(format!("rolloverOrder entry {e:?}: a {} instance, unlike the first ({k}), is ignored", i.kind)),
                 _ => {}
             }
         }
-        Ok(())
+        out
     }
 
-    /// Where a session limited on `from` could go next, best first, none of
-    /// the instances in `tried` (R-INST-7, R-INST-8): the entries of
-    /// `rolloverOrder` after `from`'s instance (from the top when it is not
-    /// listed), an entry naming no model keeping `from`'s id; with no order,
-    /// and only for an offer, every other instance of the same kind. Whether
-    /// each can run is the host's to check.
-    pub fn rollover_candidates(&self, from: &ModelRef, tried: &[String], rollover: Rollover) -> Vec<ModelRef> {
-        let parse = |e: &str| -> Option<ModelRef> {
-            let e = e.trim();
-            match e.split_once('/') {
-                Some((i, m)) if self.instances.contains_key(i) && !m.is_empty() => Some(ModelRef { instance: i.into(), model: m.into() }),
-                None if self.instances.contains_key(e) => Some(ModelRef { instance: e.into(), model: from.model.clone() }),
-                _ => None,
-            }
-        };
-        let skip = |m: &ModelRef| m.instance == from.instance || tried.contains(&m.instance);
-        if !self.rollover_order.is_empty() {
-            let order: Vec<ModelRef> = self.rollover_order.iter().filter_map(|e| parse(e)).collect();
-            let after = order.iter().position(|m| m.instance == from.instance).map_or(0, |i| i + 1);
-            // An entry on another kind of instance with no model of its own
-            // would ask it for a model id it has never heard of.
-            let kind = |i: &str| self.instances.get(i).map(|r| r.kind);
-            return order[after..]
-                .iter()
-                .zip(self.rollover_order.iter().filter(|e| parse(e).is_some()).skip(after))
-                .filter(|(m, e)| e.contains('/') || kind(&m.instance) == kind(&from.instance))
-                .map(|(m, _)| m)
-                .filter(|m| !skip(m))
-                .cloned()
-                .collect();
-        }
-        if rollover == Rollover::Auto {
-            return Vec::new();
-        }
+    /// Where a session limited on `from` could go next, none of the
+    /// instances in `tried` (R-INST-7, R-INST-8): every other instance of
+    /// `from`'s kind (D4), or with a `rolloverOrder` only those it lists, an
+    /// `instance/model` entry counting as its instance (D5) — in the
+    /// order's order, else by name, which is where ranking breaks its last
+    /// ties. One whose saved model list (`data`) lacks `from`'s model is
+    /// left out; one with no list stays. Which is best, and whether each can
+    /// run, is the host's to say.
+    pub fn rollover_candidates(&self, from: &ModelRef, tried: &[String], data: &crate::usage::Data) -> Vec<ModelRef> {
         let kind = self.instances.get(&from.instance).map(|i| i.kind);
-        self.instances.values().filter(|i| Some(i.kind) == kind).map(|i| ModelRef { instance: i.name.clone(), model: from.model.clone() }).filter(|m| !skip(m)).collect()
+        let names: Vec<&str> = if self.rollover_order.is_empty() {
+            self.instances.keys().map(String::as_str).collect()
+        } else {
+            let mut names: Vec<&str> = Vec::new();
+            for e in &self.rollover_order {
+                let e = e.trim();
+                let name = match e.split_once('/') {
+                    Some((i, _)) if self.instances.contains_key(i) => i,
+                    _ => e,
+                };
+                if self.instances.contains_key(name) && !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+            names
+        };
+        names
+            .into_iter()
+            .filter(|n| self.instances.get(*n).map(|i| i.kind) == kind)
+            .filter(|n| *n != from.instance && !tried.iter().any(|t| t == n))
+            .filter(|n| data.instance(n).is_none_or(|r| r.models.is_empty() || r.models.contains(&from.model)))
+            .map(|n| ModelRef { instance: n.into(), model: from.model.clone() })
+            .collect()
     }
 
     /// `--model`'s reading, before any instance is chosen for a bare id:
@@ -1477,12 +1486,25 @@ mod tests {
         let env = |_: &str| String::new();
         let reg = |rollover: Option<Rollover>, order: &[&str]| Registry::resolve(&InstancesConfig { rollover, rollover_order: order.iter().map(|s| s.to_string()).collect(), ..Default::default() }, &env);
         assert!(reg(None, &[]).check_rollover().is_ok(), "an offer needs no order");
-        assert!(reg(Some(Rollover::Auto), &[]).check_rollover().unwrap_err().contains("rolloverOrder is empty"));
+        assert!(reg(Some(Rollover::Auto), &[]).check_rollover().is_ok(), "auto needs no order (D4)");
         assert!(reg(Some(Rollover::Auto), &["claude", "nowhere"]).check_rollover().unwrap_err().contains("\"nowhere\""));
-        assert!(reg(Some(Rollover::Auto), &["claude", "anthropic"]).check_rollover().unwrap_err().contains("name its model"));
-        assert!(reg(Some(Rollover::Auto), &["claude", "anthropic/claude-opus-5-5", "codex/gpt-5.5"]).check_rollover().is_ok());
-        let r = reg(Some(Rollover::Auto), &["claude", "anthropic", "anthropic/claude-opus-5-5"]);
+        let r = reg(Some(Rollover::Auto), &["claude", "anthropic/claude-opus-5-5", "codex/gpt-5.5", "anthropic"]);
+        assert!(r.check_rollover().is_ok(), "an ignored entry is no failure (D5)");
+        let ignored = r.ignored_rollover_entries().join("\n");
+        assert!(ignored.contains("\"anthropic/claude-opus-5-5\": the model") && ignored.contains("\"anthropic\": a ") && ignored.contains("codex/gpt-5.5"), "{ignored}");
+        let data = crate::usage::Data::default();
         let from = ModelRef { instance: "claude".into(), model: "sonnet".into() };
-        assert_eq!(r.rollover_candidates(&from, &[], r.rollover), [ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }], "another kind without a model is skipped");
+        let names = |r: &Registry, from: &ModelRef, tried: &[String], data: &crate::usage::Data| r.rollover_candidates(from, tried, data).into_iter().map(|m| m.instance).collect::<Vec<_>>();
+        assert_eq!(names(&r, &from, &[], &data), Vec::<String>::new(), "only the first's kind, minus the session's own");
+        // A listed instance of the same kind, before or after the current one, is a candidate.
+        let cfg = InstancesConfig { rollover_order: vec!["claude:b".into(), "claude".into(), "claude:a".into()], instances: [("claude:a".to_string(), InstanceKind::ClaudeCode { binary: None, config_dir: None, env: BTreeMap::new(), args: Vec::new(), api_key_env: None, effort: None }), ("claude:b".to_string(), InstanceKind::ClaudeCode { binary: None, config_dir: None, env: BTreeMap::new(), args: Vec::new(), api_key_env: None, effort: None })].into(), ..Default::default() };
+        let r = Registry::resolve(&cfg, &env);
+        assert_eq!(names(&r, &from, &[], &data), ["claude:b", "claude:a"]);
+        assert_eq!(names(&r, &from, &["claude:b".into()], &data), ["claude:a"]);
+        // No order: every instance of the kind, by name; one whose saved list lacks the model is skipped.
+        let r = Registry::resolve(&InstancesConfig { instances: cfg.instances.clone(), ..Default::default() }, &env);
+        let mut data = crate::usage::Data::default();
+        data.instances.insert("claude:a".into(), crate::usage::InstanceRecord { login: "a".into(), models: vec!["opus".into()], seen_at_ms: 1 });
+        assert_eq!(names(&r, &from, &[], &data), ["claude:b"]);
     }
 }

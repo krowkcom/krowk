@@ -14,7 +14,7 @@
 //! share a record. A Claude Code instance's login is the account it reports
 //! (`login_of`); any other instance is its own login.
 
-use crate::protocol::{LimitState, LimitStatus};
+use crate::protocol::{LimitState, LimitStatus, ModelRef};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -71,6 +71,33 @@ pub struct Data {
     /// instance → its login and models.
     #[serde(default)]
     pub instances: BTreeMap<String, InstanceRecord>,
+    /// login → when an `auto` move last brought a session there (D19).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub moved: BTreeMap<String, i64>,
+}
+
+/// How long a login stays marked "moved here" (D19).
+const MOVED_MS: i64 = 5 * 60_000;
+/// The headroom below which a login is never picked (D7), and the spread
+/// of headroom within which candidates count as tied (D8).
+const MIN_HEADROOM: f64 = 10.0;
+const NEAR_TIE: f64 = 10.0;
+
+/// What is known of a login's room: its headroom (D6) and the binding
+/// window's reset and reading time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Standing {
+    pub headroom: f64,
+    /// The binding window's reset; none when every window has reset.
+    pub reset_ms: Option<i64>,
+    pub seen_at_ms: i64,
+}
+
+/// A rollover candidate, ranked: its standing when its login was seen.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Ranked {
+    pub model: ModelRef,
+    pub standing: Option<Standing>,
 }
 
 /// A window as it reads at a given time, staleness applied.
@@ -98,6 +125,67 @@ impl Data {
                 Reading { window: name.clone(), status: if reset { LimitState::Allowed } else { w.status }, used_percent: if reset { Some(0.0) } else { w.used_percent }, resets_at_ms: w.resets_at_ms, seen_at_ms: w.seen_at_ms }
             })
             .collect()
+    }
+
+    /// What `login` has left at `now_ms` (D6): 100 minus the highest use
+    /// among its windows that have not reset, a reset one counting as 0.
+    /// None when it was never seen, or only stale or without a figure.
+    pub fn standing(&self, login: &str, now_ms: i64) -> Option<Standing> {
+        let all: Vec<Reading> = self.readings(login, now_ms).into_iter().filter(|r| r.used_percent.is_some()).collect();
+        let used = |r: &Reading| r.used_percent.unwrap_or(0.0);
+        let reset = |r: &Reading| r.resets_at_ms.unwrap_or(i64::MAX);
+        let binding = all.iter().filter(|r| r.resets_at_ms.is_none_or(|t| t > now_ms)).max_by(|a, b| used(a).total_cmp(&used(b)).then(reset(b).cmp(&reset(a))));
+        match binding {
+            Some(b) => Some(Standing { headroom: (100.0 - used(b)).max(0.0), reset_ms: b.resets_at_ms, seen_at_ms: b.seen_at_ms }),
+            None => all.iter().map(|r| r.seen_at_ms).max().map(|seen_at_ms| Standing { headroom: 100.0, reset_ms: None, seen_at_ms }),
+        }
+    }
+
+    /// Whether a limit is in force on `login`: a reading that says limited
+    /// and has not reset.
+    pub fn limited(&self, login: &str, now_ms: i64) -> bool {
+        self.readings(login, now_ms).iter().any(|r| r.status == LimitState::Limited)
+    }
+
+    /// Marks `login` as moved to now (D19).
+    pub fn mark_moved(&mut self, login: &str, now_ms: i64) {
+        self.moved.insert(login.into(), now_ms);
+    }
+
+    /// Whether an `auto` move brought a session to `login` in the last 5 minutes.
+    pub fn moved_recently(&self, login: &str, now_ms: i64) -> bool {
+        self.moved.get(login).is_some_and(|t| *t <= now_ms && now_ms - t < MOVED_MS)
+    }
+
+    /// The candidates a session on `from_login` may move to, best first
+    /// (D7, D8, D19). The input order breaks the last ties: it is
+    /// `rolloverOrder`'s, then the names'. Eligible: not `from_login`, no
+    /// limit in force, headroom of 10 or more when known. Known logins go
+    /// first, the near-tie group (within 10 points of the most headroom) by
+    /// earliest binding reset — none last — then headroom, the rest by
+    /// headroom; never-seen ones follow. A recently moved-to login ranks
+    /// after the others in its group.
+    pub fn rank(&self, from_login: &str, candidates: &[ModelRef], now_ms: i64) -> Vec<Ranked> {
+        let mut known: Vec<(usize, Ranked, Standing, bool)> = Vec::new();
+        let mut never: Vec<(usize, Ranked, bool)> = Vec::new();
+        for (i, m) in candidates.iter().enumerate() {
+            let login = self.login_of(&m.instance);
+            if login == from_login || self.limited(login, now_ms) {
+                continue;
+            }
+            let moved = self.moved_recently(login, now_ms);
+            match self.standing(login, now_ms) {
+                Some(s) if s.headroom < MIN_HEADROOM => {}
+                Some(s) => known.push((i, Ranked { model: m.clone(), standing: Some(s) }, s, moved)),
+                None => never.push((i, Ranked { model: m.clone(), standing: None }, moved)),
+            }
+        }
+        let top = known.iter().map(|k| k.2.headroom).fold(0.0, f64::max);
+        let (mut near, mut rest): (Vec<_>, Vec<_>) = known.into_iter().partition(|k| k.2.headroom >= top - NEAR_TIE);
+        near.sort_by(|a, b| a.3.cmp(&b.3).then(a.2.reset_ms.unwrap_or(i64::MAX).cmp(&b.2.reset_ms.unwrap_or(i64::MAX))).then(b.2.headroom.total_cmp(&a.2.headroom)).then(a.0.cmp(&b.0)));
+        rest.sort_by(|a, b| a.3.cmp(&b.3).then(b.2.headroom.total_cmp(&a.2.headroom)).then(a.0.cmp(&b.0)));
+        never.sort_by_key(|n| (n.2, n.0));
+        near.into_iter().chain(rest).map(|k| k.1).chain(never.into_iter().map(|n| n.1)).collect()
     }
 
     /// The login and models `instance` last reported, if it ever did.
@@ -348,5 +436,86 @@ mod tests {
         assert_eq!(u.read().readings("codex:team", 2).len(), 1);
         assert!(u.read().readings("codex", 2).is_empty());
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A store where each `(login, window, used, resets)` was seen at `seen`.
+    fn seen(rows: &[(&str, &str, f64, Option<i64>)], seen: i64) -> Data {
+        let mut d = Data::default();
+        for (login, window, used, resets) in rows {
+            d.logins.entry(login.to_string()).or_default().insert(window.to_string(), Window { status: LimitState::Allowed, used_percent: Some(*used), resets_at_ms: *resets, seen_at_ms: seen, first_span_ms: None });
+            d.instances.insert(format!("i:{login}"), InstanceRecord { login: login.to_string(), models: Vec::new(), seen_at_ms: seen });
+        }
+        d
+    }
+
+    fn cands(logins: &[&str]) -> Vec<ModelRef> {
+        logins.iter().map(|l| ModelRef { instance: format!("i:{l}"), model: "m".into() }).collect()
+    }
+
+    fn pick(d: &Data, from: &str, logins: &[&str], now: i64) -> Vec<String> {
+        d.rank(from, &cands(logins), now).into_iter().map(|r| r.model.instance.trim_start_matches("i:").to_string()).collect()
+    }
+
+    #[test]
+    fn headroom_is_what_the_fullest_unreset_window_leaves() {
+        let d = seen(&[("a", "five_hour", 30.0, Some(10_000)), ("a", "seven_day", 60.0, Some(20_000)), ("b", "five_hour", 90.0, Some(5_000)), ("b", "seven_day", 20.0, Some(20_000))], 1_000);
+        let a = d.standing("a", 2_000).unwrap();
+        assert_eq!((a.headroom, a.reset_ms), (40.0, Some(20_000)));
+        // b's fullest window has reset: it counts as 0%.
+        assert_eq!(d.standing("b", 6_000).unwrap().headroom, 80.0);
+        // Every window reset: 100% and no binding reset.
+        assert_eq!(d.standing("b", 30_000).map(|s| (s.headroom, s.reset_ms)), Some((100.0, None)));
+        assert_eq!(d.standing("nobody", 0), None);
+    }
+
+    #[test]
+    fn eligibility_needs_headroom_a_free_login_and_a_different_one() {
+        let mut d = seen(&[("cur", "five_hour", 10.0, None), ("low", "five_hour", 91.0, None), ("ok", "five_hour", 90.0, None), ("lim", "five_hour", 10.0, None)], 1_000);
+        d.logins.get_mut("lim").unwrap().get_mut("five_hour").unwrap().status = LimitState::Limited;
+        // A second instance on the current login is no candidate (D18).
+        d.instances.insert("i:twin".into(), InstanceRecord { login: "cur".into(), models: Vec::new(), seen_at_ms: 1 });
+        let got: Vec<String> = d.rank("cur", &[cands(&["low", "ok", "lim", "cur"]), vec![ModelRef { instance: "i:twin".into(), model: "m".into() }]].concat(), 2_000).into_iter().map(|r| r.model.instance).collect();
+        assert_eq!(got, ["i:ok"]);
+    }
+
+    #[test]
+    fn most_left_first_then_the_earliest_reset_among_near_ties() {
+        let d = seen(&[("cur", "five_hour", 99.0, None), ("a", "five_hour", 50.0, Some(9_000)), ("b", "five_hour", 55.0, Some(3_000)), ("c", "five_hour", 60.0, Some(2_000)), ("d", "five_hour", 80.0, Some(1_500)), ("e", "five_hour", 55.0, None)], 1_000);
+        // Within 10 of a's 50% left: a, b, c (not d), the earliest reset first, and
+        // the reset-less e after those that have one; then d by headroom.
+        assert_eq!(pick(&d, "cur", &["a", "b", "c", "d", "e"], 1_400), ["c", "b", "a", "e", "d"]);
+        // Equal reset: more headroom, then the input order.
+        let t = seen(&[("cur", "five_hour", 99.0, None), ("x", "five_hour", 50.0, Some(9)), ("y", "five_hour", 55.0, Some(9)), ("z", "five_hour", 55.0, Some(9))], 1);
+        assert_eq!(pick(&t, "cur", &["z", "y", "x"], 2), ["x", "z", "y"]);
+    }
+
+    #[test]
+    fn never_seen_and_stale_logins_follow_every_known_one() {
+        let d = seen(&[("cur", "five_hour", 99.0, None), ("known", "five_hour", 85.0, None), ("old", "five_hour", 0.0, None)], 1_000);
+        // old's reading is past five hours (D17): never seen.
+        let now = 1_000 + 6 * HOUR_MS;
+        let mut d = d;
+        d.logins.get_mut("known").unwrap().get_mut("five_hour").unwrap().seen_at_ms = now - 1;
+        assert_eq!(pick(&d, "cur", &["new", "old", "known"], now), ["known", "new", "old"]);
+    }
+
+    #[test]
+    fn a_login_just_moved_to_ranks_after_the_others_in_its_group() {
+        let mut d = seen(&[("cur", "five_hour", 99.0, None), ("a", "five_hour", 30.0, Some(1_000)), ("b", "five_hour", 35.0, Some(2_000))], 100);
+        assert_eq!(pick(&d, "cur", &["a", "b"], 200), ["a", "b"]);
+        d.mark_moved("a", 150);
+        assert_eq!(pick(&d, "cur", &["a", "b"], 200), ["b", "a"]);
+        // The mark lapses after five minutes.
+        assert_eq!(pick(&d, "cur", &["a", "b"], 150 + MOVED_MS), ["a", "b"]);
+    }
+
+    #[test]
+    fn the_sequence_from_a_nearly_empty_account_never_goes_back() {
+        let d = seen(&[("a", "five_hour", 98.0, Some(13_000)), ("b", "five_hour", 93.0, Some(12_500)), ("c", "five_hour", 40.0, Some(15_000)), ("d", "seven_day", 60.0, Some(90_000)), ("e", "seven_day", 60.0, Some(90_000))], 100);
+        let first = pick(&d, "a", &["b", "c", "d", "e"], 200);
+        assert_eq!(first[0], "c");
+        assert!(!first.contains(&"b".to_string()), "7% left is under the floor: {first:?}");
+        // After C, A is under the floor while its window is unreset.
+        assert!(!pick(&d, "c", &["a", "b", "d", "e"], 200).contains(&"a".to_string()));
     }
 }

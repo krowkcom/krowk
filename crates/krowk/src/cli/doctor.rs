@@ -31,6 +31,8 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     report.insert("store".into(), store_check(ctx));
     report.insert("pricing".into(), pricing_check(ctx));
     report.insert("providers".into(), providers_check(ctx));
+    #[cfg(feature = "harness")]
+    report.insert("rollover".into(), rollover_check(ctx));
     report.insert("context".into(), serde_json::to_value(crate::runctx::detect(ctx.io.env)).expect("context serializes"));
 
     if ctx.format != Format::Human {
@@ -72,8 +74,9 @@ fn human(report: &Map<String, Value>, colour: bool) -> String {
         })
         .collect();
     lines.push(String::new());
-    for (k, label) in [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers")] {
-        let check = &report[k];
+    for (k, label) in [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers"), ("rollover", "Rollover")] {
+        // The agent build has no rollover to check.
+        let Some(check) = report.get(k) else { continue };
         let text = |key: &str| check.get(key).and_then(Value::as_str).unwrap_or_default();
         let mark = match text("status") {
             "pass" => paint(colour, crate::output::GREEN, "✓"),
@@ -159,6 +162,20 @@ fn providers_check(ctx: &Ctx) -> Value {
 #[cfg(not(feature = "harness"))]
 fn providers_check(_: &Ctx) -> Value {
     json!({ "name": "providers", "status": "skip", "message": "this build runs no model" })
+}
+
+/// What rollover ignores in `rolloverOrder` (D5): a warning naming each
+/// entry, so a list written for an older rule is not silently half-used.
+#[cfg(feature = "harness")]
+fn rollover_check(ctx: &Ctx) -> Value {
+    let ignored = match super::status::reports(ctx) {
+        Ok((_, registry, _)) => registry.ignored_rollover_entries(),
+        Err(e) => return json!({ "name": "rollover", "status": "warn", "message": e.fix() }),
+    };
+    if ignored.is_empty() {
+        return json!({ "name": "rollover", "status": "pass", "message": "rolloverOrder has nothing ignored" });
+    }
+    json!({ "name": "rollover", "status": "warn", "message": ignored.join("; "), "ignored": ignored, "hint": "edit rolloverOrder in ~/.krowk/config.json: list instances of one kind, without a model" })
 }
 
 fn registry_mode(ctx: &Ctx, client: &Client) -> &'static str {

@@ -22,13 +22,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ignored, so every limit was offered; they are read now, and any other
   value is refused, naming the three.
 
-- **krowk remembers each Claude login's last known usage and model list.**
-  Every limits report a turn produces, from any session, process or subagent,
-  is saved per login and per window in `~/.krowk/usage.json`, and each Claude
-  Code instance's models are saved from its startup answer. Instances signed in
-  as one account share a record, and `krowk providers rename` keeps an
-  instance's link to it. Nothing reads it yet: it is what picking the account
-  with the most usage left will use.
+- **Rollover picks the account with the most usage left, and `auto` needs no
+  `rolloverOrder`.** krowk saves each Claude login's last known usage per
+  window, and each Claude Code instance's models, in `~/.krowk/usage.json`
+  from every limits report a turn produces (instances on one account share a
+  record). When a turn hits its limit, the session moves to the instance whose
+  login has the most room in its fullest window, leaning towards the one whose
+  window resets soonest when several are close. It skips an account with
+  under 10% left or a limit in force, another instance on the same login,
+  and an instance whose saved model list lacks the session's model; accounts
+  krowk has no recent reading of come last. The model never changes. With no
+  `rolloverOrder`, `auto` rolls over among every instance of the same kind;
+  with one, among those it lists, in any position, the list breaking ties. A
+  notice or offer now says what the target has left, as of when, and when it
+  resets. An `instance/model` entry's model and an entry of another kind are
+  ignored, and `krowk doctor` lists them instead of the config being refused.
 
 ### Changed
 
