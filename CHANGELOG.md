@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **krowk remembers each Claude login's last known usage and model list.**
+  Every limits report a turn produces, from any session, process or subagent,
+  is saved per login and per window in `~/.krowk/usage.json`, and each Claude
+  Code instance's models are saved from its startup answer. Instances signed in
+  as one account share a record, and `krowk providers rename` keeps an
+  instance's link to it. Nothing reads it yet: it is what picking the account
+  with the most usage left will use.
+
 ## [0.16.2] - 2026-11-06
 
 ### Added

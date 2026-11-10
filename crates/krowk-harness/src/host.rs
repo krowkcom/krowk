@@ -27,7 +27,7 @@ use crate::toolset;
 use crate::handoff::{self, TurnSpan};
 use crate::instances::Rollover;
 use crate::protocol::{
-    Billing, BudgetLimits, ChildState, Command, ContextRecord, Effort, Item, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, TurnStatus, Usage,
+    Billing, BudgetLimits, ChildState, Command, ContextRecord, Effort, Item, LimitStatus, LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, TurnStatus, Usage,
     WireApi,
 };
 use crate::claude::ClaudeEngine;
@@ -1527,6 +1527,7 @@ impl Shared {
             parent: plan.parent.clone(),
             handoff: None,
             kids,
+            usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
         };
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
@@ -2175,6 +2176,8 @@ struct Writer<'a> {
     /// Where the backend's own agents are written, as children of the
     /// session (R-SUB-7): none for krowk's own loop.
     kids: Option<Kids>,
+    /// Each login's last known usage, in krowk's home (R-ROLL-2).
+    usage: crate::usage::Usage,
 }
 
 /// What a backend's agent is written with, as a child session of the
@@ -2577,6 +2580,41 @@ impl Writer<'_> {
         Ok(())
     }
 
+    /// What a backend said of the account the turn runs on: saved (R-ROLL-2),
+    /// and a limits report told to the clients too.
+    async fn usage_event(&self, ev: EngineEvent, session_id: &str, instance: &str) {
+        match ev {
+            EngineEvent::Limits(limit) => {
+                self.save_limit(instance, &limit).await;
+                self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id: self.turn_id.clone(), instance: instance.into(), limit }).await;
+            }
+            EngineEvent::Account { login, models } => self.save_account(instance, login, models).await,
+            _ => {}
+        }
+    }
+
+    /// Saves a limits report under the login of `instance` (R-ROLL-2): a
+    /// failed write is not a failed turn.
+    async fn save_limit(&self, instance: &str, limit: &LimitStatus) {
+        let (usage, instance, limit) = (self.usage.clone(), instance.to_string(), limit.clone());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = usage.read().login_of(&instance).to_string();
+            usage.record_limit(&login, &limit, krowk_store::now_ms())
+        })
+        .await;
+    }
+
+    /// Saves who `instance` is signed in as, and its models. Without a login
+    /// the instance keeps the one it had, or is its own.
+    async fn save_account(&self, instance: &str, login: Option<String>, models: Vec<String>) {
+        let (usage, instance) = (self.usage.clone(), instance.to_string());
+        let _ = tokio::task::spawn_blocking(move || {
+            let login = login.unwrap_or_else(|| usage.read().login_of(&instance).to_string());
+            usage.record_instance(&instance, &login, &models, krowk_store::now_ms())
+        })
+        .await;
+    }
+
     async fn handle_event(&mut self, ev: EngineEvent, session_id: &str, tally: &mut Tally, texts: &mut HashMap<String, String>, model: &ModelRef, budget: &Budget) -> Result<(), EngineError> {
         let turn_id = self.turn_id.clone();
         match ev {
@@ -2641,9 +2679,7 @@ impl Writer<'_> {
             EngineEvent::SubagentStarted { call_id, session_id: child, description, agent, model, ran_by, backend_id } => {
                 self.log(LogBody::SubagentStarted { turn_id, call_id, subagent_session_id: child, description, agent, model, ran_by, backend_id }).await?;
             }
-            EngineEvent::Limits(limit) => {
-                self.live(LiveEvent::Limits { session_id: session_id.into(), turn_id, instance: model.instance.clone(), limit }).await;
-            }
+            ev @ (EngineEvent::Limits(_) | EngineEvent::Account { .. }) => self.usage_event(ev, session_id, &model.instance).await,
             EngineEvent::BackendAgents { agents } => {
                 self.live(LiveEvent::BackendAgents { session_id: session_id.into(), agents }).await;
             }

@@ -927,6 +927,11 @@ impl ProviderAuth<'_> {
         }
         readiness::forget(from);
         readiness::forget(&to);
+        // Its login and models are the same account's still (R-ROLL-3); a
+        // home that cannot be written to is no reason to undo a rename.
+        if let Ok(home) = self.home() {
+            let _ = crate::usage::Usage::in_home(&home).rename(from, &to);
+        }
         crate::keys::forget();
         // A variable made from the old name, which it still reads.
         let var = known.instances.get(from).map(|r| r.api_key_env.clone()).unwrap_or_default();
@@ -1421,6 +1426,9 @@ impl ProviderAuth<'_> {
             return Err(EngineError::new("no_instance", why));
         }
         readiness::forget(instance);
+        if let Ok(home) = self.home() {
+            let _ = crate::usage::Usage::in_home(&home).forget(instance);
+        }
         let kept = match defs.instances.get(instance) {
             Some(InstanceKind::ClaudeCode { config_dir: Some(dir), .. }) => Some((dir.clone(), false)),
             Some(InstanceKind::CodexAppServer { codex_home: Some(dir), .. }) => Some((dir.clone(), true)),

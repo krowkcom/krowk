@@ -94,6 +94,9 @@ pub enum EngineEvent {
     /// How close the instance is to its rate or usage limit, as its
     /// provider just said (R-INST-6).
     Limits(LimitStatus),
+    /// Who a backend's instance is signed in as, and the models it listed
+    /// when it started: the host saves both beside the usage (R-ROLL-2).
+    Account { login: Option<String>, models: Vec<String> },
     /// A backend was brought up to date with turns it did not run
     /// (R-SWITCH-2, R-INST-4): how, and exactly what it was sent. Reported
     /// before the turn's `Context`, so the context record carries it.
