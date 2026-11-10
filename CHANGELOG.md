@@ -22,6 +22,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ran with unless you pass `--rollover` again. `rolloverOrder` is read from the
   config now too, and any other value is refused, naming the three.
 
+### Security
+
+- **The SQLite krowk compiles in is patched (RUSTSEC-2026-0459).** krowk's
+  session store and importer bundle SQLite through `rusqlite`, and the
+  bundled SQLite before 3.54.0 carries CVE-2026-119375. `rusqlite` 0.41
+  bundles SQLite 3.54.1; nothing else changes.
+
 ### Changed
 
 - **Claude Code's usage in every window shows below the limit.** Claude Code
