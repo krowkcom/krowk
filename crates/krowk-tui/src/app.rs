@@ -4410,7 +4410,8 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
 /// claude:personal? [y/N]".
 pub fn offer_question(o: &SwitchOffer) -> String {
     let until = o.resets_at_ms.map(|ms| format!(" until {}", krowk_harness::host::clock(ms))).unwrap_or_default();
-    format!("{}{} limited{until}, continue on {}? [`y`/`N`]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
+    let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+    format!("{}{} limited{until}, continue on {}{room}? [`y`/`N`]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
 }
 
 /// How much of a model-supplied string an approval shows.
@@ -6438,7 +6439,7 @@ mod tests {
     fn r_inst_7_a_limit_offers_the_next_instance_as_one_question() {
         let mut a = app();
         a.set_width(100);
-        let offer = SwitchOffer { from: ModelRef { instance: "claude:work".into(), model: "sonnet".into() }, to: ModelRef { instance: "claude:personal".into(), model: "sonnet".into() }, resets_at_ms: None };
+        let offer = SwitchOffer { from: ModelRef { instance: "claude:work".into(), model: "sonnet".into() }, to: ModelRef { instance: "claude:personal".into(), model: "sonnet".into() }, resets_at_ms: None, room: None };
         let result = RunResult {
             session_id: "s".into(),
             turn_id: "t".into(),
@@ -6462,6 +6463,8 @@ mod tests {
         assert!(offer_question(&later).contains("claude:work limited until "), "{}", offer_question(&later));
         let other = SwitchOffer { to: ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }, ..offer };
         assert!(offer_question(&other).ends_with("continue on anthropic/claude-opus-5-5? [`y`/`N`]"), "another model is named whole");
+        let roomy = SwitchOffer { room: Some("41% left as of 12:10, resets 13:20".into()), ..later };
+        assert!(offer_question(&roomy).ends_with("continue on claude:personal (41% left as of 12:10, resets 13:20)? [`y`/`N`]"), "{}", offer_question(&roomy));
     }
 
     #[test]
@@ -6889,7 +6892,7 @@ mod tests {
         let m = |i: &str| ModelRef { instance: i.into(), model: "claude-x".into() };
         a.model = Some(m("claude:a"));
         a.used = vec![m("claude:a"), m("claude:b")];
-        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None });
+        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None, room: None });
         for (i, turns) in [("claude:a", 2), ("claude:b", 3)] {
             a.instances.insert(i.into(), InstanceUsage { turns, tokens: 10, ..Default::default() });
         }

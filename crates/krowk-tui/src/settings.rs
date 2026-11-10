@@ -46,8 +46,7 @@
 //! session starts in (`--permission-mode` and a trusted repository's own
 //! `defaultMode` still come first) — `tui.contentWidth`, which applies at
 //! once, and `tui.screen`, which krowk opens on the next time it starts
-//! (`/new` keeps the terminal it has), and `rollover` — `auto` (only with a
-//! `rolloverOrder`), `offer` or `off` — which the host daemon uses from the
+//! (`/new` keeps the terminal it has), and `rollover` — `auto`, `offer` or `off` — which the host daemon uses from the
 //! next turn.
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on

@@ -1922,6 +1922,13 @@
             "null"
           ],
           "format": "int64"
+        },
+        "room": {
+          "description": "What `to` has left, when krowk knows (D12): `41% left as of 12:10,\nresets 13:20`.",
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [

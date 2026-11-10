@@ -836,7 +836,7 @@ fn r_inst_8_rollover_auto_moves_on_tells_every_client_and_logs_why() {
     assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{:?}", r.error);
     assert_eq!(r.result, "claude-code did step 1");
     // Every client is told, and the log says from, to and why.
-    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Notice { text, .. }) if text.contains("claude:work/haiku is limited until") && text.contains("continues on claude:personal/haiku") && !text.contains("another model"))), "the notice names both, whole: {lines:?}");
+    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Notice { text, .. }) if text.contains("claude:work/haiku is limited until") && text.contains("continuing on claude:personal/haiku") && !text.contains("another model"))), "the notice names both, whole: {lines:?}");
     let events = w.events(&r.session_id);
     let switched = events.iter().find_map(|e| match &e.body {
         LogBody::ModelSwitched { from, to, reason, detail, .. } => Some((from.clone(), to.clone(), *reason, detail.clone())),
@@ -936,12 +936,45 @@ fn r_switch_4_a_switch_the_picker_made_goes_back_when_its_first_turn_cannot_run(
 }
 
 #[test]
+fn r_roll_8_auto_without_an_order_moves_to_the_most_saved_headroom_on_the_same_model() {
+    let mut w = World::new("auto-ranked");
+    for (name, scenario) in [("claude:work", "limited.jsonl"), ("claude:twin", "switch.jsonl"), ("claude:low", "switch.jsonl"), ("claude:most", "switch.jsonl"), ("claude:nolist", "switch.jsonl"), ("claude:unseen", "switch.jsonl")] {
+        w.claude(name, &name.replace(':', "-"), Some(scenario), true);
+    }
+    w.rollover = Some(Rollover::Auto);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
+    let models = vec!["haiku".to_string()];
+    let seed = |instance: &str, login: &str, used: f64, models: &[String]| {
+        usage.record_instance(instance, login, models, now).unwrap();
+        let limit = krowk_harness::protocol::LimitStatus { status: LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
+        usage.record_limit(login, &limit, now).unwrap();
+    };
+    // The twin shares the limited instance's login, with the most room of all: never a candidate.
+    seed("claude:work", "w", 100.0, &models);
+    seed("claude:twin", "w", 0.0, &models);
+    seed("claude:low", "low", 80.0, &models);
+    seed("claude:most", "most", 30.0, &models);
+    // No room to speak of, and a model list without the model: skipped either way.
+    seed("claude:nolist", "nolist", 0.0, &["opus".to_string()]);
+    let host = w.host();
+    let (r, _) = rt().block_on(run(&host, prompt(None, "keep going", Some(ModelRef { instance: "claude:work".into(), model: "haiku".into() }))));
+    assert_eq!((r.status, r.model.clone()), (TurnStatus::Completed, ModelRef { instance: "claude:most".into(), model: "haiku".into() }), "{:?}", r.error);
+    let detail = w.events(&r.session_id).into_iter().find_map(|e| match e.body {
+        LogBody::ModelSwitched { detail, .. } => detail,
+        _ => None,
+    });
+    assert!(detail.as_deref().is_some_and(|d| d.contains("continuing on claude:most/haiku (70% left as of ") && d.contains(", resets ")), "{detail:?}");
+}
+
+#[test]
 fn r_inst_8_a_rollover_is_logged_only_once_its_turn_can_start() {
     let mut w = World::new("rollover-preflight");
     w.claude("claude:work", "claude-work", Some("limited.jsonl"), true);
     w.claude("claude:personal", "claude-personal", Some("switch.jsonl"), true);
+    w.claude("claude:third", "claude-third", Some("switch.jsonl"), true);
     w.rollover = Some(Rollover::Auto);
-    w.order = vec!["claude:work".into(), "claude:personal".into(), "anthropic/claude-sonnet-4-6".into()];
+    w.order = vec!["claude:work".into(), "claude:personal".into(), "claude:third".into(), "anthropic/claude-sonnet-4-6".into()];
     // The repository is trusted for the limited turn and the candidate's
     // check, and refused when the candidate's own turn asks: a check that
     // passed is not a turn that starts.
@@ -952,17 +985,17 @@ fn r_inst_8_a_rollover_is_logged_only_once_its_turn_can_start() {
     }));
     let host = w.host();
     let rt = rt();
-    let (r, lines) = rt.block_on(run(&host, prompt(None, "keep going", Some(Eng::Claude.model()))));
-    // claude:personal could not start, so the session went on to the next.
-    assert_eq!((r.status, r.model.clone()), (TurnStatus::Completed, Eng::Anthropic.model()), "{:?}", r.error);
+    let (r, _) = rt.block_on(run(&host, prompt(None, "keep going", Some(Eng::Claude.model()))));
+    // claude:personal could not start, so the session went on to the next, on the same model.
+    let third = ModelRef { instance: "claude:third".into(), model: Eng::Claude.model().model };
+    assert_eq!((r.status, r.model.clone()), (TurnStatus::Completed, third.clone()), "{:?}", r.error);
     let switched: Vec<(ModelRef, SwitchReason, String)> = w.events(&r.session_id).into_iter().filter_map(|e| match e.body {
         LogBody::ModelSwitched { to, reason, detail, .. } => Some((to, reason, detail.unwrap_or_default())),
         _ => None,
     }).collect();
     assert_eq!(switched.len(), 1, "one move on the record, to where the turn ran: {switched:?}");
-    assert_eq!((switched[0].0.clone(), switched[0].1), (Eng::Anthropic.model(), SwitchReason::RateLimited));
-    assert!(switched[0].2.contains("claude:work/haiku is limited") && switched[0].2.contains("another model: claude-sonnet-4-6 instead of haiku"), "a model change is said: {}", switched[0].2);
-    assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Notice { text, .. }) if text.contains("another model"))));
+    assert_eq!((switched[0].0.clone(), switched[0].1), (third, SwitchReason::RateLimited));
+    assert!(switched[0].2.contains("claude:work/haiku is limited") && switched[0].2.contains("continuing on claude:third/haiku"), "{}", switched[0].2);
     // With nowhere left that can start, the limit's own result stands and
     // nothing moved.
     drop(host);

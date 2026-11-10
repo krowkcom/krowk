@@ -33,6 +33,7 @@ use crate::protocol::{
 use crate::claude::ClaudeEngine;
 use crate::codex::CodexEngine;
 use crate::trust;
+use crate::usage;
 use crate::{compat, permissions, readiness};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1014,9 +1015,9 @@ impl Shared {
                 (Err(e), Some(r)) => {
                     tried.push(r.to.instance.clone());
                     match self.next_instance(&r.from, &tried, &r.cwd, Rollover::Auto).await {
-                        Some(to) => {
-                            model = Some(to.clone());
-                            rolling = Some(Rolling { to, ..r });
+                        Some(pick) => {
+                            model = Some(pick.model.clone());
+                            rolling = Some(Rolling { to: pick.model, room: room_note(pick.standing), ..r });
                         }
                         None => {
                             let mut result = limited.take().expect("a rollover follows a limited turn");
@@ -1187,10 +1188,13 @@ impl Shared {
     /// offered; one whose login only a project's settings provide
     /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
     /// by naming it.
-    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover) -> Option<ModelRef> {
+    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover) -> Option<usage::Ranked> {
         let registry = self.registry();
         let full = rollover == Rollover::Auto;
-        for m in registry.rollover_candidates(from, tried, rollover) {
+        let data = usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)).read();
+        let candidates = registry.rollover_candidates(from, tried, &data);
+        for ranked in data.rank(data.login_of(&from.instance), &candidates, krowk_store::now_ms()) {
+            let m = ranked.model.clone();
             let Ok(i) = registry.get(&m.instance) else { continue };
             let ok = match &i.backend {
                 Some(_) if !full => match self.neutral_probe() {
@@ -1200,7 +1204,7 @@ impl Shared {
                 _ => self.check_model(&m, cwd, None).await.is_ok(),
             };
             if ok {
-                return Some(m);
+                return Some(ranked);
             }
         }
         None
@@ -1752,12 +1756,14 @@ impl Shared {
             tried.push(model.instance.clone());
             let auto = rollover == Rollover::Auto;
             return match self.next_instance(model, &tried, cwd, rollover).await {
-                Some(to) if auto => (None, None, Some(Rolling { from: model.clone(), to, until, cwd: cwd.clone() })),
-                Some(to) => {
+                Some(pick) if auto => (None, None, Some(Rolling { from: model.clone(), to: pick.model, until, room: room_note(pick.standing), cwd: cwd.clone() })),
+                Some(pick) => {
+                    let (to, room) = (pick.model, room_note(pick.standing));
                     if let Some(err) = error {
-                        err.message.push_str(&format!(" — continue on {to} with `krowk -p --resume {session_id} --model {to}`, or say yes when krowk offers it"));
+                        let room = if room.is_empty() { String::new() } else { format!(" ({room})") };
+                        err.message.push_str(&format!(" — continue on {to}{room} with `krowk -p --resume {session_id} --model {to}`, or say yes when krowk offers it"));
                     }
-                    (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms }), None)
+                    (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms, room: Some(room).filter(|r| !r.is_empty()) }), None)
                 }
                 None => (None, None, None),
             };
@@ -1831,14 +1837,27 @@ struct Rolling {
     to: ModelRef,
     /// ` until 14:00`, when the limit said.
     until: String,
+    /// What the target has left (`room_note`), or nothing known.
+    room: String,
     cwd: PathBuf,
+}
+
+/// What a target has left, as a notice or offer says it (D12): `41% left
+/// as of 12:10, resets 13:20`, the parts not known left out.
+fn room_note(standing: Option<usage::Standing>) -> String {
+    let Some(s) = standing else { return String::new() };
+    let mut note = format!("{}% left as of {}", s.headroom.round(), clock(s.seen_at_ms));
+    if let Some(r) = s.reset_ms {
+        note.push_str(&format!(", resets {}", clock(r)));
+    }
+    note
 }
 
 impl Rolling {
     fn detail(&self) -> String {
-        let mut d = format!("{} is limited{}; rollover is auto, so the session continues on {}", self.from, self.until, self.to);
-        if self.to.model != self.from.model {
-            d.push_str(&format!(" — another model: {} instead of {}", self.to.model, self.from.model));
+        let mut d = format!("{} is limited{}; rollover is auto, continuing on {}", self.from, self.until, self.to);
+        if !self.room.is_empty() {
+            d.push_str(&format!(" ({})", self.room));
         }
         d
     }

@@ -678,6 +678,10 @@ pub struct SwitchOffer {
     /// When `from`'s limit lifts, when the provider said.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resets_at_ms: Option<i64>,
+    /// What `to` has left, when krowk knows (D12): `41% left as of 12:10,
+    /// resets 13:20`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub room: Option<String>,
 }
 
 /// How close an instance is to its rate or usage limit, as its provider

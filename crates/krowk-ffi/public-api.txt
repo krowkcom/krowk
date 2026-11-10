@@ -1,4 +1,4 @@
-FFI_API_VERSION = 12
+FFI_API_VERSION = 13
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -604,6 +604,7 @@ pub struct SwitchOffer {
     pub from: ModelRef,
     pub to: ModelRef,
     pub resets_at_ms: Option<i64>,
+    pub room: Option<String>,
 }
 
 #[uniffi::remote(Record)]

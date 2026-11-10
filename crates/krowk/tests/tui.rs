@@ -347,12 +347,20 @@ fn r_roll_15_settings_sets_the_global_rollover_the_next_turn_uses() {
     t.write(b"/config\r");
     assert!(t.wait_for("Rollover", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     std::thread::sleep(Duration::from_millis(600));
-    // Unset is offer: ↓ to the row. ← is auto, which needs a rolloverOrder
-    // and is refused; → is off.
-    t.write(b"\x1b[B\x1b[B\x1b[B\x1b[D\x1b[C");
+    // Unset is offer: ↓ to the row. ← is auto, which needs no rolloverOrder;
+    // → twice is offer, then off.
+    t.write(b"\x1b[B\x1b[B\x1b[B\x1b[D");
     let path = b.root.join("home/.krowk/config.json");
     let saved = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["rollover"].as_str().map(String::from));
     let deadline = Instant::now() + Duration::from_secs(10);
+    while saved().as_deref() != Some("auto") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(saved().as_deref(), Some("auto"), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(b"\x1b[C");
+    std::thread::sleep(Duration::from_millis(300));
+    t.write(b"\x1b[C");
     while saved().as_deref() != Some("off") && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
     }
