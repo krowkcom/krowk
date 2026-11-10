@@ -188,6 +188,26 @@ impl Data {
         near.into_iter().chain(rest).map(|k| k.1).chain(never.into_iter().map(|n| n.1)).collect()
     }
 
+    /// The early switch's trigger (D9), asked of the data as it was before
+    /// a turn: `turn` is that turn's last report per window. Fires, with
+    /// the headroom left, when it is below max(2, 2 x what the turn used of
+    /// the binding window), the rise from the reading before the turn (none
+    /// before: no rise) to the turn's last. Nothing without a report.
+    pub fn runs_low(&self, login: &str, turn: &[LimitStatus], now_ms: i64) -> Option<f64> {
+        let mut after = self.clone();
+        let windows = after.logins.entry(login.into()).or_default();
+        for l in turn {
+            let first_span_ms = l.resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0);
+            windows.insert(l.window.clone().unwrap_or_default(), Window { status: l.status, used_percent: l.used_percent, resets_at_ms: l.resets_at_ms, seen_at_ms: now_ms, first_span_ms });
+        }
+        let used = |r: &Reading| r.used_percent.unwrap_or(0.0);
+        let now: Vec<Reading> = after.readings(login, now_ms).into_iter().filter(|r| r.used_percent.is_some() && r.resets_at_ms.is_none_or(|t| t > now_ms)).collect();
+        let binding = now.iter().max_by(|a, b| used(a).total_cmp(&used(b)))?;
+        let rise = self.readings(login, now_ms).iter().find(|r| r.window == binding.window).map_or(0.0, |b| (used(binding) - used(b)).max(0.0));
+        let headroom = (100.0 - used(binding)).max(0.0);
+        (headroom < f64::max(2.0, 2.0 * rise)).then_some(headroom)
+    }
+
     /// The login and models `instance` last reported, if it ever did.
     pub fn instance(&self, instance: &str) -> Option<&InstanceRecord> {
         self.instances.get(instance)
@@ -235,6 +255,11 @@ impl Usage {
             let first_span_ms = kept.and_then(|k| k.first_span_ms).or_else(|| limit.resets_at_ms.map(|r| r - now_ms).filter(|n| *n > 0));
             windows.insert(window, Window { status: limit.status, used_percent: limit.used_percent, resets_at_ms: limit.resets_at_ms, seen_at_ms: now_ms, first_span_ms });
         })
+    }
+
+    /// Marks `login` as moved to now (D19), for every process.
+    pub fn mark_moved(&self, login: &str, now_ms: i64) -> Result<(), String> {
+        self.change(|d| d.mark_moved(login, now_ms))
     }
 
     /// Saves `instance`'s login and the models it listed. Told every turn,
@@ -354,6 +379,23 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("krowk-usage-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         (Usage::in_home(&dir), dir)
+    }
+
+    #[test]
+    fn the_early_switch_fires_below_twice_the_turns_use() {
+        let mut d = Data::default();
+        let five = |used| limit("five_hour", used, Some(9_000_000));
+        d.logins.entry("a".into()).or_default().insert("five_hour".into(), Window { status: LimitState::Allowed, used_percent: Some(90.0), resets_at_ms: Some(9_000_000), seen_at_ms: 1_000, first_span_ms: None });
+        // 90 -> 96: used 6, 4 left is under 12.
+        assert_eq!(d.runs_low("a", &[five(96.0)], 2_000), Some(4.0));
+        // 90 -> 91: 9 left is not under 2 x 1, nor under 2.
+        assert_eq!(d.runs_low("a", &[five(91.0)], 2_000), None);
+        // 90 -> 99: 1 left is under 2, whatever the use.
+        assert_eq!(d.runs_low("a", &[five(99.0)], 2_000), Some(1.0));
+        // Nothing reported this turn, nothing to go on.
+        assert_eq!(d.runs_low("a", &[], 2_000), None);
+        // A window that has reset does not bind.
+        assert_eq!(d.runs_low("a", &[five(96.0)], 9_500_000), None);
     }
 
     #[test]
