@@ -149,30 +149,42 @@ impl Usage {
         })
     }
 
-    /// Saves `instance`'s login and the models it listed.
+    /// Saves `instance`'s login and the models it listed. Told every turn,
+    /// it writes only when something changed.
     pub fn record_instance(&self, instance: &str, login: &str, models: &[String], now_ms: i64) -> Result<(), String> {
-        let record = InstanceRecord { login: login.into(), models: models.to_vec(), seen_at_ms: now_ms };
         self.change(|d| {
-            if d.instances.get(instance) != Some(&record) {
-                d.instances.insert(instance.into(), record);
+            if d.instances.get(instance).is_none_or(|r| r.login != login || r.models != models) {
+                d.instances.insert(instance.into(), InstanceRecord { login: login.into(), models: models.to_vec(), seen_at_ms: now_ms });
             }
         })
     }
 
-    /// `from` renamed `to` (R-ROLL-3): its login and models go with it.
+    /// `from` renamed `to` (R-ROLL-3): its login and models go with it. An
+    /// instance that is its own login takes its usage along.
     pub fn rename(&self, from: &str, to: &str) -> Result<(), String> {
         self.change(|d| {
-            if let Some(r) = d.instances.remove(from) {
+            let own = d.instances.get(from).is_none_or(|r| r.login == from);
+            if let Some(mut r) = d.instances.remove(from) {
+                if own {
+                    r.login = to.into();
+                }
                 d.instances.insert(to.into(), r);
+            }
+            if own && !d.instances.values().any(|r| r.login == from) && let Some(w) = d.logins.remove(from) {
+                d.logins.insert(to.into(), w);
             }
         })
     }
 
-    /// `instance` removed: it is never offered again. Its login's usage stays,
-    /// for another instance on it.
+    /// `instance` removed: it is never offered again. Its login's usage
+    /// stays for another instance on it, and goes with an instance that was
+    /// its own login.
     pub fn forget(&self, instance: &str) -> Result<(), String> {
         self.change(|d| {
             d.instances.remove(instance);
+            if !d.instances.values().any(|r| r.login == instance) {
+                d.logins.remove(instance);
+            }
         })
     }
 
@@ -330,6 +342,11 @@ mod tests {
         assert_eq!((d.login_of("claude:b"), d.instance("claude:b").unwrap().models.clone()), ("a@x.com", vec!["sonnet".to_string()]));
         u.forget("claude:b").unwrap();
         assert!(u.read().instance("claude:b").is_none());
+        // An instance that is its own login takes its usage along.
+        u.record_limit("codex", &limit("300m", 5.0, None), 1).unwrap();
+        u.rename("codex", "codex:team").unwrap();
+        assert_eq!(u.read().readings("codex:team", 2).len(), 1);
+        assert!(u.read().readings("codex", 2).is_empty());
         let _ = std::fs::remove_dir_all(dir);
     }
 }
