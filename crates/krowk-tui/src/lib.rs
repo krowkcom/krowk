@@ -986,7 +986,7 @@ fn cursor_row() -> Option<u16> {
 
 /// The rows `/settings` has: the default permission mode, the content
 /// width and the screen.
-const SETTINGS: usize = 3;
+const SETTINGS: usize = 4;
 
 /// Columns of padding on each side of everything the TUI draws.
 const PAD: u16 = 2;
@@ -1832,6 +1832,7 @@ impl<'h> Ui<'h> {
     /// read after it overrides.
     fn show_settings(&self, app: &mut App, raw: &serde_json::Map<String, serde_json::Value>) {
         app.default_mode = settings::default_mode(raw);
+        app.global_rollover = settings::global_rollover(raw);
         app.default_mode_overridden = settings::overridden(&self.permissions_cfg, raw, &self.started_in).map(|m| (m, settings::claude_file(&self.permissions_cfg)));
         app.settings.screen = settings::from_config(&serde_json::Value::Object(raw.clone())).0.screen;
         app.screen_later = app.settings.screen.fullscreen(&|k| std::env::var(k).unwrap_or_default()) != self.fullscreen;
@@ -1847,7 +1848,8 @@ impl<'h> Ui<'h> {
         let width = if app.setting_at == 1 { app.content_width().step(by) } else { None };
         let mode = if app.setting_at == 0 { settings::step_default(app.default_mode.as_deref(), by) } else { None };
         let screen = if app.setting_at == 2 { app.settings.screen.step(by) } else { None };
-        if width.is_none() && mode.is_none() && screen.is_none() {
+        let rollover = if app.setting_at == 3 { settings::step_rollover(app.global_rollover.as_deref(), by) } else { None };
+        if width.is_none() && mode.is_none() && screen.is_none() && rollover.is_none() {
             return;
         }
         // A `/connect` writes config.json too, from its own thread: one at
@@ -1856,19 +1858,46 @@ impl<'h> Ui<'h> {
             app.flash = Some("a /connect is running — change settings once it is done".into());
             return;
         }
-        let saved = match (mode, width, screen) {
-            (Some(m), _, _) => settings::set_default_mode(&paths.config, m),
-            (_, Some(w), _) => settings::set_content_width(&paths.config, w).inspect(|_| app.set_content_width(w)),
-            (_, _, Some(s)) => settings::set_screen(&paths.config, s),
+        let saved = match (mode, width, screen, rollover) {
+            (Some(m), ..) => settings::set_default_mode(&paths.config, m),
+            (_, Some(w), ..) => settings::set_content_width(&paths.config, w).inspect(|_| app.set_content_width(w)),
+            (_, _, Some(s), _) => settings::set_screen(&paths.config, s),
+            (_, _, _, Some(r)) => settings::set_rollover(&paths.config, r),
             _ => return,
         };
         match saved {
-            Ok(raw) => self.show_settings(app, &raw),
+            Ok(raw) => {
+                self.show_settings(app, &raw);
+                if rollover.is_some() {
+                    self.reload_instances(app);
+                }
+            }
             Err(e) => {
                 app.overlay = Overlay::None;
                 app.notice(&format!("/settings: {e}"));
             }
         }
+    }
+
+    /// The instances and `rollover` read from config.json again, here and in
+    /// the daemon, whose next turns use them: it re-reads config only when
+    /// told to.
+    fn reload_instances(&self, app: &mut App) {
+        let Some(paths) = &self.paths else { return };
+        let env = |k: &str| std::env::var(k).unwrap_or_default();
+        let auth = krowk_harness::connect::ProviderAuth { config: paths.config.clone(), credentials: paths.credentials.clone(), env: &env };
+        match auth.definitions() {
+            Ok(d) => self.host.set_registry(krowk_harness::instances::Registry::resolve(&d, &env), None),
+            Err(e) => app.notice(&format!("/settings: saved, but the host could not read it again: {}", e.info().message)),
+        }
+    }
+
+    /// `/rollover`: the value this session runs with, and where it comes from.
+    fn say_rollover(&self, app: &mut App) {
+        let repo = krowk_harness::permissions::settings::load(&self.permissions_cfg, &self.started_in).ok().and_then(|l| l.rollover);
+        let global_set = self.paths.as_ref().and_then(|p| krowk_harness::connect::read_config(&p.config).ok()).is_some_and(|raw| settings::global_rollover(&raw).is_some());
+        let (r, source) = settings::effective_rollover(app.rollover, repo, self.host.registry().rollover, global_set);
+        app.gap_say(&format!("rollover: {} ({source})", settings::rollover_name(r)));
     }
 
     /// Every prompt from here on runs in `m`. A turn already running keeps
@@ -2180,7 +2209,7 @@ impl<'h> Ui<'h> {
         // picked here: a switch another client made since this TUI's last
         // turn is kept.
         let model = if self.named || app.used.is_empty() { self.model.clone() } else { None };
-        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, rollover: None, budget: self.budget };
+        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, rollover: app.rollover, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
         // This client's own turn of the session: it follows it from here
@@ -2888,6 +2917,7 @@ impl<'h> Ui<'h> {
             help::Action::Model | help::Action::Mode | help::Action::New | help::Action::Sessions if self.synced_refuses(app, entry.title) => {}
             help::Action::Model => self.open_models(app),
             help::Action::Mode => app.open_mode_picker(),
+            help::Action::Rollover => self.say_rollover(app),
             help::Action::Settings => self.open_settings(app),
             help::Action::Connect => self.open_flow(app, connect::Job::Connect(None), false),
             help::Action::Disconnect => self.open_flow(app, connect::Job::Disconnect(None), false),
@@ -3843,6 +3873,27 @@ impl<'h> Ui<'h> {
                 match PermissionMode::parse(name) {
                     Some(m) => self.set_mode(app, m),
                     None => app.notice(&format!("/mode: {name} is not a permission mode — one of {}", PermissionMode::NAMES.join(", "))),
+                }
+                return false;
+            }
+            "/rollover" => {
+                app.editor.clear();
+                self.say_rollover(app);
+                return false;
+            }
+            t if t.starts_with("/rollover ") => {
+                app.editor.clear();
+                if self.synced_refuses(app, "/rollover") {
+                    return false;
+                }
+                let name = t.split_once(' ').unwrap_or_default().1.trim();
+                match krowk_harness::protocol::Rollover::parse(name) {
+                    Ok(r) => {
+                        app.rollover = Some(r);
+                        let when = if app.running() { " once this turn is over" } else { "" };
+                        app.gap_say(&format!("rollover: {} for this session{when}", settings::rollover_name(r)));
+                    }
+                    Err(_) => app.notice(&format!("/rollover: {name} is not a value — one of {}", krowk_harness::protocol::Rollover::NAMES.join(", "))),
                 }
                 return false;
             }

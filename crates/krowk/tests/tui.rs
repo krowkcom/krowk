@@ -304,6 +304,70 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
+/// `/rollover` shows the value and where it comes from, `/rollover <value>`
+/// sets the session's, and the next limited turn follows it: `off` leaves
+/// no offer, `offer` brings it back.
+#[test]
+fn r_roll_7_slash_rollover_shows_its_source_and_the_next_limited_turn_follows_it() {
+    let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}})) });
+    let ok = mock::serve(mock::readme_script);
+    let b = Sandbox::new("rollover");
+    b.config(serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url}}}));
+    let mut t = pty::Pty::spawn(b.command(&limited.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/rollover\r");
+    assert!(t.wait_for("rollover: offer (default)", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/rollover sometimes\r");
+    assert!(t.wait_for("sometimes is not a value", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/rollover off\r");
+    assert!(t.wait_for("rollover: off for this session", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/rollover\r");
+    assert!(t.wait_for("rollover: off (session)", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("(rate_limited)", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("continue on"), "an offer with rollover off: {:?}", t.text());
+    t.write(b"/rollover offer\r");
+    assert!(t.wait_for("rollover: offer for this session", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("continue on", Duration::from_secs(20)).is_some(), "no offer: {:?}", t.text());
+    t.write(b"n\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// The `/settings` rollover row writes config.json, and the next limited
+/// turn uses it without a restart.
+#[test]
+fn r_roll_15_settings_sets_the_global_rollover_the_next_turn_uses() {
+    let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "rate limited"}})) });
+    let ok = mock::serve(mock::readme_script);
+    let b = Sandbox::new("rollover-settings");
+    b.config(serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url}}}));
+    let mut t = pty::Pty::spawn(b.command(&limited.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"/config\r");
+    assert!(t.wait_for("Rollover", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    std::thread::sleep(Duration::from_millis(600));
+    // Unset is offer: ↓ to the row, → is off.
+    t.write(b"\x1b[B\x1b[B\x1b[B\x1b[C");
+    let path = b.root.join("home/.krowk/config.json");
+    let saved = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["rollover"].as_str().map(String::from));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while saved().as_deref() != Some("off") && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert_eq!(saved().as_deref(), Some("off"), "{:?}", t.text());
+    assert!(std::fs::read_to_string(&path).unwrap().contains("anthropic:personal"), "the instances stay");
+    t.write(b"\x1b");
+    std::thread::sleep(Duration::from_millis(200));
+    t.write(b"/rollover\r");
+    assert!(t.wait_for("rollover: off (global)", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"read README.md and summarise it\r");
+    assert!(t.wait_for("(rate_limited)", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("continue on"), "an offer with rollover off: {:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
 /// `/mode` picks the permission mode the session's next turn runs in, and
 /// `/permission-mode <name>` names one; a name that is not a mode is refused.
 #[test]
@@ -515,11 +579,11 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(width().as_deref(), Some("prose-wide"), "{:?}", t.text());
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
-    // ↓ chooses the screen, held at the last row: ← from inline, which
+    // ↓ chooses the screen: ← from inline, which
     // this session runs on, is fullscreen, krowk's next start's; → is inline
     // again.
     let screen = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["screen"].as_str().map(String::from));
-    t.write(b"\x1b[B\x1b[B\x1b[D");
+    t.write(b"\x1b[B\x1b[D");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while screen().as_deref() != Some("fullscreen") && std::time::Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(20));
