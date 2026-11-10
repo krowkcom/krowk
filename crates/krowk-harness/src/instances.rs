@@ -692,7 +692,7 @@ impl Registry {
             }
             match first_kind {
                 None => first_kind = Some(i.kind),
-                Some(k) if k != i.kind => out.push(format!("rolloverOrder entry {e:?}: a {} instance, unlike the first ({k}), is ignored", i.kind)),
+                Some(k) if k != i.kind => out.push(format!("rolloverOrder entry {e:?}: a {} instance, unlike the first ({k}): a session on one kind never moves to the other", i.kind)),
                 _ => {}
             }
         }
