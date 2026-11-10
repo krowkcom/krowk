@@ -13,7 +13,7 @@ krowk-store = { path = "../krowk-store" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 # opencode keeps its sessions in SQLite, read here read-only.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 jiff = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(unix)'.dependencies]

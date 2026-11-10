@@ -1,0 +1,3 @@
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1791846000,"rateLimitType":"seven_day","unifiedWindows":{"five_hour":{"utilization":0.9,"resetsAt":1791628200},"seven_day":{"utilization":1.0,"resetsAt":1791846000}}},"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"id":"msg_limit","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"Weekly limit reached"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":true,"result":"Weekly limit reached","session_id":"{{SESSION}}"}

@@ -19,6 +19,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   instance's link to it. Nothing reads it yet: it is what picking the account
   with the most usage left will use.
 
+### Changed
+
+- **Claude Code's usage in every window shows below the limit.** Claude Code
+  reports how much of each window (the five-hour and the weekly) is used on
+  every turn, but krowk read only the one window the event named, and that
+  without a percentage until you were limited. An instance's status line now
+  shows the fuller window after any turn, and a limited turn still names the
+  window that was rejected and when it resets.
+
+### Security
+
+- **The SQLite krowk compiles in is patched (RUSTSEC-2026-0459).** krowk's
+  session store and importer bundle SQLite through `rusqlite`, and the
+  bundled SQLite before 3.54.0 carries CVE-2026-119375. `rusqlite` 0.41
+  bundles SQLite 3.54.1; nothing else changes.
+
 ## [0.16.2] - 2026-11-06
 
 ### Added

@@ -11,6 +11,6 @@ publish.workspace = true
 krowk-api = { path = "../krowk-api" }
 # bundled: the SQLite this ships with is the one it was tested with, and a
 # machine without libsqlite3 still gets a working krowk.db.
-rusqlite = { version = "0.40", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
