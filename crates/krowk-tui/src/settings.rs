@@ -46,13 +46,15 @@
 //! session starts in (`--permission-mode` and a trusted repository's own
 //! `defaultMode` still come first) — `tui.contentWidth`, which applies at
 //! once, and `tui.screen`, which krowk opens on the next time it starts
-//! (`/new` keeps the terminal it has).
+//! (`/new` keeps the terminal it has), and `rollover` — `auto` (only with a
+//! `rolloverOrder`), `offer` or `off` — which the host daemon uses from the
+//! next turn.
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
 //! for the todo list and Ctrl-G for the subagents.
 
-use krowk_harness::protocol::PermissionMode;
+use krowk_harness::protocol::{PermissionMode, Rollover};
 use serde_json::{Map, Value};
 use std::path::Path;
 
@@ -300,6 +302,49 @@ pub fn set_default_mode(config: &Path, m: PermissionMode) -> Result<Map<String, 
     Ok(raw)
 }
 
+/// A rollover value as it is written in config.json.
+pub fn rollover_name(r: Rollover) -> &'static str {
+    match r {
+        Rollover::Auto => "auto",
+        Rollover::Offer => "offer",
+        Rollover::Off => "off",
+    }
+}
+
+/// `rollover` in a read config.json as written — none when there is none
+/// (or null); a value that is no string as its JSON.
+pub fn global_rollover(raw: &Map<String, Value>) -> Option<String> {
+    raw.get("rollover").filter(|v| !v.is_null()).map(|v| v.as_str().map_or_else(|| v.to_string(), String::from))
+}
+
+/// The value `by` along `Rollover::NAMES` from `now` (none is `offer`), and
+/// none past either end. From a value outside them, either way is the first.
+pub fn step_rollover(now: Option<&str>, by: isize) -> Option<Rollover> {
+    let now = now.unwrap_or("offer");
+    let Some(at) = Rollover::NAMES.iter().position(|n| *n == now) else { return Rollover::parse(Rollover::NAMES[0]).ok() };
+    at.checked_add_signed(by).and_then(|i| Rollover::NAMES.get(i)).and_then(|n| Rollover::parse(n).ok())
+}
+
+/// Writes the global `rollover`, keeping every other key as it was.
+pub fn set_rollover(config: &Path, r: Rollover) -> Result<Map<String, Value>, String> {
+    let mut raw = krowk_harness::connect::read_config(config)?;
+    raw.insert("rollover".into(), Value::String(rollover_name(r).into()));
+    krowk_harness::connect::write_config(config, &raw).map_err(|e| format!("{}: {e}", config.display()))?;
+    Ok(raw)
+}
+
+/// The rollover a session runs with and where it comes from, as the host
+/// resolves it: the session's own, a trusted repository's, config.json's
+/// (`global_set`), else the default.
+pub fn effective_rollover(session: Option<Rollover>, repo: Option<Rollover>, global: Rollover, global_set: bool) -> (Rollover, &'static str) {
+    match (session, repo) {
+        (Some(r), _) => (r, "session"),
+        (None, Some(r)) => (r, "repo"),
+        (None, None) if global_set => (global, "global"),
+        (None, None) => (Rollover::default(), "default"),
+    }
+}
+
 /// Writes `tui.contentWidth`, keeping every other key as it was.
 pub fn set_content_width(config: &Path, w: ContentWidth) -> Result<Map<String, Value>, String> {
     set_tui(config, "contentWidth", w.name())
@@ -348,6 +393,27 @@ pub fn claude_file(cfg: &krowk_harness::permissions::Config) -> String {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn the_rollover_steps_resolves_and_is_written_beside_the_rest() {
+        assert_eq!(step_rollover(None, -1), Some(Rollover::Auto), "unset runs as offer, so ← is auto");
+        assert_eq!(step_rollover(Some("offer"), 1), Some(Rollover::Off));
+        assert_eq!(step_rollover(Some("off"), 1), None, "past the end chooses nothing new");
+        assert_eq!(step_rollover(Some("sometimes"), 1), Some(Rollover::Auto), "a value outside them goes to the first");
+        let (s, r, g) = (Some(Rollover::Off), Some(Rollover::Auto), Rollover::Offer);
+        assert_eq!(effective_rollover(s, r, g, true), (Rollover::Off, "session"));
+        assert_eq!(effective_rollover(None, r, g, true), (Rollover::Auto, "repo"));
+        assert_eq!(effective_rollover(None, None, Rollover::Auto, true), (Rollover::Auto, "global"));
+        assert_eq!(effective_rollover(None, None, g, false), (Rollover::Offer, "default"));
+        let dir = std::env::temp_dir().join(format!("krowk-rollover-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.json");
+        std::fs::write(&config, r#"{"rolloverOrder":["a"]}"#).unwrap();
+        let written = set_rollover(&config, Rollover::Off).unwrap();
+        assert_eq!(global_rollover(&written).as_deref(), Some("off"));
+        assert_eq!(written.get("rolloverOrder"), Some(&json!(["a"])), "every other key stays");
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn settings_cycles_the_default_mode_and_keeps_the_rest_of_the_config() {

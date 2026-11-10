@@ -21,6 +21,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `rollover` and `rolloverOrder` in `~/.krowk/config.json` were silently
   ignored, so every limit was offered; they are read now, and any other
   value is refused, naming the three.
+  In the TUI, `/rollover` shows the value a session runs with and where it
+  comes from (session, repo or global), `/rollover off` sets the session's,
+  and a `/settings` row sets the global one, which the next turn uses
+  without restarting krowk.
 
 - **krowk remembers each Claude login's last known usage and model list.**
   Every limits report a turn produces, from any session, process or subagent,
