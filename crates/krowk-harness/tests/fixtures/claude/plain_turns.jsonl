@@ -1,0 +1,8 @@
+{"type":"assistant","message":{"id":"msg_plain_a","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}
+---
+{"type":"assistant","message":{"id":"msg_plain_b","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}
+---
+{"type":"assistant","message":{"id":"msg_plain_c","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}

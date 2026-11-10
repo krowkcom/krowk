@@ -1,0 +1,9 @@
+{"type":"assistant","message":{"id":"msg_plain_a","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}
+---
+{"type":"assistant","message":{"id":"msg_plain_b","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}
+---
+{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1790431200,"rateLimitType":"five_hour","utilization":1.0},"session_id":"{{SESSION}}"}
+{"type":"assistant","message":{"id":"msg_limit","model":"<synthetic>","role":"assistant","content":[{"type":"text","text":"5-hour limit reached ∙ resets 2pm"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":true,"result":"5-hour limit reached ∙ resets 2pm","session_id":"{{SESSION}}"}
