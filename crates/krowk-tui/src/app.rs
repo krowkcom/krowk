@@ -21,7 +21,7 @@ use crate::table;
 use krowk_harness::host::Pricer;
 use krowk_harness::log::Recent;
 use krowk_harness::protocol::{
-    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, McpServer, McpState, ModelRef, PermissionMode, RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
+    ApprovalRequest, BackendAgent, Billing, ChildState, ChildTool, Delta, ErrorInfo, HandoffKind, ImageInput, Item, ItemKind, LimitState, LimitStatus, LiveEvent, LogBody, LogEvent, McpServer, McpState, ModelRef, PermissionMode, RanBy, Rollover, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus,
     TurnStatus, Usage, Waiting,
 };
 use std::collections::{BTreeMap, HashMap};
@@ -31,10 +31,10 @@ use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// The `/` menu shows this many entries at most, scrolling past them.
-const SLASH_ROWS: usize = 13;
+const SLASH_ROWS: usize = 14;
 /// The help menu shows this many entries at most, scrolling past them: with
 /// the prompt box and the status line it fits a 24-row terminal whole.
-const HELP_ROWS: usize = 16;
+const HELP_ROWS: usize = 17;
 /// The model picker shows this many rows at most, scrolling past them.
 const MODEL_ROWS: usize = 12;
 /// The Krowk mark (.github/logo.svg): its 4×4 glyph, `#`, on a plate a
@@ -892,6 +892,10 @@ pub struct App {
     /// picker's `now` and the details overlay. Never a `turn.started`'s —
     /// a resumed session's last turn, or one a backend began, ran in its own.
     pub permission_mode: String,
+    /// The session's own rollover, which every prompt carries: `/rollover
+    /// <value>`, or what a resumed session's log recorded. None follows the
+    /// repository's, then config.json's.
+    pub rollover: Option<Rollover>,
     pub log_dir: Option<String>,
     pub quit: bool,
     dirty: bool,
@@ -1052,12 +1056,14 @@ pub struct App {
     /// `permissions.defaultMode` as config.json has it, for `/settings`;
     /// none when it names nothing.
     pub default_mode: Option<String>,
+    /// `rollover` as config.json has it, for `/settings`; none when unset.
+    pub global_rollover: Option<String>,
     /// The mode a new session here starts in instead, when a settings file
     /// read after config.json sets another, and Claude Code's user settings
     /// file as the person would find it.
     pub default_mode_overridden: Option<(PermissionMode, String)>,
     /// `/settings`' chosen row: 0 the default permission mode, 1 the
-    /// content width, 2 the screen.
+    /// content width, 2 the screen, 3 the rollover.
     pub setting_at: usize,
     /// The screen saved in config.json differs from the one this session
     /// runs on: krowk opens on it the next time it starts.
@@ -1112,6 +1118,7 @@ impl App {
             unsent_steers: Vec::new(),
             echoed: None,
             permission_mode: "default".into(),
+            rollover: None,
             log_dir: None,
             quit: false,
             dirty: true,
@@ -1177,6 +1184,7 @@ impl App {
             mcp_signin: None,
             mcp_noticed: Default::default(),
             default_mode: None,
+            global_rollover: None,
             default_mode_overridden: None,
             setting_at: 0,
             screen_later: false,
@@ -2486,7 +2494,11 @@ impl App {
                     self.dirty = true;
                 }
             }
-            LogBody::TurnStarted { model, provider, .. } => {
+            LogBody::TurnStarted { model, provider, rollover, .. } => {
+                // A resumed session keeps the value its log recorded.
+                if !live && rollover.is_some() {
+                    self.rollover = *rollover;
+                }
                 // One before it that never completed, on its own instance.
                 if !live {
                     self.settle_replayed(None);
@@ -3627,10 +3639,19 @@ impl App {
             Screen::Inline => "under the shell's output, the conversation in the terminal's scrollback",
         };
         let later = if self.screen_later { " · when krowk next starts" } else { "" };
+        let rollover = self.global_rollover.as_deref().unwrap_or("offer");
+        let rollover_says = match rollover {
+            "auto" => "a session at its limit moves to the next instance without asking",
+            "off" => "a session at its limit stops, with no offer to continue elsewhere",
+            "offer" => "a session at its limit is offered the next instance, and y continues there",
+            _ => "not a value krowk runs",
+        };
+        let rollover_warning = self.rollover.map(|r| format!("this session is set to {} with /rollover, which comes before config.json", crate::settings::rollover_name(r)));
         let rows = [
             Choice { name: "Default permission mode".into(), value: Span::raw(mode), says: says.into(), warning },
             Choice { name: "Content width".into(), value: Span::raw(cw.name()), says: cw_says, warning: None },
             Choice { name: "Screen".into(), value: Span::raw(screen.name()), says: format!("{screen_says}{later}"), warning: None },
+            Choice { name: "Rollover".into(), value: Span::raw(clean(rollover)), says: rollover_says.into(), warning: rollover_warning },
         ];
         let mut out = vec![picker_title("settings", "`↑` `↓` choose · `←` `→` change and save · `esc` close", width)];
         out.extend(choices(&rows, self.setting_at, true, width));
@@ -4543,7 +4564,7 @@ fn input_window(top: usize, crow: usize, len: usize, shown: usize) -> usize {
 mod tests {
     use super::*;
     use crate::pr::Pr;
-    use krowk_harness::protocol::{PermissionMode, WireApi};
+    use krowk_harness::protocol::{PermissionMode, Rollover, WireApi};
 
     /// Full width: most tests here lay out at a width they set.
     fn app() -> App {
@@ -6616,6 +6637,16 @@ mod tests {
         a.default_mode = Some("\u{1b}[2Jx".into());
         let rows = text(&a.view(Instant::now()).0).join("\n");
         assert!(!rows.contains('\u{1b}'), "config.json's text is shown, never obeyed: {rows:?}");
+    }
+
+    #[test]
+    fn a_resumed_sessions_rollover_comes_from_its_log() {
+        let mut a = app();
+        let started = |rollover| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body: LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover } };
+        a.replay(&[&started(None)]);
+        assert_eq!(a.rollover, None, "a log that recorded none leaves the repo's and config.json's to decide");
+        a.replay(&[&started(Some(Rollover::Off))]);
+        assert_eq!(a.rollover, Some(Rollover::Off));
     }
 
     #[test]
