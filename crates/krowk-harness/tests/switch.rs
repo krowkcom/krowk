@@ -786,10 +786,10 @@ fn r_roll_1_claude_code_reports_every_window_it_lists_below_the_limit() {
         }).collect()
     };
     let (_, lines) = rt.block_on(run(&host, prompt(None, "hello", Some(ModelRef { instance: "claude:work".into(), model: "haiku".into() }))));
-    // A bare `allowed` event adds a report with no utilisation, as before.
+    // Fullest last; a bare `allowed` event adds a report with no utilisation, as before.
     assert_eq!(limits(&lines), [
-        (Some("five_hour".into()), LimitState::Allowed, Some(69.0), Some(1_791_628_200_000)),
         (Some("seven_day".into()), LimitState::Allowed, Some(57.0), Some(1_791_846_000_000)),
+        (Some("five_hour".into()), LimitState::Allowed, Some(69.0), Some(1_791_628_200_000)),
         (None, LimitState::Allowed, None, None),
     ]);
     // A rejected turn names the rejected window, not the fullest-looking one.

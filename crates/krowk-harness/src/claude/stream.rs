@@ -125,7 +125,8 @@ pub type Kept = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String
 /// epoch) and how much is used (`utilization`, 0–1), when it says. Below
 /// the limit the top level names one window and carries no utilisation;
 /// `unifiedWindows` holds every window's, so each gets its own status: the
-/// event's for the window it names, else a warning from 80% (as Codex's).
+/// event's for the window it names, else a warning from 80% (as Codex's),
+/// the binding one last.
 pub fn rate_limits(info: &Value) -> Vec<LimitStatus> {
     let status = match str_of(info, "status") {
         "allowed" => LimitState::Allowed,
@@ -141,16 +142,18 @@ pub fn rate_limits(info: &Value) -> Vec<LimitStatus> {
         let status = if name == named { status } else if used_percent.is_some_and(|p| p >= 80.0) { LimitState::Warning } else { LimitState::Allowed };
         LimitStatus { status, window: Some(name.clone()), used_percent, resets_at_ms: seconds(w) }
     }).collect();
-    if !out.iter().any(|l| l.window.as_deref() == Some(named)) {
+    if out.is_empty() || (status != LimitState::Allowed && !out.iter().any(|l| l.window.as_deref() == Some(named))) {
         out.push(LimitStatus { status, window: Some(named.to_string()).filter(|w| !w.is_empty()), used_percent: percent(info), resets_at_ms: seconds(info) });
     }
+    // The TUI keeps the last report per instance: the binding one goes last.
+    out.sort_by(|a, b| (a.status == LimitState::Limited, a.used_percent.unwrap_or(0.0)).partial_cmp(&(b.status == LimitState::Limited, b.used_percent.unwrap_or(0.0))).unwrap_or(std::cmp::Ordering::Equal));
     out
 }
 
-/// The limit a turn's failure names: the rejected window, else the fullest.
+/// The limit a turn's failure names: the rejected window, else the fullest
+/// (`rate_limits` puts it last).
 fn binding(limits: &[LimitStatus]) -> Option<&LimitStatus> {
-    let used = |l: &LimitStatus| l.used_percent.unwrap_or(0.0);
-    limits.iter().find(|l| l.status == LimitState::Limited).or_else(|| limits.iter().max_by(|a, b| used(a).total_cmp(&used(b))))
+    limits.last()
 }
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -219,7 +222,8 @@ impl Translator {
             // per instance, and what a limited turn's failure names.
             "rate_limit_event" => {
                 let limits = msg.get("rate_limit_info").map(rate_limits).unwrap_or_default();
-                if let Some(l) = binding(&limits) {
+                // A bare `allowed` doesn't wipe what the windows said.
+                if let Some(l) = binding(&limits).filter(|l| l.used_percent.is_some() || l.status != LimitState::Allowed || self.limit.is_none()) {
                     self.limit = Some(l.clone());
                 }
                 out.extend(limits.into_iter().map(EngineEvent::Limits));
