@@ -1,0 +1,4 @@
+{"type":"assistant","message":{"id":"msg_win","model":"claude-haiku-4-5-20251001","role":"assistant","content":[{"type":"text","text":"claude-code answered"}],"usage":{"input_tokens":3,"output_tokens":9}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1791628200,"rateLimitType":"five_hour","overageStatus":"rejected","unifiedWindows":{"five_hour":{"utilization":0.69,"resetsAt":1791628200},"seven_day":{"utilization":0.57,"resetsAt":1791846000}}},"session_id":"{{SESSION}}"}
+{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"success","is_error":false,"result":"claude-code answered","session_id":"{{SESSION}}","total_cost_usd":0.001}

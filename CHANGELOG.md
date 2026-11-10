@@ -22,6 +22,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ran with unless you pass `--rollover` again. `rolloverOrder` is read from the
   config now too, and any other value is refused, naming the three.
 
+### Changed
+
+- **Claude Code's usage in every window shows below the limit.** Claude Code
+  reports how much of each window (the five-hour and the weekly) is used on
+  every turn, but krowk read only the one window the event named, and that
+  without a percentage until you were limited. An instance's status line now
+  shows the fuller window after any turn, and a limited turn still names the
+  window that was rejected and when it resets.
+
 ## [0.16.2] - 2026-11-06
 
 ### Added
