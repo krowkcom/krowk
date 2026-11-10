@@ -11,16 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
-- **`rollover` can be `off`, and is set per session, per repo and globally.**
-  A limited turn on an instance used to be offered a way on whatever you
-  wanted, and the setting lived only in `~/.krowk/config.json`, which krowk
-  didn't read at all. Now `rollover` is `auto`, `offer` (the default) or
-  `off`, read from the session (`krowk -p --rollover <value>`), then the
-  repository's `.krowk/config.json` when you trust the repository, then the
-  global config. With `off` a limit fails the turn with no offer and no
-  "continue on another instance" hint. A resumed session keeps the value it
-  ran with unless you pass `--rollover` again. `rolloverOrder` is read from the
-  config now too, and any other value is refused, naming the three.
+- **`rollover` can be `off`, and is set per session, per repository and
+  globally.** `rollover` decides what a turn that hits its instance's limit
+  does: `auto` moves on, `offer` (the default) asks, and the new `off` fails
+  the turn with no offer and no "continue on another instance" hint. krowk
+  now reads it from `krowk -p --rollover <value>` first, then a trusted
+  repository's `.krowk/config.json`, then `~/.krowk/config.json`. A resumed
+  session keeps its value unless `--rollover` is given again. Until now
+  `rollover` and `rolloverOrder` in `~/.krowk/config.json` were silently
+  ignored, so every limit was offered; they are read now, and any other
+  value is refused, naming the three.
 
 ### Security
 
