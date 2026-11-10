@@ -184,8 +184,8 @@ use krowk_client::pairing::PairingCode;
 /// `ApprovalGone`, and a catch-up asked ends with a `CaughtUp` even when
 /// its `events` are empty; 9: `ImageRef` gains `sha256`, which a Swift
 /// initializer of it must pass; 13: `SwitchOffer` gains `room`, which a Swift
-/// initializer of it must pass).
-pub const FFI_API_VERSION: u32 = 13;
+/// initializer of it must pass; 14: `SwitchOffer` gains `early`, likewise).
+pub const FFI_API_VERSION: u32 = 14;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

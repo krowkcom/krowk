@@ -186,7 +186,7 @@ fn run_result(worktree: Option<Box<KeptWorktree>>) -> RunResult {
         num_model_calls: 4,
         error: Some(error()),
         unread_steers: vec!["also this".into()],
-        switch_offer: Some(SwitchOffer { from: model(), to: model(), resets_at_ms: Some(5), room: None }),
+        switch_offer: Some(SwitchOffer { from: model(), to: model(), resets_at_ms: Some(5), room: None, early: false }),
         worktree,
     }
 }

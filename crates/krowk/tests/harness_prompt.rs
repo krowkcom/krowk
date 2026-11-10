@@ -584,6 +584,43 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     assert!(images[1]["source"]["data"].as_str().unwrap().len() < std::fs::metadata(big).unwrap().len() as usize * 4 / 3);
 }
 
+/// Saves `login`'s `requests` window with `used` percent used, as seen now.
+fn seed_usage(home: &std::path::Path, login: &str, used: f64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
+    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(used), resets_at_ms: None };
+    usage.record_limit(login, &limit, now).unwrap();
+}
+
+/// A successful answer that leaves one request in a hundred: the early switch's trigger.
+fn nearly_out(text: &str) -> mock::Reply {
+    mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(text)) }
+}
+
+/// R-ROLL-11, D16: `krowk -p` with `offer` ends a turn that left too little
+/// by offering the next instance in its JSON result, marked early, and
+/// says how to continue there on stderr; the turn itself succeeded.
+#[test]
+fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
+    let low = mock::serve(|_, _| nearly_out("low-answer-marker"));
+    let ok = mock::serve(mock::readme_script);
+    let b = Sandbox::new("early", &low.url);
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}}).to_string()).unwrap();
+    seed_usage(&b.root.join("home"), "anthropic:b", 20.0);
+    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"]);
+    let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
+    assert!(out.status.success(), "{stdout}{err}");
+    let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
+    assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("anthropic:b")), "{stdout}");
+    let id = v["sessionId"].as_str().unwrap();
+    assert!(err.contains("continue on anthropic:b/claude-sonnet-4-6 (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model anthropic:b/claude-sonnet-4-6`")), "{err}");
+    // Off: no offer, no hint.
+    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json", "--rollover", "off"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["switchOffer"].is_null() && !String::from_utf8_lossy(&out.stderr).contains("continue on"), "{v}");
+}
+
 /// R-ROLL-4..7: `rollover` is read from the global config, a trusted
 /// repository's `.krowk/config.json` and `--rollover`, most specific first;
 /// `off` fails a limit with no offer; a resumed session keeps its value; any

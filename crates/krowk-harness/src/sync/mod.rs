@@ -396,7 +396,8 @@ impl Owed {
 
 /// The rate-limit offer `krowk sync attach` last saw for its session, and
 /// the last prompt it sent, which `/switch` sends again on the instance
-/// offered — the terminal's yes (R-INST-7, R-SWITCH-4).
+/// offered — the terminal's yes (R-INST-7, R-SWITCH-4); not after an early
+/// offer, whose turn succeeded (R-ROLL-12).
 #[derive(Default)]
 struct Offered {
     /// The offer, and the turn that hit the limit.
@@ -424,7 +425,8 @@ impl Offered {
                 self.offer = r.switch_offer.clone().map(|o| (r.turn_id.clone(), o));
                 if let Some((_, o)) = &self.offer {
                     let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
-                    eprintln!("krowk: {} is at its limit — type /switch to continue on {}{room}", o.from, o.to);
+                    let state = if o.early { "is running low" } else { "is at its limit" };
+                    eprintln!("krowk: {} {state} — type /switch to continue on {}{room}", o.from, o.to);
                 }
             }
             viewer::Update::Line(StreamLine::Log(e)) => self.logged(session, e, true),
@@ -472,8 +474,9 @@ impl Offered {
         let (turn, offer) = self.offer.take().ok_or("no switch offer is waiting")?;
         let switch = crate::protocol::Command::SwitchModel { session_id: Some(session.to_string()), model: offer.to.clone() };
         let asked = self.asked.iter().find(|(t, _)| *t == turn).map(|(_, text)| text);
-        let again = self.last_prompt.clone().filter(|p| asked == Some(p));
-        if again.is_none() {
+        // An early offer's turn succeeded: nothing is sent again (D10).
+        let again = self.last_prompt.clone().filter(|p| !offer.early && asked == Some(p));
+        if again.is_none() && !offer.early {
             eprintln!("krowk: switching to {} — the limited turn was not prompted from here, so type the prompt to run there", offer.to);
         }
         Ok((switch, again.map(|text| prompt(session, text))))
@@ -610,7 +613,7 @@ mod tests {
     fn offered(session: &str, turn: &str) -> super::viewer::Update {
         use crate::protocol::{LiveEvent, ModelRef, StreamLine, SwitchOffer};
         let m = |i: &str| ModelRef { instance: i.into(), model: "m".into() };
-        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None, room: None }), worktree: None };
+        let r = crate::protocol::RunResult { session_id: session.into(), turn_id: turn.into(), status: crate::protocol::TurnStatus::Failed, is_error: true, result: String::new(), model: m("a"), usage: Default::default(), cost_usd: None, duration_ms: 0, num_model_calls: 1, error: None, unread_steers: Vec::new(), switch_offer: Some(SwitchOffer { from: m("a"), to: m("b"), resets_at_ms: None, room: None, early: false }), worktree: None };
         super::viewer::Update::Line(StreamLine::Live(LiveEvent::Result(r)))
     }
 
