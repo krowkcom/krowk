@@ -57,7 +57,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   again. `krowk -p` shows the offer in its JSON result (`switchOffer`, with
   `early: true`) and a stderr hint with the `--resume ... --model` to
   continue on. Declining is just sending the next prompt on the same
-  account: no further early offer comes for that account in the session
+  instance: no further early offer comes for that account in the session
   until its usage window resets. A hard-limit offer still comes.
 
 ### Changed

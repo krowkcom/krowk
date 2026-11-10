@@ -1282,7 +1282,6 @@ impl Shared {
         }
         let room = room_note(pick.standing);
         if !auto {
-            self.early_offered(session_id, EarlyOffer { instance: model.instance.clone(), login: login.into(), resets_at_ms });
             return (None, Some(SwitchOffer { from: model.clone(), to: pick.model, resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: true }), None);
         }
         w.mark_moved(&pick.model.instance).await;
@@ -1645,7 +1644,9 @@ impl Shared {
         let engine = plan.engine.clone();
         let model = plan.model.clone();
         let session_dir = plan.log.dir.clone();
-        if plan.announce {
+        // The next prompt on the offer's instance is the decline (D14); a
+        // turn the backend began by itself is not a prompt.
+        if plan.announce && !plan.unprompted {
             self.early_answered(&session_id, &model.instance);
         }
         let kids = self.kids(&session_id, &plan).await;
@@ -1820,6 +1821,11 @@ impl Shared {
         let (children_usd, children_unpriced) = spawned.as_ref().map_or((0.0, false), Subagents::spent);
         let completed = LogBody::TurnCompleted { turn_id: turn_id.clone(), status, usage: tally.usage, duration_ms, error: error.clone(), reported_cost_usd: tally.reported, reported_tokens: None };
         let next = w.finish(completed, status, &model, after.as_ref(), &mut plan.here, next).await?;
+        // An early offer is remembered once its turn is logged, so a log
+        // that failed leaves no decline behind for an offer never made.
+        if let (Some(o), Some(before)) = (offer.as_ref().filter(|o| o.early), read_before.as_ref()) {
+            self.early_offered(&session_id, EarlyOffer { instance: model.instance.clone(), login: before.login_of(&model.instance).into(), resets_at_ms: o.resets_at_ms });
+        }
         // Off the daemon's thread, and not waited for: the result goes out
         // as soon as the turn has ended, and the daemon waits for the sync
         // on its way out (`log::synced`).
