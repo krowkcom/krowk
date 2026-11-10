@@ -43,6 +43,10 @@ const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
 /// A prompt A's `anthropic` instance answers with its rate limit.
 const LIMITED: &str = "past-the-limit-prompt-3e0a";
 
+/// A prompt A's `anthropic` instance answers, leaving one request in a
+/// hundred: an early offer.
+const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
+
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
 
@@ -76,6 +80,9 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     }
     if !has_result && text.contains(LIMITED) {
         return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
+    }
+    if !has_result && text.contains(NEARLY_OUT) {
+        return mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(ANSWER)) };
     }
     if !has_result && text.contains("tui round trip") {
         return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
@@ -539,6 +546,37 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     assert_eq!(turns.last().unwrap()["model"]["instance"], "anthropic:personal", "the prompt again ran on the offered instance");
     assert_eq!(turns.len(), 3, "hello, the limited turn, and once again: {turns:?}");
     assert!(other.seen.lock().unwrap().last().is_some_and(|c| c.body["messages"].to_string().contains(LIMITED)), "B's last prompt was sent again");
+}
+
+/// R-ROLL-12, D10: an early offer, from a turn that succeeded, is named on
+/// B's stderr, and `/switch` takes it with a `switchModel` alone: the prompt
+/// is not sent again.
+#[test]
+fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
+    let w = World::new("early");
+    let a = w.machine("a");
+    let b = w.machine("b");
+    let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
+    let config = serde_json::json!({"tui": {"screen": "inline"}, "instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
+    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
+    let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(20.0), resets_at_ms: None };
+    krowk_harness::usage::Usage::in_home(&a.home.join(".krowk")).record_limit("anthropic:personal", &limit, now).unwrap();
+    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
+    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
+
+    view.type_line(&format!("say {NEARLY_OUT}"));
+    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
+    assert_eq!((result["status"].as_str(), result["switchOffer"]["early"].as_bool()), (Some("completed"), Some(true)), "{result}");
+    view.said("the offer", |l| l.starts_with("krowk: anthropic/claude-sonnet-4-6 is running low — type /switch to continue on anthropic:personal/claude-sonnet-4-6 ("));
+    view.type_line("/switch");
+    view.until("the switch", |v| v["type"] == "model.switched" && v["to"]["instance"] == "anthropic:personal");
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(other.seen.lock().unwrap().is_empty(), "nothing was sent again");
+    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
+    let turns = log.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["type"] == "turn.started").count();
+    assert_eq!(turns, 2, "hello and the early one, no third");
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced

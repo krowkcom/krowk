@@ -1657,6 +1657,10 @@
             "string",
             "null"
           ]
+        },
+        "early": {
+          "description": "Made between turns, as `from`'s usage runs low (D9), not after a\nlimit: the turn succeeded, so a yes switches and sends nothing again\n(D10). An older host's offer has none, and a client that does not\nknow the field reads it as a limit's.",
+          "type": "boolean"
         }
       },
       "required": [

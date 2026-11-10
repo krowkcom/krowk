@@ -983,10 +983,12 @@ fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns()
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
     let usage = krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk"));
     let models = vec!["haiku".to_string()];
+    // Seen now, each time: the report seen latest wins, and a turn's own is later than an earlier seed.
     let seed = |instance: &str, used: f64| {
-        usage.record_instance(instance, instance, &models, now).unwrap();
+        let seen = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+        usage.record_instance(instance, instance, &models, seen).unwrap();
         let limit = krowk_harness::protocol::LimitStatus { status: LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
-        usage.record_limit(instance, &limit, now).unwrap();
+        usage.record_limit(instance, &limit, seen).unwrap();
     };
     let work = ModelRef { instance: "claude:work".into(), model: "haiku".into() };
     let run_work = |host: &Host| rt().block_on(run(host, prompt(None, "keep going", Some(work.clone()))));
@@ -1013,18 +1015,25 @@ fn r_roll_11_a_turn_that_leaves_too_little_moves_an_auto_session_between_turns()
     let (r2, _) = rt().block_on(run(&host, prompt(Some(&r.session_id), "and more", None)));
     assert_eq!((r2.status, r2.model.instance.as_str()), (TurnStatus::Completed, "claude:best"));
     assert!(w.fake_log("claude-best").contains("resume-lines"));
-    // Offer: nothing moves by itself.
+    // Offer: nothing moves by itself; the successful result offers it, marked early.
     drop(host);
     seed("claude:work", 90.0);
     w.rollover = Some(Rollover::Offer);
     let (r, _) = run_work(&w.host());
     assert!(moves(&w, &r.session_id).is_empty());
+    assert_eq!(r.status, TurnStatus::Completed);
+    let offer = r.switch_offer.expect("the early offer");
+    assert!(offer.early && offer.to.instance == "claude:best" && offer.resets_at_ms.is_some(), "{offer:?}");
+    assert!(offer.room.is_some_and(|room| room.contains("% left as of ")));
+    // An older host's offer has no `early`: a limit's.
+    let old: krowk_harness::protocol::SwitchOffer = serde_json::from_value(json!({"from": {"instance": "a", "model": "m"}, "to": {"instance": "b", "model": "m"}})).unwrap();
+    assert!(!old.early);
     // Auto, but the only candidate has under 10 to spare: stays.
     seed("claude:work", 90.0);
     seed("claude:best", 95.0);
     w.rollover = Some(Rollover::Auto);
     let (r, _) = run_work(&w.host());
-    assert!(moves(&w, &r.session_id).is_empty());
+    assert!(moves(&w, &r.session_id).is_empty() && r.switch_offer.is_none());
 }
 
 #[test]

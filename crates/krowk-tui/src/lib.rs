@@ -2830,7 +2830,8 @@ impl<'h> Ui<'h> {
 
     /// A limit's offer (R-INST-7): one keystroke, y, and never taken
     /// silently — anything else declines it, and a key that is not an
-    /// answer still does what it does.
+    /// answer still does what it does. A yes sends the prompt again, unless
+    /// the offer is an early one: that turn succeeded (R-ROLL-12).
     async fn offer_key(&mut self, app: &mut App, k: KeyEvent, ctrl: bool) -> Option<bool> {
         let offer = app.offer.clone()?;
         if ctrl || app.running() {
@@ -2839,7 +2840,7 @@ impl<'h> Ui<'h> {
         app.offer = None;
         match k.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                if self.switch(app, offer.to).await && !self.last_prompt.is_empty() {
+                if self.switch(app, offer.to).await && !offer.early && !self.last_prompt.is_empty() {
                     let text = self.last_prompt.clone();
                     self.prompt(app, text);
                 }

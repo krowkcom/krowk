@@ -49,6 +49,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   in the session log, so `--resume` continues on the new account. An account
   a session was just moved to ranks after the others for 5 minutes, so
   sessions crossing the line together do not all pile onto one account.
+  With `offer`, the same moment brings the question after a turn that
+  succeeded: "claude:work is running low (resets 14:00) — continue on
+  claude:trip1 (41% left as of 12:10, resets 13:20)? [y/N]". `y` in the TUI
+  and `/switch` in `krowk sync attach` move the session without sending the
+  prompt again, since it was answered; an offer after a limit still sends it
+  again. `krowk -p` shows the offer in its JSON result (`switchOffer`, with
+  `early: true`) and a stderr hint with the `--resume ... --model` to
+  continue on.
 
 ### Changed
 

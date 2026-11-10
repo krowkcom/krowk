@@ -4407,11 +4407,19 @@ fn approval_rows(req: &ApprovalRequest, waiting: usize, width: usize, ready: boo
 }
 
 /// R-INST-7's question: "claude:work limited until 14:00, continue on
-/// claude:personal? [y/N]".
+/// claude:personal? [y/N]". An early offer (D9) is made of a turn that
+/// succeeded: "claude:work is running low (resets 14:00) — continue on
+/// claude:personal (41% left as of 12:10, resets 13:20)? [y/N]".
 pub fn offer_question(o: &SwitchOffer) -> String {
-    let until = o.resets_at_ms.map(|ms| format!(" until {}", krowk_harness::host::clock(ms))).unwrap_or_default();
+    let at = o.resets_at_ms.map(krowk_harness::host::clock);
     let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
-    format!("{}{} limited{until}, continue on {}{room}? [`y`/`N`]", look::SWITCH, o.from.instance, if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() })
+    let to = if o.to.model == o.from.model { o.to.instance.clone() } else { o.to.to_string() };
+    if o.early {
+        let resets = at.map(|t| format!(" (resets {t})")).unwrap_or_default();
+        return format!("{}{} is running low{resets} — continue on {to}{room}? [`y`/`N`]", look::SWITCH, o.from.instance);
+    }
+    let until = at.map(|t| format!(" until {t}")).unwrap_or_default();
+    format!("{}{} limited{until}, continue on {to}{room}? [`y`/`N`]", look::SWITCH, o.from.instance)
 }
 
 /// How much of a model-supplied string an approval shows.
@@ -6439,7 +6447,7 @@ mod tests {
     fn r_inst_7_a_limit_offers_the_next_instance_as_one_question() {
         let mut a = app();
         a.set_width(100);
-        let offer = SwitchOffer { from: ModelRef { instance: "claude:work".into(), model: "sonnet".into() }, to: ModelRef { instance: "claude:personal".into(), model: "sonnet".into() }, resets_at_ms: None, room: None };
+        let offer = SwitchOffer { from: ModelRef { instance: "claude:work".into(), model: "sonnet".into() }, to: ModelRef { instance: "claude:personal".into(), model: "sonnet".into() }, resets_at_ms: None, room: None, early: false };
         let result = RunResult {
             session_id: "s".into(),
             turn_id: "t".into(),
@@ -6892,7 +6900,7 @@ mod tests {
         let m = |i: &str| ModelRef { instance: i.into(), model: "claude-x".into() };
         a.model = Some(m("claude:a"));
         a.used = vec![m("claude:a"), m("claude:b")];
-        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None, room: None });
+        a.offer = Some(SwitchOffer { from: m("claude:b"), to: m("claude:a"), resets_at_ms: None, room: None, early: false });
         for (i, turns) in [("claude:a", 2), ("claude:b", 3)] {
             a.instances.insert(i.into(), InstanceUsage { turns, tokens: 10, ..Default::default() });
         }

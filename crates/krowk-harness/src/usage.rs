@@ -190,10 +190,10 @@ impl Data {
 
     /// The early switch's trigger (D9), asked of the data as it was before
     /// a turn: `turn` is that turn's last report per window. Fires, with
-    /// the headroom left, when it is below max(2, 2 x what the turn used of
+    /// the headroom left and when the binding window resets, when it is below max(2, 2 x what the turn used of
     /// the binding window), the rise from the reading before the turn (none
     /// before: no rise) to the turn's last. Nothing without a report.
-    pub fn runs_low(&self, login: &str, turn: &[LimitStatus], now_ms: i64) -> Option<f64> {
+    pub fn runs_low(&self, login: &str, turn: &[LimitStatus], now_ms: i64) -> Option<(f64, Option<i64>)> {
         let mut after = self.clone();
         let windows = after.logins.entry(login.into()).or_default();
         for l in turn {
@@ -205,7 +205,7 @@ impl Data {
         let binding = now.iter().max_by(|a, b| used(a).total_cmp(&used(b)))?;
         let rise = self.readings(login, now_ms).iter().find(|r| r.window == binding.window).map_or(0.0, |b| (used(binding) - used(b)).max(0.0));
         let headroom = (100.0 - used(binding)).max(0.0);
-        (headroom < f64::max(2.0, 2.0 * rise)).then_some(headroom)
+        (headroom < f64::max(2.0, 2.0 * rise)).then_some((headroom, binding.resets_at_ms))
     }
 
     /// The login and models `instance` last reported, if it ever did.
@@ -387,11 +387,11 @@ mod tests {
         let five = |used| limit("five_hour", used, Some(9_000_000));
         d.logins.entry("a".into()).or_default().insert("five_hour".into(), Window { status: LimitState::Allowed, used_percent: Some(90.0), resets_at_ms: Some(9_000_000), seen_at_ms: 1_000, first_span_ms: None });
         // 90 -> 96: used 6, 4 left is under 12.
-        assert_eq!(d.runs_low("a", &[five(96.0)], 2_000), Some(4.0));
+        assert_eq!(d.runs_low("a", &[five(96.0)], 2_000), Some((4.0, Some(9_000_000))));
         // 90 -> 91: 9 left is not under 2 x 1, nor under 2.
         assert_eq!(d.runs_low("a", &[five(91.0)], 2_000), None);
         // 90 -> 99: 1 left is under 2, whatever the use.
-        assert_eq!(d.runs_low("a", &[five(99.0)], 2_000), Some(1.0));
+        assert_eq!(d.runs_low("a", &[five(99.0)], 2_000), Some((1.0, Some(9_000_000))));
         // Nothing reported this turn, nothing to go on.
         assert_eq!(d.runs_low("a", &[], 2_000), None);
         // A window that has reset does not bind.

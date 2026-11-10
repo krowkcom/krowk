@@ -227,7 +227,15 @@ fn turn(ctx: &mut Ctx, cfg: HostConfig, opts: headless::Options) -> Result<(), E
         Some(r) if r.status == TurnStatus::Interrupted => {
             Err(fail("interrupted", format!("the turn was interrupted; what it produced is kept — continue with `krowk -p --resume {} …`", r.session_id)))
         }
-        _ => Ok(()),
+        // An early offer (D9): the turn succeeded, and the next one can run elsewhere.
+        Some(r) => {
+            if let Some(o) = r.switch_offer.as_ref().filter(|o| o.early) {
+                let room = o.room.as_ref().map(|r| format!(" ({r})")).unwrap_or_default();
+                ctx.warn(&format!("{} is running low — continue on {}{room} with `krowk -p --resume {} --model {}`", o.from, o.to, r.session_id, o.to));
+            }
+            Ok(())
+        }
+        None => Ok(()),
     }
 }
 

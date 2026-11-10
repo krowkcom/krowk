@@ -682,6 +682,12 @@ pub struct SwitchOffer {
     /// resets 13:20`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub room: Option<String>,
+    /// Made between turns, as `from`'s usage runs low (D9), not after a
+    /// limit: the turn succeeded, so a yes switches and sends nothing again
+    /// (D10). An older host's offer has none, and a client that does not
+    /// know the field reads it as a limit's.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub early: bool,
 }
 
 /// How close an instance is to its rate or usage limit, as its provider

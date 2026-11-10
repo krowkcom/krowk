@@ -472,6 +472,7 @@ pub struct SwitchOffer {
     pub to: ModelRef,
     pub resets_at_ms: Option<i64>,
     pub room: Option<String>,
+    pub early: bool,
 }
 
 #[uniffi::remote(Record)]

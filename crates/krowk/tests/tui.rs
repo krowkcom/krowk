@@ -304,6 +304,49 @@ fn r_inst_7_the_tui_offers_the_next_instance_and_y_continues_there() {
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
 }
 
+/// Saves `login`'s `requests` window with `used` percent used, as seen now.
+fn seed_usage(home: &std::path::Path, login: &str, used: f64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
+    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(used), resets_at_ms: None };
+    usage.record_limit(login, &limit, now).unwrap();
+}
+
+/// A successful answer that leaves one request in a hundred: the early switch's trigger.
+fn nearly_out(text: &str) -> mock::Reply {
+    mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(text)) }
+}
+
+/// R-ROLL-12, D10: a turn that succeeded and left too little is offered the
+/// next instance, asked as an early one, and `y` moves the session there
+/// without sending the prompt again: the instance it left saw one request.
+#[test]
+fn r_roll_12_the_tui_takes_an_early_offer_with_y_and_sends_nothing_again() {
+    let low = mock::serve(|_, _| nearly_out("low-answer-marker"));
+    let ok = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("next-answer-marker")));
+    let b = Sandbox::new("early");
+    b.config(serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "apiKeyEnv": "ANTHROPIC_API_KEY", "baseUrl": ok.url}}}));
+    seed_usage(&b.root.join("home"), "anthropic:personal", 20.0);
+    let mut t = pty::Pty::spawn(b.command(&low.url, &["--model", "anthropic/claude-sonnet-4-6"]), 120, 30);
+    assert!(t.wait_for("anything", Duration::from_secs(10)).is_some(), "{:?}", t.text());
+    t.write(b"first prompt\r");
+    assert!(t.wait_for("is running low", Duration::from_secs(20)).is_some(), "no early offer: {:?}", t.text());
+    assert!(t.text().contains("anthropic:personal"), "{:?}", t.text());
+    t.write(b"y");
+    // Nothing runs by itself: the next prompt is what reaches the new instance.
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(ok.seen.lock().unwrap().is_empty(), "the prompt was sent again");
+    t.write(b"second prompt\r");
+    assert!(t.wait_for("next-answer-marker", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(!low.seen.lock().unwrap().iter().any(|c| c.body.to_string().contains("second prompt")), "the first instance saw only the first prompt");
+    let seen = ok.seen.lock().unwrap();
+    assert_eq!(seen.len(), 1, "one turn there");
+    assert!(seen[0].body.to_string().contains("second prompt"));
+    drop(seen);
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
 /// `/rollover` shows the value and where it comes from, `/rollover <value>`
 /// sets the session's, and the next limited turn follows it: `off` leaves
 /// no offer, `offer` brings it back.

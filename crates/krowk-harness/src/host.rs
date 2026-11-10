@@ -1220,31 +1220,37 @@ impl Shared {
     async fn follow_up(&self, outcome: &Result<TurnEnd, EngineError>, (announce, reached, tried, cwd, rollover): (bool, Option<&ModelRef>, &Vec<String>, &PathBuf, Rollover), (w, before): (&Writer<'_>, Option<&usage::Data>), (model, session_id, calls): (&ModelRef, &str, u32), error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
         match outcome {
             Err(e) if announce => self.after_failure(e, (reached, tried, cwd, rollover), model, session_id, calls, error).await,
-            Ok(TurnEnd::Completed) if announce => (self.early_switch(w, before, model, (tried, cwd), session_id).await, None, None),
+            Ok(TurnEnd::Completed) if announce => self.early_switch(w, before, model, (tried, cwd, rollover), session_id).await,
             _ => (None, None, None),
         }
     }
 
-    /// The early switch (D9, R-ROLL-11), asked as an `auto` session's turn
-    /// ends: when its login has too little left for about two more such
-    /// turns, the best ready candidate with 5 points more room, as the move
-    /// to log — and its login marked as moved to (D19). Not when the person
-    /// asked for a switch meanwhile.
-    async fn early_switch(&self, w: &Writer<'_>, before: Option<&usage::Data>, model: &ModelRef, (tried, cwd): (&[String], &std::path::Path), session_id: &str) -> Option<(ModelRef, SwitchReason, String)> {
-        let before = before?;
+    /// The early switch (D9, R-ROLL-11), asked as a session's turn ends:
+    /// when its login has too little left for about two more such turns,
+    /// the best ready candidate with 5 points more room. `auto` moves there,
+    /// as the move to log — its login marked as moved to (D19); `offer`
+    /// makes the offer, marked early (D10); `off` does nothing. Not when
+    /// the person asked for a switch meanwhile.
+    async fn early_switch(&self, w: &Writer<'_>, before: Option<&usage::Data>, model: &ModelRef, (tried, cwd, rollover): (&[String], &std::path::Path, Rollover), session_id: &str) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+        let none = (None, None, None);
+        let (Some(before), true) = (before, rollover != Rollover::Off) else { return none };
+        let auto = rollover == Rollover::Auto;
         let now = krowk_store::now_ms();
-        let left = before.runs_low(before.login_of(&model.instance), &w.limits.values().cloned().collect::<Vec<_>>(), now)?;
+        let Some((left, resets_at_ms)) = before.runs_low(before.login_of(&model.instance), &w.limits.values().cloned().collect::<Vec<_>>(), now) else { return none };
         let mut tried = tried.to_vec();
         tried.push(model.instance.clone());
-        let pick = self.next_instance(model, &tried, cwd, Rollover::Auto, Some(left + 5.0)).await?;
+        let Some(pick) = self.next_instance(model, &tried, cwd, rollover, Some(left + 5.0)).await else { return none };
         if self.requested(session_id) {
-            return None;
+            return none;
+        }
+        let room = room_note(pick.standing);
+        if !auto {
+            return (None, Some(SwitchOffer { from: model.clone(), to: pick.model, resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: true }), None);
         }
         w.mark_moved(&pick.model.instance).await;
-        let room = room_note(pick.standing);
         let detail = format!("{model} is {}% used; rollover is auto, continuing on {} ({room})", (100.0 - left).round(), pick.model);
         w.live(LiveEvent::Notice { session_id: session_id.into(), turn_id: w.turn_id.clone(), text: format!("{detail} (rollover = \"auto\")") }).await;
-        Some((pick.model, SwitchReason::RateLimited, detail))
+        (Some((pick.model, SwitchReason::RateLimited, detail)), None, None)
     }
 
     /// Whether a switch the person asked for is waiting for `session_id`'s turn to end.
@@ -1594,7 +1600,7 @@ impl Shared {
             limits: Default::default(),
         };
         // What the login's usage read before the turn, for the early switch.
-        let read_before = w.snapshot(plan.announce && plan.rollover == Rollover::Auto);
+        let read_before = w.snapshot(plan.announce && plan.rollover != Rollover::Off);
         w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort, rollover: plan.session_rollover }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
         let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
@@ -1805,7 +1811,7 @@ impl Shared {
                         let room = if room.is_empty() { String::new() } else { format!(" ({room})") };
                         err.message.push_str(&format!(" — continue on {to}{room} with `krowk -p --resume {session_id} --model {to}`, or say yes when krowk offers it"));
                     }
-                    (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms, room: Some(room).filter(|r| !r.is_empty()) }), None)
+                    (None, Some(SwitchOffer { from: model.clone(), to, resets_at_ms: e.resets_at_ms, room: Some(room).filter(|r| !r.is_empty()), early: false }), None)
                 }
                 None => (None, None, None),
             };
