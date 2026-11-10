@@ -26,12 +26,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   and a `/settings` row sets the global one, which the next turn uses
   without restarting krowk.
 
-### Security
-
-- **The SQLite krowk compiles in is patched (RUSTSEC-2026-0459).** krowk's
-  session store and importer bundle SQLite through `rusqlite`, and the
-  bundled SQLite before 3.54.0 carries CVE-2026-119375. `rusqlite` 0.41
-  bundles SQLite 3.54.1; nothing else changes.
+- **krowk remembers each Claude login's last known usage and model list.**
+  Every limits report a turn produces, from any session, process or subagent,
+  is saved per login and per window in `~/.krowk/usage.json`, and each Claude
+  Code instance's models are saved from its startup answer. Instances signed in
+  as one account share a record, and `krowk providers rename` keeps an
+  instance's link to it. Nothing reads it yet: it is what picking the account
+  with the most usage left will use.
 
 ### Changed
 
@@ -41,6 +42,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   without a percentage until you were limited. An instance's status line now
   shows the fuller window after any turn, and a limited turn still names the
   window that was rejected and when it resets.
+
+### Security
+
+- **The SQLite krowk compiles in is patched (RUSTSEC-2026-0459).** krowk's
+  session store and importer bundle SQLite through `rusqlite`, and the
+  bundled SQLite before 3.54.0 carries CVE-2026-119375. `rusqlite` 0.41
+  bundles SQLite 3.54.1; nothing else changes.
 
 ## [0.16.2] - 2026-11-06
 

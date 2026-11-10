@@ -9,6 +9,7 @@
 //! credentials.json   0600: registry keys, provider logins, stored API keys
 //! accounts/<name>/   a named Claude Code or Codex account's own home
 //! sessions/          krowk.db and each session's log
+//! usage.json         each login's last known usage and each instance's model list
 //! cache/             the models.dev listing, the update check
 //! readiness/         where a vendor is asked whether it is signed in
 //! no-hooks/          empty: where krowk's own git looks for hooks
@@ -29,6 +30,8 @@ pub const CONFIG: &str = "config.json";
 pub const CREDENTIALS: &str = "credentials.json";
 pub const ACCOUNTS: &str = "accounts";
 pub const SESSIONS: &str = "sessions";
+/// Beside `sessions/`, not in the XDG runtime directory a logout clears.
+pub const USAGE: &str = "usage.json";
 pub const CACHE: &str = "cache";
 pub const READINESS: &str = "readiness";
 pub const LEDGER: &str = "ledger";
