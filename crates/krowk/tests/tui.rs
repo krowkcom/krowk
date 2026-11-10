@@ -347,8 +347,9 @@ fn r_roll_15_settings_sets_the_global_rollover_the_next_turn_uses() {
     t.write(b"/config\r");
     assert!(t.wait_for("Rollover", Duration::from_secs(10)).is_some(), "{:?}", t.text());
     std::thread::sleep(Duration::from_millis(600));
-    // Unset is offer: ↓ to the row, → is off.
-    t.write(b"\x1b[B\x1b[B\x1b[B\x1b[C");
+    // Unset is offer: ↓ to the row. ← is auto, which needs a rolloverOrder
+    // and is refused; → is off.
+    t.write(b"\x1b[B\x1b[B\x1b[B\x1b[D\x1b[C");
     let path = b.root.join("home/.krowk/config.json");
     let saved = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["rollover"].as_str().map(String::from));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -579,9 +580,8 @@ fn settings_saves_the_default_permission_mode_the_next_session_starts_in() {
     }
     assert_eq!(width().as_deref(), Some("prose-wide"), "{:?}", t.text());
     assert_eq!(saved().as_deref(), Some("unhinged"), "the mode stays as chosen");
-    // ↓ chooses the screen: ← from inline, which
-    // this session runs on, is fullscreen, krowk's next start's; → is inline
-    // again.
+    // ↓ chooses the screen: ← from inline, which this session runs on, is
+    // fullscreen, krowk's next start's; → is inline again.
     let screen = || std::fs::read_to_string(&path).ok().and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok()).and_then(|v| v["tui"]["screen"].as_str().map(String::from));
     t.write(b"\x1b[B\x1b[D");
     let deadline = std::time::Instant::now() + Duration::from_secs(10);

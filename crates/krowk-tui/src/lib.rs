@@ -985,7 +985,7 @@ fn cursor_row() -> Option<u16> {
 }
 
 /// The rows `/settings` has: the default permission mode, the content
-/// width and the screen.
+/// width, the screen and the rollover.
 const SETTINGS: usize = 4;
 
 /// Columns of padding on each side of everything the TUI draws.
@@ -1850,6 +1850,11 @@ impl<'h> Ui<'h> {
         let screen = if app.setting_at == 2 { app.settings.screen.step(by) } else { None };
         let rollover = if app.setting_at == 3 { settings::step_rollover(app.global_rollover.as_deref(), by) } else { None };
         if width.is_none() && mode.is_none() && screen.is_none() && rollover.is_none() {
+            return;
+        }
+        // `auto` with no `rolloverOrder` is a config krowk refuses to start with.
+        if rollover == Some(krowk_harness::protocol::Rollover::Auto) && self.host.registry().rollover_order.is_empty() {
+            app.flash = Some("auto needs a rolloverOrder in config.json — list the instances to move through".into());
             return;
         }
         // A `/connect` writes config.json too, from its own thread: one at
@@ -3878,7 +3883,9 @@ impl<'h> Ui<'h> {
             }
             "/rollover" => {
                 app.editor.clear();
-                self.say_rollover(app);
+                if !self.synced_refuses(app, "/rollover") {
+                    self.say_rollover(app);
+                }
                 return false;
             }
             t if t.starts_with("/rollover ") => {

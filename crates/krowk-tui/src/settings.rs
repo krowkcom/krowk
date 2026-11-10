@@ -42,12 +42,13 @@
 //! the details overlay.
 //!
 //! `/settings` (or `/config`) sets, chosen with ↑ and ↓ and changed with ←
-//! and →, `rollover` (the global value: `auto`, `offer` or `off`, which the
-//! host daemon uses from the next turn), `permissions.defaultMode` — `default` or `unhinged`, which the next
+//! and →, `permissions.defaultMode` — `default` or `unhinged`, which the next
 //! session starts in (`--permission-mode` and a trusted repository's own
 //! `defaultMode` still come first) — `tui.contentWidth`, which applies at
 //! once, and `tui.screen`, which krowk opens on the next time it starts
-//! (`/new` keeps the terminal it has).
+//! (`/new` keeps the terminal it has), and `rollover` — `auto` (only with a
+//! `rolloverOrder`), `offer` or `off` — which the host daemon uses from the
+//! next turn.
 //!
 //! The overlays are toggled from the keyboard rather than configured: `?` on
 //! an empty prompt for the keys, Ctrl-O for the session's details, Ctrl-T
