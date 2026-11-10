@@ -14,7 +14,7 @@ use krowk_harness::readiness;
 use krowk_harness::evidence::{PublishRequest, Publisher};
 use krowk_harness::permissions;
 use krowk_harness::sandbox::{self, By, Profile, Sandbox};
-use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, TurnStatus, Usage};
+use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, Rollover, TurnStatus, Usage};
 use std::collections::HashMap;
 use krowk_harness::subagent::{AgentsConfig, Models};
 use krowk_harness::trust;
@@ -47,6 +47,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
     let toolset = toolset_flag(ctx)?;
     let effort = effort_flag(ctx)?;
+    let rollover = rollover_flag(ctx)?;
     let budget = budget_flag(ctx)?;
     // Who the trust prompt names: the vendor of the model the turn will run
     // on — the flag, else a resumed session's last, else the default.
@@ -170,7 +171,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // Its first line with text: a prompt piped in may open on a blank one.
     let topic = prompt.trim_start().lines().next().unwrap_or_default().to_string();
     report(ctx, State::Working, &topic);
-    let opts = headless::Options { prompt, images, resume, model, permission_mode, toolset, effort, budget, format, worktree };
+    let opts = headless::Options { prompt, images, resume, model, permission_mode, toolset, effort, rollover, budget, format, worktree };
     let ran = turn(ctx, cfg, opts);
     match &ran {
         Ok(()) => report(ctx, State::Done, &topic),
@@ -404,6 +405,14 @@ pub(super) fn effort_flag(ctx: &Ctx) -> Result<Option<Effort>, Error> {
     match ctx.f.effort.trim() {
         "" => Ok(None),
         e => Ok(Some(Effort::parse(e).ok_or_else(|| fail("bad_flag", format!("--effort {e} is not a rung of the ladder — one of {}", Effort::names().join(", "))))?)),
+    }
+}
+
+/// `--rollover`: auto, offer or off.
+pub(super) fn rollover_flag(ctx: &Ctx) -> Result<Option<Rollover>, Error> {
+    match ctx.f.rollover.trim() {
+        "" => Ok(None),
+        r => Rollover::parse(r).map(Some).map_err(|e| fail("bad_flag", format!("--{e}"))),
     }
 }
 

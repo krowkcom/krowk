@@ -151,7 +151,7 @@ impl Home {
 
     fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
     }
 }
 
@@ -328,7 +328,7 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         fn with(cmd: Command, named: Vec<ImageInput>) -> Command {
             match cmd {
-                Command::Prompt { session_id, text, model, permission_mode, toolset, effort, budget, .. } => Command::Prompt { session_id, text, images: named, model, permission_mode, toolset, effort, budget },
+                Command::Prompt { session_id, text, model, permission_mode, toolset, effort, budget, .. } => Command::Prompt { session_id, text, images: named, model, permission_mode, toolset, effort, rollover: None, budget },
                 _ => unreachable!(),
             }
         }
@@ -1075,7 +1075,7 @@ impl Raw {
 
 fn prompt_in(home: &Home, session: Option<&str>, text: &str) -> Command {
     let Command::Prompt { model, permission_mode, .. } = home.prompt(text, PermissionMode::Default) else { unreachable!() };
-    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None }
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None }
 }
 
 fn seqs_of(frames: &[ServerFrame]) -> Vec<u64> {

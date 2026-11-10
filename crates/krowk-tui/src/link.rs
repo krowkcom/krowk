@@ -306,7 +306,7 @@ mod tests {
 
     fn prompt(sizes: &[usize]) -> Command {
         let images = sizes.iter().enumerate().map(|(n, s)| ImageInput { number: n as u32 + 1, media_type: "image/png".into(), data: "A".repeat(*s), sha256: Some(format!("{n:064}")) }).collect();
-        Command::Prompt { session_id: None, text: "hi".into(), images, model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: None, text: "hi".into(), images, model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 
     async fn upload(cmd: Command, protocol: Option<u32>) -> (Result<Command, krowk_harness::engine::EngineError>, Vec<Command>, Vec<String>) {

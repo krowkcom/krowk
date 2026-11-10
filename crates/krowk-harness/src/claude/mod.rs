@@ -160,6 +160,9 @@ pub const SYSTEM_NOTE: &str = "(Claude Code's own system prompt: krowk sends non
 /// with: clients show it as krowk's note, not the person's words.
 pub const UNPROMPTED: &str = "<unprompted>";
 
+/// What a limit's error ends with, unless the session's `rollover` is `off`.
+pub const CONTINUE_HINT: &str = " — continue on another instance with --model, or wait";
+
 /// The prompt item of a turn Claude Code began by itself: why it began.
 pub fn unprompted(reason: &str) -> String {
     format!("{UNPROMPTED}Claude Code began this turn by itself: {reason}. krowk sent no prompt.</unprompted>")
@@ -1933,7 +1936,7 @@ fn failed(result: &stream::Outcome, limit: Option<&crate::protocol::LimitStatus>
     if rejected.is_some() || result.api_status == Some(429) || errors.contains("usage limit") || errors.contains("limit reached") || errors.contains("rate limit") {
         let resets = rejected.and_then(|l| l.resets_at_ms).or_else(|| limit.and_then(|l| l.resets_at_ms));
         let until = resets.map(|ms| format!(" until {}", crate::host::clock(ms))).unwrap_or_default();
-        return EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}) — continue on another instance with --model, or wait")).with_status(result.api_status.unwrap_or(429)).with_resets(resets);
+        return EngineError::new("rate_limited", format!("Claude Code on {instance} is limited{until} ({said}){CONTINUE_HINT}")).with_status(result.api_status.unwrap_or(429)).with_resets(resets);
     }
     if lower.contains("/login") || lower.contains("not logged in") || lower.contains("invalid api key") || result.api_status == Some(401) {
         let add = crate::connect::connect_command(instance, "claude-code");

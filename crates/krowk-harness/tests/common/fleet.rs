@@ -769,7 +769,7 @@ impl Hosting {
     /// A prompt to host A's daemon, for the mock model.
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
         let model = Registry::resolve(&self.instances, &*self.env).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 
     /// Runs a first turn at host A, then a bridge for its session on a

@@ -1,4 +1,4 @@
-FFI_API_VERSION = 11
+FFI_API_VERSION = 12
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -262,6 +262,7 @@ pub enum LogBody {
         wire_api: WireApi,
         permission_mode: PermissionMode,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
     },
     ItemCompleted { turn_id: String, item_id: String, item: Item },
     ResponseCompleted {
@@ -368,6 +369,7 @@ pub enum Command {
         permission_mode: PermissionMode,
         toolset: Option<String>,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
         budget: Option<BudgetLimits>,
     },
     PutImage {
@@ -525,6 +527,13 @@ pub enum PermissionMode {
     Plan,
     BypassPermissions,
     Unhinged,
+}
+
+#[uniffi::remote(Enum)]
+pub enum Rollover {
+    Offer,
+    Auto,
+    Off,
 }
 
 #[uniffi::remote(Enum)]

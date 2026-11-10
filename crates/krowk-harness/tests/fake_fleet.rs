@@ -196,7 +196,7 @@ fn r_hand_4_a_prompt_queued_with_no_host_runs_once_when_the_fleet_hosts_the_sess
     rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Host(false)))));
 
     let text = "Queued while the laptop slept";
-    v.commands.send(Cmd::Prompt { session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None }).unwrap();
+    v.commands.send(Cmd::Prompt { rollover: None, session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None }).unwrap();
     let got = rt.block_on(until(&mut v, Duration::from_secs(10), |all| all.iter().any(|u| matches!(u, viewer::Update::Sent { .. }))));
     let sent = got.iter().find_map(|u| if let viewer::Update::Sent { id, queued } = u { Some((id.clone(), *queued)) } else { None }).unwrap();
     assert!(sent.1, "queued with no host: {got:?}");
@@ -772,7 +772,7 @@ fn r_switch_4_r_inst_7_a_viewer_switches_a_fleet_session_between_host_as_instanc
     let personal = ModelRef { instance: fleet::PERSONAL.into(), model: "claude-sonnet-4-6".into() };
     let acked = |all: &[viewer::Update]| all.iter().find_map(|u| if let viewer::Update::Acked { error, .. } = u { Some(error.clone()) } else { None });
     let logged = |all: &[viewer::Update]| -> Vec<LogEvent> { all.iter().filter_map(|u| if let viewer::Update::Line(StreamLine::Log(e)) = u { Some(e.clone()) } else { None }).collect() };
-    let prompt = |text: &str| Cmd::Prompt { session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let prompt = |text: &str| Cmd::Prompt { rollover: None, session_id: Some(id.clone()), text: text.into(), images: Vec::new(), model: None, permission_mode: krowk_harness::protocol::PermissionMode::Default, toolset: None, effort: None, budget: None };
     let ended = |all: &[viewer::Update]| all.iter().any(|u| matches!(u, viewer::Update::Line(StreamLine::Live(LiveEvent::Result(_)))));
 
     // A switch: acked, logged, and the next turn runs there.

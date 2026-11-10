@@ -232,7 +232,7 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "look into three things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "look into three things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
@@ -395,7 +395,7 @@ fn r_sub_11_a_childs_transcript_opens_from_its_log_and_follows_it_live_and_whole
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "look into two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "look into two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
@@ -519,7 +519,7 @@ fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_run
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "write two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "write two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
@@ -863,7 +863,7 @@ fn run_in_process(b: &Sandbox, cfg: HostConfig, session: Option<String>, text: &
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let drain = tokio::spawn(async move { while rx.recv().await.is_some() {} });
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let r = host.execute(Command::Prompt { session_id: session, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None }, tx).await;
+        let r = host.execute(Command::Prompt { session_id: session, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }, tx).await;
         let _ = drain.await;
         r.unwrap().unwrap()
     })
@@ -1035,7 +1035,7 @@ fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
     let r = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx);
+        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }, tx);
         tokio::pin!(exec);
         app.start_turn(std::time::Instant::now());
         loop {
@@ -1090,7 +1090,7 @@ fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in
     let r = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx);
+        let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }, tx);
         tokio::pin!(exec);
         loop {
             tokio::select! {
@@ -1165,7 +1165,7 @@ fn r_sub_9_a_child_streaming_a_thousand_deltas_sends_a_frame_per_change_of_state
             lines
         });
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let r = host.execute(Command::Prompt { session_id: None, text: "have a child talk".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }, tx).await;
+        let r = host.execute(Command::Prompt { session_id: None, text: "have a child talk".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }, tx).await;
         (r.unwrap().unwrap(), keep.await.unwrap())
     });
     let child = children_of(&b, &r.session_id).remove(0);
@@ -1554,7 +1554,7 @@ fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         // The slot is let go a while after the wait is said, the turn
@@ -1602,7 +1602,7 @@ fn wt12_a_subagent_of_a_session_on_the_last_agent_slot_runs_on_it() {
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "one subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let drain = async { while rx.recv().await.is_some() {} };
         let (r, ()) = tokio::time::timeout(Duration::from_secs(30), async { tokio::join!(host.execute(cmd, tx), drain) }).await.expect("the subagent waited for a slot its parent holds");
         r

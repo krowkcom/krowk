@@ -4884,7 +4884,7 @@ mod tests {
     fn a_session_left_for_a_new_one_is_not_taken_for_it() {
         let mut a = app();
         let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
-        let started = |sid: &str| StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: sid.into(), time_ms: 0, body: LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None } });
+        let started = |sid: &str| StreamLine::Log(LogEvent { id: "e".into(), parent_id: None, session_id: sid.into(), time_ms: 0, body: LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None } });
         a.left.push("old".into());
         a.start_over("~", None);
         a.take_pending();
@@ -4905,7 +4905,7 @@ mod tests {
         let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
         let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
         let evs = [
-            ev(LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+            ev(LogBody::TurnStarted { turn_id: "t".into(), model: model.clone(), provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("hi") }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "README.md"}) } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "# krowk\nmore\n".into(), is_error: false, images: Vec::new() } }),
@@ -4925,7 +4925,7 @@ mod tests {
         let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "s".into(), time_ms: 0, body };
         let turn = |t: &str, model: &str, reported: Option<f64>| {
             [
-                ev(LogBody::TurnStarted { turn_id: t.into(), model: ModelRef { instance: "claude".into(), model: model.into() }, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+                ev(LogBody::TurnStarted { turn_id: t.into(), model: ModelRef { instance: "claude".into(), model: model.into() }, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None }),
                 ev(LogBody::ResponseCompleted { turn_id: t.into(), response_id: None, model: model.into(), usage: Usage { input_tokens: 10, ..Usage::default() }, stop_reason: None, item_ids: Vec::new() }),
                 ev(LogBody::TurnCompleted { turn_id: t.into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, error: None, reported_cost_usd: reported, reported_tokens: None }),
             ]
@@ -5104,7 +5104,7 @@ mod tests {
         a.vendor_instances = vec!["codex:team".into(), "codex:personal".into()];
         a.overlay = Overlay::Details;
         let details = |a: &App| text(&a.view(Instant::now()).0).join("\n");
-        let turn = |instance: &str| LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: instance.into(), model: "gpt-5.5".into() }, provider: "openai".into(), wire_api: WireApi::CodexAppServer, permission_mode: PermissionMode::Default, effort: None };
+        let turn = |instance: &str| LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: instance.into(), model: "gpt-5.5".into() }, provider: "openai".into(), wire_api: WireApi::CodexAppServer, permission_mode: PermissionMode::Default, effort: None, rollover: None };
         let session = |b: Billing| LogBody::BackendSession { turn_id: "t".into(), backend: "codex-app-server".into(), vendor_session_id: "th".into(), transcript_path: None, billing: Some(b) };
         a.on_line(&log(turn("codex:team")));
         let billed = |a: &App, i: &str| details(a).lines().find(|l| l.starts_with(&format!("{i}:"))).map(|l| if l.ends_with(" · subscription") { "subscription" } else if l.ends_with(" · api key") { "api key" } else { "" }.to_string());
@@ -6410,7 +6410,7 @@ mod tests {
     }
 
     fn switch_turn(instance: &str, model: &str) -> LogBody {
-        LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: instance.into(), model: model.into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }
+        LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: instance.into(), model: model.into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None }
     }
 
     #[test]
@@ -6621,7 +6621,7 @@ mod tests {
         a.permission_mode = "plan".into();
         // A turn that ran in another mode — a resumed session's last, one a
         // backend began — is not what the next prompt runs in.
-        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::BypassPermissions, effort: None }));
+        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "anthropic".into(), model: "claude-x".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::BypassPermissions, effort: None, rollover: None }));
         a.open_mode_picker();
         assert_eq!((a.overlay, a.mode_at), (Overlay::Modes, 2));
         let rows = text(&a.view(Instant::now()).0).join("\n");
@@ -6720,7 +6720,7 @@ mod tests {
         assert!(!rows.iter().any(|r| r.contains("fix the parser") && r.contains("archived")), "{rows:?}");
         // What was counted of the session shown goes with it.
         let m = ModelRef { instance: "anthropic".into(), model: "claude-x".into() };
-        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: m.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }));
+        a.on_line(&log(LogBody::TurnStarted { turn_id: "t".into(), model: m.clone(), provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None }));
         a.on_line(&log(LogBody::TodosUpdated { turn_id: "t".into(), todos: vec![Todo { content: "x".into(), status: TodoStatus::Pending }] }));
         a.on_line(&log(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { input_tokens: 5, ..Usage::default() }, duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None }));
         assert!(a.session_id.is_some() && a.turns == 1 && !a.used.is_empty() && !a.todos.is_empty());
@@ -6877,7 +6877,7 @@ mod tests {
         let ev = |body| LogEvent { id: "e".into(), parent_id: None, session_id: "child".into(), time_ms: 0, body };
         let model = ModelRef { instance: "anthropic".into(), model: "claude-y".into() };
         vec![
-            ev(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None }),
+            ev(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "1".into(), item: Item::user("find where the config is read and say what it does with a missing file") }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "2".into(), item: Item::ToolCall { call_id: "c".into(), name: "read".into(), input: serde_json::json!({"path": "src/config.rs"}) } }),
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "3".into(), item: Item::ToolResult { call_id: "c".into(), output: "fn read()\n".into(), is_error: false, images: Vec::new() } }),

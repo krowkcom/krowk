@@ -23,7 +23,7 @@ struct ProtocolTests {
         }
         #expect(ev.sessionId == session)
         #expect(ev.parentId == nil)
-        guard case .turnStarted(let turnId, let model, _, let wireApi, let mode, let effort) = ev.body else {
+        guard case .turnStarted(let turnId, let model, _, let wireApi, let mode, let effort, _) = ev.body else {
             Issue.record("not turn.started: \(ev.body)")
             return
         }

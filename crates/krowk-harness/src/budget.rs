@@ -715,7 +715,7 @@ mod tests {
         });
         let (mut log, root) = log::SessionLog::create(&dir, Path::new("/repo"), "t").unwrap();
         let model = ModelRef { instance: "anthropic".into(), model: "claude-sonnet-4-6".into() };
-        log.append(LogBody::TurnStarted { turn_id: "t1".into(), model, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::ClaudeCode, permission_mode: Default::default(), effort: None }).unwrap();
+        log.append(LogBody::TurnStarted { turn_id: "t1".into(), model, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::ClaudeCode, permission_mode: Default::default(), effort: None, rollover: None }).unwrap();
         log.append(LogBody::SubagentResponse { turn_id: "t1".into(), response_id: None, model: "claude-haiku-4-5".into(), usage: Usage { output_tokens: 1000, ..Usage::default() } }).unwrap();
         drop(log);
         let events = log::read_events(&dir.join(&root.session_id).join(log::EVENTS_FILE)).unwrap();
@@ -738,7 +738,7 @@ mod tests {
         let (mut log, root) = log::SessionLog::create_child(sessions, Path::new("/repo"), "t", parent, None).unwrap();
         let turn = "t1".to_string();
         let model = ModelRef { instance: "anthropic".into(), model: "m".into() };
-        log.append(LogBody::TurnStarted { turn_id: turn.clone(), model, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None }).unwrap();
+        log.append(LogBody::TurnStarted { turn_id: turn.clone(), model, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None, rollover: None }).unwrap();
         log.append(LogBody::ResponseCompleted { turn_id: turn, response_id: None, model: "m".into(), usage: Usage { output_tokens: output, ..Usage::default() }, stop_reason: None, item_ids: vec![] }).unwrap();
         root.session_id
     }

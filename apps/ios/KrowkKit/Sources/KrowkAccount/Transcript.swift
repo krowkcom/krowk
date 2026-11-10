@@ -227,7 +227,7 @@ extension LiveCommand {
     public func command(session: String) -> Command {
         switch self {
         case .prompt(let text, let images):
-            .prompt(sessionId: session, text: text, images: images.map(\.input), model: nil, permissionMode: .default, toolset: nil, effort: nil, budget: nil)
+            .prompt(sessionId: session, text: text, images: images.map(\.input), model: nil, permissionMode: .default, toolset: nil, effort: nil, rollover: nil, budget: nil)
         case .steer(let text, let images):
             .steer(sessionId: session, text: text, images: images.map(\.input))
         case .interrupt:
@@ -318,7 +318,7 @@ extension TranscriptEvent {
             return .turnCompleted(turn: turnId, end: end)
         case .modelSwitched(_, let from, let to, let reason, _):
             return .modelSwitched(model: to.model, from: from.map(ModelChoice.init), to: ModelChoice(to), failed: reason == .switchFailed)
-        case .turnStarted(let turnId, let model, _, _, _, _):
+        case .turnStarted(let turnId, let model, _, _, _, _, _):
             return .turnStarted(turn: turnId, model: ModelChoice(model))
         case .sessionStarted, .responseCompleted, .backendSession, .subagentResponse, .subagentStarted,
              .todosUpdated, .runOpened, .backendHandoff, .sessionMoved:

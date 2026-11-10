@@ -294,6 +294,7 @@ mod tests {
                 wire_api: WireApi::AnthropicMessages,
                 permission_mode: PermissionMode::Default,
                 effort: None,
+                rollover: None,
             },
             LogBody::ItemCompleted { turn_id: t.into(), item_id: format!("{t}-p"), item: Item::user(prompt) },
         ]

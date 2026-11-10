@@ -9,6 +9,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`rollover` can be `off`, and is set per session, per repository and
+  globally.** `rollover` decides what a turn that hits its instance's limit
+  does: `auto` moves on, `offer` (the default) asks, and the new `off` fails
+  the turn with no offer and no "continue on another instance" hint. krowk
+  now reads it from `krowk -p --rollover <value>` first, then a trusted
+  repository's `.krowk/config.json`, then `~/.krowk/config.json`. A resumed
+  session keeps its value unless `--rollover` is given again. Until now
+  `rollover` and `rolloverOrder` in `~/.krowk/config.json` were silently
+  ignored, so every limit was offered; they are read now, and any other
+  value is refused, naming the three.
+
 ### Security
 
 - **The SQLite krowk compiles in is patched (RUSTSEC-2026-0459).** krowk's

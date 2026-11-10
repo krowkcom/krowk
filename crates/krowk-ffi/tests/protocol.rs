@@ -8,7 +8,7 @@ use krowk_client::protocol::{
     ApprovalDecision, ApprovalRequest, BackendAgent, Billing, BudgetLimits, ChildState, ChildTool, Command, Delta,
     Effort, ErrorInfo, HandoffKind, ImageInput, ImageRef, Item, ItemKind, KeptWorktree, LimitState, LimitStatus,
     LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, ProviderBlob, Question, QuestionAnswer, QuestionOption,
-    RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
+    RanBy, Rollover, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
 };
 use krowk_ffi::{KrowkError, UniFfiTag, decode_log_event, decode_stream_line, encode_command, encode_log_event};
 use serde_json::json;
@@ -86,6 +86,7 @@ fn log_bodies() -> Vec<LogBody> {
             wire_api: WireApi::CodexAppServer,
             permission_mode: PermissionMode::AcceptEdits,
             effort: Some(Effort::Xhigh),
+            rollover: Some(Rollover::Off),
         },
         LogBody::ResponseCompleted {
             turn_id: turn_id(),
@@ -369,6 +370,7 @@ fn commands() -> Vec<Command> {
             permission_mode: PermissionMode::Plan,
             toolset: Some("lean".into()),
             effort: Some(Effort::High),
+            rollover: Some(Rollover::Auto),
             budget: budget(),
         },
         Command::Prompt {
@@ -379,6 +381,7 @@ fn commands() -> Vec<Command> {
             permission_mode: PermissionMode::Default,
             toolset: None,
             effort: None,
+            rollover: None,
             budget: None,
         },
         Command::Interrupt { session_id: SESSION.into() },
