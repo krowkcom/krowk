@@ -1852,11 +1852,6 @@ impl<'h> Ui<'h> {
         if width.is_none() && mode.is_none() && screen.is_none() && rollover.is_none() {
             return;
         }
-        // `auto` with no `rolloverOrder` is a config krowk refuses to start with.
-        if rollover == Some(krowk_harness::protocol::Rollover::Auto) && self.host.registry().rollover_order.is_empty() {
-            app.flash = Some("auto needs a rolloverOrder in config.json — list the instances to move through".into());
-            return;
-        }
         // A `/connect` writes config.json too, from its own thread: one at
         // a time, so neither loses what the other wrote.
         if self.auth.is_some() {
