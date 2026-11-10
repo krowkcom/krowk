@@ -677,6 +677,7 @@ impl Engine for ClaudeEngine {
                 });
             }
             let p = slot.as_mut().expect("spawned above");
+            let _ = events.send(EngineEvent::Account { login: p.login.clone(), models: p.models.clone() }).await;
             // What the thread did not run goes ahead of the prompt, in the
             // same user message (R-SWITCH-2); what was sent is reported.
             let (prompt, handoff) = crate::handoff::Handoff::opening(ctx.handoff.as_ref(), &prompt, resumed, fell_back);
@@ -982,6 +983,10 @@ struct Proc {
     stderr: Arc<Mutex<String>>,
     binary: String,
     launch: Launch,
+    /// The models `initialize` listed, and who the instance is signed in as
+    /// (R-ROLL-2).
+    models: Vec<String>,
+    login: Option<String>,
     /// `initialize` listed models: `set_model` switches in place.
     set_model: bool,
     next: u64,
@@ -1181,6 +1186,8 @@ impl Proc {
             binary: b.binary.clone(),
             launch,
             set_model: false,
+            models: Vec::new(),
+            login: None,
             next: 0,
             exited: false,
             pid,
@@ -1206,6 +1213,10 @@ impl Proc {
         // its transcript is a child session's (R-SUB-7).
         let init = p.request(json!({"subtype": "initialize", "hooks": hooks(), "forwardSubagentText": true}), ask, INITIALIZE_TIMEOUT).await?;
         p.set_model = init.get("models").is_some_and(Value::is_array);
+        p.models = init.get("models").and_then(Value::as_array).map(|m| m.iter().filter_map(|m| m.get("value").and_then(Value::as_str)).map(String::from).collect()).unwrap_or_default();
+        let text = |k: &str| init.pointer(&format!("/account/{k}")).and_then(Value::as_str).unwrap_or_default().to_string();
+        // An answer without the account leaves the instance its own login.
+        p.login = crate::usage::claude_login(&text("email"), &text("organization"));
         Ok(p)
     }
 

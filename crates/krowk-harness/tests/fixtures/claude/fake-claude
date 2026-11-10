@@ -14,6 +14,7 @@
 #   FAKE_CLAUDE_SESSION   the session id of a new session
 #   FAKE_CLAUDE_LOGIN     `fail`: `auth login` gives up, as a person closing the browser would;
 #                         `ask`: it waits for a line on the terminal first, as the real one waits on a person
+#   FAKE_CLAUDE_ACCOUNT   the email init reports as the account; none without it
 #   FAKE_CLAUDE_STATUS_DELAY  seconds `auth status` takes to answer
 #   FAKE_CLAUDE_PERMISSION_MODE  the mode init reports, as a settings file
 #                         could make it; the --permission-mode given otherwise
@@ -186,7 +187,9 @@ control() {
     # is answered.
     ask '{"subtype":"mcp_message","server_name":"krowk","message":{"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"fake-claude","version":"0"}},"jsonrpc":"2.0","id":0}}'
     ask '{"subtype":"mcp_message","server_name":"krowk","message":{"method":"tools/list","jsonrpc":"2.0","id":1}}'
-    ack "$id" '{"commands":[],"models":[{"value":"sonnet"},{"value":"haiku"}],"pid":'$$'}'
+    local account=""
+    [ -n "${FAKE_CLAUDE_ACCOUNT:-}" ] && account=',"account":{"email":"'"$FAKE_CLAUDE_ACCOUNT"'"}'
+    ack "$id" '{"commands":[],"models":[{"value":"sonnet"},{"value":"haiku"}],"pid":'$$$account'}'
     ;;
   *'"subtype":"set_model"'*)
     local re='"model":"([^"]+)"'

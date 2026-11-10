@@ -202,6 +202,15 @@ impl World {
         d
     }
 
+    /// The account a Claude Code instance's fake reports at startup.
+    fn account(&mut self, name: &str, email: &str) {
+        for (n, kind) in &mut self.instances {
+            if let (true, InstanceKind::ClaudeCode { env, .. }) = (n == name, kind) {
+                env.insert("FAKE_CLAUDE_ACCOUNT".into(), email.into());
+            }
+        }
+    }
+
     fn codex(&mut self, name: &str, dir: &str, scenario: Option<&str>) -> PathBuf {
         let d = self.root.join(dir);
         std::fs::create_dir_all(&d).unwrap();
@@ -776,6 +785,38 @@ fn r_roll_5_rollover_is_resolved_per_session_repo_and_global_and_off_offers_noth
     let (r, _) = rt.block_on(run(&host, rolled(prompt(None, "do the thing", Some(Eng::Claude.model())), Rollover::Off)));
     let err = r.error.unwrap();
     assert!(r.switch_offer.is_none() && err.code == "rate_limited" && !hint(&err.message), "{err:?}");
+}
+
+#[test]
+fn r_roll_2_every_limits_report_is_saved_under_the_login_of_the_instance_that_ran() {
+    let mut w = World::new("usage");
+    w.claude("claude:work", "claude-work", Some("limited.jsonl"), true);
+    w.claude("claude:same", "claude-same", Some("switch.jsonl"), true);
+    w.claude("claude:other", "claude-other", Some("switch.jsonl"), true);
+    w.account("claude:work", "a@example.com");
+    w.account("claude:same", "a@example.com");
+    w.account("claude:other", "b@example.com");
+    let host = w.host();
+    let rt = rt();
+    let on = |instance: &str| Some(ModelRef { instance: instance.into(), model: "sonnet".into() });
+    let (r, _) = rt.block_on(run(&host, prompt(None, "go", on("claude:work"))));
+    assert_eq!(r.error.map(|e| e.code), Some("rate_limited".into()));
+    // Read as of a moment before the recorded reset (1790431200).
+    let before_reset = 1_790_431_000_000;
+    let reading = |login: &str| krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read().readings(login, before_reset).into_iter().map(|r| (r.window, r.status, r.used_percent)).collect::<Vec<_>>();
+    // The limit the turn hit is under the login of the fake account.
+    assert_eq!(reading("a@example.com"), [("five_hour".to_string(), LimitState::Limited, Some(100.0))]);
+    assert!(reading("b@example.com").is_empty());
+    // A second instance on that login shares its record, the latest report
+    // winning; a third on another login has a record of its own.
+    rt.block_on(run(&host, prompt(None, "go", on("claude:same"))));
+    rt.block_on(run(&host, prompt(None, "go", on("claude:other"))));
+    let data = krowk_harness::usage::Usage::in_home(&w.root.join("home/.krowk")).read();
+    assert_eq!((data.login_of("claude:work"), data.login_of("claude:same"), data.login_of("claude:other")), ("a@example.com", "a@example.com", "b@example.com"));
+    assert_eq!(reading("a@example.com"), [("five_hour".to_string(), LimitState::Warning, Some(82.0))]);
+    assert_eq!(reading("b@example.com"), [("five_hour".to_string(), LimitState::Warning, Some(82.0))]);
+    // The models Claude Code listed at startup are kept per instance.
+    assert_eq!(data.instance("claude:other").unwrap().models, ["sonnet", "haiku"]);
 }
 
 #[test]

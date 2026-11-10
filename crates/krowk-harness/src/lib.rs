@@ -83,6 +83,7 @@ pub mod http;
 pub mod images;
 pub mod pasted;
 pub mod upload;
+pub mod usage;
 pub mod instances;
 pub mod jobs;
 pub mod keys;

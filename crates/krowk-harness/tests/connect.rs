@@ -159,8 +159,14 @@ fn the_connect_picker_renames_an_account_with_a_name_of_its_own() {
     assert_eq!(ui.asked[2].0, "New name for claude:work", "the only one to rename, not asked which: {:?}", ui.asked);
     let Chosen::Rename { from, to } = chosen else { panic!("a rename") };
     assert_eq!((from.as_str(), to.as_str()), ("claude:work", "claude:personal"));
+    // R-ROLL-3: the renamed instance keeps its saved login and models.
+    let usage = krowk_harness::usage::Usage::in_home(&b.root.join("home/.krowk"));
+    usage.record_instance("claude:work", "a@example.com", &["sonnet".to_string()], 1).unwrap();
     let done = pa.rename(&from, &to).unwrap();
     assert_eq!(done.to, "claude:personal");
+    let data = usage.read();
+    assert!(data.instance("claude:work").is_none());
+    assert_eq!((data.login_of("claude:personal"), data.instance("claude:personal").unwrap().models.clone()), ("a@example.com", vec!["sonnet".to_string()]));
 }
 
 #[test]
