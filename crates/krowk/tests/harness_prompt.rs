@@ -583,3 +583,61 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     // Shrunk to 2000 px a side: far fewer bytes than the 3000 px original's.
     assert!(images[1]["source"]["data"].as_str().unwrap().len() < std::fs::metadata(big).unwrap().len() as usize * 4 / 3);
 }
+
+/// R-ROLL-4..7: `rollover` is read from the global config, a trusted
+/// repository's `.krowk/config.json` and `--rollover`, most specific first;
+/// `off` fails a limit with no offer; a resumed session keeps its value; any
+/// other value is refused naming the three.
+#[test]
+fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
+    let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})) });
+    let ok = mock::serve(mock::readme_script);
+    let b = Sandbox::new("rollover", &limited.url);
+    let global = |rollover: Option<&str>| {
+        let mut cfg = serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}});
+        if let Some(r) = rollover {
+            cfg["rollover"] = r.into();
+        }
+        std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+        std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
+    };
+    let repo = |rollover: &str| {
+        std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
+        std::fs::write(b.root.join("repo/.krowk/config.json"), serde_json::json!({"rollover": rollover}).to_string()).unwrap();
+    };
+    // Whether the limited turn was offered a way on, and its session.
+    let offered = |extra: &[&str]| -> (bool, String) {
+        let out = b.krowk(&[&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"], extra].concat());
+        let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
+        let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
+        let hinted = v["error"]["message"].as_str().unwrap_or_default().contains("continue on");
+        assert_eq!(hinted, !v["switchOffer"].is_null(), "the hint and the offer go together: {stdout}");
+        (hinted, v["sessionId"].as_str().unwrap_or_default().to_string())
+    };
+
+    global(None);
+    assert!(offered(&[]).0, "offer is the default");
+    global(Some("off"));
+    assert!(!offered(&[]).0, "the global value");
+    repo("offer");
+    assert!(!offered(&[]).0, "an untrusted repository's value is ignored");
+    assert!(offered(&["--trust"]).0, "a trusted repository overrides the global value");
+    assert!(!offered(&["--trust", "--rollover", "off"]).0, "--rollover overrides both");
+    assert!(offered(&["--rollover", "offer"]).0, "--rollover overrides the global value");
+
+    // Resumed: the recorded value stands until a new one replaces it.
+    let (_, id) = offered(&["--rollover", "off", "--trust"]);
+    global(None);
+    let resumed = |extra: &[&str]| offered(&[&["--resume", &id, "--trust"], extra].concat()).0;
+    assert!(!resumed(&[]), "--resume keeps the recorded value");
+    assert!(resumed(&["--rollover", "offer"]));
+    assert!(resumed(&[]), "and the new one is recorded");
+
+    let out = b.krowk(&["-p", "hi", "--rollover", "sometimes"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("bad_flag") && err.contains("auto, offer, off"), "{err}");
+    global(Some("sometimes"));
+    let out = b.krowk(&["-p", "hi"]);
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success() && err.contains("bad_config") && err.contains("auto, offer, off"), "{err}");
+}

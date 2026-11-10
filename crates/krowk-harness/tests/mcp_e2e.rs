@@ -130,6 +130,7 @@ impl Drop for Home {
 
 fn prompt(mode: PermissionMode) -> Command {
     Command::Prompt {
+        rollover: None,
         session_id: None,
         text: "echo hi through MCP".into(), images: Vec::new(),
         model: Some(ModelRef {
@@ -532,7 +533,7 @@ fn search_each_turn(body: &Value, _: usize) -> Reply {
 /// shut down, so the session's MCP connections stay.
 fn turn(rt: &tokio::runtime::Runtime, host: &Host, session: Option<&str>) -> RunResult {
     let Command::Prompt { text, model, permission_mode, .. } = prompt(PermissionMode::BypassPermissions) else { unreachable!() };
-    let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, budget: None };
+    let cmd = Command::Prompt { session_id: session.map(String::from), text, images: Vec::new(), model, permission_mode, toolset: None, effort: None, rollover: None, budget: None };
     rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let r = host.execute(cmd, tx).await.unwrap().unwrap();
@@ -737,7 +738,7 @@ fn image_result_request(instance: &str, model: &str, call: Reply, answer: Reply)
     std::fs::write(h.repo().join(".mcp.json"), json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_CONTENT": content.to_string()}}}}).to_string()).unwrap();
     let host = h.host(true, json!({"permissions": {"allow": ["Mcp(fake:echo)"]}}));
     let Command::Prompt { text, permission_mode, .. } = prompt(PermissionMode::Default) else { unreachable!() };
-    let cmd = Command::Prompt { session_id: None, text, images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode, toolset: None, effort: None, budget: None };
+    let cmd = Command::Prompt { session_id: None, text, images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode, toolset: None, effort: None, rollover: None, budget: None };
     run(&host, cmd);
     let seen = m.seen.lock().unwrap();
     assert_eq!(seen.len(), 2);

@@ -315,7 +315,7 @@ fn rt() -> tokio::runtime::Runtime {
 }
 
 fn prompt(session: Option<&str>, text: &str, model: Option<ModelRef>) -> Command {
-    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+    Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
 }
 
 async fn run(host: &Host, cmd: Command) -> (RunResult, Vec<StreamLine>) {
@@ -709,6 +709,73 @@ fn r_inst_7_a_limited_instance_offers_the_next_one_and_a_yes_continues_there() {
     assert_eq!((err.code.as_str(), err.resets_at_ms), ("rate_limited", Some(1_790_431_200_000)));
     assert_eq!(r.switch_offer.map(|o| o.to.instance), Some("claude:personal".into()));
     assert!(lines.iter().any(|l| matches!(l, StreamLine::Live(LiveEvent::Limits { instance, limit, .. }) if instance == "claude:work" && limit.status == LimitState::Limited)));
+}
+
+/// A prompt that sets the session's `rollover`.
+fn rolled(mut cmd: Command, to: Rollover) -> Command {
+    if let Command::Prompt { rollover, .. } = &mut cmd {
+        *rollover = Some(to);
+    }
+    cmd
+}
+
+/// R-ROLL-5, R-ROLL-6, D11: `off` fails a limit with no offer and no hint
+/// to continue elsewhere, whether the session, a trusted repository or the
+/// global config says it; an untrusted repository's value is ignored; a
+/// resumed session keeps the value it recorded until a new one replaces it.
+#[test]
+fn r_roll_5_rollover_is_resolved_per_session_repo_and_global_and_off_offers_nothing() {
+    let rt = rt();
+    let limited = || {
+        mock::serve(|_, _| Reply { headers: vec![("retry-after".into(), "0".into())], ..Reply::json(429, &json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})) })
+    };
+    let ok = mock::serve(anthropic_script);
+    let personal = InstanceKind::AnthropicApi { api_key_env: Some("TEST_ANTHROPIC_KEY".into()), base_url: Some(ok.url.clone()), thinking: None, max_tokens: None, effort: None };
+    let hint = |m: &str| m.contains("continue on") || m.contains("--model");
+    let ask = |w: &World, asked: Option<Rollover>| {
+        let host = w.host();
+        let cmd = prompt(None, "do the thing", Some(Eng::Anthropic.model()));
+        let (r, _) = rt.block_on(run(&host, asked.map_or(cmd.clone(), |a| rolled(cmd, a))));
+        (host, r)
+    };
+
+    // Offered by default, with the hint.
+    let mut w = World::with("roll-off", limited());
+    w.instances.push(("anthropic:personal".into(), personal.clone()));
+    let (_, r) = ask(&w, None);
+    assert!(r.switch_offer.is_some() && hint(&r.error.unwrap().message));
+    // The session's off: nothing offered, nothing hinted, and logged.
+    let (host, r) = ask(&w, Some(Rollover::Off));
+    let (err, id) = (r.error.clone().unwrap(), r.session_id.clone());
+    assert!(r.switch_offer.is_none() && !hint(&err.message) && err.code == "rate_limited", "{err:?}");
+    assert!(w.events(&id).iter().any(|e| matches!(e.body, LogBody::TurnStarted { rollover: Some(Rollover::Off), .. })));
+    // Resumed with no value: the recorded one stands. With one: it replaces it.
+    let (r2, _) = rt.block_on(run(&host, prompt(Some(&id), "again", None)));
+    assert!(r2.switch_offer.is_none() && !hint(&r2.error.unwrap().message));
+    let (r3, _) = rt.block_on(run(&host, rolled(prompt(Some(&id), "again", None), Rollover::Offer)));
+    assert!(r3.switch_offer.is_some());
+    let (r4, _) = rt.block_on(run(&host, prompt(Some(&id), "again", None)));
+    assert!(r4.switch_offer.is_some(), "the new value is the one recorded");
+
+    // The global config's off, and a repository's own: believed only when trusted.
+    w.rollover = Some(Rollover::Off);
+    assert!(ask(&w, None).1.switch_offer.is_none(), "global");
+    std::fs::create_dir_all(w.root.join("repo/.krowk")).unwrap();
+    std::fs::write(w.root.join("repo/.krowk/config.json"), r#"{"rollover": "offer"}"#).unwrap();
+    assert!(ask(&w, None).1.switch_offer.is_none(), "an untrusted repository's value is ignored");
+    w.trusted = true;
+    assert!(ask(&w, None).1.switch_offer.is_some(), "a trusted repository overrides the global one");
+    assert!(ask(&w, Some(Rollover::Off)).1.switch_offer.is_none(), "the session overrides both");
+
+    // Claude Code's own limit text carries the hint too.
+    drop(w);
+    let mut w = World::new("roll-off-claude");
+    w.claude("claude:work", "claude-work", Some("limited.jsonl"), true);
+    w.claude("claude:personal", "claude-personal", Some("switch.jsonl"), true);
+    let host = w.host();
+    let (r, _) = rt.block_on(run(&host, rolled(prompt(None, "do the thing", Some(Eng::Claude.model())), Rollover::Off)));
+    let err = r.error.unwrap();
+    assert!(r.switch_offer.is_none() && err.code == "rate_limited" && !hint(&err.message), "{err:?}");
 }
 
 #[test]

@@ -72,6 +72,9 @@ pub struct Flags {
     pub toolset: String,
     #[cfg(feature = "harness")]
     pub effort: String,
+    /// `-p`: what a limit does for this session — auto, offer or off.
+    #[cfg(feature = "harness")]
+    pub rollover: String,
     /// `-p`: run a backend in a repository nobody has trusted yet.
     #[cfg(feature = "harness")]
     pub trust: bool,
@@ -339,6 +342,8 @@ impl Flags {
             "toolset" => text(&mut self.toolset),
             #[cfg(feature = "harness")]
             "effort" => text(&mut self.effort),
+            #[cfg(feature = "harness")]
+            "rollover" => text(&mut self.rollover),
             #[cfg(feature = "harness")]
             "name" => text(&mut self.name),
             #[cfg(feature = "harness")]

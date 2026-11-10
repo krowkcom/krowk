@@ -386,6 +386,17 @@
                 }
               ]
             },
+            "rollover": {
+              "description": "The session's own `rollover` as of this turn, when it set one\n(`--rollover`); absent when the repository's or the global\nconfig's value applies.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Rollover"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "type": {
               "type": "string",
               "const": "turn.started"
@@ -900,6 +911,26 @@
         "high",
         "xhigh",
         "max"
+      ]
+    },
+    "Rollover": {
+      "description": "What happens when a session's instance hits its rate or usage limit\n(R-INST-7, R-INST-8, R-ROLL-4): the session's own value, else the\nrepository's when it is trusted, else the global config's, else `offer`.",
+      "oneOf": [
+        {
+          "description": "Ask, one keystroke, never silently: the default.",
+          "type": "string",
+          "const": "offer"
+        },
+        {
+          "description": "Move to the next instance without asking.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Fail the turn: no offer, and no hint to continue elsewhere.",
+          "type": "string",
+          "const": "off"
+        }
       ]
     },
     "Item": {

@@ -125,6 +125,8 @@ pub struct Loaded {
     /// trusted or not: its `setup` is a command, which runs only when
     /// `trusted` (`crate::worktree::setup`), as a hook does.
     pub worktrees: Option<crate::instances::WorktreesConfig>,
+    /// The repository's own `rollover`, only when it is trusted (R-ROLL-5).
+    pub rollover: Option<crate::instances::Rollover>,
 }
 
 /// One settings file's worth, before it is believed or not.
@@ -326,11 +328,16 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
     }
     let mut project: Vec<File> = Vec::new();
     let mut worktrees = None;
+    let mut rollover = None;
     let own = root.join(".krowk/config.json");
     if let Some(v) = read_json(&own)? {
         let source = own.display().to_string();
         if let Some(w) = v.get("worktrees") {
             worktrees = Some(crate::instances::WorktreesConfig::parse(w).map_err(|e| format!("{source}: {e}"))?);
+        }
+        // Read trusted or not, so a mistake is named; believed only when trusted.
+        if let Some(r) = v.get("rollover") {
+            rollover = Some(crate::instances::parse_rollover(r).map_err(|e| format!("{source}: {e}"))?);
         }
         project.push(read_object(&v, &source, &root, &root, home)?);
     }
@@ -349,7 +356,7 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
     }
     // A setup command widens as a hook does: it is a command the
     // repository names.
-    let mut out = Loaded { root: root.clone(), trusted, widens: worktrees.as_ref().is_some_and(|w| w.setup().is_some()), worktrees, ..Loaded::default() };
+    let mut out = Loaded { root: root.clone(), trusted, widens: worktrees.as_ref().is_some_and(|w| w.setup().is_some()), worktrees, rollover: rollover.filter(|_| trusted), ..Loaded::default() };
     let config = cfg.user_path.as_ref().map(|p| tilde(&p.display().to_string(), home)).unwrap_or_else(|| "krowk's config.json".into());
     // `auto`'s notices, said only if nothing sets a mode.
     let mut unknown: Vec<String> = Vec::new();

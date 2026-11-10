@@ -609,7 +609,7 @@
       "additionalProperties": false
     },
     "Rollover": {
-      "description": "`rollover` in config.",
+      "description": "What happens when a session's instance hits its rate or usage limit\n(R-INST-7, R-INST-8, R-ROLL-4): the session's own value, else the\nrepository's when it is trusted, else the global config's, else `offer`.",
       "oneOf": [
         {
           "description": "Ask, one keystroke, never silently: the default.",
@@ -617,9 +617,14 @@
           "const": "offer"
         },
         {
-          "description": "Move to the next instance of `rolloverOrder` without asking.",
+          "description": "Move to the next instance without asking.",
           "type": "string",
           "const": "auto"
+        },
+        {
+          "description": "Fail the turn: no offer, and no hint to continue elsewhere.",
+          "type": "string",
+          "const": "off"
         }
       ]
     }

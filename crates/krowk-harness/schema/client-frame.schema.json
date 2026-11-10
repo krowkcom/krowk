@@ -419,6 +419,17 @@
                 }
               ]
             },
+            "rollover": {
+              "description": "What a limited turn does for this session (`--rollover`); it\nreplaces the session's recorded value. When absent, the session's\nrecorded value, else the repository's and the global config's.",
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/Rollover"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
             "budget": {
               "description": "The spend this session, with its subagents, may reach: the engine\nrefuses the model call that would go past it (R-BUDGET-1). No\nlimit when absent.",
               "anyOf": [
@@ -690,6 +701,26 @@
         "high",
         "xhigh",
         "max"
+      ]
+    },
+    "Rollover": {
+      "description": "What happens when a session's instance hits its rate or usage limit\n(R-INST-7, R-INST-8, R-ROLL-4): the session's own value, else the\nrepository's when it is trusted, else the global config's, else `offer`.",
+      "oneOf": [
+        {
+          "description": "Ask, one keystroke, never silently: the default.",
+          "type": "string",
+          "const": "offer"
+        },
+        {
+          "description": "Move to the next instance without asking.",
+          "type": "string",
+          "const": "auto"
+        },
+        {
+          "description": "Fail the turn: no offer, and no hint to continue elsewhere.",
+          "type": "string",
+          "const": "off"
+        }
       ]
     },
     "BudgetLimits": {

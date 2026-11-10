@@ -37,6 +37,7 @@ fn model(body: &Value, _: usize) -> Reply {
 
 fn turn(rt: &tokio::runtime::Runtime, host: &Host, session: Option<&str>) -> RunResult {
     let cmd = Cmd::Prompt {
+        rollover: None,
         session_id: session.map(String::from),
         text: "find onboarding screens on Mobbin".into(),
         images: Vec::new(),

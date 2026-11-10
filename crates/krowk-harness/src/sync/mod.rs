@@ -239,7 +239,7 @@ pub fn typed(session: &str, line: String) -> Result<Typed, String> {
 /// A prompt from `krowk sync attach`: the session's model, settings and
 /// mode, the host's to choose.
 fn prompt(session: &str, text: String) -> crate::protocol::Command {
-    crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None }
+    crate::protocol::Command::Prompt { session_id: Some(session.to_string()), text, images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None }
 }
 
 /// A prompt of the images at `paths`: the first `put_image` and the others,
@@ -254,8 +254,8 @@ fn with_images(session: &str, paths: &[std::path::PathBuf]) -> Result<(crate::pr
     for i in &mut inputs {
         i.data.clear();
     }
-    let Command::Prompt { session_id, model, permission_mode, toolset, effort, budget, .. } = prompt(session, names.trim_end().to_string()) else { unreachable!() };
-    Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, budget }))
+    let Command::Prompt { session_id, model, permission_mode, toolset, effort, rollover, budget, .. } = prompt(session, names.trim_end().to_string()) else { unreachable!() };
+    Ok((first, rest, Command::Prompt { session_id, text: names.trim_end().to_string(), images: inputs, model, permission_mode, toolset, effort, rollover, budget }))
 }
 
 /// `krowk sync attach`: follows a synced session, writing each update as
@@ -623,7 +623,7 @@ mod tests {
 
     fn started(turn: &str) -> crate::protocol::LogEvent {
         use crate::protocol::ModelRef;
-        event("s", crate::protocol::LogBody::TurnStarted { turn_id: turn.into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None })
+        event("s", crate::protocol::LogBody::TurnStarted { turn_id: turn.into(), model: ModelRef { instance: "a".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: crate::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None, rollover: None })
     }
 
     fn live(e: crate::protocol::LogEvent) -> super::viewer::Update {

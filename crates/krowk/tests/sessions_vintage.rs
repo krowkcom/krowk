@@ -30,7 +30,7 @@ fn session_of(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64, turned: 
     if turned {
         let model = krowk_harness::protocol::ModelRef { instance: "anthropic".into(), model: "m".into() };
         let wire_api = krowk_harness::protocol::WireApi::AnthropicMessages;
-        l.append(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api, permission_mode: krowk_harness::protocol::PermissionMode::Default, effort: None }).unwrap();
+        l.append(LogBody::TurnStarted { turn_id: "t".into(), model, provider: "anthropic".into(), wire_api, permission_mode: krowk_harness::protocol::PermissionMode::Default, effort: None, rollover: None }).unwrap();
     }
     l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(prompt) }).unwrap();
     l.append(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "j".into(), item: Item::AssistantText { text: format!("answering {prompt}") } }).unwrap();

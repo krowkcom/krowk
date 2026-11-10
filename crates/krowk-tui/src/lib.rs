@@ -2180,7 +2180,7 @@ impl<'h> Ui<'h> {
         // picked here: a switch another client made since this TUI's last
         // turn is kept.
         let model = if self.named || app.used.is_empty() { self.model.clone() } else { None };
-        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, budget: self.budget };
+        let cmd = Command::Prompt { session_id: app.session_id.clone(), text, images, model, permission_mode: self.permission_mode, toolset: self.toolset.clone(), effort: self.effort, rollover: None, budget: self.budget };
         // Between turns a daemon of an older krowk is replaced first, so the
         // prompt runs on this one's (`Link::renew`).
         // This client's own turn of the session: it follows it from here

@@ -400,7 +400,7 @@ impl World {
 
     fn prompt(&self, session: Option<&str>, text: &str) -> Command {
         let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
-        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }
     }
 
     /// A's bridge for `session`, running until the handle is stopped.
@@ -2835,7 +2835,7 @@ async fn r_sub_12_a_viewer_answers_a_claude_agents_approval_and_nothing_elses() 
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
     let (tx, mut rx) = mpsc::channel(4096);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let first = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap();
@@ -2930,7 +2930,7 @@ async fn r_sub_12_a_viewer_stops_one_claude_agent() {
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
     let (tx, mut rx) = mpsc::channel(4096);
     tokio::spawn(async move { while rx.recv().await.is_some() {} });
     let session = d.execute(ask(None, "say hello"), tx).await.unwrap().unwrap().session_id;
@@ -2991,7 +2991,7 @@ async fn r_sub_6_claude_codes_agents_ride_the_parents_chunks_as_krowks_own_child
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
     let run = async |c: Command| {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });
@@ -3046,7 +3046,7 @@ async fn r_sub_6_a_claude_background_agents_lines_between_turns_reach_followers_
     w.serve_with(w.env(), "home", fake_claude(&w, &path));
     let d = w.daemon().await;
     let claude = krowk_harness::protocol::ModelRef { instance: "claude".into(), model: "sonnet".into() };
-    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let ask = |session: Option<&str>, text: &str| Command::Prompt { session_id: session.map(String::from), text: text.into(), images: Vec::new(), model: Some(claude.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
     let run = async |c: Command| {
         let (tx, mut rx) = mpsc::channel(4096);
         tokio::spawn(async move { while rx.recv().await.is_some() {} });

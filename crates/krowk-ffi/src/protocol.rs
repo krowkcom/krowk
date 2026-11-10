@@ -20,7 +20,7 @@ use krowk_client::protocol::{
     ApprovalDecision, ApprovalRequest, BackendAgent, Billing, BudgetLimits, ChildState, ChildTool, Command, Delta,
     Effort, ErrorInfo, HandoffKind, ImageInput, ImageRef, Item, ItemKind, KeptWorktree, LimitState, LimitStatus,
     LiveEvent, LogBody, LogEvent, ModelRef, PermissionMode, ProviderBlob, Question, QuestionAnswer, QuestionOption,
-    RanBy, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
+    RanBy, Rollover, RunResult, StreamLine, SwitchOffer, SwitchReason, Todo, TodoStatus, TurnStatus, Usage, Waiting, WireApi,
 };
 use serde::Deserialize;
 use serde_json::Value;
@@ -74,6 +74,7 @@ pub enum LogBody {
         wire_api: WireApi,
         permission_mode: PermissionMode,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
     },
     ItemCompleted {
         turn_id: String,
@@ -223,6 +224,7 @@ pub enum Command {
         permission_mode: PermissionMode,
         toolset: Option<String>,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
         budget: Option<BudgetLimits>,
     },
     PutImage {
@@ -392,6 +394,13 @@ pub enum PermissionMode {
     Plan,
     BypassPermissions,
     Unhinged,
+}
+
+#[uniffi::remote(Enum)]
+pub enum Rollover {
+    Offer,
+    Auto,
+    Off,
 }
 
 #[uniffi::remote(Enum)]

@@ -81,6 +81,7 @@ impl Home {
         let mut out = Vec::new();
         let reg = Registry::resolve(&InstancesConfig::default(), &self.env());
         let opts = headless::Options {
+            rollover: None,
             images: Vec::new(),
             prompt: prompt.into(),
             resume: resume.map(String::from),
@@ -262,6 +263,7 @@ fn r_tool_2_the_recorded_tools_carry_each_model_familys_edit_tool_and_toolset_ov
     // A toolset that does not exist is refused before any session is made.
     let mut out = Vec::new();
     let opts = headless::Options {
+            rollover: None,
             images: Vec::new(),
         prompt: "hello".into(),
         resume: None,
@@ -361,7 +363,7 @@ fn r_proto_1_steer_joins_the_running_turn_before_its_next_model_call() {
         assert_eq!(err.code, "no_running_turn");
 
         let (tx, mut rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: None, text: "read README.md and summarise it in one line".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "read README.md and summarise it in one line".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut lines = Vec::new();
@@ -423,7 +425,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let result = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(1024);
-        let cmd = Command::Prompt { session_id: None, text: "wait".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "wait".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut session = None;
@@ -481,7 +483,7 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
             }
         });
         let started = std::time::Instant::now();
-        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = krowk_harness::protocol::Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let r = host.execute(cmd, tx).await;
         ticker.abort();
         assert!(r.is_ok(), "{:?}", r.err());
@@ -504,7 +506,7 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     let model = Registry::resolve(&InstancesConfig::default(), &home.env()).parse_model("claude-sonnet-4-6").unwrap();
     let png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
     let data = base64::engine::general_purpose::STANDARD.encode(png);
-    let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+    let prompt = |images: Vec<ImageInput>| Command::Prompt { session_id: None, text: "what is in [Image #1]?".into(), images, model: Some(model.clone()), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let sessions = log::sessions_dir(&home.env()).unwrap();
     // A file that is not the image it says is refused before any session is made.
@@ -688,7 +690,7 @@ fn r_steer_3_interrupting_the_parent_interrupts_its_background_child() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let (result, child) = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(4096);
-        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let (mut session, mut child, mut interrupted) = (String::new(), None, false);
@@ -742,7 +744,7 @@ fn r_steer_3_a_failed_parent_turn_stops_its_background_children() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let (result, child) = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(4096);
-        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "survey in the background".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut child = None;
@@ -778,7 +780,7 @@ fn steered_after(home: &Home, steer: &str, after: std::time::Duration) -> (RunRe
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(4096);
-        let cmd = Command::Prompt { session_id: None, text: "run it".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::BypassPermissions, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "run it".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::BypassPermissions, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let (mut session, mut at, mut call_started) = (String::new(), None::<tokio::time::Instant>, None);
@@ -931,7 +933,7 @@ fn r_steer_4_interrupting_after_the_move_interrupts_the_moved_child() {
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let (result, slow) = rt.block_on(async {
         let (tx, mut rx) = mpsc::channel(4096);
-        let cmd = Command::Prompt { session_id: None, text: "two at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "two at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let (mut session, mut slow, mut steer_at, mut stopped) = (String::new(), None, None::<tokio::time::Instant>, false);

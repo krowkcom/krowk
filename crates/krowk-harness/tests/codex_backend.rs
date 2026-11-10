@@ -155,7 +155,7 @@ fn rt() -> tokio::runtime::Runtime {
 
 fn prompt(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMode) -> Command {
     let (instance, model) = model.split_once('/').unwrap();
-    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, budget: None }
+    Command::Prompt { session_id: session_id.map(String::from), text: text.into(), images: Vec::new(), model: Some(ModelRef { instance: instance.into(), model: model.into() }), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
 }
 
 type Outcome = Result<Option<RunResult>, krowk_harness::engine::EngineError>;
@@ -357,7 +357,7 @@ fn r_back_5_a_new_host_resumes_the_codex_thread_the_log_names() {
     // A new krowk: a new process, on the thread the log holds.
     rt().block_on(async {
         let host = h.host(vec![("codex:team", h.instance(&home, Some("tool_use.jsonl"), &[]))], trust::allow_all());
-        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
+        let (_, r) = run(&host, Command::Prompt { session_id: Some(session.clone()), text: "and now?".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.result.as_str(), r.model.instance.as_str()), (TurnStatus::Completed, "Still one file.", "codex:team"), "the session's model, on the same instance");
         host.shutdown().await;

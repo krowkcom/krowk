@@ -51,6 +51,9 @@ pub struct Options {
     pub toolset: Option<String>,
     /// `--effort`: the reasoning effort for this prompt, on krowk's ladder.
     pub effort: Option<crate::protocol::Effort>,
+    /// `--rollover`: what a limit does for this session, replacing the one it
+    /// recorded.
+    pub rollover: Option<crate::protocol::Rollover>,
     /// `--max-usd` and `--max-tokens`: what the session may spend.
     pub budget: Option<crate::protocol::BudgetLimits>,
     pub format: OutputFormat,
@@ -168,7 +171,7 @@ async fn drive(host: &impl Transport, opts: Options, stdout: &mut dyn Write) -> 
     // A resumed session's id is known up front; a new one's arrives with
     // its root event.
     let mut session_id: Option<String> = opts.resume.clone();
-    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, budget: opts.budget };
+    let cmd = Command::Prompt { session_id: opts.resume, text: opts.prompt, images: opts.images, model: opts.model, permission_mode: opts.permission_mode, toolset: opts.toolset, effort: opts.effort, rollover: opts.rollover, budget: opts.budget };
     let remote = host.remote();
     let sink = tx.clone();
     let exec = async {

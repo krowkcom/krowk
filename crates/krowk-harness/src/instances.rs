@@ -206,16 +206,7 @@ impl WorktreesConfig {
     }
 }
 
-/// `rollover` in config.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum Rollover {
-    /// Ask, one keystroke, never silently: the default.
-    #[default]
-    Offer,
-    /// Move to the next instance of `rolloverOrder` without asking.
-    Auto,
-}
+pub use crate::protocol::Rollover;
 
 /// What an instance is. Tagged by `kind`. Every API-key kind names the
 /// environment variable its key is read from, never the key.
@@ -702,7 +693,7 @@ impl Registry {
     /// listed), an entry naming no model keeping `from`'s id; with no order,
     /// and only for an offer, every other instance of the same kind. Whether
     /// each can run is the host's to check.
-    pub fn rollover_candidates(&self, from: &ModelRef, tried: &[String]) -> Vec<ModelRef> {
+    pub fn rollover_candidates(&self, from: &ModelRef, tried: &[String], rollover: Rollover) -> Vec<ModelRef> {
         let parse = |e: &str| -> Option<ModelRef> {
             let e = e.trim();
             match e.split_once('/') {
@@ -727,7 +718,7 @@ impl Registry {
                 .cloned()
                 .collect();
         }
-        if self.rollover == Rollover::Auto {
+        if rollover == Rollover::Auto {
             return Vec::new();
         }
         let kind = self.instances.get(&from.instance).map(|i| i.kind);
@@ -1105,6 +1096,12 @@ fn resolve_one(name: &str, kind: &InstanceKind, env: &dyn Fn(&str) -> String) ->
     }
 }
 
+/// A `rollover` setting, config's or a repository's.
+pub fn parse_rollover(v: &serde_json::Value) -> Result<Rollover, String> {
+    let name = v.as_str().ok_or_else(|| format!("\"rollover\" must be a string — one of {}", Rollover::NAMES.join(", ")))?;
+    Rollover::parse(name).map_err(|e| format!("\"rollover\": {e}"))
+}
+
 /// The harness's part of a `config.json` document. A file that is not JSON
 /// is the caller's error to report; a document whose `instances` are
 /// malformed is an error here, since somebody wrote them deliberately.
@@ -1134,6 +1131,12 @@ pub fn from_config_json(raw: &serde_json::Value) -> Result<InstancesConfig, Stri
             return Err(format!("\"toolset\": {name:?} is not a toolset — one of {}", crate::toolset::names().join(", ")));
         }
         cfg.toolset = Some(name.to_string());
+    }
+    if let Some(v) = raw.get("rollover") {
+        cfg.rollover = Some(parse_rollover(v)?);
+    }
+    if let Some(v) = raw.get("rolloverOrder") {
+        cfg.rollover_order = serde_json::from_value(v.clone()).map_err(|e| format!("\"rolloverOrder\": {e} — a list of instance names"))?;
     }
     if let Some(v) = raw.get("subagents") {
         cfg.subagents = serde_json::from_value(v.clone()).map_err(|e| format!("\"subagents\": {e}"))?;
@@ -1480,6 +1483,6 @@ mod tests {
         assert!(reg(Some(Rollover::Auto), &["claude", "anthropic/claude-opus-5-5", "codex/gpt-5.5"]).check_rollover().is_ok());
         let r = reg(Some(Rollover::Auto), &["claude", "anthropic", "anthropic/claude-opus-5-5"]);
         let from = ModelRef { instance: "claude".into(), model: "sonnet".into() };
-        assert_eq!(r.rollover_candidates(&from, &[]), [ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }], "another kind without a model is skipped");
+        assert_eq!(r.rollover_candidates(&from, &[], r.rollover), [ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }], "another kind without a model is skipped");
     }
 }

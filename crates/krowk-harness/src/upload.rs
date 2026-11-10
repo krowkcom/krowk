@@ -80,7 +80,7 @@ where
     say(out, String::new());
     let by_name = |images: &[crate::protocol::ImageInput]| images.iter().map(|i| crate::protocol::ImageInput { data: if i.sha256.is_some() { String::new() } else { i.data.clone() }, ..i.clone() }).collect::<Vec<_>>();
     Ok(match cmd {
-        Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, budget } => Command::Prompt { session_id, text, images: by_name(&images), model, permission_mode, toolset, effort, budget },
+        Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget } => Command::Prompt { session_id, text, images: by_name(&images), model, permission_mode, toolset, effort, rollover, budget },
         Command::Steer { session_id, text, images } => Command::Steer { session_id, text, images: by_name(&images) },
         other => other,
     })

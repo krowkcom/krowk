@@ -9,6 +9,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`rollover` can be `off`, and is set per session, per repo and globally.**
+  A limited turn on an instance used to be offered a way on whatever you
+  wanted, and the setting lived only in `~/.krowk/config.json`, which krowk
+  didn't read at all. Now `rollover` is `auto`, `offer` (the default) or
+  `off`, read from the session (`krowk -p --rollover <value>`), then the
+  repository's `.krowk/config.json` when you trust the repository, then the
+  global config. With `off` a limit fails the turn with no offer and no
+  "continue on another instance" hint. A resumed session keeps the value it
+  ran with unless you pass `--rollover` again. `rolloverOrder` is read from the
+  config now too, and any other value is refused, naming the three.
+
 ## [0.16.2] - 2026-11-06
 
 ### Added
