@@ -772,6 +772,37 @@ fn r_inst_6_each_instance_reports_how_near_its_limit_it_is() {
 }
 
 #[test]
+fn r_roll_1_claude_code_reports_every_window_it_lists_below_the_limit() {
+    let mut w = World::new("windows");
+    w.claude("claude:work", "claude-work", Some("windows.jsonl"), true);
+    w.claude("claude:full", "claude-full", Some("windows_rejected.jsonl"), true);
+    let host = w.host();
+    let rt = rt();
+    type Seen = (Option<String>, LimitState, Option<f64>, Option<i64>);
+    let limits = |lines: &[StreamLine]| -> Vec<Seen> {
+        lines.iter().filter_map(|l| match l {
+            StreamLine::Live(LiveEvent::Limits { limit, .. }) => Some((limit.window.clone(), limit.status, limit.used_percent.map(f64::round), limit.resets_at_ms)),
+            _ => None,
+        }).collect()
+    };
+    let (_, lines) = rt.block_on(run(&host, prompt(None, "hello", Some(ModelRef { instance: "claude:work".into(), model: "haiku".into() }))));
+    // A bare `allowed` event adds a report with no utilisation, as before.
+    assert_eq!(limits(&lines), [
+        (Some("five_hour".into()), LimitState::Allowed, Some(69.0), Some(1_791_628_200_000)),
+        (Some("seven_day".into()), LimitState::Allowed, Some(57.0), Some(1_791_846_000_000)),
+        (None, LimitState::Allowed, None, None),
+    ]);
+    // A rejected turn names the rejected window, not the fullest-looking one.
+    let (r, lines) = rt.block_on(run(&host, prompt(None, "hello", Some(ModelRef { instance: "claude:full".into(), model: "haiku".into() }))));
+    assert_eq!(limits(&lines).iter().map(|l| (l.0.clone(), l.1, l.2)).collect::<Vec<_>>(), [
+        (Some("five_hour".into()), LimitState::Warning, Some(90.0)),
+        (Some("seven_day".into()), LimitState::Limited, Some(100.0)),
+    ]);
+    let e = r.error.unwrap();
+    assert_eq!((e.code.as_str(), e.resets_at_ms), ("rate_limited", Some(1_791_846_000_000)));
+}
+
+#[test]
 fn r_switch_4_a_switch_the_picker_made_goes_back_when_its_first_turn_cannot_run() {
     let mut w = World::new("picker-back");
     // Signed in as far as `claude auth status` says, stale once it runs.

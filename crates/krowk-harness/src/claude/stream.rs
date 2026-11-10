@@ -119,21 +119,38 @@ pub struct Translator {
 /// Image references by the tool call they belong to.
 pub type Kept = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Vec<crate::protocol::ImageRef>>>>;
 
-/// A `rate_limit_event`'s `rate_limit_info`, as krowk's limit status:
+/// A `rate_limit_event`'s `rate_limit_info`, as krowk's limit statuses:
 /// `allowed`, `allowed_warning` (near it) or `rejected` (reached), over a
 /// window such as `five_hour`, with when it resets (seconds since the
-/// epoch) and how much is used (`utilization`, 0–1), when it says.
-pub fn rate_limit(info: &Value) -> Option<LimitStatus> {
+/// epoch) and how much is used (`utilization`, 0–1), when it says. Below
+/// the limit the top level names one window and carries no utilisation;
+/// `unifiedWindows` holds every window's, so each gets its own status: the
+/// event's for the window it names, else a warning from 80% (as Codex's).
+pub fn rate_limits(info: &Value) -> Vec<LimitStatus> {
     let status = match str_of(info, "status") {
         "allowed" => LimitState::Allowed,
         "allowed_warning" => LimitState::Warning,
         "rejected" => LimitState::Limited,
-        _ => return None,
+        _ => return Vec::new(),
     };
-    let window = Some(str_of(info, "rateLimitType").to_string()).filter(|w| !w.is_empty());
-    let resets_at_ms = info.get("resetsAt").and_then(Value::as_i64).map(|s| s * 1000);
-    let used_percent = info.get("utilization").and_then(Value::as_f64).map(|u| if u <= 1.0 { u * 100.0 } else { u });
-    Some(LimitStatus { status, window, used_percent, resets_at_ms })
+    let named = str_of(info, "rateLimitType");
+    let seconds = |v: &Value| v.get("resetsAt").and_then(Value::as_i64).map(|s| s * 1000);
+    let percent = |v: &Value| v.get("utilization").and_then(Value::as_f64).map(|u| if u <= 1.0 { u * 100.0 } else { u });
+    let mut out: Vec<LimitStatus> = info.get("unifiedWindows").and_then(Value::as_object).into_iter().flatten().map(|(name, w)| {
+        let used_percent = percent(w);
+        let status = if name == named { status } else if used_percent.is_some_and(|p| p >= 80.0) { LimitState::Warning } else { LimitState::Allowed };
+        LimitStatus { status, window: Some(name.clone()), used_percent, resets_at_ms: seconds(w) }
+    }).collect();
+    if !out.iter().any(|l| l.window.as_deref() == Some(named)) {
+        out.push(LimitStatus { status, window: Some(named.to_string()).filter(|w| !w.is_empty()), used_percent: percent(info), resets_at_ms: seconds(info) });
+    }
+    out
+}
+
+/// The limit a turn's failure names: the rejected window, else the fullest.
+fn binding(limits: &[LimitStatus]) -> Option<&LimitStatus> {
+    let used = |l: &LimitStatus| l.used_percent.unwrap_or(0.0);
+    limits.iter().find(|l| l.status == LimitState::Limited).or_else(|| limits.iter().max_by(|a, b| used(a).total_cmp(&used(b))))
 }
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -201,10 +218,11 @@ impl Translator {
             // How near the account is to its plan's limit (R-INST-6): shown
             // per instance, and what a limited turn's failure names.
             "rate_limit_event" => {
-                if let Some(l) = msg.get("rate_limit_info").and_then(rate_limit) {
+                let limits = msg.get("rate_limit_info").map(rate_limits).unwrap_or_default();
+                if let Some(l) = binding(&limits) {
                     self.limit = Some(l.clone());
-                    out.push(EngineEvent::Limits(l));
                 }
+                out.extend(limits.into_iter().map(EngineEvent::Limits));
             }
             // Status lines, hook lifecycle, thinking-token estimates: Claude
             // Code's own bookkeeping, not the conversation.
