@@ -735,7 +735,7 @@ fn parent_here(sessions: &std::path::Path, child: &str, session: &str) -> bool {
 fn under_session_settings(c: Command, mode: PermissionMode) -> Command {
     let mode = if mode == PermissionMode::Plan { PermissionMode::Plan } else { PermissionMode::Default };
     match c {
-        Command::Prompt { session_id, text, images, model, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, budget: None },
+        Command::Prompt { session_id, text, images, model, .. } => Command::Prompt { session_id, text, images, model, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None },
         other => other,
     }
 }
@@ -1869,7 +1869,7 @@ mod tests {
     }
 
     fn prompt(mode: PermissionMode) -> Command {
-        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, budget: None }
+        Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
     }
 
     /// R-PERM-2: a remote prompt never runs looser than `default`, whatever
@@ -1891,7 +1891,7 @@ mod tests {
     #[test]
     fn r_switch_4_a_remote_prompt_keeps_its_model_and_nothing_else() {
         let model = crate::protocol::ModelRef { instance: "mock".into(), model: "m".into() };
-        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }) };
+        let asked = Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(model.clone()), permission_mode: PermissionMode::Unhinged, toolset: Some("all".into()), effort: Some(crate::protocol::Effort::Max), rollover: None, budget: Some(crate::protocol::BudgetLimits { max_usd: Some(100.0), max_tokens: None }) };
         let Command::Prompt { model: kept, permission_mode, toolset, effort, budget, .. } = under_session_settings(asked, PermissionMode::Unhinged) else { unreachable!() };
         assert_eq!(kept, Some(model));
         assert_eq!(permission_mode, PermissionMode::Default);
@@ -2005,7 +2005,7 @@ mod tests {
         }
         let steer = Command::Steer { session_id: "kid".into(), text: "t".into(), images: Vec::new() };
         let approve = Command::Approve { session_id: "kid".into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };
-        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let prompt = Command::Prompt { session_id: Some("kid".into()), text: "t".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         assert!(for_this_session(&approve, "s", is_child), "its own child's approval is the session's to answer");
         for refused in ["grandkid", "theirs", "other", "made-up"] {
             let approve = Command::Approve { session_id: refused.into(), request_id: "r".into(), decision: ApprovalDecision::Allow, answers: Vec::new() };

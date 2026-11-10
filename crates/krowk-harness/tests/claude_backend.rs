@@ -150,6 +150,7 @@ fn prompt(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMod
 fn prompt_within(session_id: Option<&str>, text: &str, model: &str, mode: PermissionMode, budget: Option<krowk_harness::protocol::BudgetLimits>) -> Command {
     let (instance, model) = model.split_once('/').unwrap();
     Command::Prompt {
+        rollover: None,
         session_id: session_id.map(String::from),
         text: text.into(), images: Vec::new(),
         model: Some(ModelRef { instance: instance.into(), model: model.into() }),
@@ -895,7 +896,7 @@ fn a_renamed_instance_keeps_its_session_process() {
             ..Default::default()
         };
         host.set_registry_renamed(Registry::resolve(&cfg, &home.env()), "claude:work", "claude:personal");
-        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None }).await;
+        let (lines, r) = run(&host, Command::Prompt { session_id: Some(sid.clone()), text: "again".into(), images: Vec::new(), model: None, permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }).await;
         let r = r.unwrap().unwrap();
         assert_eq!((r.status, r.model.instance.as_str()), (TurnStatus::Completed, "claude:personal"), "{lines:?}");
         let (_, r) = run(&host, prompt(Some(&sid), "old name", "claude:work/sonnet", PermissionMode::Default)).await;

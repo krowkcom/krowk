@@ -689,7 +689,7 @@ mod tests {
             }
             frames
         });
-        let cmd = Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, budget: None };
+        let cmd = Command::Prompt { session_id: None, text: "hi".into(), images: Vec::new(), model: None, permission_mode: Default::default(), toolset: None, effort: None, rollover: None, budget: None };
         let first = Client::connect(&sock, &dir, "test", false).await.ok().expect("connected");
         let (tx, _rx) = mpsc::channel(8);
         let Err(Cut::Dropped(from)) = first.execute_or_cut(cmd, tx.clone()).await else { panic!("a cut prompt is to be found again") };

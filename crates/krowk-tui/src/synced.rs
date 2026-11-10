@@ -466,7 +466,7 @@ mod tests {
     }
 
     fn started(id: &str) -> serde_json::Value {
-        ev(id, LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "claude".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None })
+        ev(id, LogBody::TurnStarted { turn_id: "t".into(), model: ModelRef { instance: "claude".into(), model: "m".into() }, provider: "anthropic".into(), wire_api: WireApi::AnthropicMessages, permission_mode: PermissionMode::Default, effort: None, rollover: None })
     }
 
     fn completed(id: &str) -> serde_json::Value {
@@ -558,7 +558,7 @@ mod tests {
     async fn r_switch_4_a_synced_tuis_prompt_names_no_model() {
         let (commands, mut sent) = mpsc::unbounded_channel();
         let link = super::SyncLink { commands, state: Default::default(), children: Default::default(), watch: broadcast::channel(16).0, events: Mutex::new(None) };
-        let prompt = krowk_harness::protocol::Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(ModelRef { instance: "claude".into(), model: "stale".into() }), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None };
+        let prompt = krowk_harness::protocol::Command::Prompt { session_id: Some("s".into()), text: "t".into(), images: Vec::new(), model: Some(ModelRef { instance: "claude".into(), model: "stale".into() }), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
         let (out, _lines) = mpsc::channel(4);
         let run = tokio::spawn(async move { link.execute(prompt, out).await.err() });
         let Some(krowk_harness::protocol::Command::Prompt { model, .. }) = sent.recv().await else { panic!("no prompt sent") };

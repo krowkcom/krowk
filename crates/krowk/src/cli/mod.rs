@@ -659,7 +659,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk sync new`")));
             }
         }
-        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "image", "trust", "daemon", "sandbox"] {
+        for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "rollover", "image", "trust", "daemon", "sandbox"] {
             if name == "model" && new {
                 continue;
             }

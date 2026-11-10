@@ -11,6 +11,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`rollover` can be `off`, and is set per session, per repository and
+  globally.** `rollover` decides what a turn that hits its instance's limit
+  does: `auto` moves on, `offer` (the default) asks, and the new `off` fails
+  the turn with no offer and no "continue on another instance" hint. krowk
+  now reads it from `krowk -p --rollover <value>` first, then a trusted
+  repository's `.krowk/config.json`, then `~/.krowk/config.json`. A resumed
+  session keeps its value unless `--rollover` is given again. Until now
+  `rollover` and `rolloverOrder` in `~/.krowk/config.json` were silently
+  ignored, so every limit was offered; they are read now, and any other
+  value is refused, naming the three.
+
 - **krowk remembers each Claude login's last known usage and model list.**
   Every limits report a turn produces, from any session, process or subagent,
   is saved per login and per window in `~/.krowk/usage.json`, and each Claude

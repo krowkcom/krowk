@@ -673,7 +673,7 @@ impl Host {
                 tokio::task::spawn_blocking(move || images::put(&dir, session_id.as_deref(), &sha256, &media_type, &data)).await.map_err(|e| EngineError::new("log_failed", e.to_string()))??;
                 Ok(None)
             }
-            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, budget } => {
+            Command::Prompt { session_id, text, images, model, permission_mode, toolset, effort, rollover, budget } => {
                 // Images named by hash are the ones `putImage` kept: a missing
                 // one refuses the prompt before anything is logged.
                 let (dir, id) = (shared.cfg.sessions_dir.clone(), session_id.clone());
@@ -682,7 +682,7 @@ impl Host {
                     false => images,
                 };
                 let images = images::decode(&images)?;
-                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, budget.unwrap_or_default(), out).await.map(Some)
+                shared.prompt(session_id.as_deref(), (text, images), model, permission_mode, toolset.as_deref(), effort, rollover, budget.unwrap_or_default(), out).await.map(Some)
             }
             // A subagent's session is a running turn like any other, so it
             // is interrupted alone, by its own id (R-SUB-2); a backend's
@@ -816,6 +816,11 @@ struct TurnPlan {
     tried: Vec<String>,
     /// The turn a backend began by itself (`continue`).
     unprompted: bool,
+    /// The session's own `rollover`, logged with the turn.
+    session_rollover: Option<Rollover>,
+    /// What a limit does to this session: its own value, else the repository's
+    /// when trusted, else the global config's (R-ROLL-5).
+    rollover: Rollover,
 }
 
 /// The parent turn a subagent's spend is reported to.
@@ -953,7 +958,7 @@ impl Shared {
         let Some((instance, pending)) = waiting else {
             return Err(EngineError::new("nothing_pending", format!("session {session_id} has no turn its backend began by itself waiting — send a prompt instead")));
         };
-        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
+        let mut plan = self.settle(Some(session_id), (crate::claude::unprompted(&pending.reason), Vec::new()), None, PermissionMode::Default, None, None, None, limits, out, &[], None, Some((&instance, pending.mode))).await?;
         plan.announce = announce;
         self.turn(plan, out.clone()).await.map(|(r, _)| r)
     }
@@ -974,6 +979,7 @@ impl Shared {
         permission_mode: PermissionMode,
         toolset: Option<&str>,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
         limits: BudgetLimits,
         out: mpsc::Sender<StreamLine>,
     ) -> Result<RunResult, EngineError> {
@@ -989,7 +995,7 @@ impl Shared {
         let mut rolling: Option<Rolling> = None;
         let mut limited: Option<RunResult> = None;
         loop {
-            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, limits, &out, &tried, rolling.clone(), None).await {
+            let r = match self.settle(session.as_deref(), (text.clone(), images.clone()), model.clone(), permission_mode, toolset, effort, rollover, limits, &out, &tried, rolling.clone(), None).await {
                 Ok(plan) => self.turn(plan, out.clone()).await,
                 Err(e) => Err(e),
             };
@@ -1007,7 +1013,7 @@ impl Shared {
                 // The next candidate, or the limit's own result.
                 (Err(e), Some(r)) => {
                     tried.push(r.to.instance.clone());
-                    match self.next_instance(&r.from, &tried, &r.cwd, true).await {
+                    match self.next_instance(&r.from, &tried, &r.cwd, Rollover::Auto).await {
                         Some(to) => {
                             model = Some(to.clone());
                             rolling = Some(Rolling { to, ..r });
@@ -1181,9 +1187,10 @@ impl Shared {
     /// offered; one whose login only a project's settings provide
     /// (Bedrock, an `apiKeyHelper`) is not offered either, and is reached
     /// by naming it.
-    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, full: bool) -> Option<ModelRef> {
+    async fn next_instance(&self, from: &ModelRef, tried: &[String], cwd: &std::path::Path, rollover: Rollover) -> Option<ModelRef> {
         let registry = self.registry();
-        for m in registry.rollover_candidates(from, tried) {
+        let full = rollover == Rollover::Auto;
+        for m in registry.rollover_candidates(from, tried, rollover) {
             let Ok(i) = registry.get(&m.instance) else { continue };
             let ok = match &i.backend {
                 Some(_) if !full => match self.neutral_probe() {
@@ -1212,6 +1219,7 @@ impl Shared {
         permission_mode: PermissionMode,
         toolset: Option<&str>,
         effort: Option<Effort>,
+        rollover: Option<Rollover>,
         limits: BudgetLimits,
         out: &mpsc::Sender<StreamLine>,
         tried: &[String],
@@ -1306,6 +1314,10 @@ impl Shared {
                 crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;
             }
         }
+        // R-ROLL-5: the session's value (asked now, else the last one logged),
+        // else a trusted repository's, else the global config's.
+        let session_rollover = rollover.or(past.rollover);
+        let rollover = session_rollover.or(policy.loaded.rollover).unwrap_or(registry.rollover);
         let mut compat = compat::Compat::load(&self.cfg.permissions, &cwd, policy.loaded.hooks.clone());
         policy.read_dirs = compat.skills.iter().map(|k| k.dir.clone()).collect();
         let (log, events) = match opened {
@@ -1395,6 +1407,8 @@ impl Shared {
             rolling,
             tried: tried.to_vec(),
             unprompted: unprompted.is_some(),
+            session_rollover,
+            rollover,
         };
         Ok(plan)
     }
@@ -1493,6 +1507,9 @@ impl Shared {
             rolling: None,
             tried: Vec::new(),
             unprompted: false,
+            // A subagent never rolls over.
+            session_rollover: None,
+            rollover: Rollover::default(),
         };
         // Boxed: a subagent's turn is a turn of this host, inside the
         // parent's.
@@ -1529,7 +1546,7 @@ impl Shared {
             kids,
             usage: crate::usage::Usage::in_home(self.cfg.sessions_dir.parent().unwrap_or(&self.cfg.sessions_dir)),
         };
-        w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort }).await?;
+        w.begin(plan.rolling.as_ref(), &session_id, &model, LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: engine.provider().into(), wire_api: engine.wire_api(), permission_mode: plan.permission_mode, effort: plan.effort, rollover: plan.session_rollover }).await?;
         let mut history = std::mem::take(&mut plan.past.items);
         let skills = plan.agent.is_none().then_some(plan.compat.skills.as_slice());
         w.prompt((std::mem::take(&mut plan.text), std::mem::take(&mut plan.images)), &mut history, skills, plan.spawns).await?;
@@ -1677,7 +1694,7 @@ impl Shared {
             Err(e) => (TurnStatus::Failed, Some(e.info())),
         };
         let (after, offer, next) = match &outcome {
-            Err(e) if plan.announce => self.after_failure(e, (plan.past.reached.as_ref(), &plan.tried, &plan.cwd), &model, &session_id, tally.calls, error.as_mut()).await,
+            Err(e) if plan.announce => self.after_failure(e, (plan.past.reached.as_ref(), &plan.tried, &plan.cwd, plan.rollover), &model, &session_id, tally.calls, error.as_mut()).await,
             _ => (None, None, None),
         };
         let duration_ms = plan.started.elapsed().as_millis() as u64;
@@ -1719,14 +1736,22 @@ impl Shared {
     /// logged when that turn starts (R-INST-7, R-INST-8). `error` gets the
     /// words that say so.
     #[allow(clippy::type_complexity)]
-    async fn after_failure(&self, e: &EngineError, (reached, tried, cwd): (Option<&ModelRef>, &[String], &PathBuf), model: &ModelRef, session_id: &str, calls: u32, error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
+    async fn after_failure(&self, e: &EngineError, (reached, tried, cwd, rollover): (Option<&ModelRef>, &[String], &PathBuf, Rollover), model: &ModelRef, session_id: &str, calls: u32, error: Option<&mut crate::protocol::ErrorInfo>) -> (Option<(ModelRef, SwitchReason, String)>, Option<SwitchOffer>, Option<Rolling>) {
         let previous = reached.filter(|p| *p != model).cloned();
         if e.limited() {
+            // R-ROLL-6: a limit fails the turn as it is, with nowhere to go
+            // named, and no offer.
+            if rollover == Rollover::Off {
+                if let Some(err) = error {
+                    err.message = err.message.replace(crate::claude::CONTINUE_HINT, "");
+                }
+                return (None, None, None);
+            }
             let until = e.resets_at_ms.map(|ms| format!(" until {}", clock(ms))).unwrap_or_default();
             let mut tried = tried.to_vec();
             tried.push(model.instance.clone());
-            let auto = self.registry().rollover == Rollover::Auto;
-            return match self.next_instance(model, &tried, cwd, auto).await {
+            let auto = rollover == Rollover::Auto;
+            return match self.next_instance(model, &tried, cwd, rollover).await {
                 Some(to) if auto => (None, None, Some(Rolling { from: model.clone(), to, until, cwd: cwd.clone() })),
                 Some(to) => {
                     if let Some(err) = error {
@@ -2028,6 +2053,8 @@ struct Past {
     /// that could not run goes back to.
     reached: Option<ModelRef>,
     cwd: Option<PathBuf>,
+    /// The session's own `rollover`, as its last turn that had one logged it.
+    rollover: Option<Rollover>,
     /// The last `backend.session` logged, whichever instance it was on.
     backend: Option<BackendRecord>,
     /// Each backend instance's thread, and how much of the session it holds.
@@ -2079,7 +2106,8 @@ fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
                 past.cwd = Some(PathBuf::from(cwd));
                 past.parent = parent_session_id.clone();
             }
-            LogBody::TurnStarted { model, permission_mode, effort, .. } => {
+            LogBody::TurnStarted { model, permission_mode, effort, rollover, .. } => {
+                past.rollover = rollover.or(past.rollover);
                 let model = &registry.current_model(model);
                 past.model = Some(model.clone());
                 past.last_on.retain(|(m, ..)| m.instance != model.instance);
@@ -2489,7 +2517,7 @@ impl Writer<'_> {
         let here = ChildHeld::new(&k.shared, &child, BackendTask { parent: session_id.to_string(), task_id: task_id.clone() });
         let (state, ran_by) = (k.state.state.clone(), k.ran_by);
         let turn_id = krowk_store::new_id();
-        let begun = LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: self.provider.clone(), wire_api: self.wire, permission_mode: k.permission_mode, effort: k.effort };
+        let begun = LogBody::TurnStarted { turn_id: turn_id.clone(), model: model.clone(), provider: self.provider.clone(), wire_api: self.wire, permission_mode: k.permission_mode, effort: k.effort, rollover: None };
         let begun = match log.append_off(begun).await {
             Ok(ev) => ev,
             Err(e) => {

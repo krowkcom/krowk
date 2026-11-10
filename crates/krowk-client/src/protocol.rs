@@ -356,6 +356,36 @@ pub struct ErrorInfo {
     pub resets_at_ms: Option<i64>,
 }
 
+/// What happens when a session's instance hits its rate or usage limit
+/// (R-INST-7, R-INST-8, R-ROLL-4): the session's own value, else the
+/// repository's when it is trusted, else the global config's, else `offer`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum Rollover {
+    /// Ask, one keystroke, never silently: the default.
+    #[default]
+    Offer,
+    /// Move to the next instance without asking.
+    Auto,
+    /// Fail the turn: no offer, and no hint to continue elsewhere.
+    Off,
+}
+
+impl Rollover {
+    /// The values, as they are written.
+    pub const NAMES: [&'static str; 3] = ["auto", "offer", "off"];
+
+    /// A value as written, or why it is not one.
+    pub fn parse(s: &str) -> Result<Rollover, String> {
+        match s.trim() {
+            "auto" => Ok(Rollover::Auto),
+            "offer" => Ok(Rollover::Offer),
+            "off" => Ok(Rollover::Off),
+            other => Err(format!("rollover {other:?} is not a value — one of {}", Self::NAMES.join(", "))),
+        }
+    }
+}
+
 /// Claude-Code-compatible permission modes (R-PERM-1): `default` asks
 /// before edits and commands, `acceptEdits` before commands, `plan` changes
 /// nothing, and `bypassPermissions` asks before nothing — though a deny
@@ -529,6 +559,11 @@ pub enum Command {
         /// instance's, else the provider's default, when absent.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<Effort>,
+        /// What a limited turn does for this session (`--rollover`); it
+        /// replaces the session's recorded value. When absent, the session's
+        /// recorded value, else the repository's and the global config's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rollover: Option<Rollover>,
         /// The spend this session, with its subagents, may reach: the engine
         /// refuses the model call that would go past it (R-BUDGET-1). No
         /// limit when absent.
@@ -746,6 +781,11 @@ pub enum LogBody {
         /// model was sent is that rung mapped onto the ones it takes.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<Effort>,
+        /// The session's own `rollover` as of this turn, when it set one
+        /// (`--rollover`); absent when the repository's or the global
+        /// config's value applies.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rollover: Option<Rollover>,
     },
     /// One item, whole. `itemId` is the id its live frames carried.
     #[serde(rename = "item.completed")]

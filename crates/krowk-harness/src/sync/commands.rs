@@ -307,7 +307,7 @@ async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: 
         return tell(refused(e));
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, budget: None };
+    let prompt = Command::Prompt { session_id: None, text: prompt, images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None };
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
     let started = |l: &StreamLine| match l {

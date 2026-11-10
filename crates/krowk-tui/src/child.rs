@@ -301,7 +301,7 @@ mod tests {
         let end = ev("end", LogBody::TurnCompleted { turn_id: "u".into(), status: TurnStatus::Completed, usage: Default::default(), duration_ms: 1, error: None, reported_cost_usd: None, reported_tokens: None });
         let model = ModelRef { instance: "a".into(), model: "b".into() };
         let switched = ev("switched", LogBody::ModelSwitched { turn_id: None, from: None, to: model.clone(), reason: SwitchReason::Requested, detail: None });
-        let started = ev("started", LogBody::TurnStarted { turn_id: "v".into(), model, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None });
+        let started = ev("started", LogBody::TurnStarted { turn_id: "v".into(), model, provider: "anthropic".into(), wire_api: krowk_harness::protocol::WireApi::AnthropicMessages, permission_mode: Default::default(), effort: None, rollover: None });
         let id = |path: &std::path::Path| last_end(path).map(|e| e.id);
         std::fs::write(&path, format!("{huge}\n{end}\n{{\"id\":\"half")).unwrap();
         assert_eq!(id(&path), Some("end".into()), "the half-written line is not complete");
