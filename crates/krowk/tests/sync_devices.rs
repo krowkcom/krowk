@@ -68,7 +68,7 @@ fn r_sync_1_a_free_workspace_is_refused_with_a_fix() {
     let free = "krowk_sk_free_workspace";
 
     let refused = krowk_api::Client::new(&api, free).device_list_all().unwrap_err();
-    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("upgrade this workspace to Pro"), "{refused:?}");
+    assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("`krowk billing`"), "{refused:?}");
 
     let _ = std::fs::remove_dir_all(&r);
 }

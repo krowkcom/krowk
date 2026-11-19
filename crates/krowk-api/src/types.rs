@@ -198,6 +198,24 @@ pub struct Key {
     pub last_used_at: String,
     #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
     pub created_at: String,
+    /// The workspace's plan: `free`, `pro` or `business`. Empty from a
+    /// registry older than plans in the key, as every field below.
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
+    pub plan: String,
+    /// Whether the key's person may manage billing (an owner or admin);
+    /// absent for a key with no person.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub can_manage_billing: Option<bool>,
+    /// On a paid plan, for an owner or admin, at most one of these: when
+    /// the plan renews, or, once cancelled, when it ends (ISO 8601).
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
+    pub plan_renews_at: String,
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "empty")]
+    pub plan_ends_at: String,
+    /// For a member, who to ask about billing: the owners' and admins'
+    /// email addresses.
+    #[serde(default, deserialize_with = "nullable", skip_serializing_if = "Vec::is_empty")]
+    pub billing_contacts: Vec<String>,
     /// The HTTP status the read answered with. Transport detail, never rendered.
     #[serde(skip)]
     pub status: u16,

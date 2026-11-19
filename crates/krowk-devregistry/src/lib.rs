@@ -238,7 +238,7 @@ fn route(app: &Arc<App>, req: &mut Req) -> Resp {
             let site = site(req, &a.site);
             moves::update_visibility(a, req, slug, &site)
         }
-        (_, ["v1", "key"]) if get => auth::show_key(req),
+        (_, ["v1", "key"]) if get => auth::show_key(a, req),
         ("PUT" | "PATCH", ["v1", "key", "device"]) => devices::claim(a, req),
         // The device's own APNs token (R-IOS-12), signed by it.
         ("PUT" | "PATCH" | "DELETE", ["v1", "key", "device", "push_token"]) => devices::push_token(a, req),

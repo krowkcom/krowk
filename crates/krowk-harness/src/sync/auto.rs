@@ -561,7 +561,7 @@ fn paid_fix(error: &str) -> String {
         Some(i) if error[i + PAID.len()..].trim().is_empty() => error[..i].trim(),
         _ => "",
     };
-    if fix.is_empty() { "upgrade this workspace to Pro at https://app.krowk.com".into() } else { fix.into() }
+    if fix.is_empty() { "run `krowk billing` to choose a paid plan for this workspace".into() } else { fix.into() }
 }
 
 /// One bridge: its options built, its own daemon client connected in the
@@ -1932,7 +1932,7 @@ mod tests {
     /// ends with, and its fix is the one said.
     #[test]
     fn r_sync_1_a_paid_plan_refusal_names_its_fix() {
-        let fix = "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com";
+        let fix = "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace";
         let taken = format!("{} (sync_requires_paid_plan): {fix}", host::NOT_GRANTED);
         let built = format!("{fix} (sync_requires_paid_plan)");
         let shown = "the registry did not say whether it holds session x (sync_requires_paid_plan) — nothing was published; try again";
@@ -1942,7 +1942,7 @@ mod tests {
             assert_eq!(paid_fix(e), fix, "{e}");
         }
         assert!(unpaid(shown));
-        assert!(paid_fix(shown).contains("upgrade this workspace to Pro"), "{}", paid_fix(shown));
+        assert!(paid_fix(shown).contains("krowk billing"), "{}", paid_fix(shown));
         assert!(!unpaid(&format!("{} (lease_held): device x holds it", host::NOT_GRANTED)));
         assert!(!unpaid(&format!("{} session x to device (sync_requires_paid_plan)", host::HANDED_OVER)), "a device's name says nothing");
     }

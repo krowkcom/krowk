@@ -7,8 +7,8 @@ use crate::errors::{error, invalid, unauthorized};
 use crate::http::{Req, Resp};
 use crate::page::{escape, page};
 use crate::store::{
-    App, Authorization, CLI_AUTHORIZATION_GRACE, CLI_AUTHORIZATION_INTERVAL, CLI_AUTHORIZATION_LIFETIME,
-    FREE_PLAN_KEY_MARKER, generate_code, person_for, generate_slug, random_token, rfc3339, sha256_hex, workspace_for,
+    App, Authorization, BUSINESS_PLAN_KEY_MARKER, CLI_AUTHORIZATION_GRACE, CLI_AUTHORIZATION_INTERVAL, CLI_AUTHORIZATION_LIFETIME,
+    ENDING_PLAN_KEY_MARKER, FREE_PLAN_KEY_MARKER, MEMBER_KEY_MARKER, generate_code, person_for, generate_slug, random_token, rfc3339, sha256_hex, workspace_for,
 };
 use std::sync::Arc;
 
@@ -54,28 +54,46 @@ pub fn free_plan(req: &Req) -> bool {
 
 /// The key self-check. Any bearer token resolves to the workspace the
 /// artifact endpoints derive, so `auth verify` and a push agree.
-pub fn show_key(req: &Req) -> Resp {
+pub fn show_key(app: &App, req: &Req) -> Resp {
     let Some(token) = req.header("Authorization").and_then(bearer) else {
         return unauthorized();
     };
-    Resp::json(
-        200,
-        &Json::map([
-            // Derived, never the token itself: a key ID ends up in logs.
-            ("key_id", Json::str(format!("key_{}", &sha256_hex(token.as_bytes())[..8]))),
-            ("name", Json::str("local")),
-            ("workspace", Json::str(workspace_for(&token))),
-            ("workspace_name", Json::str("Local workspace")),
-            // The person the key speaks for, which a pairing binds (devices.md
-            // → Adding a device). The registry's KeySerializer has no such
-            // field yet; this is the stand-in's guess at it.
-            ("user_id", Json::str(person_for(&token))),
-            // Their email, which the new machine names them by; the stand-in
-            // has none, so it makes one of the person's id. Also a guess at a
-            // field KeySerializer lacks.
-            ("email", Json::str(format!("{}@example.test", &person_for(&token)[4..12]))),
-        ]),
-    )
+    let plan = if token.contains(FREE_PLAN_KEY_MARKER) {
+        "free"
+    } else if token.contains(BUSINESS_PLAN_KEY_MARKER) {
+        "business"
+    } else {
+        "pro"
+    };
+    let mut body = vec![
+        // Derived, never the token itself: a key ID ends up in logs.
+        ("key_id", Json::str(format!("key_{}", &sha256_hex(token.as_bytes())[..8]))),
+        ("name", Json::str("local")),
+        ("workspace", Json::str(workspace_for(&token))),
+        ("workspace_name", Json::str("Local workspace")),
+        // The person the key speaks for, which a pairing binds (devices.md
+        // → Adding a device). The registry's KeySerializer has no such
+        // field yet; this is the stand-in's guess at it.
+        ("user_id", Json::str(person_for(&token))),
+        // Their email, which the new machine names them by; the stand-in
+        // has none, so it makes one of the person's id. Also a guess at a
+        // field KeySerializer lacks.
+        ("email", Json::str(format!("{}@example.test", &person_for(&token)[4..12]))),
+        ("plan", Json::str(plan)),
+    ];
+    // Who may manage the plan, as the registry's KeySerializer gives it: an
+    // owner learns when a paid plan renews or ends, a member who to ask.
+    if token.contains(MEMBER_KEY_MARKER) {
+        body.push(("can_manage_billing", Json::Raw("false".into())));
+        body.push(("billing_contacts", Json::Arr(vec![Json::str("owner@example.test")])));
+    } else {
+        body.push(("can_manage_billing", Json::Raw("true".into())));
+        if plan != "free" {
+            let at = rfc3339(app.lock().now() + jiff::SignedDuration::from_hours(30 * 24));
+            body.push((if token.contains(ENDING_PLAN_KEY_MARKER) { "plan_ends_at" } else { "plan_renews_at" }, Json::str(at)));
+        }
+    }
+    Resp::json(200, &Json::map_of(body.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()))
 }
 
 /// Opens a browser login and answers both halves. No Idempotency-Key: a lost
