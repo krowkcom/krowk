@@ -5,7 +5,7 @@
 //! not have fails at once, saying so, rather than hanging (todo 22b). And
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
-//! And `krowk hosts` listing the machines that host, with no Tailscale tag
+//! And `krowk machines` listing the machines that host, with no Tailscale tag
 //! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
 //! and opened in a TUI attached on a third machine, which reads its
 //! history there and stops it with `x` (R-SUB-12). And `krowk sync new`
@@ -821,7 +821,7 @@ fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
     m.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
 }
 
-/// Ticket 43: on a tailnet with no tags and no policy, `krowk hosts` on B
+/// Ticket 43: on a tailnet with no tags and no policy, `krowk machines` on B
 /// lists A — the machine of B's person that hosts a synced session — by
 /// its device list name, hosting, and reachable directly over the node A
 /// kept in the session's sealed index. A peer on the tailnet that is not
@@ -849,7 +849,7 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let out = b.command(&["hosts", "--json"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let hosts = v["hosts"].as_array().unwrap();
+    let hosts = v["machines"].as_array().unwrap();
     assert_eq!(hosts.len(), 1, "A alone: {v}");
     let h = &hosts[0];
     assert_eq!((h["name"].as_str(), h["hosting"].as_bool(), h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool(), h["sessions"].as_u64()), (Some("a"), Some(true), Some(true), Some(true), Some(false), Some(1)), "{h}");
@@ -858,14 +858,14 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let human = b.command(&["hosts", "--format", "human"]).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     // A's daemon may have announced A by now: its lines follow, indented.
-    assert_eq!(human.lines().next(), Some("a  hosting  reachable directly  1 session"), "{human}");
-    assert!(human.lines().skip(1).all(|l| l.starts_with("  ")), "{human}");
+    assert!(human.lines().next().is_some_and(|l| l.starts_with("a  online  ")), "{human}");
+    assert!(human.lines().any(|l| l == "  hosting  reachable directly  1 session"), "{human}");
 
     b.env = b_plain;
     let out = b.command(&["hosts", "--json"]).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["tailscale"], false);
-    assert_eq!((v["hosts"][0]["name"].as_str(), v["hosts"][0]["direct"].as_bool()), (Some("a"), Some(false)), "{v}");
+    assert_eq!((v["machines"][0]["name"].as_str(), v["machines"][0]["direct"].as_bool()), (Some("a"), Some(false)), "{v}");
 }
 
 /// A tailscaled on a unix socket in `dir`, answering `status` for a node
@@ -1175,7 +1175,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
         let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
+        if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
             break (v, h);
         }
         assert!(Instant::now() < deadline, "B never saw A announced: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
@@ -1192,6 +1192,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     let human = b.command(&["hosts", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     let mut lines = human.lines().skip_while(|l| !l.starts_with("a  "));
+    assert!(lines.next().is_some_and(|l| l.starts_with("a  online  ")), "{human}");
     // Hosting or not: its daemon's automatic sync may have taken the turn's session up.
     assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
     assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
@@ -1218,7 +1219,7 @@ fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) ->
     loop {
         let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
+        if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
             return h.clone();
         }
         assert!(Instant::now() < deadline, "B never saw A as wanted: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
@@ -1297,7 +1298,7 @@ fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
     assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk host enable"), "{err}");
     let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
-    assert!(err.contains("no host named 'nobody' — krowk hosts lists yours"), "{err}");
+    assert!(err.contains("no machine named 'nobody' — krowk machines lists yours"), "{err}");
 }
 
 /// R-HOST-4: a directory A did not announce — its home, untrusted — is
@@ -1603,9 +1604,8 @@ fn all_build_slots(m: &Machine) -> Vec<krowk_harness::slots::Slot> {
 
 /// Slice 03 (R-ALLOC-2, D16): B's `krowk machines` lists A with its
 /// capacity, repository and acceptance and, for the current repository,
-/// ready; `--json` carries the same; `krowk hosts` prints the same.
+/// ready; `--json` carries the same; `krowk machines` prints the same.
 #[test]
-#[ignore = "slice 03: krowk machines"]
 fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
     let w = World::new("machines");
     let (_a, b, _serve) = allocating(&w);

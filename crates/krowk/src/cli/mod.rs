@@ -383,7 +383,9 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
         #[cfg(all(feature = "harness", unix))]
-        ["hosts", ..] => synced::hosts(ctx),
+        // `krowk machines accept on|off` (ticket 09) takes its own arm here,
+        // before the listing.
+        ["machines"] | ["machines", "list", ..] | ["hosts", ..] => synced::machines(ctx),
         #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),
         #[cfg(all(feature = "harness", unix))]
