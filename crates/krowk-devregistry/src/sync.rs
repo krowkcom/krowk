@@ -1338,7 +1338,7 @@ pub fn declare_image(app: &App, req: &mut Req, id: &str, site: &str, signer: &st
         burst(&mut s.sync, &caller(req), "image_declares", now)?;
         let ik = (workspace, id, name.clone());
         let expires = crate::auth::free_plan(req).then(|| now + FREE_HISTORY);
-        if s.sync.image_expiry.get(&ik).is_some_and(|e| now >= *e) {
+        if s.sync.image_expiry.get(&ik).is_some_and(|e| now > *e) {
             s.sync.images.remove(&ik);
             s.sync.image_expiry.remove(&ik);
         }
@@ -1432,7 +1432,7 @@ pub fn show_image(app: &App, req: &Req, id: &str, name: &str, site: &str) -> Res
     let s = app.lock();
     let ik = (workspace, id, name.to_owned());
     // Past its expiry an image is not found, as it will be once swept.
-    if s.sync.image_expiry.get(&ik).is_some_and(|e| s.now() >= *e) {
+    if s.sync.image_expiry.get(&ik).is_some_and(|e| s.now() > *e) {
         return not_found();
     }
     let Some(c) = s.sync.images.get(&ik).filter(|c| c.ready) else { return not_found() };
