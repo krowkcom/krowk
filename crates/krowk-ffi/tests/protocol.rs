@@ -140,7 +140,7 @@ fn log_bodies() -> Vec<LogBody> {
             fell_back: Some("too long".into()),
         },
         LogBody::SessionMoved { cwd: "/srv/repo".into(), device: "laptop".into(), from_device: "desk".into() },
-        LogBody::TaskResult { turn_id: turn_id(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()] },
+        LogBody::TaskResult { turn_id: turn_id(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()], error: None },
         LogBody::TurnCompleted {
             turn_id: turn_id(),
             status: TurnStatus::Failed,

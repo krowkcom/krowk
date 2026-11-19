@@ -186,8 +186,9 @@ use krowk_client::pairing::PairingCode;
 /// initializer of it must pass; 13: `SwitchOffer` gains `room`, which a Swift
 /// initializer of it must pass; 14: `SwitchOffer` gains `early`, likewise;
 /// 15: `LogBody` gains `TaskResult`, which a Swift switch over it must
-/// handle).
-pub const FFI_API_VERSION: u32 = 15;
+/// handle; 16: `TaskResult` gains `error`, which a Swift initializer of it
+/// must pass).
+pub const FFI_API_VERSION: u32 = 16;
 
 /// [`FFI_API_VERSION`], for the app to read at run time.
 #[uniffi::export]

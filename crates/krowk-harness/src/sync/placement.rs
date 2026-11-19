@@ -538,7 +538,7 @@ mod tests {
         const CHILD: &str = "0190f3c2-0000-7000-8000-00000000000c";
         let ev = |session: &str, body: LogBody| LogEvent { id: "0190f3c2-0000-7000-8000-0000000000e0".into(), parent_id: None, session_id: session.into(), time_ms: 0, body };
         let done = || ev(CHILD, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None });
-        let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()] });
+        let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()], error: None });
         let key = || Some("ab".repeat(32));
         assert_eq!(result_of(&[], CHILD), Ok(None), "its turn still runs");
         assert_eq!(result_of(&[done()], CHILD), Ok(None), "its turn completed, its result not stored yet");

@@ -540,6 +540,13 @@
               },
               "default": []
             },
+            "error": {
+              "description": "Why the result could not be packed or stored, when it could not:\nthe child's changes are then still in its worktree on this\nmachine, and no transport is named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "type": {
               "type": "string",
               "const": "task.result"

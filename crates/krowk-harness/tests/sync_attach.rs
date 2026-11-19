@@ -1055,7 +1055,8 @@ async fn alloc_06_a_task_childs_bridge_stores_its_result_and_logs_it() {
         viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TaskResult { .. }) => Some(e.body.clone()),
         _ => None,
     });
-    let Some(LogBody::TaskResult { turn_id, transport, key, against, denied }) = body else { panic!("the bridge logged task.result") };
+    let Some(LogBody::TaskResult { turn_id, transport, key, against, denied, error }) = body else { panic!("the bridge logged task.result") };
+    assert_eq!(error, None);
     assert_eq!((against.as_str(), denied.as_slice()), (snapshot.as_str(), ["bash: rm -rf build".to_string()].as_slice()));
     let completed = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.completed").unwrap();
     assert_eq!(completed["turnId"].as_str(), Some(turn_id.as_str()), "after the turn it is the result of");
@@ -1068,6 +1069,28 @@ async fn alloc_06_a_task_childs_bridge_stores_its_result_and_logs_it() {
     let diff = String::from_utf8_lossy(&bundle.diff).to_string();
     assert_eq!(bundle.base, snapshot);
     assert!(diff.contains("child.txt") && !diff.contains("job.txt"), "the child's work alone: {diff}");
+}
+
+/// R-ALLOC-6: a result that cannot be packed is still logged, saying why,
+/// with no transport, so the supervisor learns of it at once.
+#[tokio::test]
+async fn alloc_06_a_result_that_cannot_be_packed_is_logged_with_its_reason() {
+    let w = World::new("alloc-06-failed");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let tree = w.root.join("child-tree");
+    std::fs::create_dir_all(tree.join(".git")).unwrap();
+    init_repo(&tree);
+    let dir = log::sessions_dir(&w.env()).unwrap().join(&session);
+    std::fs::write(dir.join("task.json"), serde_json::json!({"snapshot": "not-a-commit", "worktree": tree.display().to_string(), "denied": []}).to_string()).unwrap();
+    v.commands.send(w.prompt(Some(&session), "and now")).unwrap();
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TaskResult { .. }))).await;
+    let body = got.iter().find_map(|u| match u {
+        viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TaskResult { .. }) => Some(e.body.clone()),
+        _ => None,
+    });
+    let Some(LogBody::TaskResult { transport, key, error, .. }) = body else { panic!("the bridge logged task.result") };
+    assert_eq!((transport, key), (None, None));
+    assert!(error.is_some_and(|e| e.contains("not a commit id")));
 }
 
 /// R-SWITCH-4: a switch B sends while a turn runs is acked at once and

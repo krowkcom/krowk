@@ -405,36 +405,126 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
 /// What a result over `MAX_JOB` fails with.
 pub const RESULT_TOO_BIG: &str = "The child's changes come to more than 64 MiB, so they cannot be returned. It stays in its worktree on the machine that ran it.";
 
+/// What a result refuses, as the worktree's config, which the child could
+/// have written, names a place or a program git would go to.
+pub const RESULT_CONFIG: &str = "The child's worktree sets core.worktree or includes another config file, so its changes were not read. It stays in its worktree on the machine that ran it.";
+
 /// The child's result (R-ALLOC-6): everything the worktree at `worktree`
 /// changed against `snapshot`, the job's state, committed or not, new
 /// files included, for the transport stored under the child's `session`;
 /// `base` is `snapshot`. Empty when the child changed nothing. The changes
 /// are all in `diff`: the worktree's files, whatever git ignores left out,
-/// taken into an index of their own and compared with the snapshot's tree,
-/// so neither the child's index nor its commits decide what is the child's
-/// work, and the job's own files, which the snapshot holds, are not in it.
+/// taken into an index of its own (a name no other pack shares) and compared
+/// with the snapshot's tree, so neither the child's index nor its commits
+/// decide what is the child's work, and the job's own files, which the
+/// snapshot holds, are not in it.
+///
+/// The child wrote the worktree, its config and attributes included, so git
+/// runs here as it never would on a person's repository: no system or
+/// global config, no attributes outside the tree, and every filter the
+/// repository's config names switched off (no `clean` or `process` command
+/// runs), `core.worktree` and config includes refused. Past `MAX_JOB` the
+/// files it would take are not hashed, or the diff not read on; a gitlink
+/// (a submodule, or a repository inside the tree) is refused.
 pub fn pack_result(worktree: &Path, snapshot: &str, session: &str) -> Result<Bundle, String> {
     if !(snapshot.len() == 40 || snapshot.len() == 64) || !snapshot.bytes().all(|b| b.is_ascii_hexdigit()) {
         return Err(format!("{snapshot:?} is not a commit id"));
     }
+    let sealed = |c: &mut std::process::Command| {
+        c.env("GIT_CONFIG_NOSYSTEM", "1").env("GIT_CONFIG_GLOBAL", "/dev/null").env("GIT_ATTR_NOSYSTEM", "1");
+    };
+    let config = |args: &[&str]| -> Result<Vec<u8>, String> {
+        let out = krowk_api::git::query(worktree).and_then(|mut c| {
+            sealed(&mut c);
+            c.args(["config", "--no-includes", "-z"]).args(args).output()
+        }).map_err(|e| format!("git config: {e}"))?;
+        // 1 is no match; a config git cannot read is read as the worst.
+        match out.status.code() {
+            Some(0 | 1) => Ok(out.stdout),
+            _ => Err(RESULT_CONFIG.to_string()),
+        }
+    };
+    if !config(&["--get-regexp", r"^(core\.worktree|include\.path|includeif\..*\.path)$"])?.is_empty() {
+        return Err(RESULT_CONFIG.to_string());
+    }
     let top = PathBuf::from(git_text(worktree, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("{} is not in a git repository ({e})", worktree.display()))?);
-    let index = PathBuf::from(git_text(&top, &["rev-parse", "--absolute-git-dir"])?).join("krowk-result-index");
+    let gitdir = PathBuf::from(git_text(&top, &["rev-parse", "--absolute-git-dir"])?);
+    let index = gitdir.join(format!("krowk-result-index-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())));
+    // Every filter the config names, switched off: an empty command is none.
+    let mut off: Vec<String> = Vec::new();
+    for entry in config(&["--get-regexp", r"^filter\."])?.split(|b| *b == 0).filter(|e| !e.is_empty()) {
+        let key = String::from_utf8_lossy(entry.split(|b| *b == b'\n').next().unwrap_or_default()).to_string();
+        if let Some(name) = key.strip_prefix("filter.").and_then(|k| k.rsplit_once('.')).map(|(n, _)| n.to_string()) && !off.contains(&name) {
+            off.push(name);
+        }
+    }
+    let git = |args: &[&str]| -> std::process::Command {
+        let mut c = krowk_api::git::command(&top).expect("git command");
+        sealed(&mut c);
+        c.env("GIT_INDEX_FILE", &index).args(["-c", "core.attributesFile=/dev/null"]);
+        for n in &off {
+            for what in ["clean", "process", "smudge"] {
+                c.arg("-c").arg(format!("filter.{n}.{what}="));
+            }
+            c.arg("-c").arg(format!("filter.{n}.required=false"));
+        }
+        c.args(args);
+        c
+    };
     let run = |args: &[&str]| -> Result<Vec<u8>, String> {
-        let out = krowk_api::git::command(&top).and_then(|mut c| c.env("GIT_INDEX_FILE", &index).args(args).output()).map_err(|e| format!("git {}: {e}", args[0]))?;
+        let out = git(args).output().map_err(|e| format!("git {}: {e}", args[0]))?;
         if out.status.success() { Ok(out.stdout) } else { Err(format!("git {}: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())) }
     };
-    let tree = format!("{snapshot}^{{tree}}");
+    let pack = || -> Result<Vec<u8>, String> {
+        // What `add` would hash, counted before it does.
+        let mut total = 0u64;
+        for rel in run(&["ls-files", "-z", "--others", "--modified", "--exclude-standard"])?.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+            if let Ok(m) = std::fs::symlink_metadata(top.join(String::from_utf8_lossy(rel).as_ref())) && m.is_file() {
+                total += m.len();
+            }
+            if total > MAX_JOB {
+                return Err(RESULT_TOO_BIG.to_string());
+            }
+        }
+        let tree = format!("{snapshot}^{{tree}}");
+        run(&["read-tree", &tree])?;
+        run(&["add", "--all", "--", ":/"])?;
+        let now = String::from_utf8_lossy(&run(&["write-tree"])?).trim().to_string();
+        let raw = run(&["diff-tree", "-r", "--raw", "-z", "--no-renames", &tree, &now])?;
+        if raw.split(|b| *b == 0).any(|t| t.first() == Some(&b':') && String::from_utf8_lossy(t).split_whitespace().take(2).any(|m| m == ":160000" || m == "160000")) {
+            return Err("The child added or changed a submodule, or a repository inside its tree, which a result cannot carry.".to_string());
+        }
+        let mut c = git(&["diff-tree", "-p", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", &tree, &now]);
+        capped(&mut c, MAX_JOB)
+    };
+    let diff = pack();
     let _ = std::fs::remove_file(&index);
-    let diff = run(&["read-tree", &tree])
-        .and_then(|_| run(&["add", "--all", "--", ":/"]))
-        .and_then(|_| run(&["write-tree"]))
-        .and_then(|now| run(&["diff-tree", "-p", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", &tree, String::from_utf8_lossy(&now).trim()]));
-    let _ = std::fs::remove_file(&index);
-    let diff = diff?;
-    if diff.len() as u64 > MAX_JOB {
+    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base: snapshot.to_string(), subdir: String::new(), diff: diff?, untracked: Vec::new(), transcript: None, commits: Vec::new(), prompt: String::new() })
+}
+
+/// `c`'s stdout, read no further than `cap` bytes: git is stopped there and
+/// `RESULT_TOO_BIG` said.
+fn capped(c: &mut std::process::Command, cap: u64) -> Result<Vec<u8>, String> {
+    use std::io::Read as _;
+    let mut child = c.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| format!("git diff-tree: {e}"))?;
+    let mut stderr = child.stderr.take().expect("piped");
+    let said = std::thread::spawn(move || {
+        let mut text = String::new();
+        let _ = (&mut stderr).take(64 << 10).read_to_string(&mut text);
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
+        text
+    });
+    let mut out = Vec::new();
+    let read = child.stdout.take().expect("piped").take(cap + 1).read_to_end(&mut out);
+    if out.len() as u64 > cap {
+        let _ = child.kill();
+        let _ = child.wait();
         return Err(RESULT_TOO_BIG.to_string());
     }
-    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base: snapshot.to_string(), subdir: String::new(), diff, untracked: Vec::new(), transcript: None, commits: Vec::new(), prompt: String::new() })
+    read.map_err(|e| format!("git diff-tree: {e}"))?;
+    let status = child.wait().map_err(|e| format!("git diff-tree: {e}"))?;
+    let said = said.join().unwrap_or_default();
+    if status.success() { Ok(out) } else { Err(format!("git diff-tree: {}", said.trim())) }
 }
 
 /// The supervisor lands `result` of `job` (R-ALLOC-8, D10). `to`'s working
@@ -693,12 +783,12 @@ mod tests {
     #[test]
     fn r_alloc_6_a_task_result_event_round_trips() {
         use crate::protocol::LogBody;
-        let ev = LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()] };
+        let ev = LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()], error: None };
         let json = serde_json::to_value(&ev).unwrap();
         assert_eq!((json["type"].as_str(), json["turnId"].as_str(), json["against"].as_str()), (Some("task.result"), Some("t"), Some("abc")));
         assert_eq!(serde_json::from_value::<LogBody>(json).unwrap(), ev);
         let unchanged: LogBody = serde_json::from_str(r#"{"type":"task.result","turnId":"t","against":"abc"}"#).unwrap();
-        assert_eq!(unchanged, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
+        assert_eq!(unchanged, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
     }
 
     /// A scratch directory of its own for `name`, empty.
@@ -897,6 +987,50 @@ mod tests {
         for (f, want) in [("committed.txt", "c"), ("kept.txt", "base\njob\nchild\n"), ("new.txt", "n"), ("job-new.txt", "untracked")] {
             assert_eq!(std::fs::read_to_string(parent.join(f)).unwrap(), want, "{f}");
         }
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-ALLOC-6: the child wrote the worktree's config and attributes, so
+    /// packing its result runs none of its filters, and refuses a config
+    /// that names another worktree or file.
+    #[test]
+    fn alloc_06_packing_a_result_runs_none_of_the_childs_filters() {
+        let root = scratch("result-filter");
+        let child = origin_and_clone(&root, "child");
+        std::fs::write(child.join(".gitattributes"), "*.txt filter=evil\n").unwrap();
+        git(&child, &["add", "-A"]);
+        git(&child, &["commit", "-q", "-m", "the job's state"]);
+        let snapshot = git(&child, &["rev-parse", "HEAD"]);
+        let marker = root.join("marker");
+        git(&child, &["config", "filter.evil.clean", &format!("touch {}; cat", marker.display())]);
+        git(&child, &["config", "filter.evil.process", &format!("touch {}", marker.display())]);
+        std::fs::write(child.join("new.txt"), "n").unwrap();
+        std::fs::write(child.join("kept.txt"), "base\nedit\n").unwrap();
+        let result = pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap();
+        assert!(!marker.exists(), "a filter ran");
+        assert!(String::from_utf8_lossy(&result.diff).contains("new.txt"), "the work is still taken");
+        git(&child, &["config", "core.worktree", "/tmp"]);
+        assert_eq!(pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap_err(), RESULT_CONFIG);
+        git(&child, &["config", "--unset", "core.worktree"]);
+        git(&child, &["config", "include.path", "/tmp/x"]);
+        assert_eq!(pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap_err(), RESULT_CONFIG);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-ALLOC-6: a repository inside the child's tree (a gitlink) is
+    /// refused, and no index file is left behind.
+    #[test]
+    fn alloc_06_a_result_refuses_a_gitlink_and_leaves_no_index() {
+        let root = scratch("result-link");
+        let child = origin_and_clone(&root, "child");
+        let snapshot = git(&child, &["rev-parse", "HEAD"]);
+        std::fs::create_dir_all(child.join("inner")).unwrap();
+        git(&child.join("inner"), &["init", "-q"]);
+        git(&child.join("inner"), &["commit", "-q", "--allow-empty", "-m", "x"]);
+        let err = pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap_err();
+        assert!(err.contains("submodule"), "{err}");
+        let left: Vec<_> = std::fs::read_dir(child.join(".git")).unwrap().filter_map(|e| e.ok()).filter(|e| e.file_name().to_string_lossy().starts_with("krowk-result-index")).collect();
+        assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 
