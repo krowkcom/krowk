@@ -66,7 +66,9 @@
 use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
 use crate::daemon::client::Client as Daemon;
-use crate::protocol::{Command, LogBody, PermissionMode, StreamLine};
+use super::handoff;
+use crate::protocol::{ApprovalDecision, Command, LiveEvent, LogBody, PermissionMode, StreamLine};
+use serde::{Deserialize, Serialize};
 use krowk_api::sync::DeliveredCommand;
 use krowk_client::e2e::DeviceId;
 use krowk_client::host_command::{self, HostAnswer, HostCommand, RunRefusal, RunTask};
@@ -176,7 +178,7 @@ impl Commands {
     /// started on a thread of its own. `host` is this device's name on the
     /// list, named in a refusal. Nothing here waits on the network: an
     /// answer goes from a thread of its own.
-    pub(crate) fn take(me: &Arc<Commands>, c: &Arc<Config>, a: &Announcer, host: &str, delivered: Vec<DeliveredCommand>) {
+    pub(crate) fn take(me: &Arc<Commands>, c: &Arc<Config>, a: &Announcer, host: &str, repositories: &[AnnouncedRepository], delivered: Vec<DeliveredCommand>) {
         for d in delivered {
             // The registry's, so said escaped.
             let id = d.id.to_ascii_lowercase();
@@ -216,14 +218,14 @@ impl Commands {
                 }
                 Ok((from, Ok(command))) => {
                     me.lock().working.insert(id.clone());
-                    let (me2, c2, id2, host) = (me.clone(), c.clone(), id.clone(), host.to_string());
+                    let (me2, c2, id2, host, repositories) = (me.clone(), c.clone(), id.clone(), host.to_string(), repositories.to_vec());
                     let spawned = std::thread::Builder::new().name("krowk-host-command".into()).spawn(move || {
                         let told = std::cell::Cell::new(false);
                         let tell = |answer: HostAnswer| {
                             told.set(true);
                             finish(&me2, &c2, &id2, from, answer);
                         };
-                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, command, &tell)));
+                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, &repositories, command, &tell)));
                         if ran.is_err() && !told.get() {
                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's command panicked — see host.log on it, and send it again"))));
                         }
@@ -283,10 +285,10 @@ pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> 
 
 /// A command, run: a start's answer told to `tell` once known, then held
 /// for the bridge (`hold`); a take's once it moved or was refused.
-fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
+fn run(me: &Arc<Commands>, c: &Config, host: &str, repositories: &[AnnouncedRepository], command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
     let cwd = match command {
-        HostCommand::Run(task) => return run_task(c, host, task, tell),
+        HostCommand::Run(task) => return run_task(c, o, host, repositories, task, tell),
         HostCommand::Start { ref cwd, .. } | HostCommand::Take { ref cwd, .. } => cwd.clone(),
     };
     let policy = match (c.policy)() {
@@ -342,16 +344,377 @@ pub struct Admitted {
 }
 
 /// `task` checked against `here` in the module's order: the first check it
-/// fails is the refusal, with its fix line. Slice 05 builds it.
+/// fails is the refusal, with its fix line; passing them all, the agent
+/// slot is held in the `Admitted` (D9).
 pub fn admit(task: &RunTask, here: &Admission<'_>) -> Result<Admitted, (RunRefusal, String)> {
-    let _ = (task, here.now_ms, here.accepting, here.repositories, here.instances, here.agents);
-    todo!("slice 05: admit a run")
+    if here.now_ms > task.not_after_ms {
+        return Err((RunRefusal::BadJob, "the task came after the time its sender gave up waiting for an answer, so it was not run — send it again".into()));
+    }
+    if !here.accepting {
+        return Err((RunRefusal::NotAccepting, "this machine does not take tasks from your other machines — krowk machines accept on, there, turns that on".into()));
+    }
+    let Some(repository) = here.repositories.iter().find(|r| r.origin == task.origin) else {
+        return Err((RunRefusal::NoClone, format!("this machine has no trusted clone of {}", task.origin)));
+    };
+    match here.instances.iter().find(|i| i.name == task.model.instance) {
+        Some(i) if i.ready => {}
+        Some(i) => return Err((RunRefusal::NoModel, i.fix.clone().unwrap_or_else(|| format!("the {} account is not ready on this machine ({})", i.name, i.state)))),
+        None => return Err((RunRefusal::NoModel, format!("this machine has no {} account", task.model.instance))),
+    }
+    match here.agents.try_take() {
+        Ok(Some(slot)) => Ok(Admitted { directory: std::path::PathBuf::from(&repository.directory), model: task.model.clone(), slot }),
+        Ok(None) => Err((RunRefusal::NoSlot, format!("all {} of this machine's agent slots are in use", here.agents.size()))),
+        Err(e) => Err((RunRefusal::NoSlot, format!("this machine's agent slots could not be read: {e}"))),
+    }
 }
 
-/// A `run`, answered: refused for now, so a supervisor moves on (D11).
-/// Slice 05 builds it.
-fn run_task(_c: &Config, host: &str, _task: RunTask, tell: &dyn Fn(HostAnswer)) {
-    tell(RunRefusal::NotAccepting.answer(format!("{host} does not take handed-over tasks yet — upgrade krowk there")));
+/// The file a task's child leaves in its session's directory for its bridge
+/// (slice 06): where the job's state was recorded and the worktree the child
+/// works in, so the bridge packs the result against it when the turn ends,
+/// and the approvals denied so far, which it logs with the result (R-ALLOC-14).
+pub const TASK_FILE: &str = "task.json";
+
+/// The contents of `TASK_FILE`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskRun {
+    /// The snapshot commit of the job's state in the worktree
+    /// (`handoff::JobApplied::snapshot`): what the result is packed against.
+    pub snapshot: String,
+    /// The worktree the child works in.
+    pub worktree: String,
+    /// What the child asked and was refused, one line each, in order.
+    #[serde(default)]
+    pub denied: Vec<String>,
+}
+
+/// The task record in `sessions/<session>`, if the session is a task's child.
+pub fn read_task(sessions: &Path, session: &str) -> Option<TaskRun> {
+    serde_json::from_slice(&std::fs::read(sessions.join(session).join(TASK_FILE)).ok()?).ok()
+}
+
+/// `t` written in `sessions/<session>`, all at once.
+fn write_task(sessions: &Path, session: &str, t: &TaskRun) -> Result<(), String> {
+    let dir = sessions.join(session);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} could not be made: {e}", dir.display()))?;
+    let (tmp, to) = (dir.join(format!("{TASK_FILE}.tmp")), dir.join(TASK_FILE));
+    let bytes = serde_json::to_vec(t).map_err(|e| e.to_string())?;
+    std::fs::write(&tmp, bytes).and_then(|()| std::fs::rename(&tmp, &to)).map_err(|e| format!("{} could not be written: {e}", to.display()))
+}
+
+/// How long a child waits to learn its lease: its bridge takes it up at the
+/// child's first turn, and a supervisor gives up on the answer in 30 seconds.
+const LEASE_WAIT: Duration = Duration::from_secs(20);
+
+/// How often the registry is asked whether the child's lease is this
+/// machine's.
+const LEASE_EVERY: Duration = Duration::from_millis(200);
+
+/// The permission mode a handed-over task's child runs in (D13): the
+/// host's own for the directory, as a remote start runs in it (never one
+/// that asks nobody), or the supervisor's when that is stricter. Never looser.
+fn child_mode(host: PermissionMode, asked: Option<PermissionMode>) -> PermissionMode {
+    let host = if host.asks_nothing() { PermissionMode::Default } else { host };
+    // Plan changes nothing, default asks before edits, acceptEdits only
+    // before the rest.
+    let strictness = |m: PermissionMode| match m {
+        PermissionMode::Plan => 0,
+        PermissionMode::Default => 1,
+        PermissionMode::AcceptEdits => 2,
+        PermissionMode::BypassPermissions => 3,
+        PermissionMode::Unhinged => 4,
+    };
+    match asked {
+        Some(a) if strictness(a) < strictness(host) => a,
+        _ => host,
+    }
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// The job read from the registry and opened (never spent: a fallback
+/// machine may read it too).
+fn read_job(api: &krowk_api::Client, job: &host_command::JobRef) -> Result<handoff::Bundle, String> {
+    let key = handoff::key_from_hex(&job.key).ok_or("the job's key is not 64 hex digits")?;
+    let sealed = api.read_transport(&job.transport).map_err(|e| format!("the job could not be read from the registry: {}", e.fix()))?;
+    let plain = krowk_client::e2e::open_transport(&sealed, &crate::daemon::ws::uuid(&job.session), &key).map_err(|e| e.to_string())?;
+    handoff::Bundle::decode(&plain, &job.session)
+}
+
+/// A `run`, answered (R-ALLOC-3, R-ALLOC-5): admitted, the job read and
+/// applied in a fresh worktree of the trusted clone, then the child — a
+/// full session in that worktree, the one turn the job's prompt — started
+/// and followed until the turn is over, holding the agent slot throughout.
+/// `started` is told once the child's bridge holds its lease, so one
+/// refused over the machine limit is `machine_limit` instead, and never
+/// past `notAfterMs`: the child is then stopped and its worktree removed.
+fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedRepository], task: RunTask, tell: &dyn Fn(HostAnswer)) {
+    let a = match (o.keys)(false) {
+        Ok(a) => a,
+        Err((code, message)) => return tell(HostAnswer::refused(&code, message)),
+    };
+    let accepting = match (c.policy)() {
+        Ok(p) => p.on && p.accepting,
+        Err(e) => return tell(RunRefusal::NotAccepting.answer(format!("{host} cannot read its sync settings: {e}"))),
+    };
+    let (registry, reports) = (o.instances)();
+    let Some(agents) = registry.agents.as_ref() else { return tell(HostAnswer::refused("host_failed", format!("{host} has no agent slots to run a task in"))) };
+    let instances = super::announce::instances(&registry, &reports, None);
+    let here = Admission { now_ms: now_ms(), accepting, repositories, instances: &instances, agents };
+    let Admitted { directory, model, slot } = match admit(&task, &here) {
+        Ok(a) => a,
+        Err((refusal, message)) => return tell(refusal.answer(message)),
+    };
+    let bad = |message: String| tell(RunRefusal::BadJob.answer(message));
+    let host_mode = match (o.mode_for)(&directory) {
+        Ok(m) => m,
+        Err((code, message)) => return tell(HostAnswer::refused(&code, message)),
+    };
+    let mode = child_mode(host_mode, task.permission_mode);
+    let bundle = match read_job(&a.api, &task.job) {
+        Ok(b) if b.prompt.trim().is_empty() => return bad("the job carries no prompt".into()),
+        Ok(b) => b,
+        Err(e) => return bad(e),
+    };
+    let Some(worktrees) = krowk_api::home::worktrees_root(&krowk_api::home::process_env) else { return tell(HostAnswer::refused("host_failed", format!("{host} found no home directory to make worktrees under"))) };
+    let handoff::JobApplied { applied: handoff::Applied { worktree, held, cwd }, snapshot } = match handoff::apply_job(&bundle, &directory, &worktrees) {
+        Ok(j) => j,
+        Err(e) => return bad(e),
+    };
+    // The worktree is the trusted repository's, which a backend may run in.
+    let _ = o.trusted.trust(&crate::trust::root(&cwd));
+    let child = Child { cwd, worktree: worktree.path.display().to_string(), snapshot, model, mode, prompt: bundle.prompt };
+    let kept = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+        Ok(rt) => rt.block_on(follow(c, &a, &task, &child, tell)),
+        Err(_) => {
+            tell(HostAnswer::refused("host_failed", format!("{host} has no async runtime for the task — try again")));
+            false
+        }
+    };
+    if !kept {
+        let _ = crate::worktree::discard(&worktree);
+    }
+    // The slot is let go as the turn completes; the worktree stays for the
+    // bridge to pack, as a finished child's does.
+    drop((held, slot));
+}
+
+/// What a child runs with.
+struct Child {
+    cwd: std::path::PathBuf,
+    worktree: String,
+    snapshot: String,
+    model: crate::protocol::ModelRef,
+    mode: PermissionMode,
+    prompt: String,
+}
+
+/// Where a started child stands on its way to `started`.
+struct Following<'a> {
+    c: &'a Config,
+    a: &'a Announcer,
+    task: &'a RunTask,
+    child: &'a Child,
+    session: Option<String>,
+    denied: Vec<String>,
+    /// Told when the turn started: the lease asked for, at the registry.
+    lease: Option<std::sync::mpsc::Receiver<Result<(), HostAnswer>>>,
+    told: bool,
+    /// The child must not go on: the answer owed, none for one past its deadline.
+    stopping: Option<Option<HostAnswer>>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Following<'_> {
+    fn record(&self) -> Result<(), String> {
+        let Some(s) = &self.session else { return Ok(()) };
+        write_task(&self.c.sessions, s, &TaskRun { snapshot: self.child.snapshot.clone(), worktree: self.child.worktree.clone(), denied: self.denied.clone() })
+    }
+
+    async fn stop_child(&mut self, d: &Daemon, answer: Option<HostAnswer>) {
+        if self.stopping.is_some() {
+            return;
+        }
+        self.stopping = Some(answer);
+        if let Some(s) = &self.session {
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            let _ = d.execute(Command::Interrupt { session_id: s.clone() }, tx).await;
+        }
+    }
+
+    /// One line of the child's stream: its first turn starting is where
+    /// its record is written and its lease watched for; an approval it asks
+    /// is denied, and kept (D13, R-ALLOC-14).
+    async fn line(&mut self, d: &Daemon, l: StreamLine) {
+        match l {
+            StreamLine::Log(ev) if self.session.is_none() && matches!(ev.body, LogBody::TurnStarted { .. }) => {
+                self.session = Some(ev.session_id.clone());
+                if let Err(e) = self.record() {
+                    return self.stop_child(d, Some(HostAnswer::refused("host_failed", e))).await;
+                }
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.lease = Some(rx);
+                watch_lease(self.a.api.clone(), ev.session_id, self.a.device.to_string(), self.stop.clone(), tx);
+            }
+            StreamLine::Live(LiveEvent::ApprovalRequested(r)) => {
+                self.denied.push(r.summary.clone());
+                // Kept before it is answered, so the result never misses it.
+                let _ = self.record();
+                let (tx, _rx) = tokio::sync::mpsc::channel(1);
+                let _ = d.execute(Command::Approve { session_id: r.session_id, request_id: r.request_id, decision: ApprovalDecision::Deny, answers: Vec::new() }, tx).await;
+            }
+            _ => {}
+        }
+    }
+
+    /// The lease's outcome, once it is known: `started` told, or the child
+    /// stopped.
+    async fn lease_known(&mut self, d: &Daemon, tell: &dyn Fn(HostAnswer)) {
+        if self.told || self.stopping.is_some() {
+            return;
+        }
+        let Some(rx) = &self.lease else { return };
+        let known = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => Err(HostAnswer::refused("host_failed", "the child's lease could not be watched")),
+        };
+        match known {
+            // Past it, by this clock: the supervisor has moved on.
+            Ok(()) if now_ms() > self.task.not_after_ms => self.stop_child(d, None).await,
+            Ok(()) => {
+                if let Some(session_id) = self.session.clone() {
+                    // Told, and so sent, while this client still answers
+                    // the turn's approvals.
+                    tell(HostAnswer::Started { session_id });
+                    self.told = true;
+                }
+            }
+            Err(answer) => self.stop_child(d, Some(answer)).await,
+        }
+    }
+}
+
+/// Stops a child's watch on its lease once dropped.
+struct Watch(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Watch {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Asks the registry until `session`'s lease is `me`'s, or the bridge was
+/// refused over the machine limit, or `LEASE_WAIT` has passed, and says
+/// which.
+fn watch_lease(api: Arc<krowk_api::Client>, session: String, me: String, stop: Arc<std::sync::atomic::AtomicBool>, tx: std::sync::mpsc::Sender<Result<(), HostAnswer>>) {
+    let _ = std::thread::Builder::new().name("krowk-task-lease".into()).spawn(move || {
+        let until = Instant::now() + LEASE_WAIT;
+        let said = loop {
+            if stop.load(std::sync::atomic::Ordering::SeqCst) {
+                return;
+            }
+            if let Some(said) = super::auto::limited(&session) {
+                break Err(RunRefusal::MachineLimit.answer(said));
+            }
+            if api.show_sync_session(&session).ok().and_then(|s| s.lease).is_some_and(|l| l.device.eq_ignore_ascii_case(&me)) {
+                break Ok(());
+            }
+            if Instant::now() >= until {
+                break Err(HostAnswer::refused("not_synced", "the child's session did not sync here in time, so it could not be followed — is automatic sync on?"));
+            }
+            std::thread::sleep(LEASE_EVERY);
+        };
+        let _ = tx.send(said);
+    });
+}
+
+/// The child run and followed to the end of its turn (R-ALLOC-5): its
+/// answer told as `lease_known` says, its approvals denied. Answers whether
+/// its worktree is kept: a child stopped before it was told started, or
+/// that never started, leaves nothing.
+async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: &dyn Fn(HostAnswer)) -> bool {
+    let refused = |e: crate::engine::EngineError| HostAnswer::refused(&e.code, e.message);
+    // Background, answering approvals as a bridge's client does, so none
+    // the turn asks waits for a person: it is denied here.
+    let d = match Daemon::connect_as(&c.socket, &child.cwd, &c.version, true, true).await {
+        Ok(d) => d,
+        Err(e) => {
+            tell(match e {
+                crate::daemon::client::ConnectError::Failed(e) => refused(e),
+                crate::daemon::client::ConnectError::Absent => HostAnswer::refused("host_unavailable", "the host daemon is not running — it starts again with the next krowk there"),
+            });
+            return false;
+        }
+    };
+    let (tx, _rx) = tokio::sync::mpsc::channel(1);
+    if let Err(e) = d.execute(Command::SwitchModel { session_id: None, model: child.model.clone() }, tx).await {
+        tell(refused(e));
+        return false;
+    }
+    let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+    let budget = (!task.budget.is_empty()).then_some(task.budget);
+    let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget };
+    let run = d.execute(prompt, tx);
+    tokio::pin!(run);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _watch = Watch(stop.clone());
+    let mut f = Following { c, a, task, child, session: None, denied: Vec::new(), lease: None, told: false, stopping: None, stop };
+    let (mut ended, mut closed, mut failed) = (false, false, None);
+    let mut stopped_at = None;
+    loop {
+        let tick = tokio::time::sleep(LEASE_EVERY);
+        tokio::pin!(tick);
+        loop {
+            tokio::select! {
+                // The turn's lines first: they all arrive before its end.
+                biased;
+                line = rx.recv(), if !closed => match line {
+                    Some(l) => f.line(&d, l).await,
+                    None => closed = true,
+                },
+                done = &mut run, if !ended => {
+                    ended = true;
+                    while let Ok(l) = rx.try_recv() {
+                        f.line(&d, l).await;
+                    }
+                    if let Err(e) = done {
+                        failed = Some(e);
+                    }
+                }
+                () = &mut tick => break,
+            }
+        }
+        f.lease_known(&d, tell).await;
+        if f.stopping.is_some() {
+            stopped_at.get_or_insert_with(Instant::now);
+        }
+        // Over once it ended and its answer is settled; a stopped child that
+        // will not end is not waited for past `HOLD`.
+        let settled = f.told || f.stopping.is_some() || f.session.is_none();
+        if (ended && settled) || stopped_at.is_some_and(|at| at.elapsed() >= HOLD) {
+            break;
+        }
+    }
+    match f.stopping {
+        Some(answer) => {
+            if let Some(answer) = answer {
+                tell(answer);
+            }
+            false
+        }
+        None if f.told => true,
+        // The prompt ended before a turn started.
+        None => {
+            tell(match failed {
+                Some(e) => refused(e),
+                None => HostAnswer::refused("not_started", "the task's prompt ended before a turn started — send it again"),
+            });
+            false
+        }
+    }
 }
 
 async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {
@@ -539,7 +902,6 @@ mod tests {
     /// Slice 05 (R-ALLOC-3, R-ALLOC-5, D9, D14): each refusal in its case,
     /// checked in order, and an admitted run holding an agent slot.
     #[test]
-    #[ignore = "slice 05: admit"]
     fn alloc_05_a_run_is_refused_in_each_case_and_admitted_holding_a_slot() {
         let runtime = std::env::temp_dir().join(format!("krowk-admit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&runtime);
@@ -568,6 +930,46 @@ mod tests {
         drop(admitted);
         assert!(admit(&task, &here).is_ok(), "let go as the child's turn completes");
         let _ = std::fs::remove_dir_all(&runtime);
+    }
+
+    /// D13: the child runs in the host's own mode, or the supervisor's when
+    /// that is stricter, and never one that asks nobody.
+    #[test]
+    fn a_tasks_child_runs_in_the_hosts_mode_or_a_stricter_one() {
+        use PermissionMode::*;
+        assert_eq!(child_mode(AcceptEdits, None), AcceptEdits);
+        assert_eq!(child_mode(AcceptEdits, Some(Default)), Default, "stricter asked");
+        assert_eq!(child_mode(AcceptEdits, Some(Plan)), Plan);
+        assert_eq!(child_mode(Default, Some(AcceptEdits)), Default, "never looser");
+        assert_eq!(child_mode(Default, Some(Unhinged)), Default);
+        assert_eq!(child_mode(Plan, Some(Default)), Plan);
+        assert_eq!(child_mode(Unhinged, None), Default, "a host that asks nobody still has a remote child ask");
+        assert_eq!(child_mode(BypassPermissions, Some(Plan)), Plan);
+    }
+
+    /// The record a child leaves for its bridge reads back as written, and a
+    /// session that is no task's has none.
+    #[test]
+    fn a_tasks_record_is_read_back_by_its_session() {
+        let dir = std::env::temp_dir().join(format!("krowk-task-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(read_task(&dir, "s1"), None);
+        let mut t = TaskRun { snapshot: "abc".into(), worktree: "/w/x".into(), denied: Vec::new() };
+        write_task(&dir, "s1", &t).unwrap();
+        assert_eq!(read_task(&dir, "s1"), Some(t.clone()));
+        t.denied.push("Bash `rm -rf build`".into());
+        write_task(&dir, "s1", &t).unwrap();
+        assert_eq!(read_task(&dir, "s1"), Some(t));
+        assert_eq!(read_task(&dir, "s2"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A machine over its limit is told by the supervisor's refusal.
+    #[test]
+    fn a_session_refused_over_the_machine_limit_is_found() {
+        assert_eq!(super::super::auto::limited("limited-session"), None);
+        super::super::auto::limit_refused("limited-session", "Free syncs sessions from two machines");
+        assert_eq!(super::super::auto::limited("limited-session").as_deref(), Some("Free syncs sessions from two machines"));
     }
 
     #[test]
