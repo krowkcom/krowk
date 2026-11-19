@@ -815,7 +815,7 @@ mod delegation {
         let description: String = a.task.trim().lines().next().unwrap_or_default().chars().take(80).collect();
         let spec = krowk_harness::sync::placement::TaskSpec { description, prompt: a.task, cwd, host, model, budget: Default::default(), permission_mode: None, store: None };
         let h = placer.start(spec, krowk_harness::sync::placement::Here::Worktree);
-        Ok((format!("Started task {}. It is being placed on a machine with room; call krowk_collect with this task_id to wait for it and bring its changes into this working tree.", h.id), json!({ "task_id": h.id })))
+        Ok((format!("Started task {}. It is being placed on a machine with room; call krowk_collect with this task_id to wait for it. Its changes land in this working tree when it finishes.", h.id), json!({ "task_id": h.id })))
     }
 
     pub fn collect(args: &Value) -> Outcome {
@@ -941,7 +941,7 @@ fn delegation_schemas() -> Vec<Value> {
     vec![
         json!({
             "name": "krowk_delegate",
-            "description": "Hand a self-contained task to a krowk agent that runs on whichever of your machines has room, and return a task_id at once. Use it instead of your own subagent tool when the task should run on whichever of your machines has room, for example when this machine is busy with builds or tests; for a quick task that can run here, use your own subagent tool. The task runs on this machine unless it is busy, otherwise on another of your machines that has a clone of this repository and a ready account, starting from this working tree's exact state: your uncommitted changes and unpushed commits included. The other agent has none of this conversation, so the task must say everything it needs. It runs one turn and cannot ask questions: what it would have asked is refused and listed in the result. Call krowk_collect with the task_id to wait for it; its changes are applied to this working tree, or kept in a worktree that the result names when they conflict. Tasks live in this krowk-mcp process: restarting the MCP server forgets them (the child keeps running on its machine, and its work stays in that machine's worktree). krowk_machines says what each machine has room for.",
+            "description": "Hand a self-contained task to a krowk agent that runs on whichever of your machines has room, and return a task_id at once. Use it instead of your own subagent tool when the task should run on whichever of your machines has room, for example when this machine is busy with builds or tests; for a quick task that can run here, use your own subagent tool. The task runs on this machine unless it is busy, otherwise on another of your machines that has a clone of this repository and a ready account, starting from this working tree's exact state: your uncommitted changes and unpushed commits included. The other agent has none of this conversation, so the task must say everything it needs. It runs one turn and cannot ask questions: what it would have asked is refused. Call krowk_collect with the task_id to wait for it. Its changes are applied to this working tree when it finishes, or kept in a worktree that the result names when they conflict, so do not edit the files it was asked to change while it runs; krowk_collect reports what landed. Tasks live in this krowk-mcp process: restarting the MCP server forgets them (the child keeps running on its machine, and its work stays in that machine's worktree). krowk_machines says what each machine has room for.",
             "inputSchema": { "type": "object", "required": ["task"], "properties": {
                 "task": { "type": "string", "description": "What the agent should do, in full." },
                 "host": { "type": "string", "description": "Run it on this machine, by the name krowk_machines gives, or `any` for any other machine than a busy one, or `any:macos`, `any:linux` or `any:windows` for one of that kind. Without it krowk picks: this machine unless it is busy." },
@@ -950,10 +950,10 @@ fn delegation_schemas() -> Vec<Value> {
         }),
         json!({
             "name": "krowk_collect",
-            "description": "Wait for a task started with krowk_delegate. Returns its summary once it has finished, with the changes applied to this working tree (or kept in a named worktree on a conflict), the approvals it was denied, its token usage and the machine it ran on. If it has not finished when the wait is over, it says the task is still running, and you call krowk_collect again with the same task_id. A task still being placed reads as still running too. A task that failed says why and on which machine.",
+            "description": "Wait for a task started with krowk_delegate. Returns its summary once it has finished, with the changes applied to this working tree (or kept in a named worktree on a conflict), the approvals a task on another machine was denied, its token usage and the machine it ran on. If it has not finished when the wait is over, it says the task is still running, and you call krowk_collect again with the same task_id. A task still being placed reads as still running too. A task that failed says why and on which machine.",
             "inputSchema": { "type": "object", "required": ["task_id"], "properties": {
                 "task_id": { "type": "string", "description": "The task_id krowk_delegate returned." },
-                "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "description": "How long to wait for it, at most (default 300). 0 only asks where it is." }
+                "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "description": "How long to wait for it, at most (default 300, the most 600). Pass less if your client gives a tool call less time. 0 only asks where it is." }
             }, "additionalProperties": false }
         }),
         json!({

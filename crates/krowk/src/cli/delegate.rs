@@ -98,8 +98,10 @@ pub fn run_local() -> RunLocal {
         let (code, out, err) = run(&args);
         let result: Option<RunResult> = out.lines().rev().find_map(|l| serde_json::from_str(l.trim()).ok());
         let Some(result) = result.filter(|r| code == 0 && r.status == TurnStatus::Completed) else {
-            let said = first_line(&err).or_else(|| first_line(&out)).unwrap_or_else(|| format!("krowk {VERSION} stopped with code {code}"));
-            return Err(said);
+            // Its stderr, which says what stopped it and, when it left edits
+            // behind, the worktree they are kept in.
+            let said: String = err.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ").chars().take(600).collect();
+            return Err(if said.is_empty() { first_line(&out).unwrap_or_else(|| format!("krowk {VERSION} stopped with code {code}")) } else { said });
         };
         let worktree = match &result.worktree {
             None => None,

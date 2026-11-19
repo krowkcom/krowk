@@ -16,9 +16,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   optional `host` and `model`), returns a task id at once and runs it on this
   machine unless it is busy, otherwise on another of yours, from your working
   tree's exact state. `krowk_collect` waits for it (five minutes at most,
-  then says it is still running, and you collect again), applies its changes
-  to the working tree the server runs in, and returns the summary, what was
-  applied or kept, the approvals it was denied, its usage and the machine.
+  then says it is still running, and you collect again) and returns the
+  summary, what was applied to the working tree the server runs in or kept,
+  the approvals it was denied, its usage and the machine; the changes land
+  when the task finishes.
   `krowk_machines` lists your machines as `krowk machines --json` does.
   Tasks live in the krowk-mcp process, so a restart forgets them (the child
   keeps running on its machine, and its work stays in that machine's
