@@ -237,10 +237,15 @@ pub struct ResultRef {
 }
 
 /// The result of `child` in `events`, its log as followed (R-ALLOC-8):
-/// none while its turn runs; `Err`, which fails the task, for a
-/// `task.result` in another session, before the turn's `turn.completed`,
-/// with a transport or key out of shape, or with one and not the other.
-/// Slice 07 builds it.
+/// none while its turn runs, and none when its `turn.completed` is there
+/// and no `task.result` yet (the bridge logs it once the result is
+/// stored). The first `task.result` in the child's session whose `turnId`
+/// is the completed turn's is the one taken. `Err`, which fails the task,
+/// for a `task.result` in another session, before the turn's
+/// `turn.completed` or for another turn, with a transport or key out of
+/// shape, or with one and not the other. Beyond these checks a result is
+/// not authenticated: it is trusted as the person's own sealed log is,
+/// which any of the person's devices can write. Slice 07 builds it.
 pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, String> {
     todo!("slice 07: the result of {child} in {} events", events.len())
 }
@@ -536,6 +541,7 @@ mod tests {
         let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()] });
         let key = || Some("ab".repeat(32));
         assert_eq!(result_of(&[], CHILD), Ok(None), "its turn still runs");
+        assert_eq!(result_of(&[done()], CHILD), Ok(None), "its turn completed, its result not stored yet");
         let got = result_of(&[done(), result(CHILD, Some("art_1"), key())], CHILD).unwrap().unwrap();
         assert_eq!((got.transport.as_deref(), got.against.as_str(), got.denied.len()), (Some("art_1"), "abc", 1));
         assert_eq!(result_of(&[done(), result(CHILD, None, None)], CHILD).unwrap().unwrap().transport, None, "an unchanged child");
@@ -543,6 +549,10 @@ mod tests {
         assert!(result_of(&[result(CHILD, Some("art_1"), key()), done()], CHILD).is_err(), "before its turn completed");
         assert!(result_of(&[done(), result(CHILD, Some("../x"), key())], CHILD).is_err(), "a transport out of shape");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), Some("zz".repeat(32)))], CHILD).is_err(), "a key out of shape");
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "u".into(), transport: Some("art_1".into()), key: key(), against: "abc".into(), denied: Vec::new() });
+        assert!(result_of(&[done(), other_turn], CHILD).is_err(), "for another turn");
+        let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
+        assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
     }
 
@@ -553,8 +563,9 @@ mod tests {
     fn alloc_07_recent_placements_add_without_overflow() {
         let none = anthropic();
         let mut m = machine("m", false);
+        cap(&mut m).agent_slots.in_use = 1;
         m.placed_recently = u32::MAX;
-        assert!(ruled_out(&m, &ask(&none, None)).is_some());
+        assert!(ruled_out(&m, &ask(&none, None)).is_some(), "full, not wrapped round to free");
     }
 
     /// Slice 07 (R-ALLOC-10): a pin to a machine by name, `any`, and an OS

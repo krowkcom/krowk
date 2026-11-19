@@ -54,6 +54,10 @@ pub const MAX_JOB: u64 = 64 << 20;
 /// What a job over `MAX_JOB` fails with.
 pub const JOB_TOO_BIG: &str = "This task carries more than 64 MiB of unpushed work. Push it, or run it on this machine.";
 
+/// What a job fails with when its unpushed commits change a fenced
+/// directory or a submodule, which no other machine is handed.
+pub const JOB_FENCED: &str = "This task's unpushed commits change .git, .claude, .codex, .krowk or a submodule, which krowk never hands to another machine. Push them, or run it on this machine.";
+
 /// What a handoff carries beside the log.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -211,8 +215,11 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
 /// stored under `session`. Left out: any change inside a `.git`,
 /// `.claude`, `.codex` or `.krowk` directory (`crate::tools::fenced_dir`,
 /// as a local return fences them) and any change to a submodule, which
-/// would name what runs, or what is allowed, on the target. Fails with
-/// `JOB_TOO_BIG` past `MAX_JOB`, `pack`'s own bound on untracked files
+/// would name what runs, or what is allowed, on the target. The unpushed
+/// commits are held to the same fence: when the commits on the way to
+/// HEAD that no remote has change a fenced path or a gitlink, it fails at
+/// once with `JOB_FENCED`, since a commit cannot be carried in part. Fails
+/// with `JOB_TOO_BIG` past `MAX_JOB`, `pack`'s own bound on untracked files
 /// included. Slice 04 builds it.
 pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, String> {
     todo!("slice 04: pack the job of {} for {session} ({} bytes of prompt)", cwd.display(), prompt.len())
@@ -231,7 +238,11 @@ pub struct JobApplied {
 /// the job's base with its changes, and the state recorded as a snapshot
 /// commit. Refused (`bad_job` to the supervisor) for a `base` that is not
 /// a commit id in hex, or a job changing anything `pack_job` leaves out (a
-/// fenced directory, a submodule): it came from no krowk's `pack_job`.
+/// fenced directory, a submodule), whether in its diff, its untracked
+/// files or its commits: once `base` is fetched, `git diff --name-only`
+/// from the newest ancestor of `base` an `origin` ref reaches to `base`
+/// must touch no fenced path and no gitlink. Such a job came from no
+/// krowk's `pack_job`.
 /// `base` is fetched, when the clone lacks it, from `commits` into a ref
 /// of krowk's own (`refs/krowk/jobs/…`), never a branch or tag the person
 /// has, then from origin. The snapshot is written with krowk's own
@@ -584,9 +595,8 @@ mod tests {
         let wt = &landed.applied.worktree.path;
         for (f, want) in [("one.txt", "one"), ("two.txt", "two"), ("kept.txt", "base\njob\n"), ("job-new.txt", "untracked")] {
             assert_eq!(std::fs::read_to_string(wt.join(f)).unwrap(), want, "{f}");
+            assert_eq!(git(wt, &["show", &format!("{}:{f}", landed.snapshot)]), want.trim_end(), "the snapshot holds {f} as the job left it");
         }
-        assert!(git(wt, &["diff", "--name-only", &landed.snapshot, "--"]).is_empty(), "the snapshot holds the job's tracked state");
-        assert_eq!(git(wt, &["show", &format!("{}:job-new.txt", landed.snapshot)]), "untracked", "and its untracked files");
         assert!(git(wt, &["merge-base", "--is-ancestor", &head, &landed.snapshot]).is_empty(), "on top of the job's base");
         assert_eq!(git(wt, &["log", "-1", "--format=%an <%ae>", &landed.snapshot]), "krowk <krowk@localhost>", "written as krowk, whatever the git config says");
         let _ = std::fs::remove_dir_all(&root);
@@ -610,8 +620,18 @@ mod tests {
         let b = origin_and_clone(&root, "b");
         let planted = Bundle { untracked: vec![Untracked { path: ".claude/settings.json".into(), executable: false, bytes: b"{}".to_vec() }], ..job.clone() };
         assert!(apply_job(&planted, &b, &root.join("worktrees")).is_err(), "a job carrying a fenced path is refused");
-        let bad_base = Bundle { base: "--upload-pack=touch /tmp/x".into(), ..job };
+        let bad_base = Bundle { base: "--upload-pack=touch /tmp/x".into(), ..job.clone() };
         assert!(apply_job(&bad_base, &b, &root.join("worktrees")).is_err(), "a base that is no commit id is refused");
+
+        // An unpushed commit that changes a fenced path: the supervisor
+        // fails at once, and a job carrying one anyway is refused.
+        git(&a, &["checkout", "-q", "-b", "local"]);
+        git(&a, &["add", "-f", ".krowk/settings.json"]);
+        git(&a, &["commit", "-q", "-m", "fenced"]);
+        assert_eq!(pack_job(&a, "0190f3c2-0000-7000-8000-000000000001", "p").unwrap_err(), JOB_FENCED);
+        git(&a, &["bundle", "create", "-q", "../planted.bundle", "local", "^origin/main"]);
+        let planted = Bundle { base: git(&a, &["rev-parse", "HEAD"]), commits: std::fs::read(root.join("planted.bundle")).unwrap(), diff: Vec::new(), untracked: Vec::new(), ..job };
+        assert!(apply_job(&planted, &b, &root.join("worktrees")).is_err(), "a job whose commits change a fenced path is refused");
         let _ = std::fs::remove_dir_all(&root);
     }
 

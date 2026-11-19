@@ -188,6 +188,9 @@ impl Announcement {
         if self.capacity.is_some_and(|c| !c.load_1m.is_finite() || c.load_1m < 0.0) {
             return Err("the announcement's load is not a number of zero or more".into());
         }
+        // Strict on purpose: a capacity no machine could have is a host's
+        // bug or a forgery, and the whole record is refused rather than
+        // placed on.
         if self.capacity.is_some_and(|c| c.cores == 0 || c.build_slots.in_use > c.build_slots.total || c.agent_slots.in_use > c.agent_slots.total) {
             return Err("the announcement's capacity has no cores, or more slots in use than it has".into());
         }

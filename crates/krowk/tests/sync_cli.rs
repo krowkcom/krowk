@@ -54,7 +54,7 @@ const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
 const DELEGATED: &str = "write-the-delegated-file-9d41";
 /// A task long enough for its machine to be dropped under it, and to
 /// outlast the test's bound, so only the drop can end it.
-const LONG_TASK: &str = "a-two-minute-task-4c07";
+const TEN_MINUTE_TASK: &str = "a-ten-minute-task-4c07";
 
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
@@ -105,7 +105,7 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     if !has_result && text.contains(DELEGATED) {
         return mock::Reply::sse(&mock::tool_use("toolu_01Deleg", "write", &serde_json::json!({"path": "delegated.txt", "content": "delegated\n"})));
     }
-    if !has_result && text.contains(LONG_TASK) {
+    if !has_result && text.contains(TEN_MINUTE_TASK) {
         // Ten minutes at this pace: it outlasts the drop test's bound.
         let words: String = (0..30_000).map(|i| format!("taskword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
@@ -1679,7 +1679,7 @@ fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
     let w = World::new("dropped");
     let (a, b, serve) = allocating(&w);
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": LONG_TASK, "host": "a"}));
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": TEN_MINUTE_TASK, "host": "a"}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap().to_string();
     let (said, _, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 5}));
