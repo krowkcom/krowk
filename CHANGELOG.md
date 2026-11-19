@@ -30,6 +30,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 - **A sync refused for needing a paid plan points at `krowk billing`**
   instead of the dashboard's address.
 
+- **A machine over your plan's machine limit stays a viewer instead of
+  stopping sync.** When the registry refuses this machine because the plan's
+  machines are already running sessions, krowk no longer pauses all sync for
+  an hour. The machine doesn't host, still follows your other sessions, and
+  says once why: `Free syncs sessions from two machines, and this would be a
+  third (mbp, desktop). You can still follow from here, or run krowk billing
+  to upgrade.` Moving a session to such a machine with `krowk sync take`
+  leaves it where it runs: `Can't move this session to <name>: …`. `--json`
+  carries the `sync_machine_limit` code, and for `krowk sync host` the plan,
+  the limit and the machines.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added
