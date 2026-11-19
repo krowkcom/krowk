@@ -119,9 +119,47 @@ pub struct AnnouncedRepository {
 /// stripped and the host lower-cased, so no credential is ever announced:
 /// `git@github.com:Acme/app.git` and `https://github.com/Acme/app` are
 /// both `github.com/Acme/app`. None for a URL that names no host (a local
-/// path), which no other machine has. Slice 02 implements it.
+/// path), which no other machine has. A port is dropped too: ssh and https
+/// name one repository on different ports.
 pub fn normalise_origin(url: &str) -> Option<String> {
-    todo!("slice 02: normalise {url}")
+    let url = url.trim();
+    if url.contains('\\') {
+        return None;
+    }
+    let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        if scheme.is_empty() || scheme.eq_ignore_ascii_case("file") {
+            return None;
+        }
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // A bracketed IPv6 address ends at its bracket, a port after it
+        // dropped; otherwise `host:port`.
+        let host = match host.strip_prefix('[') {
+            Some(v6) => &host[..v6.find(']')? + 2],
+            None => host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(h, _)| h),
+        };
+        (host, path)
+    } else {
+        // scp-like: `[user[:secret]@]host:path`, the colon before any slash.
+        let head = url.split('/').next().unwrap_or("");
+        let rest = head.rfind('@').map_or(url, |i| &url[i + 1..]);
+        let (host, path) = rest.split_once(':')?;
+        if host.len() < 2 {
+            return None;
+        }
+        (host, path)
+    };
+    let path = path.split(['?', '#']).next().unwrap_or("").trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    let origin = format!("{}/{path}", host.to_ascii_lowercase());
+    // Fails closed: a secret that broke the reading (one with a `/`, `#`
+    // or `:` in it) leaves an `@` or a bare `:` behind, and a real origin
+    // has neither in its host.
+    let bare = host.strip_prefix('[').map_or(host, |_| "");
+    if host.is_empty() || path.is_empty() || bare.contains([':', '@']) || origin.contains('@') || origin.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(origin)
 }
 
 /// One of the host's instances, and whether it is ready.
