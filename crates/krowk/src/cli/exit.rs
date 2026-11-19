@@ -28,6 +28,8 @@ fn client(code: &str) -> Option<i32> {
         // `krowk upgrade` and a release whose checksums its workflow did not
         // sign: refused, not retried.
         "unverified_release" => REFUSED,
+        // `krowk billing` for a member: an owner or admin manages it.
+        "billing_not_permitted" => REFUSED,
         // A backend is not started in a repository nobody trusted (R-BACK-6).
         #[cfg(feature = "harness")]
         "untrusted_directory" => REFUSED,

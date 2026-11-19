@@ -937,7 +937,8 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     let head = headline(err);
     let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, &head))];
     for (k, v) in &body {
-        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled") {
+        // `billing_contacts` is for a parser: the fix already names them.
+        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled" | "billing_contacts") {
             continue;
         }
         // A fix that is the registry's message whole says it once.

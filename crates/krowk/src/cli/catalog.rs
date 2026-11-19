@@ -220,6 +220,12 @@ last. `krowk config set workspace <name>` pins a repository to a workspace, so
 every command run inside it — by anyone, agent or person — lands there
 without saying so. Where the files live: `krowk help environment`.";
 
+const BILLING_ABOUT: &str = "\
+Opens the dashboard for the workspace the key belongs to: the plan chooser on
+Free, the subscription (plan, cancellation, invoices) on Pro or Business.
+Only owners and admins manage billing; a member is told who to ask, and it
+exits 4. `krowk upgrade` is something else: it updates krowk itself.";
+
 const BUDGET_ABOUT: &str = "\
 Checks by what the provider metered: the session's cost and generated tokens
 (output and reasoning), its subagents' included. Over a limit it exits 4; a
@@ -396,6 +402,10 @@ pub fn catalog(version: &str) -> Catalog {
             },
             cmd("logout", "krowk logout", "Remove this machine's key"),
             cmd("whoami", "krowk whoami", "Show the key and its workspace"),
+            Command {
+                flags: vec![flag("no-browser", BOOL, "Print the page instead of opening a browser — the default over SSH, or with no display")],
+                ..cmd("billing", "krowk billing [--no-browser]", "Choose or manage the workspace's plan")
+            },
             Command {
                 subcommands: vec![
                     Command {
@@ -1014,6 +1024,7 @@ pub fn about(name: &str) -> &'static str {
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
         "upgrade" => "Upgrades krowk to the latest release.",
+        "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
         "hosts" => HOSTS_ABOUT,
         #[cfg(feature = "harness")]
@@ -1125,7 +1136,7 @@ pub const GROUPS: &[(&str, &[&str])] = &[
     #[cfg(feature = "harness")]
     ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
     ("Publish", &["push", "runs", "artifacts", "claim"]),
-    ("Account", &["login", "logout", "whoami", "workspaces", "auth"]),
+    ("Account", &["login", "logout", "whoami", "billing", "workspaces", "auth"]),
     (
         "Other",
         &[
@@ -1166,6 +1177,9 @@ pub const ALL_ONLY: &[&str] = &[
     // Only for a person with more than one machine syncing.
     #[cfg(all(feature = "harness", unix))]
     "hosts",
+    // Upkeep the prices mostly do for themselves; its line went to `billing`.
+    #[cfg(feature = "sessions")]
+    "pricing",
 ];
 
 #[cfg(test)]
