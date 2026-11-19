@@ -271,7 +271,19 @@ pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, Strin
     // The uncommitted changes, less those in a fenced directory and in
     // submodules.
     let changed = git_out(&top, &["diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=all", "HEAD", "--"])?;
-    let fenced: Vec<String> = changed.split(|b| *b == 0).filter_map(|p| std::str::from_utf8(p).ok()).filter(|p| crate::tools::fenced_dir(Path::new(p)).is_some()).map(|p| format!(":(exclude,literal){p}")).collect();
+    let mut fenced = Vec::new();
+    for name in changed.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let Ok(name) = std::str::from_utf8(name) else {
+            return Err(format!("a changed file's name is not UTF-8, so it cannot move. {JOB_FENCED}"));
+        };
+        if crate::tools::fenced_dir(Path::new(name)).is_some() {
+            fenced.push(format!(":(exclude,literal){name}"));
+        }
+    }
+    // One argument each: past what a command line takes, the job is not made.
+    if fenced.len() > 1000 {
+        return Err(JOB_FENCED.to_string());
+    }
     let mut args = vec!["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=all", "HEAD", "--"];
     args.extend(fenced.iter().map(String::as_str));
     let diff = git_out(&top, &args)?;
@@ -323,20 +335,20 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
         return Err(format!("the job carries {}, inside a directory krowk never hands to another machine", f.path));
     }
     if !b.diff.is_empty() {
+        let text = String::from_utf8_lossy(&b.diff);
+        // pack_job asks for no renames, so a patch with one or a copy is not its: the old name is not in `--numstat`.
+        if text.lines().any(|l| l.starts_with("rename ") || l.starts_with("copy ") || l.starts_with("similarity ") || l.starts_with("dissimilarity ")) {
+            return Err("the job carries a rename or a copy, which krowk's jobs never do".to_string());
+        }
         let names = git_run(repo, &["apply", "--numstat", "-z", "-"], Some(&b.diff)).map_err(|e| format!("the job's changes are not a patch: {e}"))?;
-        let mut paths = names.split(|c| *c == 0).filter(|p| !p.is_empty()).map(String::from_utf8_lossy);
-        // `added<TAB>deleted<TAB>path`, or with an empty path the old and the new follow.
-        while let Some(t) = paths.next() {
-            let path = match t.rsplit('\t').next() {
-                Some("") => paths.next().and_then(|_| paths.next()),
-                Some(p) => Some(std::borrow::Cow::Owned(p.to_string())),
-                None => None,
-            };
-            if path.is_some_and(|p| crate::tools::fenced_dir(Path::new(p.as_ref())).is_some()) {
+        // `added<TAB>deleted<TAB>path`, NUL-ended.
+        for t in names.split(|c| *c == 0).filter(|p| !p.is_empty()) {
+            let t = String::from_utf8_lossy(t);
+            if t.splitn(3, '\t').nth(2).is_none_or(|p| crate::tools::fenced_dir(Path::new(p)).is_some()) {
                 return Err("the job carries changes inside a directory krowk never hands to another machine".to_string());
             }
         }
-        if String::from_utf8_lossy(&b.diff).lines().any(|l| l.trim_end() == "new file mode 160000" || l.starts_with("+Subproject commit ") || l.starts_with("-Subproject commit ") || l.ends_with(" 160000")) {
+        if text.lines().any(|l| l.trim_end() == "new file mode 160000" || l.starts_with("+Subproject commit ") || l.starts_with("-Subproject commit ") || l.ends_with(" 160000")) {
             return Err("the job carries a submodule change, which krowk never hands to another machine".to_string());
         }
     }
@@ -366,6 +378,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
         return Err(format!("this clone does not have commit {} the job starts from, and neither the job's commits nor `git fetch origin` brought it — push it, or run the task on the machine that has it", b.base));
     }
     if commits_touch_fence(repo, &b.base)? {
+        let _ = git_run(repo, &["update-ref", "-d", &job_ref], None);
         return Err("the job's commits change a directory or submodule krowk never hands to another machine".to_string());
     }
     let applied = apply(b, repo, worktrees)?;
@@ -813,6 +826,10 @@ mod tests {
         let b = origin_and_clone(&root, "b");
         let planted = Bundle { diff: b"diff --git a/.claude/settings.json b/.claude/settings.json\n--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"x\":1}\n".to_vec(), ..job };
         assert!(apply_job(&planted, &b, &root.join("worktrees")).is_err());
+        let rename = Bundle { diff: b"diff --git a/.claude/settings.json b/moved\nsimilarity index 100%\nrename from .claude/settings.json\nrename to moved\n".to_vec(), ..planted.clone() };
+        assert!(apply_job(&rename, &b, &root.join("worktrees")).is_err(), "a rename out of a fenced directory");
+        let tab = Bundle { diff: b"diff --git a/.claude/a\tb b/.claude/a\tb\nnew file mode 100644\n--- /dev/null\n+++ b/.claude/a\tb\n@@ -0,0 +1 @@\n+x\n".to_vec(), ..planted };
+        assert!(apply_job(&tab, &b, &root.join("worktrees")).is_err(), "a tab in a fenced name");
         let _ = std::fs::remove_dir_all(&root);
     }
 
