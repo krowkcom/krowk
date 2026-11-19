@@ -788,6 +788,27 @@ fn lock(b: &Mutex<BTreeSet<String>>) -> std::sync::MutexGuard<'_, BTreeSet<Strin
     b.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The sessions whose bridge was refused hosting for the machine limit
+/// (R-SYNC-17), with the sentence said: how a handed-over task's host
+/// learns its child may not run here (`limited`, R-ALLOC-3). Process-wide,
+/// as the daemon's one supervisor is, and bounded.
+static LIMITED: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+/// What the registry said when it refused `session`'s bridge over the
+/// machine limit, if it did.
+pub fn limited(session: &str) -> Option<String> {
+    LIMITED.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(s, _)| s == session).map(|(_, said)| said.clone())
+}
+
+pub(super) fn limit_refused(session: &str, said: &str) {
+    let mut l = LIMITED.lock().unwrap_or_else(|e| e.into_inner());
+    l.retain(|(s, _)| s != session);
+    if l.len() >= 256 {
+        l.remove(0);
+    }
+    l.push((session.to_string(), said.to_string()));
+}
+
 /// A session the supervisor has: its checks running, or its bridge.
 enum Has {
     /// Its checks run, begun under this policy generation (`u64::MAX`
@@ -1377,6 +1398,7 @@ impl Sup {
         if let Err(e) = &r
             && let Some((said, _)) = host::machine_limit(e)
         {
+            limit_refused(&session, said);
             if self.said_limit.as_deref() != Some(said) {
                 eprintln!("krowk: {said}");
                 self.said_limit = Some(said.to_string());

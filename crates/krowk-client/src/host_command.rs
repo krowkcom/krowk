@@ -324,9 +324,15 @@ pub fn key_shaped(s: &str) -> bool {
 /// when it asks nobody, as for `start`) and the `run`'s `permissionMode`.
 /// From strictest: `plan`, `default`, `acceptEdits`, `bypassPermissions`,
 /// `unhinged`. A `run` can only narrow the host's mode, never loosen it.
-/// Slice 05 builds it.
 pub fn stricter(a: PermissionMode, b: PermissionMode) -> PermissionMode {
-    todo!("slice 05: the stricter of {} and {}", a.name(), b.name())
+    let rank = |m: PermissionMode| match m {
+        PermissionMode::Plan => 0,
+        PermissionMode::Default => 1,
+        PermissionMode::AcceptEdits => 2,
+        PermissionMode::BypassPermissions => 3,
+        PermissionMode::Unhinged => 4,
+    };
+    if rank(b) < rank(a) { b } else { a }
 }
 
 /// `s` cut so that it takes at most `most` bytes as JSON, escapes

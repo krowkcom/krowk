@@ -11,6 +11,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A machine runs a task another of your machines hands it.** In a
+  repository you have trusted there and that matches the task's origin, the
+  host starts a fresh worktree at the sender's exact state and runs the task
+  as one turn of a session you can follow and steer from any device. It is
+  refused, with what to fix, when it does not take work from your other
+  machines, has no clone, has no ready account for the model, has no free
+  agent slot, or is over your machine limit. The session runs in the machine's
+  own permission mode, or a stricter one when asked, and an approval it would
+  ask for is denied and kept for the summary.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`
