@@ -68,6 +68,9 @@ fn announcement(device: DeviceId, version: &str) -> Announcement {
         ],
         directories: vec!["/home/ann/code/app".into()],
         sessions: Vec::new(),
+        capacity: None,
+        repositories: Vec::new(),
+        accepting: false,
     }
 }
 

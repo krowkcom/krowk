@@ -509,6 +509,49 @@
           ]
         },
         {
+          "description": "A task another machine handed this session ended (R-ALLOC-6,\nR-ALLOC-14): its one turn completed, and its changes were stored as\na result for the supervisor that handed it over. Logged by the\nsession's bridge, which holds its lease, after the turn's\n`turn.completed`. The summary is the turn's final message, and its\nusage the turn's. A viewer older than this event skips it, as it\nskips any line it does not read (R-SUB-9).",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "transport": {
+              "description": "The result's transport, stored under this session, and its key,\n64 hex digits: none when the child changed nothing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "against": {
+              "description": "The commit the result is against: the job's snapshot on this\nmachine (its base, uncommitted changes and untracked files), so\nthe result holds the child's work alone.",
+              "type": "string"
+            },
+            "denied": {
+              "description": "Each approval denied because a remote child cannot ask: the tool\nand what it asked, or the ask rule that became a denial.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "type": {
+              "type": "string",
+              "const": "task.result"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "against"
+          ]
+        },
+        {
           "description": "The turn is over.",
           "type": "object",
           "properties": {

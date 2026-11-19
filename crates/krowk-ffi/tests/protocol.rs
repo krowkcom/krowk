@@ -46,9 +46,10 @@ fn log_body_index(body: &LogBody) -> usize {
         LogBody::BackendHandoff { .. } => 10,
         LogBody::SessionMoved { .. } => 11,
         LogBody::TurnCompleted { .. } => 12,
+        LogBody::TaskResult { .. } => 13,
     }
 }
-const LOG_BODIES: usize = 13;
+const LOG_BODIES: usize = 14;
 
 /// One of every `LogBody` variant, every `Item` among them, and every
 /// optional field filled where it has one.
@@ -139,6 +140,7 @@ fn log_bodies() -> Vec<LogBody> {
             fell_back: Some("too long".into()),
         },
         LogBody::SessionMoved { cwd: "/srv/repo".into(), device: "laptop".into(), from_device: "desk".into() },
+        LogBody::TaskResult { turn_id: turn_id(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()] },
         LogBody::TurnCompleted {
             turn_id: turn_id(),
             status: TurnStatus::Failed,

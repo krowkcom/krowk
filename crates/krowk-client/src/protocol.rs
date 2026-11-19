@@ -934,6 +934,31 @@ pub enum LogBody {
         device: String,
         from_device: String,
     },
+    /// A task another machine handed this session ended (R-ALLOC-6,
+    /// R-ALLOC-14): its one turn completed, and its changes were stored as
+    /// a result for the supervisor that handed it over. Logged by the
+    /// session's bridge, which holds its lease, after the turn's
+    /// `turn.completed`. The summary is the turn's final message, and its
+    /// usage the turn's. A viewer older than this event skips it, as it
+    /// skips any line it does not read (R-SUB-9).
+    #[serde(rename = "task.result")]
+    TaskResult {
+        turn_id: String,
+        /// The result's transport, stored under this session, and its key,
+        /// 64 hex digits: none when the child changed nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        transport: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        key: Option<String>,
+        /// The commit the result is against: the job's snapshot on this
+        /// machine (its base, uncommitted changes and untracked files), so
+        /// the result holds the child's work alone.
+        against: String,
+        /// Each approval denied because a remote child cannot ask: the tool
+        /// and what it asked, or the ask rule that became a denial.
+        #[serde(default)]
+        denied: Vec<String>,
+    },
     /// The turn is over.
     #[serde(rename = "turn.completed")]
     TurnCompleted {

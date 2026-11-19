@@ -140,6 +140,13 @@ pub enum LogBody {
         device: String,
         from_device: String,
     },
+    TaskResult {
+        turn_id: String,
+        transport: Option<String>,
+        key: Option<String>,
+        against: String,
+        denied: Vec<String>,
+    },
     TurnCompleted {
         turn_id: String,
         status: TurnStatus,

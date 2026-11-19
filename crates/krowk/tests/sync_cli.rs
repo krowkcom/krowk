@@ -11,7 +11,10 @@
 //! history there and stops it with `x` (R-SUB-12). And `krowk sync new`
 //! from B starting a session on A's host daemon and following it, or
 //! refusing, with nothing sent, a host that is offline, a directory it did
-//! not offer and a model it cannot run (R-HOST-4).
+//! not offer and a model it cannot run (R-HOST-4). And automatic
+//! allocation's machines (`alloc_…`, pending until their slices land):
+//! `krowk machines`, krowk-mcp's delegate and collect, and a target that
+//! drops mid-task.
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -46,6 +49,12 @@ const LIMITED: &str = "past-the-limit-prompt-3e0a";
 /// A prompt A's `anthropic` instance answers, leaving one request in a
 /// hundred: an early offer.
 const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
+
+/// A task handed to another machine, which writes `delegated.txt`.
+const DELEGATED: &str = "write-the-delegated-file-9d41";
+/// A task long enough for its machine to be dropped under it, and to
+/// outlast the test's bound, so only the drop can end it.
+const TEN_MINUTE_TASK: &str = "a-ten-minute-task-4c07";
 
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
@@ -89,6 +98,16 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     }
     if !has_result && text.contains("a long answer") {
         let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    // A handed-over task: one file written, then done; or a long one, for
+    // a machine to drop under.
+    if !has_result && text.contains(DELEGATED) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Deleg", "write", &serde_json::json!({"path": "delegated.txt", "content": "delegated\n"})));
+    }
+    if !has_result && text.contains(TEN_MINUTE_TASK) {
+        // Ten minutes at this pace: it outlasts the drop test's bound.
+        let words: String = (0..30_000).map(|i| format!("taskword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
     for (ask, file) in [("make the allowed file", "allowed.txt"), ("make the denied file", "denied.txt")] {
@@ -1487,4 +1506,188 @@ fn r_cred_1_a_take_b_cannot_run_is_refused_with_its_fix_and_the_session_stays() 
     assert_eq!(code, "take_refused", "{message}");
     assert!(message.contains("stays where it is") && !message.contains('{'), "the take's own fix: {message}");
     assert_eq!(m.holder(), Some(m.ids[0].to_string()), "the session stays on A");
+}
+
+/// A and B with one repository, real clones of one origin announced as
+/// `github.com/acme/app`; A trusting it, taking edits without asking, and
+/// serving, announced as accepting work; B having seen it so.
+fn allocating(w: &World) -> (Machine, Machine, Running) {
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    let git = |dir: &std::path::Path, args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(dir).stdout(Stdio::null()).status().unwrap().success(), "git {args:?}");
+    let seed = w.root.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    git(&seed, &["init", "-q"]);
+    std::fs::write(seed.join("lib.rs"), "fn a() {}\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-q", "-m", "base"]);
+    git(&w.root, &["clone", "-q", "--bare", "seed", "origin.git"]);
+    for m in [&a, &b] {
+        std::fs::remove_dir_all(&m.repo).unwrap();
+        git(&w.root, &["clone", "-q", "origin.git", m.repo.to_str().unwrap()]);
+        git(&m.repo, &["remote", "set-url", "origin", "https://github.com/acme/app.git"]);
+    }
+    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    let serve = Running::spawn(a.command(&["host", "serve"]));
+    let _ = machines_row(&b, "a", |m| m["online"] == true && m["accepting"] == true && m["repositories"].as_array().is_some_and(|r| !r.is_empty()));
+    (a, b, serve)
+}
+
+/// `name`'s row in `m`'s `krowk machines --json`, once it passes `want`.
+fn machines_row(m: &Machine, name: &str, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = m.command(&["machines", "--json"]).stdin(Stdio::null()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if let Some(row) = v["machines"].as_array().and_then(|l| l.iter().find(|r| r["name"] == name)).filter(|r| want(r)) {
+            return row.clone();
+        }
+        assert!(Instant::now() < deadline, "never saw {name} as wanted: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// krowk-mcp on `m`, in its repository, spoken to a line at a time.
+struct Mcp {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    out: mpsc::Receiver<serde_json::Value>,
+    next: u64,
+}
+
+impl Mcp {
+    fn start(m: &Machine) -> Mcp {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_krowk-mcp")).env_clear().envs(m.env.iter().map(|(k, v)| (k, v))).current_dir(&m.repo).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, out) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(serde_json::from_str(&line).unwrap_or_default());
+            }
+        });
+        let mut mcp = Mcp { child, stdin, out, next: 0 };
+        mcp.ask("initialize", serde_json::json!({"protocolVersion": "2025-06-18"}));
+        mcp
+    }
+
+    fn ask(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.next += 1;
+        writeln!(self.stdin, "{}", serde_json::json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params})).unwrap();
+        self.out.recv_timeout(Duration::from_secs(400)).expect("krowk-mcp answered")
+    }
+
+    /// A tool's result: its text, and whether it is an error.
+    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> (String, bool, serde_json::Value) {
+        let r = self.ask("tools/call", serde_json::json!({"name": tool, "arguments": arguments}));
+        let text = r["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+        (text, r["result"]["isError"] == true, r["result"]["structuredContent"].clone())
+    }
+}
+
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// Every build slot of `m` held, as a machine running CI holds them.
+fn all_build_slots(m: &Machine) -> Vec<krowk_harness::slots::Slot> {
+    let pool = krowk_harness::slots::Pool::new(m.run.join("krowk"), "build-slots", 64);
+    std::iter::from_fn(|| pool.try_take().unwrap()).collect()
+}
+
+/// Slice 03 (R-ALLOC-2, D16): B's `krowk machines` lists A with its
+/// capacity, repository and acceptance and, for the current repository,
+/// ready; `--json` carries the same; `krowk hosts` prints the same.
+#[test]
+#[ignore = "slice 03: krowk machines"]
+fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
+    let w = World::new("machines");
+    let (_a, b, _serve) = allocating(&w);
+    let row = machines_row(&b, "a", |_| true);
+    assert!(row["capacity"]["cores"].as_u64().is_some_and(|c| c >= 1) && row["capacity"]["agentSlots"]["total"].as_u64().is_some_and(|t| t >= 1), "{row}");
+    assert_eq!(row["repositories"][0]["origin"], "github.com/acme/app", "{row}");
+    assert_eq!(row["here"], "ready", "ready for B's repository: {row}");
+    let shape = |args: &[&str]| -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_slice(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
+        v["machines"].as_array().unwrap().iter().map(|m| (m["name"].clone(), m.as_object().unwrap().keys().cloned().collect::<Vec<_>>())).map(|(n, k)| serde_json::json!([n, k])).collect()
+    };
+    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk hosts is krowk machines");
+    let human = String::from_utf8_lossy(&b.command(&["machines", "--format", "human"]).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
+    assert!(human.lines().any(|l| l.starts_with("a ") && l.contains("accepting")) && human.contains("ready"), "{human}");
+}
+
+/// Slice 08 (R-ALLOC-11, D18): from krowk-mcp on B, a task pinned to A is
+/// delegated, collected while it runs, and collected again once done, its
+/// file landed in B's working tree.
+#[test]
+#[ignore = "slice 08: krowk_delegate and krowk_collect"]
+fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
+    let w = World::new("delegate");
+    let (_a, b, _serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "a"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap_or_else(|| panic!("a task id: {started}")).to_string();
+    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 0}));
+    assert!(!err && said.contains("still running"), "{said}");
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "a", "{done}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "the change is in B's working tree");
+}
+
+/// Slice 10, the CI case through krowk-mcp: B has every build slot held,
+/// A is idle; a task delegated with no host runs on A from B's exact
+/// state, an unpushed commit and an uncommitted change included, and its
+/// file lands in B's working tree.
+#[test]
+#[ignore = "slice 10: the CI case through krowk-mcp"]
+fn alloc_10_with_this_machine_busy_krowk_mcp_runs_the_task_on_the_other() {
+    let w = World::new("ci-mcp");
+    let (_a, b, _serve) = allocating(&w);
+    let git = |args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&b.repo).stdout(Stdio::null()).status().unwrap().success());
+    git(&["checkout", "-q", "-b", "local"]);
+    std::fs::write(b.repo.join("unpushed.rs"), "fn u() {}\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "unpushed"]);
+    std::fs::write(b.repo.join("lib.rs"), "fn a() {}\nfn uncommitted() {}\n").unwrap();
+    let _ci = all_build_slots(&b);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "a", "B is busy, so A: {done}");
+    assert!(said.contains("build slots in use"), "why A: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n");
+    assert_eq!(std::fs::read_to_string(b.repo.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "B's own change is kept");
+}
+
+/// Slice 10 (R-ALLOC-9): A stops announcing mid-task, its daemon gone; B's
+/// collect fails within OFFLINE_AFTER and a margin, naming A and where the
+/// work is.
+#[test]
+#[ignore = "slice 10: a target that drops mid-task"]
+fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
+    let w = World::new("dropped");
+    let (a, b, serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": TEN_MINUTE_TASK, "host": "a"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    let (said, _, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 5}));
+    assert!(said.contains("still running"), "{said}");
+    drop(serve);
+    let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let dropped = Instant::now();
+    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(err && said.contains("a went offline mid-task; its work is in a worktree there."), "{said}");
+    assert!(dropped.elapsed() < Duration::from_secs(120), "within the offline limit and a margin: {:?}", dropped.elapsed());
 }

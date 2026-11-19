@@ -5,8 +5,8 @@
 
 use krowk_client::device_chain::{Action, Chain, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, hex, DeviceId, DeviceKey, Label, SigningKey};
-use krowk_client::host_command::{self, HostAnswer, HostCommand};
-use krowk_client::protocol::ModelRef;
+use krowk_client::host_command::{self, HostAnswer, HostCommand, JobRef, RunRefusal, RunTask};
+use krowk_client::protocol::{BudgetLimits, ModelRef, PermissionMode};
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeys};
 
@@ -239,4 +239,93 @@ fn r_hand_4_a_take_and_its_answer_open_on_the_other_side() {
         let Err(HostAnswer::Refused { code, .. }) = open(&seal(bad)) else { panic!("opened") };
         assert_eq!(code, "bad_command");
     }
+}
+
+/// A `run` from `from`, its job named `job_key`.
+fn run(from: &DeviceId) -> HostCommand {
+    HostCommand::Run(RunTask {
+        origin: "github.com/someone/secret-project".into(),
+        model: ModelRef { instance: "claude:work".into(), model: "claude-opus-5-5".into() },
+        job: JobRef { session: "0190f3c2-0000-7000-8000-000000000001".into(), transport: "art_0123456789abcdef".into(), key: "ab".repeat(32) },
+        budget: BudgetLimits { max_usd: Some(2.5), max_tokens: None },
+        requested_by: from.to_string(),
+        permission_mode: Some(PermissionMode::Plan),
+        not_after_ms: 1_790_000_030_000,
+    })
+}
+
+/// R-ALLOC-3: a `run` opens on the host as sent, with the wire names canon
+/// documents, and each answer it gets opens on the supervisor's machine.
+#[test]
+fn r_alloc_3_a_run_and_its_answers_open_on_the_other_side() {
+    let w = world();
+    let c = chain(&w);
+    let sealed = host_command::seal_command(&run(&w.phone.id()), ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(run(&w.phone.id())));
+    assert!(sealed.len() <= host_command::MAX_SEALED, "a run is far within the 16 KB a command may seal to");
+    for secret in ["secret-project", "claude:work", &"ab".repeat(32)] {
+        assert!(!sealed.windows(secret.len()).any(|w| w == secret.as_bytes()), "{secret} is in the sealed bytes");
+    }
+    let me = w.phone.id().to_string();
+    let wire = serde_json::to_value(run(&w.phone.id())).unwrap();
+    assert_eq!(wire, serde_json::json!({"type": "run", "origin": "github.com/someone/secret-project", "model": {"instance": "claude:work", "model": "claude-opus-5-5"}, "job": {"session": "0190f3c2-0000-7000-8000-000000000001", "transport": "art_0123456789abcdef", "key": "ab".repeat(32)}, "budget": {"maxUsd": 2.5}, "requestedBy": me, "permissionMode": "plan", "notAfterMs": 1_790_000_030_000i64}));
+    let bare = serde_json::json!({"type": "run", "origin": "o", "model": {"instance": "anthropic", "model": "m"}, "job": {"session": "0190f3c2-0000-7000-8000-000000000001", "transport": "art_1", "key": "ab".repeat(32)}, "requestedBy": me, "notAfterMs": 1});
+    let HostCommand::Run(t) = serde_json::from_value(bare).unwrap() else { panic!("not a run") };
+    assert_eq!((t.budget, t.permission_mode), (BudgetLimits::default(), None), "neither budget nor mode is needed");
+
+    let mut answers = vec![HostAnswer::Started { session_id: "0190f3c2-0000-7000-8000-000000000002".into() }];
+    answers.extend(RunRefusal::ALL.map(|r| r.answer("a fix line")));
+    for answer in answers {
+        let sealed = host_command::seal_answer(&answer, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+        assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), answer);
+    }
+}
+
+/// R-ALLOC-3: the refusal codes are the spec's, each read back as itself.
+#[test]
+fn r_alloc_3_the_refusal_codes_are_the_specs() {
+    let codes: Vec<&str> = RunRefusal::ALL.iter().map(|r| r.code()).collect();
+    assert_eq!(codes, ["no_clone", "no_model", "no_slot", "not_accepting", "machine_limit", "bad_job"]);
+    for r in RunRefusal::ALL {
+        assert_eq!(RunRefusal::of(r.code()), Some(r));
+    }
+    assert_eq!(RunRefusal::of("unknown_command"), None);
+}
+
+/// R-ALLOC-3: a job named as no stored job is is answered `bad_job`, and a
+/// `run` that says it is from another device than its sender's is refused.
+#[test]
+fn r_alloc_3_a_run_is_refused_for_a_bad_job_or_another_devices_name() {
+    let w = world();
+    let seal = |c: &HostCommand| host_command::seal_command(c, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    let open = |sealed: &[u8]| host_command::open_command(sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &chain(&w)).unwrap();
+    let HostCommand::Run(good) = run(&w.phone.id()) else { unreachable!() };
+    for job in [JobRef { session: "--help".into(), ..good.job.clone() }, JobRef { transport: "../x".into(), ..good.job.clone() }, JobRef { key: "zz".repeat(32), ..good.job.clone() }] {
+        let Err(HostAnswer::Refused { code, .. }) = open(&seal(&HostCommand::Run(RunTask { job, ..good.clone() }))) else { panic!("opened") };
+        assert_eq!(code, "bad_job");
+    }
+    let Err(HostAnswer::Refused { code, .. }) = open(&seal(&run(&w.tablet.id()))) else { panic!("opened") };
+    assert_eq!(code, "bad_command", "a run from the phone naming the tablet");
+}
+
+/// Slice 05 (D13): a `run`'s mode only narrows the host's: the stricter
+/// of the two, in the documented order, either way round.
+#[test]
+#[ignore = "slice 05: stricter"]
+fn alloc_05_a_runs_mode_only_narrows_the_hosts() {
+    use PermissionMode::*;
+    let order = [Plan, Default, AcceptEdits, BypassPermissions, Unhinged];
+    for (i, a) in order.iter().enumerate() {
+        for (j, b) in order.iter().enumerate() {
+            let want = order[i.min(j)];
+            assert_eq!(host_command::stricter(*a, *b), want, "{a:?} and {b:?}");
+        }
+    }
+}
+
+/// The shapes a transport is held to wherever it is named.
+#[test]
+fn r_alloc_3_a_transport_is_held_to_its_shape() {
+    assert!(host_command::slug_shaped("art_0123") && !host_command::slug_shaped("../x") && !host_command::slug_shaped(""));
+    assert!(host_command::key_shaped(&"ab".repeat(32)) && !host_command::key_shaped(&"zz".repeat(32)) && !host_command::key_shaped("ab"));
 }

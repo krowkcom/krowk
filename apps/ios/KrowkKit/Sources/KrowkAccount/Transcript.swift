@@ -321,7 +321,7 @@ extension TranscriptEvent {
         case .turnStarted(let turnId, let model, _, _, _, _, _):
             return .turnStarted(turn: turnId, model: ModelChoice(model))
         case .sessionStarted, .responseCompleted, .backendSession, .subagentResponse, .subagentStarted,
-             .todosUpdated, .runOpened, .backendHandoff, .sessionMoved:
+             .todosUpdated, .runOpened, .backendHandoff, .sessionMoved, .taskResult:
             return nil
         }
     }

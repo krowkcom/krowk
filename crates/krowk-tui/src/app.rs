@@ -2578,7 +2578,8 @@ impl App {
                 self.gap();
             }
             // The run the session's evidence goes under: the log's to keep.
-            LogBody::RunOpened { .. } => {}
+            // A task's result is for the supervisor that handed it over.
+            LogBody::RunOpened { .. } | LogBody::TaskResult { .. } => {}
             LogBody::SessionMoved { cwd, .. } => {
                 self.gap();
                 self.push_wrapped(look::SWITCH, "  ", &format!("moved to another machine, working in {cwd}"), look::switched(), dim());

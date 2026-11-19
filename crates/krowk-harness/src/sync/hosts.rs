@@ -109,9 +109,40 @@ pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str
     out
 }
 
+/// Whether the machine that announced `a` would take a task in the
+/// repository with normalised origin `origin` (R-ALLOC-2, D7): none when
+/// ready, else the fix, in the order a person meets them: `krowk machines
+/// accept on` when it is not accepting, `run: git clone <clone_url>` when it
+/// has no clone, and the instance's own fix line when no account there is
+/// ready. `clone_url` is the origin as this machine's clone has it; the
+/// fix shows it with any user or password left out.
+/// Slice 03 builds it.
+pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
+    todo!("slice 03: whether {} is ready for {origin} ({clone_url})", a.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Slice 03 (R-ALLOC-2, D7): for the current repository each machine
+    /// is ready, or says the fix.
+    #[test]
+    #[ignore = "slice 03: fix"]
+    fn alloc_03_each_machine_is_ready_or_says_its_fix() {
+        use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository};
+        let ready = AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: Vec::new(), limit: None };
+        let a = Announcement { device: "d".into(), name: "desktop".into(), os: "linux".into(), version: "dev".into(), online_since_ms: 0, instances: vec![ready.clone()], directories: vec!["/w/app".into()], sessions: Vec::new(), capacity: None, repositories: vec![AnnouncedRepository { directory: "/w/app".into(), origin: "github.com/acme/app".into() }], accepting: true };
+        let (origin, url) = ("github.com/acme/app", "git@github.com:acme/app.git");
+        assert_eq!(fix(&a, origin, url), None, "ready");
+        let unclone = Announcement { repositories: Vec::new(), ..a.clone() };
+        assert_eq!(fix(&unclone, origin, url).as_deref(), Some("run: git clone git@github.com:acme/app.git"));
+        assert_eq!(fix(&unclone, origin, "https://ann:ghp_secret@github.com/acme/app.git").as_deref(), Some("run: git clone https://github.com/acme/app.git"), "never a credential");
+        let off = Announcement { accepting: false, ..a.clone() };
+        assert_eq!(fix(&off, origin, url).as_deref(), Some("krowk machines accept on"));
+        let signed_out = Announcement { instances: vec![AnnouncedInstance { ready: false, state: "loggedOut".into(), fix: Some("run claude /login".into()), ..ready }], ..a };
+        assert!(fix(&signed_out, origin, url).unwrap().contains("claude /login"));
+    }
     use crate::sync::store::{HostedOn, Index};
     use krowk_client::device_chain::{Change, Subject};
     use krowk_client::e2e::{DeviceKey, SigningKey};
@@ -211,7 +242,7 @@ mod tests {
         assert!(got[0].peer.is_some() && !got[0].direct(), "on the tailnet, offline there");
     }
     fn announced(device: &str, online: bool) -> Announced {
-        let announcement = Announcement { device: device.into(), name: "claimed".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: Vec::new(), directories: vec!["/work".into()], sessions: Vec::new() };
+        let announcement = Announcement { device: device.into(), name: "claimed".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: Vec::new(), directories: vec!["/work".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         Announced { online, updated_at: "2026-10-25T10:00:00Z".into(), announcement }
     }
 

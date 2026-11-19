@@ -849,6 +849,32 @@ mod tests {
         assert_eq!(lines[1]["result"], json!({}), "a last line without its newline is still answered");
     }
 
+    /// Slice 08 (R-ALLOC-11, D18): krowk_delegate, krowk_collect and
+    /// krowk_machines are offered, delegate saying when to use it rather
+    /// than the harness's own subagent tool, and a task id nobody started
+    /// is a tool error, not a protocol one.
+    #[test]
+    #[ignore = "slice 08: krowk_delegate, krowk_collect, krowk_machines"]
+    fn alloc_08_the_delegation_tools_are_offered_and_say_when_to_delegate() {
+        let (_, out) = serve(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+        let listed: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("{name} is not offered")).clone();
+        let delegate = tool("krowk_delegate");
+        assert!(delegate["description"].as_str().unwrap().contains("whichever of your machines has room"), "{}", delegate["description"]);
+        assert_eq!(delegate["inputSchema"]["required"], json!(["task"]));
+        for optional in ["host", "model"] {
+            assert!(delegate["inputSchema"]["properties"].get(optional).is_some(), "{optional}");
+        }
+        let collect = tool("krowk_collect");
+        assert_eq!(collect["inputSchema"]["required"], json!(["task_id"]));
+        assert!(collect["inputSchema"]["properties"].get("wait_seconds").is_some(), "how long to wait, bounded; 0 asks where it is");
+        tool("krowk_machines");
+        let (_, out) = serve(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"krowk_collect\",\"arguments\":{\"task_id\":\"0190f3c2-0000-7000-8000-000000000009\"}}}\n");
+        let called: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(called["result"]["isError"], true, "{called}");
+    }
+
     #[test]
     fn push_ignores_extra_arguments_but_refuses_extra_link_fields() {
         assert!(arguments::<PushArgs>(&json!({"files": ["a.txt"], "bogus": 1}), "").is_ok());

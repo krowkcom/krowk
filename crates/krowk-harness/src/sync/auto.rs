@@ -89,7 +89,7 @@ pub const DEFAULT_IDLE: Duration = Duration::from_secs(10 * 60);
 
 /// The keys `sync` takes. Any other is refused, so a misspelt opt-out
 /// (`"Auto": false`, `"excludes"`) is never read as nothing said.
-const KEYS: [&str; 3] = ["auto", "exclude", "idleMinutes"];
+const KEYS: [&str; 4] = ["auto", "exclude", "idleMinutes", "accept"];
 
 /// A window this long or longer is never: no supervisor runs for a
 /// century, and a `Duration` near `u64::MAX` seconds would overflow an
@@ -112,6 +112,12 @@ pub struct Policy {
     pub exclude: Vec<PathBuf>,
     /// How long a bridge may sit idle before it is let go; `None` is never.
     pub idle: Option<Duration>,
+    /// `sync.accept`: this machine takes tasks a supervisor on another
+    /// machine hands it, in its trusted repositories (D14, R-ALLOC-12). On
+    /// unless set false: `krowk machines accept off` writes `false`, and
+    /// `accept on` removes the key. A session started here with `krowk sync
+    /// new --host` is not one of those.
+    pub accepting: bool,
 }
 
 /// Why a directory's sessions are not synced, naming the source a person
@@ -191,7 +197,13 @@ pub fn policy(env: &dyn Fn(&str) -> String, config: Option<&Value>) -> Result<Po
         s => s.parse::<u64>().map_err(|_| format!("KROWK_SYNC_IDLE is {s:?}, not a number of seconds — set it to one (0 never lets go), or unset it"))?,
     };
 
-    Ok(Policy { on, off_by, exclude, idle: (secs > 0 && secs < NEVER_AFTER).then(|| Duration::from_secs(secs)) })
+    let accepting = match key("accept") {
+        None | Some(Value::Bool(true)) => true,
+        Some(Value::Bool(false)) => false,
+        Some(v) => return Err(format!("sync.accept in config.json is {v}, not true or false — run krowk machines accept on or off, or remove it")),
+    };
+
+    Ok(Policy { on, off_by, exclude, idle: (secs > 0 && secs < NEVER_AFTER).then(|| Duration::from_secs(secs)), accepting })
 }
 
 impl Policy {
@@ -1642,6 +1654,17 @@ mod tests {
 
     const NONE: [(&str, String); 0] = [];
 
+    /// R-ALLOC-12, D14: a machine takes handed-over tasks unless
+    /// `sync.accept` is false; anything but a switch is refused, which
+    /// means off as every bad sync setting does.
+    #[test]
+    fn r_alloc_12_a_machine_accepts_work_unless_told_not_to() {
+        assert!(policy(&env(&NONE), None).unwrap().accepting);
+        assert!(policy(&env(&NONE), Some(&json!({"sync": {"accept": true}}))).unwrap().accepting);
+        assert!(!policy(&env(&NONE), Some(&json!({"sync": {"accept": false}}))).unwrap().accepting);
+        assert!(policy(&env(&NONE), Some(&json!({"sync": {"accept": "no"}}))).unwrap_err().contains("krowk machines accept"));
+    }
+
     /// R-SYNC-3: on unless the device turns it off. R-SYNC-1: the policy is
     /// the environment and the person's own config, read with no account
     /// and nothing on the network; whether a paid account is there is the
@@ -1758,7 +1781,7 @@ mod tests {
         let (krowk_home, in_home) = (mk("home/.krowk"), mk("home/code/proj"));
         mk("home/.krowk/no-sync");
 
-        let p = Policy { on: true, off_by: None, exclude: vec![secret.clone()], idle: None };
+        let p = Policy { on: true, off_by: None, exclude: vec![secret.clone()], idle: None, accepting: true };
         let home = Some(krowk_home.as_path());
         assert_eq!(p.opted_out(&secret, home), Some(OptOut::Excluded(secret.clone())));
         assert_eq!(p.opted_out(&deep, home), Some(OptOut::Excluded(secret.clone())), "its subdirectories too");
@@ -1848,7 +1871,7 @@ mod tests {
         std::fs::create_dir_all(sessions.join(id)).unwrap();
         let e = crate::protocol::LogEvent { id: id.into(), parent_id: None, session_id: id.into(), time_ms: 1, body: LogBody::SessionStarted { cwd: sessions.display().to_string(), krowk_version: "t".into(), protocol_version: 1, parent_session_id: None, agent: None } };
         std::fs::write(sessions.join(id).join(crate::log::EVENTS_FILE), format!("{}\n", serde_json::to_string(&e).unwrap())).unwrap();
-        let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None };
+        let on = Policy { on: true, off_by: None, exclude: Vec::new(), idle: None, accepting: true };
         let off = Policy { on: false, off_by: Some("KROWK_SYNC_AUTO"), ..on.clone() };
         type Case = (Result<Policy, String>, Result<(), String>, usize);
         let cases: [Case; 4] = [
