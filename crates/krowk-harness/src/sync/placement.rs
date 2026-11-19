@@ -549,7 +549,7 @@ mod tests {
         assert!(result_of(&[result(CHILD, Some("art_1"), key()), done()], CHILD).is_err(), "before its turn completed");
         assert!(result_of(&[done(), result(CHILD, Some("../x"), key())], CHILD).is_err(), "a transport out of shape");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), Some("zz".repeat(32)))], CHILD).is_err(), "a key out of shape");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "u".into(), transport: Some("art_1".into()), key: key(), against: "abc".into(), denied: Vec::new() });
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "u".into(), transport: Some("art_1".into()), key: key(), against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "for another turn");
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
