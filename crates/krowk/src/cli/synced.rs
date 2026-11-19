@@ -268,7 +268,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
     let now = jiff::Timestamp::now();
-    for (h, ready) in hosts.iter().zip(&ready) {
+    for h in &hosts {
         let reach = match (&h.tailnet, &h.peer) {
             _ if h.this_machine => "this machine",
             _ if status.is_none() => "Tailscale is not running here",
