@@ -165,20 +165,20 @@ pub fn last_instance(events: &[Value]) -> Option<String> {
     })
 }
 
-/// The source's half: the bundle of the session running in `cwd`, started
-/// at `since_ms`. `transcript` is the vendor's file the log names, read
-/// only when it is one: a regular file named for its session, not a link.
-pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, &str, &Path)>) -> Result<Bundle, String> {
-    let top = PathBuf::from(git_text(cwd, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("{} is not in a git repository, so its work cannot move ({e})", cwd.display()))?);
-    let base = git_text(&top, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(|_| "the repository has no commit yet to move from".to_string())?;
-    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
-    let subdir = canon(cwd).strip_prefix(canon(&top)).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-    let diff = git_out(&top, &["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", "--"])?;
-    let listed = git_out(&top, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+/// The untracked files under `top` (`--exclude-standard`, links left out)
+/// changed at or after `since_ms`, read whole, those in a fenced directory
+/// left out when `fence`; `over(rel)` is the error when they come to more
+/// than `limit` bytes together, found from the sizes before any file past
+/// the limit is read.
+fn collect_untracked(top: &Path, since_ms: i64, limit: u64, fence: bool, over: impl Fn(&str) -> String) -> Result<Vec<Untracked>, String> {
+    let listed = git_out(top, &["ls-files", "--others", "--exclude-standard", "-z"])?;
     let mut untracked = Vec::new();
     let mut total = 0u64;
     for rel in listed.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         let rel = String::from_utf8(rel.to_vec()).map_err(|_| "an untracked file's name is not UTF-8, so it cannot move".to_string())?;
+        if fence && crate::tools::fenced_dir(Path::new(&rel)).is_some() {
+            continue;
+        }
         let path = top.join(&rel);
         let Ok(meta) = path.symlink_metadata() else { continue };
         // Links are left: what they point at is this machine's.
@@ -190,8 +190,8 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
             continue;
         }
         total += meta.len();
-        if total > MAX_UNTRACKED {
-            return Err(format!("the untracked files the session changed come to more than {} MB — commit or ignore what should not move (it was {rel} that went over)", MAX_UNTRACKED >> 20));
+        if total > limit {
+            return Err(over(&rel));
         }
         #[cfg(unix)]
         let executable = std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) & 0o111 != 0;
@@ -200,6 +200,45 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
         let bytes = std::fs::read(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
         untracked.push(Untracked { path: rel, executable, bytes });
     }
+    Ok(untracked)
+}
+
+/// Whether `git log --raw -z` / `git diff --raw -z` output (`out`) names a
+/// fenced path or a gitlink (mode 160000) on either side.
+fn touches_fence(out: &[u8]) -> bool {
+    let mut tokens = out.split(|b| *b == 0).map(String::from_utf8_lossy);
+    while let Some(t) = tokens.next() {
+        if !t.starts_with(':') {
+            continue;
+        }
+        let mut f = t[1..].split(' ');
+        if f.next() == Some("160000") || f.next() == Some("160000") {
+            return true;
+        }
+        if tokens.next().is_some_and(|path| crate::tools::fenced_dir(Path::new(path.as_ref())).is_some()) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Whether the unpushed commits on the way to `head` (those no remote ref
+/// of `repo` reaches) change a fenced path or a gitlink.
+fn commits_touch_fence(repo: &Path, head: &str) -> Result<bool, String> {
+    let raw = git_out(repo, &["log", "-m", "--raw", "-z", "--format=", "--no-renames", "--no-ext-diff", head, "--not", "--remotes"])?;
+    Ok(touches_fence(&raw))
+}
+
+/// The source's half: the bundle of the session running in `cwd`, started
+/// at `since_ms`. `transcript` is the vendor's file the log names, read
+/// only when it is one: a regular file named for its session, not a link.
+pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, &str, &Path)>) -> Result<Bundle, String> {
+    let top = PathBuf::from(git_text(cwd, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("{} is not in a git repository, so its work cannot move ({e})", cwd.display()))?);
+    let base = git_text(&top, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(|_| "the repository has no commit yet to move from".to_string())?;
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let subdir = canon(cwd).strip_prefix(canon(&top)).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    let diff = git_out(&top, &["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", "--"])?;
+    let untracked = collect_untracked(&top, since_ms, MAX_UNTRACKED, false, |rel| format!("the untracked files the session changed come to more than {} MB — commit or ignore what should not move (it was {rel} that went over)", MAX_UNTRACKED >> 20))?;
     let transcript = match transcript {
         Some((backend, id, path)) if crate::handoff::valid_session_id(id) && path.file_name().and_then(|n| n.to_str()) == Some(&format!("{id}.jsonl")) && path.symlink_metadata().is_ok_and(|m| m.is_file()) => {
             Some(Transcript { backend: backend.to_string(), vendor_session_id: id.to_string(), bytes: std::fs::read(path).map_err(|e| format!("read the transcript {}: {e}", path.display()))? })
@@ -220,9 +259,45 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
 /// HEAD that no remote has change a fenced path or a gitlink, it fails at
 /// once with `JOB_FENCED`, since a commit cannot be carried in part. Fails
 /// with `JOB_TOO_BIG` past `MAX_JOB`, `pack`'s own bound on untracked files
-/// included. Slice 04 builds it.
+/// included.
 pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, String> {
-    todo!("slice 04: pack the job of {} for {session} ({} bytes of prompt)", cwd.display(), prompt.len())
+    let top = PathBuf::from(git_text(cwd, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("{} is not in a git repository, so its work cannot move ({e})", cwd.display()))?);
+    let base = git_text(&top, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(|_| "the repository has no commit yet to move from".to_string())?;
+    let canon = |p: &Path| p.canonicalize().unwrap_or_else(|_| p.to_path_buf());
+    let subdir = canon(cwd).strip_prefix(canon(&top)).map(|p| p.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+    if commits_touch_fence(&top, &base)? {
+        return Err(JOB_FENCED.to_string());
+    }
+    // The uncommitted changes, less those in a fenced directory and in
+    // submodules.
+    let changed = git_out(&top, &["diff", "--name-only", "-z", "--no-renames", "--ignore-submodules=all", "HEAD", "--"])?;
+    let mut fenced = Vec::new();
+    for name in changed.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let Ok(name) = std::str::from_utf8(name) else {
+            return Err(format!("a changed file's name is not UTF-8, so it cannot move. {JOB_FENCED}"));
+        };
+        if crate::tools::fenced_dir(Path::new(name)).is_some() {
+            fenced.push(format!(":(exclude,literal){name}"));
+        }
+    }
+    // One argument each: past what a command line takes, the job is not made.
+    if fenced.len() > 1000 {
+        return Err(JOB_FENCED.to_string());
+    }
+    let mut args = vec!["diff", "--binary", "--no-ext-diff", "--no-textconv", "--no-renames", "--ignore-submodules=all", "HEAD", "--"];
+    args.extend(fenced.iter().map(String::as_str));
+    let diff = git_out(&top, &args)?;
+    let mut left = MAX_JOB.checked_sub((diff.len() + prompt.len()) as u64).ok_or_else(|| JOB_TOO_BIG.to_string())?;
+    let untracked = collect_untracked(&top, 0, left, true, |_| JOB_TOO_BIG.to_string())?;
+    left = left.saturating_sub(untracked.iter().map(|f| f.bytes.len() as u64).sum::<u64>());
+    // Commits no remote has: none when every one is on a remote, which `git
+    // bundle` would refuse to make an empty bundle of.
+    let unpushed = git_text(&top, &["rev-list", "--count", "HEAD", "--not", "--remotes"])?;
+    let commits = if unpushed == "0" { Vec::new() } else { git_run(&top, &["bundle", "create", "-", "HEAD", "--not", "--remotes"], None)? };
+    if commits.len() as u64 > left {
+        return Err(JOB_TOO_BIG.to_string());
+    }
+    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base, subdir, diff, untracked, transcript: None, commits, prompt: prompt.to_string() })
 }
 
 /// A job applied on the target: where, and the snapshot commit of its
@@ -248,9 +323,83 @@ pub struct JobApplied {
 /// has, then from origin. The snapshot is written with krowk's own
 /// identity (`-c user.name=krowk -c user.email=krowk@localhost`) from the
 /// worktree's files, whatever the person's git config and the worktree's
-/// index say. Slice 04 builds it.
+/// index say.
 pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied, String> {
-    todo!("slice 04: apply job {} in {} under {}", b.base, repo.display(), worktrees.display())
+    git_text(repo, &["rev-parse", "--show-toplevel"]).map_err(|_| format!("{} is not in a git repository", repo.display()))?;
+    // Everything here came from another machine: a full commit id, nothing
+    // git could read as an option or a name, and nothing pack_job leaves out.
+    if !matches!(b.base.len(), 40 | 64) || !b.base.bytes().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("the job names {:?} as its base, which is not a commit id", b.base));
+    }
+    if let Some(f) = b.untracked.iter().find(|f| crate::tools::fenced_dir(Path::new(&f.path)).is_some()) {
+        return Err(format!("the job carries {}, inside a directory krowk never hands to another machine", f.path));
+    }
+    if !b.diff.is_empty() {
+        let text = String::from_utf8_lossy(&b.diff);
+        // pack_job asks for no renames, so a patch with one or a copy is not its: the old name is not in `--numstat`.
+        if text.lines().any(|l| l.starts_with("rename ") || l.starts_with("copy ") || l.starts_with("similarity ") || l.starts_with("dissimilarity ")) {
+            return Err("the job carries a rename or a copy, which krowk's jobs never do".to_string());
+        }
+        let names = git_run(repo, &["apply", "--numstat", "-z", "-"], Some(&b.diff)).map_err(|e| format!("the job's changes are not a patch: {e}"))?;
+        // `added<TAB>deleted<TAB>path`, NUL-ended.
+        for t in names.split(|c| *c == 0).filter(|p| !p.is_empty()) {
+            let t = String::from_utf8_lossy(t);
+            if t.splitn(3, '\t').nth(2).is_none_or(|p| crate::tools::fenced_dir(Path::new(p)).is_some()) {
+                return Err("the job carries changes inside a directory krowk never hands to another machine".to_string());
+            }
+        }
+        if text.lines().any(|l| l.trim_end() == "new file mode 160000" || l.starts_with("+Subproject commit ") || l.starts_with("-Subproject commit ") || l.ends_with(" 160000")) {
+            return Err("the job carries a submodule change, which krowk never hands to another machine".to_string());
+        }
+    }
+    let commit = format!("{}^{{commit}}", b.base);
+    let has = || git_text(repo, &["cat-file", "-e", &commit]).is_ok();
+    let fetch_origin = || {
+        let _ = krowk_api::git::command(repo).and_then(|mut c| c.env("GIT_TERMINAL_PROMPT", "0").args(["fetch", "--quiet", "origin"]).output());
+    };
+    // The job's own commits first: read into the object store, and held by a
+    // ref of krowk's own (never a branch or tag the person has). They stand
+    // on commits a remote has, which the clone may lack: then origin is
+    // fetched and the bundle read again.
+    let job_ref = format!("refs/krowk/jobs/{}", b.base);
+    let unbundle = || {
+        if !b.commits.is_empty() && git_run(repo, &["-c", "transfer.fsckObjects=true", "bundle", "unbundle", "-"], Some(&b.commits)).is_ok() && has() {
+            let _ = git_run(repo, &["update-ref", &job_ref, &b.base], None);
+        }
+    };
+    if !has() {
+        unbundle();
+    }
+    if !has() {
+        fetch_origin();
+        unbundle();
+    }
+    if !has() {
+        return Err(format!("this clone does not have commit {} the job starts from, and neither the job's commits nor `git fetch origin` brought it — push it, or run the task on the machine that has it", b.base));
+    }
+    if commits_touch_fence(repo, &b.base)? {
+        let _ = git_run(repo, &["update-ref", "-d", &job_ref], None);
+        return Err("the job's commits change a directory or submodule krowk never hands to another machine".to_string());
+    }
+    let applied = apply(b, repo, worktrees)?;
+    // The state recorded as a commit on top of the base, written from the
+    // worktree's files: everything staged (the worktree is this job's own),
+    // krowk's own identity. HEAD stays the base, so the job's changes show
+    // as the work in progress they are.
+    let dir = &applied.worktree.path;
+    let snapshot = (|| {
+        git_run(dir, &["add", "-A"], None)?;
+        let tree = String::from_utf8_lossy(&git_run(dir, &["write-tree"], None)?).trim().to_string();
+        let out = git_run(dir, &["-c", "user.name=krowk", "-c", "user.email=krowk@localhost", "commit-tree", &tree, "-p", &b.base, "-m", "krowk: the job's state"], None)?;
+        Ok::<_, String>(String::from_utf8_lossy(&out).trim().to_string())
+    })();
+    match snapshot {
+        Ok(snapshot) => Ok(JobApplied { applied, snapshot }),
+        Err(e) => {
+            let _ = crate::worktree::discard(&applied.worktree);
+            Err(format!("the job's state could not be recorded: {e}"))
+        }
+    }
 }
 
 /// The child's result (R-ALLOC-6): everything the worktree at `worktree`
@@ -327,19 +476,25 @@ pub fn apply(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<Applied, Strin
     Ok(Applied { worktree, held, cwd })
 }
 
-/// `git apply --binary` of `patch` in `dir`, fed on stdin.
-fn apply_patch(dir: &Path, patch: &[u8]) -> Result<(), String> {
+/// `git args` in `dir` (hooks off, `git::command`), `input` fed on stdin:
+/// its stdout.
+fn git_run(dir: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
     use std::io::Write as _;
     let mut c = krowk_api::git::command(dir).map_err(|e| e.to_string())?;
-    let mut child = c.args(["apply", "--binary", "--whitespace=nowarn", "-"]).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let mut child = c.args(args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().map_err(|e| e.to_string())?;
     let mut stdin = child.stdin.take().expect("piped");
-    let feed = std::thread::scope(|s| {
-        let w = s.spawn(move || stdin.write_all(patch));
+    let (_, out) = std::thread::scope(|s| {
+        let w = s.spawn(move || input.map_or(Ok(()), |i| stdin.write_all(i)));
         let out = child.wait_with_output();
         (w.join().unwrap_or(Ok(())), out)
     });
-    let out = feed.1.map_err(|e| e.to_string())?;
-    if out.status.success() { Ok(()) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+    let out = out.map_err(|e| e.to_string())?;
+    if out.status.success() { Ok(out.stdout) } else { Err(String::from_utf8_lossy(&out.stderr).trim().to_string()) }
+}
+
+/// `git apply --binary` of `patch` in `dir`, fed on stdin.
+fn apply_patch(dir: &Path, patch: &[u8]) -> Result<(), String> {
+    git_run(dir, &["apply", "--binary", "--whitespace=nowarn", "-"], Some(patch)).map(|_| ())
 }
 
 /// One untracked file, written only inside the worktree: never over a file
@@ -573,7 +728,6 @@ mod tests {
     /// on a clone that never saw the commits, as an identical tree, with
     /// its state recorded as a snapshot; its prompt travels with it.
     #[test]
-    #[ignore = "slice 04: pack_job and apply_job"]
     fn alloc_04_a_job_with_unpushed_commits_applies_on_a_clone_that_never_saw_them() {
         let root = scratch("job");
         let a = origin_and_clone(&root, "a");
@@ -606,7 +760,6 @@ mod tests {
     /// is allowed on the target, and the target refuses a job carrying it,
     /// or a base that is no commit id.
     #[test]
-    #[ignore = "slice 04: fenced paths in a job"]
     fn alloc_04_a_job_never_carries_fenced_paths_and_a_target_refuses_one_that_does() {
         let root = scratch("job-fenced");
         let a = origin_and_clone(&root, "a");
@@ -635,9 +788,53 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// R-ALLOC-4: a base a remote has needs no git bundle: the target
+    /// fetches it from origin, and a job at a clean tree has an empty diff.
+    #[test]
+    fn r_alloc_4_a_pushed_base_travels_without_commits_and_is_fetched_from_origin() {
+        let root = scratch("job-pushed");
+        let a = origin_and_clone(&root, "a");
+        std::fs::write(a.join("pushed.txt"), "p").unwrap();
+        git(&a, &["add", "."]);
+        git(&a, &["commit", "-q", "-m", "pushed"]);
+        git(&a, &["push", "-q", "origin", "HEAD"]);
+        let job = pack_job(&a, "s", "go").unwrap();
+        assert!(job.commits.is_empty() && job.diff.is_empty() && job.untracked.is_empty());
+        let b = origin_and_clone(&root, "b");
+        let landed = apply_job(&job, &b, &root.join("worktrees")).unwrap();
+        assert_eq!(std::fs::read_to_string(landed.applied.worktree.path.join("pushed.txt")).unwrap(), "p");
+        assert_eq!(landed.snapshot.len(), 40);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// R-ALLOC-4: a tracked file changed in a fenced directory, or a
+    /// patch naming one, stays out of the job and is refused by the target.
+    #[test]
+    fn r_alloc_4_uncommitted_changes_in_a_fenced_directory_are_left_out() {
+        let root = scratch("job-fenced-diff");
+        let a = origin_and_clone(&root, "a");
+        std::fs::create_dir_all(a.join(".claude")).unwrap();
+        std::fs::write(a.join(".claude/settings.json"), "{}").unwrap();
+        git(&a, &["add", "-f", "."]);
+        git(&a, &["commit", "-q", "-m", "claude"]);
+        git(&a, &["push", "-q", "origin", "HEAD"]);
+        std::fs::write(a.join(".claude/settings.json"), "{\"x\":1}").unwrap();
+        std::fs::write(a.join("kept.txt"), "base\nmore\n").unwrap();
+        let job = pack_job(&a, "s", "go").unwrap();
+        let patch = String::from_utf8(job.diff.clone()).unwrap();
+        assert!(patch.contains("kept.txt") && !patch.contains(".claude"), "{patch}");
+        let b = origin_and_clone(&root, "b");
+        let planted = Bundle { diff: b"diff --git a/.claude/settings.json b/.claude/settings.json\n--- a/.claude/settings.json\n+++ b/.claude/settings.json\n@@ -1 +1 @@\n-{}\n+{\"x\":1}\n".to_vec(), ..job };
+        assert!(apply_job(&planted, &b, &root.join("worktrees")).is_err());
+        let rename = Bundle { diff: b"diff --git a/.claude/settings.json b/moved\nsimilarity index 100%\nrename from .claude/settings.json\nrename to moved\n".to_vec(), ..planted.clone() };
+        assert!(apply_job(&rename, &b, &root.join("worktrees")).is_err(), "a rename out of a fenced directory");
+        let tab = Bundle { diff: b"diff --git a/.claude/a\tb b/.claude/a\tb\nnew file mode 100644\n--- /dev/null\n+++ b/.claude/a\tb\n@@ -0,0 +1 @@\n+x\n".to_vec(), ..planted };
+        assert!(apply_job(&tab, &b, &root.join("worktrees")).is_err(), "a tab in a fenced name");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Slice 04 (R-ALLOC-4): past 64 MiB the job fails with the fix.
     #[test]
-    #[ignore = "slice 04: pack_job's bound"]
     fn alloc_04_a_job_over_64_mib_fails_with_the_fix() {
         let root = scratch("job-big");
         let a = origin_and_clone(&root, "a");
