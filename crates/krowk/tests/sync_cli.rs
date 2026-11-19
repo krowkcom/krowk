@@ -1626,7 +1626,6 @@ fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
 /// delegated, collected while it runs, and collected again once done, its
 /// file landed in B's working tree.
 #[test]
-#[ignore = "slice 08: krowk_delegate and krowk_collect"]
 fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
     let w = World::new("delegate");
     let (_a, b, _serve) = allocating(&w);
@@ -1640,6 +1639,40 @@ fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
     assert!(!err, "{said}");
     assert_eq!(done["machine"], "a", "{done}");
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "the change is in B's working tree");
+}
+
+/// krowk_machines is `krowk machines --json`: the same machines with the
+/// same fields (their readings move, so the values are not compared).
+#[test]
+fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
+    let w = World::new("mcp-machines");
+    let (_a, b, _serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, got) = mcp.call("krowk_machines", serde_json::json!({}));
+    assert!(!err, "{said}");
+    let cli: serde_json::Value = serde_json::from_slice(&b.command(&["machines", "--json"]).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
+    let shape = |v: &serde_json::Value| -> Vec<(String, Vec<String>)> { v["machines"].as_array().unwrap().iter().map(|m| (m["name"].as_str().unwrap().to_string(), m.as_object().unwrap().keys().cloned().collect())).collect() };
+    assert_eq!(shape(&got), shape(&cli), "{got}");
+    assert!(shape(&got).iter().any(|(n, _)| n == "a"), "{got}");
+}
+
+/// A task pinned to this machine runs here, in a worktree of its own, and
+/// lands its file in the working tree. (Pinned, since a loaded CI runner
+/// can be busy by the rules and so send an unpinned task away.)
+#[test]
+fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
+    let w = World::new("mcp-here");
+    let (_a, b, _serve) = allocating(&w);
+    std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
+    std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "b", "pinned here: {done}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "{said}");
 }
 
 /// Slice 10, the CI case through krowk-mcp: B has every build slot held,
