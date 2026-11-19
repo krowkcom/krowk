@@ -27,6 +27,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **On Free, `krowk sessions archive` keeps the session on this machine.**
+  Free's synced history expires after 7 days, so an archived session's
+  encrypted copy was soon its only one, then gone. On Free, archiving now
+  still writes that copy but keeps the session's log here too, takes the
+  session out of `krowk sessions`, and says once: `On Free, archived sessions
+  stay on this machine; the synced copy expires after 7 days.`
+  `krowk sessions restore <id>`, or opening the session, brings it back from
+  this machine without the registry. Paid plans archive as before.
+
 - **A sync refused for needing a paid plan points at `krowk billing`**
   instead of the dashboard's address.
 
