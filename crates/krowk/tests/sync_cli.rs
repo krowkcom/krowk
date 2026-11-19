@@ -56,6 +56,12 @@ const DELEGATED: &str = "write-the-delegated-file-9d41";
 /// outlast the test's bound, so only the drop can end it.
 const TEN_MINUTE_TASK: &str = "a-ten-minute-task-4c07";
 
+/// A prompt the parent answers with a `subagent` call, no host named,
+/// whose prompt is `DELEGATED`.
+const HAND_OVER: &str = "hand-the-ci-task-over-2b6e";
+/// The same, the subagent's prompt `TEN_MINUTE_TASK`.
+const HAND_OVER_LONG: &str = "hand-the-long-task-over-5f1a";
+
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
 
@@ -86,6 +92,12 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     }
     if !has_result && text.contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
+    }
+    if !has_result && text.contains(HAND_OVER) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Hand", "subagent", &serde_json::json!({"description": "the CI task", "prompt": DELEGATED})));
+    }
+    if !has_result && text.contains(HAND_OVER_LONG) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Long", "subagent", &serde_json::json!({"description": "the long task", "prompt": TEN_MINUTE_TASK})));
     }
     if !has_result && text.contains(LIMITED) {
         return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
@@ -1642,6 +1654,67 @@ fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "the change is in B's working tree");
 }
 
+/// `m` on a local branch with a commit its origin never saw and an
+/// uncommitted change: the state a task must start from (D8). Its HEAD.
+fn mid_work(m: &Machine) -> String {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&m.repo).output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["checkout", "-q", "-b", "local"]);
+    std::fs::write(m.repo.join("unpushed.rs"), "fn u() {}\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "unpushed"]);
+    std::fs::write(m.repo.join("lib.rs"), "fn a() {}\nfn uncommitted() {}\n").unwrap();
+    git(&["rev-parse", "HEAD"])
+}
+
+/// Slice 10, the CI case from krowk's own agent (R-ALLOC-7, 8, D8): B has
+/// every build slot held, A is idle; B's agent calls `subagent` with no
+/// host, the task runs on A from B's exact state, its file lands in B's
+/// working tree with B's own change and HEAD kept, and the parent's stream
+/// says why A. The job's session B registered for it is signed, as the
+/// registry requires of every session.
+#[test]
+fn alloc_10_with_this_machine_busy_krowks_own_subagent_runs_on_the_other() {
+    let w = World::new("ci-agent");
+    let (_a, b, _serve) = allocating(&w);
+    let head = mid_work(&b);
+    let _ci = all_build_slots(&b);
+    let out = b.command(&["-p", HAND_OVER, "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits"]).stdin(Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("Running on a: this machine is busy (") && said.contains("build slots in use)."), "the stream says why A: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap_or_default(), "delegated\n", "A's change is in B's working tree: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "B's own change is kept");
+    let now = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&b.repo).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&now.stdout).trim(), head, "B's HEAD is untouched");
+    for s in b.api.list_sync_sessions("", 100).unwrap().sessions {
+        assert!(!s.record_signature.is_empty() && !s.signer.is_empty(), "session {} carries its signed record", s.id);
+    }
+}
+
+/// Slice 10 (R-ALLOC-9), from krowk's own agent: B busy, its subagent
+/// runs on A, and A's host goes away mid-task; within OFFLINE_AFTER and a
+/// margin the call's result names A and says where the work is, and B's
+/// turn goes on to its end.
+#[test]
+fn alloc_10_a_target_that_drops_under_krowks_own_subagent_fails_naming_it() {
+    let w = World::new("dropped-agent");
+    let (a, b, serve) = allocating(&w);
+    let _ci = all_build_slots(&b);
+    let mut run = Running::spawn(b.command(&["-p", HAND_OVER_LONG, "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits", "--output-format", "stream-json"]));
+    run.said("the task placed on A", |l| l.contains("Running on a: this machine is busy"));
+    drop(serve);
+    let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let dropped = Instant::now();
+    let result = run.heard_within("the turn's end", false, Duration::from_secs(150), is("result"));
+    assert!(dropped.elapsed() < Duration::from_secs(120), "within the offline limit and a margin: {:?}", dropped.elapsed());
+    assert_eq!(result["status"], "completed", "{result}");
+    assert!(run.seen.iter().any(|l| l.contains("a went offline mid-task; its work is in a worktree there.")), "the subagent's result names A: {:#?}", run.seen);
+}
+
 /// Slice 10, the CI case through krowk-mcp: B has every build slot held,
 /// A is idle; a task delegated with no host runs on A from B's exact
 /// state, an unpushed commit and an uncommitted change included, and its
@@ -1651,12 +1724,7 @@ fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
 fn alloc_10_with_this_machine_busy_krowk_mcp_runs_the_task_on_the_other() {
     let w = World::new("ci-mcp");
     let (_a, b, _serve) = allocating(&w);
-    let git = |args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&b.repo).stdout(Stdio::null()).status().unwrap().success());
-    git(&["checkout", "-q", "-b", "local"]);
-    std::fs::write(b.repo.join("unpushed.rs"), "fn u() {}\n").unwrap();
-    git(&["add", "."]);
-    git(&["commit", "-q", "-m", "unpushed"]);
-    std::fs::write(b.repo.join("lib.rs"), "fn a() {}\nfn uncommitted() {}\n").unwrap();
+    mid_work(&b);
     let _ci = all_build_slots(&b);
     let mut mcp = Mcp::start(&b);
     let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED}));
