@@ -1255,6 +1255,24 @@ stdout:
       "summary": "The same as krowk machines"
     },
     {
+      "name": "machines",
+      "summary": "Your machines, and which of them take work",
+      "subcommands": [
+        {
+          "name": "accept",
+          "usage": "krowk machines accept on|off",
+          "summary": "Take work from your other machines, or not",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ]
+        }
+      ]
+    },
+    {
       "name": "sync",
       "summary": "Sync sessions between your machines, end-to-end encrypted",
       "subcommands": [
@@ -3059,6 +3077,24 @@ tty:
       "name": "hosts",
       "usage": "krowk hosts",
       "summary": "The same as krowk machines"
+    },
+    {
+      "name": "machines",
+      "summary": "Your machines, and which of them take work",
+      "subcommands": [
+        {
+          "name": "accept",
+          "usage": "krowk machines accept on|off",
+          "summary": "Take work from your other machines, or not",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ]
+        }
+      ]
     },
     {
       "name": "sync",
