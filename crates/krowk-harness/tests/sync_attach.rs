@@ -4025,7 +4025,8 @@ async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_hel
     // A place this device read to before the expiry: the log now starts
     // after it, refused as any gap.
     let kept = store::ReadPlace { next: 2, previous: [7; 32], fence: 0, epoch: 0, head: store::Head { index: 1, digest: [7; 32] } };
-    assert!(store::resume(&api_b, &key, id, index.clone(), kept, None).unwrap_err().rolled_back);
+    let e = store::resume(&api_b, &key, id, index.clone(), kept, None).unwrap_err();
+    assert!(e.rolled_back && e.detail.contains("a gap"), "{e:?}");
 
     // An expiry past the head the host vouched for is refused: the
     // registry would choose where reading starts.
@@ -4033,6 +4034,13 @@ async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_hel
     let e = store::attach(&api_b, &key, id, index.clone(), Some(vouched)).unwrap_err();
     assert!(e.rolled_back && e.detail.contains("expired to chunk 3"), "{e:?}");
 
+    // Every chunk expired: nothing opens, and a host taking the session up
+    // writes nothing over it.
+    w.advance(day * 8);
+    assert!(store::attach(&api_b, &key, id, index.clone(), None).unwrap_err().rolled_back);
+    let lease = api.acquire_lease(id, &a.key.id().to_string(), 60, "development").unwrap();
+    let Err(refused) = Writer::take_up(api.clone(), key.clone(), id, wrapped.clone(), index, lease.fence) else { panic!("a host wrote over an expired log") };
+    assert!(refused.contains("holds none of its log"), "{refused}");
 }
 
 /// What the stand-in registry recorded as notified about `session` (ticket

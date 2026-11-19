@@ -192,19 +192,30 @@ impl From<ReadError> for String {
 ///
 /// Chunks the registry let expire from the start of the log (Free keeps 7
 /// days) are skipped, as it declares them, never past `sealed`, the head
-/// the session's index names (`Expiry`): what a holder chains onto is the
-/// log from the first chunk it still holds.
+/// the session's index names (`Expiry`), and the log read is then held to
+/// `sealed`: what a holder chains onto is the log from the first chunk it
+/// still holds to its head. A log `sealed` says has chunks and the
+/// registry holds none of is refused: a holder never writes over it.
 pub fn read_all(client: &Client, key: &SessionKeys, id: &str, sealed: Option<Head>) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
     let mut reader = ChunkReader::new(key, crate::sync::uuid(id));
     let mut events = Vec::new();
+    let mut heads = Vec::new();
     let mut expiry = Expiry { within: sealed.into_iter().collect(), skipped: None };
-    let head = read_chunks(client, id, &mut reader, None, Some(&mut expiry), &mut |c, _| {
+    let head = read_chunks(client, id, &mut reader, None, Some(&mut expiry), &mut |c, h| {
         match c {
             Chunk::Events { events: e } => events.extend(e),
             Chunk::Checkpoint(cp) => events = cp.events,
         }
+        heads.push(h);
         Ok(())
     })?;
+    if head.is_none() && sealed.is_some() {
+        return Err(format!("the session's index names chunk {} and the registry holds none of its log (its history may have expired): nothing is written over it", sealed.map_or(0, |h| h.index)));
+    }
+    if let Some(gone) = expiry.skipped {
+        heads.insert(0, gone);
+        Head::at_least(&heads, sealed)?;
+    }
     Ok((events, reader, head))
 }
 
@@ -218,8 +229,6 @@ pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, last: Opti
     read_chunks(client, id, reader, last, None, each).map_err(String::from)
 }
 
-/// `read_from`, its failure classified: what `attach` and `catch_up` read with. A
-/// refusal of `each`'s is permanent.
 /// Where a reading may start past chunks the registry let expire
 /// (`first_chunk_index`, R-SYNC-15): only on Free, as the key's plan says
 /// (a paid plan's history never expires), only from the log's start or its
@@ -235,14 +244,15 @@ struct Expiry {
     skipped: Option<Head>,
 }
 
+/// `read_from`, its failure classified: what `attach` and `catch_up` read with. A
+/// refusal of `each`'s is permanent.
 ///
 /// `expired`, when given, lets the reading start past chunks the registry
 /// declares expired, and says where it did. Only at the start: on the
-/// first page, before any chunk is opened, to the first chunk the registry
-/// still holds, chained from the digest it declares for the one before —
-/// so a host whose whole log expired writes on after it, never over it —
-/// and never past `Expiry::within`. That page listing a chunk below it is
-/// refused, as is any other gap. Without it, none is accepted.
+/// first page, to the first chunk the registry still holds, chained from
+/// the digest it declares for the one before, and never past
+/// `Expiry::within`. That page listing a chunk below it is refused, as is
+/// any other gap. Without it, none is accepted.
 fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, mut expired: Option<&mut Expiry>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, ReadError> {
     let mut after = reader.next().checked_sub(1);
     let mut first_page = true;
@@ -258,16 +268,19 @@ fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Op
                 return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first}, and no head this device holds the log to says it reached that far, refused")));
             }
             for h in &x.within {
-                if gone.index > h.index || (gone.index == h.index && gone.digest != h.digest) {
-                    return Err(ReadError::rolled_back(format!("the registry says the log expired to chunk {first}, past chunk {} the session's host sealed, refused", h.index)));
+                if gone.index > h.index {
+                    return Err(ReadError::rolled_back(format!("the registry says the log expired to chunk {first}, past chunk {}, a head this device holds the log to, refused", h.index)));
                 }
+                if gone.index == h.index && gone.digest != h.digest {
+                    return Err(ReadError::rolled_back(format!("the registry names another chunk {} than the head this device holds the log to, refused", h.index)));
+                }
+            }
+            if page.chunks.iter().any(|c| c.index < first) {
+                return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first} and lists a chunk before it, refused")));
             }
             let plan = client.verify_key().map_err(ReadError::registry)?.plan;
             if plan != "free" {
                 return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first}, but this workspace's plan ({plan}) keeps its history, refused")));
-            }
-            if page.chunks.iter().any(|c| c.index < first) {
-                return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first} and lists a chunk before it, refused")));
             }
             reader.skip_expired(first, previous);
             x.skipped = Some(gone);
@@ -471,7 +484,7 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
         Ok(())
     })?;
     // The last expired chunk, as the registry named it, is where what was
-    // read starts: the head a log that expired whole ends at.
+    // read starts.
     heads.splice(0..0, expiry.skipped);
     Head::at_least(&heads, index.head).map_err(ReadError::rolled_back)?;
     Head::at_least(&heads, known).map_err(ReadError::rolled_back)?;
