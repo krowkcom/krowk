@@ -3953,7 +3953,7 @@ async fn r_sync_17_a_handoff_to_a_machine_over_the_limit_leaves_the_session_on_i
     until(&mut cv, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
     cv.handoff.send(()).unwrap();
     let got = until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
-    let refused = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().err().expect("refused");
+    let refused = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().expect_err("refused");
     assert!(refused.starts_with(&format!("{}machine-c: Free syncs sessions from two machines, and this would be a third (", host::MOVE_REFUSED)), "{refused}");
     assert!(refused.contains("machine-a") && refused.contains("machine-b") && refused.ends_with("or run krowk billing to upgrade."), "{refused}");
     let (api, id) = (w.client(), session.clone());
@@ -3993,17 +3993,22 @@ async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_hel
         }
         api.release_lease(id, &lease.token).unwrap();
     };
-    // Eight days ago: a checkpoint (chunk 0) and two chunks of events.
-    w.skew.fetch_sub(Duration::from_secs(8 * 86400).as_millis() as i64, Ordering::SeqCst);
+    // Eight days ago: a checkpoint (chunk 0) and two chunks of events; six
+    // days ago, chunk 3.
+    let day = Duration::from_secs(86400);
+    w.skew.fetch_sub((day * 8).as_millis() as i64, Ordering::SeqCst);
     write(1..=2, true);
-    w.advance(Duration::from_secs(8 * 86400));
+    w.advance(day * 2);
+    write(3..=3, false);
     // Today: a host takes it up again, past the expired start, and writes on.
-    write(3..=4, false);
+    w.advance(day * 6);
+    write(4..=4, false);
 
     let index = store::open_index(&key, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
     assert_eq!(index.checkpoint.map(|m| m.index), Some(0), "the index still names the expired checkpoint");
     let page = api.list_chunks(id, None, 100).unwrap();
     assert_eq!((page.first_chunk_index, page.chunks.first().map(|c| c.index)), (Some(3), Some(3)), "chunks 0 to 2 expired");
+    assert_eq!(api.list_chunks(id, Some(3), 100).unwrap().first_chunk_index, Some(3), "the same on every page");
     let b = w.device("machine-b");
     let mut at = store::attach(&w.as_device(&b), &key, id, index.clone(), None).expect("attached from the first chunk held");
     assert!(at.expired);
@@ -4017,6 +4022,17 @@ async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_hel
     let mut behind = store::Attached { next: 1, ..at.clone() };
     let e = store::catch_up(&api_b, &key, id, &mut behind, None).unwrap_err();
     assert!(e.rolled_back, "{e:?}");
+    // A place this device read to before the expiry: the log now starts
+    // after it, refused as any gap.
+    let kept = store::ReadPlace { next: 2, previous: [7; 32], fence: 0, epoch: 0, head: store::Head { index: 1, digest: [7; 32] } };
+    assert!(store::resume(&api_b, &key, id, index.clone(), kept, None).unwrap_err().rolled_back);
+
+    // An expiry past the head the host vouched for is refused: the
+    // registry would choose where reading starts.
+    let vouched = store::Head { index: 1, digest: [0; 32] };
+    let e = store::attach(&api_b, &key, id, index.clone(), Some(vouched)).unwrap_err();
+    assert!(e.rolled_back && e.detail.contains("expired to chunk 3"), "{e:?}");
+
 }
 
 /// What the stand-in registry recorded as notified about `session` (ticket

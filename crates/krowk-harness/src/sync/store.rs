@@ -83,7 +83,7 @@ impl Writer {
     /// onto is the whole log (crypto.md → chunks), under lease `fence`.
     pub fn take_up(client: std::sync::Arc<Client>, key: SessionKeys, id: &str, wrapped: String, index: Index, fence: u64) -> Result<Writer, String> {
         let session = crate::daemon::ws::uuid(id);
-        let (events, reader, head) = read_all(&client, &key, id)?;
+        let (events, reader, head) = read_all(&client, &key, id, index.head)?;
         let mut index = index;
         index.head = head;
         let sealer = ChunkSealer::new(&key, session, reader.next(), reader.previous(), fence);
@@ -105,7 +105,7 @@ impl Writer {
         if fence == self.fence {
             return Ok(());
         }
-        let (events, reader, head) = read_all(&self.client, &self.key, &self.id)?;
+        let (events, reader, head) = read_all(&self.client, &self.key, &self.id, self.index.head)?;
         let staged_head = self.staged.as_ref().map(|s| Head { index: s.index, digest: e2e::chunk_digest(&s.sealed) });
         if head.is_some() && head == staged_head {
             self.commit();

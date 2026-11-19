@@ -187,8 +187,8 @@ pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
     /// Workspace and session id → where its log starts once its oldest
-    /// chunks expired (`expire_chunks`): the first index still held, and
-    /// the checksum of the last expired chunk, which that one binds.
+    /// chunks expired (`expire_chunks`): the index after the last expired
+    /// chunk, and that chunk's checksum, which the next one binds.
     pub expired: HashMap<(String, String), (u64, String)>,
     /// Workspace, session id and name → a sealed image object: a chunk's
     /// upload with no place in a log (index and fence 0).
@@ -1256,6 +1256,8 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
     if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
         return not_found();
     }
+    // By the key's plan, which in the stand-in is the owner's: a person's
+    // keys share one workspace, so one plan.
     if crate::auth::free_plan(req) {
         let now = s.now();
         expire_chunks(&mut s.sync, &workspace, &id, now);
@@ -1273,7 +1275,12 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
             Json::map_of(j)
         })
         .collect();
-    let (first, previous) = s.sync.expired.get(&(workspace, id)).map_or((Json::Null, Json::Null), |(i, p)| (Json::Int(*i as i64), Json::str(p)));
+    // As the registry gives it: the lowest index held, on every page, null
+    // when none is; and, the stand-in's ahead of it, the checksum of the
+    // last expired chunk, which the first held binds.
+    let first = s.sync.chunks.iter().filter(|((w, sid, _), c)| *w == workspace && *sid == id && c.ready).map(|((_, _, i), _)| *i).min();
+    let previous = s.sync.expired.get(&(workspace, id)).filter(|(i, _)| first == Some(*i)).map_or(Json::Null, |(_, p)| Json::str(p));
+    let first = first.map_or(Json::Null, |i| Json::Int(i as i64));
     Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next), ("first_chunk_index", first), ("first_chunk_previous", previous)]))
 }
 
