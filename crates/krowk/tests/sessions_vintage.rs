@@ -322,8 +322,8 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
 
     // No registry at all, as good as the vintage expired: the copy restores.
     let offline = Machine { home: root.clone(), api_url: "http://127.0.0.1:9/v1".into(), token: FREE_TOKEN };
-    let (ok, _, out) = offline.krowk(&["sessions", "restore", &a]);
-    assert!(ok, "{out}");
+    let (ok, v, out) = offline.krowk(&["sessions", "restore", &a]);
+    assert!(ok && v["data"]["vintage"] == "", "no vintage read: {out}");
     assert_eq!(std::fs::read(sessions.join(&a).join(log::EVENTS_FILE)).unwrap(), original);
     assert_eq!(std::fs::read(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap(), original_context, "and its context");
     assert!(!kept.exists() && !sessions.join(&a).join(krowk_harness::vintage::STUB_FILE).exists());
@@ -332,6 +332,17 @@ fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_i
     // Opening one restores it too.
     let (ok, v, out) = offline.krowk(&["sessions", "show", &b]);
     assert!(ok && v.to_string().contains("answering another free idle session"), "{out}");
+
+    // A copy kept from an archive before is older than the log, and an
+    // archive again keeps the log, not it.
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join(log::EVENTS_FILE), "stale\n").unwrap();
+    std::fs::write(kept.join(log::CONTEXT_FILE), "stale\n").unwrap();
+    std::fs::remove_file(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap();
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read(kept.join(log::EVENTS_FILE)).unwrap(), original, "{out}");
+    assert!(!kept.join(log::CONTEXT_FILE).exists(), "nor its stale context");
     let _ = std::fs::remove_dir_all(&root);
 }
 

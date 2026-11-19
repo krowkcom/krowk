@@ -483,11 +483,17 @@ fn store_week(client: &Client, keys: &Keys, week: &str, group: &[Candidate]) -> 
 
 /// The registry holds the session: the stub goes in, then the log goes —
 /// into `KEPT_DIR` with `keep`. A context left behind by a move cut short
-/// is where the restore would put it anyway.
+/// is where the restore would put it anyway. A `KEPT_DIR` already there is
+/// from an archive before the log came back, older than it, and goes first,
+/// so a later restore never brings it back in place of this one's.
 fn leave_stub(c: &Candidate, keep: bool) -> Result<(), String> {
+    let kept = c.dir.join(KEPT_DIR);
+    match std::fs::remove_dir_all(&kept) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("remove {}: {e}", kept.display())),
+        _ => {}
+    }
     let stub = serde_json::to_vec_pretty(&c.stub).map_err(|e| e.to_string())?;
     write_private(&c.dir.join(STUB_FILE), &stub)?;
-    let kept = c.dir.join(KEPT_DIR);
     if keep {
         let mut b = std::fs::DirBuilder::new();
         #[cfg(unix)]
@@ -505,8 +511,9 @@ fn leave_stub(c: &Candidate, keep: bool) -> Result<(), String> {
 }
 
 /// Brings a session archived with its local copy kept back from that copy,
-/// with no registry: its files move back and the stub goes. None when it
-/// is not kept here, for `restore` to read its vintage instead.
+/// with no registry: its files move back and the stub goes. Its `vintage`
+/// is empty, since none was read. None when it is not kept here, for
+/// `restore` to read its vintage instead.
 pub fn restore_kept(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Option<Restored>, Error> {
     if !is_kept(sessions, id) {
         return Ok(None);
@@ -515,7 +522,6 @@ pub fn restore_kept(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Res
     if !is_kept(sessions, id) {
         return Ok(None);
     }
-    let vintage = read_stub(sessions, id).map(|s| s.vintage).unwrap_or_default();
     let (dir, kept) = (sessions.join(id), sessions.join(id).join(KEPT_DIR));
     for f in [CONTEXT_FILE, EVENTS_FILE] {
         match std::fs::rename(kept.join(f), dir.join(f)) {
@@ -525,7 +531,7 @@ pub fn restore_kept(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Res
     }
     std::fs::remove_file(dir.join(STUB_FILE)).map_err(|e| restore_failed(format!("remove {}: {e}", dir.join(STUB_FILE).display())))?;
     let _ = std::fs::remove_dir(&kept);
-    Ok(Some(Restored { vintage, ..Restored::default() }))
+    Ok(Some(Restored::default()))
 }
 
 /// Brings an archived session back (R-VINT-4) and says which vintage it
