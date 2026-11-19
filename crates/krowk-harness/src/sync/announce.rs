@@ -143,20 +143,88 @@ pub fn instances(registry: &Registry, reports: &[Report], raw: Option<&[u8]>) ->
 }
 
 /// This machine's capacity now (R-ALLOC-1): its cores, 1-minute load and
-/// free memory from the OS (Linux, macOS and Windows), and the slots of
-/// `builds` and `agents` in use (`Pool::in_use`) and in all. Blocking but
-/// quick. Slice 02 builds it.
+/// free memory from the OS, and the slots of `builds` and `agents` in use
+/// (`Pool::in_use`) and in all. Blocking but quick. A reading the OS does
+/// not give is zero (load) or zero (memory), which a supervisor reads as no
+/// room rather than as plenty.
 pub fn capacity(builds: &crate::slots::Pool, agents: &crate::slots::Pool) -> presence::Capacity {
-    todo!("slice 02: read the capacity of {} and {}", builds.dir().display(), agents.dir().display())
+    let slots = |p: &crate::slots::Pool| {
+        let total = u32::try_from(p.size()).unwrap_or(u32::MAX);
+        presence::Slots { in_use: u32::try_from(p.in_use().unwrap_or(0)).unwrap_or(u32::MAX).min(total), total }
+    };
+    presence::Capacity {
+        cores: u32::try_from(crate::builds::cores()).unwrap_or(u32::MAX).max(1),
+        load_1m: load_1m(),
+        free_memory: free_memory(),
+        build_slots: slots(builds),
+        agent_slots: slots(agents),
+    }
+}
+
+/// The 1-minute load average, 0 when the OS gives none.
+fn load_1m() -> f64 {
+    let mut load = [0f64; 1];
+    // SAFETY: getloadavg writes at most the one sample asked for.
+    let got = unsafe { libc::getloadavg(load.as_mut_ptr(), 1) };
+    if got == 1 && load[0].is_finite() && load[0] >= 0.0 { load[0] } else { 0.0 }
+}
+
+/// Memory free for new work, in bytes: what the OS counts as available
+/// (caches it can give back included), 0 when it cannot be read.
+#[cfg(target_os = "linux")]
+fn free_memory() -> u64 {
+    let Ok(info) = std::fs::read_to_string("/proc/meminfo") else { return 0 };
+    let kib = |key: &str| info.lines().find_map(|l| l.strip_prefix(key)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok());
+    kib("MemAvailable:").or_else(|| kib("MemFree:")).map_or(0, |k| k.saturating_mul(1024))
+}
+
+#[cfg(target_os = "macos")]
+fn free_memory() -> u64 {
+    fn sysctl(name: &str) -> Option<u64> {
+        let name = std::ffi::CString::new(name).ok()?;
+        let mut value: u64 = 0;
+        let mut size = std::mem::size_of::<u64>();
+        // SAFETY: the name is NUL-terminated and `value` is `size` bytes long, as the call asks.
+        let rc = unsafe { libc::sysctlbyname(name.as_ptr(), (&mut value as *mut u64).cast(), &mut size, std::ptr::null_mut(), 0) };
+        // A 32-bit answer fills the low half of the zeroed word on a little-endian machine.
+        (rc == 0).then_some(value)
+    }
+    // SAFETY: sysconf has no preconditions; -1 is its failure.
+    let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
+    let pages = ["vm.page_free_count", "vm.page_speculative_count", "vm.page_purgeable_count"].iter().filter_map(|n| sysctl(n)).fold(0u64, u64::saturating_add);
+    u64::try_from(page).unwrap_or(0).saturating_mul(pages & 0xffff_ffff)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn free_memory() -> u64 {
+    0
 }
 
 /// The allocation fields of `record` filled in before it is fitted
 /// (R-ALLOC-1, R-ALLOC-12): `capacity`; `accepting` from `policy`
 /// (`sync.accept`); and `repositories`, each of `record.directories` whose
 /// `origin` remote normalises (`presence::normalise_origin`), a directory
-/// with none left out. Slice 02 builds it, and the publisher calls it.
+/// with none left out. The publisher calls it.
 pub fn fill(record: &mut Announcement, policy: &super::auto::Policy, capacity: presence::Capacity) {
-    todo!("slice 02: fill {} from the policy (accepting {}) and {capacity:?}", record.name, policy.accepting)
+    record.capacity = Some(capacity);
+    record.accepting = policy.accepting;
+    record.repositories = repositories(&record.directories);
+}
+
+/// The repositories among `directories`, in order, at most `MAX_REPOSITORIES`:
+/// each with its `origin` remote's URL normalised, so never with a
+/// credential. A directory with no origin, or a local one, is left out.
+pub fn repositories(directories: &[String]) -> Vec<presence::AnnouncedRepository> {
+    let mut out = Vec::new();
+    for d in directories {
+        if out.len() >= MAX_REPOSITORIES {
+            break;
+        }
+        let url = krowk_api::git::query(Path::new(d)).and_then(|mut c| c.args(["config", "--get", "remote.origin.url"]).output());
+        let Some(origin) = url.ok().filter(|o| o.status.success()).and_then(|o| presence::normalise_origin(String::from_utf8_lossy(&o.stdout).trim())) else { continue };
+        out.push(presence::AnnouncedRepository { directory: d.clone(), origin });
+    }
+    out
 }
 
 /// `a` brought within the record's bounds before it is sealed: whatever
@@ -316,6 +384,8 @@ struct Ticks {
     /// When the list and the instances were last read fresh.
     fresh_at: Option<Instant>,
     instances: Vec<AnnouncedInstance>,
+    /// The build and agent slot pools, read with the instances.
+    pools: Option<(crate::slots::Pool, crate::slots::Pool)>,
     /// No call until then: the workspace has no paid plan.
     paused: Option<Instant>,
     daemon: Option<Daemon>,
@@ -337,7 +407,7 @@ fn publish(c: &Arc<Config>, stop: &Receiver<End>, stopping: Arc<std::sync::atomi
         eprintln!("krowk: this machine cannot announce itself to your other devices: no async runtime for it");
         return false;
     };
-    let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), paused: None, daemon: None, stop: stopping };
+    let mut t = Ticks { published: false, said: HashSet::new(), fresh_at: None, instances: Vec::new(), pools: None, paused: None, daemon: None, stop: stopping };
     let mut last: Option<Announcer> = None;
     loop {
         let next = tick(c, o, &rt, &mut t, &mut last, commands);
@@ -398,6 +468,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
     if fresh || t.instances.is_empty() {
         let (registry, reports) = (o.instances)();
         t.instances = instances(&registry, &reports, (o.catalog)().as_deref());
+        t.pools = Some(pools_of(&registry));
     }
     let Some(me) = a.chain.devices().iter().find(|d| d.id() == a.device) else {
         return refused(c, o, t, "device_revoked", "this device is not on your device list");
@@ -409,6 +480,8 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
     };
     let directories = offered(c, o, &policy);
     let mut record = Announcement { device: a.device.to_string(), name: me.name.clone(), os: me.os.clone(), version: c.version.clone(), online_since_ms: o.online_since_ms, instances: t.instances.clone(), directories, sessions, capacity: None, repositories: Vec::new(), accepting: false };
+    let (builds, agents) = t.pools.get_or_insert_with(|| pools_of(&Registry::default()));
+    fill(&mut record, &policy, capacity(builds, agents));
     fit(&mut record);
     // Told to stop while it gathered: nothing more is put, so the stop's
     // take-down is the last word.
@@ -431,6 +504,16 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
         }
         Err((code, message)) => refused(c, o, t, &code, &message),
     }
+}
+
+/// The build and agent slot pools of `registry`; where it names none (a
+/// config that did not read), the defaults in this process's runtime directory.
+fn pools_of(registry: &Registry) -> (crate::slots::Pool, crate::slots::Pool) {
+    let env = krowk_api::home::process_env;
+    let runtime = crate::slots::runtime_dir(&env);
+    let builds = registry.builds.pool.clone().unwrap_or_else(|| crate::slots::Pool::new(runtime.clone(), crate::builds::POOL, (crate::builds::cores() / 4).max(1)));
+    let agents = registry.agents.clone().unwrap_or_else(|| crate::slots::Pool::new(runtime, crate::subagent::AGENT_SLOTS, crate::subagent::max_host()));
+    (builds, agents)
 }
 
 /// The sessions the daemon holds, asked over a background connection kept
@@ -584,7 +667,6 @@ mod tests {
     /// `sync.accept` as `accepting`, and each directory with an origin as a
     /// repository, normalised, with no credential.
     #[test]
-    #[ignore = "slice 02: fill"]
     fn alloc_02_the_record_carries_capacity_acceptance_and_repositories() {
         let root = std::env::temp_dir().join(format!("krowk-fill-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -611,7 +693,6 @@ mod tests {
     /// Slice 02 (R-ALLOC-1): this machine reads its own capacity, its slot
     /// totals the pools'.
     #[test]
-    #[ignore = "slice 02: capacity"]
     fn alloc_02_this_machine_reads_its_capacity() {
         let runtime = std::env::temp_dir().join(format!("krowk-capacity-{}", std::process::id()));
         let builds = crate::slots::Pool::new(runtime.clone(), "build-slots", 3);

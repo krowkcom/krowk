@@ -119,9 +119,39 @@ pub struct AnnouncedRepository {
 /// stripped and the host lower-cased, so no credential is ever announced:
 /// `git@github.com:Acme/app.git` and `https://github.com/Acme/app` are
 /// both `github.com/Acme/app`. None for a URL that names no host (a local
-/// path), which no other machine has. Slice 02 implements it.
+/// path), which no other machine has. A port is dropped too: ssh and https
+/// name one repository on different ports.
 pub fn normalise_origin(url: &str) -> Option<String> {
-    todo!("slice 02: normalise {url}")
+    let url = url.trim();
+    let url = url.split(['?', '#']).next().unwrap_or("");
+    let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        if scheme.is_empty() || scheme.eq_ignore_ascii_case("file") {
+            return None;
+        }
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // `host:port`; a bracketed IPv6 address is left as it is.
+        let host = match host.rsplit_once(':') {
+            Some((h, port)) if !host.starts_with('[') && port.bytes().all(|b| b.is_ascii_digit()) => h,
+            _ => host,
+        };
+        (host, path)
+    } else {
+        // scp-like: `[user[:secret]@]host:path`, the colon before any slash.
+        let head = url.split('/').next().unwrap_or("");
+        let rest = head.rfind('@').map_or(url, |i| &url[i + 1..]);
+        let (host, path) = rest.split_once(':')?;
+        if host.contains('/') || host.len() < 2 {
+            return None;
+        }
+        (host, path)
+    };
+    let mut path = path.trim_matches('/');
+    path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    if host.is_empty() || path.is_empty() || host.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(format!("{}/{path}", host.to_ascii_lowercase()))
 }
 
 /// One of the host's instances, and whether it is ready.

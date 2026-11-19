@@ -118,10 +118,28 @@ impl Pool {
     }
 
     /// How many of the pool's slots are held now, by any process, counted
-    /// without taking one (R-ALLOC-1): what a machine announces. Slice 02
-    /// builds it.
+    /// without taking one (R-ALLOC-1): what a machine announces. Each lock
+    /// file is opened (never made) and a shared lock tried on it, let go at
+    /// once: one a process holds refuses it. A pool never used has none held.
+    /// A slot taken in the instant a file is probed may find it busy and try
+    /// the next, then the pool's wait: the same as another taker's race.
     pub fn in_use(&self) -> Result<usize, String> {
-        todo!("slice 02: count the held slots of {}", self.dir().display())
+        let dir = self.dir();
+        let mut held = 0;
+        for index in 0..self.size {
+            let path = dir.join(format!("{index}.lock"));
+            let f = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("{} could not be opened: {e}", path.display())),
+            };
+            match f.try_lock_shared() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => held += 1,
+                Err(std::fs::TryLockError::Error(e)) => return Err(format!("{} could not be locked: {e}", path.display())),
+            }
+        }
+        Ok(held)
     }
 
     /// A slot, waited for as long as it takes: tried every `RETRY` while
@@ -168,7 +186,6 @@ mod tests {
     /// Slice 02 (R-ALLOC-1): the occupancy a machine announces is the
     /// locks held, and counting them takes none.
     #[test]
-    #[ignore = "slice 02: Pool::in_use"]
     fn alloc_02_slot_occupancy_matches_held_locks() {
         let d = dir("occupancy");
         let pool = Pool::new(d.clone(), "agent-slots", 3);
