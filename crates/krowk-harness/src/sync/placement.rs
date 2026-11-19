@@ -411,8 +411,10 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
                 }
+                // Said by the child's bridge, whole: why its result could
+                // not be packed or stored, its work kept in its worktree.
                 if let Some(why) = error {
-                    return Err(format!("the child's result could not be stored: {why}"));
+                    return Err(why.clone());
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -508,11 +510,6 @@ impl std::fmt::Display for Failure {
     }
 }
 
-/// How far a machine's announcement must move on between two readings to
-/// count as a new one, past the jitter of reading its age (or four polls,
-/// when a test polls faster).
-const REANNOUNCED: Duration = Duration::from_millis(250);
-
 /// How long placement waits and polls. The constants above are what it
 /// runs with; a test makes them short.
 #[derive(Debug, Clone, Copy)]
@@ -573,8 +570,9 @@ pub trait Fleet: Send + Sync {
     fn send_run(&self, to: &Announcement, task: &RunTask, wait: Duration) -> Result<Option<HostAnswer>, String>;
     /// The child's log so far, as events.
     fn watch(&self, child: &str) -> Result<Vec<Value>, String>;
-    /// How long ago the machine last announced; none when it never has.
-    fn seen(&self, device: &str) -> Option<Duration>;
+    /// When the machine last announced, in ms by the registry's clock;
+    /// none when it never has.
+    fn seen(&self, device: &str) -> Option<i64>;
     /// The result `task.result` named, opened.
     fn read_result(&self, child: &str, transport: &str, key: &str) -> Result<super::handoff::Bundle, String>;
     /// `handoff::apply_result`, into `to`.
@@ -917,7 +915,7 @@ impl Placer {
         let mut read = Instant::now();
         let mut ended: Option<Instant> = None;
         let mut seen_events = 0;
-        let mut announced: Option<Instant> = None;
+        let mut announced: Option<i64> = None;
         let done = loop {
             std::thread::sleep(t.poll);
             if task.is_cancelled() {
@@ -947,14 +945,13 @@ impl Placer {
             }
             // Alive when its announcement is seen to move on: a machine gone
             // quiet is offline `offline_after` past its last announcement
-            // (and a poll), not twice that. Only how far the announcement
-            // moved counts, never its age, so a clock that differs from the
-            // registry's cancels out.
-            if let Some(at) = f.seen(device).and_then(|ago| Instant::now().checked_sub(ago)) {
-                if announced.is_some_and(|before| at > before + REANNOUNCED.min(t.poll * 4)) {
+            // (and a poll), not twice that. Only the registry's own times
+            // are compared, so this machine's clock never counts.
+            if let Some(at) = f.seen(device) {
+                if announced.is_some_and(|before| at > before) {
                     alive = Instant::now();
                 }
-                announced = Some(at);
+                announced = Some(announced.map_or(at, |before| before.max(at)));
             }
             if alive.elapsed() >= t.offline_after {
                 return Err(Failure::Offline { machine: machine.to_string() });
@@ -1226,8 +1223,8 @@ mod tests {
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
         let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
-        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("too_large: smaller".into()) });
-        assert_eq!(result_of(&[done(), failed], CHILD), Err("the child's result could not be stored: too_large: smaller".into()), "a result the child could not store fails with why");
+        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("the result could not be stored (too_large): the transport is over the limit".into()) });
+        assert_eq!(result_of(&[done(), failed], CHILD), Err("the result could not be stored (too_large): the transport is over the limit".into()), "a result the child could not store fails with why");
     }
 
     /// Slice 07 (D9): this supervisor's recent placements fill a machine's
@@ -1279,7 +1276,7 @@ mod tests {
         answers: Mutex<HashMap<String, VecDeque<Option<HostAnswer>>>>,
         sent: Mutex<Vec<(String, RunTask)>>,
         events: Mutex<Vec<Value>>,
-        seen: Mutex<Option<Duration>>,
+        seen: Mutex<Option<i64>>,
         others_read: AtomicUsize,
         landed: Mutex<Vec<String>>,
         spent: AtomicUsize,
@@ -1289,12 +1286,8 @@ mod tests {
         stopped: Mutex<Vec<String>>,
         /// How long `send_run` takes to answer.
         slow: Duration,
-        /// When the machine last announced, once it stopped: `seen` then
-        /// grows from it.
-        quiet_since: Mutex<Option<Instant>>,
-        /// Announcing every `.1` since `.0`, read by a clock `.2` ahead of
-        /// the registry's.
-        announcing: Option<(Instant, Duration, Duration)>,
+        /// Announcing every `.1` since `.0`: `seen` moves on each time.
+        announcing: Option<(Instant, Duration)>,
     }
 
     struct Shared(Arc<Fake>);
@@ -1347,13 +1340,10 @@ mod tests {
         fn watch(&self, _: &str) -> Result<Vec<Value>, String> {
             Ok(self.0.events.lock().unwrap().clone())
         }
-        fn seen(&self, _: &str) -> Option<Duration> {
-            if let Some(at) = *self.0.quiet_since.lock().unwrap() {
-                return Some(at.elapsed());
-            }
-            if let Some((since, every, ahead)) = self.0.announcing {
-                let phase = since.elapsed().as_nanos() % every.as_nanos();
-                return Some(ahead + Duration::from_nanos(phase as u64));
+        fn seen(&self, _: &str) -> Option<i64> {
+            if let Some((since, every)) = self.0.announcing {
+                let times = since.elapsed().as_nanos() / every.as_nanos();
+                return Some(times as i64 * every.as_millis() as i64);
             }
             *self.0.seen.lock().unwrap()
         }
@@ -1409,11 +1399,10 @@ mod tests {
         Arc::new(Fake { here: Some(here), others, answers: Mutex::new(answers), ..Fake::default() })
     }
 
-    /// `f`'s machine announcing every 40 ms from now on, read by a clock
-    /// `ahead` of the registry's.
-    fn announcing(f: Arc<Fake>, ahead: Duration) -> Arc<Fake> {
+    /// `f`'s machine announcing every 40 ms from now on.
+    fn announcing(f: Arc<Fake>) -> Arc<Fake> {
         let mut f = Arc::try_unwrap(f).ok().unwrap();
-        f.announcing = Some((Instant::now(), Duration::from_millis(40), ahead));
+        f.announcing = Some((Instant::now(), Duration::from_millis(40)));
         Arc::new(f)
     }
 
@@ -1524,18 +1513,18 @@ mod tests {
         let f = fleet(true, &["b"], &[("b", vec![started()])]);
         let t = Timing { offline_after: Duration::from_secs(1), ..quick() };
         let began = Instant::now();
-        *f.quiet_since.lock().unwrap() = Some(began);
+        *f.seen.lock().unwrap() = Some(1_790_000_000_000);
         let p = Placer::with(Box::new(Shared(f.clone())), t);
         let h = p.start(spec(), Here::Caller);
         assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Offline { machine: "b".into() });
         assert!(began.elapsed() < Duration::from_millis(1500), "about 1 s, not 2: {:?}", began.elapsed());
     }
 
-    /// R-ALLOC-9: a machine that keeps announcing is never offline, read
-    /// by a clock nearly `OFFLINE_AFTER` ahead of the registry's.
+    /// R-ALLOC-9: a machine that keeps announcing is never offline, though
+    /// its child's log is quiet for longer than `offline_after`.
     #[test]
-    fn a_machine_still_announcing_is_online_whatever_the_clock_skew() {
-        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]), Duration::from_secs(55));
+    fn a_machine_still_announcing_is_online_while_its_child_is_quiet() {
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
         let t = Timing { offline_after: Duration::from_secs(1), ..quick() };
         let p = Placer::with(Box::new(Shared(f.clone())), t);
         let h = p.start(spec(), Here::Caller);
@@ -1564,11 +1553,11 @@ mod tests {
     fn a_result_the_child_could_not_store_fails_the_task_with_why() {
         let f = fleet(true, &["b"], &[("b", vec![started()])]);
         let mut events = completed_child();
-        events[2] = event(LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "snap".into(), denied: Vec::new(), error: Some("the result is over 64 MiB".into()) });
+        events[2] = event(LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "snap".into(), denied: Vec::new(), error: Some(super::super::handoff::RESULT_TOO_BIG.into()) });
         *f.events.lock().unwrap() = events;
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
-        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the child's result could not be stored: the result is over 64 MiB".into() });
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: super::super::handoff::RESULT_TOO_BIG.into() });
         assert!(f.landed.lock().unwrap().is_empty());
     }
 
@@ -1645,7 +1634,7 @@ mod tests {
     /// fails the task rather than waiting for ever.
     #[test]
     fn a_turn_that_ends_with_no_result_fails_the_task() {
-        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]), Duration::ZERO);
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
         *f.events.lock().unwrap() = completed_child()[..2].to_vec();
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
@@ -1657,7 +1646,7 @@ mod tests {
     /// An interrupted caller stops the child and lands nothing.
     #[test]
     fn a_cancelled_task_stops_its_child_and_lands_nothing() {
-        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]), Duration::ZERO);
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
         assert!(matches!(p.placed(&h, Duration::from_secs(5)), Ok(Progress::Running { .. })));

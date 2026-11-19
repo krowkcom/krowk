@@ -259,12 +259,10 @@ impl Fleet for Registry {
         store::read_all(&self.announcer.api, &keys, child, None).map(|(events, _, _)| events)
     }
 
-    fn seen(&self, device: &str) -> Option<Duration> {
+    fn seen(&self, device: &str) -> Option<i64> {
         let presences = self.announcer.api.list_presences().ok()?;
         let p = presences.into_iter().find(|p| p.device.eq_ignore_ascii_case(device))?;
-        let at = crate::http::rfc3339_ms(&p.updated_at)?;
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as i64;
-        Some(Duration::from_millis((now - at).max(0) as u64))
+        crate::http::rfc3339_ms(&p.updated_at)
     }
 
     fn read_result(&self, child: &str, transport: &str, key: &str) -> Result<Bundle, String> {

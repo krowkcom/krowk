@@ -1080,8 +1080,8 @@ mod placed {
         fn watch(&self, child: &str) -> Result<Vec<Value>, String> {
             Ok(done(child, self.0.unstored.clone()))
         }
-        fn seen(&self, _: &str) -> Option<Duration> {
-            Some(Duration::ZERO)
+        fn seen(&self, _: &str) -> Option<i64> {
+            Some(0)
         }
         fn read_result(&self, child: &str, _: &str, _: &str) -> Result<Bundle, String> {
             Ok(bundle(child))
@@ -1138,13 +1138,13 @@ fn alloc_10_a_result_the_child_could_not_store_fails_the_call_with_why() {
         }
     });
     let home = Home::new("unstored", &m.url);
-    let counts = Arc::new(placed::Counts { unstored: Some("the result is over 64 MiB".into()), ..Default::default() });
+    let counts = Arc::new(placed::Counts { unstored: Some("the result could not be stored (too_large): the transport is over the limit".into()), ..Default::default() });
     let (_, result) = home.run_with("fix the test with a subagent", placed_agents(&counts));
     assert_eq!(result.status, TurnStatus::Completed, "{result:?}");
     let answer = parent_seen(&m)[1]["messages"].as_array().unwrap().last().unwrap().clone();
     let block = &answer["content"][0];
     assert_eq!(block["is_error"], true, "{answer}");
-    assert!(block.to_string().contains("The task failed on b: the child's result could not be stored: the result is over 64 MiB"), "{answer}");
+    assert!(block.to_string().contains("The task failed on b: the result could not be stored (too_large): the transport is over the limit"), "{answer}");
 }
 
 /// R-ALLOC-10, D12: an agent with a tool allowlist runs here whatever the
