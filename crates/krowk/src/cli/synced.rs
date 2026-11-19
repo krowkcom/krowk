@@ -248,19 +248,30 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     let here = repository_here();
     // This machine is the one asking: whether it would take a task from
     // itself is no question, so it has no readiness to show.
-    let ready: Vec<Option<String>> = hosts.iter().map(|h| here.as_ref().filter(|_| !h.this_machine).map(|(origin, url)| h.announced.as_ref().map_or_else(|| "no announcement yet: run krowk host enable there".to_string(), |a| krowk_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into())))).collect();
+    // On the tailnet — which this machine is whenever its Tailscale is up —
+    // or announced and not lapsed.
+    let online: Vec<bool> = hosts.iter().map(|h| (if h.this_machine { status.is_some() } else { h.direct() }) || h.announced.as_ref().is_some_and(|a| a.online)).collect();
+    let ready: Vec<Option<String>> = hosts
+        .iter()
+        .zip(&online)
+        .map(|(h, online)| {
+            let (origin, url) = here.as_ref().filter(|_| !h.this_machine)?;
+            Some(match &h.announced {
+                None => "no announcement yet: run krowk host enable there".to_string(),
+                Some(_) if !online => "offline: start krowk's host service there".to_string(),
+                Some(a) => krowk_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into()),
+            })
+        })
+        .collect();
     if ctx.format == crate::output::Format::Json {
         let rows: Vec<_> = hosts
             .iter()
-            .zip(&ready)
-            .map(|(h, ready)| {
+            .zip(online.iter().zip(&ready))
+            .map(|(h, (online, ready))| {
                 let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
-                // On the tailnet — which this machine is whenever its
-                // Tailscale is up — or announced and not lapsed.
-                let tailnet = if h.this_machine { status.is_some() } else { h.direct() };
                 let a = h.announced.as_ref();
                 let instances: Vec<_> = a.map(|a| &a.announcement.instances[..]).unwrap_or_default().iter().map(|i| json!({"name": i.name, "kind": i.kind, "ready": i.ready, "state": i.state, "fix": i.fix, "models": i.models, "limit": i.limit})).collect();
-                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": tailnet || a.is_some_and(|a| a.online), "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips,
+                json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": online, "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips,
                     "announced": a.is_some(), "lastSeen": a.map(|a| &a.updated_at), "version": a.map(|a| &a.announcement.version), "instances": instances, "directories": a.map(|a| &a.announcement.directories[..]).unwrap_or_default(),
                     "capacity": a.and_then(|a| a.announcement.capacity.as_ref()), "repositories": a.map(|a| &a.announcement.repositories[..]).unwrap_or_default(), "accepting": a.is_some_and(|a| a.announcement.accepting), "here": ready})
             })
@@ -268,7 +279,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
     let now = jiff::Timestamp::now();
-    for h in &hosts {
+    for (h, online) in hosts.iter().zip(&online) {
         let reach = match (&h.tailnet, &h.peer) {
             _ if h.this_machine => "this machine",
             _ if status.is_none() => "Tailscale is not running here",
@@ -279,8 +290,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         };
         let n = if h.sessions == 1 { "1 session".to_string() } else { format!("{} sessions", h.sessions) };
         let a = h.announced.as_ref();
-        let online = if h.this_machine { status.is_some() } else { h.direct() } || a.is_some_and(|a| a.online);
-        let _ = writeln!(ctx.io.stdout, "{}  {}  {}", super::sync::printable(&h.name), if online { "online" } else { "offline" }, a.map_or_else(|| "no announcement yet".to_string(), |a| capacity_line(&a.announcement)));
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}", super::sync::printable(&h.name), if *online { "online" } else { "offline" }, a.map_or_else(|| "no announcement yet".to_string(), |a| capacity_line(&a.announcement)));
         let _ = writeln!(ctx.io.stdout, "  {}  {reach}  {n}", if h.hosting { "hosting" } else { "not hosting" });
         if let Some(a) = a {
             for line in announced_lines(a, now) {
@@ -289,7 +299,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         }
     }
     if let Some((origin, _)) = &here {
-        let _ = writeln!(ctx.io.stdout, "\nFor {origin}:");
+        let _ = writeln!(ctx.io.stdout, "\nFor {}:", super::sync::printable(origin));
         for (h, ready) in hosts.iter().zip(&ready) {
             if let Some(ready) = ready {
                 let _ = writeln!(ctx.io.stdout, "  {}  {}", super::sync::printable(&h.name), super::sync::printable(ready));

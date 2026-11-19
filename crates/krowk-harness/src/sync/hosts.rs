@@ -132,18 +132,16 @@ pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
     })
 }
 
-/// `url` with no user or password in it, whatever its scheme: an http(s)
-/// or git URL loses its whole userinfo, an ssh one keeps the user alone
-/// (`git@`), which names no secret. A scp-style `git@host:path` has only
-/// that user and stays as it is.
+/// `url` with no user, password, query or fragment in it: an http(s) or git
+/// URL loses its whole userinfo, an ssh one (`ssh://`, `git+ssh://`) keeps
+/// the user alone (`git@`), which names no secret. A scp-style
+/// `git@host:path` has only that user and stays as it is.
 fn without_credentials(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
     let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
     let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
     let Some((userinfo, host)) = authority.rsplit_once('@') else { return url.to_string() };
-    let user = match scheme.to_ascii_lowercase().as_str() {
-        "ssh" => userinfo.split(':').next().filter(|u| !u.is_empty()).map(|u| format!("{u}@")),
-        _ => None,
-    };
+    let user = scheme.to_ascii_lowercase().contains("ssh").then(|| userinfo.split(':').next().filter(|u| !u.is_empty()).map(|u| format!("{u}@"))).flatten();
     let slash = if rest.contains('/') { "/" } else { "" };
     format!("{scheme}://{}{host}{slash}{path}", user.unwrap_or_default())
 }
@@ -182,6 +180,8 @@ mod tests {
             ("https://ann:p%40ss@github.com:8443/acme/app", "https://github.com:8443/acme/app"),
             ("ssh://git:pw@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
             ("ssh://git@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
+            ("git+ssh://git@github.com/acme/app.git", "git+ssh://git@github.com/acme/app.git"),
+            ("https://github.com/acme/app.git?access_token=x#frag", "https://github.com/acme/app.git"),
             ("git@github.com:acme/app.git", "git@github.com:acme/app.git"),
             ("https://github.com/acme/app.git", "https://github.com/acme/app.git"),
         ] {
