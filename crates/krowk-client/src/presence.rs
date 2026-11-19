@@ -63,7 +63,9 @@ pub struct Announcement {
     pub sessions: Vec<String>,
     /// How loaded the machine is now (R-ALLOC-1). None from a host older
     /// than automatic allocation, and kept last when the record must shrink.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// One an older device cannot read (a shape added since) reads as none,
+    /// rather than refusing the whole record.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
     pub capacity: Option<Capacity>,
     /// The trusted repositories it takes handed-over tasks in, each with
     /// its origin normalised (`normalise_origin`), so a supervisor finds
@@ -146,7 +148,7 @@ pub struct AnnouncedInstance {
     pub limit: Option<LimitStatus>,
 }
 
-fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<LimitStatus>, D::Error> {
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
     let v = Option::<serde_json::Value>::deserialize(d)?;
     Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
@@ -185,6 +187,9 @@ impl Announcement {
         }
         if self.capacity.is_some_and(|c| !c.load_1m.is_finite() || c.load_1m < 0.0) {
             return Err("the announcement's load is not a number of zero or more".into());
+        }
+        if self.capacity.is_some_and(|c| c.cores == 0 || c.build_slots.in_use > c.build_slots.total || c.agent_slots.in_use > c.agent_slots.total) {
+            return Err("the announcement's capacity has no cores, or more slots in use than it has".into());
         }
         let json = serde_json::to_vec(self).map_err(|e| format!("the announcement does not encode: {e}"))?;
         if json.len() > MAX_JSON {

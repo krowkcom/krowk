@@ -225,6 +225,25 @@ fn r_alloc_1_the_allocation_fields_are_held_to_their_bounds() {
     let mut wild = record(&me);
     wild.capacity.as_mut().unwrap().load_1m = -1.0;
     assert!(presence::seal(&wild, &keys(1), 1, &me).unwrap_err().contains("load"));
+    let mut none = record(&me);
+    none.capacity.as_mut().unwrap().cores = 0;
+    assert!(presence::seal(&none, &keys(1), 1, &me).unwrap_err().contains("no cores"));
+    let mut over = record(&me);
+    over.capacity.as_mut().unwrap().agent_slots = Slots { in_use: 33, total: 32 };
+    assert!(presence::seal(&over, &keys(1), 1, &me).unwrap_err().contains("slots in use"));
+}
+
+/// R-ALLOC-1: a capacity this build cannot read, from a newer host, reads
+/// as none, and the rest of the record still opens.
+#[test]
+fn r_alloc_1_a_capacity_this_build_cannot_read_reads_as_none() {
+    let w = world();
+    let me = w.laptop.id();
+    let mut json = serde_json::to_value(record(&me)).unwrap();
+    json["capacity"]["load1m"] = serde_json::json!({"oneMinute": 3.2});
+    let sealed = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, &serde_json::to_vec(&json).unwrap()).unwrap();
+    let opened = presence::open(&sealed, &me, &keys(1), &chain(&w)).unwrap();
+    assert_eq!((opened.capacity, opened.accepting, opened.repositories.len()), (None, true, 1));
 }
 
 /// R-ALLOC-1, D14: a record from a host older than automatic allocation

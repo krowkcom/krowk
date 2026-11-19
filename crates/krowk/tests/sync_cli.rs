@@ -52,7 +52,8 @@ const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
 
 /// A task handed to another machine, which writes `delegated.txt`.
 const DELEGATED: &str = "write-the-delegated-file-9d41";
-/// A task long enough for its machine to be dropped under it.
+/// A task long enough for its machine to be dropped under it, and to
+/// outlast the test's bound, so only the drop can end it.
 const LONG_TASK: &str = "a-two-minute-task-4c07";
 
 /// Holds the slower subagent's answer until the test opens it.
@@ -105,7 +106,8 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
         return mock::Reply::sse(&mock::tool_use("toolu_01Deleg", "write", &serde_json::json!({"path": "delegated.txt", "content": "delegated\n"})));
     }
     if !has_result && text.contains(LONG_TASK) {
-        let words: String = (0..6000).map(|i| format!("taskword{i} ")).collect();
+        // Ten minutes at this pace: it outlasts the drop test's bound.
+        let words: String = (0..30_000).map(|i| format!("taskword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
     for (ask, file) in [("make the allowed file", "allowed.txt"), ("make the denied file", "denied.txt")] {

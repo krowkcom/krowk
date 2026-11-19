@@ -16,9 +16,10 @@
 //!
 //! **The pick** (`choose`, pure). Every machine not `ruled_out` (D6, D7,
 //! D14: offline, not accepting, no clone of the repository's origin, no
-//! ready instance of the model's, no free agent slot counting this
-//! supervisor's own placements on it of the last `RECENT` as slots in use,
-//! D9; this machine only for the model). Then this machine unless it is
+//! ready instance of the model's, no capacity announced (a host older than
+//! allocation), no free agent slot counting this supervisor's own
+//! placements on it of the last `RECENT` as slots in use, D9, added
+//! saturating; this machine only for the model). Then this machine unless it is
 //! `busy` (D4, D5); else the others ranked by free agent slots, then free
 //! build slots, then lowest load per core, then most free memory; a
 //! machine whose instance of the model reports it is near its usage limit
@@ -41,13 +42,22 @@
 //! refusal, or no answer by then and `ANSWER_GRACE` more, moves to the next
 //! pick, once (D11): nothing ran yet. The target never spends the job, so
 //! the next pick reads the same one; the `Placer` spends it once a child
-//! started.
+//! started. The machines' clocks are taken to agree within `ANSWER_GRACE`
+//! (5 s). A `started` that arrives once the `Placer` has moved on
+//! (`in_time` false) has its child stopped, through the session's own
+//! interrupt as any follower stops a turn, and its worktree left to the
+//! target's clean-up: the target holds itself to `notAfterMs`, and this is
+//! the backstop when the clocks disagree by more.
 //!
 //! **The way back** (`Placer::wait`). The child is followed as any synced
 //! session is; its bridge, which holds its lease, stores the result and
-//! logs `task.result` (`LogBody::TaskResult`) when the one turn completes,
-//! and the `Placer` fetches it and lands it in the working tree
-//! (`handoff::apply_result`). A failure after the child started is the
+//! logs `task.result` (`LogBody::TaskResult`) when the one turn completes.
+//! Any of the person's devices can write to a log, so the `Placer` takes
+//! the result only as `result_of` checks it: in the started child's own
+//! session, after its turn's `turn.completed`, its transport a slug and its
+//! key 64 hex digits (`host_command::slug_shaped`, `key_shaped`); anything
+//! else fails the task. Then it fetches it and lands it in the working
+//! tree (`handoff::apply_result`). A failure after the child started is the
 //! caller's, never retried (D11): `Failure`. A machine with no announcement
 //! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
@@ -57,7 +67,7 @@
 use super::announce::Announcer;
 use krowk_client::host_command::ModelChoice;
 use krowk_client::presence::{Announcement, Capacity};
-use krowk_client::protocol::{BudgetLimits, ModelRef, PermissionMode, Usage};
+use krowk_client::protocol::{BudgetLimits, LogEvent, ModelRef, PermissionMode, Usage};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,6 +217,34 @@ pub fn choose(candidates: &[Candidate], ask: &Ask<'_>) -> Result<Choice, String>
     todo!("slice 07: choose among {} for {}", candidates.len(), ask.origin)
 }
 
+/// Whether a `started` received at `received_ms` (the supervisor's clock)
+/// for a `run` whose `notAfterMs` was `not_after_ms` came in time: by
+/// `notAfterMs` and `ANSWER_GRACE` more. One that did not has its child
+/// stopped (see the module's docs). Slice 07 builds it.
+pub fn in_time(not_after_ms: i64, received_ms: i64) -> bool {
+    todo!("slice 07: whether {received_ms} is in time for {not_after_ms}")
+}
+
+/// A child's result, as its log names it and `result_of` checked it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultRef {
+    /// The transport and its key; both none for a child that changed
+    /// nothing.
+    pub transport: Option<String>,
+    pub key: Option<String>,
+    pub against: String,
+    pub denied: Vec<String>,
+}
+
+/// The result of `child` in `events`, its log as followed (R-ALLOC-8):
+/// none while its turn runs; `Err`, which fails the task, for a
+/// `task.result` in another session, before the turn's `turn.completed`,
+/// with a transport or key out of shape, or with one and not the other.
+/// Slice 07 builds it.
+pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, String> {
+    todo!("slice 07: the result of {child} in {} events", events.len())
+}
+
 /// Who runs a task placed on this machine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Here {
@@ -230,7 +268,8 @@ pub struct Handle {
 /// Where a task is.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Progress {
-    /// Still being placed.
+    /// Still being placed. `krowk_collect` says it is still running, as it
+    /// does for `Running`.
     Placing,
     /// Placed on this machine, for the caller to run (`Here::Caller`).
     Here { why: String },
@@ -309,8 +348,8 @@ impl Placer {
     }
 
     /// Up to `most` for the task to move past placing and running: where
-    /// it is then, its result landed in `h.cwd` once done. Slice 07 builds
-    /// it.
+    /// it is then, its result landed in `h.cwd` once done, taken only as
+    /// `result_of` checks it. Slice 07 builds it.
     pub fn wait(&self, h: &Handle, most: Duration) -> Result<Progress, Failure> {
         todo!("slice 07: wait {most:?} for {}", h.id)
     }
@@ -472,6 +511,50 @@ mod tests {
 
         assert_eq!(choose(&[busy_here.clone(), b.clone()], &ask(&none, None)).unwrap().picks, [Pick::There(1), Pick::Here], "the only other machine refusing: here");
         assert_eq!(choose(&[busy_here], &ask(&none, None)).unwrap().picks, [Pick::Here], "busy, but no other machine can take it: here");
+    }
+
+    /// Slice 07 (D11): a `started` counts by `notAfterMs` and the grace;
+    /// one later has its child stopped.
+    #[test]
+    #[ignore = "slice 07: in_time"]
+    fn alloc_07_a_started_after_the_grace_is_late() {
+        let grace = ANSWER_GRACE.as_millis() as i64;
+        assert!(in_time(30_000, 29_000));
+        assert!(in_time(30_000, 30_000 + grace));
+        assert!(!in_time(30_000, 30_001 + grace));
+    }
+
+    /// Slice 07 (R-ALLOC-8): a result is taken only from the started
+    /// child's own log, after its turn completed, in shape.
+    #[test]
+    #[ignore = "slice 07: result_of"]
+    fn alloc_07_a_result_is_taken_only_from_the_child_after_its_turn() {
+        use krowk_client::protocol::{LogBody, TurnStatus};
+        const CHILD: &str = "0190f3c2-0000-7000-8000-00000000000c";
+        let ev = |session: &str, body: LogBody| LogEvent { id: "0190f3c2-0000-7000-8000-0000000000e0".into(), parent_id: None, session_id: session.into(), time_ms: 0, body };
+        let done = || ev(CHILD, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None });
+        let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()] });
+        let key = || Some("ab".repeat(32));
+        assert_eq!(result_of(&[], CHILD), Ok(None), "its turn still runs");
+        let got = result_of(&[done(), result(CHILD, Some("art_1"), key())], CHILD).unwrap().unwrap();
+        assert_eq!((got.transport.as_deref(), got.against.as_str(), got.denied.len()), (Some("art_1"), "abc", 1));
+        assert_eq!(result_of(&[done(), result(CHILD, None, None)], CHILD).unwrap().unwrap().transport, None, "an unchanged child");
+        assert!(result_of(&[done(), result("0190f3c2-0000-7000-8000-0000000000ff", Some("art_1"), key())], CHILD).is_err(), "another session's");
+        assert!(result_of(&[result(CHILD, Some("art_1"), key()), done()], CHILD).is_err(), "before its turn completed");
+        assert!(result_of(&[done(), result(CHILD, Some("../x"), key())], CHILD).is_err(), "a transport out of shape");
+        assert!(result_of(&[done(), result(CHILD, Some("art_1"), Some("zz".repeat(32)))], CHILD).is_err(), "a key out of shape");
+        assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
+    }
+
+    /// Slice 07 (D9): this supervisor's recent placements fill a machine's
+    /// agent slots, added without overflowing.
+    #[test]
+    #[ignore = "slice 07: ruled_out"]
+    fn alloc_07_recent_placements_add_without_overflow() {
+        let none = anthropic();
+        let mut m = machine("m", false);
+        m.placed_recently = u32::MAX;
+        assert!(ruled_out(&m, &ask(&none, None)).is_some());
     }
 
     /// Slice 07 (R-ALLOC-10): a pin to a machine by name, `any`, and an OS

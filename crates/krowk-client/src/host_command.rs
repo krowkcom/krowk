@@ -246,7 +246,7 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
     }
     // Passed on to the registry and to the transport's open.
     if let HostCommand::Run(RunTask { job, .. }) = &c
-        && !(session_id_shaped(&job.session) && slug_shaped(&job.transport) && job.key.len() == 64 && job.key.bytes().all(|b| b.is_ascii_hexdigit()))
+        && !(session_id_shaped(&job.session) && slug_shaped(&job.transport) && key_shaped(&job.key))
     {
         return Ok(Err(RunRefusal::BadJob.answer("the task's job is not named as a stored job is — send it again from an up-to-date krowk")));
     }
@@ -308,9 +308,25 @@ pub fn session_id_shaped(s: &str) -> bool {
 }
 
 /// Whether `s` is a registry slug as text: 1–64 ASCII letters, digits,
-/// `_` and `-`.
-fn slug_shaped(s: &str) -> bool {
+/// `_` and `-`. A transport named anywhere (a `run`'s job, a child's
+/// `task.result`) is held to it before it is passed on.
+pub fn slug_shaped(s: &str) -> bool {
     (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// Whether `s` is a transport key as text: 64 hex digits.
+pub fn key_shaped(s: &str) -> bool {
+    s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// The stricter of two permission modes (D13): what a `run`'s child runs
+/// in, of the host's own mode for the directory (already made `default`
+/// when it asks nobody, as for `start`) and the `run`'s `permissionMode`.
+/// From strictest: `plan`, `default`, `acceptEdits`, `bypassPermissions`,
+/// `unhinged`. A `run` can only narrow the host's mode, never loosen it.
+/// Slice 05 builds it.
+pub fn stricter(a: PermissionMode, b: PermissionMode) -> PermissionMode {
+    todo!("slice 05: the stricter of {} and {}", a.name(), b.name())
 }
 
 /// `s` cut so that it takes at most `most` bytes as JSON, escapes

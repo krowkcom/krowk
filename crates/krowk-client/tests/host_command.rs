@@ -307,3 +307,25 @@ fn r_alloc_3_a_run_is_refused_for_a_bad_job_or_another_devices_name() {
     let Err(HostAnswer::Refused { code, .. }) = open(&seal(&run(&w.tablet.id()))) else { panic!("opened") };
     assert_eq!(code, "bad_command", "a run from the phone naming the tablet");
 }
+
+/// Slice 05 (D13): a `run`'s mode only narrows the host's: the stricter
+/// of the two, in the documented order, either way round.
+#[test]
+#[ignore = "slice 05: stricter"]
+fn alloc_05_a_runs_mode_only_narrows_the_hosts() {
+    use PermissionMode::*;
+    let order = [Plan, Default, AcceptEdits, BypassPermissions, Unhinged];
+    for (i, a) in order.iter().enumerate() {
+        for (j, b) in order.iter().enumerate() {
+            let want = order[i.min(j)];
+            assert_eq!(host_command::stricter(*a, *b), want, "{a:?} and {b:?}");
+        }
+    }
+}
+
+/// The shapes a transport is held to wherever it is named.
+#[test]
+fn r_alloc_3_a_transport_is_held_to_its_shape() {
+    assert!(host_command::slug_shaped("art_0123") && !host_command::slug_shaped("../x") && !host_command::slug_shaped(""));
+    assert!(host_command::key_shaped(&"ab".repeat(32)) && !host_command::key_shaped(&"zz".repeat(32)) && !host_command::key_shaped("ab"));
+}

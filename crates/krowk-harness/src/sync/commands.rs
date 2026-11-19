@@ -43,16 +43,20 @@
 //! `take_unfinished` and left to finish: it may hold the lease by then.
 //!
 //! **Run** (R-ALLOC-3, R-ALLOC-5): a task a supervisor hands this machine.
-//! Admitted (`admit`) before anything else, in this order: within its
+//! A job named in no shape a stored job has is refused `bad_job` as the
+//! command opens (`host_command::open_command`). Then it is admitted
+//! (`admit`) before anything else, in this order: within its
 //! `notAfterMs` by this machine's clock (else `bad_job`), accepting (else
 //! `not_accepting`), a trusted directory whose origin is the task's (else
 //! `no_clone`), the model's instance ready here (else `no_model`), then an
 //! agent slot claimed (else `no_slot`), held until the child's turn
 //! completes. Then the job is read (never spent: a fallback machine may
 //! read it too) and applied into a fresh worktree (`handoff::apply_job`;
-//! else `bad_job`), and the child, a full session in the host's own mode
-//! for that directory (the stricter of it and the `run`'s), runs the one
-//! turn, the job's prompt; its lease refused over the machine limit is
+//! else `bad_job`, the slot let go), and the child, a full session, runs
+//! the one turn, the job's prompt. Its mode is the host's own for that
+//! directory, made `default` when it asks nobody, as for a start, then
+//! the stricter of that and the `run`'s (`host_command::stricter`): a
+//! `run` only ever narrows it (D13). Its lease refused over the machine limit is
 //! `machine_limit`. `started` carries the child's session id, and is not
 //! sent past `notAfterMs`: the child is stopped and its worktree removed
 //! instead, as the supervisor has moved on. When the turn completes, the
@@ -315,7 +319,10 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
 }
 
 /// What a host holds a `run` to before it answers (R-ALLOC-5): what it
-/// announces of itself, read now, and its agent slots.
+/// would announce of itself, read now, and its agent slots. Its
+/// repositories and instances are read directly (as `announce::fill`
+/// builds them), never from the published record, which `announce::fit`
+/// may have trimmed: a repository left out of the record is still here.
 pub struct Admission<'a> {
     /// This machine's clock, in milliseconds since the Unix epoch.
     pub now_ms: i64,

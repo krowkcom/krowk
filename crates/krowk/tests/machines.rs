@@ -34,8 +34,9 @@ fn config(home: &Path) -> Value {
     serde_json::from_slice(&std::fs::read(home.join(".krowk/config.json")).unwrap()).unwrap()
 }
 
-/// Slice 09 (R-ALLOC-12, D14): `accept off` and `accept on` set
-/// `sync.accept`, keeping what else the config says.
+/// Slice 09 (R-ALLOC-12, D14): `accept off` writes `sync.accept: false`
+/// and `accept on` removes it, on being the default, keeping what else the
+/// config says.
 #[test]
 #[ignore = "slice 09: krowk machines accept"]
 fn alloc_09_accept_off_and_on_set_sync_accept() {
@@ -46,6 +47,6 @@ fn alloc_09_accept_off_and_on_set_sync_accept() {
     assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5, "accept": false}));
     let on = krowk(&home, &["machines", "accept", "on"]);
     assert!(on.status.success(), "{}", String::from_utf8_lossy(&on.stderr));
-    assert_eq!(config(&home)["sync"]["accept"], true);
+    assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5}), "on is the default, so the key goes");
     let _ = std::fs::remove_dir_all(&home);
 }

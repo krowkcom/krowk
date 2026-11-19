@@ -114,8 +114,9 @@ pub struct Policy {
     pub idle: Option<Duration>,
     /// `sync.accept`: this machine takes tasks a supervisor on another
     /// machine hands it, in its trusted repositories (D14, R-ALLOC-12). On
-    /// unless set false (`krowk machines accept off`). A session started
-    /// here with `krowk sync new --host` is not one of those.
+    /// unless set false: `krowk machines accept off` writes `false`, and
+    /// `accept on` removes the key. A session started here with `krowk sync
+    /// new --host` is not one of those.
     pub accepting: bool,
 }
 

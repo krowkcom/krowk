@@ -208,8 +208,12 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
 /// The supervisor's half of a job (R-ALLOC-4): the bundle of `cwd`'s
 /// repository at HEAD, its uncommitted changes, every untracked file `pack`
 /// would take, the commits no remote has, and `prompt`, for the transport
-/// stored under `session`; fails with `JOB_TOO_BIG` past `MAX_JOB`. Slice
-/// 04 builds it.
+/// stored under `session`. Left out: any change inside a `.git`,
+/// `.claude`, `.codex` or `.krowk` directory (`crate::tools::fenced_dir`,
+/// as a local return fences them) and any change to a submodule, which
+/// would name what runs, or what is allowed, on the target. Fails with
+/// `JOB_TOO_BIG` past `MAX_JOB`, `pack`'s own bound on untracked files
+/// included. Slice 04 builds it.
 pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, String> {
     todo!("slice 04: pack the job of {} for {session} ({} bytes of prompt)", cwd.display(), prompt.len())
 }
@@ -224,9 +228,16 @@ pub struct JobApplied {
 }
 
 /// The target's half of a job: as `apply`, a fresh worktree of `repo` at
-/// the job's base with its changes, `base` fetched from `commits` first
-/// when the clone lacks it (then from origin), and the state recorded as a
-/// snapshot commit. Slice 04 builds it.
+/// the job's base with its changes, and the state recorded as a snapshot
+/// commit. Refused (`bad_job` to the supervisor) for a `base` that is not
+/// a commit id in hex, or a job changing anything `pack_job` leaves out (a
+/// fenced directory, a submodule): it came from no krowk's `pack_job`.
+/// `base` is fetched, when the clone lacks it, from `commits` into a ref
+/// of krowk's own (`refs/krowk/jobs/…`), never a branch or tag the person
+/// has, then from origin. The snapshot is written with krowk's own
+/// identity (`-c user.name=krowk -c user.email=krowk@localhost`) from the
+/// worktree's files, whatever the person's git config and the worktree's
+/// index say. Slice 04 builds it.
 pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied, String> {
     todo!("slice 04: apply job {} in {} under {}", b.base, repo.display(), worktrees.display())
 }
@@ -574,8 +585,33 @@ mod tests {
         for (f, want) in [("one.txt", "one"), ("two.txt", "two"), ("kept.txt", "base\njob\n"), ("job-new.txt", "untracked")] {
             assert_eq!(std::fs::read_to_string(wt.join(f)).unwrap(), want, "{f}");
         }
-        assert_eq!(git(wt, &["rev-parse", &format!("{}^{{tree}}", landed.snapshot)]), git(wt, &["write-tree"]), "the snapshot is the job's state");
+        assert!(git(wt, &["diff", "--name-only", &landed.snapshot, "--"]).is_empty(), "the snapshot holds the job's tracked state");
+        assert_eq!(git(wt, &["show", &format!("{}:job-new.txt", landed.snapshot)]), "untracked", "and its untracked files");
         assert!(git(wt, &["merge-base", "--is-ancestor", &head, &landed.snapshot]).is_empty(), "on top of the job's base");
+        assert_eq!(git(wt, &["log", "-1", "--format=%an <%ae>", &landed.snapshot]), "krowk <krowk@localhost>", "written as krowk, whatever the git config says");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Slice 04 (R-ALLOC-4): a job leaves out what names what runs or what
+    /// is allowed on the target, and the target refuses a job carrying it,
+    /// or a base that is no commit id.
+    #[test]
+    #[ignore = "slice 04: fenced paths in a job"]
+    fn alloc_04_a_job_never_carries_fenced_paths_and_a_target_refuses_one_that_does() {
+        let root = scratch("job-fenced");
+        let a = origin_and_clone(&root, "a");
+        for dir in [".claude", ".codex", ".krowk"] {
+            std::fs::create_dir_all(a.join(dir)).unwrap();
+            std::fs::write(a.join(dir).join("settings.json"), "{}").unwrap();
+        }
+        std::fs::write(a.join("ok.txt"), "ok").unwrap();
+        let job = pack_job(&a, "0190f3c2-0000-7000-8000-000000000001", "p").unwrap();
+        assert_eq!(job.untracked.iter().map(|f| f.path.as_str()).collect::<Vec<_>>(), ["ok.txt"], "fenced files are left out");
+        let b = origin_and_clone(&root, "b");
+        let planted = Bundle { untracked: vec![Untracked { path: ".claude/settings.json".into(), executable: false, bytes: b"{}".to_vec() }], ..job.clone() };
+        assert!(apply_job(&planted, &b, &root.join("worktrees")).is_err(), "a job carrying a fenced path is refused");
+        let bad_base = Bundle { base: "--upload-pack=touch /tmp/x".into(), ..job };
+        assert!(apply_job(&bad_base, &b, &root.join("worktrees")).is_err(), "a base that is no commit id is refused");
         let _ = std::fs::remove_dir_all(&root);
     }
 
