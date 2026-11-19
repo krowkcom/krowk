@@ -420,7 +420,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
     if let Ok(put) = &sent
         && !put.commands.is_empty()
     {
-        Commands::take(commands, c, &a, &record.name, &record.repositories, put.commands.clone());
+        Commands::take(commands, c, &a, &record.name, put.commands.clone());
     }
     *last = Some(a);
     match sent {

@@ -60,8 +60,10 @@
 //! `machine_limit`. `started` carries the child's session id, and is not
 //! sent past `notAfterMs`: the child is stopped and its worktree removed
 //! instead, as the supervisor has moved on. When the turn completes, the
-//! child's bridge stores its result and logs `task.result` (slice 06).
-//! Slice 05 builds it.
+//! child's bridge stores its result and logs `task.result` (slice 06),
+//! reading the child's `task.json` (`TaskRun`) for what to pack it against.
+//! The child's turn runs in the daemon; this host follows it, holding the
+//! slot, and denies each approval it asks, keeping them in `task.json`.
 
 use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
@@ -178,7 +180,7 @@ impl Commands {
     /// started on a thread of its own. `host` is this device's name on the
     /// list, named in a refusal. Nothing here waits on the network: an
     /// answer goes from a thread of its own.
-    pub(crate) fn take(me: &Arc<Commands>, c: &Arc<Config>, a: &Announcer, host: &str, repositories: &[AnnouncedRepository], delivered: Vec<DeliveredCommand>) {
+    pub(crate) fn take(me: &Arc<Commands>, c: &Arc<Config>, a: &Announcer, host: &str, delivered: Vec<DeliveredCommand>) {
         for d in delivered {
             // The registry's, so said escaped.
             let id = d.id.to_ascii_lowercase();
@@ -218,14 +220,14 @@ impl Commands {
                 }
                 Ok((from, Ok(command))) => {
                     me.lock().working.insert(id.clone());
-                    let (me2, c2, id2, host, repositories) = (me.clone(), c.clone(), id.clone(), host.to_string(), repositories.to_vec());
+                    let (me2, c2, id2, host) = (me.clone(), c.clone(), id.clone(), host.to_string());
                     let spawned = std::thread::Builder::new().name("krowk-host-command".into()).spawn(move || {
                         let told = std::cell::Cell::new(false);
                         let tell = |answer: HostAnswer| {
                             told.set(true);
                             finish(&me2, &c2, &id2, from, answer);
                         };
-                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, &repositories, command, &tell)));
+                        let ran = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run(&me2, &c2, &host, command, &tell)));
                         if ran.is_err() && !told.get() {
                             let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tell(HostAnswer::refused("host_failed", "the host's command panicked — see host.log on it, and send it again"))));
                         }
@@ -284,6 +286,20 @@ pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> 
     o.trusted.directories().into_iter().filter(|d| not_krowks_own(d, worktrees.as_deref()) && policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
 }
 
+/// The directories as repositories: each one's `origin` remote, normalised
+/// as it is announced (`presence::normalise_origin`); one with none, or a
+/// local path, is left out.
+fn repositories(directories: &[String]) -> Vec<AnnouncedRepository> {
+    directories
+        .iter()
+        .filter_map(|d| {
+            let out = krowk_api::git::command(Path::new(d)).ok()?.args(["config", "--get", "remote.origin.url"]).output().ok().filter(|o| o.status.success())?;
+            let origin = krowk_client::presence::normalise_origin(String::from_utf8_lossy(&out.stdout).trim())?;
+            Some(AnnouncedRepository { directory: d.clone(), origin })
+        })
+        .collect()
+}
+
 /// Whether `dir` is a repository rather than a worktree krowk made under
 /// `worktrees`, which a handoff or a task trusts for its backend but is
 /// no clone to offer.
@@ -293,10 +309,10 @@ fn not_krowks_own(dir: &Path, worktrees: Option<&Path>) -> bool {
 
 /// A command, run: a start's answer told to `tell` once known, then held
 /// for the bridge (`hold`); a take's once it moved or was refused.
-fn run(me: &Arc<Commands>, c: &Config, host: &str, repositories: &[AnnouncedRepository], command: HostCommand, tell: &dyn Fn(HostAnswer)) {
+fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
     let cwd = match command {
-        HostCommand::Run(task) => return run_task(c, o, host, repositories, task, tell),
+        HostCommand::Run(task) => return run_task(c, o, host, task, tell),
         HostCommand::Start { ref cwd, .. } | HostCommand::Take { ref cwd, .. } => cwd.clone(),
     };
     let policy = match (c.policy)() {
@@ -424,22 +440,10 @@ const LEASE_EVERY: Duration = Duration::from_millis(200);
 
 /// The permission mode a handed-over task's child runs in (D13): the
 /// host's own for the directory, as a remote start runs in it (never one
-/// that asks nobody), or the supervisor's when that is stricter. Never looser.
+/// that asks nobody), or the supervisor's when that is stricter.
 fn child_mode(host: PermissionMode, asked: Option<PermissionMode>) -> PermissionMode {
     let host = if host.asks_nothing() { PermissionMode::Default } else { host };
-    // Plan changes nothing, default asks before edits, acceptEdits only
-    // before the rest.
-    let strictness = |m: PermissionMode| match m {
-        PermissionMode::Plan => 0,
-        PermissionMode::Default => 1,
-        PermissionMode::AcceptEdits => 2,
-        PermissionMode::BypassPermissions => 3,
-        PermissionMode::Unhinged => 4,
-    };
-    match asked {
-        Some(a) if strictness(a) < strictness(host) => a,
-        _ => host,
-    }
+    asked.map_or(host, |a| host_command::stricter(host, a))
 }
 
 fn now_ms() -> i64 {
@@ -462,15 +466,16 @@ fn read_job(api: &krowk_api::Client, job: &host_command::JobRef) -> Result<hando
 /// `started` is told once the child's bridge holds its lease, so one
 /// refused over the machine limit is `machine_limit` instead, and never
 /// past `notAfterMs`: the child is then stopped and its worktree removed.
-fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedRepository], task: RunTask, tell: &dyn Fn(HostAnswer)) {
-    let accepting = match (c.policy)() {
-        Ok(p) => p.on && p.accepting,
+fn run_task(c: &Config, o: &Options, host: &str, task: RunTask, tell: &dyn Fn(HostAnswer)) {
+    // Read now, never from the announcement, which is trimmed to fit.
+    let (accepting, repositories) = match (c.policy)() {
+        Ok(p) => (p.on && p.accepting, repositories(&offered(c, o, &p))),
         Err(e) => return tell(RunRefusal::NotAccepting.answer(format!("{host} cannot read its sync settings: {e}"))),
     };
     let (registry, reports) = (o.instances)();
     let Some(agents) = registry.agents.as_ref() else { return tell(RunRefusal::NoSlot.answer(format!("{host} has no agent slots to run a task in"))) };
     let instances = super::announce::instances(&registry, &reports, None);
-    let here = Admission { now_ms: now_ms(), accepting, repositories, instances: &instances, agents };
+    let here = Admission { now_ms: now_ms(), accepting, repositories: &repositories, instances: &instances, agents };
     let Admitted { directory, model, slot } = match admit(&task, &here) {
         Ok(a) => a,
         Err((refusal, message)) => return tell(refusal.answer(message)),

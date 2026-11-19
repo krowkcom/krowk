@@ -311,7 +311,6 @@ fn r_alloc_3_a_run_is_refused_for_a_bad_job_or_another_devices_name() {
 /// Slice 05 (D13): a `run`'s mode only narrows the host's: the stricter
 /// of the two, in the documented order, either way round.
 #[test]
-#[ignore = "slice 05: stricter"]
 fn alloc_05_a_runs_mode_only_narrows_the_hosts() {
     use PermissionMode::*;
     let order = [Plan, Default, AcceptEdits, BypassPermissions, Unhinged];
