@@ -940,8 +940,11 @@ impl Placer {
                 Err(e) if read.elapsed() >= t.offline_after * 3 => return Err(failed(format!("its log could not be read: {e}"))),
                 Err(_) => {}
             }
-            if f.seen(device).is_some_and(|ago| ago < t.offline_after) {
-                alive = Instant::now();
+            // Alive when it last announced, not when that was read: a
+            // machine gone quiet is offline `offline_after` past its last
+            // announcement, not twice that.
+            if let Some(at) = f.seen(device).and_then(|ago| Instant::now().checked_sub(ago)) {
+                alive = alive.max(at);
             }
             if alive.elapsed() >= t.offline_after {
                 return Err(Failure::Offline { machine: machine.to_string() });
@@ -1274,6 +1277,9 @@ mod tests {
         stopped: Mutex<Vec<String>>,
         /// How long `send_run` takes to answer.
         slow: Duration,
+        /// When the machine last announced, once it stopped: `seen` then
+        /// grows from it.
+        quiet_since: Mutex<Option<Instant>>,
     }
 
     struct Shared(Arc<Fake>);
@@ -1327,6 +1333,9 @@ mod tests {
             Ok(self.0.events.lock().unwrap().clone())
         }
         fn seen(&self, _: &str) -> Option<Duration> {
+            if let Some(at) = *self.0.quiet_since.lock().unwrap() {
+                return Some(at.elapsed());
+            }
             *self.0.seen.lock().unwrap()
         }
         fn read_result(&self, child: &str, _: &str, _: &str) -> Result<super::super::handoff::Bundle, String> {
@@ -1478,6 +1487,21 @@ mod tests {
         let got = p.wait(&h, Duration::from_secs(5)).unwrap_err();
         assert_eq!(got, Failure::Offline { machine: "b".into() });
         assert!(got.to_string().contains("work is in a worktree there"));
+    }
+
+    /// R-ALLOC-9: a machine that announced as the task started and never
+    /// again is offline `offline_after` past that announcement, not past
+    /// the first reading of it as too old (twice as long).
+    #[test]
+    fn a_machine_is_offline_counted_from_its_last_announcement() {
+        let f = fleet(true, &["b"], &[("b", vec![started()])]);
+        let t = Timing { offline_after: Duration::from_secs(1), ..quick() };
+        let began = Instant::now();
+        *f.quiet_since.lock().unwrap() = Some(began);
+        let p = Placer::with(Box::new(Shared(f.clone())), t);
+        let h = p.start(spec(), Here::Caller);
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Offline { machine: "b".into() });
+        assert!(began.elapsed() < Duration::from_millis(1500), "about 1 s, not 2: {:?}", began.elapsed());
     }
 
     /// D11: after the child started, its failure comes back as the result.
