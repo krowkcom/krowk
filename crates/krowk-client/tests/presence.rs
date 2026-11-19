@@ -281,10 +281,11 @@ fn alloc_02_ssh_and_https_origins_normalise_alike() {
 #[test]
 fn a_port_a_secret_or_a_local_form_never_reaches_the_origin() {
     let want = Some("git.example.com/a/b".to_string());
-    for url in ["ssh://git@Git.Example.com:2222/a/b.git", "https://tok:x-oauth@git.example.com:8443/a/b.git/", "ann:secret@git.example.com:a/b.git", "https://git.example.com/a/b.git?x=1#y"] {
+    assert_eq!(presence::normalise_origin("ssh://git@[::1]:2222/a/b.git/"), Some("[::1]/a/b".into()));
+    for url in ["ssh://git@Git.Example.com:2222/a/b.git", "https://tok:x-oauth@git.example.com:8443/a/b.git/", "ann:secret@git.example.com:a/b.git", "https://git.example.com/a/b.git?x=1#y", "https://ann:sec#1@git.example.com/a/b.git", "ann:sec#1@git.example.com:a/b"] {
         assert_eq!(presence::normalise_origin(url), want, "{url}");
     }
-    for url in ["", "file:///srv/app.git", "./app", "../app.git", "~/app", "C:/repos/app", "C:\\repos\\app", "https://github.com", "https://github.com/"] {
+    for url in ["", "file:///srv/app.git", "./app", "../app.git", "~/app", "C:/repos/app", "C:\\repos\\app", "https://github.com", "https://github.com/", "ann:sec/ret@git.example.com:a/b", "https://ann:sec/ret@git.example.com/a/b", "\\\\?\\C:\\x"] {
         assert_eq!(presence::normalise_origin(url), None, "{url}");
     }
 }

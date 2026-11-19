@@ -144,13 +144,13 @@ pub fn instances(registry: &Registry, reports: &[Report], raw: Option<&[u8]>) ->
 
 /// This machine's capacity now (R-ALLOC-1): its cores, 1-minute load and
 /// free memory from the OS, and the slots of `builds` and `agents` in use
-/// (`Pool::in_use`) and in all. Blocking but quick. A reading the OS does
-/// not give is zero (load) or zero (memory), which a supervisor reads as no
-/// room rather than as plenty.
+/// (`Pool::in_use`) and in all. Blocking but quick. A pool that cannot be
+/// read counts as full, and memory the OS does not give as none: no room,
+/// not plenty. Load it does not give reads as 0.
 pub fn capacity(builds: &crate::slots::Pool, agents: &crate::slots::Pool) -> presence::Capacity {
     let slots = |p: &crate::slots::Pool| {
         let total = u32::try_from(p.size()).unwrap_or(u32::MAX);
-        presence::Slots { in_use: u32::try_from(p.in_use().unwrap_or(0)).unwrap_or(u32::MAX).min(total), total }
+        presence::Slots { in_use: p.in_use().map_or(total, |n| u32::try_from(n).unwrap_or(u32::MAX).min(total)), total }
     };
     presence::Capacity {
         cores: u32::try_from(crate::builds::cores()).unwrap_or(u32::MAX).max(1),
@@ -191,8 +191,8 @@ fn free_memory() -> u64 {
     }
     // SAFETY: sysconf has no preconditions; -1 is its failure.
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) };
-    let pages = ["vm.page_free_count", "vm.page_speculative_count", "vm.page_purgeable_count"].iter().filter_map(|n| sysctl(n)).fold(0u64, u64::saturating_add);
-    u64::try_from(page).unwrap_or(0).saturating_mul(pages & 0xffff_ffff)
+    let pages = ["vm.page_free_count", "vm.page_purgeable_count"].iter().filter_map(|n| sysctl(n)).fold(0u64, u64::saturating_add);
+    u64::try_from(page).unwrap_or(0).saturating_mul(pages)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]

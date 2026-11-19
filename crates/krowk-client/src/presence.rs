@@ -123,17 +123,20 @@ pub struct AnnouncedRepository {
 /// name one repository on different ports.
 pub fn normalise_origin(url: &str) -> Option<String> {
     let url = url.trim();
-    let url = url.split(['?', '#']).next().unwrap_or("");
+    if url.contains('\\') {
+        return None;
+    }
     let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
         if scheme.is_empty() || scheme.eq_ignore_ascii_case("file") {
             return None;
         }
         let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
         let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
-        // `host:port`; a bracketed IPv6 address is left as it is.
-        let host = match host.rsplit_once(':') {
-            Some((h, port)) if !host.starts_with('[') && port.bytes().all(|b| b.is_ascii_digit()) => h,
-            _ => host,
+        // A bracketed IPv6 address ends at its bracket, a port after it
+        // dropped; otherwise `host:port`.
+        let host = match host.strip_prefix('[') {
+            Some(v6) => &host[..v6.find(']')? + 2],
+            None => host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(h, _)| h),
         };
         (host, path)
     } else {
@@ -141,17 +144,22 @@ pub fn normalise_origin(url: &str) -> Option<String> {
         let head = url.split('/').next().unwrap_or("");
         let rest = head.rfind('@').map_or(url, |i| &url[i + 1..]);
         let (host, path) = rest.split_once(':')?;
-        if host.contains('/') || host.len() < 2 {
+        if host.len() < 2 {
             return None;
         }
         (host, path)
     };
-    let mut path = path.trim_matches('/');
-    path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
-    if host.is_empty() || path.is_empty() || host.contains(char::is_whitespace) {
+    let path = path.split(['?', '#']).next().unwrap_or("").trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    let origin = format!("{}/{path}", host.to_ascii_lowercase());
+    // Fails closed: a secret that broke the reading (one with a `/`, `#`
+    // or `:` in it) leaves an `@` or a bare `:` behind, and a real origin
+    // has neither in its host.
+    let bare = host.strip_prefix('[').map_or(host, |_| "");
+    if host.is_empty() || path.is_empty() || bare.contains([':', '@']) || origin.contains('@') || origin.contains(char::is_whitespace) {
         return None;
     }
-    Some(format!("{}/{path}", host.to_ascii_lowercase()))
+    Some(origin)
 }
 
 /// One of the host's instances, and whether it is ready.
