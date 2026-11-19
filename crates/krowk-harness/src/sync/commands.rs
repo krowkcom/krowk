@@ -280,7 +280,15 @@ fn send(me: &Arc<Commands>, id: &str, sealed: Vec<u8>, api: Arc<krowk_api::Clien
 /// The directories this host offers now: the trusted repositories, less
 /// those the policy opts out.
 pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> Vec<String> {
-    o.trusted.directories().into_iter().filter(|d| policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
+    let worktrees = krowk_api::home::worktrees_root(&krowk_api::home::process_env);
+    o.trusted.directories().into_iter().filter(|d| not_krowks_own(d, worktrees.as_deref()) && policy.opted_out(d, c.krowk_home.as_deref()).is_none()).map(|d| d.display().to_string()).collect()
+}
+
+/// Whether `dir` is a repository rather than a worktree krowk made under
+/// `worktrees`, which a handoff or a task trusts for its backend but is
+/// no clone to offer.
+fn not_krowks_own(dir: &Path, worktrees: Option<&Path>) -> bool {
+    worktrees.is_none_or(|w| !dir.starts_with(w))
 }
 
 /// A command, run: a start's answer told to `tell` once known, then held
@@ -406,6 +414,10 @@ fn write_task(sessions: &Path, session: &str, t: &TaskRun) -> Result<(), String>
 /// child's first turn, and a supervisor gives up on the answer in 30 seconds.
 const LEASE_WAIT: Duration = Duration::from_secs(20);
 
+/// How many denied approvals a task's record keeps, and how long each line is.
+const MAX_DENIED: usize = 100;
+const DENIED_CHARS: usize = 200;
+
 /// How often the registry is asked whether the child's lease is this
 /// machine's.
 const LEASE_EVERY: Duration = Duration::from_millis(200);
@@ -451,16 +463,12 @@ fn read_job(api: &krowk_api::Client, job: &host_command::JobRef) -> Result<hando
 /// refused over the machine limit is `machine_limit` instead, and never
 /// past `notAfterMs`: the child is then stopped and its worktree removed.
 fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedRepository], task: RunTask, tell: &dyn Fn(HostAnswer)) {
-    let a = match (o.keys)(false) {
-        Ok(a) => a,
-        Err((code, message)) => return tell(HostAnswer::refused(&code, message)),
-    };
     let accepting = match (c.policy)() {
         Ok(p) => p.on && p.accepting,
         Err(e) => return tell(RunRefusal::NotAccepting.answer(format!("{host} cannot read its sync settings: {e}"))),
     };
     let (registry, reports) = (o.instances)();
-    let Some(agents) = registry.agents.as_ref() else { return tell(HostAnswer::refused("host_failed", format!("{host} has no agent slots to run a task in"))) };
+    let Some(agents) = registry.agents.as_ref() else { return tell(RunRefusal::NoSlot.answer(format!("{host} has no agent slots to run a task in"))) };
     let instances = super::announce::instances(&registry, &reports, None);
     let here = Admission { now_ms: now_ms(), accepting, repositories, instances: &instances, agents };
     let Admitted { directory, model, slot } = match admit(&task, &here) {
@@ -468,6 +476,10 @@ fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedReposi
         Err((refusal, message)) => return tell(refusal.answer(message)),
     };
     let bad = |message: String| tell(RunRefusal::BadJob.answer(message));
+    let a = match (o.keys)(false) {
+        Ok(a) => a,
+        Err((code, message)) => return tell(HostAnswer::refused(&code, message)),
+    };
     let host_mode = match (o.mode_for)(&directory) {
         Ok(m) => m,
         Err((code, message)) => return tell(HostAnswer::refused(&code, message)),
@@ -486,6 +498,8 @@ fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedReposi
     // The worktree is the trusted repository's, which a backend may run in.
     let _ = o.trusted.trust(&crate::trust::root(&cwd));
     let child = Child { cwd, worktree: worktree.path.display().to_string(), snapshot, model, mode, prompt: bundle.prompt };
+    // Removed however this ends, a panic included, unless the child ran.
+    let mut fresh = Fresh(Some(worktree));
     let kept = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
         Ok(rt) => rt.block_on(follow(c, &a, &task, &child, tell)),
         Err(_) => {
@@ -493,12 +507,23 @@ fn run_task(c: &Config, o: &Options, host: &str, repositories: &[AnnouncedReposi
             false
         }
     };
-    if !kept {
-        let _ = crate::worktree::discard(&worktree);
+    if kept {
+        // The turn is over: the worktree stays for the bridge to pack, as a
+        // finished child's does, and the slot is let go.
+        fresh.0.take();
     }
-    // The slot is let go as the turn completes; the worktree stays for the
-    // bridge to pack, as a finished child's does.
-    drop((held, slot));
+    drop((fresh, held, slot));
+}
+
+/// A worktree made for a task, removed when dropped.
+struct Fresh(Option<crate::worktree::Worktree>);
+
+impl Drop for Fresh {
+    fn drop(&mut self) {
+        if let Some(w) = self.0.take() {
+            let _ = crate::worktree::discard(&w);
+        }
+    }
 }
 
 /// What a child runs with.
@@ -559,7 +584,7 @@ impl Following<'_> {
                 watch_lease(self.a.api.clone(), ev.session_id, self.a.device.to_string(), self.stop.clone(), tx);
             }
             StreamLine::Live(LiveEvent::ApprovalRequested(r)) => {
-                self.denied.push(r.summary.clone());
+                deny(&mut self.denied, &r.summary);
                 // Kept before it is answered, so the result never misses it.
                 let _ = self.record();
                 let (tx, _rx) = tokio::sync::mpsc::channel(1);
@@ -594,6 +619,20 @@ impl Following<'_> {
             }
             Err(answer) => self.stop_child(d, Some(answer)).await,
         }
+    }
+}
+
+/// `summary` of a refused approval added to `denied`: one short line, and
+/// at most `MAX_DENIED` of them.
+fn deny(denied: &mut Vec<String>, summary: &str) {
+    match denied.len().cmp(&MAX_DENIED) {
+        std::cmp::Ordering::Less => {
+            let line = summary.lines().next().unwrap_or_default();
+            let cut = line.char_indices().nth(DENIED_CHARS).map_or(line.len(), |(i, _)| i);
+            denied.push(if cut < line.len() { format!("{}…", &line[..cut]) } else { line.to_string() });
+        }
+        std::cmp::Ordering::Equal => denied.push("and more it asked after these".into()),
+        std::cmp::Ordering::Greater => {}
     }
 }
 
@@ -663,7 +702,6 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: 
     let _watch = Watch(stop.clone());
     let mut f = Following { c, a, task, child, session: None, denied: Vec::new(), lease: None, told: false, stopping: None, stop };
     let (mut ended, mut closed, mut failed) = (false, false, None);
-    let mut stopped_at = None;
     loop {
         let tick = tokio::time::sleep(LEASE_EVERY);
         tokio::pin!(tick);
@@ -688,19 +726,16 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: 
             }
         }
         f.lease_known(&d, tell).await;
-        if f.stopping.is_some() {
-            stopped_at.get_or_insert_with(Instant::now);
-        }
-        // Over once it ended and its answer is settled; a stopped child that
-        // will not end is not waited for past `HOLD`.
-        let settled = f.told || f.stopping.is_some() || f.session.is_none();
-        if (ended && settled) || stopped_at.is_some_and(|at| at.elapsed() >= HOLD) {
+        // Over once the turn ended and its answer is settled: the slot is
+        // held until the turn is, a stopped child's included.
+        if ended && (f.told || f.stopping.is_some() || f.session.is_none()) {
             break;
         }
     }
     match f.stopping {
         Some(answer) => {
-            if let Some(answer) = answer {
+            // Never a refusal after `started`.
+            if let (Some(answer), false) = (answer, f.told) {
                 tell(answer);
             }
             false
@@ -970,6 +1005,30 @@ mod tests {
         assert_eq!(super::super::auto::limited("limited-session"), None);
         super::super::auto::limit_refused("limited-session", "Free syncs sessions from two machines");
         assert_eq!(super::super::auto::limited("limited-session").as_deref(), Some("Free syncs sessions from two machines"));
+    }
+
+    /// A worktree krowk made, trusted for its backend, is not offered as a
+    /// clone; a repository beside it is.
+    #[test]
+    fn a_krowk_worktree_is_not_offered_as_a_clone() {
+        let root = Path::new("/home/ann/.local/share/krowk/worktrees");
+        assert!(!not_krowks_own(&root.join("4fb7/e117ff1a"), Some(root)));
+        assert!(not_krowks_own(Path::new("/home/ann/app"), Some(root)));
+        assert!(not_krowks_own(Path::new("/home/ann/app"), None));
+    }
+
+    /// A child's denials are short lines, and few.
+    #[test]
+    fn denied_approvals_are_kept_short_and_bounded() {
+        let long = format!("Bash `{}`\nsecond line", "x".repeat(500));
+        let mut denied = Vec::new();
+        deny(&mut denied, &long);
+        assert!(denied[0].chars().count() <= DENIED_CHARS + 1 && !denied[0].contains('\n'));
+        for _ in 0..MAX_DENIED * 2 {
+            deny(&mut denied, "Bash `ls`");
+        }
+        assert_eq!(denied.len(), MAX_DENIED + 1);
+        assert_eq!(denied.last().unwrap(), "and more it asked after these");
     }
 
     #[test]
