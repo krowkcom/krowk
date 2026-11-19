@@ -1,8 +1,8 @@
 //! Sync's records and calls (canon, engineering/crypto.md, devices.md): a
 //! person's device list and user key, the mailbox a new device is paired
-//! through, and sessions with their leases. Every call needs a key to a paid
-//! workspace
-//! (R-SYNC-1), and nothing here carries plaintext: keys and sealed blobs are
+//! through, and sessions with their leases. Every call needs a person's key,
+//! on any plan (R-SYNC-10); a machine over its person's limit is refused
+//! hosting (`sync_machine_limit`, R-SYNC-11), and nothing here carries plaintext: keys and sealed blobs are
 //! hex, and a session's title and the rest of what a listing shows travel
 //! inside `sealed_index`, sealed by the caller before it gets here.
 //!
@@ -991,5 +991,60 @@ impl Client {
     pub fn release_lease(&self, id: &str, token: &str) -> Result<(), Error> {
         let url = format!("{}/sessions/{}/lease", self.base_url, slug_path(id));
         self.request_signed("DELETE", &url, Some(json!({ "lease": { "token": token } })), ATTEMPTS, None, Some(self.device_signer()?)).map(|_| ())
+    }
+}
+
+/// What a machine refused hosting for its plan's limit
+/// (`sync_machine_limit`, R-SYNC-17) is told, from the refusal's details:
+/// the plan, its limit and the machines counted against it.
+pub fn machine_limit_fix(details: Option<&Value>) -> String {
+    let d = details.and_then(Value::as_object);
+    let plan = d.and_then(|d| d.get("plan")).and_then(Value::as_str).unwrap_or_default();
+    let limit = d.and_then(|d| d.get("limit")).and_then(Value::as_u64);
+    let names: Vec<&str> = d.and_then(|d| d.get("machines")).and_then(Value::as_array).map_or_else(Vec::new, |m| m.iter().filter_map(Value::as_str).collect());
+    let then = if plan == "free" { "upgrade" } else { "change plan" };
+    let Some(limit) = limit.filter(|_| !plan.is_empty()) else {
+        return format!("This machine is over your plan's limit of machines that run sessions. You can still follow from here, or run krowk billing to {then}.");
+    };
+    let mut name: Vec<char> = plan.chars().collect();
+    name[0] = name[0].to_ascii_uppercase();
+    let name: String = name.into_iter().collect();
+    let machines = if limit == 1 { "one machine".to_string() } else { format!("{} machines", number(limit)) };
+    let named = if names.is_empty() { String::new() } else { format!(" ({})", names.join(", ")) };
+    format!("{name} syncs sessions from {machines}, and this would be {}{named}. You can still follow from here, or run krowk billing to {then}.", ordinal(limit + 1))
+}
+
+/// A count in words up to twenty, as the pricing card says them.
+fn number(n: u64) -> String {
+    const WORDS: [&str; 21] = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty"];
+    WORDS.get(usize::try_from(n).unwrap_or(usize::MAX)).map_or_else(|| n.to_string(), |w| (*w).to_string())
+}
+
+/// "a third", "an eleventh": the ordinal in words up to twenty, with its
+/// article.
+fn ordinal(n: u64) -> String {
+    const WORDS: [&str; 21] = ["zeroth", "first", "second", "third", "fourth", "fifth", "sixth", "seventh", "eighth", "ninth", "tenth", "eleventh", "twelfth", "thirteenth", "fourteenth", "fifteenth", "sixteenth", "seventeenth", "eighteenth", "nineteenth", "twentieth"];
+    match WORDS.get(usize::try_from(n).unwrap_or(usize::MAX)) {
+        Some(w) if w.starts_with('e') => format!("an {w}"),
+        Some(w) => format!("a {w}"),
+        None if n % 100 / 10 == 1 => format!("a {n}th"),
+        None => format!("a {n}{}", match n % 10 { 1 => "st", 2 => "nd", 3 => "rd", _ => "th" }),
+    }
+}
+
+#[cfg(test)]
+mod machine_limit_tests {
+    use super::*;
+
+    /// R-SYNC-17: the sentence the screens give, on Free and on Pro.
+    #[test]
+    fn r_sync_17_the_refusal_names_the_plan_its_count_and_the_machines() {
+        let free = json!({"plan": "free", "limit": 2, "machines": ["mbp", "desktop"]});
+        assert_eq!(machine_limit_fix(Some(&free)), "Free syncs sessions from two machines, and this would be a third (mbp, desktop). You can still follow from here, or run krowk billing to upgrade.");
+        let pro = json!({"plan": "pro", "limit": 10, "machines": ["a"]});
+        assert_eq!(machine_limit_fix(Some(&pro)), "Pro syncs sessions from ten machines, and this would be an eleventh (a). You can still follow from here, or run krowk billing to change plan.");
+        assert!(machine_limit_fix(None).ends_with("or run krowk billing to change plan."));
+        assert_eq!(ordinal(23), "a 23rd");
+        assert_eq!(ordinal(112), "a 112th");
     }
 }

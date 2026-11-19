@@ -7,8 +7,11 @@
 //! registering a device with the workspace (`POST /v1/devices`), and the
 //! approval mailbox — is gone, `410 sync_reset`.
 //!
-//! Every endpoint needs a key and refuses a free workspace (R-SYNC-1); a
-//! token containing `free` is one, as for uploads. Every one also needs the
+//! Every endpoint needs a person's key, on any plan (R-SYNC-10): a token
+//! containing `service` is a service key, refused every call (R-SYNC-14).
+//! Free's fence is the machines a person runs sessions on (R-SYNC-11): a
+//! token containing `free` is a Free person's, as for uploads, who may host
+//! on two; `business`, on any number; any other, on ten. Every one also needs the
 //! device the key speaks for on the person's list and active, so a device
 //! removed from the list, or revoked by the dashboard's Revoke (`POST
 //! /_settings/devices/:id/revocation`, its stand-in), is refused its reads
@@ -20,7 +23,7 @@
 //! hex of the sizes canon's crypto.md fixes, and anything else a body carries
 //! is not read, so there is nowhere for plaintext to land (R-E2E-1).
 
-use crate::auth::{free_plan, require_key};
+use crate::auth::{machine_limit, require_key, service_key};
 use crate::encode::Json;
 use crate::errors::{Decoded, decode, error, invalid, not_found, parameter_missing};
 use crate::http::{Req, Resp};
@@ -401,10 +404,13 @@ fn id_field(field: &str, value: &str) -> Result<String, Resp> {
     if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) { Ok(id) } else { Err(invalid(field, "must be 32 hex characters")) }
 }
 
-/// The paid gate every sync endpoint runs after the key.
+/// The gate every sync endpoint runs after the key: a person's key on any
+/// plan passes (R-SYNC-10); a service key never does (R-SYNC-14). Free's
+/// fence is the machine limit, met where a device starts hosting
+/// (`within_limit`).
 pub fn gate(req: &Req) -> Result<String, Resp> {
     let workspace = require_key(req)?;
-    if free_plan(req) {
+    if service_key(req) {
         return Err(error(
             402,
             "sync_requires_paid_plan",
@@ -789,6 +795,9 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
                 Some(Json::map([("device", Json::str(&x.holder)), ("expires_at", Json::str(until))])),
             ));
         }
+        let owner = x.owner.clone();
+        within_limit(&s.sync, req, &owner, &device, now)?;
+        let x = s.sync.sessions.get_mut(&key).unwrap();
         x.fence += 1;
         x.holder = device.clone();
         x.lease_expires_at = Some(now + ttl);
@@ -821,6 +830,13 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         if let Some(refused) = &refused {
             return Err(crate::devices::revoked(refused));
         }
+        // A renewal is never refused for the limit; a hand-over's target
+        // is, and the refusal is the current host's, which asked.
+        if x.holder != device {
+            let owner = x.owner.clone();
+            within_limit(&s.sync, req, &owner, &device, now)?;
+        }
+        let x = s.sync.sessions.get_mut(&key).unwrap();
         let minted = if x.holder != device {
             x.fence += 1;
             x.holder = device.clone();
@@ -892,6 +908,39 @@ pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         Ok(Resp::empty(204))
     };
     run().unwrap_or_else(|r| r)
+}
+
+/// How long a device that hosted counts as one of its person's machines
+/// (R-SYNC-12).
+const MACHINE_WINDOW: SignedDuration = SignedDuration::from_hours(30 * 24);
+
+/// Whether `device` may start hosting (R-SYNC-11, D5): when fewer than the
+/// limit of its person's other machines hosted in the last 30 days, or it
+/// is among the limit's most recently active. A machine is a device whose
+/// last lease call (`touch`) is that recent: removed ones never count,
+/// revoked ones do. Refused `sync_machine_limit`, naming the plan, the
+/// limit and the other machines, most recent first.
+fn within_limit(s: &SyncStore, req: &Req, person: &str, device: &str, now: Timestamp) -> Result<(), Resp> {
+    let Some((plan, limit)) = machine_limit(req) else { return Ok(()) };
+    let mut counted: Vec<&crate::devices::Listed> = s.people.get(person).map_or_else(Vec::new, |p| {
+        p.devices.iter().filter(|d| d.removed_seq.is_none() && d.last_seen_at.is_some_and(|t| now.duration_since(t) < MACHINE_WINDOW)).collect()
+    });
+    counted.sort_by_key(|d| std::cmp::Reverse(d.last_seen_at));
+    let others: Vec<&str> = counted.iter().filter(|d| d.id != device).map(|d| d.name.as_str()).collect();
+    if others.len() < limit || counted.iter().take(limit).any(|d| d.id == device) {
+        return Ok(());
+    }
+    let n = others.len() + 1;
+    Err(error(
+        402,
+        "sync_machine_limit",
+        &format!("This person runs sessions on {} machines already, the most the {plan} plan allows; this device would be machine {n}.", others.len()),
+        Some(Json::map([
+            ("plan", Json::str(plan)),
+            ("limit", Json::Int(i64::try_from(limit).unwrap_or(i64::MAX))),
+            ("machines", Json::Arr(others.into_iter().map(Json::str).collect())),
+        ])),
+    ))
 }
 
 /// A lease call is the holder being seen, as the registry records it.

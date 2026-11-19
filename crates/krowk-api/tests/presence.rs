@@ -232,14 +232,14 @@ fn r_host_3_a_removed_devices_presence_is_not_listed() {
     assert_eq!(stored(p.addr)["presences"].as_array().unwrap().len(), 1);
 }
 
-/// R-SYNC-1: presences are sync's, so a free workspace is refused all three
+/// R-SYNC-14: presences are sync's, so a service key is refused all three
 /// calls with the paid plan's fix.
 #[test]
-fn r_sync_1_a_free_workspace_is_refused_presences() {
+fn r_sync_14_a_service_key_is_refused_presences() {
     let p = person();
-    // The stand-in's FREE_PLAN_KEY_MARKER: a key with `free` in it.
-    let free = p.host.client_as(&p.url, "krowk_sk_free_presence");
-    for e in [free.put_presence(b"x", 30).unwrap_err(), free.delete_presence().unwrap_err(), free.list_presences().unwrap_err()] {
+    // The stand-in's SERVICE_KEY_MARKER: a key with `service` in it.
+    let service = p.host.client_as(&p.url, "krowk_sk_service_presence");
+    for e in [service.put_presence(b"x", 30).unwrap_err(), service.delete_presence().unwrap_err(), service.list_presences().unwrap_err()] {
         assert_eq!((e.code().as_str(), e.status), ("sync_requires_paid_plan", 402), "{e:?}");
     }
 }

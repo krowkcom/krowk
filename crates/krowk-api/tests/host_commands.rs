@@ -283,17 +283,17 @@ fn r_host_4_a_removed_devices_commands_go() {
     assert_eq!(host.put_presence(b"a", 30).unwrap().commands, vec![]);
 }
 
-/// R-SYNC-1: commands are sync's, so a free workspace is refused all three
+/// R-SYNC-14: commands are sync's, so a service key is refused all three
 /// calls with the paid plan's fix.
 #[test]
-fn r_sync_1_a_free_workspace_is_refused_commands() {
+fn r_sync_14_a_service_key_is_refused_commands() {
     let p = person();
-    // The stand-in's FREE_PLAN_KEY_MARKER: a key with `free` in it.
-    let free = p.phone.client_as(&p.url, "krowk_sk_free_commands");
+    // The stand-in's SERVICE_KEY_MARKER: a key with `service` in it.
+    let service = p.phone.client_as(&p.url, "krowk_sk_service_commands");
     for e in [
-        free.send_host_command(&p.host.id(), ID, b"x").unwrap_err(),
-        free.host_command(&p.host.id(), ID).unwrap_err(),
-        free.answer_host_command(ID, b"x").unwrap_err(),
+        service.send_host_command(&p.host.id(), ID, b"x").unwrap_err(),
+        service.host_command(&p.host.id(), ID).unwrap_err(),
+        service.answer_host_command(ID, b"x").unwrap_err(),
     ] {
         assert_eq!((e.code().as_str(), e.status), ("sync_requires_paid_plan", 402), "{e:?}");
     }

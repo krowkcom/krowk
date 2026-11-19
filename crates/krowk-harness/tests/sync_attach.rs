@@ -142,7 +142,13 @@ struct World {
     b_batches: Arc<AtomicUsize>,
     /// Under `DROP_BATCHES`, how many more to drop before passing again.
     b_drop: Arc<AtomicUsize>,
+    /// The person's key, up to the `#` naming each device's: a Pro
+    /// person's, or a Free one's (`World::free`).
+    token: &'static str,
 }
+
+/// A Free person's key: the stand-in's FREE_PLAN_KEY_MARKER is in it.
+const FREE_TOKEN: &str = "krowk_sk_free_sync_attach_00000000000";
 
 const PASS: u8 = 0;
 const CUT: u8 = 1;
@@ -205,6 +211,26 @@ impl World {
         World::with_relay(name, Default::default())
     }
 
+    /// A world whose person is on the Free plan: two machines may run
+    /// sessions (R-SYNC-13).
+    fn free(name: &str) -> World {
+        let mut w = World::new(name);
+        w.token = FREE_TOKEN;
+        w
+    }
+
+    /// `d` ran a session (`id`, of its own): it held a lease as host and
+    /// gave it back, which makes it one of its person's machines for the
+    /// next 30 days (R-SYNC-12).
+    fn hosted(&self, d: &Device, id: &str) {
+        let raw = krowk_harness::daemon::ws::uuid(id);
+        let wrapped = e2e::seal_session_key(&SessionKey::generate(), &raw, &self.keys(), self.chain().generation()).unwrap();
+        let api = self.as_device(d);
+        api.put_sync_session(id, &e2e::hex(&wrapped), None, None, None).unwrap();
+        let lease = api.acquire_lease(id, &d.key.id().to_string(), 60, "development").unwrap();
+        api.release_lease(id, &lease.token).unwrap();
+    }
+
     /// A world whose reference relay runs under `limits`.
     fn with_relay(name: &str, limits: krowk_harness::relay::Limits) -> World {
         let root = scratch::root(&format!("sync-{name}"));
@@ -230,7 +256,7 @@ impl World {
         let reg_a = format!("http://{}/v1", registry_proxy(registry.addr(), reg_mode.clone(), reg_log.clone(), reg_times.clone(), reg_refused.clone()));
         let m = mock::serve(model);
         let mock_url = m.url.clone();
-        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop }
+        World { root, registry, api, list: Mutex::new(None), first: Mutex::new(None), seen, cut, a_mode, a_conns, a_live, relay_a: format!("ws://{relay_a}"), relay_b: format!("ws://{relay_b}"), _mock: m, mock_url, reg_a, reg_mode, reg_log, reg_times, skew, reg_refused, late: Arc::default(), b_mode, b_batches, b_drop, token: TOKEN }
     }
 
     /// The registry's clock moved `by` ahead, so a lease it lapses has
@@ -308,7 +334,7 @@ impl World {
 
     /// A device of the person's, on their list with a key of its own.
     fn device(&self, name: &str) -> Device {
-        let d = Device::new(name);
+        let d = Device { token: format!("{}#{name}", self.token), ..Device::new(name) };
         self.enlist(&d, name);
         d
     }
@@ -2593,9 +2619,9 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
     let b_log = std::fs::read_to_string(log::sessions_dir(&b_env).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(b_log.contains("session.moved"), "B logged the move");
 
-    // R-HAND-3: a free workspace stores no transport.
-    let free = krowk_api::Client::new(&w.api, "krowk_sk_free_0000000000000000000000").signed_by(signer(&b));
-    let refused = tokio::task::spawn_blocking(move || free.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
+    // R-HAND-3, R-SYNC-14: a service key stores no transport.
+    let service = krowk_api::Client::new(&w.api, "krowk_sk_service_000000000000000000").signed_by(signer(&b));
+    let refused = tokio::task::spawn_blocking(move || service.put_transport("01a0ec7b-3333-7000-8000-000000000001", b"x", "t")).await.unwrap().unwrap_err();
     assert_eq!(refused.code(), "sync_requires_paid_plan", "{refused:?}");
 }
 
@@ -3833,7 +3859,7 @@ async fn r_sync_2_a_manual_host_keeps_its_lease_and_auto_sync_stays_off_it() {
     auto.stop(Duration::from_secs(10)).await;
 }
 
-/// R-SYNC-1: a workspace without a paid plan. The first `build` is refused
+/// R-SYNC-14: a key with no sync at all (a service key's). The first `build` is refused
 /// with `sync_requires_paid_plan`; for the pause that follows (an hour,
 /// shortened here through `Config::paid_pause`) no turn of any session is
 /// built, and nothing reaches the relay. After it, the next turn asks again.
@@ -3869,6 +3895,71 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-17, R-SYNC-18: a Free person's third machine. Its supervisor's
+/// bridge is refused the lease with `sync_machine_limit`, naming the two
+/// machines that ran sessions; nothing pauses — the next session's turn is
+/// built at once, where the paid refusal waits an hour — and the machine
+/// still follows the others' sessions.
+#[tokio::test]
+async fn r_sync_17_a_third_free_machine_stays_a_viewer_and_auto_sync_does_not_pause() {
+    let w = World::free("auto-limit");
+    let (a, b, c) = (w.device("machine-a"), w.device("machine-b"), w.device("machine-c"));
+    w.hosted(&a, "01a0ec7b-5555-7000-8000-000000000001");
+    w.hosted(&b, "01a0ec7b-5555-7000-8000-000000000002");
+    let mut auto = w.auto_with(&c, AutoOpts::default());
+    let d = w.daemon().await;
+    let first = prompted(&w, &d, None, "say hello").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auto.built(&first).is_empty() {
+        assert!(Instant::now() < deadline, "never built");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let other = prompted(&w, &d, None, "say hello").await;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while auto.built(&other).is_empty() {
+        assert!(Instant::now() < deadline, "the next session's turn was never built: sync paused");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert_eq!((leased(&w, &first).await, leased(&w, &other).await), (Ok(false), Ok(false)), "machine C hosts neither");
+    assert!(auto.bridged.lock().unwrap().is_empty());
+
+    // What the registry says, and C still a viewer of A's session.
+    let (api, dev) = (w.as_device(&c), c.key.id().to_string());
+    let (refused, viewer) = tokio::task::spawn_blocking(move || (api.acquire_lease(&first, &dev, 60, "development").unwrap_err(), api.relay_ticket("01a0ec7b-5555-7000-8000-000000000001", &dev, "development"))).await.unwrap();
+    assert_eq!((refused.code().as_str(), refused.status), ("sync_machine_limit", 402), "{refused:?}");
+    assert_eq!(refused.fix(), "Free syncs sessions from two machines, and this would be a third (machine-b, machine-a). You can still follow from here, or run krowk billing to upgrade.");
+    assert_eq!(refused.body["details"]["machines"], serde_json::json!(["machine-b", "machine-a"]));
+    assert!(viewer.is_ok(), "C follows A's session: {viewer:?}");
+    auto.stop(Duration::from_secs(10)).await;
+}
+
+/// R-SYNC-17, D7: A hosts a Free person's session and B ran another, so C
+/// is a third machine. C asks for the session: the registry refuses A the
+/// hand-over, A says why, and the session stays on A, C still attached.
+#[tokio::test]
+async fn r_sync_17_a_handoff_to_a_machine_over_the_limit_leaves_the_session_on_its_host() {
+    let w = World::free("handoff-limit");
+    let (a, b, c) = (w.device("machine-a"), w.device("machine-b"), w.device("machine-c"));
+    init_repo(&w.repo());
+    w.hosted(&b, "01a0ec7b-5555-7000-8000-000000000003");
+    let (_d, session) = first_turn(&w).await;
+    let (_stop, _cp, bridge) = w.bridge(&a, &session, w.daemon().await);
+    w.synced(&session).await;
+    let mut frames = Vec::new();
+    let mut cv = viewer::attach(w.viewer(&c, &session)).await.unwrap();
+    until(&mut cv, Duration::from_secs(10), &mut frames, |u| matches!(u, viewer::Update::Host(true))).await;
+    cv.handoff.send(()).unwrap();
+    let got = until(&mut cv, Duration::from_secs(30), &mut frames, |u| matches!(u, viewer::Update::Handoff(_))).await;
+    let refused = got.into_iter().find_map(|u| if let viewer::Update::Handoff(r) = u { Some(r) } else { None }).unwrap().err().expect("refused");
+    assert!(refused.starts_with(&format!("{}machine-c: Free syncs sessions from two machines, and this would be a third (", host::MOVE_REFUSED)), "{refused}");
+    assert!(refused.contains("machine-a") && refused.contains("machine-b") && refused.ends_with("or run krowk billing to upgrade."), "{refused}");
+    let (api, id) = (w.client(), session.clone());
+    let lease = tokio::task::spawn_blocking(move || api.show_sync_session(&id)).await.unwrap().unwrap().lease.expect("leased");
+    assert_eq!(lease.device, a.key.id().to_string(), "the session stays on A");
+    assert!(!bridge.is_finished(), "A's bridge carries on");
 }
 
 /// What the stand-in registry recorded as notified about `session` (ticket
