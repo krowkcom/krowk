@@ -612,9 +612,55 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let summary = format!("Joined as '{name}'. This machine syncs in every workspace you're a member of.");
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");
+    }
+    let service = offer_service(ctx);
+    let _ = writeln!(ctx.io.stderr, "{TAKES_WORK}");
+    if ctx.format == Format::Human {
         return Ok(());
     }
-    super::sessions::emit_data(ctx, json!({ "device": device.id().to_string(), "name": name, "seq": seq, "joined": true }), summary)
+    super::sessions::emit_data(ctx, json!({ "device": device.id().to_string(), "name": name, "seq": seq, "joined": true, "hostService": service }), summary)
+}
+
+/// What a join ends saying (R-ALLOC-13): acceptance is the default.
+const TAKES_WORK: &str = "This machine now takes work from your other machines in trusted repositories. Turn it off with krowk machines accept off.";
+
+/// The always-on host service a machine needs to take work, offered at the
+/// end of a join, yes by default: a laptop joined only to follow declines.
+/// The join is done whatever happens here, so a service that will not start
+/// is said, never an error. Whether it was enabled.
+#[cfg(unix)]
+fn offer_service(ctx: &mut Ctx) -> bool {
+    let question = "Run the always-on host service, so this machine can take work from your other machines?";
+    let yes = if unattended(ctx) {
+        let mut line = String::new();
+        // No line at all (stdin closed) is no: a test stand-in never
+        // installs a service it was not asked to.
+        let read = std::io::stdin().read_line(&mut line).unwrap_or(0);
+        let yes = read > 0 && !matches!(line.trim().to_lowercase().as_str(), "n" | "no");
+        let _ = writeln!(ctx.io.stderr, "{question} [Y/n] {}", if yes { "y" } else { "n" });
+        yes
+    } else {
+        inquire::Confirm::new(question).with_default(true).prompt().unwrap_or(false)
+    };
+    if !yes {
+        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk host enable` does it later.");
+        return false;
+    }
+    match super::host::set_service(ctx, true) {
+        Ok((file, _)) => {
+            let _ = writeln!(ctx.io.stderr, "The host daemon runs as a service: {}", file.display());
+            true
+        }
+        Err(e) => {
+            let _ = writeln!(ctx.io.stderr, "The host service did not start: {e} Run `krowk host enable` to try again.");
+            false
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn offer_service(_: &mut Ctx) -> bool {
+    false
 }
 
 #[derive(PartialEq, Eq)]

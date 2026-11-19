@@ -555,7 +555,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("machines", "krowk machines", "Your machines, and what each can take"));
+    c.commands.push(Command { subcommands: vec![cmd("list", "krowk machines [list]", "Your machines, and what each can take"), machines_accept()], ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
     #[cfg(feature = "harness")]
@@ -746,6 +746,11 @@ fn mcp_command() -> Command {
         ],
         ..cmd("mcp", "", "MCP servers krowk's agent uses (add, remove, list, login)")
     }
+}
+
+#[cfg(all(feature = "harness", unix))]
+fn machines_accept() -> Command {
+    Command { args: vec![arg("state", "on or off", true)], ..cmd("accept", "krowk machines accept on|off", "Take work from your other machines, or not") }
 }
 
 /// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).

@@ -1033,7 +1033,7 @@ mod placed {
         vec![
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "I added fixed.rs.".into() } }),
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            ev(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_result".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: git push".into()] }),
+            ev(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_result".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: git push".into()], error: None }),
         ]
     }
 

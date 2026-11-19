@@ -317,6 +317,22 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// `enable`: the service file written, then the service manager told to
 /// start it now and at every login. `disable`: stopped, then removed.
 pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
+    let (file, stopped) = set_service(ctx, on)?;
+    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
+    let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, data, summary);
+    }
+    if let Some(pid) = stopped {
+        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
+    }
+    let _ = writeln!(ctx.io.stdout, "{summary}");
+    Ok(())
+}
+
+/// What `enable` does, without saying so: the service file, and the pid of
+/// a daemon it let go. The join's offer runs it inside its own answer.
+pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf, Option<u32>), Error> {
     let platform = service::Platform::here();
     let file = service::path(platform, ctx.io.env).map_err(|e| fail("no_home", e))?;
     // SAFETY: getuid has no preconditions and cannot fail.
@@ -360,16 +376,7 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
             _ => {}
         }
     }
-    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
-    let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
-    if ctx.format != Format::Human {
-        return super::sessions::emit_data(ctx, data, summary);
-    }
-    if let Some(pid) = stopped {
-        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
-    }
-    let _ = writeln!(ctx.io.stdout, "{summary}");
-    Ok(())
+    Ok((file, stopped))
 }
 
 /// Whether a service manager's command succeeds.

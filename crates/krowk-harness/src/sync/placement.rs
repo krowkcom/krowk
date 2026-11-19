@@ -402,7 +402,7 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
     for e in events {
         match &e.body {
             LogBody::TurnCompleted { turn_id, .. } if e.session_id == child => completed = Some(turn_id),
-            LogBody::TaskResult { turn_id, transport, key, against, denied } => {
+            LogBody::TaskResult { turn_id, transport, key, against, denied, error } => {
                 if e.session_id != child {
                     return Err(format!("a task result from session {}, which is not the child {child}", e.session_id));
                 }
@@ -410,6 +410,9 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     None => return Err("the child logged its result before its turn completed".into()),
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
+                }
+                if let Some(why) = error {
+                    return Err(format!("the child's result could not be stored: {why}"));
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -1206,7 +1209,7 @@ mod tests {
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
     }
 
@@ -1344,7 +1347,7 @@ mod tests {
         vec![
             event(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "added fixed.rs".into() } }),
             event(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { output_tokens: 7, ..Usage::default() }, duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()] }),
+            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()], error: None }),
         ]
     }
 
