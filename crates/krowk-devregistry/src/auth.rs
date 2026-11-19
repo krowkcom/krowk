@@ -87,11 +87,13 @@ pub fn show_key(app: &App, req: &Req) -> Resp {
         body.push(("can_manage_billing", Json::Raw("false".into())));
         body.push(("billing_contacts", Json::Arr(vec![Json::str("owner@example.test")])));
     } else {
+        // Both dates always, as the registry sends them: null on Free, and
+        // on a paid plan exactly one set.
+        let at = (plan != "free").then(|| rfc3339(app.lock().now() + jiff::SignedDuration::from_hours(30 * 24)));
+        let ending = token.contains(ENDING_PLAN_KEY_MARKER);
         body.push(("can_manage_billing", Json::Raw("true".into())));
-        if plan != "free" {
-            let at = rfc3339(app.lock().now() + jiff::SignedDuration::from_hours(30 * 24));
-            body.push((if token.contains(ENDING_PLAN_KEY_MARKER) { "plan_ends_at" } else { "plan_renews_at" }, Json::str(at)));
-        }
+        body.push(("plan_renews_at", Json::opt(at.clone().filter(|_| !ending))));
+        body.push(("plan_ends_at", Json::opt(at.filter(|_| ending))));
     }
     Resp::json(200, &Json::map_of(body.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()))
 }
