@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **krowk's own agent starts a subagent on the machine with room.** With
+  sync set up, a subagent stays on this machine unless it is busy (every
+  build or agent slot in use, load at the core count, or under 2 GiB free);
+  then it runs on another of your machines that has a clone of the
+  repository and a ready account, and its changes land in your working tree
+  as a local worktree subagent's do. The stream says where and why
+  (`Running on desktop: this machine is busy (3 of 3 build slots in use).`).
+  The `subagent` tool takes an optional `host` (a machine's name, `any`,
+  `any:macos`, `any:linux` or `any:windows`) and `model` (a model or an
+  account such as `claude:work`). A machine that refuses, or does not answer
+  in 30 seconds, is skipped once; one that drops mid-task fails the call
+  naming it. An agent with a tool allowlist always runs here.
+
 - **A machine runs a task another of your machines hands it.** In a
   repository you have trusted there and that matches the task's origin, the
   host starts a fresh worktree at the sender's exact state and runs the task

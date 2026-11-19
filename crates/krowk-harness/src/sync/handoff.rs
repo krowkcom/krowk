@@ -420,7 +420,40 @@ pub fn pack_result(worktree: &Path, snapshot: &str, session: &str) -> Result<Bun
 /// named on conflict, fenced paths and submodules kept). The worktree, and
 /// what came of it. Slice 07 builds it.
 pub fn apply_result(job: &Bundle, result: &Bundle, to: &Path, worktrees: &Path) -> Result<(crate::worktree::Worktree, crate::worktree::apply::Applied), String> {
-    todo!("slice 07: apply the result of job {} at {} to {} under {}", job.base, result.base, to.display(), worktrees.display())
+    use crate::worktree::apply::Applied as Landed;
+    let applied = apply(job, to, worktrees)?;
+    let held = applied.held;
+    let at = applied.worktree;
+    let made = at.clone();
+    let undo = |e: String| {
+        let _ = crate::worktree::discard(&made);
+        e
+    };
+    // The job's state, committed: what the result is the changes against.
+    let dirty = git_text(&at.path, &["status", "--porcelain", "--untracked-files=normal"]).map_err(&undo)?;
+    if !dirty.is_empty() {
+        let mut add = krowk_api::git::command(&at.path).map_err(|e| undo(e.to_string()))?;
+        let out = add.args(["add", "--all", "--", ":/"]).output().map_err(|e| undo(format!("git add: {e}")))?;
+        if !out.status.success() {
+            return Err(undo(format!("git add: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+        let mut commit = krowk_api::git::command(&at.path).map_err(|e| undo(e.to_string()))?;
+        let out = commit.args(["-c", "user.name=krowk", "-c", "user.email=krowk@localhost", "commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m", "krowk: the job's state"]).output().map_err(|e| undo(format!("git commit: {e}")))?;
+        if !out.status.success() {
+            return Err(undo(format!("git commit: {}", String::from_utf8_lossy(&out.stderr).trim())));
+        }
+    }
+    let head = git_text(&at.path, &["rev-parse", "--verify", "HEAD^{commit}"]).map_err(&undo)?;
+    let wt = crate::worktree::Worktree { base: head, ..at };
+    if !result.diff.is_empty() {
+        apply_patch(&wt.path, &result.diff).map_err(|e| undo(format!("the child's changes did not apply on the job's state: {e}")))?;
+    }
+    for f in &result.untracked {
+        write_untracked(&wt.path, f).map_err(&undo)?;
+    }
+    let landed = crate::worktree::finish_into(&wt, to).map_err(|e| format!("the child's changes could not be applied: {e}"));
+    drop(held);
+    Ok((wt, landed?.unwrap_or(Landed::Applied(Vec::new()))))
 }
 
 /// Where a session handed over landed: its worktree and the directory its
@@ -879,7 +912,6 @@ mod tests {
     /// tree, which holds the job's state, never its index or HEAD; one that
     /// conflicts is kept in a local worktree and the files named.
     #[test]
-    #[ignore = "slice 07: apply_result"]
     fn alloc_07_a_result_lands_in_the_working_tree_or_is_kept_on_conflict() {
         use crate::worktree::apply::Applied as Landed;
         let root = scratch("land");

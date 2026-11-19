@@ -167,7 +167,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         trust,
         publisher: Some(prompt::publisher(ctx)),
         permissions,
-        agents: prompt::agents_config(ctx.io.env),
+        agents: krowk_harness::subagent::AgentsConfig { placer: Some(super::synced::placer_source(&ctx.f)), ..prompt::agents_config(ctx.io.env) },
         session,
     };
     let projector = Projector::default();
