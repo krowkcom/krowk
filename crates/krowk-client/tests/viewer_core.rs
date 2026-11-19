@@ -1322,3 +1322,16 @@ fn r_ios_1_a_resumed_viewers_catch_up_starts_after_the_cached_newest() {
         assert_eq!(catch_ups(&r.frames), std::slice::from_ref(&after), "held up to {newest:?}");
     }
 }
+
+/// R-SYNC-15: a session whose log's start expired says so once, as the
+/// viewer attaches, beside what it shows; one that did not says nothing.
+#[test]
+fn r_sync_15_an_expired_start_is_said_once_as_the_viewer_attaches() {
+    let key = SessionKeys::from(SessionKey::generate());
+    let (_, first) = ViewerCore::new(key.clone(), SESSION, DeviceId([1; 16]), RELAY, Attached { expired: true, ..Attached::default() }, 0);
+    let shown: Vec<&[Update]> = first.iter().filter_map(|e| if let Effect::Show(u) = e { Some(u.as_slice()) } else { None }).collect();
+    assert!(matches!(shown.as_slice(), [[Update::Attached { .. }, Update::Note(n)]] if n == krowk_client::sync::viewer::EXPIRED), "{shown:?}");
+    assert_eq!(krowk_client::sync::viewer::EXPIRED, "Older history expired (Free keeps 7 days).");
+    let (_, first) = ViewerCore::new(key, SESSION, DeviceId([1; 16]), RELAY, Attached::default(), 0);
+    assert!(!first.iter().any(|e| matches!(e, Effect::Show(u) if u.iter().any(|u| matches!(u, Update::Note(_))))));
+}

@@ -348,7 +348,7 @@ impl OpenedSession {
             let mut a = self.attached();
             let heads = std::mem::take(&mut a.heads);
             let lent = heads.len();
-            (Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads }, a.events.len(), lent)
+            (Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads, expired: a.expired }, a.events.len(), lent)
         };
         let decoded = store::catch_up(&self.client, &self.keys, &self.id, &mut read, None)
             .map_err(unreached)

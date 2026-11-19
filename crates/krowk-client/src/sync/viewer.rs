@@ -21,6 +21,10 @@ use crate::relay_link::{Outbound, ViewerLink};
 use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
+/// What a viewer is told when the start of the session's log expired
+/// (R-SYNC-15): the registry no longer holds it.
+pub const EXPIRED: &str = "Older history expired (Free keeps 7 days).";
+
 /// What a viewer hands its screen, one `Vec` a display frame.
 // A line is most of what a viewer is handed, so it stays unboxed.
 #[allow(clippy::large_enum_variant)]
@@ -506,7 +510,13 @@ impl ViewerCore {
         for id in &seen {
             newest(&mut last_id, id);
         }
-        let first = Effect::Show(vec![Update::Attached { events: at_rest.events.clone(), head: at_rest.head }]);
+        let mut shown = vec![Update::Attached { events: at_rest.events.clone(), head: at_rest.head }];
+        // Said once, as the viewer attaches: what it shows starts later
+        // than the session did.
+        if at_rest.expired {
+            shown.push(Update::Note(EXPIRED.into()));
+        }
+        let first = Effect::Show(shown);
         let mut v = ViewerCore {
             key,
             raw: super::uuid(session),

@@ -41,6 +41,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   carries the `sync_machine_limit` code, and for `krowk sync host` the plan,
   the limit and the machines.
 
+- **A synced session whose oldest history expired still opens.** Free keeps
+  a session's history for 7 days. When the start of its log is gone, a
+  device attaching reads from the oldest part the registry still holds,
+  checked as strictly as before, and the viewer says once `Older history
+  expired (Free keeps 7 days).`; a host taking the session up again writes
+  on after it. Any other gap in a log is still refused as tampering.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

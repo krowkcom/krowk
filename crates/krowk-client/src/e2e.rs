@@ -858,6 +858,17 @@ impl ChunkReader {
         self.finished
     }
 
+    /// Reading on from chunk `next`, past chunks the registry let expire,
+    /// the one after the expired chunk whose digest is `previous`: the
+    /// chain holds from there exactly as from a checkpoint. Only ever
+    /// forward, and only before any chunk has been opened: the caller's
+    /// (`store`'s) to keep to the start of a reading.
+    pub fn skip_expired(&mut self, next: u64, previous: [u8; 32]) {
+        assert!(next > self.next, "never back");
+        self.next = next;
+        self.previous = previous;
+    }
+
     /// The index the next chunk must have.
     pub fn next(&self) -> u64 {
         self.next

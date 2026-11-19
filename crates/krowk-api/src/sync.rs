@@ -2,7 +2,7 @@
 //! person's device list and user key, the mailbox a new device is paired
 //! through, and sessions with their leases. Every call needs a person's key,
 //! on any plan (R-SYNC-10); a machine over its person's limit is refused
-//! hosting (`sync_machine_limit`, R-SYNC-11), and nothing here carries plaintext: keys and sealed blobs are
+//! hosting (`sync_machine_limit`, R-SYNC-11). Nothing here carries plaintext: keys and sealed blobs are
 //! hex, and a session's title and the rest of what a listing shows travel
 //! inside `sealed_index`, sealed by the caller before it gets here.
 //!
@@ -460,6 +460,15 @@ pub struct ChunkPage {
     pub chunks: Vec<Chunk>,
     #[serde(default, deserialize_with = "nullable")]
     pub next: Option<u64>,
+    /// The lowest index the registry still holds, when the chunks before
+    /// it expired (Free keeps 7 days, R-SYNC-15); absent when none did.
+    #[serde(default, deserialize_with = "nullable")]
+    pub first_chunk_index: Option<u64>,
+    /// The digest of the last expired chunk, hex: what the first held one
+    /// binds, so a reader can open it and hold the chain from there. The
+    /// registry's word, which only an authentic chunk opens under.
+    #[serde(default, deserialize_with = "nullable")]
+    pub first_chunk_previous: String,
 }
 
 /// One ISO week of archived sessions, as the registry holds it: a durable
@@ -1001,7 +1010,8 @@ pub fn machine_limit_fix(details: Option<&Value>) -> String {
     let d = details.and_then(Value::as_object);
     let plan = d.and_then(|d| d.get("plan")).and_then(Value::as_str).unwrap_or_default();
     let limit = d.and_then(|d| d.get("limit")).and_then(Value::as_u64);
-    let names: Vec<&str> = d.and_then(|d| d.get("machines")).and_then(Value::as_array).map_or_else(Vec::new, |m| m.iter().filter_map(Value::as_str).collect());
+    // The registry's words, which reach a terminal: no control characters.
+    let names: Vec<String> = d.and_then(|d| d.get("machines")).and_then(Value::as_array).map_or_else(Vec::new, |m| m.iter().filter_map(Value::as_str).map(|n| n.chars().filter(|c| !c.is_control()).collect()).collect());
     let then = if plan == "free" { "upgrade" } else { "change plan" };
     let Some(limit) = limit.filter(|_| !plan.is_empty()) else {
         return format!("This machine is over your plan's limit of machines that run sessions. You can still follow from here, or run krowk billing to {then}.");
@@ -1011,7 +1021,7 @@ pub fn machine_limit_fix(details: Option<&Value>) -> String {
     let name: String = name.into_iter().collect();
     let machines = if limit == 1 { "one machine".to_string() } else { format!("{} machines", number(limit)) };
     let named = if names.is_empty() { String::new() } else { format!(" ({})", names.join(", ")) };
-    format!("{name} syncs sessions from {machines}, and this would be {}{named}. You can still follow from here, or run krowk billing to {then}.", ordinal(limit + 1))
+    format!("{name} syncs sessions from {machines}, and this would be {}{named}. You can still follow from here, or run krowk billing to {then}.", ordinal(limit.saturating_add(1)))
 }
 
 /// A count in words up to twenty, as the pricing card says them.
@@ -1046,5 +1056,7 @@ mod machine_limit_tests {
         assert!(machine_limit_fix(None).ends_with("or run krowk billing to change plan."));
         assert_eq!(ordinal(23), "a 23rd");
         assert_eq!(ordinal(112), "a 112th");
+        let hostile = json!({"plan": "free", "limit": u64::MAX, "machines": ["a\u{1b}[2Jb\nc"]});
+        assert!(machine_limit_fix(Some(&hostile)).contains("(a[2Jbc)"), "no control characters reach the terminal");
     }
 }

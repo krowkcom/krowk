@@ -1360,7 +1360,8 @@ impl Sup {
         // Over the person's machine limit (R-SYNC-17): this machine does not
         // host the session, and stays a viewer. Nothing pauses — other
         // sessions, and this one's next turn, ask again — and it is said
-        // once, not every turn.
+        // once, not every turn. A bridge stopping as it was refused is not
+        // started again nor parked: it would only be refused again.
         if let Err(e) = &r
             && let Some((said, _)) = host::machine_limit(e)
         {

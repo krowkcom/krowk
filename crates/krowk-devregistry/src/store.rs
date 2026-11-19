@@ -320,7 +320,7 @@ pub fn workspace_for(token: &str) -> String {
 }
 
 /// A token up to its first `#`: what names its workspace and its person.
-fn token_base(token: &str) -> &str {
+pub fn token_base(token: &str) -> &str {
     token.split('#').next().unwrap_or(token)
 }
 

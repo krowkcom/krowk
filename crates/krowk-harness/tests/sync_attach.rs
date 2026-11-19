@@ -15,7 +15,7 @@ mod mock;
 #[path = "common/scratch.rs"]
 mod scratch;
 
-use krowk_client::e2e::{self, DeviceKey, SessionKey, SigningKey};
+use krowk_client::e2e::{self, DeviceKey, SessionKey, SessionKeys, SigningKey};
 use krowk_client::device_chain::{Batch, Chain, Change, Kind, Subject};
 use krowk_client::host_command::{self, HostAnswer};
 use krowk_client::session_record;
@@ -30,7 +30,7 @@ use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
 use krowk_harness::protocol::{ApprovalDecision, ApprovalRequest, Command, Item, LiveEvent, LogBody, PermissionMode, StreamLine};
-use krowk_harness::sync::{announce, auto, direct, host, viewer};
+use krowk_harness::sync::{announce, auto, direct, host, store, viewer};
 use std::collections::BTreeSet;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -3960,6 +3960,63 @@ async fn r_sync_17_a_handoff_to_a_machine_over_the_limit_leaves_the_session_on_i
     let lease = tokio::task::spawn_blocking(move || api.show_sync_session(&id)).await.unwrap().unwrap().lease.expect("leased");
     assert_eq!(lease.device, a.key.id().to_string(), "the session stays on A");
     assert!(!bridge.is_finished(), "A's bridge carries on");
+}
+
+/// R-SYNC-15: a Free session whose oldest chunks expired. The log's start
+/// is gone past its checkpoint, so a device attaching reads from the first
+/// chunk the registry still holds, the chain held from there, and is told
+/// the start expired; a host taking it up again chains onto what is left.
+/// A reading that started past the expired chunks never skips any.
+#[tokio::test]
+async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_held() {
+    use krowk_harness::sync::store::Writer;
+    let w = World::free("expired");
+    let a = w.device("machine-a");
+    let id = "01a0ec7b-6666-7000-8000-000000000001";
+    let ev = |n: u32| serde_json::json!({"id": format!("01a0ec7b-2222-7000-8000-{n:012}"), "sessionId": id, "timeMs": n, "type": "run.opened", "turnId": "t1", "run": format!("c{n}")});
+    let api = w.as_device(&a);
+    let raw = krowk_harness::daemon::ws::uuid(id);
+    let key = SessionKeys::from(SessionKey::generate());
+    let wrapped = e2e::hex(&e2e::seal_session_keys(&key, &raw, &w.keys(), w.chain().generation()).unwrap());
+    let sig = session_record::sign(&raw, &e2e::unhex(&wrapped).unwrap(), session_record::SEAL_USER, w.keys().newest(), &a.signing).unwrap();
+    api.put_sync_session(id, &wrapped, Some((&e2e::hex(&sig), &a.key.id().to_string())), None, None).unwrap();
+    let write = |events: std::ops::RangeInclusive<u32>, checkpoint: bool| {
+        let lease = api.acquire_lease(id, &a.key.id().to_string(), 60, "development").unwrap();
+        let index = store::open_index(&key, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
+        let mut writer = Writer::take_up(api.clone(), key.clone(), id, wrapped.clone(), index, lease.fence).unwrap();
+        if checkpoint {
+            writer.checkpoint(None, &lease.token).unwrap();
+        }
+        for n in events {
+            writer.push(ev(n));
+            writer.flush(&lease.token).unwrap();
+        }
+        api.release_lease(id, &lease.token).unwrap();
+    };
+    // Eight days ago: a checkpoint (chunk 0) and two chunks of events.
+    w.skew.fetch_sub(Duration::from_secs(8 * 86400).as_millis() as i64, Ordering::SeqCst);
+    write(1..=2, true);
+    w.advance(Duration::from_secs(8 * 86400));
+    // Today: a host takes it up again, past the expired start, and writes on.
+    write(3..=4, false);
+
+    let index = store::open_index(&key, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
+    assert_eq!(index.checkpoint.map(|m| m.index), Some(0), "the index still names the expired checkpoint");
+    let page = api.list_chunks(id, None, 100).unwrap();
+    assert_eq!((page.first_chunk_index, page.chunks.first().map(|c| c.index)), (Some(3), Some(3)), "chunks 0 to 2 expired");
+    let b = w.device("machine-b");
+    let mut at = store::attach(&w.as_device(&b), &key, id, index.clone(), None).expect("attached from the first chunk held");
+    assert!(at.expired);
+    assert_eq!(at.events.iter().map(|e| e["run"].as_str().unwrap()).collect::<Vec<_>>(), ["c3", "c4"]);
+    assert_eq!(at.head.map(|h| h.index), Some(4));
+
+    // A reading that went on from a place never skips: chunks it has not
+    // read since are a gap.
+    let api_b = w.as_device(&b);
+    assert!(store::catch_up(&api_b, &key, id, &mut at, None).unwrap().is_empty());
+    let mut behind = store::Attached { next: 1, ..at.clone() };
+    let e = store::catch_up(&api_b, &key, id, &mut behind, None).unwrap_err();
+    assert!(e.rolled_back, "{e:?}");
 }
 
 /// What the stand-in registry recorded as notified about `session` (ticket

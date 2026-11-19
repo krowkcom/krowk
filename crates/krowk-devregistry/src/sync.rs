@@ -160,6 +160,25 @@ const MAX_CHUNK_BYTES: i64 = 64 << 20;
 const MAX_VINTAGE_BYTES: i64 = 256 << 20;
 /// The registry's Artifact::MAX_IMAGE_OBJECT_BYTES, and krowk-api's read limit.
 const MAX_IMAGE_OBJECT_BYTES: i64 = 3 << 20;
+/// How long a Free session's chunks are kept (R-SYNC-15).
+const FREE_HISTORY: SignedDuration = SignedDuration::from_hours(7 * 24);
+
+/// A Free session's chunks older than 7 days, oldest first, let go as the
+/// registry's sweep lets them go, here as the log is listed: what is left
+/// starts at a later index, which the listing declares with the digest
+/// the first chunk left binds (`first_chunk_index`, `first_chunk_previous`).
+fn expire_chunks(s: &mut SyncStore, workspace: &str, id: &str, now: Timestamp) {
+    let mut held: Vec<(u64, Timestamp, String)> = s.chunks.iter().filter(|((w, sid, _), c)| w == workspace && sid == id && c.ready).map(|(_, c)| (c.index, c.created_at, c.checksum.clone())).collect();
+    held.sort_by_key(|c| c.0);
+    for (index, created, checksum) in held {
+        if now.duration_since(created) < FREE_HISTORY {
+            return;
+        }
+        s.chunks.remove(&(workspace.to_owned(), id.to_owned(), index));
+        s.expired.insert((workspace.to_owned(), id.to_owned()), (index + 1, checksum));
+    }
+}
+
 /// The registry's SyncSession::MAX_CHUNKS.
 const MAX_CHUNKS: usize = 100_000;
 
@@ -167,6 +186,10 @@ const MAX_CHUNKS: usize = 100_000;
 pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
+    /// Workspace and session id → where its log starts once its oldest
+    /// chunks expired (`expire_chunks`): the first index still held, and
+    /// the checksum of the last expired chunk, which that one binds.
+    pub expired: HashMap<(String, String), (u64, String)>,
     /// Workspace, session id and name → a sealed image object: a chunk's
     /// upload with no place in a log (index and fence 0).
     pub images: HashMap<(String, String, String), Chunk>,
@@ -785,6 +808,10 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         let ttl = ttl(&v.fields())?;
         let env = env_field(&v.fields())?;
         let now = s.now();
+        // The limit first, as the registry checks it: a machine over it is
+        // told so even where another device holds the lease.
+        let owner = s.sync.sessions[&key].owner.clone();
+        within_limit(&s.sync, req, &owner, &device, now)?;
         let x = s.sync.sessions.get_mut(&key).unwrap();
         if leased(x, now) {
             let until = rfc3339_nano(x.lease_expires_at.unwrap());
@@ -795,9 +822,6 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
                 Some(Json::map([("device", Json::str(&x.holder)), ("expires_at", Json::str(until))])),
             ));
         }
-        let owner = x.owner.clone();
-        within_limit(&s.sync, req, &owner, &device, now)?;
-        let x = s.sync.sessions.get_mut(&key).unwrap();
         x.fence += 1;
         x.holder = device.clone();
         x.lease_expires_at = Some(now + ttl);
@@ -1228,9 +1252,13 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
     };
     let Some(id) = session_id(id) else { return not_found() };
     let limit = crate::artifacts::page_limit(req);
-    let s = app.lock();
+    let mut s = app.lock();
     if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
         return not_found();
+    }
+    if crate::auth::free_plan(req) {
+        let now = s.now();
+        expire_chunks(&mut s.sync, &workspace, &id, now);
     }
     let after: Option<u64> = req.query_get("after").parse().ok();
     let mut ready: Vec<&Chunk> = s.sync.chunks.iter().filter(|((w, sid, i), c)| *w == workspace && *sid == id && c.ready && after.is_none_or(|a| *i > a)).map(|(_, c)| c).collect();
@@ -1245,7 +1273,8 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
             Json::map_of(j)
         })
         .collect();
-    Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
+    let (first, previous) = s.sync.expired.get(&(workspace, id)).map_or((Json::Null, Json::Null), |(i, p)| (Json::Int(*i as i64), Json::str(p)));
+    Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next), ("first_chunk_index", first), ("first_chunk_previous", previous)]))
 }
 
 fn serialize_image(name: &str, c: &Chunk) -> Vec<(String, Json)> {

@@ -737,7 +737,7 @@ impl Viewer {
             // `store::catch_up` only adds to them, and the core reads its
             // at-rest events only as it starts.
             let a = i.core.attached();
-            let from = Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads: a.heads.clone() };
+            let from = Attached { index: a.index.clone(), events: Vec::new(), head: a.head, next: a.next, previous: a.previous, fence: a.fence, epoch: a.epoch, heads: a.heads.clone(), expired: a.expired };
             (i.asked, i.want, from, Arc::clone(&i.opened))
         });
         let (asked, read) = match copied {
