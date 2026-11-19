@@ -19,20 +19,9 @@ pub(crate) fn billing(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(fail("not_authenticated", "billing is a workspace's — run `krowk login` first"));
     }
     let key = client.verify_key()?;
-    // Only an owner's or admin's key may: a member's names who to ask, and
-    // a key with no person behind it (or a registry that does not say)
-    // names nobody.
     if key.can_manage_billing != Some(true) {
         let name = if key.workspace_name.is_empty() { &key.workspace } else { &key.workspace_name };
-        let fix = if key.can_manage_billing.is_none() {
-            format!("Only owners and admins can manage billing for {name}, and this key does not belong to one. Log in as an owner or admin, then try again.")
-        } else if key.billing_contacts.is_empty() {
-            format!("Billing for {name} is managed by its owners and admins. Ask one of them.")
-        } else {
-            format!("Billing for {name} is managed by {}. Ask one of them.", key.billing_contacts.join(", "))
-        };
-        let mut e = fail("billing_not_permitted", fix);
-        e.body.insert("workspace".into(), json!(key.workspace));
+        let mut e = fail("billing_not_permitted", refusal(name, key.can_manage_billing, &key.billing_contacts));
         e.body.insert("billing_contacts".into(), json!(key.billing_contacts));
         return Err(e);
     }
@@ -51,24 +40,45 @@ pub(crate) fn billing(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     ctx.emit(&said)
 }
 
+/// Why a key may not manage billing. Only an owner's or admin's may: a
+/// member's names who to ask; a key with no person behind it, or from a
+/// registry that does not say, names nobody.
+fn refusal(name: &str, can_manage: Option<bool>, contacts: &[String]) -> String {
+    match (can_manage, contacts) {
+        (None, _) => format!("Only owners and admins can manage billing for {name}, and the registry does not say this key's person is one. Log in as an owner or admin, then try again."),
+        (_, []) => format!("Billing for {name} is managed by its owners and admins. Ask one of them."),
+        _ => format!("Billing for {name} is managed by {}. Ask one of them.", contacts.join(", ")),
+    }
+}
+
 /// The dashboard beside a registry: the API's origin, its `api.` host
-/// swapped for `app.` (api.krowk.com → app.krowk.com). A registry on any
-/// other host serves its dashboard itself, as the local stand-in does.
+/// swapped for `app.` (api.krowk.com → app.krowk.com); any other host is
+/// kept as it is. Credentials in the URL are left behind.
 fn app_url(base_url: &str) -> String {
     let (scheme, rest) = base_url.split_once("://").unwrap_or(("https", base_url));
-    let host = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or_default();
+    let host = authority.rsplit('@').next().unwrap_or_default();
     let host = host.strip_prefix("api.").map_or_else(|| host.to_string(), |h| format!("app.{h}"));
     format!("{scheme}://{host}")
 }
 
 #[cfg(test)]
 mod tests {
-    use super::app_url;
+    use super::{app_url, refusal};
 
     #[test]
     fn r_bill_6_the_dashboard_sits_beside_the_api() {
         assert_eq!(app_url("https://api.krowk.com/v1"), "https://app.krowk.com");
         assert_eq!(app_url("http://localhost:8787/v1"), "http://localhost:8787");
         assert_eq!(app_url("https://registry.example.com/v1/"), "https://registry.example.com");
+        assert_eq!(app_url("https://user:pass@api.example.com/v1"), "https://app.example.com");
+    }
+
+    #[test]
+    fn r_bill_6_a_refusal_names_who_to_ask_or_says_nobody_can_be_named() {
+        let two = ["a@x.test".to_string(), "c@x.test".to_string()];
+        assert_eq!(refusal("Acme", Some(false), &two), "Billing for Acme is managed by a@x.test, c@x.test. Ask one of them.");
+        assert_eq!(refusal("Acme", Some(false), &[]), "Billing for Acme is managed by its owners and admins. Ask one of them.");
+        assert!(refusal("Acme", None, &[]).starts_with("Only owners and admins can manage billing for Acme"));
     }
 }
