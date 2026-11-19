@@ -166,7 +166,10 @@ stdout:
     "key_id": "<key_1>",
     "name": "local",
     "workspace": "<ws_1>",
-    "workspace_name": "Local workspace"
+    "workspace_name": "Local workspace",
+    "plan": "pro",
+    "can_manage_billing": true,
+    "plan_renews_at": "<time>"
   },
   "summary": "<key_1> in <ws_1>",
   "breadcrumbs": [
@@ -187,7 +190,10 @@ stdout:
     "key_id": "<key_2>",
     "name": "local",
     "workspace": "<ws_2>",
-    "workspace_name": "Local workspace"
+    "workspace_name": "Local workspace",
+    "plan": "pro",
+    "can_manage_billing": true,
+    "plan_renews_at": "<time>"
   },
   "summary": "<key_2> in <ws_2>",
   "breadcrumbs": [
@@ -208,7 +214,10 @@ stdout:
     "key_id": "<key_2>",
     "name": "local",
     "workspace": "<ws_2>",
-    "workspace_name": "Local workspace"
+    "workspace_name": "Local workspace",
+    "plan": "pro",
+    "can_manage_billing": true,
+    "plan_renews_at": "<time>"
   },
   "summary": "<key_2> in <ws_2>",
   "breadcrumbs": [
@@ -229,7 +238,10 @@ stdout:
     "key_id": "<key_1>",
     "name": "local",
     "workspace": "<ws_1>",
-    "workspace_name": "Local workspace"
+    "workspace_name": "Local workspace",
+    "plan": "pro",
+    "can_manage_billing": true,
+    "plan_renews_at": "<time>"
   },
   "summary": "<key_1> in <ws_1>",
   "breadcrumbs": [
@@ -282,7 +294,10 @@ stdout:
     "key_id": "<key_2>",
     "name": "local",
     "workspace": "<ws_2>",
-    "workspace_name": "Local workspace"
+    "workspace_name": "Local workspace",
+    "plan": "pro",
+    "can_manage_billing": true,
+    "plan_renews_at": "<time>"
   },
   "summary": "<key_2> in <ws_2>",
   "breadcrumbs": [

@@ -52,9 +52,12 @@ pub fn free_plan(req: &Req) -> bool {
     req.header("Authorization").and_then(bearer).is_some_and(|t| t.contains(FREE_PLAN_KEY_MARKER))
 }
 
+/// When every paid plan the stand-in reports renews or ends.
+const PLAN_DATE: &str = "2026-12-19T00:00:00Z";
+
 /// The key self-check. Any bearer token resolves to the workspace the
 /// artifact endpoints derive, so `auth verify` and a push agree.
-pub fn show_key(app: &App, req: &Req) -> Resp {
+pub fn show_key(req: &Req) -> Resp {
     let Some(token) = req.header("Authorization").and_then(bearer) else {
         return unauthorized();
     };
@@ -88,8 +91,9 @@ pub fn show_key(app: &App, req: &Req) -> Resp {
         body.push(("billing_contacts", Json::Arr(vec![Json::str("owner@example.test")])));
     } else {
         // Both dates always, as the registry sends them: null on Free, and
-        // on a paid plan exactly one set.
-        let at = (plan != "free").then(|| rfc3339(app.lock().now() + jiff::SignedDuration::from_hours(30 * 24)));
+        // on a paid plan exactly one set. A fixed date, so output that
+        // shows it (the golden cases) does not move with the real clock.
+        let at = (plan != "free").then(|| PLAN_DATE.to_string());
         let ending = token.contains(ENDING_PLAN_KEY_MARKER);
         body.push(("can_manage_billing", Json::Raw("true".into())));
         body.push(("plan_renews_at", Json::opt(at.clone().filter(|_| !ending))));
