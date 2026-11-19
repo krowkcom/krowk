@@ -1190,7 +1190,7 @@ mod tests {
         const CHILD: &str = "0190f3c2-0000-7000-8000-00000000000c";
         let ev = |session: &str, body: LogBody| LogEvent { id: "0190f3c2-0000-7000-8000-0000000000e0".into(), parent_id: None, session_id: session.into(), time_ms: 0, body };
         let done = || ev(CHILD, LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None });
-        let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()] });
+        let result = |session: &str, transport: Option<&str>, key: Option<String>| ev(session, LogBody::TaskResult { turn_id: "t".into(), transport: transport.map(String::from), key, against: "abc".into(), denied: vec!["bash: rm".into()], error: None });
         let key = || Some("ab".repeat(32));
         assert_eq!(result_of(&[], CHILD), Ok(None), "its turn still runs");
         assert_eq!(result_of(&[done()], CHILD), Ok(None), "its turn completed, its result not stored yet");
@@ -1201,7 +1201,7 @@ mod tests {
         assert!(result_of(&[result(CHILD, Some("art_1"), key()), done()], CHILD).is_err(), "before its turn completed");
         assert!(result_of(&[done(), result(CHILD, Some("../x"), key())], CHILD).is_err(), "a transport out of shape");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), Some("zz".repeat(32)))], CHILD).is_err(), "a key out of shape");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "u".into(), transport: Some("art_1".into()), key: key(), against: "abc".into(), denied: Vec::new() });
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "u".into(), transport: Some("art_1".into()), key: key(), against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "for another turn");
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");

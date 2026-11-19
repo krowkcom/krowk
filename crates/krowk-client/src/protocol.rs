@@ -958,6 +958,11 @@ pub enum LogBody {
         /// and what it asked, or the ask rule that became a denial.
         #[serde(default)]
         denied: Vec<String>,
+        /// Why the result could not be packed or stored, when it could not:
+        /// the child's changes are then still in its worktree on this
+        /// machine, and no transport is named.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
     },
     /// The turn is over.
     #[serde(rename = "turn.completed")]

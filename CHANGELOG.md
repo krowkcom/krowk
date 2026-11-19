@@ -40,6 +40,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   so a task can later be placed where there is room. A machine can opt out
   of taking tasks with `sync.accept: false`.
 
+- **A task's changes come back as a sealed result.** When the task's one turn
+  ends, the machine that ran it packs what the child changed, committed or
+  not, new files included, stores it encrypted for you under that session,
+  names it in the session's log with the approvals it had to deny, and
+  removes the task's worktree. A child that changed nothing records an empty
+  result.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`

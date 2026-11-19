@@ -146,6 +146,7 @@ pub enum LogBody {
         key: Option<String>,
         against: String,
         denied: Vec<String>,
+        error: Option<String>,
     },
     TurnCompleted {
         turn_id: String,
