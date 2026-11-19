@@ -8,11 +8,11 @@ use super::announce::{self, Announcer};
 use super::handoff::{self, Bundle};
 use super::placement::{Fleet, JobStore, LocalRun, TaskSpec};
 use krowk_client::device_chain::Kind;
-use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys};
+use krowk_client::e2e::{self, DeviceId, SessionKey, SessionKeys, SigningKey};
 use krowk_client::host_command::{self, HostAnswer, HostCommand, JobRef, ModelChoice, RunTask};
 use krowk_client::presence::{self, AnnouncedInstance, Announcement};
 use krowk_client::protocol::ModelRef;
-use krowk_client::session_record::Signer;
+use krowk_client::session_record::{self, Signer};
 use krowk_client::sync::store;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -47,6 +47,9 @@ pub struct Registry {
     resolve: Resolver,
     local: Option<RunLocal>,
     stop: Option<Stop>,
+    /// This device's signing key: a job's session record is signed with it,
+    /// as every session's is, or the registry refuses to make it.
+    signing: Option<SigningKey>,
     /// The keys of each child session read, opened once.
     keys: Mutex<HashMap<String, SessionKeys>>,
 }
@@ -69,7 +72,7 @@ impl Registry {
             }
             (None, None) => Err("no model was named, and none is chosen for a task from here".to_string()),
         });
-        Registry { announcer, builds, agents, worktrees: krowk_api::home::worktrees_root(&env), resolve, local: None, stop: None, keys: Mutex::default() }
+        Registry { announcer, builds, agents, worktrees: krowk_api::home::worktrees_root(&env), resolve, local: None, stop: None, signing: None, keys: Mutex::default() }
     }
 
     /// The pools this machine's capacity is read from, when the caller's
@@ -92,6 +95,11 @@ impl Registry {
 
     pub fn with_stop(mut self, stop: Stop) -> Registry {
         self.stop = Some(stop);
+        self
+    }
+
+    pub fn with_signing(mut self, signing: SigningKey) -> Registry {
+        self.signing = Some(signing);
         self
     }
 
@@ -178,13 +186,17 @@ impl Fleet for Registry {
             return Ok(s.clone());
         }
         let a = &self.announcer;
+        let signing = self.signing.as_ref().ok_or("this machine has no signing key to register the job's session with")?;
         let id = krowk_store::new_id();
         let raw = crate::daemon::ws::uuid(&id);
         let keys = SessionKeys::from(SessionKey::generate());
         let sealed_key = e2e::seal_session_keys(&keys, &raw, &a.keys, a.chain.generation()).map_err(|e| e.to_string())?;
+        // Signed as a bridge signs a session it makes: the registry makes
+        // none without its record, and a reader opens none without it.
+        let signature = session_record::sign(&raw, &sealed_key, session_record::SEAL_USER, a.keys.newest(), signing).map_err(|e| e.to_string())?;
         let index = store::Index { title: "task".into(), ..store::Index::default() };
         let sealed_index = e2e::hex(&e2e::seal_session_index(keys.current(), &raw, &serde_json::to_vec(&index).map_err(|e| e.to_string())?));
-        a.api.put_sync_session(&id, &e2e::hex(&sealed_key), None, Some(&sealed_index), None).map_err(|e| format!("the job could not be registered ({}): {}", e.code(), e.fix()))?;
+        a.api.put_sync_session(&id, &e2e::hex(&sealed_key), Some((&e2e::hex(&signature), &self.me())), Some(&sealed_index), None).map_err(|e| format!("the job could not be registered ({}): {}", e.code(), e.fix()))?;
         let env = |k: &str| std::env::var(k).unwrap_or_default();
         let lease = a.api.acquire_lease(&id, &self.me(), JOB_LEASE, krowk_api::relay_env(&a.api.base_url, &env)).map_err(|e| format!("the job could not be stored ({}): {}", e.code(), e.fix()))?;
         Ok(JobStore { session: id, lease_token: lease.token })
@@ -212,7 +224,8 @@ impl Fleet for Registry {
     fn send_run(&self, to: &Announcement, task: &RunTask, wait: Duration) -> Result<Option<HostAnswer>, String> {
         let a = &self.announcer;
         let target = DeviceId::parse(&to.device).ok_or_else(|| format!("{} announces no device id this krowk reads", to.name))?;
-        let id = format!("{:032x}", u128::from_be_bytes(e2e::random()));
+        // A UUID: the registry takes no other command id.
+        let id = krowk_store::new_id();
         let sealed = host_command::seal_command(&HostCommand::Run(task.clone()), &id, &a.device, &target, &a.keys, a.chain.generation())?;
         let mut tries = 0;
         loop {
