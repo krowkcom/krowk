@@ -31,6 +31,7 @@ Account
   login         Sign in to your krowk account
   logout        Remove this machine's key
   whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
   workspaces    Switch between stored keys
 
 Other
@@ -39,7 +40,6 @@ Other
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
-  pricing       Refresh model prices
   upgrade       Upgrade krowk
 
 Flags
@@ -568,6 +568,19 @@ stdout:
       "name": "whoami",
       "usage": "krowk whoami",
       "summary": "Show the key and its workspace"
+    },
+    {
+      "name": "billing",
+      "usage": "krowk billing [--no-browser]",
+      "summary": "Choose or manage the workspace's plan",
+      "flags": [
+        {
+          "name": "no-browser",
+          "type": "bool",
+          "default": "false",
+          "usage": "Print the page instead of opening a browser — the default over SSH, or with no display"
+        }
+      ]
     },
     {
       "name": "auth",
@@ -1805,6 +1818,7 @@ Account
   login         Sign in to your krowk account
   logout        Remove this machine's key
   whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
   workspaces    Switch between stored keys
 
 Other
@@ -1813,7 +1827,6 @@ Other
   host          The daemon sessions run in, which outlives the terminal
   config        Show or set configuration
   doctor        Check this machine's setup
-  pricing       Refresh model prices
   upgrade       Upgrade krowk
 
 Flags
@@ -2356,6 +2369,19 @@ tty:
       "name": "whoami",
       "usage": "krowk whoami",
       "summary": "Show the key and its workspace"
+    },
+    {
+      "name": "billing",
+      "usage": "krowk billing [--no-browser]",
+      "summary": "Choose or manage the workspace's plan",
+      "flags": [
+        {
+          "name": "no-browser",
+          "type": "bool",
+          "default": "false",
+          "usage": "Print the page instead of opening a browser — the default over SSH, or with no display"
+        }
+      ]
     },
     {
       "name": "auth",

@@ -595,7 +595,26 @@ pub fn key(k: &Key, f: Format, quiet: bool, colour: bool) -> String {
     if !k.expires_at.is_empty() {
         lines.push(format!("  {:<11} {}", "Expires", k.expires_at));
     }
+    if let Some(plan) = plan_line(k, &jiff::tz::TimeZone::system()) {
+        lines.push(format!("  {:<11} {plan}", "Plan"));
+    }
     lines.join("\n")
+}
+
+/// "Pro", and for an owner or admin of a paid plan "Pro · renews 19 Dec
+/// 2026" or "· ends …" in the local zone; none from a registry that does
+/// not say.
+fn plan_line(k: &Key, tz: &jiff::tz::TimeZone) -> Option<String> {
+    let mut chars = k.plan.chars();
+    let first = chars.next()?;
+    let mut line = first.to_uppercase().chain(chars).collect::<String>();
+    let date = |iso: &str| parse_time(iso).map_or_else(|| iso.to_string(), |t| t.to_zoned(tz.clone()).strftime("%-d %b %Y").to_string());
+    if !k.plan_ends_at.is_empty() {
+        line += &format!(" · ends {}", date(&k.plan_ends_at));
+    } else if !k.plan_renews_at.is_empty() {
+        line += &format!(" · renews {}", date(&k.plan_renews_at));
+    }
+    Some(line)
 }
 
 /// What `auth login` stored, and whether the registry confirmed it.
@@ -918,7 +937,8 @@ pub fn error(err: &Error, f: Format, quiet: bool, colour: bool) -> String {
     let head = headline(err);
     let mut lines = vec![format!("{} {}", paint(colour, RED, "✗"), paint(colour, BOLD, &head))];
     for (k, v) in &body {
-        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled") {
+        // `billing_contacts` is for a parser: the fix already names them.
+        if matches!(k.as_str(), "error" | "fix" | "retryable" | "status" | "stalled" | "billing_contacts") {
             continue;
         }
         // A fix that is the registry's message whole says it once.
@@ -1013,6 +1033,22 @@ mod tests {
         assert_eq!(friendly_expiry("2026-09-24T20:00:00Z", &now), "expired");
         assert_eq!(friendly_expiry("2026-09-28T23:00:00Z", &now), "expires in 4 days");
         assert_eq!(relative_expiry("2026-09-25T23:00:00Z", now.timestamp()), "expires in 24h");
+    }
+
+    /// R-BILL-4: the plan, with its date only when the registry gives one,
+    /// and nothing from a registry older than plans in the key.
+    #[test]
+    fn r_bill_4_the_plan_reads_with_its_date() {
+        let utc = jiff::tz::TimeZone::UTC;
+        let old: Key = serde_json::from_str(r#"{"key_id":"key_1","workspace":"ws_1"}"#).unwrap();
+        assert_eq!(plan_line(&old, &utc), None);
+        assert!(!key(&old, Format::Human, false, false).contains("Plan"));
+        let member: Key = serde_json::from_str(r#"{"key_id":"key_1","plan":"business","can_manage_billing":false,"billing_contacts":["a@b.c"]}"#).unwrap();
+        assert_eq!(plan_line(&member, &utc).as_deref(), Some("Business"));
+        let renews = Key { plan: "pro".into(), plan_renews_at: "2026-12-19T12:00:00Z".into(), ..Key::default() };
+        assert_eq!(plan_line(&renews, &utc).as_deref(), Some("Pro · renews 19 Dec 2026"));
+        let ends = Key { plan: "pro".into(), plan_ends_at: "2026-12-09T12:00:00Z".into(), ..Key::default() };
+        assert_eq!(plan_line(&ends, &utc).as_deref(), Some("Pro · ends 9 Dec 2026"));
     }
 
     #[test]

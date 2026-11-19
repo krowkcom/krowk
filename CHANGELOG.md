@@ -9,6 +9,27 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Added
+
+- **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
+  Pro or Business; owners and admins of a paid plan also see when it renews
+  or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`
+  carries `plan`, `can_manage_billing`, `plan_renews_at` and `plan_ends_at`.
+  A registry that does not send the plan yet shows no line, as before.
+
+- **`krowk billing` buys or manages the workspace's plan.** On Free it opens
+  the dashboard's plan chooser; on Pro or Business it opens the subscription
+  page, where an owner or admin changes plan, cancels or gets invoices. A
+  member is told which owners and admins to ask, and it exits 4. With no
+  browser (SSH, CI, `--no-browser`) it prints the page; `--json` gives `url`,
+  or the refusal with `billing_contacts`. `krowk upgrade` still updates krowk
+  itself.
+
+### Changed
+
+- **A sync refused for needing a paid plan points at `krowk billing`**
+  instead of the dashboard's address.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

@@ -45,6 +45,14 @@ pub const ARTIFACT_REGION: &str = "weur";
 /// A key with this in it is a free workspace; every other key is paid, which is
 /// what a developer poking at --dev wants by default.
 pub const FREE_PLAN_KEY_MARKER: &str = "free";
+/// A key with this in it is a Business workspace's, rather than Pro's.
+pub const BUSINESS_PLAN_KEY_MARKER: &str = "business";
+/// A key with this in it is a member's, who may not manage billing; every
+/// other key's person is an owner.
+pub const MEMBER_KEY_MARKER: &str = "member";
+/// A key with this in it is a paid workspace whose plan was cancelled and
+/// ends, rather than renews.
+pub const ENDING_PLAN_KEY_MARKER: &str = "ending";
 
 /// The injectable now — Go's `HandlerWithClock`. A 24-hour lifetime and a
 /// 15-minute upload window are not going to elapse inside a test otherwise.

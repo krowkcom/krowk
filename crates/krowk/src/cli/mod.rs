@@ -3,6 +3,7 @@
 
 mod agent;
 mod auth;
+mod billing;
 pub mod catalog;
 mod doctor;
 pub mod exit;
@@ -311,6 +312,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["login", ..] => auth::login(ctx, rest(1)),
         ["logout", ..] => auth::logout(ctx, rest(1)),
         ["whoami", ..] => auth::verify(ctx),
+        ["billing", ..] => billing::billing(ctx, rest(1)),
         ["upgrade", ..] => upgrade::upgrade(ctx),
         ["doctor", ..] => doctor::doctor(ctx),
         ["config", "show", ..] => workspace::config_show(ctx),

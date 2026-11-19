@@ -121,6 +121,26 @@ fn minted_slugs_have_the_canonical_shape() {
     assert_eq!(request("GET", &s.at("/v1/key"), "", "", "").status, 401);
 }
 
+/// R-BILL-1, R-BILL-2: the key carries its workspace's plan; an owner both
+/// dates, null where unset, and a member who to ask and no dates.
+#[test]
+fn the_key_carries_the_plan_and_who_manages_it() {
+    let s = Server::new();
+    let key = |token: &str| request("GET", &s.at("/v1/key"), token, "", "").json();
+    let free = key("krowk_sk_free_owner");
+    assert_eq!((&free["plan"], &free["can_manage_billing"]), (&"free".into(), &true.into()), "{free}");
+    assert!(free.get("plan_renews_at").is_some_and(|v| v.is_null()) && free.get("plan_ends_at").is_some_and(|v| v.is_null()), "{free}");
+    let pro = key("krowk_sk_pro_owner");
+    assert!(pro["plan_renews_at"].is_string() && pro.get("plan_ends_at").is_some_and(|v| v.is_null()), "{pro}");
+    let ending = key("krowk_sk_business_ending_owner");
+    assert_eq!(ending["plan"], "business", "{ending}");
+    assert!(ending["plan_ends_at"].is_string() && ending.get("plan_renews_at").is_some_and(|v| v.is_null()), "{ending}");
+    let member = key("krowk_sk_pro_member");
+    assert_eq!((&member["plan"], &member["can_manage_billing"]), (&"pro".into(), &false.into()), "{member}");
+    assert_eq!(member["billing_contacts"], serde_json::json!(["owner@example.test"]), "{member}");
+    assert!(member.get("plan_renews_at").is_none() && member.get("plan_ends_at").is_none(), "{member}");
+}
+
 /// Every reference has one silhouette: an image embeds and clicks through, a
 /// caption from the metadata names it, and anything else is the bolded line.
 #[test]
