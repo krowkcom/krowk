@@ -34,6 +34,16 @@ pub type Stop = Box<dyn Fn(&str) -> Result<(), String> + Send + Sync>;
 /// How long a short-lived job session's lease lasts: past a job's storage,
 /// which is all it is held for.
 const JOB_LEASE: u64 = 120;
+/// A fresh command id: a random UUID, version 4, which is all the registry
+/// takes for one (`krowk sync new` makes its the same way).
+fn command_id() -> String {
+    let mut b = e2e::random::<16>();
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h = e2e::hex(&b);
+    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
+}
+
 /// How often a `run`'s answer is asked for, and how often a send is tried
 /// again when the registry does not answer.
 const ANSWER_EVERY: Duration = Duration::from_millis(500);
@@ -212,7 +222,7 @@ impl Fleet for Registry {
     fn send_run(&self, to: &Announcement, task: &RunTask, wait: Duration) -> Result<Option<HostAnswer>, String> {
         let a = &self.announcer;
         let target = DeviceId::parse(&to.device).ok_or_else(|| format!("{} announces no device id this krowk reads", to.name))?;
-        let id = format!("{:032x}", u128::from_be_bytes(e2e::random()));
+        let id = command_id();
         let sealed = host_command::seal_command(&HostCommand::Run(task.clone()), &id, &a.device, &target, &a.keys, a.chain.generation())?;
         let mut tries = 0;
         loop {

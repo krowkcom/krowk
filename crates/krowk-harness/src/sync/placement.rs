@@ -61,8 +61,8 @@
 //! caller's, never retried (D11): `Failure`. A machine with no announcement
 //! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
-//! Slice 07 builds `busy`, `ruled_out`, `choose` and the `Placer`; slice 08
-//! calls it from krowk-mcp.
+//! krowk's own agent places its subagents with the `Placer`, and krowk-mcp
+//! its `krowk_delegate` tasks (`Here::Worktree`).
 
 use super::announce::Announcer;
 use krowk_client::host_command::{key_shaped, slug_shaped, HostAnswer, JobRef, ModelChoice, RunTask};
@@ -402,7 +402,7 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
     for e in events {
         match &e.body {
             LogBody::TurnCompleted { turn_id, .. } if e.session_id == child => completed = Some(turn_id),
-            LogBody::TaskResult { turn_id, transport, key, against, denied } => {
+            LogBody::TaskResult { turn_id, transport, key, against, denied, error } => {
                 if e.session_id != child {
                     return Err(format!("a task result from session {}, which is not the child {child}", e.session_id));
                 }
@@ -410,6 +410,11 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     None => return Err("the child logged its result before its turn completed".into()),
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
+                }
+                // The bridge could not pack or store it: the work is left in
+                // the child's worktree there.
+                if let Some(why) = error {
+                    return Err(why.clone());
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -530,7 +535,9 @@ impl Default for Timing {
 pub struct LocalRun {
     pub summary: String,
     pub usage: Usage,
-    pub worktree: crate::worktree::Worktree,
+    /// Where its changes are; none when it changed nothing, which leaves
+    /// no worktree to land.
+    pub worktree: Option<crate::worktree::Worktree>,
     pub denied: Vec<String>,
 }
 
@@ -893,8 +900,13 @@ impl Placer {
         task.set(State::Running { machine: name.to_string(), child: String::new(), why });
         let failed = |reason: String| Failure::Failed { machine: name.to_string(), reason };
         let ran = f.run_local(spec, model).map_err(&failed)?;
-        let landed = f.land_local(&ran.worktree, &spec.cwd).map_err(|e| failed(format!("its changes could not be applied: {e}")))?;
-        let (applied, kept) = split(&ran.worktree, landed);
+        let (applied, kept) = match &ran.worktree {
+            Some(wt) => {
+                let landed = f.land_local(wt, &spec.cwd).map_err(|e| failed(format!("its changes could not be applied: {e}")))?;
+                split(wt, landed)
+            }
+            None => (Vec::new(), None),
+        };
         Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string() }))
     }
 
@@ -1206,7 +1218,7 @@ mod tests {
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
     }
 
@@ -1344,7 +1356,7 @@ mod tests {
         vec![
             event(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "added fixed.rs".into() } }),
             event(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { output_tokens: 7, ..Usage::default() }, duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()] }),
+            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()], error: None }),
         ]
     }
 

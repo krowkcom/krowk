@@ -919,7 +919,7 @@ async fn remaining(budget: &Budget) -> crate::protocol::BudgetLimits {
 /// The call's answer for a child that ran on another machine: its summary,
 /// where it ran, what landed in the working tree or was kept, and the
 /// approvals it was denied (R-ALLOC-8, R-ALLOC-14).
-fn told(o: &Outcome) -> String {
+pub fn told(o: &Outcome) -> String {
     let mut text = o.summary.trim_end().to_string();
     text.push_str(&format!("\n\nRan on {}.", o.machine));
     if !o.applied.is_empty() {

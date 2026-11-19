@@ -16,6 +16,8 @@ mod chain;
 #[cfg(feature = "harness")]
 mod devices;
 #[cfg(all(feature = "harness", unix))]
+mod delegate;
+#[cfg(all(feature = "harness", unix))]
 mod host;
 mod machine;
 #[cfg(feature = "harness")]
@@ -122,6 +124,11 @@ fn after_the_command_ran(err: &Error) -> Error {
 }
 
 /// Runs one invocation and returns the process exit code.
+/// krowk-mcp's delegation tools (`mcp.rs`): the `Placer` its tasks are
+/// placed by, and `krowk machines --json`.
+#[cfg(all(feature = "harness", unix))]
+pub use delegate::{machines, placer};
+
 pub fn run(args: &[String], io: &mut Io) -> i32 {
     let (f, positionals, parsed) = flags::parse(args);
     let typed = positionals;

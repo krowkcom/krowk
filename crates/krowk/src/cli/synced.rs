@@ -520,6 +520,13 @@ pub(super) fn announcer(ctx: &mut Ctx, fresh: bool) -> Result<krowk_harness::syn
 /// registry, so every subagent runs here as it always did. This machine's
 /// slot pools are the config's.
 pub(super) fn placer_source(f: &super::flags::Flags) -> krowk_harness::subagent::PlacerSource {
+    source(f, false)
+}
+
+/// `placer_source`, for krowk-mcp when `local`: its `Placer` also runs a
+/// task that stays on this machine, as a child in a worktree
+/// (`delegate::run_local`), since it has no agent of its own to run it.
+pub(super) fn source(f: &super::flags::Flags, local: bool) -> krowk_harness::subagent::PlacerSource {
     use krowk_harness::sync::placement::Placer;
     // Built at most once, off the lock; a machine with no sync set up is
     // remembered too, so its calls read nothing again.
@@ -529,14 +536,14 @@ pub(super) fn placer_source(f: &super::flags::Flags) -> krowk_harness::subagent:
         if let Some(known) = cell.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return known;
         }
-        let built = made(&f);
+        let built = made(&f, local);
         cell.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(built).clone()
     })
 }
 
 /// A `Placer` over this machine's registry client, or none when sync is not
 /// set up here.
-fn made(f: &super::flags::Flags) -> Option<Arc<krowk_harness::sync::placement::Placer>> {
+fn made(f: &super::flags::Flags, local: bool) -> Option<Arc<krowk_harness::sync::placement::Placer>> {
     use krowk_harness::sync::{fleet::Registry as Fleet, placement::{Placer, Timing}};
     let announcer = super::host::own_ctx(f, |ctx| ready(ctx).ok().and_then(|()| announcer(ctx, false).ok()))?;
     let env = |k: &str| std::env::var(k).unwrap_or_default();
@@ -546,6 +553,9 @@ fn made(f: &super::flags::Flags) -> Option<Arc<krowk_harness::sync::placement::P
     let mut fleet = Fleet::new(announcer).with_stop(Box::new(move |child| super::host::own_ctx(&stop_flags, |ctx| interrupt(ctx, child))));
     if let (Some(builds), Some(agents)) = (registry.builds.pool.clone(), registry.agents.clone()) {
         fleet = fleet.with_pools(builds, agents);
+    }
+    if local {
+        fleet = fleet.with_local(super::delegate::run_local()).with_resolver(super::delegate::resolver(registry, f.clone()));
     }
     Some(Placer::with(Box::new(fleet), Timing::default()))
 }
