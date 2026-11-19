@@ -646,8 +646,11 @@ fn offer_service(ctx: &mut Ctx) -> bool {
         let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk host enable` does it later.");
         return false;
     }
-    match super::host::enable(ctx, true) {
-        Ok(()) => true,
+    match super::host::set_service(ctx, true) {
+        Ok((file, _)) => {
+            let _ = writeln!(ctx.io.stderr, "The host daemon runs as a service: {}", file.display());
+            true
+        }
         Err(e) => {
             let _ = writeln!(ctx.io.stderr, "The host service did not start: {e} Run `krowk host enable` to try again.");
             false

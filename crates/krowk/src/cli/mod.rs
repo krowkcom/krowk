@@ -385,6 +385,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
         #[cfg(all(feature = "harness", unix))]
+        ["machines"] => show_help(ctx, p),
+        #[cfg(all(feature = "harness", unix))]
         ["machines", "accept", ..] => accept::accept(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
         ["machines"] | ["machines", "list", ..] | ["hosts", ..] => synced::machines(ctx),

@@ -6,6 +6,7 @@
 //! are not affected.
 
 use super::Ctx;
+use crate::output::Format;
 use krowk_api::{fail, Error};
 use serde_json::{json, Value};
 
@@ -36,5 +37,9 @@ pub(super) fn accept(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     } else {
         "This machine no longer takes work from your other machines. Sessions you start here are not affected; turn it on again with krowk machines accept on."
     };
+    if ctx.format == Format::Human {
+        let _ = writeln!(ctx.io.stdout, "{summary}");
+        return Ok(());
+    }
     super::sessions::emit_data(ctx, json!({ "accepting": on }), summary.into())
 }
