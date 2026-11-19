@@ -27,6 +27,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk machines` shows which of your machines could take a task, and what
+  stops the others.** One row per machine: online, load per core, free memory,
+  build and agent slots in use, and whether it accepts tasks. In a clone, a
+  second list says `ready` for each other machine, or the one fix: `krowk
+  machines accept on`, `run: git clone <origin>` (never with a credential in
+  it), or the account to sign in. `krowk hosts` is the same command now, and
+  `--json` carries `machines` where it carried `hosts`, each with `capacity`,
+  `repositories`, `accepting` and `here`. Errors that pointed at `krowk hosts`
+  point at `krowk machines`.
+
 - **A sync refused for needing a paid plan points at `krowk billing`**
   instead of the dashboard's address.
 

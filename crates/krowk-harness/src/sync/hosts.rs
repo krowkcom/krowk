@@ -116,9 +116,36 @@ pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str
 /// has no clone, and the instance's own fix line when no account there is
 /// ready. `clone_url` is the origin as this machine's clone has it; the
 /// fix shows it with any user or password left out.
-/// Slice 03 builds it.
 pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
-    todo!("slice 03: whether {} is ready for {origin} ({clone_url})", a.name)
+    if !a.accepting {
+        return Some("krowk machines accept on".into());
+    }
+    if !a.repositories.iter().any(|r| r.origin == origin) {
+        return Some(format!("run: git clone {}", without_credentials(clone_url)));
+    }
+    if a.instances.iter().any(|i| i.ready) {
+        return None;
+    }
+    Some(match a.instances.first() {
+        None => "sign in an account: run krowk connect there".into(),
+        Some(i) => i.fix.clone().map_or_else(|| format!("{} is not ready ({})", i.name, i.state), |f| format!("{}: {f}", i.name)),
+    })
+}
+
+/// `url` with no user or password in it, whatever its scheme: an http(s)
+/// or git URL loses its whole userinfo, an ssh one keeps the user alone
+/// (`git@`), which names no secret. A scp-style `git@host:path` has only
+/// that user and stays as it is.
+fn without_credentials(url: &str) -> String {
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let Some((userinfo, host)) = authority.rsplit_once('@') else { return url.to_string() };
+    let user = match scheme.to_ascii_lowercase().as_str() {
+        "ssh" => userinfo.split(':').next().filter(|u| !u.is_empty()).map(|u| format!("{u}@")),
+        _ => None,
+    };
+    let slash = if rest.contains('/') { "/" } else { "" };
+    format!("{scheme}://{}{host}{slash}{path}", user.unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -128,7 +155,6 @@ mod tests {
     /// Slice 03 (R-ALLOC-2, D7): for the current repository each machine
     /// is ready, or says the fix.
     #[test]
-    #[ignore = "slice 03: fix"]
     fn alloc_03_each_machine_is_ready_or_says_its_fix() {
         use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository};
         let ready = AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: Vec::new(), limit: None };
@@ -142,6 +168,25 @@ mod tests {
         assert_eq!(fix(&off, origin, url).as_deref(), Some("krowk machines accept on"));
         let signed_out = Announcement { instances: vec![AnnouncedInstance { ready: false, state: "loggedOut".into(), fix: Some("run claude /login".into()), ..ready }], ..a };
         assert!(fix(&signed_out, origin, url).unwrap().contains("claude /login"));
+    }
+
+    /// The fix names no secret, in any way a URL carries one, and a machine
+    /// with no account at all is told to sign one in.
+    #[test]
+    fn a_fix_never_carries_a_credential_and_a_machine_with_no_account_says_so() {
+        use krowk_client::presence::AnnouncedRepository;
+        let a = Announcement { device: "d".into(), name: "desktop".into(), os: "linux".into(), version: "dev".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new(), capacity: None, repositories: vec![AnnouncedRepository { directory: "/w".into(), origin: "github.com/acme/app".into() }], accepting: true };
+        assert_eq!(fix(&a, "github.com/acme/app", "u").as_deref(), Some("sign in an account: run krowk connect there"));
+        for (url, shown) in [
+            ("https://tok@github.com/acme/app.git", "https://github.com/acme/app.git"),
+            ("https://ann:p%40ss@github.com:8443/acme/app", "https://github.com:8443/acme/app"),
+            ("ssh://git:pw@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
+            ("ssh://git@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
+            ("git@github.com:acme/app.git", "git@github.com:acme/app.git"),
+            ("https://github.com/acme/app.git", "https://github.com/acme/app.git"),
+        ] {
+            assert_eq!(without_credentials(url), shown);
+        }
     }
     use crate::sync::store::{HostedOn, Index};
     use krowk_client::device_chain::{Change, Subject};

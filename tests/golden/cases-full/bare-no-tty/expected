@@ -38,6 +38,7 @@ Other
   providers     Low-level instance config (add, list, rename, remove)
   worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
+  machines      Your machines, and what each can take
   config        Show or set configuration
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
@@ -1245,9 +1246,14 @@ stdout:
       ]
     },
     {
+      "name": "machines",
+      "usage": "krowk machines",
+      "summary": "Your machines, and what each can take"
+    },
+    {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "Your machines that host synced sessions"
+      "summary": "The same as krowk machines"
     },
     {
       "name": "sync",
@@ -1375,13 +1381,13 @@ stdout:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
             },
             {
               "name": "model",
@@ -1825,6 +1831,7 @@ Other
   providers     Low-level instance config (add, list, rename, remove)
   worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
+  machines      Your machines, and what each can take
   config        Show or set configuration
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
@@ -3046,9 +3053,14 @@ tty:
       ]
     },
     {
+      "name": "machines",
+      "usage": "krowk machines",
+      "summary": "Your machines, and what each can take"
+    },
+    {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "Your machines that host synced sessions"
+      "summary": "The same as krowk machines"
     },
     {
       "name": "sync",
@@ -3176,13 +3188,13 @@ tty:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
             },
             {
               "name": "model",

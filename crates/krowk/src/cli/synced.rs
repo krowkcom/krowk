@@ -204,7 +204,7 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<krowk_harness::r
     krowk_harness::relay::Roster::parse(text).ok()
 }
 
-/// `krowk hosts` (R-NET-4, R-HOST-3): the machines of yours that host
+/// `krowk machines` (R-NET-4, R-HOST-3): the machines of yours that host
 /// synced sessions, from the registry's sessions and your device list, each
 /// marked hosting when it holds one's lease now and direct when the
 /// tailnet reaches it — no tag, and no step in the Tailscale admin
@@ -212,11 +212,14 @@ fn kept_keys(text: &str, registry: &str, now_ms: i64) -> Option<krowk_harness::r
 /// machine marked direct. And every machine that announced itself, hosting
 /// or not: online or when it was last seen, its version, its instances and
 /// its directories. An announcement that does not open here is counted,
-/// never shown.
-pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
+/// never shown. Each machine's row adds what it announced of its capacity,
+/// its repositories and whether it accepts handed-over tasks, and under the
+/// table, when the current directory is a clone with an origin, whether each
+/// machine is `ready` for that repository or the fix.
+pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     use krowk_harness::sync::{hosts::Announced, tailscale};
     let k = keys(ctx)?;
-    let api = signed(ctx, &k, "krowk hosts")?;
+    let api = signed(ctx, &k, "krowk machines")?;
     // A removed device is refused here (`device_revoked`), in the
     // registry's own words. A registry that keeps no presences yet has
     // none to list.
@@ -242,10 +245,15 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
         .collect();
     let status = tailscale::status(&tailscale::socket(ctx.io.env)).ok().filter(|s| s.running());
     let hosts = krowk_harness::sync::hosts::hosts(&listed, &announced, &k.chain, &k.device.to_string(), status.as_ref());
+    let here = repository_here();
+    // This machine is the one asking: whether it would take a task from
+    // itself is no question, so it has no readiness to show.
+    let ready: Vec<Option<String>> = hosts.iter().map(|h| here.as_ref().filter(|_| !h.this_machine).map(|(origin, url)| h.announced.as_ref().map_or_else(|| "no announcement yet: run krowk host enable there".to_string(), |a| krowk_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into())))).collect();
     if ctx.format == crate::output::Format::Json {
         let rows: Vec<_> = hosts
             .iter()
-            .map(|h| {
+            .zip(&ready)
+            .map(|(h, ready)| {
                 let (dns, ips) = h.tailnet.as_ref().map_or((String::new(), Vec::new()), |t| (t.dns_name.clone(), t.ips.clone()));
                 // On the tailnet — which this machine is whenever its
                 // Tailscale is up — or announced and not lapsed.
@@ -253,13 +261,14 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
                 let a = h.announced.as_ref();
                 let instances: Vec<_> = a.map(|a| &a.announcement.instances[..]).unwrap_or_default().iter().map(|i| json!({"name": i.name, "kind": i.kind, "ready": i.ready, "state": i.state, "fix": i.fix, "models": i.models, "limit": i.limit})).collect();
                 json!({"device": h.device, "name": h.name, "os": h.os, "thisMachine": h.this_machine, "hosting": h.hosting, "online": tailnet || a.is_some_and(|a| a.online), "direct": h.direct(), "sessions": h.sessions, "dnsName": dns, "addresses": ips,
-                    "announced": a.is_some(), "lastSeen": a.map(|a| &a.updated_at), "version": a.map(|a| &a.announcement.version), "instances": instances, "directories": a.map(|a| &a.announcement.directories[..]).unwrap_or_default()})
+                    "announced": a.is_some(), "lastSeen": a.map(|a| &a.updated_at), "version": a.map(|a| &a.announcement.version), "instances": instances, "directories": a.map(|a| &a.announcement.directories[..]).unwrap_or_default(),
+                    "capacity": a.and_then(|a| a.announcement.capacity.as_ref()), "repositories": a.map(|a| &a.announcement.repositories[..]).unwrap_or_default(), "accepting": a.is_some_and(|a| a.announcement.accepting), "here": ready})
             })
             .collect();
-        return ctx.emit(&json!({"hosts": rows, "tailscale": status.is_some(), "unopened": unopened}).to_string());
+        return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
     let now = jiff::Timestamp::now();
-    for h in &hosts {
+    for (h, ready) in hosts.iter().zip(&ready) {
         let reach = match (&h.tailnet, &h.peer) {
             _ if h.this_machine => "this machine",
             _ if status.is_none() => "Tailscale is not running here",
@@ -269,10 +278,21 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
             (None, None) => "no tailnet address known",
         };
         let n = if h.sessions == 1 { "1 session".to_string() } else { format!("{} sessions", h.sessions) };
-        let _ = writeln!(ctx.io.stdout, "{}  {}  {}  {n}", super::sync::printable(&h.name), if h.hosting { "hosting" } else { "not hosting" }, reach);
-        if let Some(a) = &h.announced {
+        let a = h.announced.as_ref();
+        let online = if h.this_machine { status.is_some() } else { h.direct() } || a.is_some_and(|a| a.online);
+        let _ = writeln!(ctx.io.stdout, "{}  {}  {}", super::sync::printable(&h.name), if online { "online" } else { "offline" }, a.map_or_else(|| "no announcement yet".to_string(), |a| capacity_line(&a.announcement)));
+        let _ = writeln!(ctx.io.stdout, "  {}  {reach}  {n}", if h.hosting { "hosting" } else { "not hosting" });
+        if let Some(a) = a {
             for line in announced_lines(a, now) {
                 let _ = writeln!(ctx.io.stdout, "  {}", super::sync::printable(&line));
+            }
+        }
+    }
+    if let Some((origin, _)) = &here {
+        let _ = writeln!(ctx.io.stdout, "\nFor {origin}:");
+        for (h, ready) in hosts.iter().zip(&ready) {
+            if let Some(ready) = ready {
+                let _ = writeln!(ctx.io.stdout, "  {}  {}", super::sync::printable(&h.name), super::sync::printable(ready));
             }
         }
     }
@@ -283,6 +303,26 @@ pub(super) fn hosts(ctx: &mut Ctx) -> Result<(), Error> {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
     }
     Ok(())
+}
+
+/// A machine's capacity, accepting or not, on one line: load per core, free
+/// memory, build and agent slots in use of total. What it did not announce
+/// is not guessed.
+fn capacity_line(a: &krowk_client::presence::Announcement) -> String {
+    let accepting = if a.accepting { "accepting" } else { "not accepting" };
+    match &a.capacity {
+        Some(c) => format!("load {:.2}/core  {} free  builds {}/{}  agents {}/{}  {accepting}", c.load_1m / f64::from(c.cores.max(1)), crate::output::human_bytes(i64::try_from(c.free_memory).unwrap_or(i64::MAX)), c.build_slots.in_use, c.build_slots.total, c.agent_slots.in_use, c.agent_slots.total),
+        None => format!("capacity not announced  {accepting}"),
+    }
+}
+
+/// The repository of the current directory, as the other machines name it
+/// (the normalised origin) and as this clone has it: none outside a clone,
+/// and for one whose origin is a local path.
+fn repository_here() -> Option<(String, String)> {
+    let out = krowk_api::git::query(std::path::Path::new(".")).ok()?.args(["remote", "get-url", "origin"]).output().ok().filter(|o| o.status.success())?;
+    let url = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    Some((krowk_client::presence::normalise_origin(&url)?, url))
 }
 
 /// The lines under an announced host: online or when it was last seen,
@@ -440,7 +480,7 @@ pub(super) fn options(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, hande
         ttl: host::LEASE_TTL,
         keep: host::KEEP,
         direct,
-        // Kept in the session's sealed index, for `krowk hosts`.
+        // Kept in the session's sealed index, for `krowk machines`.
         tailnet: krowk_harness::sync::tailscale::status(&krowk_harness::sync::tailscale::socket(ctx.io.env)).ok().and_then(|s| s.tailnet()),
         handed,
         approval_wait: host::APPROVAL_WAIT,
@@ -662,10 +702,10 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let (asked, dir) = (ctx.f.host.trim().to_string(), ctx.f.cwd.trim().to_string());
     if asked.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --host, the machine to start the session on (`krowk hosts` lists yours) — {example}")));
+        return Err(fail("bad_args", format!("`krowk sync new` needs --host, the machine to start the session on (`krowk machines` lists yours) — {example}")));
     }
     if dir.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --cwd, the directory there to start it in (`krowk hosts` lists what each machine offers) — {example}")));
+        return Err(fail("bad_args", format!("`krowk sync new` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
     }
     let here = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let cwd = absolute(&dir, &ctx.env("HOME"), &here)?;
@@ -769,7 +809,7 @@ fn find_host<'a>(chain: &'a Chain, asked: &str) -> Result<&'a krowk_client::devi
     let found: Vec<_> = chain.devices().iter().filter(|d| d.kind == krowk_client::device_chain::Kind::Device).filter(|d| d.name.to_lowercase() == lower || (by_id && d.id().to_string().starts_with(&lower))).collect();
     match found[..] {
         [one] => Ok(one),
-        [] => Err(fail("no_host", format!("no host named '{}' — krowk hosts lists yours", super::sync::printable(asked)))),
+        [] => Err(fail("no_host", format!("no machine named '{}' — krowk machines lists yours", super::sync::printable(asked)))),
         _ => {
             let named: Vec<String> = found.iter().map(|d| format!("{} ({})", super::sync::printable(&d.name), &d.id().to_string()[..12])).collect();
             Err(fail("ambiguous_host", format!("'{}' names more than one machine: {} — pass --host with 8 or more characters of its id", super::sync::printable(asked), named.join(", "))))
@@ -806,7 +846,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
         return Err(fail("no_ready_model", super::sync::printable(&format!("{shown} has no ready model: {fixes}"))));
     }
     let Some((instance, id)) = model.split_once('/').filter(|(i, m)| !i.is_empty() && !m.is_empty()) else {
-        return Err(fail("bad_model", format!("--model takes <instance>/<id>, e.g. anthropic/claude-opus-5-5 — `krowk hosts` lists {shown}'s instances")));
+        return Err(fail("bad_model", format!("--model takes <instance>/<id>, e.g. anthropic/claude-opus-5-5 — `krowk machines` lists {shown}'s instances")));
     };
     let fix = match a.instances.iter().find(|i| i.name == instance) {
         Some(i) if i.ready => return Ok(ModelRef { instance: instance.into(), model: id.into() }),
@@ -887,7 +927,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
 mod tests {
     use super::relay_for;
 
-    /// R-HOST-3: `krowk hosts` shows an announced host's state, its ready
+    /// R-HOST-3: `krowk machines` shows an announced host's state, its ready
     /// instances with their first model, the others with their fix, and its
     /// directories with the home as `~`.
     #[test]
@@ -957,7 +997,7 @@ mod tests {
         assert_eq!(found("recovery"), Err("no_host".into()), "the kit is no machine");
         assert_eq!(found(&kit.id().to_string()[..8]), Err("no_host".into()));
         assert_eq!(found("TWIN"), Ok(twin.id()));
-        assert_eq!(super::find_host(&chain, "nope").unwrap_err().fix(), "no host named 'nope' — krowk hosts lists yours");
+        assert_eq!(super::find_host(&chain, "nope").unwrap_err().fix(), "no machine named 'nope' — krowk machines lists yours");
     }
 
     /// `--cwd` is the host's path: `~` expanded and made absolute, never
