@@ -37,6 +37,9 @@ use std::path::{Path, PathBuf};
 
 /// The stub an archived session leaves in its directory.
 pub const STUB_FILE: &str = "archived.json";
+/// Where an archive that keeps the local copy — on Free, whose vintages
+/// expire — moves the session's two log files, beside its stub.
+pub const KEPT_DIR: &str = "kept";
 /// A marker file: the session is pinned and never archived.
 pub const PIN_FILE: &str = "pinned";
 /// When the weekly job last ran, in ms since the epoch, in `sessions/`.
@@ -211,6 +214,12 @@ pub fn read_stub(sessions: &Path, id: &str) -> Option<Stub> {
 /// Whether a session was archived and has not been restored.
 pub fn is_archived(sessions: &Path, id: &str) -> bool {
     log::valid_id(id) && sessions.join(id).join(STUB_FILE).is_file() && !sessions.join(id).join(EVENTS_FILE).is_file()
+}
+
+/// Whether a session is archived with its local copy kept (`archive`'s
+/// `keep`): it comes back from this machine, not from its vintage.
+pub fn is_kept(sessions: &Path, id: &str) -> bool {
+    is_archived(sessions, id) && sessions.join(id).join(KEPT_DIR).join(EVENTS_FILE).is_file()
 }
 
 /// Every archived session, as (id, stub path).
@@ -418,8 +427,10 @@ pub struct Run {
 /// Archives every native session idle for more than `idle_days` at
 /// `now_ms`, week by week, and stamps a run that finished. A week that
 /// fails leaves its sessions exactly as they were — no stub, the log files
-/// in place — and ends the run.
-pub fn archive(client: &Client, keys: &Keys, sessions: &Path, now_ms: i64, idle_days: u64) -> Run {
+/// in place — and ends the run. With `keep`, each archived session's log
+/// files move into its `KEPT_DIR` rather than going: on Free the vintage
+/// expires, and this machine's copy is then the only one.
+pub fn archive(client: &Client, keys: &Keys, sessions: &Path, now_ms: i64, idle_days: u64, keep: bool) -> Run {
     let mut weeks: BTreeMap<String, Vec<Candidate>> = BTreeMap::new();
     for c in candidates(sessions, now_ms, idle_days as i64 * DAY_MS) {
         weeks.entry(c.week.clone()).or_default().push(c);
@@ -435,7 +446,7 @@ pub fn archive(client: &Client, keys: &Keys, sessions: &Path, now_ms: i64, idle_
         };
         for mut c in group {
             c.stub.vintage.clone_from(&slug);
-            if let Err(e) = leave_stub(&c) {
+            if let Err(e) = leave_stub(&c, keep) {
                 run.failed = Some(e);
                 return run;
             }
@@ -470,17 +481,51 @@ fn store_week(client: &Client, keys: &Keys, week: &str, group: &[Candidate]) -> 
     Err(format!("the vintage for {week} kept being replaced by another machine; its sessions stay here until the next run"))
 }
 
-/// The registry holds the session: the stub goes in, then the log goes.
-fn leave_stub(c: &Candidate) -> Result<(), String> {
+/// The registry holds the session: the stub goes in, then the log goes —
+/// into `KEPT_DIR` with `keep`. A context left behind by a move cut short
+/// is where the restore would put it anyway.
+fn leave_stub(c: &Candidate, keep: bool) -> Result<(), String> {
     let stub = serde_json::to_vec_pretty(&c.stub).map_err(|e| e.to_string())?;
     write_private(&c.dir.join(STUB_FILE), &stub)?;
+    let kept = c.dir.join(KEPT_DIR);
+    if keep {
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.recursive(true).create(&kept).map_err(|e| format!("create {}: {e}", kept.display()))?;
+    }
     for f in [EVENTS_FILE, CONTEXT_FILE] {
-        match std::fs::remove_file(c.dir.join(f)) {
-            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("remove {}: {e}", c.dir.join(f).display())),
+        let gone = if keep { std::fs::rename(c.dir.join(f), kept.join(f)) } else { std::fs::remove_file(c.dir.join(f)) };
+        match gone {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(format!("{} {}: {e}", if keep { "keep" } else { "remove" }, c.dir.join(f).display())),
             _ => {}
         }
     }
     Ok(())
+}
+
+/// Brings a session archived with its local copy kept back from that copy,
+/// with no registry: its files move back and the stub goes. None when it
+/// is not kept here, for `restore` to read its vintage instead.
+pub fn restore_kept(sessions: &Path, id: &str, waiting: &mut dyn FnMut()) -> Result<Option<Restored>, Error> {
+    if !is_kept(sessions, id) {
+        return Ok(None);
+    }
+    let Some(_held) = hold(sessions, id, waiting)? else { return restored_meanwhile(sessions, id).map(Some) };
+    if !is_kept(sessions, id) {
+        return Ok(None);
+    }
+    let vintage = read_stub(sessions, id).map(|s| s.vintage).unwrap_or_default();
+    let (dir, kept) = (sessions.join(id), sessions.join(id).join(KEPT_DIR));
+    for f in [CONTEXT_FILE, EVENTS_FILE] {
+        match std::fs::rename(kept.join(f), dir.join(f)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(restore_failed(format!("restore {}: {e}", kept.join(f).display()))),
+            _ => {}
+        }
+    }
+    std::fs::remove_file(dir.join(STUB_FILE)).map_err(|e| restore_failed(format!("remove {}: {e}", dir.join(STUB_FILE).display())))?;
+    let _ = std::fs::remove_dir(&kept);
+    Ok(Some(Restored { vintage, ..Restored::default() }))
 }
 
 /// Brings an archived session back (R-VINT-4) and says which vintage it
@@ -694,7 +739,10 @@ fn unpack_session(sessions: &Path, id: &str, line: &Line) -> Result<(), String> 
     let dir = sessions.join(id);
     write_private(&dir.join(CONTEXT_FILE), line.context.as_bytes())?;
     write_private(&dir.join(EVENTS_FILE), line.events.as_bytes())?;
-    std::fs::remove_file(dir.join(STUB_FILE)).map_err(|e| format!("remove {}: {e}", dir.join(STUB_FILE).display()))
+    std::fs::remove_file(dir.join(STUB_FILE)).map_err(|e| format!("remove {}: {e}", dir.join(STUB_FILE).display()))?;
+    // A copy kept here, passed over for the vintage asked for by name.
+    let _ = std::fs::remove_dir_all(dir.join(KEPT_DIR));
+    Ok(())
 }
 
 /// Writes a file whole, 0600, through a temporary beside it and a rename,
@@ -905,7 +953,7 @@ mod tests {
         drop(dead);
         let client = Client::new(&url, "krowk_sk_dead_000000000000000000000000");
         let keys = Keys { user: UserKeys::new(krowk_client::user_key::UserKey::first(), []).unwrap(), generation: 1 };
-        let run = archive(&client, &keys, &dir, krowk_store::now_ms(), 14);
+        let run = archive(&client, &keys, &dir, krowk_store::now_ms(), 14, false);
         assert!(run.archived.is_empty() && run.failed.is_some(), "{run:?}");
         assert_eq!(std::fs::read(dir.join(&id).join(EVENTS_FILE)).unwrap(), before);
         assert!(!dir.join(&id).join(STUB_FILE).exists());

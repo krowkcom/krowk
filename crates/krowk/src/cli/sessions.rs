@@ -76,6 +76,14 @@ pub(super) fn project_native(env: krowk_import::Env, session_id: &str) -> Result
 #[cfg(all(feature = "harness", unix))]
 pub(super) fn restore_native(ctx: &mut Ctx, session_id: &str, from: Option<&str>) -> Result<krowk_harness::vintage::Restored, Error> {
     let dir = krowk_harness::log::sessions_dir(ctx.io.env)?;
+    // Kept on this machine when it was archived on Free: no registry needed.
+    if from.is_none() {
+        let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
+        if let Some(restored) = krowk_harness::vintage::restore_kept(&dir, session_id, &mut waiting)? {
+            project_native(ctx.io.env, session_id)?;
+            return Ok(restored);
+        }
+    }
     let (client, keys) = super::sync::vintage_keys(ctx)?;
     let restored = {
         let mut waiting = || ctx.warn(&format!("waiting for another krowk restoring {session_id}…"));
@@ -138,10 +146,16 @@ fn idle_days(ctx: &Ctx) -> Result<u64, Error> {
     given.trim().parse().map_err(|_| fail("bad_flag", format!("{from} is a whole number of days, got {:?}", given.trim())))
 }
 
+/// What archiving on Free says, once a run, when it archived anything.
+#[cfg(all(feature = "harness", unix))]
+const FREE_ARCHIVE: &str = "On Free, archived sessions stay on this machine; the synced copy expires after 7 days.";
+
 /// `krowk sessions archive`: every native session idle past the cut-off
 /// leaves the machine for its week's vintage (R-VINT-1, R-VINT-2), and
 /// keeps its index row in krowk.db (R-VINT-3). `--weekly` is the weekly
-/// job: it does nothing until a week has passed since the last run.
+/// job: it does nothing until a week has passed since the last run. On
+/// Free its log is kept on the machine, and `krowk sessions` no longer
+/// lists it until it is restored.
 #[cfg(all(feature = "harness", unix))]
 pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     check_os()?;
@@ -155,10 +169,16 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return emit_data(ctx, json!({ "archived": [], "due": false }), "not due: the last archive ran less than a week ago".into());
     }
     let (client, keys) = super::sync::vintage_keys(ctx)?;
-    let run = krowk_harness::vintage::archive(&client, &keys, &dir, now, days);
+    // On Free the vintage expires after 7 days, so the session's log stays
+    // on this machine too: the vintage is then never its only copy.
+    let free = client.verify_key()?.plan == "free";
+    let run = krowk_harness::vintage::archive(&client, &keys, &dir, now, days, free);
     // The weeks stored before a failure are archived: their bodies leave
     // krowk.db whether or not the rest of the run went through.
     let done = run.archived;
+    if free && !done.is_empty() {
+        ctx.warn(FREE_ARCHIVE);
+    }
     let conn = open_store(ctx)?;
     for a in &done {
         krowk_store::drop_bodies(&conn, krowk_harness::project::HARNESS, &a.id).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
@@ -362,6 +382,13 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let limit = if ctx.f.all { -1 } else { ctx.f.limit };
     let conn = open_store(ctx)?;
     let rows = krowk_store::list_sessions(&conn, &ctx.f.harness, &ctx.f.worktree, limit).map_err(|e| store_fail(&e, &db_path_string(ctx)))?;
+    // Archived on Free, with the local copy kept: out of the list until
+    // `krowk sessions restore` brings it back.
+    #[cfg(all(feature = "harness", unix))]
+    let rows: Vec<SessionRow> = match krowk_harness::log::sessions_dir(ctx.io.env) {
+        Ok(dir) => rows.into_iter().filter(|r| r.harness != krowk_harness::project::HARNESS || !krowk_harness::vintage::is_kept(&dir, &r.foreign_session_id)).collect(),
+        Err(_) => rows,
+    };
     let ids: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     let groups = if ids.is_empty() { HashMap::new() } else { krowk_store::cost_groups(&conn, &ids).map_err(|e| store_fail(&e, &db_path_string(ctx)))? };
     let priced: Vec<Priced> = rows.iter().map(|r| price_session(ctx, r, groups.get(&r.id))).collect();
