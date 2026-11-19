@@ -1005,7 +1005,7 @@ fn fix_for(code: &str, status: u16) -> String {
         // working without an account; what the free plan does not get is
         // sessions leaving the machine.
         "sync_requires_paid_plan" => {
-            "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com; everything else krowk does keeps working locally without it"
+            "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace; everything else krowk does keeps working locally without it"
         }
         // Never "join with the id in this error": a hostile registry could
         // name a key it holds, and joining with it would hand it every

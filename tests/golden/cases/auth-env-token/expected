@@ -3,6 +3,7 @@ stdout:
 ✓ Key <key_1> is valid
   Workspace   Local workspace (<ws_1>)
   Name        local
+  Plan        Pro · renews 19 Dec 2026
 exit: 0
 
 $ krowk auth token --format human

@@ -3843,7 +3843,7 @@ async fn r_sync_1_a_free_workspace_stops_auto_sync_for_an_hour() {
     let w = World::new("auto-free");
     let a = w.device("machine-a");
     let pause = Duration::from_secs(6);
-    let refuse = ("sync_requires_paid_plan".to_string(), "syncing sessions between devices needs a paid plan — upgrade this workspace to Pro at https://app.krowk.com".to_string());
+    let refuse = ("sync_requires_paid_plan".to_string(), "syncing sessions between devices needs a paid plan — run `krowk billing` to choose one for this workspace".to_string());
     let mut auto = w.auto_with(&a, AutoOpts { refuse: Some(refuse), paid_pause: pause, ..AutoOpts::default() });
     let d = w.daemon().await;
     let first = prompted(&w, &d, None, "say hello").await;

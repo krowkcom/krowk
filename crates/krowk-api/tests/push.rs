@@ -221,7 +221,7 @@ fn r_sync_1_a_free_workspace_is_refused() {
     ];
     for e in refusals {
         assert_eq!((e.code().as_str(), e.status), ("sync_requires_paid_plan", 402), "{e:?}");
-        assert!(e.fix().contains("paid plan"), "{e:?}");
+        assert!(e.fix().contains("paid plan") && e.fix().contains("`krowk billing`"), "{e:?}");
     }
 }
 

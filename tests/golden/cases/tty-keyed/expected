@@ -22,6 +22,7 @@ tty:
 \e[32m✓\e[0m Key <key_1> is valid
   Workspace   Local workspace (<ws_1>)
   Name        local
+  Plan        Pro · renews 19 Dec 2026
 exit: 0
 
 $ @tty krowk workspaces
