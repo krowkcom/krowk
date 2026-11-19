@@ -19,6 +19,8 @@ mod devices;
 mod delegate;
 #[cfg(all(feature = "harness", unix))]
 mod host;
+#[cfg(all(feature = "harness", unix))]
+mod accept;
 mod machine;
 #[cfg(feature = "harness")]
 mod mcp;
@@ -390,8 +392,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["host", "disable", ..] => host::enable(ctx, false),
         #[cfg(all(feature = "harness", unix))]
-        // `krowk machines accept on|off` (ticket 09) takes its own arm here,
-        // before the listing.
+        ["machines", "accept", ..] => accept::accept(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
         ["machines"] | ["machines", "list", ..] | ["hosts", ..] => synced::machines(ctx),
         #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),

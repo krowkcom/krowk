@@ -61,6 +61,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
   removes the task's worktree. A child that changed nothing records an empty
   result.
 
+- **A joined machine takes work from your other machines, and you can turn
+  that off.** `krowk sync join` now ends by offering the always-on host
+  service (yes by default; a laptop joined only to follow can decline) and
+  saying the machine takes work in trusted repositories. `krowk machines
+  accept off` stops this machine taking tasks another of your machines hands
+  it, and `accept on` restores it. Sessions you start here are not affected.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`

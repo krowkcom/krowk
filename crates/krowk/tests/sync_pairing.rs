@@ -590,7 +590,6 @@ fn a_removed_machine_is_told_to_join_with_new_keys() {
 /// person's other machines; declined here, so nothing is installed, and
 /// still said.
 #[test]
-#[ignore = "slice 09: the join's offer and line"]
 fn alloc_09_a_join_ends_offering_the_host_service_and_saying_it_takes_work() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());

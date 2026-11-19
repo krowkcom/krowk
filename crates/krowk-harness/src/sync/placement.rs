@@ -411,10 +411,8 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
                 }
-                // The bridge could not pack or store it: the work is left in
-                // the child's worktree there.
                 if let Some(why) = error {
-                    return Err(why.clone());
+                    return Err(format!("the child's result could not be stored: {why}"));
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
