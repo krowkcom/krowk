@@ -89,6 +89,17 @@ Once sync is set up, every session that runs a turn in the host daemon syncs by 
 | `krowk sync sessions` | The synced sessions this machine can open |
 | `krowk sync attach <session>` | Follow a synced session in the TUI |
 
+## Machines
+
+`krowk machines` lists your machines (`krowk hosts` is the same command): online or not, load per core, free memory, build and agent slots in use, and whether each accepts tasks handed over by your other machines. Inside a clone, it then says for each other machine `ready` or the one fix it needs: `krowk machines accept on`, `run: git clone <origin>`, or the account to sign in. Piped, it prints JSON.
+
+```
+a  online  load 0.81/core  17 GB free  builds 0/4  agents 0/32  accepting
+  ...
+For github.com/acme/other:
+  a  run: git clone https://github.com/acme/other.git
+```
+
 ## Publishing
 
 ```bash

@@ -236,7 +236,14 @@ Claude Code hook blocks only on exit 2, so block on a trip alone:
 — any other failure then warns without stopping the agent.";
 
 #[cfg(all(feature = "harness", unix))]
-const HOSTS_ABOUT: &str = "\
+const MACHINES_ABOUT: &str = "\
+One row per machine of yours: online or not, its load per core, free memory,
+build and agent slots in use, and whether it accepts tasks other machines hand
+it. In a clone with an origin, a second list says for each other machine
+`ready`, or the one fix it needs: `krowk machines accept on`,
+`run: git clone <origin>`, or the account to sign in. `--json` (the default
+when piped) carries the same, and `krowk hosts` is this command.
+
 Read from the registry's synced sessions with this machine's sync keys:
 hosting when it holds one now; reachable directly when this machine's
 Tailscale finds it online. No tag and no admin console step: a host names
@@ -548,7 +555,9 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("hosts", "krowk hosts", "Your machines that host synced sessions"));
+    c.commands.push(cmd("machines", "krowk machines", "Your machines, and what each can take"));
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -633,8 +642,8 @@ fn sync_command() -> Command {
             Command {
                 args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
                 flags: vec![
-                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"),
-                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk hosts`)"),
+                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"),
+                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
                     flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
                 ],
                 ..cmd("new", "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
@@ -1026,7 +1035,7 @@ pub fn about(name: &str) -> &'static str {
         "upgrade" => "Upgrades krowk to the latest release.",
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
-        "hosts" => HOSTS_ABOUT,
+        "machines" | "hosts" => MACHINES_ABOUT,
         #[cfg(feature = "harness")]
         "status" => "Also where its key or login comes from, and what fixes it. Exits 3 if none is.",
         #[cfg(feature = "harness")]
@@ -1149,6 +1158,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
+            "machines",
+            #[cfg(all(feature = "harness", unix))]
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
@@ -1175,6 +1186,8 @@ pub const ALL_ONLY: &[&str] = &[
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.
+    #[cfg(all(feature = "harness", unix))]
+    "machines",
     #[cfg(all(feature = "harness", unix))]
     "hosts",
     // Upkeep the prices mostly do for themselves; its line went to `billing`.
