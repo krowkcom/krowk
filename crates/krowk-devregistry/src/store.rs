@@ -47,6 +47,9 @@ pub const ARTIFACT_REGION: &str = "weur";
 pub const FREE_PLAN_KEY_MARKER: &str = "free";
 /// A key with this in it is a Business workspace's, rather than Pro's.
 pub const BUSINESS_PLAN_KEY_MARKER: &str = "business";
+/// A key with this in it is a service key, which gets no sync on any plan
+/// (`sync_requires_paid_plan`); every other key is a person's.
+pub const SERVICE_KEY_MARKER: &str = "service";
 /// A key with this in it is a member's, who may not manage billing; every
 /// other key's person is an owner.
 pub const MEMBER_KEY_MARKER: &str = "member";
@@ -317,7 +320,7 @@ pub fn workspace_for(token: &str) -> String {
 }
 
 /// A token up to its first `#`: what names its workspace and its person.
-fn token_base(token: &str) -> &str {
+pub fn token_base(token: &str) -> &str {
     token.split('#').next().unwrap_or(token)
 }
 

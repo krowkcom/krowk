@@ -127,11 +127,12 @@ fn runtime() -> Result<tokio::runtime::Runtime, String> {
 
 /// `krowk sync host`: reaches this machine's daemon (starting it when none
 /// answers) as a client that answers approvals, and runs the bridge until
-/// Ctrl-C or SIGTERM. Errors are `(code, message)`.
-pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>) -> Result<(), (String, String)> {
-    let rt = runtime().map_err(|e| ("runtime_unavailable".to_string(), e))?;
+/// Ctrl-C or SIGTERM. A machine over its limit is refused with
+/// `sync_machine_limit`, the refusal's details and its sentence.
+pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path::Path, version: &str, spawn: &crate::daemon::Spawn<'_>) -> Result<(), krowk_api::Error> {
+    let rt = runtime().map_err(|e| krowk_api::fail("runtime_unavailable", e))?;
     let ended = rt.block_on(async move {
-        let daemon = crate::daemon::ensure(env, cwd, version, true, spawn).await.map_err(|e| (e.code.clone(), e.message.clone()))?;
+        let daemon = crate::daemon::ensure(env, cwd, version, true, spawn).await.map_err(|e| krowk_api::fail(&e.code, e.message.clone()))?;
         let (stop, stop_rx) = tokio::sync::watch::channel(false);
         let (_cp, cp_rx) = tokio::sync::mpsc::unbounded_channel();
         let mut run = tokio::spawn(host::run(o, std::sync::Arc::new(daemon), stop_rx, cp_rx));
@@ -145,14 +146,23 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
                 run.await
             }
         };
-        let code = |e: &str| if e.starts_with(host::LIST_MOVED) { "device_list_moved" } else { "sync_failed" }.to_string();
-        match ended.map_err(|e| ("sync_failed".to_string(), e.to_string()))? {
+        let code = |e: &str| if e.starts_with(host::LIST_MOVED) { "device_list_moved" } else { "sync_failed" };
+        match ended.map_err(|e| krowk_api::fail("sync_failed", e.to_string()))? {
             // Handed over: done here, as asked.
             Err(e) if e.starts_with(host::HANDED_OVER) => {
                 eprintln!("krowk: {e}");
                 Ok(())
             }
-            r => r.map_err(|e| (code(&e), e)),
+            r => r.map_err(|e| match host::machine_limit(&e) {
+                Some((said, details)) => {
+                    let mut refused = krowk_api::fail("sync_machine_limit", said);
+                    if !details.is_null() {
+                        refused.body.insert("details".into(), details);
+                    }
+                    refused
+                }
+                None => krowk_api::fail(code(&e), e),
+            }),
         }
     });
     // The lease is given back by now; a notification still on its way

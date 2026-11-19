@@ -207,17 +207,17 @@ fn r_ios_12_a_push_token_call_signed_by_another_device_is_refused_device_mismatc
     assert_eq!(unsigned.put_push_token(&"ab".repeat(32), "production").unwrap_err().code(), "device_signature_missing");
 }
 
-/// R-SYNC-1: pushes are sync's, so a free workspace is refused all three
+/// R-SYNC-14: pushes are sync's, so a service key is refused all three
 /// calls with the paid plan's fix.
 #[test]
-fn r_sync_1_a_free_workspace_is_refused() {
+fn r_sync_14_a_service_key_is_refused() {
     let p = person();
-    // The stand-in's FREE_PLAN_KEY_MARKER: a key with `free` in it.
-    let free = p.laptop.client_as(&p.url, "krowk_sk_free_push");
+    // The stand-in's SERVICE_KEY_MARKER: a key with `service` in it.
+    let service = p.laptop.client_as(&p.url, "krowk_sk_service_push");
     let refusals = [
-        free.notify_session(SESSION, NotifyKind::Done, &"ab".repeat(32), "token").unwrap_err(),
-        free.put_push_token(&"ab".repeat(32), "sandbox").unwrap_err(),
-        free.delete_push_token().unwrap_err(),
+        service.notify_session(SESSION, NotifyKind::Done, &"ab".repeat(32), "token").unwrap_err(),
+        service.put_push_token(&"ab".repeat(32), "sandbox").unwrap_err(),
+        service.delete_push_token().unwrap_err(),
     ];
     for e in refusals {
         assert_eq!((e.code().as_str(), e.status), ("sync_requires_paid_plan", 402), "{e:?}");

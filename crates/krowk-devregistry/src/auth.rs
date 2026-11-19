@@ -8,7 +8,7 @@ use crate::http::{Req, Resp};
 use crate::page::{escape, page};
 use crate::store::{
     App, Authorization, BUSINESS_PLAN_KEY_MARKER, CLI_AUTHORIZATION_GRACE, CLI_AUTHORIZATION_INTERVAL, CLI_AUTHORIZATION_LIFETIME,
-    ENDING_PLAN_KEY_MARKER, FREE_PLAN_KEY_MARKER, MEMBER_KEY_MARKER, generate_code, person_for, generate_slug, random_token, rfc3339, sha256_hex, workspace_for,
+    ENDING_PLAN_KEY_MARKER, FREE_PLAN_KEY_MARKER, MEMBER_KEY_MARKER, SERVICE_KEY_MARKER, generate_code, person_for, generate_slug, random_token, rfc3339, sha256_hex, token_base, workspace_for,
 };
 use std::sync::Arc;
 
@@ -50,6 +50,27 @@ pub fn token(req: &Req) -> Option<String> {
 /// Whether the request's key belongs to a free workspace.
 pub fn free_plan(req: &Req) -> bool {
     req.header("Authorization").and_then(bearer).is_some_and(|t| t.contains(FREE_PLAN_KEY_MARKER))
+}
+
+/// Whether the request's key is a service key rather than a person's. Read
+/// from the key up to its `#`, so a device's name never makes it one.
+pub fn service_key(req: &Req) -> bool {
+    token(req).is_some_and(|t| token_base(&t).contains(SERVICE_KEY_MARKER))
+}
+
+/// How many machines the key's person may run sessions on (R-SYNC-13), by
+/// the key's plan: the stand-in's person belongs to one workspace, so its
+/// plan is their best. None is Business's, unlimited.
+pub fn machine_limit(req: &Req) -> Option<(&'static str, usize)> {
+    let t = token(req).unwrap_or_default();
+    let t = token_base(&t);
+    if t.contains(FREE_PLAN_KEY_MARKER) {
+        Some(("free", 2))
+    } else if t.contains(BUSINESS_PLAN_KEY_MARKER) {
+        None
+    } else {
+        Some(("pro", 10))
+    }
 }
 
 /// When every paid plan the stand-in reports renews or ends.

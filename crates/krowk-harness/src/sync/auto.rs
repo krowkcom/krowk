@@ -847,6 +847,9 @@ struct Sup {
     /// The same for a session left to another's lease, forgotten once the
     /// supervisor has let a bridge of it go.
     said_lease: HashMap<String, String>,
+    /// What was said when this machine was last refused hosting for its
+    /// person's machine limit, so it is said once rather than each turn.
+    said_limit: Option<String>,
     /// The daemon's hook closed: it is gone, and nothing starts again.
     gone: bool,
     /// The one device-list reader, shared by every bridge.
@@ -978,6 +981,7 @@ impl Sup {
             said: None,
             said_of: HashMap::new(),
             said_lease: HashMap::new(),
+            said_limit: None,
             gone: false,
             lists: Arc::default(),
             lease_retry: HashSet::new(),
@@ -1353,6 +1357,22 @@ impl Sup {
         // keeps: any other end closes it here.
         let parked = slot.and_then(|s| s.lock().unwrap_or_else(|e| e.into_inner()).take());
         lock(&self.c.bridged).remove(&session);
+        // Over the person's machine limit (R-SYNC-17): this machine does not
+        // host the session, and stays a viewer. Nothing pauses — other
+        // sessions, and this one's next turn, ask again — and it is said
+        // once, not every turn. A bridge stopping as it was refused is not
+        // started again nor parked: it would only be refused again.
+        if let Err(e) = &r
+            && let Some((said, _)) = host::machine_limit(e)
+        {
+            if self.said_limit.as_deref() != Some(said) {
+                eprintln!("krowk: {said}");
+                self.said_limit = Some(said.to_string());
+            }
+            self.waits.remove(&session);
+            self.said_lease.remove(&session);
+            return;
+        }
         if let Err(e) = &r
             && unpaid(e)
         {
@@ -1945,6 +1965,25 @@ mod tests {
         assert!(paid_fix(shown).contains("krowk billing"), "{}", paid_fix(shown));
         assert!(!unpaid(&format!("{} (lease_held): device x holds it", host::NOT_GRANTED)));
         assert!(!unpaid(&format!("{} session x to device (sync_requires_paid_plan)", host::HANDED_OVER)), "a device's name says nothing");
+    }
+
+    /// R-SYNC-17: a machine over its limit ends its bridge with the
+    /// sentence and the details, which never read as the paid-plan refusal
+    /// that pauses sync — whatever a machine is named.
+    #[test]
+    fn r_sync_17_a_machine_limit_refusal_is_no_pause() {
+        let mut refused = krowk_api::fail("sync_machine_limit", "");
+        refused.body.insert("details".into(), serde_json::json!({"plan": "free", "limit": 2, "machines": ["mbp", "x (sync_requires_paid_plan)\n"]}));
+        refused.body.insert("fix".into(), krowk_api::sync::machine_limit_fix(refused.body.get("details")).into());
+        let e = host::over_limit(&refused);
+        let (said, details) = host::machine_limit(&e).expect("read back");
+        assert!(said.starts_with("Free syncs sessions from two machines, and this would be a third (mbp, "), "{said}");
+        assert_eq!(details["limit"], 2);
+        // A name may say anything, even the paid code: `ended` reads the
+        // limit first, so it never pauses.
+        assert!(unpaid(&e), "why the limit is read before the paid refusal");
+        assert!(host::machine_limit(&format!("{} (sync_requires_paid_plan): fix", host::NOT_GRANTED)).is_none());
+        assert!(host::machine_limit(&format!("{}mbp: Free syncs …", host::MOVE_REFUSED)).is_none(), "a hand-over's refusal is the target's, not this machine's");
     }
 
     /// R-OFF-2 and R-SYNC-2: a session whose wait ran out is started again

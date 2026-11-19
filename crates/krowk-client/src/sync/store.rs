@@ -189,16 +189,33 @@ impl From<ReadError> for String {
 /// holds the log to no head, so a registry serving a prefix goes unseen: a
 /// reader that was not told the log's length goes through `attach` or
 /// `catch_up`, which do (`Head::at_least`).
-pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
+///
+/// Chunks the registry let expire from the start of the log (Free keeps 7
+/// days) are skipped, as it declares them, never past `sealed`, the head
+/// the session's index names (`Expiry`), and the log read is then held to
+/// `sealed`: what a holder chains onto is the log from the first chunk it
+/// still holds to its head. A log `sealed` says has chunks and the
+/// registry holds none of is refused: a holder never writes over it.
+pub fn read_all(client: &Client, key: &SessionKeys, id: &str, sealed: Option<Head>) -> Result<(Vec<Value>, ChunkReader, Option<Head>), String> {
     let mut reader = ChunkReader::new(key, crate::sync::uuid(id));
     let mut events = Vec::new();
-    let head = read_from(client, id, &mut reader, None, &mut |c, _| {
+    let mut heads = Vec::new();
+    let mut expiry = Expiry { within: sealed.into_iter().collect(), skipped: None };
+    let head = read_chunks(client, id, &mut reader, None, Some(&mut expiry), &mut |c, h| {
         match c {
             Chunk::Events { events: e } => events.extend(e),
             Chunk::Checkpoint(cp) => events = cp.events,
         }
+        heads.push(h);
         Ok(())
     })?;
+    if head.is_none() && sealed.is_some() {
+        return Err(format!("the session's index names chunk {} and the registry holds none of its log (its history may have expired): nothing is written over it", sealed.map_or(0, |h| h.index)));
+    }
+    if let Some(gone) = expiry.skipped {
+        heads.insert(0, gone);
+        Head::at_least(&heads, sealed)?;
+    }
     Ok((events, reader, head))
 }
 
@@ -209,15 +226,67 @@ pub fn read_all(client: &Client, key: &SessionKeys, id: &str) -> Result<(Vec<Val
 /// reading a session it was not told the length of goes through `attach`
 /// or `catch_up`, which do (`Head::at_least`).
 pub fn read_from(client: &Client, id: &str, reader: &mut ChunkReader, last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, String> {
-    read_chunks(client, id, reader, last, each).map_err(String::from)
+    read_chunks(client, id, reader, last, None, each).map_err(String::from)
+}
+
+/// Where a reading may start past chunks the registry let expire
+/// (`first_chunk_index`, R-SYNC-15): only on Free, as the key's plan says
+/// (a paid plan's history never expires), only from the log's start or its
+/// latest checkpoint (never from a place this device read to: `catch_up`
+/// and `resume` take none), never past a head the reader holds the log to
+/// (`within`: the index's sealed head, one the host vouched for), and none
+/// at all with no such head. What it skipped to is `skipped`: the last
+/// expired chunk as the registry names it, which the first chunk held must
+/// bind.
+#[derive(Debug, Default)]
+struct Expiry {
+    within: Vec<Head>,
+    skipped: Option<Head>,
 }
 
 /// `read_from`, its failure classified: what `attach` and `catch_up` read with. A
 /// refusal of `each`'s is permanent.
-fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, ReadError> {
+///
+/// `expired`, when given, lets the reading start past chunks the registry
+/// declares expired, and says where it did. Only at the start: on the
+/// first page, to the first chunk the registry still holds, chained from
+/// the digest it declares for the one before, and never past
+/// `Expiry::within`. That page listing a chunk below it is refused, as is
+/// any other gap. Without it, none is accepted.
+fn read_chunks(client: &Client, id: &str, reader: &mut ChunkReader, mut last: Option<Head>, mut expired: Option<&mut Expiry>, each: &mut dyn FnMut(Chunk, Head) -> Result<(), String>) -> Result<Option<Head>, ReadError> {
     let mut after = reader.next().checked_sub(1);
+    let mut first_page = true;
     loop {
         let page = client.list_chunks(id, after, 100).map_err(ReadError::registry)?;
+        if let Some(x) = expired.as_deref_mut()
+            && first_page
+            && let Some(first) = page.first_chunk_index.filter(|f| *f > reader.next())
+        {
+            let previous = e2e::unhex(&page.first_chunk_previous).and_then(|p| <[u8; 32]>::try_from(p).ok()).ok_or_else(|| ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first} but names no digest for the chunk before it, refused")))?;
+            let gone = Head { index: first - 1, digest: previous };
+            if x.within.is_empty() {
+                return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first}, and no head this device holds the log to says it reached that far, refused")));
+            }
+            for h in &x.within {
+                if gone.index > h.index {
+                    return Err(ReadError::rolled_back(format!("the registry says the log expired to chunk {first}, past chunk {}, a head this device holds the log to, refused", h.index)));
+                }
+                if gone.index == h.index && gone.digest != h.digest {
+                    return Err(ReadError::rolled_back(format!("the registry names another chunk {} than the head this device holds the log to, refused", h.index)));
+                }
+            }
+            if page.chunks.iter().any(|c| c.index < first) {
+                return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first} and lists a chunk before it, refused")));
+            }
+            let plan = client.verify_key().map_err(ReadError::registry)?.plan;
+            if plan != "free" {
+                return Err(ReadError::rolled_back(format!("the registry says the log's start expired to chunk {first}, but this workspace's plan ({plan}) keeps its history, refused")));
+            }
+            reader.skip_expired(first, previous);
+            x.skipped = Some(gone);
+            last = Some(gone);
+        }
+        first_page = false;
         let wanted: Vec<_> = page.chunks.iter().filter(|c| c.index >= reader.next()).collect();
         // Each chunk is a round trip to storage, so a page is fetched
         // FETCH at a time and opened in order: an attach costs a few round
@@ -274,6 +343,9 @@ pub struct Attached {
     pub epoch: u32,
     /// Every chunk read, for holding the log to a head it was told of.
     pub heads: Vec<Head>,
+    /// The log's start had expired (Free keeps 7 days): what was read
+    /// starts at the first chunk the registry still holds.
+    pub expired: bool,
 }
 
 impl Attached {
@@ -398,7 +470,8 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
     };
     let mut events = Vec::new();
     let mut heads = Vec::new();
-    let head = read_chunks(client, id, &mut reader, None, &mut |c, h| {
+    let mut expiry = Expiry { within: index.head.into_iter().chain(known).collect(), skipped: None };
+    let head = read_chunks(client, id, &mut reader, None, Some(&mut expiry), &mut |c, h| {
         match c {
             Chunk::Events { events: e } => events.extend(e),
             Chunk::Checkpoint(cp) => {
@@ -410,9 +483,12 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
         heads.push(h);
         Ok(())
     })?;
+    // The last expired chunk, as the registry named it, is where what was
+    // read starts.
+    heads.splice(0..0, expiry.skipped);
     Head::at_least(&heads, index.head).map_err(ReadError::rolled_back)?;
     Head::at_least(&heads, known).map_err(ReadError::rolled_back)?;
-    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), epoch: reader.epoch(), index, events, head, heads })
+    Ok(Attached { next: reader.next(), previous: reader.previous(), fence: reader.fence(), epoch: reader.epoch(), index, events, head, heads, expired: expiry.skipped.is_some() })
 }
 
 /// Reads the tail again from where `a` stopped, until it reaches `known`.
@@ -422,7 +498,7 @@ pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, 
     let mut reader = ChunkReader::resume(key, crate::sync::uuid(id), a.next, a.previous, a.fence, a.epoch);
     let mut fresh = Vec::new();
     let mut heads = std::mem::take(&mut a.heads);
-    let head = read_chunks(client, id, &mut reader, a.head, &mut |c, h| {
+    let head = read_chunks(client, id, &mut reader, a.head, None, &mut |c, h| {
         if let Chunk::Events { events } = c {
             fresh.extend(events);
         }
@@ -461,7 +537,9 @@ pub fn resume(client: &Client, key: &SessionKeys, id: &str, index: Index, place:
     // Only what is read from here is held to a head: before it, the chain
     // this device read binds it.
     let sealed = if behind.is_some() { None } else { index.head };
-    let mut a = Attached { index, events: Vec::new(), head: Some(place.head), next: place.next, previous: place.previous, fence: place.fence, epoch: place.epoch, heads: vec![place.head] };
+    let mut a = Attached { index, events: Vec::new(), head: Some(place.head), next: place.next, previous: place.previous, fence: place.fence, epoch: place.epoch, heads: vec![place.head], expired: false };
+    // Never past an expired start: a log that now starts after a chunk
+    // this device read is refused as any gap is.
     catch_up(client, key, id, &mut a, sealed)?;
     if let Some(e) = behind.filter(|_| a.next == place.next) {
         // Nothing after the place: the place's own chunk, as the registry

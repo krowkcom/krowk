@@ -969,6 +969,11 @@ fn response_error(status: u16, payload: &[u8], retry_after: &str) -> Error {
     {
         fix = m.clone();
     }
+    // The plan, its limit and the machines counted are the refusal's
+    // details, which the sentence names.
+    if code == "sync_machine_limit" {
+        fix = crate::sync::machine_limit_fix(err.body.get("details"));
+    }
     if !fix.is_empty() {
         err.body.insert("fix".into(), json!(fix));
     }

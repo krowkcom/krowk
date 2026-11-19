@@ -409,7 +409,7 @@ fn host_loop(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, mut handed: Op
 fn host_once(ctx: &mut Ctx, session: &str, cwd: &std::path::Path, handed: Option<krowk_harness::sync::Handed>) -> Result<(), Error> {
     let spawn = super::host::spawner(ctx)?;
     let o = options(ctx, session, cwd, handed)?;
-    krowk_harness::sync::run_host(o, ctx.io.env, cwd, super::VERSION, &spawn).map_err(|(code, message)| fail(&code, message))
+    krowk_harness::sync::run_host(o, ctx.io.env, cwd, super::VERSION, &spawn)
 }
 
 /// A bridge's options for `session`, whose own directory is `cwd`: the
@@ -548,6 +548,9 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         Err(e) if api.show_sync_session(&session).ok().and_then(|s| s.lease).is_some_and(|l| l.device == me) => {
             return Err(fail("handoff_lost", format!("the host handed session {session} to this machine, but its answer did not arrive ({e}); the lease lapses in a minute — then `krowk sync host {session}` on the machine whose work it is")));
         }
+        // This machine is over its machine limit: the host said why, and
+        // the session stays there (R-SYNC-17).
+        Err(e) if e.starts_with(host::MOVE_REFUSED) => return Err(fail("sync_machine_limit", e)),
         Err(e) => return Err(fail("handoff_refused", e)),
     };
     // Room to apply the work before the bridge renews it: the handed

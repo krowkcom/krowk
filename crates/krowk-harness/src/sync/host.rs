@@ -219,6 +219,10 @@ pub async fn parked(p: Parked, mut stop: watch::Receiver<bool>, beats: tokio::ti
 /// says, its lease the other device's now.
 pub const HANDED_OVER: &str = "handed over";
 
+/// How a handoff to a device over its machine limit is refused
+/// (R-SYNC-17): this, the device's name, and the limit's sentence.
+pub const MOVE_REFUSED: &str = "Can't move this session to ";
+
 /// How long a bridge that handed its session over stays: a target whose
 /// link dropped as the answer went asks again, and is answered again.
 const HANDED_GRACE: Duration = Duration::from_secs(10);
@@ -240,6 +244,27 @@ pub const NOT_GRANTED: &str = "the registry did not grant the lease";
 
 /// How a bridge whose lease another device took ends (R-SYNC-2).
 pub const LEASE_LOST: &str = "another device holds session";
+
+/// The registry's refusal of a machine over its person's limit
+/// (R-SYNC-17), as a bridge's error starts: this, the refusal's details as
+/// JSON on one line, then the sentence to say (`machine_limit`).
+const MACHINE_LIMIT: &str = "(sync_machine_limit) ";
+
+/// How a bridge refused hosting for the machine limit ends: the refusal's
+/// details, which `machine_limit` reads back, and what to say. The details
+/// lead, so a machine's name in the sentence can never read as either.
+pub(crate) fn over_limit(e: &krowk_api::Error) -> String {
+    let details = e.body.get("details").cloned().unwrap_or(Value::Null);
+    format!("{MACHINE_LIMIT}{details}\n{}", e.fix())
+}
+
+/// A bridge's error, when it ended refused hosting for the machine limit:
+/// the sentence to say once, and the refusal's details. This machine stays
+/// a viewer, and nothing pauses (R-SYNC-17).
+pub fn machine_limit(error: &str) -> Option<(&str, Value)> {
+    let (details, said) = error.strip_prefix(MACHINE_LIMIT)?.split_once('\n')?;
+    Some((said, serde_json::from_str(details).unwrap_or(Value::Null)))
+}
 
 /// Opens (or creates) the synced session and takes its lease: the session
 /// keys, the writer at the log's end, and the lease.
@@ -276,7 +301,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
         // The fix said, not only the code: a lease that stalled must say the
         // registry stopped answering (R-REG-1), and a held one that another
         // device holds it.
-        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()))?,
+        None => o.api.acquire_lease(id, &o.device.to_string(), o.ttl, &o.env).map_err(|e| if e.code() == "sync_machine_limit" { over_limit(&e) } else { format!("{NOT_GRANTED} ({}): {}", e.code(), e.fix()) })?,
     };
     if lease.relay_ticket.is_empty() {
         return Err("the registry issued no host ticket: this device has no signing key on record — pair it again with `krowk sync join`".into());
@@ -358,6 +383,12 @@ fn renew_loop(o: Arc<Options>, held: Arc<Mutex<Held>>, stop: Arc<AtomicBool>, lo
             Err(e) if e.code() == "sync_requires_paid_plan" => {
                 // The first reason to stop stands (the list thread's too).
                 stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| format!("the registry refused to renew the lease ({}): {}", e.code(), e.fix()));
+                return;
+            }
+            // The lease lapsed and taking it again is refused: this machine
+            // is over its limit now, and stays a viewer.
+            Err(e) if e.code() == "sync_machine_limit" => {
+                stale.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(|| over_limit(&e));
                 return;
             }
             Err(_) => next = Instant::now() + Duration::from_secs(2),
@@ -1643,9 +1674,20 @@ impl Hosting {
                 let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
                 let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
                 let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the bundle could not be stored ({}): {}", e.code(), e.fix()))?;
-                let lease = o.api.renew_lease(&o.session, &device, &token, o.ttl, &o.env).map_err(|e| format!("the registry did not hand the lease over ({}): {}", e.code(), e.fix()))?;
-                let handed = super::Handed { transport: t.slug, key: super::handoff::key_hex(&key), token: lease.token, fence: lease.fence, ticket: lease.relay_ticket, from_device: o.device.to_string() };
                 let name = o.chain.devices().iter().find(|d| d.id().to_string() == device).map_or(device.clone(), |d| d.name.clone());
+                let lease = o.api.renew_lease(&o.session, &device, &token, o.ttl, &o.env).map_err(|e| {
+                    if e.code() == "sync_machine_limit" {
+                        // The target is over its limit (R-SYNC-17): said
+                        // here, in the host's log, and to the device that
+                        // asked; the session stays here.
+                        let said = format!("{MOVE_REFUSED}{name}: {}", e.fix());
+                        eprintln!("krowk: {said}");
+                        said
+                    } else {
+                        format!("the registry did not hand the lease over ({}): {}", e.code(), e.fix())
+                    }
+                })?;
+                let handed = super::Handed { transport: t.slug, key: super::handoff::key_hex(&key), token: lease.token, fence: lease.fence, ticket: lease.relay_ticket, from_device: o.device.to_string() };
                 Ok((handed, format!("{HANDED_OVER} session {} to {name}; it runs there now", o.session)))
             };
             let _ = tx.send(match run() {
@@ -1653,6 +1695,7 @@ impl Hosting {
                     *moved_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(moved);
                     (from, Answer::Handoff { id, handed: Some(handed), error: None })
                 }
+                Err(e) if e.starts_with(MOVE_REFUSED) => (from, Answer::Handoff { id, handed: None, error: Some(e) }),
                 Err(e) => (from, Answer::Handoff { id, handed: None, error: Some(format!("{e} — the session stays here")) }),
             });
         });

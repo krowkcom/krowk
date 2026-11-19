@@ -7,8 +7,11 @@
 //! registering a device with the workspace (`POST /v1/devices`), and the
 //! approval mailbox — is gone, `410 sync_reset`.
 //!
-//! Every endpoint needs a key and refuses a free workspace (R-SYNC-1); a
-//! token containing `free` is one, as for uploads. Every one also needs the
+//! Every endpoint needs a person's key, on any plan (R-SYNC-10): a token
+//! containing `service` is a service key, refused every call (R-SYNC-14).
+//! Free's fence is the machines a person runs sessions on (R-SYNC-11): a
+//! token containing `free` is a Free person's, as for uploads, who may host
+//! on two; `business`, on any number; any other, on ten. Every one also needs the
 //! device the key speaks for on the person's list and active, so a device
 //! removed from the list, or revoked by the dashboard's Revoke (`POST
 //! /_settings/devices/:id/revocation`, its stand-in), is refused its reads
@@ -20,7 +23,7 @@
 //! hex of the sizes canon's crypto.md fixes, and anything else a body carries
 //! is not read, so there is nowhere for plaintext to land (R-E2E-1).
 
-use crate::auth::{free_plan, require_key};
+use crate::auth::{machine_limit, require_key, service_key};
 use crate::encode::Json;
 use crate::errors::{Decoded, decode, error, invalid, not_found, parameter_missing};
 use crate::http::{Req, Resp};
@@ -157,6 +160,25 @@ const MAX_CHUNK_BYTES: i64 = 64 << 20;
 const MAX_VINTAGE_BYTES: i64 = 256 << 20;
 /// The registry's Artifact::MAX_IMAGE_OBJECT_BYTES, and krowk-api's read limit.
 const MAX_IMAGE_OBJECT_BYTES: i64 = 3 << 20;
+/// How long a Free session's chunks are kept (R-SYNC-15).
+const FREE_HISTORY: SignedDuration = SignedDuration::from_hours(7 * 24);
+
+/// A Free session's chunks older than 7 days, oldest first, let go as the
+/// registry's sweep lets them go, here as the log is listed: what is left
+/// starts at a later index, which the listing declares with the digest
+/// the first chunk left binds (`first_chunk_index`, `first_chunk_previous`).
+fn expire_chunks(s: &mut SyncStore, workspace: &str, id: &str, now: Timestamp) {
+    let mut held: Vec<(u64, Timestamp, String)> = s.chunks.iter().filter(|((w, sid, _), c)| w == workspace && sid == id && c.ready).map(|(_, c)| (c.index, c.created_at, c.checksum.clone())).collect();
+    held.sort_by_key(|c| c.0);
+    for (index, created, checksum) in held {
+        if now.duration_since(created) < FREE_HISTORY {
+            return;
+        }
+        s.chunks.remove(&(workspace.to_owned(), id.to_owned(), index));
+        s.expired.insert((workspace.to_owned(), id.to_owned()), (index + 1, checksum));
+    }
+}
+
 /// The registry's SyncSession::MAX_CHUNKS.
 const MAX_CHUNKS: usize = 100_000;
 
@@ -164,6 +186,10 @@ const MAX_CHUNKS: usize = 100_000;
 pub struct SyncStore {
     /// Workspace, session id and index → the chunk.
     pub chunks: HashMap<(String, String, u64), Chunk>,
+    /// Workspace and session id → where its log starts once its oldest
+    /// chunks expired (`expire_chunks`): the index after the last expired
+    /// chunk, and that chunk's checksum, which the next one binds.
+    pub expired: HashMap<(String, String), (u64, String)>,
     /// Workspace, session id and name → a sealed image object: a chunk's
     /// upload with no place in a log (index and fence 0).
     pub images: HashMap<(String, String, String), Chunk>,
@@ -401,10 +427,13 @@ fn id_field(field: &str, value: &str) -> Result<String, Resp> {
     if id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()) { Ok(id) } else { Err(invalid(field, "must be 32 hex characters")) }
 }
 
-/// The paid gate every sync endpoint runs after the key.
+/// The gate every sync endpoint runs after the key: a person's key on any
+/// plan passes (R-SYNC-10); a service key never does (R-SYNC-14). Free's
+/// fence is the machine limit, met where a device starts hosting
+/// (`within_limit`).
 pub fn gate(req: &Req) -> Result<String, Resp> {
     let workspace = require_key(req)?;
-    if free_plan(req) {
+    if service_key(req) {
         return Err(error(
             402,
             "sync_requires_paid_plan",
@@ -779,6 +808,10 @@ pub fn acquire_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         let ttl = ttl(&v.fields())?;
         let env = env_field(&v.fields())?;
         let now = s.now();
+        // The limit first, as the registry checks it: a machine over it is
+        // told so even where another device holds the lease.
+        let owner = s.sync.sessions[&key].owner.clone();
+        within_limit(&s.sync, req, &owner, &device, now)?;
         let x = s.sync.sessions.get_mut(&key).unwrap();
         if leased(x, now) {
             let until = rfc3339_nano(x.lease_expires_at.unwrap());
@@ -821,6 +854,13 @@ pub fn renew_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         if let Some(refused) = &refused {
             return Err(crate::devices::revoked(refused));
         }
+        // A renewal is never refused for the limit; a hand-over's target
+        // is, and the refusal is the current host's, which asked.
+        if x.holder != device {
+            let owner = x.owner.clone();
+            within_limit(&s.sync, req, &owner, &device, now)?;
+        }
+        let x = s.sync.sessions.get_mut(&key).unwrap();
         let minted = if x.holder != device {
             x.fence += 1;
             x.holder = device.clone();
@@ -892,6 +932,39 @@ pub fn release_lease(app: &App, req: &mut Req, id: &str, signer: &str) -> Resp {
         Ok(Resp::empty(204))
     };
     run().unwrap_or_else(|r| r)
+}
+
+/// How long a device that hosted counts as one of its person's machines
+/// (R-SYNC-12).
+const MACHINE_WINDOW: SignedDuration = SignedDuration::from_hours(30 * 24);
+
+/// Whether `device` may start hosting (R-SYNC-11, D5): when fewer than the
+/// limit of its person's other machines hosted in the last 30 days, or it
+/// is among the limit's most recently active. A machine is a device whose
+/// last lease call (`touch`) is that recent: removed ones never count,
+/// revoked ones do. Refused `sync_machine_limit`, naming the plan, the
+/// limit and the other machines, most recent first.
+fn within_limit(s: &SyncStore, req: &Req, person: &str, device: &str, now: Timestamp) -> Result<(), Resp> {
+    let Some((plan, limit)) = machine_limit(req) else { return Ok(()) };
+    let mut counted: Vec<&crate::devices::Listed> = s.people.get(person).map_or_else(Vec::new, |p| {
+        p.devices.iter().filter(|d| d.removed_seq.is_none() && d.last_seen_at.is_some_and(|t| now.duration_since(t) < MACHINE_WINDOW)).collect()
+    });
+    counted.sort_by_key(|d| std::cmp::Reverse(d.last_seen_at));
+    let others: Vec<&str> = counted.iter().filter(|d| d.id != device).map(|d| d.name.as_str()).collect();
+    if others.len() < limit || counted.iter().take(limit).any(|d| d.id == device) {
+        return Ok(());
+    }
+    let n = others.len() + 1;
+    Err(error(
+        402,
+        "sync_machine_limit",
+        &format!("This person runs sessions on {} machines already, the most the {plan} plan allows; this device would be machine {n}.", others.len()),
+        Some(Json::map([
+            ("plan", Json::str(plan)),
+            ("limit", Json::Int(i64::try_from(limit).unwrap_or(i64::MAX))),
+            ("machines", Json::Arr(others.into_iter().map(Json::str).collect())),
+        ])),
+    ))
 }
 
 /// A lease call is the holder being seen, as the registry records it.
@@ -1179,9 +1252,15 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
     };
     let Some(id) = session_id(id) else { return not_found() };
     let limit = crate::artifacts::page_limit(req);
-    let s = app.lock();
+    let mut s = app.lock();
     if !s.sync.sessions.contains_key(&(workspace.clone(), id.clone())) {
         return not_found();
+    }
+    // By the key's plan, which in the stand-in is the owner's: a person's
+    // keys share one workspace, so one plan.
+    if crate::auth::free_plan(req) {
+        let now = s.now();
+        expire_chunks(&mut s.sync, &workspace, &id, now);
     }
     let after: Option<u64> = req.query_get("after").parse().ok();
     let mut ready: Vec<&Chunk> = s.sync.chunks.iter().filter(|((w, sid, i), c)| *w == workspace && *sid == id && c.ready && after.is_none_or(|a| *i > a)).map(|(_, c)| c).collect();
@@ -1196,7 +1275,13 @@ pub fn list_chunks(app: &App, req: &Req, id: &str, site: &str) -> Resp {
             Json::map_of(j)
         })
         .collect();
-    Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next)]))
+    // As the registry gives it: the lowest index held, on every page, null
+    // when none is; and, the stand-in's ahead of it, the checksum of the
+    // last expired chunk, which the first held binds.
+    let first = s.sync.chunks.iter().filter(|((w, sid, _), c)| *w == workspace && *sid == id && c.ready).map(|((_, _, i), _)| *i).min();
+    let previous = s.sync.expired.get(&(workspace, id)).filter(|(i, _)| first == Some(*i)).map_or(Json::Null, |(_, p)| Json::str(p));
+    let first = first.map_or(Json::Null, |i| Json::Int(i as i64));
+    Resp::json(200, &Json::map([("chunks", Json::Arr(page)), ("next", next), ("first_chunk_index", first), ("first_chunk_previous", previous)]))
 }
 
 fn serialize_image(name: &str, c: &Chunk) -> Vec<(String, Json)> {

@@ -59,18 +59,18 @@ fn uuid(b: &[u8; 16]) -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
-/// R-SYNC-1: a free workspace is refused every sync call with a fix.
+/// R-SYNC-10, R-SYNC-14: a Free person's key is admitted to sync; a
+/// service key is refused every sync call with a fix.
 #[test]
-fn r_sync_1_a_free_workspace_is_refused_with_a_fix() {
+fn r_sync_14_a_service_key_is_refused_with_a_fix_and_free_is_admitted() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
-    let r = root("free");
-    let free = "krowk_sk_free_workspace";
 
-    let refused = krowk_api::Client::new(&api, free).device_list_all().unwrap_err();
+    let refused = krowk_api::Client::new(&api, "krowk_sk_service_workspace").device_list_all().unwrap_err();
     assert!(refused.code() == "sync_requires_paid_plan" && refused.fix().contains("`krowk billing`"), "{refused:?}");
 
-    let _ = std::fs::remove_dir_all(&r);
+    let free = krowk_api::Client::new(&api, "krowk_sk_free_workspace").device_list_all();
+    assert!(free.as_ref().err().is_none_or(|e| e.code() != "sync_requires_paid_plan"), "{free:?}");
 }
 
 /// R-SYNC-2: a second device cannot take a lease that is held, and the
