@@ -952,6 +952,19 @@ mod tests {
     use super::*;
     use crate::instances::InstancesConfig;
 
+    /// Slice 07 (R-ALLOC-10): the tool takes an optional host, a machine's
+    /// name, any or an OS filter, which `placement::HostPin` reads.
+    #[test]
+    #[ignore = "slice 07: the subagent tool's host"]
+    fn alloc_07_the_subagent_tool_takes_a_host() {
+        for host in ["desktop", "any", "any:macos", "any:linux", "any:windows"] {
+            let input = serde_json::json!({"description": "fix it", "prompt": "fix the test", "host": host});
+            assert!(SubagentInput::deserialize(input).is_ok(), "{host}");
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(SubagentInput)).unwrap();
+        assert!(schema["properties"].get("host").is_some(), "the model is told it can name one");
+    }
+
     #[test]
     fn r_sub_1_the_model_is_the_definitions_else_the_configs_else_a_cheaper_tier() {
         let registry = Registry::resolve(&InstancesConfig::default(), &|_| String::new());

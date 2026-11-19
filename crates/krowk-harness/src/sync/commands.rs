@@ -41,6 +41,17 @@
 //! error's fix, the refusal, is the answer. One at a time: another is
 //! `busy`. A take still running after `TAKE_WAIT` is answered
 //! `take_unfinished` and left to finish: it may hold the lease by then.
+//!
+//! **Run** (R-ALLOC-3, R-ALLOC-5): a task a supervisor hands this machine.
+//! Admitted (`admit`) before anything else, in this order: accepting (else
+//! `not_accepting`), a trusted directory whose origin is the task's (else
+//! `no_clone`), a ready instance for the model asked (else `no_model`),
+//! then an agent slot claimed (else `no_slot`), held until the child's turn
+//! completes. Then the job is opened and applied into a fresh worktree
+//! (`handoff::apply_job`; else `bad_job`), and the child, a full session in
+//! the host's own mode for that directory (narrowed if asked), runs the one
+//! turn; its lease refused over the machine limit is `machine_limit`.
+//! `started` carries the child's session id. Slice 05 builds it.
 
 use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
@@ -48,7 +59,8 @@ use crate::daemon::client::Client as Daemon;
 use crate::protocol::{Command, LogBody, PermissionMode, StreamLine};
 use krowk_api::sync::DeliveredCommand;
 use krowk_client::e2e::DeviceId;
-use krowk_client::host_command::{self, HostAnswer, HostCommand};
+use krowk_client::host_command::{self, HostAnswer, HostCommand, RunRefusal, RunTask};
+use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -263,8 +275,10 @@ pub(crate) fn offered(c: &Config, o: &Options, policy: &super::auto::Policy) -> 
 /// for the bridge (`hold`); a take's once it moved or was refused.
 fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &dyn Fn(HostAnswer)) {
     let Some(o) = c.announce.as_ref() else { return tell(HostAnswer::refused("host_failed", "this host takes no commands")) };
-    let (HostCommand::Start { cwd, .. } | HostCommand::Take { cwd, .. }) = &command;
-    let cwd = cwd.clone();
+    let cwd = match command {
+        HostCommand::Run(task) => return run_task(c, host, task, tell),
+        HostCommand::Start { ref cwd, .. } | HostCommand::Take { ref cwd, .. } => cwd.clone(),
+    };
     let policy = match (c.policy)() {
         Ok(p) if p.on => p,
         Ok(_) => return tell(HostAnswer::refused("sync_off", format!("automatic sync is off on {host} — turn it on there to start or move sessions from your other devices"))),
@@ -279,6 +293,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
         HostCommand::Start { model, prompt, .. } => (model, prompt),
         HostCommand::Take { session_id, .. } if crate::log::valid_id(&session_id) => return take(me, c, o, host, &session_id, &cwd, tell),
         HostCommand::Take { session_id, .. } => return tell(HostAnswer::refused("bad_command", format!("{:?} is not a session id", session_id.escape_debug().to_string()))),
+        HostCommand::Run(_) => unreachable!("run is answered above"),
     };
     // The host's own default for the directory, never what the command
     // carried, and never a mode that asks nobody.
@@ -291,6 +306,37 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
         return tell(HostAnswer::refused("host_failed", format!("{host} has no async runtime for the start — try again")));
     };
     rt.block_on(start(c, &cwd, model, prompt, mode, tell));
+}
+
+/// What a host holds a `run` to before it answers (R-ALLOC-5): what it
+/// announces of itself, read now, and its agent slots.
+pub struct Admission<'a> {
+    pub accepting: bool,
+    pub repositories: &'a [AnnouncedRepository],
+    pub instances: &'a [AnnouncedInstance],
+    pub agents: &'a crate::slots::Pool,
+}
+
+/// A `run` admitted: the trusted directory it runs in, the model it runs
+/// on, and the agent slot it holds until its turn completes.
+#[derive(Debug)]
+pub struct Admitted {
+    pub directory: std::path::PathBuf,
+    pub model: crate::protocol::ModelRef,
+    pub slot: crate::slots::Slot,
+}
+
+/// `task` checked against `here` in the module's order: the first check it
+/// fails is the refusal, with its fix line. Slice 05 builds it.
+pub fn admit(task: &RunTask, here: &Admission<'_>) -> Result<Admitted, (RunRefusal, String)> {
+    let _ = (task, here.accepting, here.repositories, here.instances, here.agents);
+    todo!("slice 05: admit a run")
+}
+
+/// A `run`, answered: refused for now, so a supervisor moves on (D11).
+/// Slice 05 builds it.
+fn run_task(_c: &Config, host: &str, _task: RunTask, tell: &dyn Fn(HostAnswer)) {
+    tell(RunRefusal::NotAccepting.answer(format!("{host} does not take handed-over tasks yet — upgrade krowk there")));
 }
 
 async fn start(c: &Config, cwd: &str, model: crate::protocol::ModelRef, prompt: String, mode: PermissionMode, tell: &dyn Fn(HostAnswer)) {
@@ -472,6 +518,41 @@ async fn hold<F: std::future::Future>(d: &Daemon, session: &str, rx: &mut tokio:
 #[cfg(test)]
 mod tests {
     use super::*;
+    use krowk_client::host_command::{JobRef, ModelChoice};
+    use krowk_client::protocol::BudgetLimits;
+
+    /// Slice 05 (R-ALLOC-3, R-ALLOC-5, D9, D14): each refusal in its case,
+    /// checked in order, and an admitted run holding an agent slot.
+    #[test]
+    #[ignore = "slice 05: admit"]
+    fn alloc_05_a_run_is_refused_in_each_case_and_admitted_holding_a_slot() {
+        let runtime = std::env::temp_dir().join(format!("krowk-admit-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&runtime);
+        let agents = crate::slots::Pool::new(runtime.clone(), crate::subagent::AGENT_SLOTS, 1);
+        let repositories = [AnnouncedRepository { directory: "/home/ann/app".into(), origin: "github.com/acme/app".into() }];
+        let instances = [AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: vec!["claude-opus-5-5".into()], limit: None }];
+        let here = Admission { accepting: true, repositories: &repositories, instances: &instances, agents: &agents };
+        let task = RunTask {
+            origin: "github.com/acme/app".into(),
+            model: ModelChoice::default(),
+            prompt: "fix the test".into(),
+            job: JobRef { session: "0190f3c2-0000-7000-8000-000000000001".into(), transport: "art_1".into(), key: "ab".repeat(32) },
+            budget: BudgetLimits::default(),
+            requested_by: "00".repeat(16),
+            permission_mode: None,
+        };
+        let refused = |t: &RunTask, h: &Admission<'_>| admit(t, h).map(|_| ()).unwrap_err().0;
+        assert_eq!(refused(&task, &Admission { accepting: false, ..here }), RunRefusal::NotAccepting);
+        assert_eq!(refused(&RunTask { origin: "github.com/acme/other".into(), ..task.clone() }, &here), RunRefusal::NoClone);
+        assert_eq!(refused(&RunTask { model: ModelChoice { instance: Some("codex".into()), model: None }, ..task.clone() }, &here), RunRefusal::NoModel);
+        let admitted = admit(&task, &here).unwrap();
+        assert_eq!(admitted.directory, std::path::PathBuf::from("/home/ann/app"));
+        assert_eq!(admitted.model.instance, "anthropic");
+        assert_eq!(refused(&task, &here), RunRefusal::NoSlot, "its one agent slot is held by the first");
+        drop(admitted);
+        assert!(admit(&task, &here).is_ok(), "let go as the child's turn completes");
+        let _ = std::fs::remove_dir_all(&runtime);
+    }
 
     #[test]
     fn r_hand_4_a_takes_refusal_is_its_last_errors_fix() {

@@ -894,7 +894,7 @@ mod tests {
     fn r_host_3_an_announced_host_is_shown_in_a_few_lines() {
         use krowk_client::presence::{AnnouncedInstance, Announcement};
         let inst = |name: &str, ready: bool, models: &[&str]| AnnouncedInstance { name: name.into(), kind: "k".into(), ready, state: if ready { "ready" } else { "key_not_set" }.into(), fix: (!ready).then(|| "set OPENAI_API_KEY".into()), models: models.iter().map(|m| m.to_string()).collect(), limit: None };
-        let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/krowk".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new() };
+        let announcement = Announcement { device: "d".into(), name: "a".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("anthropic", true, &["claude-sonnet-4-5", "claude-opus-4-1"]), inst("codex", true, &[]), inst("openai", false, &[])], directories: vec!["/home/ann/code/krowk".into(), "/Users/ann".into(), "/srv/x".into(), "/root/y".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         let mut a = krowk_harness::sync::hosts::Announced { online: true, updated_at: "2026-10-25T10:00:00Z".into(), announcement };
         let now: jiff::Timestamp = "2026-10-25T10:12:30Z".parse().unwrap();
         assert_eq!(super::announced_lines(&a, now), ["online · krowk 0.31.0", "ready: anthropic (claude-sonnet-4-5, …), codex", "not ready: openai — set OPENAI_API_KEY", "directories: ~/code/krowk, ~, /srv/x, …"]);
@@ -913,7 +913,7 @@ mod tests {
     fn r_host_4_sync_new_checks_the_announcement_before_it_sends() {
         use krowk_client::presence::{AnnouncedInstance, Announcement};
         let inst = |name: &str, ready: bool, models: &[&str]| AnnouncedInstance { name: name.into(), kind: "k".into(), ready, state: if ready { "ready" } else { "keyNotSet" }.into(), fix: (!ready).then(|| format!("set the key of {name}")), models: models.iter().map(|m| m.to_string()).collect(), limit: None };
-        let announcement = Announcement { device: "d".into(), name: "desk".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("openai", false, &["gpt-5"]), inst("codex", true, &[]), inst("anthropic", true, &["claude-opus-5-5", "claude-sonnet-5-5"])], directories: vec!["/home/ann/app".into(), "/srv/x".into()], sessions: Vec::new() };
+        let announcement = Announcement { device: "d".into(), name: "desk".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: vec![inst("openai", false, &["gpt-5"]), inst("codex", true, &[]), inst("anthropic", true, &["claude-opus-5-5", "claude-sonnet-5-5"])], directories: vec!["/home/ann/app".into(), "/srv/x".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         let mut a = krowk_harness::sync::hosts::Announced { online: true, updated_at: "2026-10-25T10:00:00Z".into(), announcement };
         let now: jiff::Timestamp = "2026-10-25T10:12:30Z".parse().unwrap();
         let refused = |a: Option<&krowk_harness::sync::hosts::Announced>, cwd: &str, model: &str| {

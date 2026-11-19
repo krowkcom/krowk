@@ -2,7 +2,9 @@
 //! answer (R-HOST-4): `start`, a session in a directory the host announced,
 //! on a model it has ready; and `take`, a session another host holds moved
 //! to this one, into a clone of its repository in a directory it announced
-//! (R-HAND-1), so a device that never hosts can move one. The registry carries both as bytes
+//! (R-HAND-1), so a device that never hosts can move one; and `run`, a task
+//! a supervisor hands this machine to run in a fresh worktree of its clone
+//! of a repository (R-ALLOC-3). The registry carries them as bytes
 //! (`krowk_api` `send_host_command`, `answer_host_command`), so each is
 //! sealed to the person's devices (`e2e::seal_to_person`) and bound to the
 //! command's id and the two devices: one moved to another id, or to another
@@ -14,7 +16,7 @@
 
 use crate::device_chain::{Chain, Kind};
 use crate::e2e::{self, DeviceId, Label};
-use crate::protocol::ModelRef;
+use crate::protocol::{BudgetLimits, ModelRef, PermissionMode};
 use crate::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
 
@@ -47,10 +49,118 @@ pub enum HostCommand {
     /// one of the directories the host announced and a clone of the
     /// session's repository: what `krowk sync take` there does.
     Take { session_id: String, cwd: String },
+    /// A task a supervisor hands this host (R-ALLOC-3, D8–D14): run once,
+    /// in a fresh worktree of the host's own clone of `origin`, from the
+    /// sealed job. Answered `started` with the child session's id, or
+    /// `refused` with a `RunRefusal`'s code.
+    Run(RunTask),
+}
+
+/// What a `run` carries. The prompt rides in the command, so with the
+/// rest it must seal within `MAX_SEALED`; the work rides in the job.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTask {
+    /// The repository, as `presence::normalise_origin` writes it: the host
+    /// runs it in the trusted directory it announced with this origin.
+    pub origin: String,
+    /// The instance, the model, both or neither (D12): what neither names
+    /// the host picks as it would for a local subagent.
+    #[serde(default)]
+    pub model: ModelChoice,
+    /// The child's one turn.
+    pub prompt: String,
+    /// The sealed job (R-ALLOC-4): where it is stored and its key.
+    pub job: JobRef,
+    /// The cap the child runs under: what is left of the supervisor's tree
+    /// budget, under the budget rules of the harness it runs on (D12).
+    #[serde(default)]
+    pub budget: BudgetLimits,
+    /// The supervisor's device, in hex: whom the child's result is for.
+    pub requested_by: String,
+    /// A mode stricter than the host's own for the directory, when the
+    /// supervisor asks for one. Never looser (D13): the host runs the
+    /// stricter of its own and this.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission_mode: Option<PermissionMode>,
+}
+
+/// A model as a call may name it (D12): an instance (`claude:work`), a
+/// model id, both (the wire's `ModelRef`), or neither.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelChoice {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl From<ModelRef> for ModelChoice {
+    fn from(m: ModelRef) -> ModelChoice {
+        ModelChoice { instance: Some(m.instance), model: Some(m.model) }
+    }
+}
+
+/// Where a sealed job is: a transport artifact (`e2e::seal_transport`)
+/// stored under `session`, and the key that opens it, which reaches the
+/// host only inside this sealed command, never the registry.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JobRef {
+    /// The session the transport is stored under, and bound to.
+    pub session: String,
+    /// The transport's slug.
+    pub transport: String,
+    /// The transport's key, 64 hex digits.
+    pub key: String,
+}
+
+/// Why a host would not run a handed-over task (R-ALLOC-3). Each is a
+/// refusal before the child started, so the supervisor moves to its next
+/// candidate (D11); `code` is what `HostAnswer::Refused` carries.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunRefusal {
+    /// No trusted directory here has the repository's origin (D7).
+    NoClone,
+    /// No ready instance here for the model asked (D6).
+    NoModel,
+    /// Every agent slot here is taken (D9).
+    NoSlot,
+    /// This machine takes no handed-over tasks (`krowk machines accept off`, D14).
+    NotAccepting,
+    /// The child's lease was refused as over the person's machine limit (D15).
+    MachineLimit,
+    /// The job did not open, or did not apply here.
+    BadJob,
+}
+
+impl RunRefusal {
+    pub const ALL: [RunRefusal; 6] = [RunRefusal::NoClone, RunRefusal::NoModel, RunRefusal::NoSlot, RunRefusal::NotAccepting, RunRefusal::MachineLimit, RunRefusal::BadJob];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            RunRefusal::NoClone => "no_clone",
+            RunRefusal::NoModel => "no_model",
+            RunRefusal::NoSlot => "no_slot",
+            RunRefusal::NotAccepting => "not_accepting",
+            RunRefusal::MachineLimit => "machine_limit",
+            RunRefusal::BadJob => "bad_job",
+        }
+    }
+
+    pub fn of(code: &str) -> Option<RunRefusal> {
+        RunRefusal::ALL.into_iter().find(|r| r.code() == code)
+    }
+
+    /// The answer refusing, with `message` its fix line.
+    pub fn answer(self, message: impl Into<String>) -> HostAnswer {
+        HostAnswer::refused(self.code(), message)
+    }
 }
 
 /// The command types a host runs.
-const KNOWN: [&str; 2] = ["start", "take"];
+const KNOWN: [&str; 3] = ["start", "take", "run"];
 
 /// The host's answer to a command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -80,7 +190,7 @@ pub fn binding(id: &str, from: &DeviceId, to: &DeviceId) -> Vec<u8> {
 /// `c` sealed by `me` to the person's devices, for `to` to open, under
 /// `id`: a fresh random UUID of the sender's, which the registry keys it by.
 pub fn seal_command(c: &HostCommand, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
-    if let HostCommand::Start { prompt, .. } = c
+    if let HostCommand::Start { prompt, .. } | HostCommand::Run(RunTask { prompt, .. }) = c
         && prompt.len() > MAX_PROMPT
     {
         return Err(format!("the prompt is {} bytes, more than a host takes ({MAX_PROMPT})", prompt.len()));
@@ -115,10 +225,16 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
         Ok(c) => c,
         Err(e) => return Ok(Err(HostAnswer::refused("bad_command", format!("the {kind} command does not read: {}", e.to_string().escape_debug())))),
     };
-    if let HostCommand::Start { prompt, .. } = &c
+    if let HostCommand::Start { prompt, .. } | HostCommand::Run(RunTask { prompt, .. }) = &c
         && prompt.len() > MAX_PROMPT
     {
         return Ok(Err(HostAnswer::refused("prompt_too_long", format!("the prompt is {} bytes, more than this host takes ({MAX_PROMPT}) — send a shorter one", prompt.len()))));
+    }
+    // Passed on to the registry and to the transport's open.
+    if let HostCommand::Run(RunTask { job, .. }) = &c
+        && !(session_id_shaped(&job.session) && slug_shaped(&job.transport) && job.key.len() == 64 && job.key.bytes().all(|b| b.is_ascii_hexdigit()))
+    {
+        return Ok(Err(RunRefusal::BadJob.answer("the task's job is not named as a stored job is — send it again from an up-to-date krowk")));
     }
     // Passed on as an argument: only ever a session id.
     if let HostCommand::Take { session_id, .. } = &c
@@ -175,6 +291,12 @@ fn open(sealed: &[u8], most: usize, label: Label, binding: &[u8], from: &DeviceI
 /// Whether `s` is a session id as text: 8-4-4-4-12 hex digits.
 pub fn session_id_shaped(s: &str) -> bool {
     s.len() == 36 && s.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() })
+}
+
+/// Whether `s` is a registry slug as text: 1–64 ASCII letters, digits,
+/// `_` and `-`.
+fn slug_shaped(s: &str) -> bool {
+    (1..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 /// `s` cut so that it takes at most `most` bytes as JSON, escapes

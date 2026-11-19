@@ -4660,7 +4660,7 @@ async fn r_host_3_a_removed_device_neither_sees_hosts_nor_is_listed() {
     let (a, b) = (w.device("presence-a"), w.device("presence-b"));
     let mut auto = w.auto_with(&a, AutoOpts { announce: true, ..AutoOpts::default() });
     let sealed = {
-        let record = krowk_client::presence::Announcement { device: b.key.id().to_string(), name: "presence-b".into(), os: "linux".into(), version: "test".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new() };
+        let record = krowk_client::presence::Announcement { device: b.key.id().to_string(), name: "presence-b".into(), os: "linux".into(), version: "test".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         krowk_client::presence::seal(&record, &w.keys(), w.chain().generation(), &b.key.id()).unwrap()
     };
     w.as_device(&b).put_presence(&sealed, 30).unwrap();

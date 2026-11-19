@@ -117,6 +117,13 @@ impl Pool {
         Ok(None)
     }
 
+    /// How many of the pool's slots are held now, by any process, counted
+    /// without taking one (R-ALLOC-1): what a machine announces. Slice 02
+    /// builds it.
+    pub fn in_use(&self) -> Result<usize, String> {
+        todo!("slice 02: count the held slots of {}", self.dir().display())
+    }
+
     /// A slot, waited for as long as it takes: tried every `RETRY` while
     /// the pool is full, `waiting` told once, with how many are in use,
     /// when the first try finds none (and awaited, so it can say so on a
@@ -156,6 +163,26 @@ mod tests {
         let uid = unsafe { libc::getuid() };
         assert_eq!(runtime_dir(&env(&[("TMPDIR", "/var/folders/x")])), PathBuf::from(format!("/var/folders/x/krowk-{uid}")));
         assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "relative"), ("TMPDIR", "also")])), PathBuf::from(format!("/tmp/krowk-{uid}")), "only absolute paths count");
+    }
+
+    /// Slice 02 (R-ALLOC-1): the occupancy a machine announces is the
+    /// locks held, and counting them takes none.
+    #[test]
+    #[ignore = "slice 02: Pool::in_use"]
+    fn alloc_02_slot_occupancy_matches_held_locks() {
+        let d = dir("occupancy");
+        let pool = Pool::new(d.clone(), "agent-slots", 3);
+        assert_eq!(pool.in_use().unwrap(), 0, "a pool never used has none held");
+        let a = pool.try_take().unwrap().expect("a free slot");
+        let b = pool.try_take().unwrap().expect("a second");
+        assert_eq!(pool.in_use().unwrap(), 2);
+        assert_eq!(pool.in_use().unwrap(), 2, "counting took none");
+        drop(a);
+        assert_eq!(pool.in_use().unwrap(), 1);
+        let c = pool.try_take().unwrap().expect("the one let go");
+        assert!(pool.try_take().unwrap().is_some(), "the third is still free");
+        drop((b, c));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

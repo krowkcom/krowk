@@ -5,8 +5,8 @@
 
 use krowk_client::device_chain::{Action, Chain, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, hex, DeviceId, DeviceKey, Label, SigningKey};
-use krowk_client::host_command::{self, HostAnswer, HostCommand};
-use krowk_client::protocol::ModelRef;
+use krowk_client::host_command::{self, HostAnswer, HostCommand, JobRef, ModelChoice, RunRefusal, RunTask};
+use krowk_client::protocol::{BudgetLimits, ModelRef, PermissionMode};
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeys};
 
@@ -238,5 +238,73 @@ fn r_hand_4_a_take_and_its_answer_open_on_the_other_side() {
     for bad in [br#"{"type":"take","sessionId":"--help","cwd":"/w"}"#.as_slice(), br#"{"type":"take","cwd":"/w"}"#] {
         let Err(HostAnswer::Refused { code, .. }) = open(&seal(bad)) else { panic!("opened") };
         assert_eq!(code, "bad_command");
+    }
+}
+
+fn run(prompt: &str) -> HostCommand {
+    HostCommand::Run(RunTask {
+        origin: "github.com/someone/secret-project".into(),
+        model: ModelChoice { instance: Some("claude:work".into()), model: None },
+        prompt: prompt.into(),
+        job: JobRef { session: "0190f3c2-0000-7000-8000-000000000001".into(), transport: "art_0123456789abcdef".into(), key: "ab".repeat(32) },
+        budget: BudgetLimits { max_usd: Some(2.5), max_tokens: None },
+        requested_by: "00".repeat(16),
+        permission_mode: Some(PermissionMode::Plan),
+    })
+}
+
+/// R-ALLOC-3: a `run` opens on the host as sent, with the wire names canon
+/// documents, and each answer it gets opens on the supervisor's machine.
+#[test]
+fn r_alloc_3_a_run_and_its_answers_open_on_the_other_side() {
+    let w = world();
+    let c = chain(&w);
+    let sealed = host_command::seal_command(&run("fix the secret-flaky test"), ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    assert_eq!(host_command::open_command(&sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &c).unwrap(), Ok(run("fix the secret-flaky test")));
+    for secret in ["secret-project", "claude:work", "secret-flaky", &"ab".repeat(32)] {
+        assert!(!sealed.windows(secret.len()).any(|w| w == secret.as_bytes()), "{secret} is in the sealed bytes");
+    }
+    let wire = serde_json::to_value(run("p")).unwrap();
+    assert_eq!(wire, serde_json::json!({"type": "run", "origin": "github.com/someone/secret-project", "model": {"instance": "claude:work"}, "prompt": "p", "job": {"session": "0190f3c2-0000-7000-8000-000000000001", "transport": "art_0123456789abcdef", "key": "ab".repeat(32)}, "budget": {"maxUsd": 2.5}, "requestedBy": "00".repeat(16), "permissionMode": "plan"}));
+    let bare = br#"{"type":"run","origin":"o","prompt":"p","job":{"session":"0190f3c2-0000-7000-8000-000000000001","transport":"art_1","key":"abababababababababababababababababababababababababababababababab"},"requestedBy":"d"}"#;
+    let HostCommand::Run(t) = serde_json::from_slice(bare).unwrap() else { panic!("not a run") };
+    assert_eq!((t.model, t.budget, t.permission_mode), (ModelChoice::default(), BudgetLimits::default(), None), "neither model nor budget nor mode is needed");
+
+    let mut answers = vec![HostAnswer::Started { session_id: "0190f3c2-0000-7000-8000-000000000002".into() }];
+    answers.extend(RunRefusal::ALL.map(|r| r.answer("a fix line")));
+    for answer in answers {
+        let sealed = host_command::seal_answer(&answer, ID, &w.host.id(), &w.phone.id(), &keys(1), 1).unwrap();
+        assert_eq!(host_command::open_answer(&sealed, ID, &w.host.id(), &w.phone.id(), &keys(1), &c).unwrap(), answer);
+    }
+}
+
+/// R-ALLOC-3: the refusal codes are the spec's, each read back as itself.
+#[test]
+fn r_alloc_3_the_refusal_codes_are_the_specs() {
+    let codes: Vec<&str> = RunRefusal::ALL.iter().map(|r| r.code()).collect();
+    assert_eq!(codes, ["no_clone", "no_model", "no_slot", "not_accepting", "machine_limit", "bad_job"]);
+    for r in RunRefusal::ALL {
+        assert_eq!(RunRefusal::of(r.code()), Some(r));
+    }
+    assert_eq!(RunRefusal::of("unknown_command"), None);
+}
+
+/// R-ALLOC-3: a `run` is held to the registry's 16 KB like any command: a
+/// long task's prompt fits, one past the cap is refused on seal with the
+/// fix; a job named as no stored job is is answered `bad_job`.
+#[test]
+fn r_alloc_3_a_run_is_held_to_the_16_kb_command_cap() {
+    let w = world();
+    let fits = host_command::seal_command(&run(&"x".repeat(12 * 1024)), ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    assert!(fits.len() <= host_command::MAX_SEALED);
+    let e = host_command::seal_command(&run(&"x".repeat(host_command::MAX_SEALED)), ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap_err();
+    assert!(e.contains(&format!("more than the registry carries ({})", host_command::MAX_SEALED)), "{e}");
+
+    let seal = |c: &HostCommand| host_command::seal_command(c, ID, &w.phone.id(), &w.host.id(), &keys(1), 1).unwrap();
+    let open = |sealed: &[u8]| host_command::open_command(sealed, ID, &w.phone.id(), &w.host.id(), &keys(1), &chain(&w)).unwrap();
+    let HostCommand::Run(good) = run("p") else { unreachable!() };
+    for job in [JobRef { session: "--help".into(), ..good.job.clone() }, JobRef { transport: "../x".into(), ..good.job.clone() }, JobRef { key: "zz".repeat(32), ..good.job.clone() }] {
+        let Err(HostAnswer::Refused { code, .. }) = open(&seal(&HostCommand::Run(RunTask { job, ..good.clone() }))) else { panic!("opened") };
+        assert_eq!(code, "bad_job");
     }
 }

@@ -31,7 +31,7 @@ use crate::readiness::Report;
 use crate::trust;
 use krowk_client::device_chain::{refused_in_name, Chain};
 use krowk_client::e2e::DeviceId;
-use krowk_client::presence::{self, AnnouncedInstance, Announcement, MAX_DIRECTORIES, MAX_INSTANCES, MAX_JSON, MAX_MODELS, MAX_SESSIONS};
+use krowk_client::presence::{self, AnnouncedInstance, Announcement, MAX_DIRECTORIES, MAX_INSTANCES, MAX_JSON, MAX_MODELS, MAX_REPOSITORIES, MAX_SESSIONS};
 use krowk_client::user_key::UserKeys;
 use std::collections::HashSet;
 use std::path::Path;
@@ -142,12 +142,21 @@ pub fn instances(registry: &Registry, reports: &[Report], raw: Option<&[u8]>) ->
         .collect()
 }
 
+/// This machine's capacity now (R-ALLOC-1): its cores, 1-minute load and
+/// free memory from the OS (Linux, macOS and Windows), and the slots of
+/// `builds` and `agents` in use (`Pool::in_use`) and in all. Blocking but
+/// quick. Slice 02 builds it.
+pub fn capacity(builds: &crate::slots::Pool, agents: &crate::slots::Pool) -> presence::Capacity {
+    todo!("slice 02: read the capacity of {} and {}", builds.dir().display(), agents.dir().display())
+}
+
 /// `a` brought within the record's bounds before it is sealed: whatever
 /// names a thing with a character the record refuses is left out (a fix
 /// line has it replaced), the lists cut to their counts, and then, while
-/// the record is still too long, models, then directories, then sessions
-/// go: the oldest-released model, the directory last on the list, the
-/// oldest session. Pure.
+/// the record is still too long, models, then directories, then sessions,
+/// then repositories go: the oldest-released model, the directory last on
+/// the list, the oldest session, the repository last on the list; the
+/// capacity only after all of them (R-ALLOC-1). Pure.
 pub fn fit(a: &mut Announcement) {
     let clean = |s: &str| !s.chars().any(refused_in_name);
     a.version = a.version.chars().map(|c| if refused_in_name(c) { ' ' } else { c }).collect();
@@ -164,6 +173,8 @@ pub fn fit(a: &mut Announcement) {
     // Kept newest: the daemon lists them as it took them up.
     let over = a.sessions.len().saturating_sub(MAX_SESSIONS);
     a.sessions.drain(..over);
+    a.repositories.retain(|r| clean(&r.directory) && clean(&r.origin));
+    a.repositories.truncate(MAX_REPOSITORIES);
     let size = |a: &Announcement| serde_json::to_vec(a).map_or(usize::MAX, |j| j.len());
     while size(a) > MAX_JSON {
         let dropped = if let Some(i) = a.instances.iter_mut().filter(|i| !i.models.is_empty()).max_by_key(|i| i.models.len()) {
@@ -174,7 +185,7 @@ pub fn fit(a: &mut Announcement) {
             a.sessions.remove(0);
             true
         } else {
-            false
+            a.repositories.pop().is_some() || a.capacity.take().is_some()
         };
         if !dropped {
             break;
@@ -388,7 +399,7 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
         return Next::After(o.every.min(DAEMON_WAIT));
     };
     let directories = offered(c, o, &policy);
-    let mut record = Announcement { device: a.device.to_string(), name: me.name.clone(), os: me.os.clone(), version: c.version.clone(), online_since_ms: o.online_since_ms, instances: t.instances.clone(), directories, sessions };
+    let mut record = Announcement { device: a.device.to_string(), name: me.name.clone(), os: me.os.clone(), version: c.version.clone(), online_since_ms: o.online_since_ms, instances: t.instances.clone(), directories, sessions, capacity: None, repositories: Vec::new(), accepting: false };
     fit(&mut record);
     // Told to stop while it gathered: nothing more is put, so the stop's
     // take-down is the last word.
@@ -492,7 +503,7 @@ mod tests {
     use super::*;
 
     fn record() -> Announcement {
-        Announcement { device: "d".into(), name: "n".into(), os: "linux".into(), version: "1\n".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new() }
+        Announcement { device: "d".into(), name: "n".into(), os: "linux".into(), version: "1\n".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false }
     }
 
     fn instance(name: &str, models: usize) -> AnnouncedInstance {
@@ -523,6 +534,57 @@ mod tests {
         small.directories = vec!["/work/a".into()];
         fit(&mut small);
         assert_eq!((small.instances[0].models.len(), small.directories.len()), (3, 1), "a record within its bounds keeps everything");
+    }
+
+    /// R-ALLOC-1: 64 repositories, the most models and a capacity fit in
+    /// one record; past that the repositories go after models, directories
+    /// and sessions, and the capacity only once nothing else is left.
+    #[test]
+    fn r_alloc_1_the_capacity_is_the_last_thing_an_announcement_loses() {
+        let capacity = presence::Capacity { cores: 16, load_1m: 15.5, free_memory: 1 << 34, build_slots: presence::Slots { in_use: 3, total: 3 }, agent_slots: presence::Slots { in_use: 2, total: 32 } };
+        let repo = |i: usize| presence::AnnouncedRepository { directory: format!("/home/someone/Repositories/project-{i:02}"), origin: format!("github.com/someone/project-{i:02}") };
+        let mut a = record();
+        a.instances = (0..4).map(|n| instance(&format!("instance-{n}"), MAX_MODELS)).collect();
+        a.directories = (0..MAX_REPOSITORIES).map(|i| repo(i).directory).collect();
+        a.repositories = (0..MAX_REPOSITORIES).map(repo).collect();
+        a.capacity = Some(capacity);
+        a.accepting = true;
+        fit(&mut a);
+        a.check().unwrap();
+        assert_eq!((a.repositories.len(), a.capacity), (MAX_REPOSITORIES, Some(capacity)), "64 repositories and the capacity survive");
+        assert!(serde_json::to_vec(&a).unwrap().len() <= MAX_JSON);
+
+        let mut huge = a.clone();
+        huge.directories = (0..MAX_DIRECTORIES).map(|i| format!("/{}/{i}", "d".repeat(180))).collect();
+        huge.sessions = (0..MAX_SESSIONS).map(|i| format!("{i:036}")).collect();
+        huge.repositories = (0..MAX_REPOSITORIES).map(|i| presence::AnnouncedRepository { directory: format!("/{}/{i}", "r".repeat(180)), origin: format!("github.com/{}/{i}", "o".repeat(100)) }).collect();
+        fit(&mut huge);
+        huge.check().unwrap();
+        assert!(huge.instances.iter().all(|i| i.models.is_empty()) && huge.directories.is_empty() && huge.sessions.is_empty(), "models, directories and sessions went first");
+        assert!(huge.repositories.len() < MAX_REPOSITORIES && !huge.repositories.is_empty(), "then repositories, from the end");
+        assert_eq!(huge.capacity, Some(capacity), "the capacity stays");
+
+        let mut overflow = record();
+        overflow.capacity = Some(capacity);
+        overflow.version = "v".repeat(MAX_JSON);
+        fit(&mut overflow);
+        assert_eq!(overflow.capacity, None, "and goes only when nothing else is left");
+    }
+
+    /// Slice 02 (R-ALLOC-1): this machine reads its own capacity, its slot
+    /// totals the pools'.
+    #[test]
+    #[ignore = "slice 02: capacity"]
+    fn alloc_02_this_machine_reads_its_capacity() {
+        let runtime = std::env::temp_dir().join(format!("krowk-capacity-{}", std::process::id()));
+        let builds = crate::slots::Pool::new(runtime.clone(), "build-slots", 3);
+        let agents = crate::slots::Pool::new(runtime.clone(), crate::subagent::AGENT_SLOTS, 5);
+        let held = agents.try_take().unwrap().expect("a slot");
+        let c = capacity(&builds, &agents);
+        assert!(c.cores >= 1 && c.load_1m >= 0.0 && c.free_memory > 0, "{c:?}");
+        assert_eq!((c.build_slots, c.agent_slots), (presence::Slots { in_use: 0, total: 3 }, presence::Slots { in_use: 1, total: 5 }));
+        drop(held);
+        let _ = std::fs::remove_dir_all(&runtime);
     }
 
     /// R-HOST-3: a ready instance announces its own default model first,
