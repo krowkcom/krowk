@@ -504,9 +504,10 @@ fn run_task(c: &Config, o: &Options, host: &str, task: RunTask, tell: &dyn Fn(Ho
     let _ = o.trusted.trust(&crate::trust::root(&cwd));
     let child = Child { cwd, worktree: worktree.path.display().to_string(), snapshot, model, mode, prompt: bundle.prompt };
     // Removed however this ends, a panic included, unless the child ran.
-    let mut fresh = Fresh(Some(worktree));
+    let ran = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut fresh = Fresh(Some(worktree), ran.clone());
     let kept = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
-        Ok(rt) => rt.block_on(follow(c, &a, &task, &child, tell)),
+        Ok(rt) => rt.block_on(follow(c, &a, &task, &child, &ran, tell)),
         Err(_) => {
             tell(HostAnswer::refused("host_failed", format!("{host} has no async runtime for the task — try again")));
             false
@@ -516,16 +517,20 @@ fn run_task(c: &Config, o: &Options, host: &str, task: RunTask, tell: &dyn Fn(Ho
         // The turn is over: the worktree stays for the bridge to pack, as a
         // finished child's does, and the slot is let go.
         fresh.0.take();
+    } else {
+        // Over, stopped or never started: nothing runs in it.
+        ran.store(false, std::sync::atomic::Ordering::SeqCst);
     }
     drop((fresh, held, slot));
 }
 
-/// A worktree made for a task, removed when dropped.
-struct Fresh(Option<crate::worktree::Worktree>);
+/// A worktree made for a task, removed when dropped, unless its child's
+/// turn was started (the flag): one that may still be running keeps it.
+struct Fresh(Option<crate::worktree::Worktree>, Arc<std::sync::atomic::AtomicBool>);
 
 impl Drop for Fresh {
     fn drop(&mut self) {
-        if let Some(w) = self.0.take() {
+        if let Some(w) = self.0.take().filter(|_| !self.1.load(std::sync::atomic::Ordering::SeqCst)) {
             let _ = crate::worktree::discard(&w);
         }
     }
@@ -679,7 +684,7 @@ fn watch_lease(api: Arc<krowk_api::Client>, session: String, me: String, stop: A
 /// answer told as `lease_known` says, its approvals denied. Answers whether
 /// its worktree is kept: a child stopped before it was told started, or
 /// that never started, leaves nothing.
-async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: &dyn Fn(HostAnswer)) -> bool {
+async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, ran: &std::sync::atomic::AtomicBool, tell: &dyn Fn(HostAnswer)) -> bool {
     let refused = |e: crate::engine::EngineError| HostAnswer::refused(&e.code, e.message);
     // Background, answering approvals as a bridge's client does, so none
     // the turn asks waits for a person: it is denied here.
@@ -701,6 +706,7 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: 
     let (tx, mut rx) = tokio::sync::mpsc::channel(256);
     let budget = (!task.budget.is_empty()).then_some(task.budget);
     let prompt = Command::Prompt { session_id: None, text: child.prompt.clone(), images: Vec::new(), model: Some(child.model.clone()), permission_mode: child.mode, toolset: None, effort: None, rollover: None, budget };
+    ran.store(true, std::sync::atomic::Ordering::SeqCst);
     let run = d.execute(prompt, tx);
     tokio::pin!(run);
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -712,8 +718,11 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: 
         tokio::pin!(tick);
         loop {
             tokio::select! {
-                // The turn's lines first: they all arrive before its end.
+                // The tick first, so a stream that never pauses does not hold
+                // `started` back; then the turn's lines, which all arrive
+                // before its end.
                 biased;
+                () = &mut tick => break,
                 line = rx.recv(), if !closed => match line {
                     Some(l) => f.line(&d, l).await,
                     None => closed = true,
@@ -727,7 +736,6 @@ async fn follow(c: &Config, a: &Announcer, task: &RunTask, child: &Child, tell: 
                         failed = Some(e);
                     }
                 }
-                () = &mut tick => break,
             }
         }
         f.lease_known(&d, tell).await;
