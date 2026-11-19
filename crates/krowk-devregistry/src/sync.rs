@@ -193,6 +193,9 @@ pub struct SyncStore {
     /// Workspace, session id and name → a sealed image object: a chunk's
     /// upload with no place in a log (index and fence 0).
     pub images: HashMap<(String, String, String), Chunk>,
+    /// The same key → when a Free session's image expires: 7 days after it
+    /// was last declared (R-SYNC-15). Paid images have none.
+    pub image_expiry: HashMap<(String, String, String), Timestamp>,
     /// Workspace and slug → a vintage: its ISO week, and its bytes' upload,
     /// which is a chunk's with no place in a log (index and fence 0).
     pub vintages: HashMap<(String, String), (String, Chunk)>,
@@ -1300,6 +1303,9 @@ fn image_name(name: &str) -> bool {
 /// The holder's declare of a sealed image object (the registry's
 /// `Sessions::ImagesController#create`): a name the session has is a no-op,
 /// a pending one taking this declare's size and digest with a fresh URL.
+/// On Free an image expires 7 days after it is declared, and declaring it
+/// again restarts its 7 days; one already expired, not yet swept, is
+/// replaced by a new one (201).
 pub fn declare_image(app: &App, req: &mut Req, id: &str, site: &str, signer: &str) -> Resp {
     let mut run = || -> Result<Resp, Resp> {
         let workspace = gate(req)?;
@@ -1331,6 +1337,14 @@ pub fn declare_image(app: &App, req: &mut Req, id: &str, site: &str, signer: &st
         }
         burst(&mut s.sync, &caller(req), "image_declares", now)?;
         let ik = (workspace, id, name.clone());
+        let expires = crate::auth::free_plan(req).then(|| now + FREE_HISTORY);
+        if s.sync.image_expiry.get(&ik).is_some_and(|e| now > *e) {
+            s.sync.images.remove(&ik);
+            s.sync.image_expiry.remove(&ik);
+        }
+        if let Some(e) = expires.filter(|_| s.sync.images.contains_key(&ik)) {
+            s.sync.image_expiry.entry(ik.clone()).and_modify(|x| *x = (*x).max(e));
+        }
         if let Some(c) = s.sync.images.get_mut(&ik) {
             if !c.ready {
                 c.byte_size = byte_size;
@@ -1355,6 +1369,9 @@ pub fn declare_image(app: &App, req: &mut Req, id: &str, site: &str, signer: &st
             created_at: now,
         };
         let resp = Resp::json(201, &declared_image(&name, &c, site));
+        if let Some(e) = expires {
+            s.sync.image_expiry.insert(ik.clone(), e);
+        }
         s.sync.images.insert(ik, c);
         Ok(resp)
     };
@@ -1413,7 +1430,12 @@ pub fn show_image(app: &App, req: &Req, id: &str, name: &str, site: &str) -> Res
     };
     let Some(id) = session_id(id) else { return not_found() };
     let s = app.lock();
-    let Some(c) = s.sync.images.get(&(workspace, id, name.to_owned())).filter(|c| c.ready) else { return not_found() };
+    let ik = (workspace, id, name.to_owned());
+    // Past its expiry an image is not found, as it will be once swept.
+    if s.sync.image_expiry.get(&ik).is_some_and(|e| s.now() > *e) {
+        return not_found();
+    }
+    let Some(c) = s.sync.images.get(&ik).filter(|c| c.ready) else { return not_found() };
     let mut j = serialize_image(name, c);
     j.push(("url".to_owned(), Json::str(format!("{site}/_storage/{}", c.storage_key))));
     Resp::json(200, &Json::map_of(j))

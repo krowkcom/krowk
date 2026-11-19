@@ -4043,6 +4043,64 @@ async fn r_sync_15_a_free_log_whose_start_expired_reads_from_the_first_chunk_hel
     assert!(refused.contains("holds none of its log"), "{refused}");
 }
 
+/// R-SYNC-15, R-IMG-9: on Free an image expires 7 days after it is
+/// declared. A host declares an image again in each chunk that names it,
+/// so one pasted again keeps as long as the newer chunk; once expired, the
+/// next chunk naming it stores it anew.
+#[tokio::test]
+async fn r_sync_15_an_image_pasted_again_keeps_as_long_as_the_chunk_naming_it() {
+    use krowk_harness::sync::store::Writer;
+    let w = World::free("repasted");
+    let a = w.device("machine-a");
+    let id = "01a0ec7b-6666-7000-8000-000000000002";
+    let api = w.as_device(&a);
+    let raw = krowk_harness::daemon::ws::uuid(id);
+    let key = SessionKeys::from(SessionKey::generate());
+    let wrapped = e2e::hex(&e2e::seal_session_keys(&key, &raw, &w.keys(), w.chain().generation()).unwrap());
+    let sig = session_record::sign(&raw, &e2e::unhex(&wrapped).unwrap(), session_record::SEAL_USER, w.keys().newest(), &a.signing).unwrap();
+    api.put_sync_session(id, &wrapped, Some((&e2e::hex(&sig), &a.key.id().to_string())), None, None).unwrap();
+    let dir = w.root.join("repasted-session");
+    let png: &[u8] = b"\x89PNG\r\n\x1a\n a pasted image";
+    let image = krowk_harness::images::save(&dir, &[krowk_harness::images::Decoded { number: 1, media_type: "image/png", bytes: Arc::from(png) }]).unwrap().remove(0);
+    let sha: [u8; 32] = e2e::unhex(image.sha256.as_deref().unwrap()).unwrap().try_into().unwrap();
+    let name = e2e::image_name(&key, &sha);
+    let ev = |n: u32, named: bool| {
+        let images = if named { serde_json::json!([image]) } else { serde_json::json!([]) };
+        serde_json::json!({"id": format!("01a0ec7b-2222-7000-8000-{n:012}"), "sessionId": id, "timeMs": n, "type": "item.completed", "turnId": "t1", "itemId": format!("i{n}"), "item": {"kind": "userText", "text": "[Image #1]", "images": images}})
+    };
+    // One host all along, its writer kept across a long session, the lease
+    // taken again for each write.
+    let day = Duration::from_secs(86400);
+    w.skew.fetch_sub((day * 10).as_millis() as i64, Ordering::SeqCst);
+    let lease = api.acquire_lease(id, &a.key.id().to_string(), 60, "development").unwrap();
+    let index = store::open_index(&key, id, &api.show_sync_session(id).unwrap().sealed_index).unwrap();
+    let mut writer = Writer::take_up(api.clone(), key.clone(), id, wrapped.clone(), index, lease.fence).unwrap().with_images(dir.clone());
+    api.release_lease(id, &lease.token).unwrap();
+    let mut write = |n: u32, named: bool| {
+        let lease = api.acquire_lease(id, &a.key.id().to_string(), 60, "development").unwrap();
+        writer.refence(lease.fence).unwrap();
+        writer.push(ev(n, named));
+        writer.flush(&lease.token).unwrap();
+        api.release_lease(id, &lease.token).unwrap();
+    };
+    let held = || api.get_image_object(id, &name).map_err(|e| e.status);
+    // Ten days ago, pasted; five days ago, pasted again.
+    write(1, true);
+    w.advance(day * 5);
+    write(2, true);
+    // Today the first paste's 7 days are past; the second's are not.
+    w.advance(day * 5);
+    assert!(held().is_ok(), "the second paste's declare restarted the image's 7 days");
+    write(3, false);
+    // Six days on the image has expired, not yet swept; the next chunk
+    // naming it stores it anew.
+    w.advance(day * 6);
+    assert_eq!(held().unwrap_err(), 404, "expired");
+    write(4, true);
+    let sealed = held().expect("stored anew");
+    assert_eq!(e2e::open_image(&sealed, &raw, &sha, &key).unwrap(), png);
+}
+
 /// What the stand-in registry recorded as notified about `session` (ticket
 /// 103's `GET /_notifications`, which only the stand-in has), oldest first:
 /// each one's kind and dedup. A repeat of a dedup is not recorded again.

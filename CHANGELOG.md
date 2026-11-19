@@ -57,6 +57,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   expired (Free keeps 7 days).`; a host taking the session up again writes
   on after it. Any other gap in a log is still refused as tampering.
 
+### Fixed
+
+- **An image pasted again in a long synced session no longer disappears
+  early.** On Free a session's images are kept 7 days from when they were
+  stored, and the host stored each image only the first time. Pasting the
+  same image again days later now renews its 7 days (or stores it again if
+  it had already expired), so other devices can show it for about as long as
+  the new message that uses it.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

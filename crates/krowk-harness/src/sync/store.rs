@@ -74,7 +74,9 @@ pub struct Writer {
     /// name: set by the host (`with_images`), which puts each image as a
     /// sealed object before the chunk naming it.
     dir: Option<std::path::PathBuf>,
-    /// The sha256s this writer has put, so each goes once.
+    /// The sha256s put for the waiting events, so a flush tried again goes
+    /// on from where it stopped; cleared once those events are sealed into
+    /// a chunk, so the next chunk naming an image declares it again.
     put: std::collections::HashSet<String>,
 }
 
@@ -105,6 +107,9 @@ impl Writer {
         if fence == self.fence {
             return Ok(());
         }
+        // Images put under the old lease may be days old by now: the chunk
+        // that names them declares them again.
+        self.put.clear();
         let (events, reader, head) = read_all(&self.client, &self.key, &self.id, self.index.head)?;
         let staged_head = self.staged.as_ref().map(|s| Head { index: s.index, digest: e2e::chunk_digest(&s.sealed) });
         if head.is_some() && head == staged_head {
@@ -205,6 +210,7 @@ impl Writer {
             self.put_images(token)?;
             let events = std::mem::take(&mut self.pending);
             self.stage(&Chunk::Events { events: events.clone() }, events, None)?;
+            self.put.clear();
             self.put_staged(token)?;
         }
         if self.index_owed {
@@ -226,10 +232,16 @@ impl Writer {
 
     /// R-IMG-9: each image the waiting events name, put as a sealed image
     /// object before the chunk naming it is sealed, so a reader of the log
-    /// finds every image it names. Once per image: this writer remembers
-    /// what it put, and the registry takes a name it holds as a no-op. An
-    /// image this machine has no file of (an older log's, named by number)
-    /// is passed over: a reader shows its placeholder.
+    /// finds every image it names. Declared again for each chunk that names
+    /// it: on Free an image expires 7 days after it is declared, and
+    /// declaring it again restarts them (or, once expired, stores it anew),
+    /// so an image pasted again is kept about as long as the chunk the new
+    /// paste is in. A checkpoint, which names every image so far, declares
+    /// none again. On a paid plan, which keeps images forever, the declare
+    /// is a no-op; the host does not know the plan, and one declare per
+    /// pasted image is cheap. An image this machine has no file of (an
+    /// older log's, named by number) is passed over: a reader shows its
+    /// placeholder.
     fn put_images(&mut self, token: &str) -> Result<(), String> {
         let Some(dir) = self.dir.clone() else { return Ok(()) };
         let refs: Vec<ImageRef> = self.pending.iter().filter_map(|e| e.pointer("/item/images")).filter_map(|i| serde_json::from_value::<Vec<ImageRef>>(i.clone()).ok()).flatten().collect();
