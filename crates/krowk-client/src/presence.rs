@@ -113,8 +113,9 @@ pub struct AnnouncedRepository {
 }
 
 /// A git remote URL as one string for every way of writing it (D7): the
-/// scheme, the user and a `.git` suffix stripped and the host lower-cased,
-/// so `git@github.com:Acme/app.git` and `https://github.com/Acme/app` are
+/// scheme, the user and any password or token, and a `.git` suffix
+/// stripped and the host lower-cased, so no credential is ever announced:
+/// `git@github.com:Acme/app.git` and `https://github.com/Acme/app` are
 /// both `github.com/Acme/app`. None for a URL that names no host (a local
 /// path), which no other machine has. Slice 02 implements it.
 pub fn normalise_origin(url: &str) -> Option<String> {

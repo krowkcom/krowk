@@ -866,7 +866,9 @@ mod tests {
         for optional in ["host", "model"] {
             assert!(delegate["inputSchema"]["properties"].get(optional).is_some(), "{optional}");
         }
-        assert_eq!(tool("krowk_collect")["inputSchema"]["required"], json!(["task_id"]));
+        let collect = tool("krowk_collect");
+        assert_eq!(collect["inputSchema"]["required"], json!(["task_id"]));
+        assert!(collect["inputSchema"]["properties"].get("wait_seconds").is_some(), "how long to wait, bounded; 0 asks where it is");
         tool("krowk_machines");
         let (_, out) = serve(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"krowk_collect\",\"arguments\":{\"task_id\":\"0190f3c2-0000-7000-8000-000000000009\"}}}\n");
         let called: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();

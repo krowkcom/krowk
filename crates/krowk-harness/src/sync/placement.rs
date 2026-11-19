@@ -1,36 +1,55 @@
-//! Placement (R-ALLOC-7 … R-ALLOC-11; engineering/harness.md → Sync →
-//! Automatic allocation): which of the person's machines runs a task a
-//! supervisor hands over, and the task's way there and back. krowk's own
-//! `subagent` tool and krowk-mcp's `krowk_delegate` and `krowk_collect` are
-//! its two callers, and share all of it.
+//! Placement (R-ALLOC-7 … R-ALLOC-11; engineering/harness.md → Automatic
+//! allocation): which of the person's machines runs a task a supervisor
+//! hands over, and the task's way there and back. krowk's own `subagent`
+//! tool and krowk-mcp's `krowk_delegate` and `krowk_collect` are its two
+//! callers, and share all of it.
 //!
 //! **It runs on the supervisor's machine** (D3), from the announcements
 //! opened there (`krowk_client::presence`): the registry sees only sealed
 //! bytes, so it cannot place anything.
 //!
-//! **The pick** (`choose`, pure): every machine not `ruled_out` (D6, D7,
+//! **The candidates.** Each other machine as its announcement says, and
+//! this one as it is now: its capacity read directly
+//! (`announce::capacity`), never through its own announcement, and its
+//! repository the task's own, so neither `accepting` nor a clone applies
+//! to it.
+//!
+//! **The pick** (`choose`, pure). Every machine not `ruled_out` (D6, D7,
 //! D14: offline, not accepting, no clone of the repository's origin, no
-//! ready instance for the model, no free agent slot, counting this
+//! ready instance of the model's, no free agent slot counting this
 //! supervisor's own placements on it of the last `RECENT` as slots in use,
-//! D9), then this machine unless it is `busy` (D4, D5), else the others
-//! ranked by free agent slots, then free build slots, then lowest load per
-//! core, then most free memory, a machine whose instance for the model is
-//! near its usage limit after those whose is not. A `HostPin` narrows it:
-//! a machine by name, `any` (the best, this machine no more preferred than
-//! another), or `any:<os>`. The pick, then one more to fall back on.
+//! D9; this machine only for the model). Then this machine unless it is
+//! `busy` (D4, D5); else the others ranked by free agent slots, then free
+//! build slots, then lowest load per core, then most free memory; a
+//! machine whose instance of the model reports it is near its usage limit
+//! comes after every one whose does not (how this reads D6's "less
+//! preferred"). A `HostPin` narrows it: a machine by name, `any` (the most
+//! room, this machine no more preferred than another), or `any:<os>`. The
+//! picks are the first, at most one more machine to send to (D11), and
+//! last this machine, when it can take the task and is not already first:
+//! a task whose remote picks all refused runs here, busy or not. A pin to
+//! another machine by name has no fallback.
 //!
-//! **The way there** (`Placer::start`): the job packed
-//! (`handoff::pack_job`) and stored as a transport, `run` sent
-//! (`host_command::RunTask`); a refusal, or no answer within
-//! `ANSWER_WAIT`, moves to the fallback once (D11): nothing ran yet. A
-//! `Placed::Here` is this machine's to run as it runs any subagent.
+//! **The way there** (`Placer::start`, answering a `Handle` at once and
+//! placing on a thread of its own). The model is resolved here (D12): what
+//! the call named, else the default a local subagent would run on. The job
+//! is packed (`handoff::pack_job`, the prompt in it) and stored under a
+//! session whose lease this supervisor holds (`JobStore`): the parent's
+//! when it is synced, else one the `Placer` registers for the job alone
+//! and lets go once a child started or every pick refused. `run`
+//! (`host_command::RunTask`) goes with `notAfterMs` `ANSWER_WAIT` ahead; a
+//! refusal, or no answer by then and `ANSWER_GRACE` more, moves to the next
+//! pick, once (D11): nothing ran yet. The target never spends the job, so
+//! the next pick reads the same one; the `Placer` spends it once a child
+//! started.
 //!
-//! **The way back** (`Placer::wait`): the child is followed as any synced
-//! session is; when its turn completes, the result its log names
-//! (`handoff::ResultNote`) is fetched and landed in the supervisor's working
-//! tree (`handoff::apply_result`). A failure after the child started is
-//! the caller's, never retried (D11): `Failure`. A machine with no
-//! announcement for `OFFLINE_AFTER` and no stream has gone (R-ALLOC-9).
+//! **The way back** (`Placer::wait`). The child is followed as any synced
+//! session is; its bridge, which holds its lease, stores the result and
+//! logs `task.result` (`LogBody::TaskResult`) when the one turn completes,
+//! and the `Placer` fetches it and lands it in the working tree
+//! (`handoff::apply_result`). A failure after the child started is the
+//! caller's, never retried (D11): `Failure`. A machine with no announcement
+//! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
 //! Slice 07 builds `busy`, `ruled_out`, `choose` and the `Placer`; slice 08
 //! calls it from krowk-mcp.
@@ -38,17 +57,20 @@
 use super::announce::Announcer;
 use krowk_client::host_command::ModelChoice;
 use krowk_client::presence::{Announcement, Capacity};
-use krowk_client::protocol::{BudgetLimits, Usage};
+use krowk_client::protocol::{BudgetLimits, ModelRef, PermissionMode, Usage};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// How long a placement this supervisor made counts as an agent slot in
 /// use on its machine (D9), so calls made together spread out.
 pub const RECENT: Duration = Duration::from_secs(30);
-/// How long a `run` waits for its answer before the machine counts as
-/// silent and the next is tried (D11): the host-silence limit `krowk sync
-/// new --host` waits.
+/// How far ahead a `run`'s `notAfterMs` is: the host-silence limit `krowk
+/// sync new --host` waits (D11).
 pub const ANSWER_WAIT: Duration = Duration::from_secs(30);
+/// How much longer than `notAfterMs` the supervisor still takes a
+/// `started`: one the host sent just in time, still on its way.
+pub const ANSWER_GRACE: Duration = Duration::from_secs(5);
 /// How long a machine may go unannounced, with no stream from its child,
 /// before the task fails as gone (R-ALLOC-9): two announcement lifetimes.
 pub const OFFLINE_AFTER: Duration = Duration::from_secs(60);
@@ -85,6 +107,14 @@ impl HostPin {
     }
 }
 
+/// A session whose lease this supervisor holds, which a job's transport is
+/// stored under (`krowk_api` `put_transport` takes the holder's token).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JobStore {
+    pub session: String,
+    pub lease_token: String,
+}
+
 /// A task to place: what both callers hand `Placer::start`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TaskSpec {
@@ -96,17 +126,26 @@ pub struct TaskSpec {
     /// its state the job's, and the result lands in its working tree.
     pub cwd: PathBuf,
     pub host: Option<HostPin>,
+    /// What the call named, if anything; resolved by the `Placer` (D12).
     pub model: ModelChoice,
     /// What is left of the supervisor's tree budget (D12).
     pub budget: BudgetLimits,
+    /// The parent's own mode, which the child may only be stricter than
+    /// (D13): sent as the `run`'s `permissionMode`.
+    pub permission_mode: Option<PermissionMode>,
+    /// Where to store the job: the parent's synced session and its lease;
+    /// none for a parent that is not synced (krowk-mcp's), when the
+    /// `Placer` registers one of its own.
+    pub store: Option<JobStore>,
 }
 
 /// One machine as placement sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Candidate {
-    /// Its announcement, opened.
+    /// Its announcement, opened; for this machine, one the `Placer` makes
+    /// from its capacity read now.
     pub announcement: Announcement,
-    /// The registry lists it online.
+    /// The registry lists it online. This machine always is.
     pub online: bool,
     /// It is the supervisor's own machine.
     pub here: bool,
@@ -119,26 +158,29 @@ pub struct Candidate {
 pub struct Ask<'a> {
     /// The task's repository, normalised (`presence::normalise_origin`).
     pub origin: &'a str,
-    /// Its origin as the supervisor's clone has it, which a fix names:
-    /// `git clone <clone_url>`.
+    /// Its origin as the supervisor's clone has it, which a fix names
+    /// (`git clone <clone_url>`), with any user or password left out.
     pub clone_url: &'a str,
-    pub model: &'a ModelChoice,
+    /// The model, resolved: its instance must be ready on the machine. The
+    /// model id is not held to the announced list, which is trimmed first.
+    pub model: &'a ModelRef,
     pub host: Option<&'a HostPin>,
 }
 
 /// One machine picked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pick {
-    /// This machine: the caller runs it as it runs any subagent.
+    /// This machine.
     Here,
     /// The candidate at this index, sent a `run`.
     There(usize),
 }
 
-/// The pick, and why.
+/// The picks, and why the first.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Choice {
-    /// The pick first, then at most one to fall back on (D11).
+    /// In order: the first, at most one more machine to send to (D11),
+    /// and `Here` last when this machine can take it and is not first.
     pub picks: Vec<Pick>,
     /// Why the first, as the parent's stream says it: "this machine is
     /// busy (3 of 3 build slots in use)", "this machine has room".
@@ -151,40 +193,51 @@ pub fn busy(c: &Capacity) -> Option<String> {
     todo!("slice 07: whether {c:?} is busy")
 }
 
-/// Why `c` cannot take `ask` at all (D6, D7, D14), with the fix where
-/// there is one ("run: git clone <clone_url>"); none when it can. Slice 07
-/// builds it.
+/// Why `c` cannot take `ask` at all (see the module's docs), with the fix
+/// where there is one ("run: git clone <clone_url>"); none when it can.
+/// Slice 07 builds it.
 pub fn ruled_out(c: &Candidate, ask: &Ask<'_>) -> Option<String> {
     todo!("slice 07: whether {} can take {}", c.announcement.name, ask.origin)
 }
 
-/// The pick among `candidates` for `ask` (see the module's docs); `Err` is
-/// why none can take it, each machine's reason and fix. Slice 07 builds it.
+/// The picks among `candidates` for `ask` (see the module's docs); `Err`
+/// is why none can take it, each machine's reason and fix. Slice 07 builds
+/// it.
 pub fn choose(candidates: &[Candidate], ask: &Ask<'_>) -> Result<Choice, String> {
     todo!("slice 07: choose among {} for {}", candidates.len(), ask.origin)
 }
 
-/// A task placed.
-#[derive(Debug)]
-pub enum Placed {
-    /// On this machine: the caller runs it.
-    Here { why: String },
-    /// Sent to another, which started it.
-    There(Handle),
+/// Who runs a task placed on this machine.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Here {
+    /// The caller, as it runs any subagent (krowk's own agent):
+    /// `Progress::Here` says so.
+    Caller,
+    /// The `Placer`, as a child in a local worktree of the repository,
+    /// landed as a remote one is (krowk-mcp, which has no engine of its
+    /// own). Never through the registry.
+    Worktree,
 }
 
-/// A task running on another machine.
+/// A task started: its id, `krowk_collect`'s argument, minted at once, and
+/// the working tree its result lands in.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Handle {
-    /// The task's id, krowk_collect's argument: the child's session id.
     pub id: String,
-    /// The machine's name, and its device id in hex.
-    pub machine: String,
-    pub device: String,
-    /// Why it runs there, as the parent's stream says it.
-    pub why: String,
-    /// The working tree the result lands in.
     pub cwd: PathBuf,
+}
+
+/// Where a task is.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Progress {
+    /// Still being placed.
+    Placing,
+    /// Placed on this machine, for the caller to run (`Here::Caller`).
+    Here { why: String },
+    /// Running on `machine` as session `child`.
+    Running { machine: String, child: String, why: String },
+    /// Over, its result landed.
+    Done(Outcome),
 }
 
 /// A finished task (R-ALLOC-8): what the caller's tool result says.
@@ -217,6 +270,8 @@ pub enum Failure {
     Offline { machine: String },
     /// After the child started: the machine and the reason (D11).
     Failed { machine: String, reason: String },
+    /// No task by that id.
+    Unknown(String),
 }
 
 impl std::fmt::Display for Failure {
@@ -227,39 +282,36 @@ impl std::fmt::Display for Failure {
             Failure::TooBig => write!(f, "{}", super::handoff::JOB_TOO_BIG),
             Failure::Offline { machine } => write!(f, "{machine} went offline mid-task; its work is in a worktree there."),
             Failure::Failed { machine, reason } => write!(f, "The task failed on {machine}: {reason}"),
+            Failure::Unknown(id) => write!(f, "No task {id} was started here."),
         }
     }
 }
 
 /// The supervisor's side: places tasks and brings their results back. One
 /// per supervisor, kept for its life, so its placements of the last
-/// `RECENT` count (D9). Blocking: an async caller runs it on a blocking
-/// thread.
+/// `RECENT` count (D9) and its tasks can be collected. Blocking: an async
+/// caller waits on a blocking thread. Slice 07 adds what it keeps of its
+/// tasks.
 pub struct Placer {
     pub announcer: Announcer,
 }
 
 impl Placer {
-    pub fn new(announcer: Announcer) -> Placer {
-        Placer { announcer }
+    pub fn new(announcer: Announcer) -> Arc<Placer> {
+        Arc::new(Placer { announcer })
     }
 
-    /// `spec` placed, and started there unless here (see the module's
-    /// docs). Slice 07 builds it.
-    pub fn start(&self, spec: TaskSpec) -> Result<Placed, Failure> {
-        todo!("slice 07: place {}", spec.description)
+    /// `spec` handed over: its `Handle` at once, the placing done on a
+    /// thread of its own, `here` running a pick of this machine. Slice 07
+    /// builds it.
+    pub fn start(self: &Arc<Self>, spec: TaskSpec, here: Here) -> Handle {
+        todo!("slice 07: place {} ({here:?})", spec.description)
     }
 
-    /// `spec` sent to this machine's own host daemon as a `run`, for a
-    /// caller with no engine of its own to run a `Placed::Here` (krowk-mcp).
-    /// Slice 07 builds it.
-    pub fn start_here(&self, spec: TaskSpec) -> Result<Handle, Failure> {
-        todo!("slice 07: run {} on this machine's daemon", spec.description)
-    }
-
-    /// Up to `most` for `h` to finish: its outcome, its result landed in
-    /// `h.cwd`, or none while it still runs. Slice 07 builds it.
-    pub fn wait(&self, h: &Handle, most: Duration) -> Result<Option<Outcome>, Failure> {
+    /// Up to `most` for the task to move past placing and running: where
+    /// it is then, its result landed in `h.cwd` once done. Slice 07 builds
+    /// it.
+    pub fn wait(&self, h: &Handle, most: Duration) -> Result<Progress, Failure> {
         todo!("slice 07: wait {most:?} for {}", h.id)
     }
 }
@@ -268,6 +320,7 @@ impl Placer {
 mod tests {
     use super::*;
     use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository, Slots};
+    use krowk_client::protocol::ModelRef;
     use krowk_client::protocol::{LimitState, LimitStatus};
 
     const ORIGIN: &str = "github.com/acme/app";
@@ -298,7 +351,11 @@ mod tests {
         c.announcement.capacity.as_mut().unwrap()
     }
 
-    fn ask<'a>(model: &'a ModelChoice, host: Option<&'a HostPin>) -> Ask<'a> {
+    fn anthropic() -> ModelRef {
+        ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() }
+    }
+
+    fn ask<'a>(model: &'a ModelRef, host: Option<&'a HostPin>) -> Ask<'a> {
         Ask { origin: ORIGIN, clone_url: "https://github.com/acme/app.git", model, host }
     }
 
@@ -320,6 +377,7 @@ mod tests {
         assert_eq!(Failure::Offline { machine: "desktop".into() }.to_string(), "desktop went offline mid-task; its work is in a worktree there.");
         assert!(Failure::MachineLimit.to_string().contains("krowk billing"));
         assert!(Failure::TooBig.to_string().contains("64 MiB"));
+        assert!(Failure::Unknown("t1".into()).to_string().contains("t1"));
     }
 
     /// Slice 07 (D5): each of the four ways a machine is busy, said in
@@ -347,7 +405,7 @@ mod tests {
     #[test]
     #[ignore = "slice 07: ruled_out"]
     fn alloc_07_a_machine_is_ruled_out_for_each_reason() {
-        let none = ModelChoice::default();
+        let none = anthropic();
         assert_eq!(ruled_out(&machine("m", false), &ask(&none, None)), None);
         let mut m = machine("m", false);
         m.online = false;
@@ -358,7 +416,10 @@ mod tests {
         let mut m = machine("m", false);
         m.announcement.repositories.clear();
         assert!(ruled_out(&m, &ask(&none, None)).unwrap().contains("git clone https://github.com/acme/app.git"), "no clone, and the fix");
-        let codex = ModelChoice { instance: Some("codex".into()), model: None };
+        let token = Ask { clone_url: "https://ann:ghp_secret@github.com/acme/app.git", ..ask(&none, None) };
+        let fix = ruled_out(&m, &token).unwrap();
+        assert!(fix.contains("git clone https://github.com/acme/app.git") && !fix.contains("ghp_secret") && !fix.contains("ann@"), "never a credential: {fix}");
+        let codex = ModelRef { instance: "codex".into(), model: "gpt-5.5".into() };
         assert!(ruled_out(&machine("m", false), &ask(&codex, None)).is_some(), "no ready instance for the model");
         let mut m = machine("m", false);
         cap(&mut m).agent_slots.in_use = 7;
@@ -367,6 +428,11 @@ mod tests {
         let mut m = machine("m", false);
         m.announcement.capacity = None;
         assert!(ruled_out(&m, &ask(&none, None)).is_some(), "a host older than allocation");
+        let mut here = machine("here", true);
+        here.announcement.accepting = false;
+        here.announcement.repositories.clear();
+        assert_eq!(ruled_out(&here, &ask(&none, None)), None, "neither accepting nor a clone applies to this machine");
+        assert!(ruled_out(&here, &ask(&codex, None)).is_some(), "the model does");
     }
 
     /// Slice 07 (D4, D5, D6): here unless here is busy; then free agent
@@ -375,7 +441,7 @@ mod tests {
     #[test]
     #[ignore = "slice 07: choose"]
     fn alloc_07_work_stays_here_unless_busy_then_goes_to_the_most_room() {
-        let none = ModelChoice::default();
+        let none = anthropic();
         let (here, b, c) = (machine("here", true), machine("b", false), machine("c", false));
         let roomy = choose(&[here.clone(), b.clone(), c.clone()], &ask(&none, None)).unwrap();
         assert_eq!((roomy.picks[0], roomy.why.as_str()), (Pick::Here, "this machine has room"));
@@ -385,7 +451,7 @@ mod tests {
         let mut fewer_agents = b.clone();
         cap(&mut fewer_agents).agent_slots.in_use = 3;
         let got = choose(&[busy_here.clone(), fewer_agents.clone(), c.clone()], &ask(&none, None)).unwrap();
-        assert_eq!(got.picks, [Pick::There(2), Pick::There(1)], "most free agent slots first, one fallback");
+        assert_eq!(got.picks, [Pick::There(2), Pick::There(1), Pick::Here], "most free agent slots first, one more machine, then here");
         assert!(got.why.contains("4 of 4 build slots in use"), "{}", got.why);
 
         let mut fewer_builds = b.clone();
@@ -404,7 +470,8 @@ mod tests {
         cap(&mut fuller).agent_slots.in_use = 4;
         assert_eq!(choose(&[busy_here.clone(), limited, fuller], &ask(&none, None)).unwrap().picks[0], Pick::There(2), "an account near its limit makes a machine less preferred");
 
-        assert_eq!(choose(&[busy_here], &ask(&none, None)).unwrap().picks[0], Pick::Here, "busy, but no other machine can take it: here");
+        assert_eq!(choose(&[busy_here.clone(), b.clone()], &ask(&none, None)).unwrap().picks, [Pick::There(1), Pick::Here], "the only other machine refusing: here");
+        assert_eq!(choose(&[busy_here], &ask(&none, None)).unwrap().picks, [Pick::Here], "busy, but no other machine can take it: here");
     }
 
     /// Slice 07 (R-ALLOC-10): a pin to a machine by name, `any`, and an OS
@@ -412,14 +479,14 @@ mod tests {
     #[test]
     #[ignore = "slice 07: choose with a host pin"]
     fn alloc_07_host_pins_and_os_filters_narrow_the_pick() {
-        let none = ModelChoice::default();
+        let none = anthropic();
         let mut mac = machine("mac", false);
         mac.announcement.os = "macos".into();
         let mut idle_b = machine("b", false);
         cap(&mut idle_b).load_1m = 0.0;
         let all = [machine("here", true), idle_b, mac];
         let pin = HostPin::Machine("mac".into());
-        assert_eq!(choose(&all, &ask(&none, Some(&pin))).unwrap().picks[0], Pick::There(2));
+        assert_eq!(choose(&all, &ask(&none, Some(&pin))).unwrap().picks, [Pick::There(2)], "a pin by name has no fallback");
         assert_eq!(choose(&all, &ask(&none, Some(&HostPin::Any))).unwrap().picks[0], Pick::There(1), "any: the most room, here no more preferred");
         let macos = HostPin::Os("macos".into());
         assert_eq!(choose(&all, &ask(&none, Some(&macos))).unwrap().picks, [Pick::There(2)]);

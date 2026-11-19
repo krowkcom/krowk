@@ -114,7 +114,8 @@ pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str
 /// ready, else the fix, in the order a person meets them: `krowk machines
 /// accept on` when it is not accepting, `run: git clone <clone_url>` when it
 /// has no clone, and the instance's own fix line when no account there is
-/// ready. `clone_url` is the origin as this machine's clone has it.
+/// ready. `clone_url` is the origin as this machine's clone has it; the
+/// fix shows it with any user or password left out.
 /// Slice 03 builds it.
 pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
     todo!("slice 03: whether {} is ready for {origin} ({clone_url})", a.name)
@@ -136,6 +137,7 @@ mod tests {
         assert_eq!(fix(&a, origin, url), None, "ready");
         let unclone = Announcement { repositories: Vec::new(), ..a.clone() };
         assert_eq!(fix(&unclone, origin, url).as_deref(), Some("run: git clone git@github.com:acme/app.git"));
+        assert_eq!(fix(&unclone, origin, "https://ann:ghp_secret@github.com/acme/app.git").as_deref(), Some("run: git clone https://github.com/acme/app.git"), "never a credential");
         let off = Announcement { accepting: false, ..a.clone() };
         assert_eq!(fix(&off, origin, url).as_deref(), Some("krowk machines accept on"));
         let signed_out = Announcement { instances: vec![AnnouncedInstance { ready: false, state: "loggedOut".into(), fix: Some("run claude /login".into()), ..ready }], ..a };

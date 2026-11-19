@@ -254,7 +254,7 @@ fn r_alloc_1_an_older_hosts_record_reads_as_not_accepting() {
 #[ignore = "slice 02: normalise_origin"]
 fn alloc_02_ssh_and_https_origins_normalise_alike() {
     let want = Some("github.com/Acme/app".to_string());
-    for url in ["git@github.com:Acme/app.git", "https://github.com/Acme/app", "https://user@GitHub.com/Acme/app.git", "ssh://git@github.com/Acme/app.git", "https://github.com/Acme/app/"] {
+    for url in ["git@github.com:Acme/app.git", "https://github.com/Acme/app", "https://user@GitHub.com/Acme/app.git", "https://ann:ghp_secret@github.com/Acme/app.git", "ssh://git@github.com/Acme/app.git", "https://github.com/Acme/app/"] {
         assert_eq!(presence::normalise_origin(url), want, "{url}");
     }
     assert_eq!(presence::normalise_origin("/srv/git/app.git"), None);

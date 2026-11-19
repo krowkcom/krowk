@@ -56,33 +56,40 @@ pub enum HostCommand {
     Run(RunTask),
 }
 
-/// What a `run` carries. The prompt rides in the command, so with the
-/// rest it must seal within `MAX_SEALED`; the work rides in the job.
+/// What a `run` carries. The prompt rides in the job, not here, so a task
+/// of any length fits the registry's 16 KB for a command.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RunTask {
     /// The repository, as `presence::normalise_origin` writes it: the host
     /// runs it in the trusted directory it announced with this origin.
     pub origin: String,
-    /// The instance, the model, both or neither (D12): what neither names
-    /// the host picks as it would for a local subagent.
-    #[serde(default)]
-    pub model: ModelChoice,
-    /// The child's one turn.
-    pub prompt: String,
-    /// The sealed job (R-ALLOC-4): where it is stored and its key.
+    /// The model, resolved on the supervisor's machine (D12): what the call
+    /// named, else the default a local subagent there would run on. The
+    /// host needs that instance ready, else `no_model`.
+    pub model: ModelRef,
+    /// The sealed job (R-ALLOC-4): where it is stored and its key. The
+    /// host reads it and never spends it, so a fallback machine can read
+    /// the same job; the supervisor spends it once a child started.
     pub job: JobRef,
     /// The cap the child runs under: what is left of the supervisor's tree
     /// budget, under the budget rules of the harness it runs on (D12).
     #[serde(default)]
     pub budget: BudgetLimits,
-    /// The supervisor's device, in hex: whom the child's result is for.
+    /// The supervisor's device, in hex. The host refuses a `run` whose
+    /// `requestedBy` is not the device it came from.
     pub requested_by: String,
     /// A mode stricter than the host's own for the directory, when the
     /// supervisor asks for one. Never looser (D13): the host runs the
     /// stricter of its own and this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<PermissionMode>,
+    /// When the supervisor stops waiting for the answer and moves on (D11),
+    /// in milliseconds since the Unix epoch: `placement::ANSWER_WAIT` after
+    /// it sent the command. Past it, by the host's clock, the host neither
+    /// admits the task nor answers `started`, so a task never runs on two
+    /// machines because one was slow to answer.
+    pub not_after_ms: i64,
 }
 
 /// A model as a call may name it (D12): an instance (`claude:work`), a
@@ -131,7 +138,8 @@ pub enum RunRefusal {
     NotAccepting,
     /// The child's lease was refused as over the person's machine limit (D15).
     MachineLimit,
-    /// The job did not open, or did not apply here.
+    /// The job did not open, or did not apply here, or the `run` came past
+    /// its `notAfterMs`.
     BadJob,
 }
 
@@ -190,7 +198,7 @@ pub fn binding(id: &str, from: &DeviceId, to: &DeviceId) -> Vec<u8> {
 /// `c` sealed by `me` to the person's devices, for `to` to open, under
 /// `id`: a fresh random UUID of the sender's, which the registry keys it by.
 pub fn seal_command(c: &HostCommand, id: &str, me: &DeviceId, to: &DeviceId, keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, String> {
-    if let HostCommand::Start { prompt, .. } | HostCommand::Run(RunTask { prompt, .. }) = c
+    if let HostCommand::Start { prompt, .. } = c
         && prompt.len() > MAX_PROMPT
     {
         return Err(format!("the prompt is {} bytes, more than a host takes ({MAX_PROMPT})", prompt.len()));
@@ -225,10 +233,16 @@ pub fn open_command(sealed: &[u8], id: &str, from: &DeviceId, me: &DeviceId, key
         Ok(c) => c,
         Err(e) => return Ok(Err(HostAnswer::refused("bad_command", format!("the {kind} command does not read: {}", e.to_string().escape_debug())))),
     };
-    if let HostCommand::Start { prompt, .. } | HostCommand::Run(RunTask { prompt, .. }) = &c
+    if let HostCommand::Start { prompt, .. } = &c
         && prompt.len() > MAX_PROMPT
     {
         return Ok(Err(HostAnswer::refused("prompt_too_long", format!("the prompt is {} bytes, more than this host takes ({MAX_PROMPT}) — send a shorter one", prompt.len()))));
+    }
+    // Who the result is for is the device the command is bound to.
+    if let HostCommand::Run(RunTask { requested_by, .. }) = &c
+        && *requested_by != from.to_string()
+    {
+        return Ok(Err(HostAnswer::refused("bad_command", format!("the task says it is from {}, not from {from}, which sent it", requested_by.escape_debug()))));
     }
     // Passed on to the registry and to the transport's open.
     if let HostCommand::Run(RunTask { job, .. }) = &c

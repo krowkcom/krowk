@@ -4,16 +4,15 @@
 //! uncommitted change. A task handed over without a host runs on B from
 //! A's exact state, and its changes land in A's working tree.
 //!
-//! What the contract (slice 01) can hold already is the data path,
-//! through the placement, job and result interfaces, with no registry
-//! between the machines; slice 10 runs it across two in-process hosts
-//! against the in-memory registry, through krowk's own subagent tool and
-//! through krowk-mcp, and makes these pass.
+//! Here, the data path through the placement, job and result interfaces,
+//! with no registry between the machines. The same case through the
+//! binaries, krowk-mcp's delegate and collect and a target that drops
+//! mid-task, is `crates/krowk/tests/sync_cli.rs`'s `alloc_10_…`.
 
 #![cfg(unix)]
 
-use krowk_client::host_command::ModelChoice;
 use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository, Announcement, Capacity, Slots};
+use krowk_client::protocol::ModelRef;
 use krowk_harness::sync::handoff::{self, Bundle};
 use krowk_harness::sync::placement::{self, Ask, Candidate, Failure, Pick};
 use krowk_harness::worktree::apply::Applied;
@@ -61,7 +60,7 @@ fn machine(name: &str, here: bool, builds_in_use: u32) -> Candidate {
 #[test]
 #[ignore = "slice 10: the CI case end to end"]
 fn alloc_10_with_this_machine_busy_the_task_runs_on_the_other_and_lands_here() {
-    let model = ModelChoice::default();
+    let model = ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() };
     let ask = Ask { origin: ORIGIN, clone_url: "https://github.com/acme/app.git", model: &model, host: None };
     let choice = placement::choose(&[machine("a", true, 3), machine("b", false, 0)], &ask).unwrap();
     assert_eq!(choice.picks[0], Pick::There(1));
@@ -86,16 +85,16 @@ fn alloc_10_with_this_machine_busy_the_task_runs_on_the_other_and_lands_here() {
     let head = git(&a, &["rev-parse", "HEAD"]);
 
     let session = "0190f3c2-0000-7000-8000-00000000000a";
-    let job = Bundle::decode(&handoff::pack_job(&a, session).unwrap().encode(), session).unwrap();
+    let job = Bundle::decode(&handoff::pack_job(&a, session, "add fixed.rs").unwrap().encode(), session).unwrap();
     let on_b = handoff::apply_job(&job, &b, &root.join("b-worktrees")).unwrap();
-    let wt = on_b.worktree.path.clone();
+    let wt = on_b.applied.worktree.path.clone();
     assert_eq!(std::fs::read_to_string(wt.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "B starts from A's exact state");
     assert!(wt.join("unpushed.rs").exists());
     std::fs::write(wt.join("fixed.rs"), "fn fixed() {}\n").unwrap();
 
     let child = "0190f3c2-0000-7000-8000-00000000000b";
-    let result = Bundle::decode(&handoff::pack_result(&wt, &job.base, child).unwrap().encode(), child).unwrap();
-    let (_, landed) = handoff::apply_result(&result, &a, &root.join("a-worktrees")).unwrap();
+    let result = Bundle::decode(&handoff::pack_result(&wt, &on_b.snapshot, child).unwrap().encode(), child).unwrap();
+    let (_, landed) = handoff::apply_result(&job, &result, &a, &root.join("a-worktrees")).unwrap();
     assert!(matches!(&landed, Applied::Applied(files) if files == &["fixed.rs".to_string()]), "{landed:?}");
     assert_eq!(std::fs::read_to_string(a.join("fixed.rs")).unwrap(), "fn fixed() {}\n", "B's change is in A's working tree");
     assert_eq!(std::fs::read_to_string(a.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "A's own uncommitted change is kept");
@@ -108,9 +107,9 @@ fn alloc_10_with_this_machine_busy_the_task_runs_on_the_other_and_lands_here() {
 #[test]
 #[ignore = "slice 10: refusal and a dropped machine end to end"]
 fn alloc_10_a_refusal_moves_on_once_and_a_dropped_machine_fails_plainly() {
-    let model = ModelChoice::default();
+    let model = ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() };
     let ask = Ask { origin: ORIGIN, clone_url: "https://github.com/acme/app.git", model: &model, host: None };
     let choice = placement::choose(&[machine("a", true, 3), machine("b", false, 0), machine("c", false, 1)], &ask).unwrap();
-    assert_eq!(choice.picks, [Pick::There(1), Pick::There(2)], "B, then C once");
+    assert_eq!(choice.picks, [Pick::There(1), Pick::There(2), Pick::Here], "B, then C once, then here");
     assert_eq!(Failure::Offline { machine: "b".into() }.to_string(), "b went offline mid-task; its work is in a worktree there.");
 }

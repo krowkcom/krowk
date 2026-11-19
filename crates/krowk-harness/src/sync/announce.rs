@@ -150,6 +150,15 @@ pub fn capacity(builds: &crate::slots::Pool, agents: &crate::slots::Pool) -> pre
     todo!("slice 02: read the capacity of {} and {}", builds.dir().display(), agents.dir().display())
 }
 
+/// The allocation fields of `record` filled in before it is fitted
+/// (R-ALLOC-1, R-ALLOC-12): `capacity`; `accepting` from `policy`
+/// (`sync.accept`); and `repositories`, each of `record.directories` whose
+/// `origin` remote normalises (`presence::normalise_origin`), a directory
+/// with none left out. Slice 02 builds it, and the publisher calls it.
+pub fn fill(record: &mut Announcement, policy: &super::auto::Policy, capacity: presence::Capacity) {
+    todo!("slice 02: fill {} from the policy (accepting {}) and {capacity:?}", record.name, policy.accepting)
+}
+
 /// `a` brought within the record's bounds before it is sealed: whatever
 /// names a thing with a character the record refuses is left out (a fix
 /// line has it replaced), the lists cut to their counts, and then, while
@@ -569,6 +578,34 @@ mod tests {
         overflow.version = "v".repeat(MAX_JSON);
         fit(&mut overflow);
         assert_eq!(overflow.capacity, None, "and goes only when nothing else is left");
+    }
+
+    /// Slice 02 (R-ALLOC-1, R-ALLOC-12): the record carries the capacity,
+    /// `sync.accept` as `accepting`, and each directory with an origin as a
+    /// repository, normalised, with no credential.
+    #[test]
+    #[ignore = "slice 02: fill"]
+    fn alloc_02_the_record_carries_capacity_acceptance_and_repositories() {
+        let root = std::env::temp_dir().join(format!("krowk-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (app, plain) = (root.join("app"), root.join("plain"));
+        for d in [&app, &plain] {
+            std::fs::create_dir_all(d).unwrap();
+            assert!(std::process::Command::new("git").args(["init", "-q"]).current_dir(d).status().unwrap().success());
+        }
+        assert!(std::process::Command::new("git").args(["remote", "add", "origin", "https://ann:ghp_secret@GitHub.com/acme/app.git"]).current_dir(&app).status().unwrap().success());
+        let mut a = record();
+        a.directories = vec![app.display().to_string(), plain.display().to_string()];
+        let capacity = presence::Capacity { cores: 4, load_1m: 0.5, free_memory: 1 << 33, ..Default::default() };
+        let off = super::super::auto::policy(&|_| String::new(), Some(&serde_json::json!({"sync": {"accept": false}}))).unwrap();
+        fill(&mut a, &off, capacity);
+        assert_eq!(a.capacity, Some(capacity));
+        assert!(!a.accepting, "sync.accept false");
+        assert_eq!(a.repositories, [presence::AnnouncedRepository { directory: app.display().to_string(), origin: "github.com/acme/app".into() }], "the directory with an origin, normalised; none without");
+        let on = super::super::auto::policy(&|_| String::new(), None).unwrap();
+        fill(&mut a, &on, capacity);
+        assert!(a.accepting, "on by default");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Slice 02 (R-ALLOC-1): this machine reads its own capacity, its slot

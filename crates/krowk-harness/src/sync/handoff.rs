@@ -19,17 +19,22 @@
 //!
 //! **A job and its result** (R-ALLOC-4, R-ALLOC-6) are bundles too. A job,
 //! what a supervisor hands another machine with a `run` command, is the
-//! bundle of the supervisor's directory (all its untracked files, not only
-//! those changed since a session started) plus `commits`, a git bundle of
-//! the commits on the way to `base` that no remote has, so a branch never
-//! pushed still arrives: `pack_job`, at most `MAX_JOB` in all, and
-//! `apply_job` on the target. A result is the bundle of the child's
-//! worktree against the job's base, everything it changed, committed or
-//! not, as `diff` and `untracked`: `pack_result` on the target when the
-//! child's one turn completes, named in the child's log (`ResultNote`), and
-//! `apply_result` on the supervisor's machine, which lands it as a local
-//! worktree subagent's changes land (`crate::worktree::apply`). Both
-//! travel as transport artifacts like a handoff's.
+//! bundle of the supervisor's directory, its untracked files as `pack`
+//! takes them (`--exclude-standard`, links left out) but all of them, not
+//! only those changed since a session started; plus `commits`, a git
+//! bundle of the commits on the way to `base` that no remote has, so a
+//! branch never pushed still arrives; plus the task's `prompt`, which so
+//! never meets the 16 KB a command may be. At most `MAX_JOB` in all
+//! (`pack_job`). The target applies it into a fresh worktree and records
+//! the job's state there as a snapshot commit (`apply_job`). A result is
+//! the bundle of the child's worktree against that snapshot, so it holds
+//! the child's work alone, committed or not, as `diff` and `untracked`
+//! (`pack_result`); the child's bridge, which holds its lease, stores it
+//! when the one turn completes and logs `task.result`. The supervisor's
+//! working tree already holds the job's state, so the result lands there
+//! as a local worktree subagent's changes land (`apply_result`). Both
+//! travel as transport artifacts like a handoff's; the target never
+//! spends a job's, so a fallback machine can read the same one.
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -73,34 +78,11 @@ pub struct Bundle {
     /// or a result's bundle.
     #[serde(default, skip_serializing_if = "Vec::is_empty", with = "b64")]
     pub commits: Vec<u8>,
+    /// A job's: the task, the child's one turn. Empty in a handoff's or a
+    /// result's bundle.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub prompt: String,
 }
-
-/// What the child's log records when its one turn completes (R-ALLOC-6,
-/// R-ALLOC-14), as `RESULT_EVENT`: the result's transport and key, none
-/// when the child changed nothing, and the approvals it was denied because
-/// a remote child cannot ask. The summary is the turn's final message and
-/// its usage the turn's `turn.completed`, already in the log. Slice 06
-/// writes it as a log event of this shape.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResultNote {
-    pub turn_id: String,
-    /// The result's transport slug and key (64 hex digits), stored under
-    /// the child's session; none for an unchanged child.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub transport: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub key: Option<String>,
-    /// The job's base, which the result is against.
-    pub base: String,
-    /// Each denied approval in a line: the tool and what it asked, or the
-    /// ask rule that became a denial.
-    #[serde(default)]
-    pub denied: Vec<String>,
-}
-
-/// The log event type a `ResultNote` is recorded under.
-pub const RESULT_EVENT: &str = "task.result";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -220,39 +202,54 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
         }
         _ => None,
     };
-    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base, subdir, diff, untracked, transcript, commits: Vec::new() })
+    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base, subdir, diff, untracked, transcript, commits: Vec::new(), prompt: String::new() })
 }
 
 /// The supervisor's half of a job (R-ALLOC-4): the bundle of `cwd`'s
-/// repository at HEAD, its uncommitted changes and untracked files, and the
-/// commits no remote has, for the transport stored under `session`; fails
-/// with `JOB_TOO_BIG` past `MAX_JOB`. Slice 04 builds it.
-pub fn pack_job(cwd: &Path, session: &str) -> Result<Bundle, String> {
-    todo!("slice 04: pack the job of {} for {session}", cwd.display())
+/// repository at HEAD, its uncommitted changes, every untracked file `pack`
+/// would take, the commits no remote has, and `prompt`, for the transport
+/// stored under `session`; fails with `JOB_TOO_BIG` past `MAX_JOB`. Slice
+/// 04 builds it.
+pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, String> {
+    todo!("slice 04: pack the job of {} for {session} ({} bytes of prompt)", cwd.display(), prompt.len())
+}
+
+/// A job applied on the target: where, and the snapshot commit of its
+/// state (base, uncommitted changes and untracked files) the result is
+/// packed against.
+#[derive(Debug)]
+pub struct JobApplied {
+    pub applied: Applied,
+    pub snapshot: String,
 }
 
 /// The target's half of a job: as `apply`, a fresh worktree of `repo` at
 /// the job's base with its changes, `base` fetched from `commits` first
-/// when the clone lacks it (then from origin). Slice 04 builds it.
-pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<Applied, String> {
+/// when the clone lacks it (then from origin), and the state recorded as a
+/// snapshot commit. Slice 04 builds it.
+pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied, String> {
     todo!("slice 04: apply job {} in {} under {}", b.base, repo.display(), worktrees.display())
 }
 
 /// The child's result (R-ALLOC-6): everything the worktree at `worktree`
-/// changed against `base`, committed or not, untracked files included, for
-/// the transport stored under the child's `session`. Slice 06 builds it.
-pub fn pack_result(worktree: &Path, base: &str, session: &str) -> Result<Bundle, String> {
-    todo!("slice 06: pack the result of {} against {base} for {session}", worktree.display())
+/// changed against `snapshot`, the job's state, committed or not, new
+/// files included, for the transport stored under the child's `session`;
+/// `base` is `snapshot`. Empty when the child changed nothing. Slice 06
+/// builds it.
+pub fn pack_result(worktree: &Path, snapshot: &str, session: &str) -> Result<Bundle, String> {
+    todo!("slice 06: pack the result of {} against {snapshot} for {session}", worktree.display())
 }
 
-/// The supervisor lands a result (R-ALLOC-8, D10): it is applied into a
-/// fresh worktree of `to`'s repository at its base, under `worktrees`, and
-/// that worktree's changes to `to`'s working tree as a local subagent's are
+/// The supervisor lands `result` of `job` (R-ALLOC-8, D10). `to`'s working
+/// tree holds the job's state, so the result applies on it: through a
+/// worktree of `to`'s repository, under `worktrees`, at the job's state
+/// (the job applied and committed there) with the result on top, whose
+/// changes then go to `to`'s working tree as a local subagent's do
 /// (`Approval::Agent`: never index or HEAD, whole or not at all, kept and
 /// named on conflict, fenced paths and submodules kept). The worktree, and
 /// what came of it. Slice 07 builds it.
-pub fn apply_result(b: &Bundle, to: &Path, worktrees: &Path) -> Result<(crate::worktree::Worktree, crate::worktree::apply::Applied), String> {
-    todo!("slice 07: apply the result at {} to {} under {}", b.base, to.display(), worktrees.display())
+pub fn apply_result(job: &Bundle, result: &Bundle, to: &Path, worktrees: &Path) -> Result<(crate::worktree::Worktree, crate::worktree::apply::Applied), String> {
+    todo!("slice 07: apply the result of job {} at {} to {} under {}", job.base, result.base, to.display(), worktrees.display())
 }
 
 /// Where a session handed over landed: its worktree and the directory its
@@ -468,35 +465,37 @@ mod tests {
     /// another session's.
     #[test]
     fn r_hand_1_a_bundle_round_trips_and_names_its_session() {
-        let b = Bundle { v: BUNDLE_V1, session: "s".into(), base: "abc".into(), subdir: "".into(), diff: vec![0, 1, 255], untracked: vec![Untracked { path: "a".into(), executable: true, bytes: b"x".to_vec() }], transcript: None, commits: Vec::new() };
+        let b = Bundle { v: BUNDLE_V1, session: "s".into(), base: "abc".into(), subdir: "".into(), diff: vec![0, 1, 255], untracked: vec![Untracked { path: "a".into(), executable: true, bytes: b"x".to_vec() }], transcript: None, commits: Vec::new(), prompt: String::new() };
         assert_eq!(Bundle::decode(&b.encode(), "s").unwrap(), b);
         assert!(Bundle::decode(&b.encode(), "t").is_err());
-        assert!(!String::from_utf8(b.encode()).unwrap().contains("commits"), "a handoff's bundle is written as before");
+        let text = String::from_utf8(b.encode()).unwrap();
+        assert!(!text.contains("commits") && !text.contains("prompt"), "a handoff's bundle is written as before");
         let newer = Bundle { v: BUNDLE_V1 + 1, ..b };
         assert!(Bundle::decode(&newer.encode(), "s").unwrap_err().contains("upgrade"));
     }
 
-    /// R-ALLOC-4: a job is a bundle with its unpushed commits, and reads
-    /// back as it went in; a bundle written before jobs reads as one with
-    /// none.
+    /// R-ALLOC-4: a job is a bundle with its unpushed commits and its
+    /// prompt, and reads back as it went in; a bundle written before jobs
+    /// reads as one with neither.
     #[test]
-    fn r_alloc_4_a_job_round_trips_with_its_commits() {
-        let job = Bundle { v: BUNDLE_V1, session: "s".into(), base: "abc".into(), subdir: "sub".into(), diff: Vec::new(), untracked: Vec::new(), transcript: None, commits: b"# v2 git bundle\n\0\xff".to_vec() };
+    fn r_alloc_4_a_job_round_trips_with_its_commits_and_prompt() {
+        let job = Bundle { v: BUNDLE_V1, session: "s".into(), base: "abc".into(), subdir: "sub".into(), diff: Vec::new(), untracked: Vec::new(), transcript: None, commits: b"# v2 git bundle\n\0\xff".to_vec(), prompt: "x".repeat(64 * 1024) };
         assert_eq!(Bundle::decode(&job.encode(), "s").unwrap(), job);
-        let old = br#"{"v":1,"session":"s","base":"abc","subdir":"","diff":"","untracked":[]}"#;
-        assert!(Bundle::decode(old, "s").unwrap().commits.is_empty());
+        let old = Bundle::decode(br#"{"v":1,"session":"s","base":"abc","subdir":"","diff":"","untracked":[]}"#, "s").unwrap();
+        assert!(old.commits.is_empty() && old.prompt.is_empty());
     }
 
-    /// R-ALLOC-6: the note a child's log names its result with reads back
+    /// R-ALLOC-6: the event a child's log names its result with reads back
     /// as it went in, and an unchanged child's names no transport.
     #[test]
-    fn r_alloc_6_a_result_note_round_trips() {
-        let note = ResultNote { turn_id: "t".into(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), base: "abc".into(), denied: vec!["bash: rm -rf build".into()] };
-        let json = serde_json::to_value(&note).unwrap();
-        assert_eq!(json["turnId"], "t");
-        assert_eq!(serde_json::from_value::<ResultNote>(json).unwrap(), note);
-        let unchanged: ResultNote = serde_json::from_str(r#"{"turnId":"t","base":"abc"}"#).unwrap();
-        assert_eq!((unchanged.transport, unchanged.denied.len()), (None, 0));
+    fn r_alloc_6_a_task_result_event_round_trips() {
+        use crate::protocol::LogBody;
+        let ev = LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_1".into()), key: Some("ab".repeat(32)), against: "abc".into(), denied: vec!["bash: rm -rf build".into()] };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!((json["type"].as_str(), json["turnId"].as_str(), json["against"].as_str()), (Some("task.result"), Some("t"), Some("abc")));
+        assert_eq!(serde_json::from_value::<LogBody>(json).unwrap(), ev);
+        let unchanged: LogBody = serde_json::from_str(r#"{"type":"task.result","turnId":"t","against":"abc"}"#).unwrap();
+        assert_eq!(unchanged, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
     }
 
     /// A scratch directory of its own for `name`, empty.
@@ -518,19 +517,39 @@ mod tests {
     /// `root/<clone>`.
     fn origin_and_clone(root: &Path, clone: &str) -> PathBuf {
         let seed = root.join("seed");
-        std::fs::create_dir_all(&seed).unwrap();
-        git(&seed, &["init", "-q"]);
-        std::fs::write(seed.join("kept.txt"), "base\n").unwrap();
-        git(&seed, &["add", "."]);
-        git(&seed, &["commit", "-q", "-m", "base"]);
-        git(root, &["clone", "-q", "--bare", "seed", "origin.git"]);
+        if !seed.exists() {
+            std::fs::create_dir_all(&seed).unwrap();
+            git(&seed, &["init", "-q"]);
+            std::fs::write(seed.join("kept.txt"), "base\n").unwrap();
+            git(&seed, &["add", "."]);
+            git(&seed, &["commit", "-q", "-m", "base"]);
+            git(root, &["clone", "-q", "--bare", "seed", "origin.git"]);
+        }
         git(root, &["clone", "-q", "origin.git", clone]);
         root.join(clone)
     }
 
+    /// `b`'s changes written into the working tree at `dir`, as a result
+    /// lands: the diff applied and the new files written.
+    fn land(dir: &Path, b: &Bundle) {
+        if !b.diff.is_empty() {
+            apply_patch(dir, &b.diff).unwrap();
+        }
+        for f in &b.untracked {
+            write_untracked(dir, f).unwrap();
+        }
+    }
+
+    /// The job's state: an edit to kept.txt and a new file, uncommitted.
+    fn job_state(dir: &Path) {
+        std::fs::write(dir.join("kept.txt"), "base\njob\n").unwrap();
+        std::fs::write(dir.join("job-new.txt"), "untracked").unwrap();
+    }
+
     /// Slice 04 (R-ALLOC-4, D8): a job packed on a branch with two commits
     /// no remote has, an uncommitted change and an untracked file applies
-    /// on a clone that never saw the commits, as an identical tree.
+    /// on a clone that never saw the commits, as an identical tree, with
+    /// its state recorded as a snapshot; its prompt travels with it.
     #[test]
     #[ignore = "slice 04: pack_job and apply_job"]
     fn alloc_04_a_job_with_unpushed_commits_applies_on_a_clone_that_never_saw_them() {
@@ -542,22 +561,21 @@ mod tests {
             git(&a, &["add", "."]);
             git(&a, &["commit", "-q", "-m", n]);
         }
-        std::fs::write(a.join("kept.txt"), "base\nedited\n").unwrap();
-        std::fs::write(a.join("new.txt"), "untracked").unwrap();
+        job_state(&a);
         let head = git(&a, &["rev-parse", "HEAD"]);
-        let job = pack_job(&a, "0190f3c2-0000-7000-8000-000000000001").unwrap();
-        assert_eq!(job.base, head);
+        let job = pack_job(&a, "0190f3c2-0000-7000-8000-000000000001", "fix the test").unwrap();
+        assert_eq!((job.base.as_str(), job.prompt.as_str()), (head.as_str(), "fix the test"));
         assert!(!job.commits.is_empty(), "the unpushed commits travel");
-        let b = root.join("b");
-        git(&root, &["clone", "-q", "origin.git", "b"]);
+        let b = origin_and_clone(&root, "b");
         assert!(std::process::Command::new("git").args(["cat-file", "-e", &format!("{head}^{{commit}}")]).current_dir(&b).status().unwrap().code() != Some(0), "b has never seen it");
         let job = Bundle::decode(&job.encode(), "0190f3c2-0000-7000-8000-000000000001").unwrap();
         let landed = apply_job(&job, &b, &root.join("worktrees")).unwrap();
-        let wt = &landed.worktree.path;
-        assert_eq!(git(wt, &["rev-parse", "HEAD"]), head);
-        for (f, want) in [("one.txt", "one"), ("two.txt", "two"), ("kept.txt", "base\nedited\n"), ("new.txt", "untracked")] {
+        let wt = &landed.applied.worktree.path;
+        for (f, want) in [("one.txt", "one"), ("two.txt", "two"), ("kept.txt", "base\njob\n"), ("job-new.txt", "untracked")] {
             assert_eq!(std::fs::read_to_string(wt.join(f)).unwrap(), want, "{f}");
         }
+        assert_eq!(git(wt, &["rev-parse", &format!("{}^{{tree}}", landed.snapshot)]), git(wt, &["write-tree"]), "the snapshot is the job's state");
+        assert!(git(wt, &["merge-base", "--is-ancestor", &head, &landed.snapshot]).is_empty(), "on top of the job's base");
         let _ = std::fs::remove_dir_all(&root);
     }
 
@@ -568,40 +586,45 @@ mod tests {
         let root = scratch("job-big");
         let a = origin_and_clone(&root, "a");
         std::fs::File::create(a.join("big.bin")).unwrap().set_len(MAX_JOB + 1).unwrap();
-        assert_eq!(pack_job(&a, "0190f3c2-0000-7000-8000-000000000001").unwrap_err(), JOB_TOO_BIG);
+        assert_eq!(pack_job(&a, "0190f3c2-0000-7000-8000-000000000001", "p").unwrap_err(), JOB_TOO_BIG);
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// Slice 06 (R-ALLOC-6, D10): a child's result, committed and
-    /// uncommitted changes and new files alike, reproduces its tree on the
-    /// base; an unchanged child's result is empty.
+    /// Slice 06 (R-ALLOC-6, D10): a child's result is its work alone,
+    /// against the job's snapshot, committed and uncommitted changes and
+    /// new files alike, and lands on a working tree that holds the job's
+    /// state; an unchanged child's result is empty.
     #[test]
     #[ignore = "slice 06: pack_result"]
-    fn alloc_06_a_result_reproduces_the_childs_changes_on_the_base() {
+    fn alloc_06_a_result_is_the_childs_work_against_the_jobs_snapshot() {
         let root = scratch("result");
         let child = origin_and_clone(&root, "child");
-        let base = git(&child, &["rev-parse", "HEAD"]);
-        let unchanged = pack_result(&child, &base, "0190f3c2-0000-7000-8000-000000000002").unwrap();
+        job_state(&child);
+        git(&child, &["add", "-A"]);
+        git(&child, &["commit", "-q", "-m", "the job's state"]);
+        let snapshot = git(&child, &["rev-parse", "HEAD"]);
+        let unchanged = pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap();
         assert!(unchanged.diff.is_empty() && unchanged.untracked.is_empty(), "an unchanged child's result is empty");
         std::fs::write(child.join("committed.txt"), "c").unwrap();
         git(&child, &["add", "."]);
         git(&child, &["commit", "-q", "-m", "child"]);
-        std::fs::write(child.join("kept.txt"), "base\nchild\n").unwrap();
+        std::fs::write(child.join("kept.txt"), "base\njob\nchild\n").unwrap();
         std::fs::write(child.join("new.txt"), "n").unwrap();
-        let result = pack_result(&child, &base, "0190f3c2-0000-7000-8000-000000000002").unwrap();
-        assert_eq!(result.base, base);
-        let other = root.join("other");
-        git(&root, &["clone", "-q", "origin.git", "other"]);
-        let landed = apply(&result, &other, &root.join("worktrees")).unwrap();
-        for (f, want) in [("committed.txt", "c"), ("kept.txt", "base\nchild\n"), ("new.txt", "n")] {
-            assert_eq!(std::fs::read_to_string(landed.worktree.path.join(f)).unwrap(), want, "{f}");
+        let result = pack_result(&child, &snapshot, "0190f3c2-0000-7000-8000-000000000002").unwrap();
+        assert_eq!(result.base, snapshot);
+        assert!(result.untracked.iter().all(|f| f.path != "job-new.txt"), "the job's own files are not the child's work");
+        let parent = origin_and_clone(&root, "parent");
+        job_state(&parent);
+        land(&parent, &result);
+        for (f, want) in [("committed.txt", "c"), ("kept.txt", "base\njob\nchild\n"), ("new.txt", "n"), ("job-new.txt", "untracked")] {
+            assert_eq!(std::fs::read_to_string(parent.join(f)).unwrap(), want, "{f}");
         }
         let _ = std::fs::remove_dir_all(&root);
     }
 
     /// Slice 07 (R-ALLOC-8, D10): a result lands in the parent's working
-    /// tree, never its index or HEAD; one that conflicts is kept in a local
-    /// worktree and the files named.
+    /// tree, which holds the job's state, never its index or HEAD; one that
+    /// conflicts is kept in a local worktree and the files named.
     #[test]
     #[ignore = "slice 07: apply_result"]
     fn alloc_07_a_result_lands_in_the_working_tree_or_is_kept_on_conflict() {
@@ -609,14 +632,23 @@ mod tests {
         let root = scratch("land");
         let parent = origin_and_clone(&root, "parent");
         let base = git(&parent, &["rev-parse", "HEAD"]);
-        let patch = b"diff --git a/kept.txt b/kept.txt\n--- a/kept.txt\n+++ b/kept.txt\n@@ -1 +1,2 @@\n base\n+child\n".to_vec();
-        let result = Bundle { v: BUNDLE_V1, session: "s".into(), base: base.clone(), subdir: String::new(), diff: patch, untracked: vec![Untracked { path: "new.txt".into(), executable: false, bytes: b"n".to_vec() }], transcript: None, commits: Vec::new() };
-        let (_, landed) = apply_result(&result, &parent, &root.join("worktrees")).unwrap();
-        assert!(matches!(&landed, Landed::Applied(files) if files.contains(&"kept.txt".to_string()) && files.contains(&"new.txt".to_string())), "{landed:?}");
-        assert_eq!(std::fs::read_to_string(parent.join("kept.txt")).unwrap(), "base\nchild\n");
+        job_state(&parent);
+        let job = pack(&parent, "s", 0, None).unwrap();
+        // The child: the job's state as its snapshot, then its own work.
+        let child = origin_and_clone(&root, "child");
+        land(&child, &job);
+        git(&child, &["add", "-A"]);
+        git(&child, &["commit", "-q", "-m", "snapshot"]);
+        std::fs::write(child.join("kept.txt"), "base\njob\nchild\n").unwrap();
+        std::fs::write(child.join("new.txt"), "n").unwrap();
+        let result = pack(&child, "s", 0, None).unwrap();
+
+        let (_, landed) = apply_result(&job, &result, &parent, &root.join("worktrees")).unwrap();
+        assert!(matches!(&landed, Landed::Applied(files) if files.len() == 2 && files.contains(&"kept.txt".to_string()) && files.contains(&"new.txt".to_string())), "the child's work alone: {landed:?}");
+        assert_eq!(std::fs::read_to_string(parent.join("kept.txt")).unwrap(), "base\njob\nchild\n");
         assert_eq!(git(&parent, &["rev-parse", "HEAD"]), base, "HEAD untouched");
         assert_eq!(git(&parent, &["diff", "--cached", "--name-only"]), "", "index untouched");
-        let (kept, landed) = apply_result(&result, &parent, &root.join("worktrees")).unwrap();
+        let (kept, landed) = apply_result(&job, &result, &parent, &root.join("worktrees")).unwrap();
         assert!(matches!(&landed, Landed::Conflicts(files) if !files.is_empty()), "{landed:?}");
         assert!(kept.path.exists(), "a result that conflicts is kept in a worktree");
         let _ = std::fs::remove_dir_all(&root);

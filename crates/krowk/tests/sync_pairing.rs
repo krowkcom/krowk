@@ -584,3 +584,28 @@ fn a_removed_machine_is_told_to_join_with_new_keys() {
     assert!(!again.status.success() && err.contains("device_removed"), "{err}");
     let _ = std::fs::remove_dir_all(&r);
 }
+
+/// Slice 09 (R-ALLOC-13, D17): a join ends offering the always-on host
+/// service, yes by default, and saying the machine takes work from the
+/// person's other machines; declined here, so nothing is installed, and
+/// still said.
+#[test]
+#[ignore = "slice 09: the join's offer and line"]
+fn alloc_09_a_join_ends_offering_the_host_service_and_saying_it_takes_work() {
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("offer");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    set_up(&laptop, &api);
+    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add", "--json"]).spawn().unwrap();
+    let code = code_shown(&lines(&mut a));
+    let mut b = krowk(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
+    b.stdin.take().unwrap().write_all(format!("{code}\nn\n").as_bytes()).unwrap();
+    let b = wait(b, Duration::from_secs(60));
+    let said = format!("{}{}", String::from_utf8_lossy(&b.stdout), String::from_utf8_lossy(&b.stderr));
+    assert!(b.status.success(), "{said}");
+    assert!(said.contains("[Y/n]") && said.to_lowercase().contains("host service"), "the offer, yes by default: {said}");
+    assert!(said.contains("This machine now takes work from your other machines in trusted repositories. Turn it off with krowk machines accept off."), "{said}");
+    let _ = wait(a, Duration::from_secs(30));
+    let _ = std::fs::remove_dir_all(&r);
+}

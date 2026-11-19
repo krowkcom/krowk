@@ -1,4 +1,4 @@
-FFI_API_VERSION = 14
+FFI_API_VERSION = 15
 
 #[derive(uniffi::Object)]
 pub struct Account {
@@ -314,6 +314,13 @@ pub enum LogBody {
         fell_back: Option<String>,
     },
     SessionMoved { cwd: String, device: String, from_device: String },
+    TaskResult {
+        turn_id: String,
+        transport: Option<String>,
+        key: Option<String>,
+        against: String,
+        denied: Vec<String>,
+    },
     TurnCompleted {
         turn_id: String,
         status: TurnStatus,

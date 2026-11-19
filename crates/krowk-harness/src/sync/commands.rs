@@ -43,15 +43,21 @@
 //! `take_unfinished` and left to finish: it may hold the lease by then.
 //!
 //! **Run** (R-ALLOC-3, R-ALLOC-5): a task a supervisor hands this machine.
-//! Admitted (`admit`) before anything else, in this order: accepting (else
+//! Admitted (`admit`) before anything else, in this order: within its
+//! `notAfterMs` by this machine's clock (else `bad_job`), accepting (else
 //! `not_accepting`), a trusted directory whose origin is the task's (else
-//! `no_clone`), a ready instance for the model asked (else `no_model`),
-//! then an agent slot claimed (else `no_slot`), held until the child's turn
-//! completes. Then the job is opened and applied into a fresh worktree
-//! (`handoff::apply_job`; else `bad_job`), and the child, a full session in
-//! the host's own mode for that directory (narrowed if asked), runs the one
-//! turn; its lease refused over the machine limit is `machine_limit`.
-//! `started` carries the child's session id. Slice 05 builds it.
+//! `no_clone`), the model's instance ready here (else `no_model`), then an
+//! agent slot claimed (else `no_slot`), held until the child's turn
+//! completes. Then the job is read (never spent: a fallback machine may
+//! read it too) and applied into a fresh worktree (`handoff::apply_job`;
+//! else `bad_job`), and the child, a full session in the host's own mode
+//! for that directory (the stricter of it and the `run`'s), runs the one
+//! turn, the job's prompt; its lease refused over the machine limit is
+//! `machine_limit`. `started` carries the child's session id, and is not
+//! sent past `notAfterMs`: the child is stopped and its worktree removed
+//! instead, as the supervisor has moved on. When the turn completes, the
+//! child's bridge stores its result and logs `task.result` (slice 06).
+//! Slice 05 builds it.
 
 use super::announce::{Announcer, Options, FRESH_EVERY};
 use super::auto::Config;
@@ -311,6 +317,8 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
 /// What a host holds a `run` to before it answers (R-ALLOC-5): what it
 /// announces of itself, read now, and its agent slots.
 pub struct Admission<'a> {
+    /// This machine's clock, in milliseconds since the Unix epoch.
+    pub now_ms: i64,
     pub accepting: bool,
     pub repositories: &'a [AnnouncedRepository],
     pub instances: &'a [AnnouncedInstance],
@@ -329,7 +337,7 @@ pub struct Admitted {
 /// `task` checked against `here` in the module's order: the first check it
 /// fails is the refusal, with its fix line. Slice 05 builds it.
 pub fn admit(task: &RunTask, here: &Admission<'_>) -> Result<Admitted, (RunRefusal, String)> {
-    let _ = (task, here.accepting, here.repositories, here.instances, here.agents);
+    let _ = (task, here.now_ms, here.accepting, here.repositories, here.instances, here.agents);
     todo!("slice 05: admit a run")
 }
 
@@ -518,7 +526,7 @@ async fn hold<F: std::future::Future>(d: &Daemon, session: &str, rx: &mut tokio:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use krowk_client::host_command::{JobRef, ModelChoice};
+    use krowk_client::host_command::JobRef;
     use krowk_client::protocol::BudgetLimits;
 
     /// Slice 05 (R-ALLOC-3, R-ALLOC-5, D9, D14): each refusal in its case,
@@ -531,20 +539,21 @@ mod tests {
         let agents = crate::slots::Pool::new(runtime.clone(), crate::subagent::AGENT_SLOTS, 1);
         let repositories = [AnnouncedRepository { directory: "/home/ann/app".into(), origin: "github.com/acme/app".into() }];
         let instances = [AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: vec!["claude-opus-5-5".into()], limit: None }];
-        let here = Admission { accepting: true, repositories: &repositories, instances: &instances, agents: &agents };
+        let here = Admission { now_ms: 1_000, accepting: true, repositories: &repositories, instances: &instances, agents: &agents };
         let task = RunTask {
             origin: "github.com/acme/app".into(),
-            model: ModelChoice::default(),
-            prompt: "fix the test".into(),
+            model: crate::protocol::ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() },
             job: JobRef { session: "0190f3c2-0000-7000-8000-000000000001".into(), transport: "art_1".into(), key: "ab".repeat(32) },
             budget: BudgetLimits::default(),
             requested_by: "00".repeat(16),
             permission_mode: None,
+            not_after_ms: 31_000,
         };
         let refused = |t: &RunTask, h: &Admission<'_>| admit(t, h).map(|_| ()).unwrap_err().0;
+        assert_eq!(refused(&task, &Admission { now_ms: 31_001, ..here }), RunRefusal::BadJob, "past its deadline: the supervisor has moved on");
         assert_eq!(refused(&task, &Admission { accepting: false, ..here }), RunRefusal::NotAccepting);
         assert_eq!(refused(&RunTask { origin: "github.com/acme/other".into(), ..task.clone() }, &here), RunRefusal::NoClone);
-        assert_eq!(refused(&RunTask { model: ModelChoice { instance: Some("codex".into()), model: None }, ..task.clone() }, &here), RunRefusal::NoModel);
+        assert_eq!(refused(&RunTask { model: crate::protocol::ModelRef { instance: "codex".into(), model: "gpt-5.5".into() }, ..task.clone() }, &here), RunRefusal::NoModel);
         let admitted = admit(&task, &here).unwrap();
         assert_eq!(admitted.directory, std::path::PathBuf::from("/home/ann/app"));
         assert_eq!(admitted.model.instance, "anthropic");
