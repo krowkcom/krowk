@@ -1005,6 +1005,9 @@ mod placed {
     pub struct Counts {
         pub others: AtomicUsize,
         pub sent: Mutex<Vec<String>>,
+        /// Why the child's bridge could not store its result, if it could
+        /// not.
+        pub unstored: Option<String>,
     }
 
     pub struct Fake(pub Arc<Counts>);
@@ -1028,12 +1031,13 @@ mod placed {
         Candidate { announcement, online: true, here, placed_recently: 0 }
     }
 
-    fn done(session: &str) -> Vec<Value> {
+    fn done(session: &str, unstored: Option<String>) -> Vec<Value> {
+        let stored = unstored.is_none();
         let ev = |body| serde_json::to_value(LogEvent { id: krowk_store::new_id(), parent_id: None, session_id: session.into(), time_ms: 0, body }).unwrap();
         vec![
             ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "I added fixed.rs.".into() } }),
             ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            ev(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_result".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: git push".into()], error: None }),
+            ev(LogBody::TaskResult { turn_id: "t".into(), transport: stored.then(|| "art_result".into()), key: stored.then(|| "ab".repeat(32)), against: "snap".into(), denied: vec!["bash: git push".into()], error: unstored }),
         ]
     }
 
@@ -1074,7 +1078,7 @@ mod placed {
             Ok(Some(HostAnswer::Started { session_id: CHILD.into() }))
         }
         fn watch(&self, child: &str) -> Result<Vec<Value>, String> {
-            Ok(done(child))
+            Ok(done(child, self.0.unstored.clone()))
         }
         fn seen(&self, _: &str) -> Option<Duration> {
             Some(Duration::ZERO)
@@ -1119,6 +1123,28 @@ fn alloc_07_a_subagent_goes_to_the_machine_with_room_and_says_so() {
         assert!(answer.contains(part), "{part}: {answer}");
     }
     assert_eq!(counts.sent.lock().unwrap().as_slice(), ["b"]);
+}
+
+/// Slice 10 (D11): a child whose bridge could not store its result fails
+/// the subagent call with the machine and the reason, and nothing lands.
+#[test]
+fn alloc_10_a_result_the_child_could_not_store_fails_the_call_with_why() {
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let m = mock::serve(move |body, _| {
+        assert!(!is_child(body), "no child runs here");
+        match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "fix it", "prompt": "fix the test"}))),
+            _ => mock::Reply::sse(&mock::text_stream("It failed.")),
+        }
+    });
+    let home = Home::new("unstored", &m.url);
+    let counts = Arc::new(placed::Counts { unstored: Some("the result is over 64 MiB".into()), ..Default::default() });
+    let (_, result) = home.run_with("fix the test with a subagent", placed_agents(&counts));
+    assert_eq!(result.status, TurnStatus::Completed, "{result:?}");
+    let answer = parent_seen(&m)[1]["messages"].as_array().unwrap().last().unwrap().clone();
+    let block = &answer["content"][0];
+    assert_eq!(block["is_error"], true, "{answer}");
+    assert!(block.to_string().contains("The task failed on b: the child's result could not be stored: the result is over 64 MiB"), "{answer}");
 }
 
 /// R-ALLOC-10, D12: an agent with a tool allowlist runs here whatever the

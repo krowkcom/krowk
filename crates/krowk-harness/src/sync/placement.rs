@@ -411,10 +411,8 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
                 }
-                // The child's bridge could not pack or store the result:
-                // its changes are still in its worktree there.
                 if let Some(why) = error {
-                    return Err(why.clone());
+                    return Err(format!("the child's result could not be stored: {why}"));
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -1226,8 +1224,10 @@ mod tests {
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
-        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("the result could not be stored (too_large): smaller".into()) });
-        assert_eq!(result_of(&[done(), failed], CHILD), Err("the result could not be stored (too_large): smaller".into()), "a result the child could not store fails with why");
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
+        assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
+        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("too_large: smaller".into()) });
+        assert_eq!(result_of(&[done(), failed], CHILD), Err("the child's result could not be stored: too_large: smaller".into()), "a result the child could not store fails with why");
     }
 
     /// Slice 07 (D9): this supervisor's recent placements fill a machine's
@@ -1568,7 +1568,7 @@ mod tests {
         *f.events.lock().unwrap() = events;
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
-        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the result is over 64 MiB".into() });
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the child's result could not be stored: the result is over 64 MiB".into() });
         assert!(f.landed.lock().unwrap().is_empty());
     }
 
