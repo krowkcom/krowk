@@ -107,6 +107,9 @@ impl Writer {
         if fence == self.fence {
             return Ok(());
         }
+        // Images put under the old lease may be days old by now: the chunk
+        // that names them declares them again.
+        self.put.clear();
         let (events, reader, head) = read_all(&self.client, &self.key, &self.id, self.index.head)?;
         let staged_head = self.staged.as_ref().map(|s| Head { index: s.index, digest: e2e::chunk_digest(&s.sealed) });
         if head.is_some() && head == staged_head {
