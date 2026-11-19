@@ -555,7 +555,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(Command { subcommands: vec![machines_accept()], ..cmd("machines", "krowk machines", "Your machines, and what each can take") });
+    c.commands.push(Command { subcommands: vec![cmd("list", "krowk machines [list]", "Your machines, and what each can take"), machines_accept()], ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
     #[cfg(feature = "harness")]

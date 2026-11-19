@@ -1246,18 +1246,13 @@ stdout:
     },
     {
       "name": "machines",
-      "usage": "krowk machines",
-      "summary": "Your machines, and what each can take"
-    },
-    {
-      "name": "hosts",
-      "usage": "krowk hosts",
-      "summary": "The same as krowk machines"
-    },
-    {
-      "name": "machines",
-      "summary": "Your machines, and which of them take work",
+      "summary": "Your machines, and what each can take",
       "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk machines [list]",
+          "summary": "Your machines, and what each can take"
+        },
         {
           "name": "accept",
           "usage": "krowk machines accept on|off",
@@ -1271,6 +1266,11 @@ stdout:
           ]
         }
       ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The same as krowk machines"
     },
     {
       "name": "sync",
@@ -3070,18 +3070,13 @@ tty:
     },
     {
       "name": "machines",
-      "usage": "krowk machines",
-      "summary": "Your machines, and what each can take"
-    },
-    {
-      "name": "hosts",
-      "usage": "krowk hosts",
-      "summary": "The same as krowk machines"
-    },
-    {
-      "name": "machines",
-      "summary": "Your machines, and which of them take work",
+      "summary": "Your machines, and what each can take",
       "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk machines [list]",
+          "summary": "Your machines, and what each can take"
+        },
         {
           "name": "accept",
           "usage": "krowk machines accept on|off",
@@ -3095,6 +3090,11 @@ tty:
           ]
         }
       ]
+    },
+    {
+      "name": "hosts",
+      "usage": "krowk hosts",
+      "summary": "The same as krowk machines"
     },
     {
       "name": "sync",

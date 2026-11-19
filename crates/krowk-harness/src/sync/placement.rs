@@ -402,7 +402,7 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
     for e in events {
         match &e.body {
             LogBody::TurnCompleted { turn_id, .. } if e.session_id == child => completed = Some(turn_id),
-            LogBody::TaskResult { turn_id, transport, key, against, denied } => {
+            LogBody::TaskResult { turn_id, transport, key, against, denied, error } => {
                 if e.session_id != child {
                     return Err(format!("a task result from session {}, which is not the child {child}", e.session_id));
                 }
@@ -410,6 +410,9 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     None => return Err("the child logged its result before its turn completed".into()),
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
+                }
+                if let Some(why) = error {
+                    return Err(format!("the child's result could not be stored: {why}"));
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
