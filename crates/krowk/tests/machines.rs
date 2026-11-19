@@ -38,7 +38,6 @@ fn config(home: &Path) -> Value {
 /// and `accept on` removes it, on being the default, keeping what else the
 /// config says.
 #[test]
-#[ignore = "slice 09: krowk machines accept"]
 fn alloc_09_accept_off_and_on_set_sync_accept() {
     let home = home("accept");
     std::fs::write(home.join(".krowk/config.json"), json!({"sync": {"idleMinutes": 5}}).to_string()).unwrap();
