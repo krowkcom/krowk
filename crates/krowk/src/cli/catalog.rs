@@ -1187,6 +1187,8 @@ pub const ALL_ONLY: &[&str] = &[
     "relay",
     // Only for a person with more than one machine syncing.
     #[cfg(all(feature = "harness", unix))]
+    "machines",
+    #[cfg(all(feature = "harness", unix))]
     "hosts",
     // Upkeep the prices mostly do for themselves; its line went to `billing`.
     #[cfg(feature = "sessions")]

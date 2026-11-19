@@ -38,7 +38,6 @@ Other
   providers     Low-level instance config (add, list, rename, remove)
   worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
-  machines      Your machines, and what each can take
   config        Show or set configuration
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
@@ -1831,7 +1830,6 @@ Other
   providers     Low-level instance config (add, list, rename, remove)
   worktrees     The git worktrees krowk made for agents, across repositories
   host          The daemon sessions run in, which outlives the terminal
-  machines      Your machines, and what each can take
   config        Show or set configuration
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
