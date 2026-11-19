@@ -170,10 +170,10 @@ pub fn archive(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let (client, keys) = super::sync::vintage_keys(ctx)?;
     // On Free the vintage expires after 7 days, so the session's log stays
-    // on this machine too: the vintage is then never its only copy. A plan
-    // not known — a registry that names none, or a lookup that failed —
-    // archives as before.
-    let free = client.verify_key().is_ok_and(|k| k.plan == "free");
+    // on this machine too: the vintage is then never its only copy. A
+    // registry that names no plan archives as before; a lookup that failed
+    // stops the run, rather than risk deleting a Free session's last copy.
+    let free = client.verify_key()?.plan == "free";
     let run = krowk_harness::vintage::archive(&client, &keys, &dir, now, days, free);
     // The weeks stored before a failure are archived: their bodies leave
     // krowk.db whether or not the rest of the run went through.
@@ -215,7 +215,11 @@ pub fn restore(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     }
     let slug = &r.vintage;
     // None read: it was kept on this machine when it was archived on Free.
-    let said = if slug.is_empty() { format!("session {id} restored from this machine") } else { format!("session {id} restored from vintage {slug}") };
+    let said = match (r.already, slug.is_empty()) {
+        (true, _) => format!("session {id} is back: another krowk restored it"),
+        (false, true) => format!("session {id} restored from this machine"),
+        (false, false) => format!("session {id} restored from vintage {slug}"),
+    };
     emit_data(ctx, json!({ "restored": id, "vintage": slug, "warnings": r.warnings }), said)
 }
 
