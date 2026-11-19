@@ -1656,21 +1656,22 @@ fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
     assert!(shape(&got).iter().any(|(n, _)| n == "a"), "{got}");
 }
 
-/// With room on this machine and no host, krowk-mcp runs the task here, in
-/// a worktree of its own, and lands its file in the working tree.
+/// A task pinned to this machine runs here, in a worktree of its own, and
+/// lands its file in the working tree. (Pinned, since a loaded CI runner
+/// can be busy by the rules and so send an unpinned task away.)
 #[test]
-fn krowk_mcp_runs_a_task_here_when_this_machine_has_room() {
+fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
     let w = World::new("mcp-here");
     let (_a, b, _serve) = allocating(&w);
     std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
     std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let mut mcp = Mcp::start(&b);
-    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED}));
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
     assert!(!err, "{said}");
     let id = started["task_id"].as_str().unwrap().to_string();
     let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
     assert!(!err, "{said}");
-    assert_eq!(done["machine"], "b", "this machine has room: {done}");
+    assert_eq!(done["machine"], "b", "pinned here: {done}");
     assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "{said}");
 }
 
