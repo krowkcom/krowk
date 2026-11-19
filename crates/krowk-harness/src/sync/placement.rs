@@ -402,7 +402,7 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
     for e in events {
         match &e.body {
             LogBody::TurnCompleted { turn_id, .. } if e.session_id == child => completed = Some(turn_id),
-            LogBody::TaskResult { turn_id, transport, key, against, denied } => {
+            LogBody::TaskResult { turn_id, transport, key, against, denied, error } => {
                 if e.session_id != child {
                     return Err(format!("a task result from session {}, which is not the child {child}", e.session_id));
                 }
@@ -410,6 +410,11 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     None => return Err("the child logged its result before its turn completed".into()),
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
+                }
+                // The child's bridge could not pack or store the result:
+                // its changes are still in its worktree there.
+                if let Some(why) = error {
+                    return Err(why.clone());
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -1206,8 +1211,8 @@ mod tests {
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
-        assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
+        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("the result could not be stored (too_large): smaller".into()) });
+        assert_eq!(result_of(&[done(), failed], CHILD), Err("the result could not be stored (too_large): smaller".into()), "a result the child could not store fails with why");
     }
 
     /// Slice 07 (D9): this supervisor's recent placements fill a machine's
@@ -1344,7 +1349,7 @@ mod tests {
         vec![
             event(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "added fixed.rs".into() } }),
             event(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { output_tokens: 7, ..Usage::default() }, duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()] }),
+            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()], error: None }),
         ]
     }
 
@@ -1484,6 +1489,20 @@ mod tests {
         let h = p.start(spec(), Here::Caller);
         assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the model quit".into() });
         assert_eq!(f.sent.lock().unwrap().len(), 1, "never retried");
+    }
+
+    /// D11: a child whose result could not be packed or stored fails the
+    /// task with why, and nothing is read or landed.
+    #[test]
+    fn a_result_the_child_could_not_store_fails_the_task_with_why() {
+        let f = fleet(true, &["b"], &[("b", vec![started()])]);
+        let mut events = completed_child();
+        events[2] = event(LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "snap".into(), denied: Vec::new(), error: Some("the result is over 64 MiB".into()) });
+        *f.events.lock().unwrap() = events;
+        let p = placer(&f);
+        let h = p.start(spec(), Here::Caller);
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the result is over 64 MiB".into() });
+        assert!(f.landed.lock().unwrap().is_empty());
     }
 
     /// D9: a placement sent counts as an agent slot in use for 30 seconds,
