@@ -94,10 +94,10 @@ pub fn show_key(req: &Req) -> Resp {
         // on a paid plan exactly one set. A fixed date, so output that
         // shows it (the golden cases) does not move with the real clock.
         let at = (plan != "free").then(|| PLAN_DATE.to_string());
-        let ending = token.contains(ENDING_PLAN_KEY_MARKER);
+        let (renews, ends) = if token.contains(ENDING_PLAN_KEY_MARKER) { (None, at) } else { (at, None) };
         body.push(("can_manage_billing", Json::Raw("true".into())));
-        body.push(("plan_renews_at", Json::opt(at.clone().filter(|_| !ending))));
-        body.push(("plan_ends_at", Json::opt(at.filter(|_| ending))));
+        body.push(("plan_renews_at", Json::opt(renews)));
+        body.push(("plan_ends_at", Json::opt(ends)));
     }
     Resp::json(200, &Json::map_of(body.into_iter().map(|(k, v)| (k.to_owned(), v)).collect()))
 }
