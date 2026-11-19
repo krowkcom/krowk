@@ -464,6 +464,52 @@ pub(super) fn announcer(ctx: &mut Ctx, fresh: bool) -> Result<krowk_harness::syn
     Ok(krowk_harness::sync::announce::Announcer { api, keys: k.user, chain: k.chain, device: k.device })
 }
 
+/// The supervisor's `Placer` a subagent is placed by (R-ALLOC-10), made on
+/// the first call that asks and then kept, so its placements of the last 30
+/// seconds count: none when sync is not set up here, which never reaches the
+/// registry, so every subagent runs here as it always did. This machine's
+/// slot pools are the config's.
+pub(super) fn placer_source(f: &super::flags::Flags) -> krowk_harness::subagent::PlacerSource {
+    use krowk_harness::sync::placement::Placer;
+    // Built at most once, off the lock; a machine with no sync set up is
+    // remembered too, so its calls read nothing again.
+    let cell: Arc<std::sync::Mutex<Option<Option<Arc<Placer>>>>> = Arc::default();
+    let f = f.clone();
+    Arc::new(move || {
+        if let Some(known) = cell.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            return known;
+        }
+        let built = made(&f);
+        cell.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(built).clone()
+    })
+}
+
+/// A `Placer` over this machine's registry client, or none when sync is not
+/// set up here.
+fn made(f: &super::flags::Flags) -> Option<Arc<krowk_harness::sync::placement::Placer>> {
+    use krowk_harness::sync::{fleet::Registry as Fleet, placement::{Placer, Timing}};
+    let announcer = super::host::own_ctx(f, |ctx| ready(ctx).ok().and_then(|()| announcer(ctx, false).ok()))?;
+    let env = |k: &str| std::env::var(k).unwrap_or_default();
+    let config = super::prompt::config_json().ok()?;
+    let registry = krowk_harness::instances::Registry::resolve(&super::prompt::instances_from(&config).ok()?, &env);
+    let stop_flags = f.clone();
+    let mut fleet = Fleet::new(announcer).with_stop(Box::new(move |child| super::host::own_ctx(&stop_flags, |ctx| interrupt(ctx, child))));
+    if let (Some(builds), Some(agents)) = (registry.builds.pool.clone(), registry.agents.clone()) {
+        fleet = fleet.with_pools(builds, agents);
+    }
+    Some(Placer::with(Box::new(fleet), Timing::default()))
+}
+
+/// Interrupts the turn `session` is running, as a viewer does.
+fn interrupt(ctx: &mut Ctx, session: &str) -> Result<(), String> {
+    let k = keys(ctx).map_err(|e| e.fix())?;
+    let api = signed(ctx, &k, "krowk sync").map_err(|e| e.fix())?;
+    let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
+    let relay = relay(ctx, &api.base_url);
+    let o = krowk_harness::sync::viewer::Options { relay, env, api: Arc::new(api), device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.to_string(), known: None, addrs: None };
+    krowk_harness::sync::interrupt(o, std::time::Duration::from_secs(10))
+}
+
 /// Whether sync is set up here, as the host daemon's automatic sync asks
 /// before each bridge: this machine's device key, the person's user key and
 /// a verified device list kept, and a key to the workspace. File reads

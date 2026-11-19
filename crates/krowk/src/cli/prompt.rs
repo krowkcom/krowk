@@ -162,7 +162,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
-        agents: agents_config(ctx.io.env),
+        agents: AgentsConfig { placer: Some(super::synced::placer_source(&ctx.f)), ..agents_config(ctx.io.env) },
         session,
     };
     // R-PRES-6: the run's record, on stderr when that is a terminal: working
@@ -696,7 +696,7 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
     // WT3: a subagent's worktree, under the data directory the sandbox
     // knows krowk's worktrees by.
     let worktrees = krowk_api::home::worktrees_root(env);
-    AgentsConfig { user_dirs, models, worktrees }
+    AgentsConfig { user_dirs, models, worktrees, placer: None }
 }
 
 /// An engine failure as krowk's error: the code and its fix, with the HTTP
