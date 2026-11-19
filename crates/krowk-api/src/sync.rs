@@ -627,7 +627,9 @@ impl Client {
     /// declared, put straight to storage and finalized, each presenting the
     /// lease token. Declaring a name the session has is a no-op on the
     /// registry, so a retry after a lost answer is fine; a name that is
-    /// already ready is returned as it is, with nothing to put.
+    /// already ready is returned as it is, with nothing to put. On Free the
+    /// declare restarts the image's 7 days, and one already expired is
+    /// declared anew and put again.
     pub fn put_image_object(&self, session: &str, name: &str, sealed: &[u8], lease_token: &str) -> Result<ImageObject, Error> {
         let base = format!("/sessions/{}/images", slug_path(session));
         let body = json!({ "image": { "name": name, "byte_size": sealed.len(), "checksum": crate::client::sha256_hex(sealed), "lease_token": lease_token } });

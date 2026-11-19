@@ -74,8 +74,6 @@ pub struct Writer {
     /// name: set by the host (`with_images`), which puts each image as a
     /// sealed object before the chunk naming it.
     dir: Option<std::path::PathBuf>,
-    /// The sha256s this writer has put, so each goes once.
-    put: std::collections::HashSet<String>,
 }
 
 impl Writer {
@@ -87,7 +85,7 @@ impl Writer {
         let mut index = index;
         index.head = head;
         let sealer = ChunkSealer::new(&key, session, reader.next(), reader.previous(), fence);
-        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new(), staged: None, index_owed: false, dir: None, put: Default::default() })
+        Ok(Writer { client, key, id: id.to_string(), session, wrapped, sealer, fence, index, events, pending: Vec::new(), staged: None, index_owed: false, dir: None })
     }
 
     /// Puts the images the events name from `session_dir`'s `images/`.
@@ -226,15 +224,21 @@ impl Writer {
 
     /// R-IMG-9: each image the waiting events name, put as a sealed image
     /// object before the chunk naming it is sealed, so a reader of the log
-    /// finds every image it names. Once per image: this writer remembers
-    /// what it put, and the registry takes a name it holds as a no-op. An
-    /// image this machine has no file of (an older log's, named by number)
-    /// is passed over: a reader shows its placeholder.
-    fn put_images(&mut self, token: &str) -> Result<(), String> {
+    /// finds every image it names. Declared again each time a new chunk
+    /// names it, once per chunk: on Free an image expires 7 days after it
+    /// is declared, and declaring it again restarts them (or, once expired,
+    /// stores it anew), so an image pasted again keeps as long as the newest
+    /// chunk naming it. On a paid plan, which keeps images forever, that
+    /// declare is a no-op; the host does not know the plan, and one declare
+    /// per pasted image is cheap. An image this machine has no file of (an
+    /// older log's, named by number) is passed over: a reader shows its
+    /// placeholder.
+    fn put_images(&self, token: &str) -> Result<(), String> {
         let Some(dir) = self.dir.clone() else { return Ok(()) };
         let refs: Vec<ImageRef> = self.pending.iter().filter_map(|e| e.pointer("/item/images")).filter_map(|i| serde_json::from_value::<Vec<ImageRef>>(i.clone()).ok()).flatten().collect();
+        let mut put = std::collections::HashSet::new();
         for r in refs {
-            let Some(sha) = r.sha256.clone().filter(|s| !self.put.contains(s)) else { continue };
+            let Some(sha) = r.sha256.clone().filter(|s| !put.contains(s)) else { continue };
             // One kept before the cap was 2.75 MiB may be too large for an
             // object: passed over too, rather than holding the log up.
             let bytes = match crate::images::path(&dir, &r).map(std::fs::read) {
@@ -244,7 +248,7 @@ impl Writer {
             let Some(hash) = e2e::unhex(&sha).and_then(|h| <[u8; 32]>::try_from(h).ok()) else { continue };
             let sealed = e2e::seal_image(&self.key, &self.session, &hash, &bytes);
             self.client.put_image_object(&self.id, &e2e::image_name(&self.key, &hash), &sealed, token).map_err(api)?;
-            self.put.insert(sha);
+            put.insert(sha);
         }
         Ok(())
     }
