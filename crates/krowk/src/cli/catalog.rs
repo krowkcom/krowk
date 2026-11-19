@@ -748,6 +748,7 @@ fn mcp_command() -> Command {
     }
 }
 
+#[cfg(all(feature = "harness", unix))]
 fn machines_accept() -> Command {
     Command { args: vec![arg("state", "on or off", true)], ..cmd("accept", "krowk machines accept on|off", "Take work from your other machines, or not") }
 }

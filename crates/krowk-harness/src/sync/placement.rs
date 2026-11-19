@@ -1209,7 +1209,7 @@ mod tests {
         let first = result_of(&[done(), result(CHILD, Some("art_1"), key()), result(CHILD, Some("art_2"), key())], CHILD).unwrap().unwrap();
         assert_eq!(first.transport.as_deref(), Some("art_1"), "the first matching one");
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
-        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new() });
+        let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
     }
 
@@ -1347,7 +1347,7 @@ mod tests {
         vec![
             event(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "added fixed.rs".into() } }),
             event(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage { output_tokens: 7, ..Usage::default() }, duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
-            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()] }),
+            event(LogBody::TaskResult { turn_id: "t".into(), transport: Some("art_rslug".into()), key: Some("ab".repeat(32)), against: "snap".into(), denied: vec!["bash: rm -rf".into()], error: None }),
         ]
     }
 
