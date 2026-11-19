@@ -402,13 +402,39 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
     }
 }
 
+/// What a result over `MAX_JOB` fails with.
+pub const RESULT_TOO_BIG: &str = "The child's changes come to more than 64 MiB, so they cannot be returned. It stays in its worktree on the machine that ran it.";
+
 /// The child's result (R-ALLOC-6): everything the worktree at `worktree`
 /// changed against `snapshot`, the job's state, committed or not, new
 /// files included, for the transport stored under the child's `session`;
-/// `base` is `snapshot`. Empty when the child changed nothing. Slice 06
-/// builds it.
+/// `base` is `snapshot`. Empty when the child changed nothing. The changes
+/// are all in `diff`: the worktree's files, whatever git ignores left out,
+/// taken into an index of their own and compared with the snapshot's tree,
+/// so neither the child's index nor its commits decide what is the child's
+/// work, and the job's own files, which the snapshot holds, are not in it.
 pub fn pack_result(worktree: &Path, snapshot: &str, session: &str) -> Result<Bundle, String> {
-    todo!("slice 06: pack the result of {} against {snapshot} for {session}", worktree.display())
+    if !(snapshot.len() == 40 || snapshot.len() == 64) || !snapshot.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(format!("{snapshot:?} is not a commit id"));
+    }
+    let top = PathBuf::from(git_text(worktree, &["rev-parse", "--show-toplevel"]).map_err(|e| format!("{} is not in a git repository ({e})", worktree.display()))?);
+    let index = PathBuf::from(git_text(&top, &["rev-parse", "--absolute-git-dir"])?).join("krowk-result-index");
+    let run = |args: &[&str]| -> Result<Vec<u8>, String> {
+        let out = krowk_api::git::command(&top).and_then(|mut c| c.env("GIT_INDEX_FILE", &index).args(args).output()).map_err(|e| format!("git {}: {e}", args[0]))?;
+        if out.status.success() { Ok(out.stdout) } else { Err(format!("git {}: {}", args[0], String::from_utf8_lossy(&out.stderr).trim())) }
+    };
+    let tree = format!("{snapshot}^{{tree}}");
+    let _ = std::fs::remove_file(&index);
+    let diff = run(&["read-tree", &tree])
+        .and_then(|_| run(&["add", "--all", "--", ":/"]))
+        .and_then(|_| run(&["write-tree"]))
+        .and_then(|now| run(&["diff-tree", "-p", "--binary", "--full-index", "--no-ext-diff", "--no-textconv", "--no-renames", &tree, String::from_utf8_lossy(&now).trim()]));
+    let _ = std::fs::remove_file(&index);
+    let diff = diff?;
+    if diff.len() as u64 > MAX_JOB {
+        return Err(RESULT_TOO_BIG.to_string());
+    }
+    Ok(Bundle { v: BUNDLE_V1, session: session.to_string(), base: snapshot.to_string(), subdir: String::new(), diff, untracked: Vec::new(), transcript: None, commits: Vec::new(), prompt: String::new() })
 }
 
 /// The supervisor lands `result` of `job` (R-ALLOC-8, D10). `to`'s working
@@ -848,7 +874,6 @@ mod tests {
     /// new files alike, and lands on a working tree that holds the job's
     /// state; an unchanged child's result is empty.
     #[test]
-    #[ignore = "slice 06: pack_result"]
     fn alloc_06_a_result_is_the_childs_work_against_the_jobs_snapshot() {
         let root = scratch("result");
         let child = origin_and_clone(&root, "child");

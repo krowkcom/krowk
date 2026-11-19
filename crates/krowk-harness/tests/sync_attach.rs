@@ -1029,6 +1029,47 @@ async fn r_switch_4_a_switch_from_b_runs_the_next_turn_on_that_model() {
     assert!(call.body["messages"].to_string().contains("say hello"), "R-SWITCH-1: the first turn's text rides to the new model");
 }
 
+/// R-ALLOC-6, R-ALLOC-14: a bridge whose session is a task's child (a
+/// `task.json` in its directory) packs the worktree's changes against the
+/// job's snapshot when a turn completes, stores them sealed under the
+/// session, and logs `task.result` naming them, with the denied approvals;
+/// B opens the transport and finds the child's work alone.
+#[tokio::test]
+async fn alloc_06_a_task_childs_bridge_stores_its_result_and_logs_it() {
+    let w = World::new("alloc-06-result");
+    let (session, mut v, mut frames, _bridge) = two_instances(&w).await;
+    let tree = w.root.join("child-tree");
+    std::fs::create_dir_all(tree.join(".git")).unwrap();
+    init_repo(&tree);
+    std::fs::write(tree.join("job.txt"), "from the job\n").unwrap();
+    git(&tree, &["add", "-A"]);
+    git(&tree, &["commit", "-q", "-m", "the job's state"]);
+    let snapshot = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&tree).output().unwrap().stdout).unwrap().trim().to_string();
+    std::fs::write(tree.join("child.txt"), "the child's work\n").unwrap();
+    let dir = log::sessions_dir(&w.env()).unwrap().join(&session);
+    std::fs::write(dir.join("task.json"), serde_json::json!({"snapshot": snapshot, "worktree": tree.display().to_string(), "denied": ["bash: rm -rf build"]}).to_string()).unwrap();
+
+    v.commands.send(w.prompt(Some(&session), "and now")).unwrap();
+    let got = until(&mut v, Duration::from_secs(20), &mut frames, |u| matches!(u, viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TaskResult { .. }))).await;
+    let body = got.iter().find_map(|u| match u {
+        viewer::Update::Line(StreamLine::Log(e)) if matches!(e.body, LogBody::TaskResult { .. }) => Some(e.body.clone()),
+        _ => None,
+    });
+    let Some(LogBody::TaskResult { turn_id, transport, key, against, denied }) = body else { panic!("the bridge logged task.result") };
+    assert_eq!((against.as_str(), denied.as_slice()), (snapshot.as_str(), ["bash: rm -rf build".to_string()].as_slice()));
+    let completed = a_log(&w, &session).into_iter().rfind(|e| e["type"] == "turn.completed").unwrap();
+    assert_eq!(completed["turnId"].as_str(), Some(turn_id.as_str()), "after the turn it is the result of");
+
+    let (api, key, id, slug) = (w.client(), krowk_harness::sync::handoff::key_from_hex(&key.unwrap()).unwrap(), session.clone(), transport.unwrap());
+    let bundle = tokio::task::spawn_blocking(move || {
+        let plain = e2e::open_transport(&api.read_transport(&slug).unwrap(), &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
+        krowk_harness::sync::handoff::Bundle::decode(&plain, &id).unwrap()
+    }).await.unwrap();
+    let diff = String::from_utf8_lossy(&bundle.diff).to_string();
+    assert_eq!(bundle.base, snapshot);
+    assert!(diff.contains("child.txt") && !diff.contains("job.txt"), "the child's work alone: {diff}");
+}
+
 /// R-SWITCH-4: a switch B sends while a turn runs is acked at once and
 /// kept for after the turn, which ends on the model it began on.
 #[tokio::test]

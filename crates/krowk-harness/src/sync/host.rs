@@ -983,6 +983,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         current_turn: None,
         turn_running: false,
         handing: false,
+        packing: None,
         handoff: None,
         handed_at: None,
         refused_moving: HashSet::new(),
@@ -1094,6 +1095,10 @@ struct Hosting {
     /// A handoff under way: another is refused meanwhile, and so is every
     /// command, so nothing runs here once the work is packed.
     handing: bool,
+    /// A task child's result being packed and stored (`task_result`), on a
+    /// blocking thread: the `task.result` event it ends with. The bridge
+    /// does not stop before it is logged.
+    packing: Option<tokio::sync::oneshot::Receiver<crate::protocol::LogEvent>>,
     /// The handoff asked for, by its id: the link to answer, which a viewer
     /// that joins again moves, and the answer once there is one, sent again
     /// to a viewer that asks again.
@@ -1193,6 +1198,9 @@ impl Hosting {
                         self.current_turn = None;
                     }
                     let _ = self.jobs.send(Write::Flush);
+                    if own && !stored && self.packing.is_none() && !self.log.iter().any(|l| matches!(&l.body, LogBody::TaskResult { turn_id: t, .. } if t == turn_id)) {
+                        self.pack_result(e);
+                    }
                 }
                 LogBody::TurnStarted { permission_mode, turn_id, .. } if own => {
                     self.mode = *permission_mode;
@@ -1214,6 +1222,32 @@ impl Hosting {
             self.notify(kind, &key);
         }
         self.waiting.push(line);
+    }
+
+    /// A task child's one turn is over (R-ALLOC-6): its changes are packed
+    /// against the job's snapshot, stored sealed under this session and
+    /// named in a `task.result` event, on a blocking thread; the worktree
+    /// goes once they are stored. A session that is no task's child has
+    /// nothing to do here.
+    fn pack_result(&mut self, completed: &crate::protocol::LogEvent) {
+        if super::commands::read_task(&self.o.sessions, &self.o.session).is_none() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.packing = Some(rx);
+        let (o, held, completed) = (self.o.clone(), self.held.clone(), completed.clone());
+        tokio::task::spawn_blocking(move || match task_result(&o, &held, &completed) {
+            Ok(Some(ev)) => { let _ = tx.send(ev); }
+            Ok(None) => {}
+            // Nothing is logged and the worktree stays: its work is not lost.
+            Err(e) => eprintln!("krowk: the result of task session {} was not stored: {e}", o.session),
+        });
+    }
+
+    /// The `task.result` a packing thread ended with, logged.
+    fn packed(&mut self, ev: crate::protocol::LogEvent) {
+        self.line(StreamLine::Log(ev));
+        let _ = self.jobs.send(Write::Flush);
     }
 
     /// Asks the registry to ring the person's other devices, once per event
@@ -1776,6 +1810,7 @@ impl Hosting {
                     let Some(line) = line else { return Ok(()) };
                     self.line(line);
                 }
+                Some(ev) = packed(&mut self.packing) => self.packed(ev),
                 _ = tick.tick(), if !self.waiting.is_empty() => self.send_batch().await?,
                 Some(head) = i.heads.recv() => self.head = Some(head),
                 Some((to, a)) = i.answers.recv() => self.answer(to, a).await,
@@ -1794,6 +1829,10 @@ impl Hosting {
     /// lease given back once the writer is done. Its relay link, while it
     /// is up and no handoff took the session, and whether a viewer was here.
     async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) -> Option<(super::Ws, bool)> {
+        // A result being stored is waited for, so the log names it.
+        if let Some(rx) = self.packing.take() && let Ok(Ok(ev)) = tokio::time::timeout(PACK_WAIT, rx).await {
+            self.packed(ev);
+        }
         self.seal().await;
         drop(self.listening.take());
         drop(self.dws.take());
@@ -1816,6 +1855,56 @@ impl Hosting {
                 let _ = super::send(w, end).await;
             }
         }
+    }
+}
+
+/// How long a stopping bridge waits for a task's result to be stored.
+const PACK_WAIT: Duration = Duration::from_secs(120);
+
+/// The result being packed, once it is: none, forever, when there is none.
+async fn packed(p: &mut Option<tokio::sync::oneshot::Receiver<crate::protocol::LogEvent>>) -> Option<crate::protocol::LogEvent> {
+    match p {
+        Some(rx) => {
+            let r = rx.await.ok();
+            *p = None;
+            r
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A task child's result (R-ALLOC-6, R-ALLOC-14): the worktree's changes
+/// against the job's snapshot, sealed under a fresh key and stored under
+/// the session with its lease, then the worktree removed (its lock was
+/// let go with the turn); the `task.result` event that names them, after
+/// `completed`. A child that changed nothing stores nothing and names no
+/// transport. None when the session has no task record.
+fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::LogEvent) -> Result<Option<crate::protocol::LogEvent>, String> {
+    let Some(task) = super::commands::read_task(&o.sessions, &o.session) else { return Ok(None) };
+    let LogBody::TurnCompleted { turn_id, .. } = &completed.body else { return Ok(None) };
+    let bundle = super::handoff::pack_result(std::path::Path::new(&task.worktree), &task.snapshot, &o.session)?;
+    let (transport, key) = if bundle.diff.is_empty() && bundle.untracked.is_empty() {
+        (None, None)
+    } else {
+        let key: [u8; 32] = e2e::random();
+        let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the result could not be stored ({}): {}", e.code(), e.fix()))?;
+        (Some(t.slug), Some(super::handoff::key_hex(&key)))
+    };
+    // Stored, so the worktree has nothing left to give.
+    if let Some(root) = krowk_api::home::worktrees_root(&krowk_api::home::process_env) {
+        discard_worktree(&root, &task.worktree);
+    }
+    let body = LogBody::TaskResult { turn_id: turn_id.clone(), transport, key, against: task.snapshot, denied: task.denied };
+    Ok(Some(crate::protocol::LogEvent { id: krowk_store::new_id(), parent_id: Some(completed.id.clone()), session_id: o.session.clone(), time_ms: krowk_store::now_ms(), body }))
+}
+
+/// The worktree at `path`, if it is one krowk made under `root`, removed
+/// with its branch; one that cannot be is left for `krowk worktrees`.
+fn discard_worktree(root: &std::path::Path, path: &str) {
+    if let Ok(listed) = crate::worktree::manage::find(root, path) && let Some(w) = listed.worktree() {
+        let _ = crate::worktree::discard(&w);
     }
 }
 
@@ -1889,6 +1978,28 @@ fn rejoin_wait(rng: &mut u64) -> Duration {
 
 #[cfg(test)]
 mod tests {
+
+    /// R-ALLOC-6: a finished task's worktree is removed once its result is
+    /// stored, and a path that is none of krowk's is left alone.
+    #[test]
+    fn alloc_06_a_stored_tasks_worktree_is_removed() {
+        let root = std::env::temp_dir().join(format!("krowk-alloc-06-discard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(&repo).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let head = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout).unwrap().trim().to_string();
+        let (wt, held) = crate::worktree::create_at(&repo, &root.join("worktrees"), "s", &head).unwrap();
+        drop(held);
+        std::fs::write(wt.path.join("child.txt"), "x").unwrap();
+        discard_worktree(&root.join("worktrees"), &repo.display().to_string());
+        assert!(repo.exists() && wt.path.exists(), "a path that is no worktree of krowk's stays");
+        discard_worktree(&root.join("worktrees"), &wt.path.display().to_string());
+        assert!(!wt.path.exists(), "the worktree is gone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use super::*;
 
     /// Fifty bridges, each seeded by its session, draw their rejoins
