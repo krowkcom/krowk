@@ -1234,9 +1234,28 @@ fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_
     rt().block_on(async { assert_eq!(home.client().await.pairing_offer().await.unwrap(), None) });
     daemon.join().unwrap().unwrap();
 
-    // A host whose keys cannot be read: the request is taken up and fails,
-    // and the failure is what a client is told.
-    let introductions = Introductions::new(Box::new(|| Err(("not_set_up".into(), "no keys".into()))));
+    // A host that is not on the list its keys are checked against: the
+    // request is taken up and refused before any call, and the refusal is
+    // what a client is told.
+    let device = krowk_client::e2e::DeviceKey::generate();
+    let signing = krowk_client::e2e::SigningKey::generate();
+    let listed = krowk_client::e2e::DeviceKey::generate();
+    let listed_signing = krowk_client::e2e::SigningKey::generate();
+    let subject = krowk_client::device_chain::Subject { kind: krowk_client::device_chain::Kind::Device, name: "other".into(), os: "Linux".into(), device: listed.public(), signing: listed_signing.public() };
+    let (chain, start) = krowk_client::device_chain::Chain::start(subject, &listed_signing, None, 1_790_000_000).unwrap();
+    let id = device.id();
+    let secret = signing.secret_bytes().to_vec();
+    let introductions = Introductions::new(Box::new(move || {
+        Ok(krowk_harness::sync::introduce::Introducer {
+            api: Arc::new(krowk_api::Client::new("http://127.0.0.1:9", "krowk_sk_x")),
+            keys: krowk_client::user_key::UserKeys::new(start.newest.clone(), []).unwrap(),
+            chain: chain.clone(),
+            entries: start.entries.clone(),
+            device: id,
+            signing: krowk_client::e2e::SigningKey::from_secret(&secret).unwrap(),
+            keep: None,
+        })
+    }));
     let daemon = home.serve_hooked("test", Some(Duration::from_millis(400)), None, Hooks { introductions: Some(introductions.clone()), ..Hooks::default() });
     rt().block_on(async {
         let c = home.client().await;
@@ -1249,7 +1268,7 @@ fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_
             tokio::time::sleep(Duration::from_millis(10)).await;
         };
         assert_eq!(offer.stage, krowk_harness::protocol::OfferStage::Failed);
-        assert!(offer.note.contains("not_set_up") && offer.code.is_empty(), "{offer:?}");
+        assert!(offer.note.contains("not on your device list") && offer.code.is_empty(), "{offer:?}");
         let refused = c.pairing_answer(&offer.pairing, true).await.unwrap_err();
         assert_eq!(refused.code, "no_pairing_offer");
     });
