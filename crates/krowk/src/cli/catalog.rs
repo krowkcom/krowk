@@ -1347,7 +1347,8 @@ mod tests {
         let want: Vec<&str> = want.iter().copied().filter(|n| cfg!(unix) || *n != "machines").filter(|n| cfg!(feature = "sessions") || *n != "sessions").collect();
         assert_eq!(shown, want);
         // The catalog says the same: every other command is hidden.
-        for cmd in &c.commands {
+        // (A build without `sessions` still names `sessions` and `pricing`.)
+        for cmd in c.commands.iter().filter(|c| cfg!(feature = "sessions") || !matches!(c.name.as_str(), "sessions" | "pricing")) {
             assert_eq!(cmd.hidden, !shown.contains(&cmd.name.as_str()), "{}", cmd.name);
         }
     }
@@ -1372,19 +1373,22 @@ mod tests {
     /// router's own source is read.)
     #[test]
     fn every_hidden_command_still_routes() {
-        let router = include_str!("mod.rs");
+        let source = include_str!("mod.rs");
+        // Only the router's own match arms: the flag checks elsewhere in the
+        // file spell the same words.
+        let router: Vec<&str> = source[source.find("fn dispatch(").unwrap()..].lines().filter(|l| l.contains("=>")).collect();
         let c = catalog("dev");
         let mut checked = 0;
         for leaf in c.leaves().iter().filter(|l| l.hidden && l.name != "help") {
             let words: Vec<String> = leaf.name.split(' ').map(|w| format!("\"{w}\"")).collect();
             let arm = format!("[{}", words.join(", "));
             let alone = format!("[{}]", words.join(", "));
-            assert!(router.contains(&arm) || router.contains(&alone), "no route for hidden `krowk {}`", leaf.name);
+            assert!(router.iter().any(|l| l.contains(&arm) || l.contains(&alone)), "no route for hidden `krowk {}`", leaf.name);
             checked += 1;
         }
         assert!(checked >= 10, "{checked}");
         // `help` routes before dispatch.
-        assert!(router.contains("positionals[0] == \"help\""));
+        assert!(source.contains("positionals[0] == \"help\""));
     }
 
     #[test]
