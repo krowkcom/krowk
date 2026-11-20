@@ -53,11 +53,16 @@ fn is_machine(d: &Device) -> bool {
     d.kind == Kind::Device && !matches!(d.os.to_ascii_lowercase().as_str(), "ios" | "ipados" | "android")
 }
 
-/// D5's rule, the one place it is decided (`krowk machines`, the TUI's status
-/// line, `krowk doctor`): remind while the person has fewer than two
-/// machines and the list has no recovery kit.
+/// How many machines a list names, phones not counted.
+pub(super) fn machines_on(chain: &Chain) -> usize {
+    chain.devices().iter().filter(|d| is_machine(d)).count()
+}
+
+/// D5's rule for a device list (`krowk machines`, the TUI's status line,
+/// `krowk doctor`): remind while the person has fewer than two machines and
+/// the list has no recovery kit. The rule itself is `health::reminder_due`.
 pub(super) fn reminder_due(chain: &Chain) -> bool {
-    chain.recovery().is_none() && chain.devices().iter().filter(|d| is_machine(d)).count() < 2
+    super::health::reminder_due(machines_on(chain), chain.recovery().is_some())
 }
 
 /// `reminder_due` for the device list this machine keeps, as it last
