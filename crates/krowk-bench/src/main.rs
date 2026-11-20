@@ -16,8 +16,6 @@ mod budgets;
 #[cfg(target_os = "linux")]
 mod idle;
 mod measure;
-#[cfg(target_os = "linux")]
-mod tui;
 
 use budgets::{Outcome, Status, Verdict};
 #[cfg(target_os = "linux")]
@@ -74,10 +72,8 @@ fn main() {
     let (lean, full, work) = (abs(&args.lean), abs(&args.full), abs(&args.work));
 
     let target = budgets::host_target();
-    // The three idle budgets are read off one idle process, measured once;
-    // the TUI's two off another.
+    // The three idle budgets are read off one idle process, measured once.
     let mut idle: Option<Result<Idle, String>> = None;
-    let mut tui_idle: Option<Result<Idle, String>> = None;
     let mut rows = Vec::new();
     for b in &file.budget {
         let outcome = match b.status {
@@ -104,20 +100,6 @@ fn main() {
                         match sample {
                             Ok(s) if b.id == "engine.idle_cpu" => Outcome::Measured { value: s.ticks as f64, note },
                             Ok(s) if b.id == "engine.idle_wakeups" => Outcome::Measured { value: s.wakeups as f64, note },
-                            Ok(s) => Outcome::Measured { value: s.rss_mb, note: String::new() },
-                            Err(e) if e == NOT_LINUX => Outcome::Skipped(e.clone()),
-                            Err(e) => Outcome::Error(e.clone()),
-                        }
-                    }
-                    "tui.startup_cold" | "tui.startup_warm" | "tui.redraw_fps" | "session.replay_rss" => tui_measure(&b.id, &full, &measure::fresh_dir(&work, &b.id), runs),
-                    "tui.turn_cpu" => tui_turn_cpu(&full, &measure::fresh_dir(&work, "tui-turn"), Duration::from_secs(b.window_s.unwrap_or(5))),
-                    "tui.idle_cpu" | "tui.idle_rss" => {
-                        let window = Duration::from_secs(b.window_s.unwrap_or(10));
-                        let sample = tui_idle.get_or_insert_with(|| tui_idle_sample(&full, &measure::fresh_dir(&work, "tui-idle"), window));
-                        match sample {
-                            // Wakeups have no budget of their own for the
-                            // TUI yet; they are printed beside the ticks.
-                            Ok(s) if b.id == "tui.idle_cpu" => Outcome::Measured { value: s.ticks as f64, note: format!("{} s window, {} wakeups", window.as_secs(), s.wakeups) },
                             Ok(s) => Outcome::Measured { value: s.rss_mb, note: String::new() },
                             Err(e) if e == NOT_LINUX => Outcome::Skipped(e.clone()),
                             Err(e) => Outcome::Error(e.clone()),
@@ -155,44 +137,6 @@ fn main() {
         eprintln!("{} budget(s) broken. A number in {} changes only with a line of justification in the PR.", failed.len(), args.budgets.display());
         exit(1);
     }
-}
-
-/// The TUI's timings and peak memory, run on a pseudo-terminal. Linux only
-/// for now: the replay's peak is read from /proc, and one runner class
-/// holds all of them.
-#[cfg(target_os = "linux")]
-fn tui_measure(id: &str, full: &std::path::Path, home: &std::path::Path, runs: usize) -> Outcome {
-    match id {
-        "tui.startup_cold" => tui::startup(full, home, runs, false),
-        "tui.startup_warm" => tui::startup(full, home, runs, true),
-        "tui.redraw_fps" => tui::redraw(full, home),
-        _ => tui::replay_rss(full, home),
-    }
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tui_measure(_: &str, _: &std::path::Path, _: &std::path::Path, _: usize) -> Outcome {
-    Outcome::Skipped(NOT_LINUX.into())
-}
-
-#[cfg(target_os = "linux")]
-fn tui_turn_cpu(bin: &std::path::Path, home: &std::path::Path, window: Duration) -> Outcome {
-    tui::turn_cpu(bin, home, window)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tui_turn_cpu(_: &std::path::Path, _: &std::path::Path, _: Duration) -> Outcome {
-    Outcome::Skipped(NOT_LINUX.into())
-}
-
-#[cfg(target_os = "linux")]
-fn tui_idle_sample(bin: &std::path::Path, home: &std::path::Path, window: Duration) -> Result<Idle, String> {
-    tui::idle(bin, home, window)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn tui_idle_sample(_: &std::path::Path, _: &std::path::Path, _: Duration) -> Result<Idle, String> {
-    Err(NOT_LINUX.into())
 }
 
 #[cfg(not(target_os = "linux"))]

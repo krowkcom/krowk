@@ -302,8 +302,8 @@ id = "startup.version"
 req = "R-PERF-1"
 what = "Agent build: `krowk --version`, cold process"
 unit = "ms"
-# ~2.3 ms locally. A tripwire well under R-PERF-1's 150 ms cold prompt:
-# nothing krowk does before its prompt may cost more than printing a version.
+# ~2.3 ms locally. A tripwire: nothing krowk does before its prompt may cost
+# more than printing a version.
 max = 15
 runs = 21
 status = "enforced"
@@ -315,31 +315,6 @@ what = "Full build: `krowk sessions` on an empty store, cold process"
 unit = "ms"
 # ~3.5 ms locally: opening krowk.db and listing it, the picker's first step.
 max = 30
-runs = 21
-status = "enforced"
-
-[[budget]]
-id = "tui.startup_cold"
-req = "R-PERF-1"
-what = "Bare `krowk` to an interactive prompt, no daemon running"
-unit = "ms"
-# Spawn to the first complete frame (the end of the first synchronized
-# update), which is the prompt, on a pseudo-terminal answering the cursor
-# query; the startup connectivity probe is not waited for. Since ticket 13b
-# the TUI starts the host daemon and connects to it first: that is in here.
-max = 150
-runs = 21
-status = "enforced"
-
-[[budget]]
-id = "tui.startup_warm"
-req = "R-PERF-1"
-what = "Bare `krowk` to an interactive prompt, daemon warm"
-unit = "ms"
-# Spawn to the first complete frame with the host daemon already up: the
-# TUI connects over its socket, says hello and asks its status before it
-# draws. Turned on by ticket 13b, when the TUI became the daemon's client.
-max = 50
 runs = 21
 status = "enforced"
 
@@ -370,56 +345,10 @@ id = "engine.idle_rss"
 req = "R-PERF-3"
 what = "`krowk -p` waiting on a silent provider: resident memory"
 unit = "MB"
-# The engine alone, held to the TUI-plus-engine number: if the engine does
-# not fit, the pair cannot.
+# The whole process, held to the 30 MB the TUI-plus-engine pair once had: a
+# silent provider's turn is the most idle the engine gets.
 max = 30
 window_s = 10
-status = "enforced"
-
-[[budget]]
-id = "tui.idle_cpu"
-req = "R-PERF-2"
-what = "TUI with an idle session: CPU ticks over 10 s"
-unit = "ticks"
-# At its prompt, nothing running, the start-up probe answered: the crossterm
-# reader parked on the terminal and the runtime on nothing. Wakeups are
-# printed beside it.
-max = 0
-window_s = 10
-status = "enforced"
-
-[[budget]]
-id = "tui.turn_cpu"
-req = "R-PERF-2"
-what = "TUI with a turn waiting on a silent provider: CPU ticks over 5 s"
-unit = "ticks"
-# Not idle — a turn is running, so the clock and spinner redraw at 8 fps
-# (40 frames in the window) — but nothing else happens, and a frame of a
-# few rows costs well under a tick: 0-1 measured. 10 ticks is 2% of one
-# core; a deadline that has fallen into the past, which spins the loop and
-# redraws at 60 fps, is hundreds.
-max = 10
-window_s = 5
-status = "enforced"
-
-[[budget]]
-id = "tui.idle_rss"
-req = "R-PERF-3"
-what = "TUI plus engine with an idle session: resident memory"
-unit = "MB"
-# The same idle TUI: the whole process, engine and runtime included.
-max = 30
-status = "enforced"
-
-[[budget]]
-id = "session.replay_rss"
-req = "R-PERF-3"
-what = "TUI plus engine replaying a synthetic 200k-token session: peak resident memory"
-unit = "MB"
-# `krowk --resume` on a synthetic session of 100 turns and 200k tokens of
-# answer: the history drawn into scrollback, then one more turn that sends
-# all of it to the provider. VmHWM, the process's peak.
-max = 100
 status = "enforced"
 
 # --- The session log ---
@@ -483,16 +412,6 @@ runs = 1
 status = "enforced"
 
 # --- Rendering and remote ---
-
-[[budget]]
-id = "tui.redraw_fps"
-req = "R-PERF-4"
-what = "TUI under a synthetic token stream: redraws per second"
-unit = "fps"
-# The most frames begun inside any one second while an answer streams at
-# 500 tokens a second (one delta every 2 ms, for about four seconds).
-max = 60
-status = "enforced"
 
 [[budget]]
 id = "remote.attach"

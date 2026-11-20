@@ -309,13 +309,8 @@ mod tests {
         let f = parse(include_str!("../budgets.toml")).expect("budgets.toml parses");
         let find = |id: &str| f.budget.iter().find(|b| b.id == id).unwrap_or_else(|| panic!("budgets.toml has no {id}"));
         let spec: &[(&str, &str, f64)] = &[
-            ("tui.startup_warm", "R-PERF-1", 50.0),
-            ("tui.startup_cold", "R-PERF-1", 150.0),
-            ("tui.idle_cpu", "R-PERF-2", 0.0),
             ("engine.idle_cpu", "R-PERF-2", 0.0),
-            ("tui.idle_rss", "R-PERF-3", 30.0),
-            ("session.replay_rss", "R-PERF-3", 100.0),
-            ("tui.redraw_fps", "R-PERF-4", 60.0),
+            ("engine.idle_rss", "R-PERF-3", 30.0),
             ("log.append", "R-PERF-5", 1000.0),
             ("remote.attach", "R-PERF-6", 500.0),
         ];
@@ -324,7 +319,7 @@ mod tests {
             assert_eq!(b.req, *req, "{id}");
             assert_eq!(b.max.for_target("x86_64-linux"), Some(*n), "{id} holds the spec's number");
         }
-        for req in ["R-PERF-1", "R-PERF-2", "R-PERF-3", "R-PERF-4", "R-PERF-5", "R-PERF-6", "R-PKG-2"] {
+        for req in ["R-PERF-1", "R-PERF-2", "R-PERF-3", "R-PERF-5", "R-PERF-6", "R-PKG-2"] {
             assert!(f.budget.iter().any(|b| b.req == req), "budgets.toml has nothing for {req}");
         }
         for id in [
@@ -333,12 +328,6 @@ mod tests {
             "log.append",
             "engine.idle_cpu",
             "context.tokens",
-            "tui.startup_cold",
-            "tui.idle_cpu",
-            "tui.turn_cpu",
-            "tui.idle_rss",
-            "tui.redraw_fps",
-            "session.replay_rss",
             "remote.attach",
             "remote.resume",
         ] {

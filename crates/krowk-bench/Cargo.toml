@@ -21,5 +21,3 @@ krowk-devregistry = { path = "../krowk-devregistry" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
-# The TUI's budgets run the full build on a pseudo-terminal.
-libc = "0.2"
