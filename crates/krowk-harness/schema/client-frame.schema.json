@@ -368,7 +368,7 @@
       ]
     },
     {
-      "description": "Asks the daemon to exit — `krowk host stop`, or `krowk host enable`\nhanding over to the service. Refused with `host_busy` while a turn\nruns, and with `host_in_use` while another client is connected\nunless `force` (a TUI connected to it reconnects to the next one);\nanswered by `done` just before it goes.",
+      "description": "Asks the daemon to exit — `krowk host stop`, or `krowk machines always-on on`\nhanding over to the service. Refused with `host_busy` while a turn\nruns, and with `host_in_use` while another client is connected\nunless `force` (a TUI connected to it reconnects to the next one);\nanswered by `done` just before it goes.",
       "type": "object",
       "properties": {
         "id": {
