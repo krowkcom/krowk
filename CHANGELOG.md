@@ -165,6 +165,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
   or the refusal with `billing_contacts`. `krowk upgrade` still updates krowk
   itself.
 
+### Security
+
+- **Trusting a repository now fingerprints every file that can run code.**
+  Before, only `.mcp.json` was watched, so a `git pull` that changed a Claude
+  hook, a command, an agent or Codex's config ran under the old yes. Now the
+  record also covers Claude's project settings, hook scripts, commands, agents
+  and skills, krowk's agent definitions and everything under `.codex`; when any
+  of them is added or changed, krowk asks again and names the file.
+  `.claude/settings.local.json` is not in git and never asks. Repositories you
+  trusted before upgrade without a question for files that have not changed
+  since you trusted them, and are asked about the ones that have.
+
 ### Changed
 
 - **A removed machine can start over without moving files by hand.** `krowk

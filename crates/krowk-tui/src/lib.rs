@@ -290,6 +290,9 @@ pub struct TrustAsk {
     /// Why it cannot be trusted for good (the home directory, `/`); then
     /// nothing is asked.
     pub refuses: Option<String>,
+    /// The files of it that changed since it was trusted, when it was:
+    /// named when it is asked about again.
+    pub changed: Vec<String>,
     /// Trusts it: for this run, and remembered when it can be — an error
     /// when it could not be.
     pub accept: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -2009,6 +2012,7 @@ impl<'h> Ui<'h> {
                 None => {
                     let runs = krowk_harness::trust::what_runs(&t.root);
                     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+                    let has = if t.changed.is_empty() { has } else { format!("{has} You trusted it before; {} changed since.", t.changed.join(", ")) };
                     let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? `y` trusts it, `n` or `esc` does not", home_relative(&t.root).replace('`', "'"));
                     self.needs_trust = Some((m.clone(), q));
                     if self.held.is_some() {
