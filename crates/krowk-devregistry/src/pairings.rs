@@ -95,6 +95,11 @@ impl Pairing {
         matches!(self.state, State::Open | State::Confirmed)
     }
 
+    /// Live and within its window: what a request made now would join.
+    pub fn live_at(&self, now: Timestamp) -> bool {
+        self.live() && self.expires_at > now
+    }
+
     fn gone(&self, now: Timestamp) -> bool {
         self.state == State::Dead || self.expires_at <= now
     }
@@ -180,6 +185,7 @@ pub fn open(app: &App, req: &mut Req) -> Resp {
         };
         s.sync.seq += 1;
         let resp = Resp::json(201, &serialize(&p));
+        crate::pairing_requests::answered(&mut s.sync, &p.person, now);
         s.sync.pairings.insert(p.slug.clone(), p);
         Ok(resp)
     };
