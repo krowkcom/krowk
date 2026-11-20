@@ -914,7 +914,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sessions attach <id>",
-          "summary": "Follow a session on another machine in the TUI, or as stream-json",
+          "summary": "Follow a session on another machine, live",
           "args": [
             {
               "name": "id",
@@ -2799,7 +2799,7 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sessions attach <id>",
-          "summary": "Follow a session on another machine in the TUI, or as stream-json",
+          "summary": "Follow a session on another machine, live",
           "args": [
             {
               "name": "id",

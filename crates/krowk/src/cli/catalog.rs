@@ -585,7 +585,7 @@ pub fn catalog(version: &str) -> Catalog {
 fn machine_commands() -> Vec<Command> {
     let id = || vec![arg("id", "The session's id, as `krowk sessions` lists it", true)];
     vec![
-        Command { args: id(), ..cmd("attach", "krowk sessions attach <id>", "Follow a session on another machine in the TUI, or as stream-json") },
+        Command { args: id(), ..cmd("attach", "krowk sessions attach <id>", "Follow a session on another machine, live") },
         Command { args: id(), ..cmd("take", "krowk sessions take <id>", "Move a live session here, uncommitted work and all") },
         Command {
             args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
