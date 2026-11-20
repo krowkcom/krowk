@@ -82,6 +82,27 @@ pub(super) fn ask(ctx: &mut Ctx, question: &str) -> Result<bool, Error> {
     inquire::Confirm::new(question).prompt().map_err(|_| fail("selection_cancelled", "not answered, so nothing was done"))
 }
 
+/// One answer from a line of keys, in plain text on stderr: `title`, then
+/// the keys and what each does, read as a line from stdin — `""` for Enter
+/// alone, else the line trimmed and lowercased, `"esc"` at the end of input.
+/// The debug build's test suite answers with the next stand-in answer
+/// instead.
+pub(super) fn ask_key(ctx: &mut Ctx, title: &str, options: &[(&str, &str)]) -> String {
+    use std::io::BufRead as _;
+    if let Some(a) = test_answer(ctx) {
+        return a;
+    }
+    let keys: Vec<String> = options.iter().map(|(k, what)| format!("[{k}] {what}")).collect();
+    let _ = write!(ctx.io.stderr, "\n{title}\n{}{}", if keys.is_empty() { "" } else { "  " }, keys.join("   "));
+    let _ = write!(ctx.io.stderr, " ");
+    let _ = ctx.io.stderr.flush();
+    let mut line = String::new();
+    match std::io::stdin().lock().read_line(&mut line) {
+        Ok(0) | Err(_) => "esc".into(),
+        Ok(_) => line.trim().to_ascii_lowercase(),
+    }
+}
+
 /// A line from the person.
 pub(super) fn ask_line(ctx: &mut Ctx, prompt: &str) -> Result<String, Error> {
     if let Some(a) = test_answer(ctx) {

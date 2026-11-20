@@ -46,6 +46,10 @@ impl Home {
     }
 
     fn config(&self) -> HostConfig {
+        self.config_with(krowk_harness::subagent::AgentsConfig::none())
+    }
+
+    fn config_with(&self, agents: krowk_harness::subagent::AgentsConfig) -> HostConfig {
         HostConfig {
             sessions_dir: log::sessions_dir(&self.env()).unwrap(),
             cwd: self.repo(),
@@ -64,9 +68,20 @@ impl Home {
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             permissions: Default::default(),
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents,
             session: Default::default(),
         }
+    }
+
+    /// One prompt, run with `agents` as the subagents' config.
+    fn run_with(&self, prompt: &str, agents: krowk_harness::subagent::AgentsConfig) -> (Vec<StreamLine>, RunResult) {
+        let mut out = Vec::new();
+        let reg = Registry::resolve(&InstancesConfig::default(), &self.env());
+        let opts = headless::Options { rollover: None, images: Vec::new(), prompt: prompt.into(), resume: None, model: Some(reg.parse_model("claude-sonnet-4-6").unwrap()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None, format: OutputFormat::StreamJson, worktree: None };
+        let outcome = headless::run(self.config_with(agents), opts, &mut out);
+        assert!(outcome.error.is_none(), "{:?}", outcome.error);
+        let lines: Vec<StreamLine> = String::from_utf8(out).unwrap().lines().map(|l| serde_json::from_str(l).unwrap_or_else(|e| panic!("{e}: {l}"))).collect();
+        (lines, outcome.result.unwrap())
     }
 
     fn run(&self, prompt: &str, resume: Option<&str>) -> (Vec<StreamLine>, RunResult) {
@@ -967,4 +982,192 @@ fn r_steer_4_interrupting_after_the_move_interrupts_the_moved_child() {
     assert_eq!(result.status, TurnStatus::Interrupted);
     let events = log::read_events(&log::sessions_dir(&home.env()).unwrap().join(&slow).join(log::EVENTS_FILE)).unwrap();
     assert!(matches!(&events.last().unwrap().body, LogBody::TurnCompleted { status: TurnStatus::Interrupted, .. }), "{:?}", events.last());
+}
+
+/// A fleet of two machines for the `subagent` tool's placement: this one
+/// with every build slot in use, and `b`, which takes the task and finishes
+/// it, its changes landing in the working tree.
+mod placed {
+    use krowk_client::host_command::{HostAnswer, JobRef, ModelChoice, RunTask};
+    use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository, Announcement, Capacity, Slots};
+    use krowk_client::protocol::{Item, LogBody, LogEvent, ModelRef, TurnStatus, Usage};
+    use krowk_harness::sync::handoff::Bundle;
+    use krowk_harness::sync::placement::{Candidate, Fleet, JobStore};
+    use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    pub const CHILD: &str = "0190f3c2-0000-7000-8000-0000000000c1";
+    pub const ORIGIN: &str = "github.com/acme/app";
+
+    #[derive(Default)]
+    pub struct Counts {
+        pub others: AtomicUsize,
+        pub sent: Mutex<Vec<String>>,
+        /// Why the child's bridge could not store its result, if it could
+        /// not.
+        pub unstored: Option<String>,
+    }
+
+    pub struct Fake(pub Arc<Counts>);
+
+    fn machine(name: &str, here: bool, builds_in_use: u32) -> Candidate {
+        let capacity = Capacity { cores: 8, load_1m: 0.5, free_memory: 16 << 30, build_slots: Slots { in_use: builds_in_use, total: 3 }, agent_slots: Slots { in_use: 0, total: 8 } };
+        let instance = AnnouncedInstance { name: "anthropic".into(), kind: "anthropic-api".into(), ready: true, state: "ready".into(), fix: None, models: vec!["claude-sonnet-4-6".into()], limit: None };
+        let announcement = Announcement {
+            device: format!("{name}-id"),
+            name: name.into(),
+            os: "linux".into(),
+            version: "dev".into(),
+            online_since_ms: 0,
+            instances: vec![instance],
+            directories: Vec::new(),
+            sessions: Vec::new(),
+            capacity: Some(capacity),
+            repositories: vec![AnnouncedRepository { directory: format!("/{name}/app"), origin: ORIGIN.into() }],
+            accepting: true,
+        };
+        Candidate { announcement, online: true, here, placed_recently: 0 }
+    }
+
+    fn done(session: &str, unstored: Option<String>) -> Vec<Value> {
+        let stored = unstored.is_none();
+        let ev = |body| serde_json::to_value(LogEvent { id: krowk_store::new_id(), parent_id: None, session_id: session.into(), time_ms: 0, body }).unwrap();
+        vec![
+            ev(LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::AssistantText { text: "I added fixed.rs.".into() } }),
+            ev(LogBody::TurnCompleted { turn_id: "t".into(), status: TurnStatus::Completed, usage: Usage::default(), duration_ms: 1, reported_cost_usd: None, reported_tokens: None, error: None }),
+            ev(LogBody::TaskResult { turn_id: "t".into(), transport: stored.then(|| "art_result".into()), key: stored.then(|| "ab".repeat(32)), against: "snap".into(), denied: vec!["bash: git push".into()], error: unstored }),
+        ]
+    }
+
+    fn bundle(session: &str) -> Bundle {
+        Bundle { v: 1, session: session.into(), base: "abc".into(), subdir: String::new(), diff: Vec::new(), untracked: Vec::new(), transcript: None, commits: Vec::new(), prompt: String::new() }
+    }
+
+    impl Fleet for Fake {
+        fn device(&self) -> String {
+            "a-id".into()
+        }
+        fn resolve_model(&self, c: &ModelChoice) -> Result<ModelRef, String> {
+            Ok(ModelRef { instance: c.instance.clone().unwrap(), model: c.model.clone().unwrap() })
+        }
+        fn here(&self, _: &ModelRef) -> Candidate {
+            machine("a", true, 3)
+        }
+        fn others(&self) -> Result<Vec<Candidate>, String> {
+            self.0.others.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![machine("b", false, 0)])
+        }
+        fn repository(&self, _: &std::path::Path) -> Option<(String, String)> {
+            Some((ORIGIN.into(), "https://github.com/acme/app.git".into()))
+        }
+        fn open_store(&self, _: Option<&JobStore>) -> Result<JobStore, String> {
+            Ok(JobStore { session: "0190f3c2-0000-7000-8000-0000000000a0".into(), lease_token: "t".into() })
+        }
+        fn close_store(&self, _: &JobStore) {}
+        fn pack_job(&self, _: &std::path::Path, session: &str, _: &str) -> Result<Bundle, String> {
+            Ok(bundle(session))
+        }
+        fn put_job(&self, s: &JobStore, _: &Bundle) -> Result<JobRef, String> {
+            Ok(JobRef { session: s.session.clone(), transport: "art_job".into(), key: "ab".repeat(32) })
+        }
+        fn spend_job(&self, _: &JobRef) {}
+        fn send_run(&self, to: &Announcement, _: &RunTask, _: Duration) -> Result<Option<HostAnswer>, String> {
+            self.0.sent.lock().unwrap().push(to.name.clone());
+            Ok(Some(HostAnswer::Started { session_id: CHILD.into() }))
+        }
+        fn watch(&self, child: &str) -> Result<Vec<Value>, String> {
+            Ok(done(child, self.0.unstored.clone()))
+        }
+        fn seen(&self, _: &str) -> Option<i64> {
+            Some(0)
+        }
+        fn read_result(&self, child: &str, _: &str, _: &str) -> Result<Bundle, String> {
+            Ok(bundle(child))
+        }
+        fn land(&self, _: &Bundle, _: &Bundle, _: &std::path::Path) -> Result<(krowk_harness::worktree::Worktree, krowk_harness::worktree::apply::Applied), String> {
+            let wt = krowk_harness::worktree::Worktree { path: "/wt".into(), hex: "ab12cd34".into(), base: "snap".into(), common: "/c".into(), main: "/m".into(), repo_id: "r".into() };
+            Ok((wt, krowk_harness::worktree::apply::Applied::Applied(vec!["fixed.rs".into()])))
+        }
+    }
+}
+
+fn placed_agents(counts: &Arc<placed::Counts>) -> krowk_harness::subagent::AgentsConfig {
+    use krowk_harness::sync::placement::{Placer, Timing};
+    let placer = Placer::with(Box::new(placed::Fake(counts.clone())), Timing { poll: std::time::Duration::from_millis(5), ..Timing::default() });
+    krowk_harness::subagent::AgentsConfig { placer: Some(Arc::new(move || Some(placer.clone()))), ..krowk_harness::subagent::AgentsConfig::none() }
+}
+
+/// R-ALLOC-10, R-ALLOC-8: with this machine's build slots full, a subagent
+/// runs on the other machine: the call's answer carries the summary, the machine, what landed and what was
+/// denied, and no local child ran.
+#[test]
+fn alloc_07_a_subagent_goes_to_the_machine_with_room_and_says_so() {
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let m = mock::serve(move |body, _| {
+        assert!(!is_child(body), "no child runs here");
+        match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "fix it", "prompt": "fix the test"}))),
+            _ => mock::Reply::sse(&mock::text_stream("It is fixed.")),
+        }
+    });
+    let home = Home::new("placed", &m.url);
+    let counts = Arc::new(placed::Counts::default());
+    let (_, result) = home.run_with("fix the test with a subagent", placed_agents(&counts));
+    assert_eq!((result.status, result.result.as_str()), (TurnStatus::Completed, "It is fixed."), "{result:?}");
+    // The parent's stream line, "Running on b: this machine is busy (3 of 3
+    // build slots in use).", is a notice, which headless prints on stderr.
+    let answer = parent_seen(&m)[1]["messages"].as_array().unwrap().last().unwrap().to_string();
+    for part in ["I added fixed.rs.", "Ran on b.", "Changes applied to your working tree: fixed.rs", "bash: git push"] {
+        assert!(answer.contains(part), "{part}: {answer}");
+    }
+    assert_eq!(counts.sent.lock().unwrap().as_slice(), ["b"]);
+}
+
+/// Slice 10 (D11): a child whose bridge could not store its result fails
+/// the subagent call with the machine and the reason, and nothing lands.
+#[test]
+fn alloc_10_a_result_the_child_could_not_store_fails_the_call_with_why() {
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let m = mock::serve(move |body, _| {
+        assert!(!is_child(body), "no child runs here");
+        match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "fix it", "prompt": "fix the test"}))),
+            _ => mock::Reply::sse(&mock::text_stream("It failed.")),
+        }
+    });
+    let home = Home::new("unstored", &m.url);
+    let counts = Arc::new(placed::Counts { unstored: Some("the result could not be stored (too_large): the transport is over the limit".into()), ..Default::default() });
+    let (_, result) = home.run_with("fix the test with a subagent", placed_agents(&counts));
+    assert_eq!(result.status, TurnStatus::Completed, "{result:?}");
+    let answer = parent_seen(&m)[1]["messages"].as_array().unwrap().last().unwrap().clone();
+    let block = &answer["content"][0];
+    assert_eq!(block["is_error"], true, "{answer}");
+    assert!(block.to_string().contains("The task failed on b: the result could not be stored (too_large): the transport is over the limit"), "{answer}");
+}
+
+/// R-ALLOC-10, D12: an agent with a tool allowlist runs here whatever the
+/// host says, and never reads the registry.
+#[test]
+fn alloc_07_an_agent_with_an_allowlist_runs_here_whatever_the_host_says() {
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let m = mock::serve(move |body, _| {
+        if is_child(body) {
+            return mock::Reply::sse(&mock::text_stream("The reviewer found nothing."));
+        }
+        match n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+            0 => mock::Reply::sse(&mock::tool_use("t1", "subagent", &serde_json::json!({"description": "review", "prompt": "review the repo", "agent": "reviewer", "host": "b"}))),
+            _ => mock::Reply::sse(&mock::text_stream("Reviewed.")),
+        }
+    });
+    let home = Home::new("placed-allowlist", &m.url);
+    std::fs::create_dir_all(home.repo().join(".krowk/agents")).unwrap();
+    std::fs::write(home.repo().join(".krowk/agents/reviewer.md"), "---\nname: reviewer\ndescription: reviews\ntools: read, grep\n---\nReview.\n").unwrap();
+    let counts = Arc::new(placed::Counts::default());
+    let (_, result) = home.run_with("review with the reviewer", placed_agents(&counts));
+    assert_eq!((result.status, result.result.as_str()), (TurnStatus::Completed, "Reviewed."), "{result:?}");
+    let answer = parent_seen(&m)[1]["messages"].as_array().unwrap().last().unwrap().to_string();
+    assert!(answer.contains("The reviewer found nothing."), "{answer}");
+    assert!(counts.sent.lock().unwrap().is_empty() && counts.others.load(std::sync::atomic::Ordering::SeqCst) == 0);
 }

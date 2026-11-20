@@ -71,6 +71,6 @@ After any visual change, capture it (screenshot if static, a short screen record
 krowk doctor
 ```
 
-This reports version, connectivity, auth and detected run context.
+This reports version, connectivity, auth and detected run context, then one line per check: a ✗ line says what is wrong and the command that fixes it, and doctor exits non-zero while any check has failed.
 
-Setup is complete when: `krowk doctor` succeeds, the skill file is in place (where your agent supports skills), and the snippet is present in the agent instructions file. Once done, tell the user what was installed and where.
+Setup is complete when: `krowk doctor` reports no ✗ line you can fix (a machine that only pushes evidence may have no model, and using krowk locally is fine), the skill file is in place (where your agent supports skills), and the snippet is present in the agent instructions file. Once done, tell the user what was installed and where.

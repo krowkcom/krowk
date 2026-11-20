@@ -117,6 +117,31 @@ impl Pool {
         Ok(None)
     }
 
+    /// How many of the pool's slots are held now, by any process, counted
+    /// without taking one (R-ALLOC-1): what a machine announces. Each lock
+    /// file is opened (never made) and a shared lock tried on it, let go at
+    /// once: one a process holds refuses it. A pool never used has none held.
+    /// A slot taken in the instant a file is probed may find it busy and try
+    /// the next, then the pool's wait: the same as another taker's race.
+    pub fn in_use(&self) -> Result<usize, String> {
+        let dir = self.dir();
+        let mut held = 0;
+        for index in 0..self.size {
+            let path = dir.join(format!("{index}.lock"));
+            let f = match std::fs::File::open(&path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                Err(e) => return Err(format!("{} could not be opened: {e}", path.display())),
+            };
+            match f.try_lock_shared() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => held += 1,
+                Err(std::fs::TryLockError::Error(e)) => return Err(format!("{} could not be locked: {e}", path.display())),
+            }
+        }
+        Ok(held)
+    }
+
     /// A slot, waited for as long as it takes: tried every `RETRY` while
     /// the pool is full, `waiting` told once, with how many are in use,
     /// when the first try finds none (and awaited, so it can say so on a
@@ -156,6 +181,25 @@ mod tests {
         let uid = unsafe { libc::getuid() };
         assert_eq!(runtime_dir(&env(&[("TMPDIR", "/var/folders/x")])), PathBuf::from(format!("/var/folders/x/krowk-{uid}")));
         assert_eq!(runtime_dir(&env(&[("XDG_RUNTIME_DIR", "relative"), ("TMPDIR", "also")])), PathBuf::from(format!("/tmp/krowk-{uid}")), "only absolute paths count");
+    }
+
+    /// Slice 02 (R-ALLOC-1): the occupancy a machine announces is the
+    /// locks held, and counting them takes none.
+    #[test]
+    fn alloc_02_slot_occupancy_matches_held_locks() {
+        let d = dir("occupancy");
+        let pool = Pool::new(d.clone(), "agent-slots", 3);
+        assert_eq!(pool.in_use().unwrap(), 0, "a pool never used has none held");
+        let a = pool.try_take().unwrap().expect("a free slot");
+        let b = pool.try_take().unwrap().expect("a second");
+        assert_eq!(pool.in_use().unwrap(), 2);
+        assert_eq!(pool.in_use().unwrap(), 2, "counting took none");
+        drop(a);
+        assert_eq!(pool.in_use().unwrap(), 1);
+        let c = pool.try_take().unwrap().expect("the one let go");
+        assert!(pool.try_take().unwrap().is_some(), "the third is still free");
+        drop((b, c));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

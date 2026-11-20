@@ -25,9 +25,9 @@ npx @krowk/cli
 cargo install --locked --git https://github.com/krowkcom/krowk --features harness krowk
 ```
 
-Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the **full build**, which includes the agent. In CI and containers it gives you the **lean build**, which only publishes. Pass `--full` or `--lean` to choose (`curl … | bash -s -- --full`).
+Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a workstation the installer gives you the full build, with the agent. In CI and containers it gives you the lean build, which only publishes. `--full` and `--lean` choose; see [the install docs](https://krowk.com/docs#install).
 
-## The agent
+## Three moments
 
 - **Headless.** `krowk -p` runs one prompt and prints the answer, or `--output-format json` or `stream-json` for another program to read. It never takes over the terminal, so it runs the same in a script, over SSH or inside another harness. Bare `krowk` prints an overview of the commands.
 - **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
@@ -89,24 +89,23 @@ Once sync is set up, every session that runs a turn in the host daemon syncs by 
 ## Publishing
 
 ```bash
-krowk push screenshot.png --pull-request="https://github.com/acme/storefront/pull/412"
+krowk                    # sign in, connect a model, open the agent
+krowk -p "fix the build" # run one prompt headless
+krowk --resume           # continue an earlier session
 ```
 
-```
-✓ Uploaded screenshot.png → https://krowk.com/a/art_2e1d
-  412 KB · run run_8Kd2wq
-```
+**Another machine.** Install krowk and run `krowk`. Sign in there and type the code your other machine shows. The new machine joins your account, and your sessions are there.
 
-Each link shows a card with the repo, commit, branch, PR, session and agent, all detected from git and CI. You can push without a key: anonymous uploads last 24 hours and can be claimed into a workspace with `krowk claim`.
+**Your phone.** Get the app, then run `krowk machines add`. It shows a QR code; scan it and your machines and sessions appear on the phone.
 
-| Command | What it does |
-| --- | --- |
-| `krowk push <file...>` | Upload files and print a link for each |
-| `krowk runs` / `artifacts` | Group runs; list, show, attach and delete artifacts (`push` is `artifacts create`, short) |
-| `krowk login` / `whoami` | Sign in to a workspace (`--token` for CI) |
-| `krowk config set workspace <ws>` | Pin a repository to a workspace |
+## More
 
-Useful `push` flags include `--private`, `--caption`, `--link`, `--metadata key=value`, and `--destination github|slack|linear|…`, which prints the paste format that tool expects. Metadata is public, so never put a secret in it.
+- **Sessions.** The full build keeps a local store of every agent session on the machine, whether it came from krowk, Claude Code, Cursor or opencode. `krowk sessions` lists them and `krowk --resume` opens one. [Sessions](https://krowk.com/docs#sessions)
+- **Machines.** `krowk machines` shows each machine's load, free memory and slots, and whether it accepts work from your others. `always-on` keeps one available and `recovery` guards your recovery kit. [Machines](https://krowk.com/docs#machines)
+- **Worktrees.** Agents running at once each work in a git worktree of their own, so they never overwrite each other. `krowk worktrees` lists, applies and removes them. [Worktrees](https://krowk.com/docs#worktrees)
+- **Publishing.** `krowk push screenshot.png` uploads a file and prints a link whose card shows the repo, commit, branch, PR and session. It works without an account for a day. In CI, this repository is also a GitHub Action (`uses: krowkcom/krowk@v0`). [Publishing](https://krowk.com/docs#first-push)
+- **MCP.** The agent uses the MCP servers you set up for Claude Code. `krowk mcp add`, `login` and `list` manage them, and `krowk-mcp` serves krowk itself to other MCP clients. [MCP servers](https://krowk.com/docs#mcp), [signing in to OAuth servers](https://krowk.com/docs#mcp-sign-in)
+- **Configuration.** Everything lives in `~/.krowk/`, and a repository can commit `.krowk/config.json`. `krowk config` reads and sets it; `krowk status` and `krowk doctor` check health and `krowk upgrade` updates. [Configuration](https://krowk.com/docs#configuration)
 
 In CI, the repository doubles as a GitHub Action:
 
@@ -185,13 +184,7 @@ The model sees two tools, `mcp_search` and `mcp_call`, however many MCP tools th
 
 ## Development
 
-```bash
-make check   # clippy, unit tests and golden tests
-make dev     # fast build, linked into ~/.cargo/bin
-make mock    # local registry; run any command with --dev
-```
-
-See [CHANGELOG.md](CHANGELOG.md) for what changed in each release, and [`crates/krowk-bench`](crates/krowk-bench/README.md) for the performance and size budgets.
+Build, test and benchmark instructions are in [the development docs](https://krowk.com/docs#development). See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
 ## Who uses Krowk?
 

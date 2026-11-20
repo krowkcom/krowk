@@ -230,6 +230,8 @@ pub struct SyncStore {
     /// (R-HOST-4). Dropped when either device is revoked or removed from
     /// its list (`commands::drop_device`).
     pub host_commands: HashMap<String, HostCommand>,
+    /// Slug → a new machine's request for a pairing (`pairing_requests`).
+    pub pairing_requests: HashMap<String, crate::pairing_requests::PairingRequest>,
 }
 
 /// A command as the registry keeps it: the two devices, the bytes sealed to

@@ -150,6 +150,52 @@
       ]
     },
     {
+      "description": "Asks the pairing this host opened because a new machine signed in\nto the person's account: answered by `pairingOffer`, with none when\nthere is no such pairing.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "type": {
+          "type": "string",
+          "const": "pairingOffer"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
+      "description": "The person's yes or no to adding the new machine a `pairingOffer`\nnamed at the `confirm` stage; answered by `done`, with\n`no_pairing_offer` when none waits for an answer.\n`pairing` is the offer's own, so a yes meant for one pairing is never\ntaken for the next.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "pairing": {
+          "type": "string"
+        },
+        "yes": {
+          "type": "boolean"
+        },
+        "type": {
+          "type": "string",
+          "const": "pairingAnswer"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "pairing",
+        "yes"
+      ]
+    },
+    {
       "description": "Asks the MCP servers of a session, as its host holds them; answered\nby `mcp`, with none for a session that has no servers. Protocol 3.",
       "type": "object",
       "properties": {
@@ -322,7 +368,7 @@
       ]
     },
     {
-      "description": "Asks the daemon to exit — `krowk host stop`, or `krowk host enable`\nhanding over to the service. Refused with `host_busy` while a turn\nruns, and with `host_in_use` while another client is connected\nunless `force` (an interactive client connected to it reconnects to the next one);\nanswered by `done` just before it goes.",
+      "description": "Asks the daemon to exit — `krowk host stop`, or `krowk machines always-on on`\nhanding over to the service. Refused with `host_busy` while a turn\nruns, and with `host_in_use` while another client is connected\nunless `force` (an interactive client connected to it reconnects to the next one);\nanswered by `done` just before it goes.",
       "type": "object",
       "properties": {
         "id": {

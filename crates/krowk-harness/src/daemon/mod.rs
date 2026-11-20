@@ -15,7 +15,7 @@
 //!   a client up, bounded by a snapshot (R-LAG-10).
 //! - `ws` — the WebSocket listener: the same frames in batches, compressed,
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
-//! - `service` — `krowk host enable`: the systemd user unit and the launchd
+//! - `service` — `krowk machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
 //! Where it listens: `$XDG_RUNTIME_DIR/krowk/<home>/host.sock`, and where
@@ -340,8 +340,29 @@ pub fn status(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crat
     })
 }
 
+/// The pairing the daemon opened for a new machine that signed in, or none
+/// when none runs or none is open. Never starts one.
+pub fn pairing_offer(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crate::protocol::PairingOffer>, EngineError> {
+    runtime()?.block_on(async {
+        match running(env, version).await? {
+            Some(c) => c.pairing_offer().await,
+            None => Ok(None),
+        }
+    })
+}
+
+/// The person's yes or no to the offer's question.
+pub fn pairing_answer(env: &dyn Fn(&str) -> String, version: &str, pairing: &str, yes: bool) -> Result<(), EngineError> {
+    runtime()?.block_on(async {
+        match running(env, version).await? {
+            Some(c) => c.pairing_answer(pairing, yes).await,
+            None => Err(EngineError::new("host_not_running", "no host daemon runs, so no pairing waits for an answer")),
+        }
+    })
+}
+
 /// Stops the daemon that runs, if one does, and waits for its socket to go:
-/// `krowk host enable` hands over to the service, which could not bind
+/// `krowk machines always-on on` hands over to the service, which could not bind
 /// while it listens. Refused while a turn runs. Answers the pid stopped.
 pub fn stop(env: &dyn Fn(&str) -> String, version: &str, force: bool) -> Result<Option<u32>, EngineError> {
     let path = socket(env).map_err(|e| EngineError::new("host_unavailable", e))?;

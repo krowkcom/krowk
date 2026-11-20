@@ -201,6 +201,35 @@
       ]
     },
     {
+      "description": "The answer to `pairingOffer`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "offer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairingOffer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "pairingOffer"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
       "description": "The answer to `mcpStatus`: each server of the session, in the order\nit is configured.",
       "type": "object",
       "properties": {
@@ -778,6 +807,56 @@
             "cwd",
             "device",
             "fromDevice"
+          ]
+        },
+        {
+          "description": "A task another machine handed this session ended (R-ALLOC-6,\nR-ALLOC-14): its one turn completed, and its changes were stored as\na result for the supervisor that handed it over. Logged by the\nsession's bridge, which holds its lease, after the turn's\n`turn.completed`. The summary is the turn's final message, and its\nusage the turn's. A viewer older than this event skips it, as it\nskips any line it does not read (R-SUB-9).",
+          "type": "object",
+          "properties": {
+            "turnId": {
+              "type": "string"
+            },
+            "transport": {
+              "description": "The result's transport, stored under this session, and its key,\n64 hex digits: none when the child changed nothing.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "against": {
+              "description": "The commit the result is against: the job's snapshot on this\nmachine (its base, uncommitted changes and untracked files), so\nthe result holds the child's work alone.",
+              "type": "string"
+            },
+            "denied": {
+              "description": "Each approval denied because a remote child cannot ask: the tool\nand what it asked, or the ask rule that became a denial.",
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "default": []
+            },
+            "error": {
+              "description": "Why the result could not be packed or stored, when it could not:\nthe child's changes are then still in its worktree on this\nmachine, and no transport is named.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "type": "string",
+              "const": "task.result"
+            }
+          },
+          "required": [
+            "type",
+            "turnId",
+            "against"
           ]
         },
         {
@@ -2261,6 +2340,58 @@
         "sessionId",
         "running",
         "clients"
+      ]
+    },
+    "PairingOffer": {
+      "description": "The pairing a host daemon opened for a new machine that signed in to\nthe person's account (`krowk machines`, the terminal UI): the code to\ntype there and where the pairing stands. `name` and `os` are the new\nmachine's own, set only once the code's confirmation checks passed.",
+      "type": "object",
+      "properties": {
+        "pairing": {
+          "description": "The registry's id of the pairing: what an answer names.",
+          "type": "string"
+        },
+        "code": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/$defs/OfferStage"
+        },
+        "name": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "note": {
+          "description": "What came of it, at `added` and `failed`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "pairing",
+        "code",
+        "stage"
+      ]
+    },
+    "OfferStage": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "added",
+            "failed"
+          ]
+        },
+        {
+          "description": "The code is shown; the new machine has not typed it, or its checks\nhave not passed.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "The checks passed: the person is asked to add `name` (`os`).",
+          "type": "string",
+          "const": "confirm"
+        }
       ]
     },
     "McpServer": {

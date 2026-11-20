@@ -162,6 +162,9 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
+        #[cfg(unix)]
+        agents: AgentsConfig { placer: Some(super::synced::placer_source(&ctx.f)), ..agents_config(ctx.io.env) },
+        #[cfg(not(unix))]
         agents: agents_config(ctx.io.env),
         session,
     };
@@ -541,9 +544,9 @@ fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run krowk -p from a repository of its own.")));
         }
         if !ask {
-            return Err(trust::untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
+            return Err(store.untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
         }
-        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(trust::untrusted(root, "Nothing was run.")) }
+        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(store.untrusted(root, "Nothing was run.")) }
     })
 }
 
@@ -566,6 +569,8 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
         v => format!("{v} runs a repository's own hooks and MCP servers without asking."),
     };
     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+    let changed = store.changes(root);
+    let has = if changed.is_empty() { has } else { format!("{has} You trusted it before; {} changed since.", changed.join(", ")) };
     let mut err = std::io::stderr();
     let _ = write!(err, "{}\n{}\nTrust {}? [y/N] ", crate::termclean::cell(&why), crate::termclean::cell(&has), crate::termclean::cell(&crate::home_relative(root)));
     let _ = err.flush();
@@ -647,7 +652,7 @@ pub(super) fn agents_config(env: &dyn Fn(&str) -> String) -> AgentsConfig {
     // WT3: a subagent's worktree, under the data directory the sandbox
     // knows krowk's worktrees by.
     let worktrees = krowk_api::home::worktrees_root(env);
-    AgentsConfig { user_dirs, models, worktrees }
+    AgentsConfig { user_dirs, models, worktrees, placer: None }
 }
 
 /// An engine failure as krowk's error: the code and its fix, with the HTTP

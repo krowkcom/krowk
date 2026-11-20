@@ -1,6 +1,6 @@
 //! A daemon client that outlives its daemon: what an interactive client holds for as long
 //! as it is open. A daemon can go while an interactive client idles — `krowk host stop
-//! --force`, `krowk host enable` handing over to the service, an upgrade's
+//! --force`, `krowk machines always-on on` handing over to the service, an upgrade's
 //! old daemon killed, a crash — and a client's next command then reaches the
 //! next one, started when none runs (`daemon::ensure`), rather than failing
 //! with `host_gone` until krowk is restarted. A turn under way when its
@@ -119,6 +119,14 @@ impl Remote {
 
     pub async fn status(&self) -> Result<HostStatus, EngineError> {
         self.fresh().await?.status().await
+    }
+
+    pub async fn pairing_offer(&self) -> Result<Option<crate::protocol::PairingOffer>, EngineError> {
+        self.fresh().await?.pairing_offer().await
+    }
+
+    pub async fn pairing_answer(&self, pairing: &str, yes: bool) -> Result<(), EngineError> {
+        self.fresh().await?.pairing_answer(pairing, yes).await
     }
 
     pub async fn mcp_status(&self, session_id: &str) -> Result<Vec<crate::protocol::McpServer>, EngineError> {
