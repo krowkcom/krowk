@@ -270,6 +270,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// machine's keys and its list, read as `krowk devices add` reads them — a
 /// machine not on the list has nothing to add anyone with, and the list is
 /// the registry's current one, verified from this machine's pin.
+#[cfg(unix)]
 pub(super) fn introducer(ctx: &Ctx) -> Result<krowk_harness::sync::introduce::Introducer, Error> {
     let store = keystore(ctx)?;
     let setup_first = || fail("no_user_key", "this machine is not on your device list yet — set sync up with `krowk sync init`, or add it from another device with `krowk sync join`");
@@ -551,6 +552,7 @@ fn ask(ctx: &mut Ctx, question: &str) -> Result<(), Error> {
 /// off one only the code is shown, since adding a machine hands it every
 /// session and takes a person. Nothing is shown when the daemon holds no
 /// offer, or none runs.
+#[cfg(unix)]
 pub(super) fn show_offer(ctx: &mut Ctx) {
     use krowk_client::protocol::OfferStage;
     let ask_here = unattended(ctx) || (ctx.io.stdin_tty && ctx.io.err_tty);
@@ -616,6 +618,10 @@ pub(super) fn show_offer(ctx: &mut Ctx) {
         }
     }
 }
+
+/// No host daemon where there is no unix socket: nothing to show.
+#[cfg(not(unix))]
+pub(super) fn show_offer(_: &mut Ctx) {}
 
 // --------------------------------------------------------------- B: sync join
 
