@@ -275,7 +275,7 @@ fn a_move_a_crash_cut_short_after_its_rename_is_finished_by_the_next_start() {
     b.write(&b.krowk_home().join("credentials.json"), &merged.to_string(), 0o600);
     std::fs::set_permissions(b.krowk_home(), std::fs::Permissions::from_mode(0o700)).unwrap();
     let out = b.krowk(&["doctor", "--json"], &[]);
-    assert!(out.status.success(), "{}", printed(&out));
+    assert!(reported(&out), "{}", printed(&out));
     assert!(!b.old_config().join("credentials.json").exists() && !b.old_config().join("providers").exists(), "the old keys are deleted: {}", printed(&out));
     assert!(!printed(&out).contains(REGISTRY_KEY));
 }
@@ -298,13 +298,19 @@ fn a_home_that_exists_takes_nothing_from_an_old_layout_and_names_it_once() {
     }
 }
 
+/// Doctor ran and reported: with no account or machine of its own in the
+/// sandbox it exits non-zero for what is unset, which these cases are not about.
+fn reported(out: &std::process::Output) -> bool {
+    serde_json::from_slice::<Value>(&out.stdout).is_ok_and(|d| d["checks"].is_array())
+}
+
 #[test]
 fn a_krowk_home_is_a_sandbox_and_never_takes_the_persons_own_files() {
     let b = Sandbox::new("sandboxed");
     b.old_layout();
     let own = b.root.join("sandbox-home");
     let out = b.krowk(&["doctor", "--json"], &[("KROWK_HOME", own.to_str().unwrap())]);
-    assert!(out.status.success(), "{}", printed(&out));
+    assert!(reported(&out), "{}", printed(&out));
     assert!(!printed(&out).contains("moved"), "{}", printed(&out));
     assert!(b.old_config().join("credentials.json").exists() && b.old_data().join("krowk.db").exists(), "nothing moved");
     assert!(!b.krowk_home().exists());
@@ -331,7 +337,7 @@ fn a_malformed_old_key_file_stops_the_move_naming_only_where_and_a_fixed_one_let
     assert!(b.old_data().join("krowk.db").exists());
     b.write(&providers, &json!({"version": 1, "keys": {"anthropic": {"literal": STORED_KEY}}}).to_string(), 0o600);
     let out = b.krowk(&["doctor", "--json"], &[]);
-    assert!(out.status.success(), "{}", printed(&out));
+    assert!(reported(&out), "{}", printed(&out));
     assert_eq!(b.credentials()["keys"]["anthropic"], json!({"literal": STORED_KEY}));
     assert_eq!(b.credentials()["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
 }

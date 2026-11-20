@@ -13,24 +13,21 @@ Examples
                              The same, as JSON for a script or an agent
   krowk login                Add a key, so uploads keep and group under runs
 
-Publish
-  push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
-
-Account
+Accounts
   login         Sign in to your krowk account
-  logout        Remove this machine's key
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
 
-Other
+Work
   sessions      List and read agent sessions on this machine
-  config        Show or set configuration
+
+Publish
+  push          Upload files, get a link for each
+
+Health
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it
@@ -57,24 +54,21 @@ Examples
                              The same, as JSON for a script or an agent
   krowk login                Add a key, so uploads keep and group under runs
 
-Publish
-  push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
-
-Account
+Accounts
   login         Sign in to your krowk account
-  logout        Remove this machine's key
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
 
-Other
+Work
   sessions      List and read agent sessions on this machine
-  config        Show or set configuration
+
+Publish
+  push          Upload files, get a link for each
+
+Health
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it
@@ -101,24 +95,21 @@ Examples
                              The same, as JSON for a script or an agent
   krowk login                Add a key, so uploads keep and group under runs
 
-Publish
-  push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
-
-Account
+Accounts
   login         Sign in to your krowk account
-  logout        Remove this machine's key
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
 
-Other
+Work
   sessions      List and read agent sessions on this machine
-  config        Show or set configuration
+
+Publish
+  push          Upload files, get a link for each
+
+Health
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it
@@ -246,7 +237,8 @@ stdout:
           "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "artifacts",
@@ -361,7 +353,8 @@ stdout:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -386,7 +379,8 @@ stdout:
               "default": "",
               "usage": "Narrow it to what one run produced. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -398,7 +392,8 @@ stdout:
               "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "attach",
@@ -418,7 +413,8 @@ stdout:
               "default": "",
               "usage": "The run to put it under — required, and it must be one this workspace holds. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "delete",
@@ -435,7 +431,8 @@ stdout:
               "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "claim",
@@ -460,9 +457,11 @@ stdout:
               "default": "",
               "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "runs",
@@ -544,7 +543,8 @@ stdout:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -563,7 +563,8 @@ stdout:
               "default": "",
               "usage": "Start after this row — the `next` of the last page"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -575,7 +576,8 @@ stdout:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "finish",
@@ -587,9 +589,11 @@ stdout:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "claim",
@@ -614,7 +618,8 @@ stdout:
           "default": "",
           "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "login",
@@ -633,17 +638,20 @@ stdout:
           "default": "false",
           "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Remove this machine's key"
+      "summary": "Remove this machine's key",
+      "hidden": true
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Show the key and its workspace"
+      "summary": "Show the key and its workspace",
+      "hidden": false
     },
     {
       "name": "billing",
@@ -656,7 +664,8 @@ stdout:
           "default": "false",
           "usage": "Print the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "auth",
@@ -679,25 +688,30 @@ stdout:
               "default": "false",
               "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The long form of `krowk logout`"
+          "summary": "The long form of `krowk logout`",
+          "hidden": false
         },
         {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
-          "no_json": true
+          "no_json": true,
+          "hidden": false
         },
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The long form of `krowk whoami`"
+          "summary": "The long form of `krowk whoami`",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "workspaces",
@@ -706,7 +720,8 @@ stdout:
         {
           "name": "list",
           "usage": "krowk workspaces [list]",
-          "summary": "List the stored keys, and which workspace resolves here"
+          "summary": "List the stored keys, and which workspace resolves here",
+          "hidden": false
         },
         {
           "name": "use",
@@ -718,9 +733,11 @@ stdout:
               "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "config",
@@ -729,7 +746,8 @@ stdout:
         {
           "name": "show",
           "usage": "krowk config show",
-          "summary": "The effective configuration, and which layer set each value"
+          "summary": "The effective configuration, and which layer set each value",
+          "hidden": false
         },
         {
           "name": "get",
@@ -741,7 +759,8 @@ stdout:
               "summary": "workspace",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",
@@ -766,7 +785,8 @@ stdout:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "unset",
@@ -786,14 +806,17 @@ stdout:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check this machine's setup"
+      "summary": "Check this machine's setup",
+      "hidden": false
     },
     {
       "name": "sessions",
@@ -844,7 +867,8 @@ stdout:
               "default": "false",
               "usage": "Show full thinking parts instead of one line each"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "import",
@@ -869,7 +893,8 @@ stdout:
               "default": "0",
               "usage": "Read at most this many transcripts per source (0 is all)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "rebuild",
@@ -882,7 +907,8 @@ stdout:
               "default": "false",
               "usage": "Delete without asking — required when nobody is at a terminal to confirm"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "budget",
@@ -908,7 +934,8 @@ stdout:
               "default": "",
               "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "sync",
@@ -921,9 +948,11 @@ stdout:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "pricing",
@@ -932,14 +961,17 @@ stdout:
         {
           "name": "refresh",
           "usage": "krowk pricing refresh",
-          "summary": "Refresh the models.dev price cache"
+          "summary": "Refresh the models.dev price cache",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk"
+      "summary": "Upgrade krowk",
+      "hidden": false
     },
     {
       "name": "help",
@@ -959,7 +991,8 @@ stdout:
           "default": "false",
           "usage": "List every command and subcommand"
         }
-      ]
+      ],
+      "hidden": true
     }
   ],
   "global_flags": [

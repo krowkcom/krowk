@@ -115,7 +115,7 @@ fn d6_recovery_check_tests_the_words_locally() {
     set_up(&bare, None);
     let r = bare;
     let e = err(&piped(&r, &["sync", "recovery", "check", "--json"], &kit.words()));
-    assert!(e.contains("no recovery kit") && e.contains("krowk sync recovery new"), "{e}");
+    assert!(e.contains("no recovery kit") && e.contains("krowk machines recovery new"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
 }
 
@@ -131,7 +131,7 @@ fn d6_status_on_a_machine_not_set_up_says_how_to_set_it_up() {
 fn d6_the_kits_flags_belong_to_the_commands_that_make_one() {
     let r = root("flags");
     let e = err(&command(&r, &["sync", "status", "--save", "kit.txt"]).output().unwrap());
-    assert!(e.contains("`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"), "{e}");
+    assert!(e.contains("`--save` is only a flag of `krowk sync init` and `krowk machines recovery new`"), "{e}");
     let e = err(&command(&r, &["sync", "recover", "--start-over"]).output().unwrap());
     assert!(e.contains("`--start-over` is only a flag of `krowk sync init`"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
@@ -185,6 +185,6 @@ fn d7_devices_remove_needs_a_person_and_a_name() {
     let e = err(&command(&r, &["devices", "remove", "old-laptop", "--json"]).output().unwrap());
     assert!(e.contains("confirmation_required") && e.contains("a person at a terminal"), "{e}");
     let e = err(&piped(&r, &["devices", "remove", "--json"], ""));
-    assert!(e.contains("missing_argument") && e.contains("krowk devices remove NAME"), "{e}");
+    assert!(e.contains("missing_argument") && e.contains("krowk machines remove NAME"), "{e}");
     let _ = std::fs::remove_dir_all(&r);
 }

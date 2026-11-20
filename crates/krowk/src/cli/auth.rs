@@ -113,9 +113,18 @@ fn login_with_token(ctx: &mut Ctx) -> Result<(), Error> {
 /// confirms and can only approve or deny — so the half that travels cannot be
 /// turned into a key by whoever sees it. The key arrives exactly once.
 fn login_in_browser(ctx: &mut Ctx) -> Result<(), Error> {
-    let (_, result) = browser_login(ctx, krowk_api::LoginAction::Login)?;
+    let (token, result) = browser_login(ctx, krowk_api::LoginAction::Login)?;
     let rendered = output::stored_key(&result, ctx.format, ctx.f.quiet, ctx.colour);
-    ctx.emit(&rendered)
+    ctx.emit(&rendered)?;
+    // For a person at a terminal, the first-machine flow from its top: this
+    // machine is registered for sync too, with no further prompt.
+    #[cfg(feature = "harness")]
+    if ctx.format == output::Format::Human && super::chain::attended(ctx) {
+        super::first_run::after_login(ctx, &token);
+    }
+    #[cfg(not(feature = "harness"))]
+    let _ = token;
+    Ok(())
 }
 
 /// A browser login, its key stored as `krowk login` stores one, `action`

@@ -142,7 +142,7 @@ pub fn thread(events: &[LogEvent], res: &mut ReadResult) -> Option<Thread> {
             // linked here by its root's parent; the todo list is the log's,
             // and so are a switch and how a backend was caught up
             // (and the calls that set it are messages already).
-            LogBody::SessionStarted { .. } | LogBody::BackendSession { .. } | LogBody::RunOpened { .. } | LogBody::SubagentStarted { .. } | LogBody::TodosUpdated { .. } | LogBody::ModelSwitched { .. } | LogBody::BackendHandoff { .. } | LogBody::SessionMoved { .. } => {}
+            LogBody::SessionStarted { .. } | LogBody::BackendSession { .. } | LogBody::RunOpened { .. } | LogBody::SubagentStarted { .. } | LogBody::TodosUpdated { .. } | LogBody::ModelSwitched { .. } | LogBody::BackendHandoff { .. } | LogBody::SessionMoved { .. } | LogBody::TaskResult { .. } => {}
             LogBody::TurnStarted { model, provider: p, .. } => {
                 flush(&mut th, &mut pending, &provider, turn);
                 provider.clone_from(p);
@@ -228,6 +228,7 @@ fn event_type(b: &LogBody) -> &'static str {
         LogBody::BackendSession { .. } => "backend.session",
         LogBody::RunOpened { .. } => "run.opened",
         LogBody::SessionMoved { .. } => "session.moved",
+        LogBody::TaskResult { .. } => "task.result",
         LogBody::SubagentResponse { .. } => "subagent.response",
         LogBody::SubagentStarted { .. } => "subagent.started",
         LogBody::TodosUpdated { .. } => "todos.updated",

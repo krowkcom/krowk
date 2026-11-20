@@ -2,7 +2,7 @@
 //! scratch homes against the stand-in registry (D6; canon,
 //! engineering/devices.md → Recovery, Replacing the kit, Starting over):
 //! `krowk sync init` with the kit saved to a file, a start-over that keeps
-//! the sessions this device can open, `krowk sync recovery new` with the
+//! the sessions this device can open, `krowk machines recovery new` with the
 //! old kit's words, and `krowk sync recover` on a new machine.
 
 #![cfg(all(feature = "harness", unix))]
@@ -158,7 +158,7 @@ fn d6_a_start_over_seals_this_devices_sessions_again_under_the_new_list() {
     assert_eq!((again["data"]["resealed"].clone(), again["data"]["left"].clone(), again["data"]["continued"].clone()), (0.into(), 0.into(), true.into()), "{again}");
     // D6: said, so a person who meant a new start-over knows to discard first.
     let said = krowk(&laptop, &api, LAPTOP, &["sync", "init", "--start-over"], "", "");
-    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `krowk sync recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
+    assert!(String::from_utf8_lossy(&said.stdout).contains("a new start-over needs `krowk machines recovery discard-old` first"), "{}", String::from_utf8_lossy(&said.stdout));
     // And the aside goes only when the person says so.
     let dropped = ok(&krowk(&laptop, &api, LAPTOP, &["sync", "recovery", "discard-old", "--json"], "y", ""));
     assert_eq!((dropped["data"]["discarded"].clone(), dropped["data"]["left"].clone()), (true.into(), 0.into()), "{dropped}");

@@ -874,8 +874,9 @@ mod tests {
     /// `ask_user` brings it to 1,766. Background jobs' `bash_output`,
     /// `kill_bash` and `run_in_background` (R-STEER-2), about 115 more, bring
     /// it to 1,918; `subagent`'s `run_in_background` (R-STEER-3), 27 more,
-    /// to 1,945.
-    const FREEFORM_CONTEXT_TOKENS: u64 = 1950;
+    /// to 1,945; `subagent`'s `host` and `model` (automatic allocation), 35
+    /// more, to 1,980.
+    const FREEFORM_CONTEXT_TOKENS: u64 = 1990;
 
     /// The ceiling with no MCP servers, which is what the bench measures:
     /// `context.tokens` in budgets.toml was raised to 1,625 for the two MCP
@@ -885,8 +886,9 @@ mod tests {
     /// tool's `isolation` field (WT3) takes 29 of what was left (1,670).
     /// Background jobs (R-STEER-2) add `bash_output` (51), `kill_bash` (44)
     /// and `bash`'s `run_in_background` (about 20): 1,793 for gpt.
-    /// `subagent`'s `run_in_background` (R-STEER-3) is 27 more: 1,820.
-    const BASE_CONTEXT_TOKENS: u64 = 1825;
+    /// `subagent`'s `run_in_background` (R-STEER-3) is 27 more: 1,820;
+    /// its `host` and `model` (automatic allocation) 35 more: 1,855.
+    const BASE_CONTEXT_TOKENS: u64 = 1860;
 
     fn freeform_or(ts: &Toolset) -> bool {
         tools::definitions(ts).iter().any(|d| d.grammar.is_some())

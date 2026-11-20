@@ -344,7 +344,7 @@ impl Flags {
             #[cfg(feature = "harness")]
             "to" => text(&mut self.to),
             #[cfg(feature = "harness")]
-            "host" => text(&mut self.host),
+            "host" | "on" => text(&mut self.host),
             #[cfg(feature = "harness")]
             "cwd" => text(&mut self.cwd),
             #[cfg(feature = "harness")]

@@ -35,6 +35,152 @@ the versions are the `v*` tags a release is cut from. Entries land under
   else `global`, else `default`). Until now only the terminal UI's settings
   screen could change the first two.
 
+- **The README is three steps, and the installer says "Run krowk".** The README
+  now opens with what krowk is, then the first machine and another machine;
+  the Worktrees detail, the MCP sign-in walkthroughs, Development and the
+  lean build moved to the website's docs, which the README links. The
+  installer's closing list is headed "Run krowk" and names only the commands
+  `krowk help` shows.
+
+- **`krowk doctor` checks everything, and `krowk` names the top problem.**
+  Beyond the store, prices and providers, doctor now checks that you are signed
+  in, that this machine is registered for sync, that the always-on service is
+  on, that this directory's repository is trusted, that you have a recovery kit
+  (only flagged with fewer than two machines), and your plan against its
+  machine limit. Each is one line with what is wrong and the command that fixes
+  it (`✗ Always-on service off — krowk machines always-on on`), `--json` carries
+  every check under `checks`, and doctor exits non-zero when a check failed
+  (warnings do not count). A machine set to use krowk locally is not asked to
+  sign in. The overview bare `krowk` prints ends with the single most
+  important problem, if any (for now, that this machine is signed in but not
+  registered for sync), and says nothing when all is well.
+
+- **The first machine sets up in one flow from `krowk`.** On a terminal with
+  no krowk account and nothing to run a model on, bare `krowk` asks in plain
+  text before its overview: `Sign in to krowk` (`[Enter]` opens the browser,
+  `[l]` uses krowk locally without an account). Signing in leaves this machine
+  with a workspace key and registered for sync, with no further prompt, and
+  "Connect a model" follows with `krowk connect`'s own pickers (a Claude,
+  ChatGPT or SuperGrok subscription, an API key, or your own Claude Code or
+  Codex login). Each step can be cancelled and picked up by running `krowk`
+  again; "use locally" is not offered a second time, and `krowk login` on a
+  terminal runs the sign-in step, the next `krowk` going on from there. An
+  account that already has machines is not given a device list of its own:
+  this machine is added to them with a code (below). Nothing changes without
+  a terminal, and once the machine is set up `krowk` prints only the
+  overview.
+
+- **The first machine offers to stay available, then the recovery kit.** After
+  the model step, "Keep this machine available while you're away? It syncs your
+  sessions and takes work from your other machines." installs the always-on host
+  service on yes (what `krowk host enable` does). It defaults to yes on a desktop
+  and no on a laptop, a laptop being a machine with a battery (a `BAT*` entry on
+  Linux, a power source on macOS, the system power status on Windows). Then the
+  recovery kit is offered once with what it is for: 12 words that stand in for a
+  device of yours, the only way back in if every device is lost or stolen.
+  `[Enter]` says they are saved, `[s]` puts it off. While you have fewer than two
+  machines (a phone does not count) and no kit, `krowk machines` and the
+  overview bare `krowk` prints say "One machine, no recovery kit: losing it
+  loses your sessions. krowk machines recovery."; with two machines the reminder
+  stops.
+
+- **A new machine can ask your other machines for a pairing.** Once signed in
+  to an account that already has devices, a machine that is not on the list can
+  record a request with its proposed name and OS. It opens nothing and carries
+  no keys. Your hosts hear of it within one presence refresh, and it lapses
+  after ten minutes; a second machine asking meanwhile waits its turn.
+
+- **Joining another machine is signing in there and typing one code.** On the
+  new machine, `krowk` (signing in to an account that already has machines) or
+  `krowk sync join` asks your other machines for a pairing and
+  says `Type the code shown on your other machine: ____-____`. Whichever of
+  your machines runs the host opens the pairing on its own (only one does) and
+  shows `A new machine signed in to your account. Its code: K7QF-9M3X` in
+  `krowk machines`; once the code is typed there, `krowk machines` asks `Add 'B' (Linux) to your devices? [Y/n]`, showing the new
+  machine's name and OS only after the code's checks, as `krowk devices add`
+  does. Nothing about who may add a machine changed: an existing machine
+  opens the pairing, a wrong code ends it, and a yes needs a person at a
+  terminal. With none of your machines online the new one says so and points
+  to `krowk machines add`. A pairing opened by hand with `krowk devices add`
+  still works.
+
+- **`krowk sessions` works with the sessions on all your machines.** It lists
+  this machine's sessions, then the ones on your other machines that you can
+  open, each with the machine it runs on (as data too: `machine`,
+  `this_machine`). `krowk sessions attach <id>` follows one, `krowk sessions
+  take <id>` moves a live one here, and `krowk sessions new --on <machine>
+  --cwd <dir> "prompt"` starts one on another machine. The `krowk sync
+  sessions|attach|take|new` forms and `krowk sessions sync` work as before and
+  are no longer listed in the help (`krowk help --all` still has them).
+
+- **Manage your machines in one place: `krowk machines add`, `remove`,
+  `always-on` and `recovery`.** `add` shows the code that adds a machine that
+  can't sign in, `remove NAME` takes a machine off and rotates
+  your key, `always-on on|off` keeps this machine running as a service so it
+  syncs and takes work while you're away, and `recovery` says whether you have
+  a recovery kit (`recovery new`, `check` and `discard-old` make, test and tidy
+  it). Each does what `krowk devices add`, `devices remove`, `host enable|disable`
+  and `sync recovery` do, and those still work; `krowk devices` is hidden from
+  `krowk help` and listed by `krowk help --all`. Error messages and fixes now
+  name the new commands.
+
+- **Claude Code and Codex can hand a task to the machine with room.** With
+  krowk-mcp added and sync set up, `krowk_delegate` takes a task (and an
+  optional `host` and `model`), returns a task id at once and runs it on this
+  machine unless it is busy, otherwise on another of yours, from your working
+  tree's exact state. `krowk_collect` waits for it (five minutes at most,
+  then says it is still running, and you collect again) and returns the
+  summary, what was applied to the working tree the server runs in or kept,
+  the approvals it was denied, its usage and the machine; the changes land
+  when the task finishes.
+  `krowk_machines` lists your machines as `krowk machines --json` does.
+  Tasks live in the krowk-mcp process, so a restart forgets them (the child
+  keeps running on its machine, and its work stays in that machine's
+  worktree).
+
+- **krowk's own agent starts a subagent on the machine with room.** With
+  sync set up, a subagent stays on this machine unless it is busy (every
+  build or agent slot in use, load at the core count, or under 2 GiB free);
+  then it runs on another of your machines that has a clone of the
+  repository and a ready account, and its changes land in your working tree
+  as a local worktree subagent's do. The stream says where and why
+  (`Running on desktop: this machine is busy (3 of 3 build slots in use).`).
+  The `subagent` tool takes an optional `host` (a machine's name, `any`,
+  `any:macos`, `any:linux` or `any:windows`) and `model` (a model or an
+  account such as `claude:work`). A machine that refuses, or does not answer
+  in 30 seconds, is skipped once; one that drops mid-task fails the call
+  naming it. An agent with a tool allowlist always runs here.
+
+- **A machine runs a task another of your machines hands it.** In a
+  repository you have trusted there and that matches the task's origin, the
+  host starts a fresh worktree at the sender's exact state and runs the task
+  as one turn of a session you can follow and steer from any device. It is
+  refused, with what to fix, when it does not take work from your other
+  machines, has no clone, has no ready account for the model, has no free
+  agent slot, or is over your machine limit. The session runs in the machine's
+  own permission mode, or a stricter one when asked, and an approval it would
+  ask for is denied and kept for the summary.
+
+- **Each machine tells your others how much room it has.** A machine that
+  syncs now announces its cores, load, free memory, the build and agent slots
+  in use, and the repositories it offers (by origin, with no credentials),
+  so a task can later be placed where there is room. A machine can opt out
+  of taking tasks with `sync.accept: false`.
+
+- **A task's changes come back as a sealed result.** When the task's one turn
+  ends, the machine that ran it packs what the child changed, committed or
+  not, new files included, stores it encrypted for you under that session,
+  names it in the session's log with the approvals it had to deny, and
+  removes the task's worktree. A child that changed nothing records an empty
+  result.
+
+- **A joined machine takes work from your other machines, and you can turn
+  that off.** `krowk sync join` now ends by offering the always-on host
+  service (yes by default; a laptop joined only to follow can decline) and
+  saying the machine takes work in trusted repositories. `krowk machines
+  accept off` stops this machine taking tasks another of your machines hands
+  it, and `accept on` restores it. Sessions you start here are not affected.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`
@@ -57,7 +203,47 @@ the versions are the `v*` tags a release is cut from. Entries land under
   question is no longer a full-screen card answered with one key, so it needs
   Enter.
 
+### Security
+
+- **Trusting a repository now fingerprints every file that can run code.**
+  Before, only `.mcp.json` was watched, so a `git pull` that changed a Claude
+  hook, a command, an agent or Codex's config ran under the old yes. Now the
+  record also covers Claude's project settings, hook scripts, commands, agents
+  and skills (including those in subdirectories), krowk's agent definitions and
+  `.krowk/config.json`, and everything under `.codex`; when any
+  of them is added or changed, krowk asks again and names the file.
+  `.claude/settings.local.json` is not in git and never asks. Repositories you
+  trusted before upgrade without a question for files that have not changed
+  since you trusted them, and are asked about the ones that have.
+
 ### Changed
+
+- **`krowk help` is one short screen.** It shows a Start header (`krowk`,
+  `krowk -p`, `krowk -p --resume`) and four groups: Accounts (`login`,
+  `connect`, `disconnect`, `whoami`, `billing`), Work (`sessions`, `machines`,
+  `worktrees`, `mcp`, `trust`), Publish (`push`) and Health (`status`, `doctor`,
+  `upgrade`, `config`). The duplicates and low-level commands (`auth`, `runs`,
+  `artifacts`, `claim`, `providers`, `workspaces`, `host`, `hosts`, `devices`,
+  `sync`, `relay`, `pricing`, `logout`) are hidden from it, not removed: they
+  run as before, so scripts and the GitHub Action are unaffected. `krowk help
+  --all` lists every command, hidden ones included, and `krowk help --json`
+  marks each command `hidden` or not.
+
+- **A removed machine can start over without moving files by hand.** `krowk
+  sync join` on a machine whose keys were removed from your devices now asks
+  `This machine was removed from your devices. Start it over as a new
+  machine? [Y/n]`; yes renames its old device and signing key files aside
+  (`…removed-<time>`, never deleted) and joins with new keys.
+
+- **`krowk machines` shows which of your machines could take a task, and what
+  stops the others.** One row per machine: online, load per core, free memory,
+  build and agent slots in use, and whether it accepts tasks. In a clone, a
+  second list says `ready` for each other machine, or the one fix: `krowk
+  machines accept on`, `run: git clone <origin>` (never with a credential in
+  it), or the account to sign in. `krowk hosts` is the same command now, and
+  `--json` carries `machines` where it carried `hosts`, each with `capacity`,
+  `repositories`, `accepting` and `here`. Errors that pointed at `krowk hosts`
+  point at `krowk machines`.
 
 - **On Free, `krowk sessions archive` keeps the session on this machine.**
   Free's synced history expires after 7 days, so an archived session's

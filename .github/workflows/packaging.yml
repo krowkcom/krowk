@@ -130,10 +130,14 @@ jobs:
             /d/${{ matrix.triple }}/krowk --version
             /d/${{ matrix.triple }}/krowk-mcp --version
             /d/${{ matrix.triple }}/krowk sessions import --from all --json
-            /d/${{ matrix.triple }}/krowk doctor --json
+            # Fresh container, no account: doctor reports and exits non-zero
+            # for what is unset; what matters here is that it ran and reported.
+            /d/${{ matrix.triple }}/krowk doctor --json > /tmp/doctor.json || true
+            grep -q "\"checks\"" /tmp/doctor.json
             printf "%s\n" "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"ping\"}" | /d/${{ matrix.triple }}/krowk-mcp
             /d/${{ matrix.triple }}-lean/krowk --version
-            /d/${{ matrix.triple }}-lean/krowk doctor --json
+            /d/${{ matrix.triple }}-lean/krowk doctor --json > /tmp/doctor-lean.json || true
+            grep -q "\"checks\"" /tmp/doctor-lean.json
             ! /d/${{ matrix.triple }}-lean/krowk sessions --json 2>/tmp/lean.json
             grep -q not_in_build /tmp/lean.json
           '

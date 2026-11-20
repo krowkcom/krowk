@@ -32,6 +32,11 @@ pub struct Command {
     /// --jq has nothing to read on.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_json: bool,
+    /// Works, but is left out of `krowk help` (a top-level command, by
+    /// `ALL_ONLY`) or its group's command list (a subcommand): an older or
+    /// low-level form. `help --all` still lists it, and `help --json` says so
+    /// for every command.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -246,7 +251,28 @@ Claude Code hook blocks only on exit 2, so block on a trip alone:
 — any other failure then warns without stopping the agent.";
 
 #[cfg(all(feature = "harness", unix))]
-const HOSTS_ABOUT: &str = "\
+const MACHINES_ABOUT: &str = "\
+One row per machine of yours: online or not, its load per core, free memory,
+build and agent slots in use, and whether it accepts tasks other machines hand
+it. In a clone with an origin, a second list says for each other machine
+`ready`, or the one fix it needs: `krowk machines accept on`,
+`run: git clone <origin>`, or the account to sign in. `--json` (the default
+when piped) carries the same, and `krowk hosts` is this command.
+
+Managing them:
+
+  krowk machines add               a code for a machine that can't sign in;
+                                   valid 10 minutes and once, and this machine
+                                   asks you to confirm the new one by name
+                                   before anything is added
+  krowk machines remove NAME       take one off and rotate your key
+  krowk machines always-on on|off  keep this machine available while you're away
+  krowk machines recovery          whether you have a recovery kit; `new`,
+                                   `check` or `discard-old` act on it
+
+`krowk devices`, `krowk host enable|disable` and `krowk sync recovery` are older
+names for these and still work.
+
 Read from the registry's synced sessions with this machine's sync keys:
 hosting when it holds one now; reachable directly when this machine's
 Tailscale finds it online. No tag and no admin console step: a host names
@@ -512,6 +538,7 @@ pub fn catalog(version: &str) -> Catalog {
                         ..cmd("budget", "krowk sessions budget <id> [--max-usd N] [--max-tokens N]", "Check a session against a spend limit")
                     },
                     Command {
+                        hidden: true,
                         flags: vec![flag("no-network", BOOL, "Skip the models.dev price refresh")],
                         ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed since the last import, refresh prices")
                     },
@@ -560,7 +587,9 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(cmd("hosts", "krowk hosts", "Your machines that host synced sessions"));
+    c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
+    #[cfg(all(feature = "harness", unix))]
+    c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
     #[cfg(feature = "harness")]
     c.commands.push(sync_command());
     #[cfg(feature = "harness")]
@@ -574,8 +603,32 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
+        sessions.subcommands.extend(machine_commands());
+    }
+    for cmd in &mut c.commands {
+        cmd.hidden = ALL_ONLY.contains(&cmd.name.as_str());
     }
     c
+}
+
+/// `krowk sessions attach`, `take` and `new --on`: a session on any of your
+/// machines, by the same code as the `krowk sync` forms they replace.
+#[cfg(all(feature = "harness", unix))]
+fn machine_commands() -> Vec<Command> {
+    let id = || vec![arg("id", "The session's id, as `krowk sessions` lists it", true)];
+    vec![
+        Command { args: id(), ..cmd("attach", "krowk sessions attach <id>", "Follow a session on another machine, live") },
+        Command { args: id(), ..cmd("take", "krowk sessions take <id>", "Move a live session here, uncommitted work and all") },
+        Command {
+            args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
+            flags: vec![
+                flag("on", STRING, "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"),
+                flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
+                flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
+            ],
+            ..cmd("new", "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
+        },
+    ]
 }
 
 /// `krowk sessions archive`, `restore`, `vintage`, `pin` and `unpin`: native sessions
@@ -633,22 +686,23 @@ fn sync_command() -> Command {
             },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
+                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk machines add` shows")
             },
             #[cfg(unix)]
-            cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
+            Command { hidden: true, ..cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open") },
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session as stream-json"),
+            Command { hidden: true, ..cmd("attach", "krowk sync attach SESSION", "Follow a synced session as stream-json") },
             #[cfg(unix)]
-            cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
+            Command { hidden: true, ..cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all") },
             #[cfg(unix)]
             Command {
+                hidden: true,
                 args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
                 flags: vec![
-                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"),
-                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk hosts`)"),
+                    flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"),
+                    flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
                     flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
                 ],
                 ..cmd("new", "krowk sync new --host NAME --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
@@ -767,6 +821,30 @@ fn mcp_command() -> Command {
     }
 }
 
+#[cfg(all(feature = "harness", unix))]
+fn machines_subcommands() -> Vec<Command> {
+    vec![
+        cmd("list", "krowk machines [list]", "Your machines, and what each can take"),
+        machines_accept(),
+        cmd("add", "krowk machines add", "Show a code that adds another machine"),
+        Command { args: vec![arg("name", "The machine's name, as `krowk machines` lists it", true)], ..cmd("remove", "krowk machines remove NAME", "Take a machine off your list and rotate your key") },
+        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away") },
+        Command {
+            subcommands: vec![
+                Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk machines recovery new [--save FILE]", "Make a new recovery kit") },
+                cmd("check", "krowk machines recovery check", "Test the kit's words against your device list, locally"),
+                cmd("discard-old", "krowk machines recovery discard-old", "Drop the old keys a start-over kept aside"),
+            ],
+            ..cmd("recovery", "krowk machines recovery [new|check|discard-old]", "Your recovery kit: see it, make a new one, test it")
+        },
+    ]
+}
+
+#[cfg(all(feature = "harness", unix))]
+fn machines_accept() -> Command {
+    Command { args: vec![arg("state", "on or off", true)], ..cmd("accept", "krowk machines accept on|off", "Take work from your other machines, or not") }
+}
+
 /// `krowk host`: the per-user daemon sessions run in (R-HOST-1, R-HOST-2).
 /// `serve` is what the first `krowk` that needs the daemon starts, and what
 /// the service runs; it is not listed.
@@ -783,8 +861,8 @@ fn host_command() -> Command {
                 flags: vec![flag("force", BOOL, "Stop it though other clients are connected; each reconnects to the next daemon")],
                 ..cmd("stop", "krowk host stop [--force]", "Stop the daemon, once no turn runs in it")
             },
-            cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
-            cmd("disable", "krowk host disable", "Stop the service and remove it"),
+            Command { hidden: true, ..cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service") },
+            Command { hidden: true, ..cmd("disable", "krowk host disable", "Stop the service and remove it") },
         ],
         ..cmd("host", "", "The daemon sessions run in, which outlives the terminal")
     }
@@ -993,7 +1071,7 @@ impl Catalog {
                 out.push(Command { subcommands: Vec::new(), ..c.clone() });
             }
             for sub in &c.subcommands {
-                out.push(Command { name: format!("{} {}", c.name, sub.name), ..sub.clone() });
+                out.push(Command { name: format!("{} {}", c.name, sub.name), hidden: c.hidden || sub.hidden, ..sub.clone() });
             }
         }
         out
@@ -1054,7 +1132,7 @@ pub fn about(name: &str) -> &'static str {
         "upgrade" => "Upgrades krowk to the latest release.",
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
-        "hosts" => HOSTS_ABOUT,
+        "machines" | "hosts" => MACHINES_ABOUT,
         #[cfg(feature = "harness")]
         "status" => "Also where its key or login comes from, and what fixes it. Exits 3 if none is.",
         #[cfg(feature = "harness")]
@@ -1108,11 +1186,11 @@ synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
 and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync. A
 session idle for `sync.idleMinutes` (10), with no other device watching it,
 stops syncing until its next prompt here, or until another device opens it
-while the host daemon runs and has stayed online (`krowk host enable` keeps
-it running).",
+while the host daemon runs and has stayed online (`krowk machines always-on on`
+keeps it running).",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
+Adding a machine: `krowk machines add` here shows a code, valid 10 minutes and
 once; run `krowk sync join` on the new machine and type it there. The code is
 checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
@@ -1148,70 +1226,114 @@ directories, which a subagent's changes leave to you, are applied.",
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
-`krowk host enable` keeps it running instead, for an always-on machine.",
+`krowk machines always-on on` keeps it running instead, for an
+always-on machine.",
         _ => "",
     }
 }
 
 /// A heading in the human help, and the commands under it in reading order.
-/// `krowk help` lists each command; `krowk help --all` each with everything
-/// under it. Every command the build has sits under exactly one heading.
+/// `krowk help` lists the commands under the first four, bar those in
+/// `ALL_ONLY`; `krowk help --all` each with everything under it, and the
+/// last heading, which holds what the overview leaves out. Every command the
+/// build has sits under exactly one heading. The overview's Start header
+/// (`krowk`, `krowk -p`, `krowk -p --resume`) is flags, so not here.
 pub const GROUPS: &[(&str, &[&str])] = &[
-    // The harness build's own commands, and the sessions they run. Sync and
-    // devices carry a session from one machine to the next, so they sit here:
-    // a heading of their own would push the overview past one screen.
-    #[cfg(feature = "harness")]
-    ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
-    ("Publish", &["push", "runs", "artifacts", "claim"]),
-    ("Account", &["login", "logout", "whoami", "billing", "workspaces", "auth"]),
     (
-        "Other",
+        "Accounts",
         &[
             #[cfg(feature = "harness")]
-            "providers",
+            "connect",
+            #[cfg(feature = "harness")]
+            "disconnect",
+            "login",
+            "whoami",
+            "billing",
+        ],
+    ),
+    (
+        "Work",
+        &[
+            #[cfg(feature = "sessions")]
+            "sessions",
+            #[cfg(all(feature = "harness", unix))]
+            "machines",
             #[cfg(feature = "harness")]
             "worktrees",
             #[cfg(feature = "harness")]
             "mcp",
             #[cfg(feature = "harness")]
             "trust",
+        ],
+    ),
+    ("Publish", &["push"]),
+    (
+        "Health",
+        &[
+            #[cfg(feature = "harness")]
+            "status",
+            "doctor",
+            "upgrade",
+            "config",
+        ],
+    ),
+    (
+        MORE_HEADING,
+        &[
+            "logout",
+            "workspaces",
+            "auth",
+            "runs",
+            "artifacts",
+            "claim",
+            #[cfg(feature = "harness")]
+            "providers",
+            #[cfg(feature = "harness")]
+            "sync",
+            #[cfg(feature = "harness")]
+            "devices",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
-            #[cfg(all(feature = "sessions", not(feature = "harness")))]
-            "sessions",
-            "config",
-            "doctor",
             #[cfg(feature = "sessions")]
             "pricing",
-            "upgrade",
             "help",
         ],
     ),
 ];
 
-/// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, help itself, and the relay, which a person runs only to
-/// host one.
+/// The heading `krowk help --all` puts the hidden commands under.
+pub const MORE_HEADING: &str = "More";
+
+/// Hidden: still routed, but listed by `krowk help --all` alone, and marked
+/// `hidden` in `krowk help --json`. The duplicates and the low-level
+/// commands; the GitHub Action and scripts call them by name, and nothing
+/// about how they run changes.
 pub const ALL_ONLY: &[&str] = &[
+    "logout",
+    "workspaces",
     "auth",
-    "help",
+    "runs",
+    "artifacts",
+    "claim",
     #[cfg(feature = "harness")]
-    "mcp",
-    // Run once per repository, so the overview's one screen goes to what is run daily.
+    "providers",
     #[cfg(feature = "harness")]
-    "trust",
+    "sync",
+    #[cfg(feature = "harness")]
+    "devices",
     #[cfg(all(feature = "harness", unix))]
-    "relay",
-    // Only for a person with more than one machine syncing.
+    "host",
     #[cfg(all(feature = "harness", unix))]
     "hosts",
-    // Upkeep the prices mostly do for themselves; its line went to `billing`.
+    #[cfg(all(feature = "harness", unix))]
+    "relay",
     #[cfg(feature = "sessions")]
     "pricing",
+    "help",
 ];
 
 #[cfg(test)]
@@ -1234,6 +1356,68 @@ mod tests {
         commands.sort_unstable();
         assert_eq!(listed, commands);
         assert!(ALL_ONLY.iter().all(|n| listed.contains(n)));
+    }
+
+    /// D12: the overview lists these and no others, in this order.
+    #[test]
+    fn the_overview_lists_exactly_the_short_list() {
+        let c = catalog("dev");
+        let shown: Vec<&str> = GROUPS
+            .iter()
+            .filter(|(title, _)| *title != MORE_HEADING)
+            .flat_map(|(_, names)| names.iter().copied())
+            .filter(|n| !ALL_ONLY.contains(n))
+            .collect();
+        let want: &[&str] = if cfg!(feature = "harness") {
+            &["connect", "disconnect", "login", "whoami", "billing", "sessions", "machines", "worktrees", "mcp", "trust", "push", "status", "doctor", "upgrade", "config"]
+        } else {
+            &["login", "whoami", "billing", "sessions", "push", "doctor", "upgrade", "config"]
+        };
+        let want: Vec<&str> = want.iter().copied().filter(|n| cfg!(unix) || *n != "machines").filter(|n| cfg!(feature = "sessions") || *n != "sessions").collect();
+        assert_eq!(shown, want);
+        // The catalog says the same: every other command is hidden.
+        // (A build without `sessions` still names `sessions` and `pricing`.)
+        for cmd in c.commands.iter().filter(|c| cfg!(feature = "sessions") || !matches!(c.name.as_str(), "sessions" | "pricing")) {
+            assert_eq!(cmd.hidden, !shown.contains(&cmd.name.as_str()), "{}", cmd.name);
+        }
+    }
+
+    #[test]
+    fn help_json_carries_a_hidden_flag_for_every_command() {
+        let v = serde_json::to_value(catalog("dev")).unwrap();
+        fn walk(commands: &serde_json::Value) {
+            for c in commands.as_array().unwrap() {
+                assert!(c["hidden"].is_boolean(), "{}", c["name"]);
+                if let Some(subs) = c.get("subcommands") {
+                    walk(subs);
+                }
+            }
+        }
+        walk(&v["commands"]);
+    }
+
+    /// Hidden is not removed: the router still has an arm for every hidden
+    /// command, since the GitHub Action and scripts call them by name.
+    /// (Running them would start daemons and reach the network, so the
+    /// router's own source is read.)
+    #[test]
+    fn every_hidden_command_still_routes() {
+        let source = include_str!("mod.rs");
+        // Only the router's own match arms: the flag checks elsewhere in the
+        // file spell the same words.
+        let router: Vec<&str> = source[source.find("fn dispatch(").unwrap()..].lines().filter(|l| l.contains("=>")).collect();
+        let c = catalog("dev");
+        let mut checked = 0;
+        for leaf in c.leaves().iter().filter(|l| l.hidden && l.name != "help") {
+            let words: Vec<String> = leaf.name.split(' ').map(|w| format!("\"{w}\"")).collect();
+            let arm = format!("[{}", words.join(", "));
+            let alone = format!("[{}]", words.join(", "));
+            assert!(router.iter().any(|l| l.contains(&arm) || l.contains(&alone)), "no route for hidden `krowk {}`", leaf.name);
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked}");
+        // `help` routes before dispatch.
+        assert!(source.contains("positionals[0] == \"help\""));
     }
 
     #[test]

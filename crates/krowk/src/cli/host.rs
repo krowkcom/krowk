@@ -65,7 +65,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
         if let Some(why) = store.refuses(root) {
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `krowk -p --trust` there, in this process rather than the daemon, for one run.")));
         }
-        Err(trust::untrusted(root, "The host daemon asks nobody: run `krowk trust` in that repository, then send the prompt again."))
+        Err(store.untrusted(root, "The host daemon asks nobody: run `krowk trust` in that repository, then send the prompt again."))
     });
     // A session another device starts here runs in the mode `krowk -p`
     // would with no `--permission-mode` (R-HOST-4): the most specific
@@ -77,6 +77,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let credentials = super::providers::credentials_path()?;
     let env = krowk_api::home::process_env;
+    let placer = super::synced::placer_source(&ctx.f);
     let factory: server::Factory = Box::new(move |cwd: &std::path::Path, answers: bool| {
         // Read again for each directory's host: a provider connected since
         // the daemon started is one its next directory has.
@@ -93,7 +94,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             trust: gate.clone(),
             publisher: Some(publisher.clone()),
             permissions: krowk_harness::permissions::Config { approvals: answers, ..permissions.clone() },
-            agents: prompt::agents_config(&env),
+            agents: krowk_harness::subagent::AgentsConfig { placer: Some(placer.clone()), ..prompt::agents_config(&env) },
             session: Default::default(),
         })
     });
@@ -110,8 +111,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     raise_open_files(OPEN_FILES);
     let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
     let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for), turns_rx);
-    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // New machines asking for a pairing (R-EASE-5): the publisher hands each
+    // refresh's requests to this, and the daemon tells clients its offer.
+    let introduce_flags = ctx.f.clone();
+    let introductions = krowk_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), krowk_harness::sync::announce::words(&e)))));
+    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
+    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `krowk host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,
@@ -155,7 +160,7 @@ fn raise_open_files(want: libc::rlim_t) {
 /// status` checks them, their models from the models.dev cache, and the
 /// repositories `trusted` lists. The sessions another device starts here
 /// (R-HOST-4) run in `mode_for`'s mode.
-fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: krowk_harness::sync::announce::ModeFor) -> krowk_harness::sync::auto::Config {
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: krowk_harness::sync::announce::ModeFor, introductions: Arc<krowk_harness::sync::introduce::Introductions>) -> krowk_harness::sync::auto::Config {
     use krowk_harness::sync::{announce, auto};
     let (f, f2, f3, f4) = (ctx.f.clone(), ctx.f.clone(), ctx.f.clone(), ctx.f.clone());
     let env = krowk_api::home::process_env;
@@ -196,6 +201,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             trusted,
             mode_for,
             take: take_up(ctx),
+            introductions: Some(introductions),
         }),
     }
 }
@@ -231,7 +237,7 @@ fn take_up(ctx: &Ctx) -> Option<krowk_harness::sync::announce::TakeUp> {
 /// (the supervisor's, on its thread): the process's environment, no
 /// stdout, and stderr the daemon's — `host.log` — so a line a bridge's
 /// setup says (`no direct path …`) is kept there.
-fn own_ctx<R>(f: &super::flags::Flags, body: impl FnOnce(&mut Ctx) -> R) -> R {
+pub(super) fn own_ctx<R>(f: &super::flags::Flags, body: impl FnOnce(&mut Ctx) -> R) -> R {
     use super::Io;
     let (mut out, mut err) = (std::io::sink(), std::io::stderr());
     let env = |k: &str| std::env::var(k).unwrap_or_default();
@@ -316,6 +322,22 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// `enable`: the service file written, then the service manager told to
 /// start it now and at every login. `disable`: stopped, then removed.
 pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
+    let (file, stopped) = set_service(ctx, on)?;
+    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
+    let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
+    if ctx.format != Format::Human {
+        return super::sessions::emit_data(ctx, data, summary);
+    }
+    if let Some(pid) = stopped {
+        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
+    }
+    let _ = writeln!(ctx.io.stdout, "{summary}");
+    Ok(())
+}
+
+/// What `enable` does, without saying so: the service file, and the pid of
+/// a daemon it let go. The join's offer runs it inside its own answer.
+pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf, Option<u32>), Error> {
     let platform = service::Platform::here();
     let file = service::path(platform, ctx.io.env).map_err(|e| fail("no_home", e))?;
     // SAFETY: getuid has no preconditions and cannot fail.
@@ -346,7 +368,7 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
             Ok(o) if o.status.success() => {}
             // Stopping one that is not loaded is no failure: it is stopped.
             Ok(_) | Err(_) if !on => {}
-            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `krowk host enable` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
+            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `krowk machines always-on on` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
             Err(e) => return Err(fail("service_failed", format!("`{}` could not run: {e} — {} is written; start it with your service manager", c.join(" "), file.display()))),
         }
     }
@@ -359,16 +381,7 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
             _ => {}
         }
     }
-    let data = json!({ "enabled": on, "service": file, "stopped": stopped });
-    let summary = if on { format!("the host daemon runs as a service: {}", file.display()) } else { format!("the host service is stopped and {} removed", file.display()) };
-    if ctx.format != Format::Human {
-        return super::sessions::emit_data(ctx, data, summary);
-    }
-    if let Some(pid) = stopped {
-        let _ = writeln!(ctx.io.stdout, "stopped the host daemon krowk had started (pid {pid}); the service runs it from now on");
-    }
-    let _ = writeln!(ctx.io.stdout, "{summary}");
-    Ok(())
+    Ok((file, stopped))
 }
 
 /// Whether a service manager's command succeeds.

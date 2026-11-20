@@ -141,7 +141,7 @@ impl Candidate {
 }
 
 /// A machine's tailnet node, as its host keeps it in a session's sealed
-/// index for `krowk hosts` to find on the tailnet.
+/// index for `krowk machines` to find on the tailnet.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Tailnet {

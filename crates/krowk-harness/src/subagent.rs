@@ -60,6 +60,8 @@ use crate::engine::{EngineEvent, Events};
 use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
+#[cfg(unix)]
+use crate::sync::placement::{stream_line, Failure, Handle, Here, HostPin, Outcome, Placer, Progress, TaskSpec};
 use crate::protocol::{ChildState, ChildTool, Item, ItemKind, LiveEvent, ModelRef, PermissionMode, StreamLine, TurnStatus, Waiting};
 use crate::worktree::InUse;
 use schemars::JsonSchema;
@@ -68,6 +70,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(unix)]
+use std::time::Duration;
 use tokio::sync::{mpsc, watch, Semaphore};
 
 pub const SUBAGENT: &str = "subagent";
@@ -153,6 +157,12 @@ pub struct SubagentInput {
     /// Answered at once; its summary arrives when it ends.
     #[serde(default)]
     pub run_in_background: Option<bool>,
+    /// A machine's name, `any`, or `any:<os>`.
+    #[serde(default)]
+    pub host: Option<String>,
+    /// A model or account.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 /// Where a subagent works: the parent's directory, or a git worktree of
@@ -259,14 +269,25 @@ pub struct AgentsConfig {
     /// Where a subagent's worktree is made (`krowk_api::home::worktrees_root`);
     /// none refuses `isolation: "worktree"`.
     pub worktrees: Option<PathBuf>,
+    /// Places a subagent on one of the person's machines (R-ALLOC-10): the
+    /// supervisor's `Placer`, made once on first use, none when sync is not
+    /// set up here, so every subagent runs here.
+    pub placer: Option<PlacerSource>,
 }
+
+/// The `Placer` a subagent's call places by, if this machine has one.
+#[cfg(unix)]
+pub type PlacerSource = Arc<dyn Fn() -> Option<Arc<crate::sync::placement::Placer>> + Send + Sync>;
+/// Sync, and so placing, is unix-only: elsewhere there is never a `Placer`.
+#[cfg(not(unix))]
+pub type PlacerSource = Arc<dyn Fn() -> Option<std::convert::Infallible> + Send + Sync>;
 
 impl AgentsConfig {
     /// No definitions of the person's, and a catalog that lists nothing:
     /// subagents run on the parent's model unless told otherwise, and in
     /// no worktree.
     pub fn none() -> AgentsConfig {
-        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None }
+        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None, placer: None }
     }
 }
 
@@ -290,6 +311,11 @@ pub fn choose_model(asked: Option<&str>, config: Option<&str>, parent: &ModelRef
                 Some(m) => Ok(ModelRef { instance: "anthropic".into(), model: m }),
                 None => Err(format!("model {a:?} names the {family} family, which the model catalog does not list — run `krowk pricing refresh`, or name the model as <instance>/<model>")),
             }
+        }
+        // An account instance by name (`claude:work`): its default model.
+        Some(m) if registry.instances.contains_key(m) => {
+            let kind = registry.get(m)?.kind;
+            crate::instances::default_model_of(kind).map(|d| ModelRef { instance: m.to_string(), model: d.to_string() }).ok_or_else(|| format!("name a model for {m}, as {m}/<model>"))
         }
         Some(m) => registry.parse_model(m),
     }
@@ -569,7 +595,8 @@ impl Subagents {
         }
         let def = self.resolve(input.agent.as_deref())?;
         let (registry, p) = (self.0.host.registry(), &self.0.parent);
-        choose_model(def.and_then(|d| d.model.as_deref()), registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, self.0.host.cfg.agents.models.as_ref()).map(drop).map_err(|e| format!("the subagent could not start: {e}"))
+        pin_of(&input)?;
+        choose_model(input.model.as_deref().map(str::trim).filter(|m| !m.is_empty()).or(def.and_then(|d| d.model.as_deref())), registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, self.0.host.cfg.agents.models.as_ref()).map(drop).map_err(|e| format!("the subagent could not start: {e}"))
     }
 
     /// One `subagent` call as the child `child`: its answer, whether it is
@@ -597,7 +624,9 @@ impl Subagents {
         let p = &self.0.parent;
         let registry = host.registry();
         let choose = |asked| choose_model(asked, registry.subagents.model.as_deref(), &p.model, &p.provider, &registry, cfg.agents.models.as_ref());
-        let model = match choose(def.and_then(|d| d.model.as_deref())) {
+        // The call's own model outranks the definition's (D12).
+        let asked = input.model.as_deref().map(str::trim).filter(|m| !m.is_empty());
+        let model = match choose(asked.or(def.and_then(|d| d.model.as_deref()))) {
             Ok(m) => m,
             Err(e) => return (format!("the subagent could not start: {e}"), true, None),
         };
@@ -609,7 +638,7 @@ impl Subagents {
         let model = match def {
             // Trusted as the permission rules judge it: the repository's own
             // allow rules, directories and hooks count only then too.
-            Some(d) if d.project && model.instance != p.model.instance && !cfg.permissions.trusted.as_ref().is_some_and(|t| t(&crate::trust::root(&p.cwd))) => {
+            Some(d) if asked.is_none() && d.project && model.instance != p.model.instance && !cfg.permissions.trusted.as_ref().is_some_and(|t| t(&crate::trust::root(&p.cwd))) => {
                 let fallback = match choose(None) {
                     Ok(m) => m,
                     Err(e) => return (format!("the subagent could not start: {e}"), true, None),
@@ -644,6 +673,11 @@ impl Subagents {
             },
             _ = crate::engine::cancelled(&mut cancel) => return ("not run: the turn was interrupted".into(), true, Some("interrupted")),
         };
+        // Where it runs (R-ALLOC-10): here, as ever, unless this machine
+        // is busy or a host was asked for.
+        if let Some(answered) = self.placed_elsewhere(&input, def, &model, events, &mut cancel).await {
+            return answered;
+        }
         // Then one of the machine's agent slots, held until it ends — or
         // its parent's, when the parent holds one (`--worktree`): a parent
         // on the last slot waiting for a child that waits for a slot would
@@ -698,6 +732,112 @@ impl Subagents {
             }
         }
         concluded(result, worktree, (!background).then(|| p.cwd.clone())).await
+    }
+
+    /// Without sync nothing is placed: every call runs here, and one that
+    /// names a machine is refused.
+    #[cfg(not(unix))]
+    async fn placed_elsewhere(&self, input: &SubagentInput, _def: Option<&AgentDef>, _model: &ModelRef, _events: &Events, _cancel: &mut watch::Receiver<bool>) -> Option<(String, bool, Option<&'static str>)> {
+        pin_of(input).err().map(|e| (e, true, None))
+    }
+
+    /// The call's answer when it ran on another machine (or could not be
+    /// placed), none when it runs here. An agent with a tool allowlist
+    /// always runs here: allowlists do not travel (D12).
+    #[cfg(unix)]
+    async fn placed_elsewhere(&self, input: &SubagentInput, def: Option<&AgentDef>, model: &ModelRef, events: &Events, cancel: &mut watch::Receiver<bool>) -> Option<(String, bool, Option<&'static str>)> {
+        let pin = match pin_of(input) {
+            Ok(pin) => pin,
+            Err(e) => return Some((e, true, None)),
+        };
+        if let Some(d) = def.filter(|d| d.tools.is_some()) {
+            if pin.is_some() {
+                let text = format!("agent {} has a tool allowlist, which does not travel: it runs on this machine", d.name);
+                let _ = events.send(crate::engine::EngineEvent::Notice { text }).await;
+            }
+            return None;
+        }
+        // Made on first use, which reads keys and files: off the runtime.
+        let source = self.0.host.cfg.agents.placer.clone();
+        let placer = match source {
+            Some(source) => tokio::task::spawn_blocking(move || source()).await.ok().flatten(),
+            None => None,
+        };
+        let Some(placer) = placer else {
+            return pin.map(|_| ("host needs machines to place work on: set this one up with `krowk sync init` or `krowk sync join`, or leave host out to run it here".to_string(), true, None));
+        };
+        match self.place(&placer, input, def, model, events, cancel).await {
+            Placed::Here => None,
+            Placed::Answered(text, failed, status) => Some((text, failed, status)),
+        }
+    }
+
+    /// Places the call (`Placer`): `Here` when it runs on this machine as
+    /// any subagent does, else the call's answer, the child having run on
+    /// another machine and its changes landed in the parent's working tree.
+    #[cfg(unix)]
+    async fn place(&self, placer: &Arc<Placer>, input: &SubagentInput, def: Option<&AgentDef>, model: &ModelRef, events: &Events, cancel: &mut watch::Receiver<bool>) -> Placed {
+        let pin = pin_of(input).ok().flatten();
+        let pin_is_none = pin.is_none();
+        let p = &self.0.parent;
+        let left = remaining(&p.budget).await;
+        let spec = TaskSpec {
+            description: input.description.clone(),
+            prompt: match def.map(|d| d.instructions.trim()).filter(|i| !i.is_empty()) {
+                Some(instructions) => format!("{instructions}\n\n{}", input.prompt),
+                None => input.prompt.clone(),
+            },
+            cwd: p.cwd.clone(),
+            host: pin,
+            model: model.clone().into(),
+            budget: left,
+            permission_mode: Some(p.permission_mode),
+            store: None,
+        };
+        let handle = placer.start(spec, Here::Caller);
+        let said = |text: String| events.send(crate::engine::EngineEvent::Notice { text });
+        let wait = |placer: Arc<Placer>, handle: Handle, long: bool| {
+            tokio::task::spawn_blocking(move || if long { placer.wait(&handle, Duration::from_secs(24 * 3600)) } else { placer.placed(&handle, Duration::from_secs(24 * 3600)) })
+        };
+        let interrupted = || Placed::Answered("not run: the turn was interrupted".into(), true, Some("interrupted"));
+        let progress = tokio::select! {
+            r = wait(placer.clone(), handle.clone(), false) => r.unwrap_or_else(|_| Err(Failure::Failed { machine: "this machine".into(), reason: "placement stopped unexpectedly".into() })),
+            _ = crate::engine::cancelled(cancel) => { placer.cancel(&handle); return interrupted() }
+        };
+        let progress = match progress {
+            Ok(pr) => pr,
+            // Placing broke on this machine (the registry, the job's storage,
+            // a read of its own load) and no machine was asked for: the
+            // default is to run here, as it was before there was a choice.
+            Err(Failure::Failed { machine, reason }) if pin_is_none && machine == "this machine" => {
+                let _ = said(format!("Running here: it could not be placed on another machine ({reason}).")).await;
+                return Placed::Here;
+            }
+            Err(f) => return Placed::Answered(format!("the subagent could not start: {f}"), true, None),
+        };
+        if let Some(line) = stream_line(&progress) {
+            let _ = said(line).await;
+        }
+        match progress {
+            Progress::Here { .. } => Placed::Here,
+            Progress::Done(o) => Placed::Answered(told(&o), false, Some("completed")),
+            Progress::Placing | Progress::Running { .. } => {
+                let done = tokio::select! {
+                    r = wait(placer.clone(), handle.clone(), true) => r.unwrap_or_else(|_| Err(Failure::Failed { machine: "this machine".into(), reason: "placement stopped unexpectedly".into() })),
+                    _ = crate::engine::cancelled(cancel) => { placer.cancel(&handle); return interrupted() }
+                };
+                match done {
+                    Ok(Progress::Done(o)) => {
+                        // Its tokens are known and its price is not: the
+                        // turn's cost is partial, as for any unpriced call.
+                        self.0.spent.lock().unwrap_or_else(|e| e.into_inner()).1 = true;
+                        Placed::Answered(told(&o), false, Some("completed"))
+                    }
+                    Ok(_) => Placed::Answered("the subagent did not finish".into(), true, None),
+                    Err(f) => Placed::Answered(f.to_string(), true, Some("failed")),
+                }
+            }
+        }
     }
 
     /// A worktree of the parent's repository for the child `child`, readied
@@ -760,6 +900,70 @@ impl Subagents {
             Err(e) => Err(failed(format!("the subagent's worktree could not be made: {e}"))),
         }
     }
+}
+
+/// The machine the call asks for, if it asks.
+#[cfg(unix)]
+fn pin_of(input: &SubagentInput) -> Result<Option<HostPin>, String> {
+    match input.host.as_deref().map(str::trim).filter(|h| !h.is_empty()).map(HostPin::parse) {
+        Some(Ok(pin)) => Ok(Some(pin)),
+        Some(Err(e)) => Err(format!("invalid host: {e}")),
+        None => Ok(None),
+    }
+}
+
+/// Placing needs sync, which is unix-only: a call that names a machine is
+/// refused.
+#[cfg(not(unix))]
+fn pin_of(input: &SubagentInput) -> Result<Option<()>, String> {
+    match input.host.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        Some(_) => Err("host is not available on this platform: a subagent runs on this machine here".to_string()),
+        None => Ok(None),
+    }
+}
+
+/// Where `place` put a call.
+#[cfg(unix)]
+enum Placed {
+    /// On this machine, to run as a subagent here.
+    Here,
+    /// Run elsewhere (or not at all): the answer, whether it is an error,
+    /// and how the turn ended.
+    Answered(String, bool, Option<&'static str>),
+}
+
+/// What is left of the parent's tree budget, which a child on another
+/// machine runs under (D12).
+#[cfg(unix)]
+async fn remaining(budget: &Budget) -> crate::protocol::BudgetLimits {
+    let limits = budget.limits();
+    if limits.is_empty() {
+        return limits;
+    }
+    let total = budget.refreshed().await.total;
+    crate::protocol::BudgetLimits { max_usd: limits.max_usd.map(|u| (u - total.cost().unwrap_or(0.0)).max(0.0)), max_tokens: limits.max_tokens.map(|t| (t - total.generated()).max(0)) }
+}
+
+/// The call's answer for a child that ran on another machine: its summary,
+/// where it ran, what landed in the working tree or was kept, and the
+/// approvals it was denied (R-ALLOC-8, R-ALLOC-14).
+#[cfg(unix)]
+pub fn told(o: &Outcome) -> String {
+    let mut text = o.summary.trim_end().to_string();
+    text.push_str(&format!("\n\nRan on {}.", o.machine));
+    if !o.why.is_empty() {
+        text.push_str(&format!("\nPlaced there because {}.", o.why));
+    }
+    if !o.applied.is_empty() {
+        text.push_str(&format!("\nChanges applied to your working tree: {}", crate::worktree::apply::named(&o.applied)));
+    }
+    if let Some(kept) = &o.kept {
+        text.push_str(&format!("\n{kept}"));
+    }
+    if !o.denied.is_empty() {
+        text.push_str(&format!("\nDenied, since a task on another machine cannot ask: {}", o.denied.join("; ")));
+    }
+    text
 }
 
 /// What a child's call is answered with once its turn is over — its
@@ -951,6 +1155,31 @@ impl ChildWatch {
 mod tests {
     use super::*;
     use crate::instances::InstancesConfig;
+
+    /// Slice 07 (R-ALLOC-10): the tool takes an optional host, a machine's
+    /// name, any or an OS filter, which `placement::HostPin` reads.
+    #[test]
+    fn alloc_07_the_subagent_tool_takes_a_host() {
+        for host in ["desktop", "any", "any:macos", "any:linux", "any:windows"] {
+            let input = serde_json::json!({"description": "fix it", "prompt": "fix the test", "host": host});
+            assert!(SubagentInput::deserialize(input).is_ok(), "{host}");
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(SubagentInput)).unwrap();
+        assert!(schema["properties"].get("host").is_some(), "the model is told it can name one");
+    }
+
+    /// Slice 07 (D12): the tool takes an optional model or instance
+    /// (`claude:work`, `codex:team`, a model id), which placement resolves
+    /// on this machine and sends with the `run`.
+    #[test]
+    fn alloc_07_the_subagent_tool_takes_a_model_or_instance() {
+        for model in ["claude:work", "codex:team", "claude-opus-5-5", "anthropic/claude-opus-5-5"] {
+            let input = serde_json::json!({"description": "fix it", "prompt": "fix the test", "model": model});
+            assert!(SubagentInput::deserialize(input).is_ok(), "{model}");
+        }
+        let schema = serde_json::to_value(schemars::schema_for!(SubagentInput)).unwrap();
+        assert!(schema["properties"].get("model").is_some());
+    }
 
     #[test]
     fn r_sub_1_the_model_is_the_definitions_else_the_configs_else_a_cheaper_tier() {

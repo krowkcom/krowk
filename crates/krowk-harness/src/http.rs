@@ -449,7 +449,7 @@ const MAX_RESET_MS: i64 = 30 * 24 * 3600 * 1000;
 
 /// An RFC 3339 UTC time (`2026-09-26T14:00:00Z`, fractions and a numeric
 /// offset allowed) in milliseconds since the epoch.
-fn rfc3339_ms(s: &str) -> Option<i64> {
+pub(crate) fn rfc3339_ms(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') || b[13] != b':' || b[16] != b':' {
         return None;

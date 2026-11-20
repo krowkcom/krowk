@@ -1017,7 +1017,7 @@ fn fix_for(code: &str, status: u16) -> String {
         // session this machine syncs. The id to trust is on a machine the
         // person already syncs from.
         "account_key_mismatch" => {
-            "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk devices list` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
+            "the registry says this workspace syncs under another account key — if this key came from `krowk sync recover`, a word of the phrase is wrong: run it again with the right one. Compare with `krowk machines` on a machine you already sync from, never with an id in an error message; if you have no such machine, do not join this workspace, and its owner can reset sync in the dashboard's settings"
         }
         // Never "write the next index": a gap is a log no reader gets past.
         "chunk_exists" => "this session already has that chunk, and its log is append-only — list the session's chunks and continue from the last ready index + 1, chained onto that chunk",
@@ -1477,7 +1477,7 @@ mod tests {
     fn the_account_key_mismatch_fix_never_points_at_join() {
         let fix = fix_for("account_key_mismatch", 409);
         assert!(!fix.contains("sync join"), "{fix}");
-        assert!(fix.contains("krowk devices list") && fix.contains("never with an id in an error message"), "{fix}");
+        assert!(fix.contains("krowk machines") && fix.contains("never with an id in an error message"), "{fix}");
     }
 
     #[test]

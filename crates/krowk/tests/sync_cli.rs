@@ -5,13 +5,16 @@
 //! not have fails at once, saying so, rather than hanging (todo 22b). And
 //! the direct path with no setup (ticket 42): the host goes direct with the
 //! registry's published ticket keys, or says in one line why it does not.
-//! And `krowk hosts` listing the machines that host, with no Tailscale tag
+//! And `krowk machines` listing the machines that host, with no Tailscale tag
 //! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
 //! and opened by `sync attach` on a third machine, which reads its
 //! history there and stops it (R-SUB-12). And `krowk sync new`
 //! from B starting a session on A's host daemon and following it, or
 //! refusing, with nothing sent, a host that is offline, a directory it did
-//! not offer and a model it cannot run (R-HOST-4).
+//! not offer and a model it cannot run (R-HOST-4). And automatic
+//! allocation's machines (`alloc_…`, pending until their slices land):
+//! `krowk machines`, krowk-mcp's delegate and collect, and a target that
+//! drops mid-task.
 //! Against the stand-in registry, the reference relay and a mock model.
 
 #![cfg(all(feature = "harness", unix))]
@@ -45,6 +48,18 @@ const LIMITED: &str = "past-the-limit-prompt-3e0a";
 /// hundred: an early offer.
 const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
 
+/// A task handed to another machine, which writes `delegated.txt`.
+const DELEGATED: &str = "write-the-delegated-file-9d41";
+/// A task long enough for its machine to be dropped under it, and to
+/// outlast the test's bound, so only the drop can end it.
+const TEN_MINUTE_TASK: &str = "a-ten-minute-task-4c07";
+
+/// A prompt the parent answers with a `subagent` call, no host named,
+/// whose prompt is `DELEGATED`.
+const HAND_OVER: &str = "hand-the-ci-task-over-2b6e";
+/// The same, the subagent's prompt `TEN_MINUTE_TASK`.
+const HAND_OVER_LONG: &str = "hand-the-long-task-over-5f1a";
+
 /// Holds the slower subagent's answer until the test opens it.
 static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
 
@@ -76,6 +91,12 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     if !has_result && text.contains("start a slow subagent") {
         return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
     }
+    if !has_result && text.contains(HAND_OVER) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Hand", "subagent", &serde_json::json!({"description": "the CI task", "prompt": DELEGATED})));
+    }
+    if !has_result && text.contains(HAND_OVER_LONG) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Long", "subagent", &serde_json::json!({"description": "the long task", "prompt": TEN_MINUTE_TASK})));
+    }
     if !has_result && text.contains(LIMITED) {
         return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
     }
@@ -87,6 +108,16 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     }
     if !has_result && text.contains("a long answer") {
         let words: String = (0..400).map(|i| format!("word{i} ")).collect();
+        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
+    }
+    // A handed-over task: one file written, then done; or a long one, for
+    // a machine to drop under.
+    if !has_result && text.contains(DELEGATED) {
+        return mock::Reply::sse(&mock::tool_use("toolu_01Deleg", "write", &serde_json::json!({"path": "delegated.txt", "content": "delegated\n"})));
+    }
+    if !has_result && text.contains(TEN_MINUTE_TASK) {
+        // Ten minutes at this pace: it outlasts the drop test's bound.
+        let words: String = (0..30_000).map(|i| format!("taskword{i} ")).collect();
         return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
     }
     for (ask, file) in [("make the allowed file", "allowed.txt"), ("make the denied file", "denied.txt")] {
@@ -698,7 +729,7 @@ fn on_tailscale(m: &mut Machine, status: serde_json::Value) {
     m.env.push(("KROWK_TAILSCALE_SOCKET".into(), socket.display().to_string()));
 }
 
-/// Ticket 43: on a tailnet with no tags and no policy, `krowk hosts` on B
+/// Ticket 43: on a tailnet with no tags and no policy, `krowk machines` on B
 /// lists A — the machine of B's person that hosts a synced session — by
 /// its device list name, hosting, and reachable directly over the node A
 /// kept in the session's sealed index. A peer on the tailnet that is not
@@ -726,7 +757,7 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let out = b.command(&["hosts", "--json"]).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    let hosts = v["hosts"].as_array().unwrap();
+    let hosts = v["machines"].as_array().unwrap();
     assert_eq!(hosts.len(), 1, "A alone: {v}");
     let h = &hosts[0];
     assert_eq!((h["name"].as_str(), h["hosting"].as_bool(), h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool(), h["sessions"].as_u64()), (Some("a"), Some(true), Some(true), Some(true), Some(false), Some(1)), "{h}");
@@ -735,14 +766,14 @@ fn r_net_4_hosts_lists_your_machines_that_host_with_no_tailscale_tags() {
     let human = b.command(&["hosts", "--format", "human"]).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     // A's daemon may have announced A by now: its lines follow, indented.
-    assert_eq!(human.lines().next(), Some("a  hosting  reachable directly  1 session"), "{human}");
-    assert!(human.lines().skip(1).all(|l| l.starts_with("  ")), "{human}");
+    assert!(human.lines().next().is_some_and(|l| l.starts_with("a  online  ")), "{human}");
+    assert!(human.lines().any(|l| l == "  hosting  reachable directly  1 session"), "{human}");
 
     b.env = b_plain;
     let out = b.command(&["hosts", "--json"]).output().unwrap();
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["tailscale"], false);
-    assert_eq!((v["hosts"][0]["name"].as_str(), v["hosts"][0]["direct"].as_bool()), (Some("a"), Some(false)), "{v}");
+    assert_eq!((v["machines"][0]["name"].as_str(), v["machines"][0]["direct"].as_bool()), (Some("a"), Some(false)), "{v}");
 }
 
 /// A tailscaled on a unix socket in `dir`, answering `status` for a node
@@ -859,7 +890,7 @@ fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
 }
 
 /// R-SYNC-3, R-HOST-2 (ticket 95): A runs a turn in its host daemon with no
-/// sync command — kept up as `krowk host enable` keeps it, with no idle
+/// sync command — kept up as `krowk machines always-on on` keeps it, with no idle
 /// exit — and B lists the session within 5 seconds of the command's start,
 /// then follows a prompt it sends to its result. `krowk sync status` on A
 /// counts the bridge, `krowk sync host` of the session says it is synced
@@ -1033,7 +1064,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
 }
 
 /// R-HOST-3, R-NET-4: A's host daemon runs with sync set up and no
-/// Tailscale anywhere; B's `krowk hosts --json` lists A as announced and
+/// Tailscale anywhere; B's `krowk machines --json` lists A as announced and
 /// online, with its instances and its trusted repository, and the text
 /// says so under A's line.
 #[test]
@@ -1052,7 +1083,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
         let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
+        if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a" && h["announced"] == true)).cloned() {
             break (v, h);
         }
         assert!(Instant::now() < deadline, "B never saw A announced: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
@@ -1069,6 +1100,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     let human = b.command(&["hosts", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
     let human = String::from_utf8_lossy(&human.stdout);
     let mut lines = human.lines().skip_while(|l| !l.starts_with("a  "));
+    assert!(lines.next().is_some_and(|l| l.starts_with("a  online  ")), "{human}");
     // Hosting or not: its daemon's automatic sync may have taken the turn's session up.
     assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
     assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
@@ -1089,13 +1121,13 @@ fn serving(w: &World) -> (Machine, Machine, Running) {
     (a, b, serve)
 }
 
-/// A's row in B's `krowk hosts --json`, once it passes `want`.
+/// A's row in B's `krowk machines --json`, once it passes `want`.
 fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let out = b.command(&["hosts", "--json"]).stdin(Stdio::null()).output().unwrap();
         let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
-        if let Some(h) = v["hosts"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
+        if let Some(h) = v["machines"].as_array().and_then(|l| l.iter().find(|h| h["name"] == "a")).filter(|h| want(h)) {
             return h.clone();
         }
         assert!(Instant::now() < deadline, "B never saw A as wanted: {v}\nA's host.log: {}", std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default());
@@ -1151,6 +1183,64 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     assert_eq!(a.session(), session);
 }
 
+/// R-EASE-10: `krowk sessions new --on` starts a session on A as `sync new
+/// --host` does; `krowk sessions` on B then lists it after B's own, under A's
+/// name, as data too, and `sessions attach` follows it.
+#[test]
+fn r_ease_10_sessions_lists_every_machine_and_new_on_and_attach_work() {
+    let w = World::new("easenew");
+    let (a, b, _serve) = serving(&w);
+    let repo = a.repo.display().to_string();
+    let mut view = Running::spawn(b.command(&["sessions", "new", "--on", "A", "--cwd", &repo, "--json", "say hi"]));
+    let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
+    view.until("the turn's end", |v| v["type"] == "turn.completed");
+    let session = started["sessionId"].as_str().unwrap().to_string();
+    drop(view);
+
+    // A's automatic sync takes the session up to the registry shortly after;
+    // a loaded runner is given room.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let listed = loop {
+        let out = b.command(&["sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if let Some(s) = v["data"]["sessions"].as_array().and_then(|l| l.iter().find(|s| s["id"] == session.as_str())) {
+            break s.clone();
+        }
+        assert!(Instant::now() < deadline, "B never listed {session}: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!((listed["machine"].as_str(), listed["this_machine"].as_bool(), listed["synced"].as_bool(), listed["directory"].as_str()), (Some("a"), Some(false), Some(true), Some(repo.as_str())), "{listed}");
+    let out = b.command(&["sessions", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Machine") && text.lines().any(|l| l.contains(&session) && l.split_whitespace().any(|w| w == "a")), "{text}");
+
+    let mut view = Running::spawn(b.command(&["sessions", "attach", &session, "--json"]));
+    view.heard_within("the host", true, Duration::from_secs(45), |v| v["type"] == "sync.host" && v["present"] == true);
+}
+
+/// R-EASE-10: the `sync` forms and `sessions sync` work as before and are
+/// left out of the help lists; `help --all` still has them.
+#[test]
+fn r_ease_10_the_old_forms_stay_but_are_hidden() {
+    let w = World::new("easehid");
+    let b = w.machine("b");
+    let help = |args: &[&str]| String::from_utf8_lossy(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
+    let (sessions, sync, all) = (help(&["help", "sessions"]), help(&["help", "sync"]), help(&["help", "--all"]));
+    let has = |text: &str, usage: &str| text.lines().any(|l| l.trim_start().starts_with(usage));
+    assert!(has(&sessions, "attach <id>") && has(&sessions, "take <id>") && has(&sessions, "new --on"), "{sessions}");
+    assert!(!sessions.contains("krowk sessions sync") && !has(&sessions, "sync [--no-network]"), "{sessions}");
+    assert!(!has(&sync, "sessions") && !has(&sync, "attach") && !has(&sync, "take") && !has(&sync, "new") && has(&sync, "status"), "{sync}");
+    for old in ["sync sessions", "sync attach", "sync take", "sync new", "sessions sync"] {
+        assert!(has(&all, old), "{old} is in help --all: {all}");
+    }
+    // Still routed: refused for want of keys or a session id, not as unknown.
+    for args in [&["sync", "sessions"][..], &["sync", "attach", "x"], &["sync", "take", "x"], &["sync", "new", "--host", "a", "--cwd", "/x", "hi"], &["sessions", "attach", "x"], &["sessions", "take", "x"], &["sessions", "new", "--on", "a", "--cwd", "/x", "hi"]] {
+        let out = b.command(args).stdin(Stdio::null()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("unknown command") && !err.contains("unknown flag"), "{args:?}: {err}");
+    }
+}
+
 /// R-HOST-4: A stopped cleanly takes its presence with it. B's `sync new`
 /// says A is offline and how to bring it up, and sends nothing.
 #[test]
@@ -1172,9 +1262,9 @@ fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
-    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk host enable"), "{err}");
+    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk machines always-on on"), "{err}");
     let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
-    assert!(err.contains("no host named 'nobody' — krowk hosts lists yours"), "{err}");
+    assert!(err.contains("no machine named 'nobody' — krowk machines lists yours"), "{err}");
 }
 
 /// R-HOST-4: a directory A did not announce — its home, untrusted — is
@@ -1383,4 +1473,283 @@ fn r_cred_1_a_take_b_cannot_run_is_refused_with_its_fix_and_the_session_stays() 
     assert_eq!(code, "take_refused", "{message}");
     assert!(message.contains("stays where it is") && !message.contains('{'), "the take's own fix: {message}");
     assert_eq!(m.holder(), Some(m.ids[0].to_string()), "the session stays on A");
+}
+
+/// A and B with one repository, real clones of one origin announced as
+/// `github.com/acme/app`; A trusting it, taking edits without asking, and
+/// serving, announced as accepting work; B having seen it so.
+fn allocating(w: &World) -> (Machine, Machine, Running) {
+    let mut a = w.machine("a");
+    let b = w.machine("b");
+    let git = |dir: &std::path::Path, args: &[&str]| assert!(Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(dir).stdout(Stdio::null()).status().unwrap().success(), "git {args:?}");
+    let seed = w.root.join("seed");
+    std::fs::create_dir_all(&seed).unwrap();
+    git(&seed, &["init", "-q"]);
+    std::fs::write(seed.join("lib.rs"), "fn a() {}\n").unwrap();
+    git(&seed, &["add", "."]);
+    git(&seed, &["commit", "-q", "-m", "base"]);
+    git(&w.root, &["clone", "-q", "--bare", "seed", "origin.git"]);
+    for m in [&a, &b] {
+        std::fs::remove_dir_all(&m.repo).unwrap();
+        git(&w.root, &["clone", "-q", "origin.git", m.repo.to_str().unwrap()]);
+        git(&m.repo, &["remote", "set-url", "origin", "https://github.com/acme/app.git"]);
+    }
+    a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
+    a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
+    std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
+    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    let serve = Running::spawn(a.command(&["host", "serve"]));
+    let _ = machines_row(&b, "a", |m| m["online"] == true && m["accepting"] == true && m["repositories"].as_array().is_some_and(|r| !r.is_empty()));
+    (a, b, serve)
+}
+
+/// `name`'s row in `m`'s `krowk machines --json`, once it passes `want`.
+fn machines_row(m: &Machine, name: &str, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    loop {
+        let out = m.command(&["machines", "--json"]).stdin(Stdio::null()).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+        if let Some(row) = v["machines"].as_array().and_then(|l| l.iter().find(|r| r["name"] == name)).filter(|r| want(r)) {
+            return row.clone();
+        }
+        assert!(Instant::now() < deadline, "never saw {name} as wanted: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// krowk-mcp on `m`, in its repository, spoken to a line at a time.
+struct Mcp {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    out: mpsc::Receiver<serde_json::Value>,
+    next: u64,
+}
+
+impl Mcp {
+    fn start(m: &Machine) -> Mcp {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_krowk-mcp")).env_clear().envs(m.env.iter().map(|(k, v)| (k, v))).current_dir(&m.repo).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+        let stdin = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+        let (tx, out) = mpsc::channel();
+        std::thread::spawn(move || {
+            for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                let _ = tx.send(serde_json::from_str(&line).unwrap_or_default());
+            }
+        });
+        let mut mcp = Mcp { child, stdin, out, next: 0 };
+        mcp.ask("initialize", serde_json::json!({"protocolVersion": "2025-06-18"}));
+        mcp
+    }
+
+    fn ask(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+        self.next += 1;
+        writeln!(self.stdin, "{}", serde_json::json!({"jsonrpc": "2.0", "id": self.next, "method": method, "params": params})).unwrap();
+        self.out.recv_timeout(Duration::from_secs(400)).expect("krowk-mcp answered")
+    }
+
+    /// A tool's result: its text, and whether it is an error.
+    fn call(&mut self, tool: &str, arguments: serde_json::Value) -> (String, bool, serde_json::Value) {
+        let r = self.ask("tools/call", serde_json::json!({"name": tool, "arguments": arguments}));
+        let text = r["result"]["content"][0]["text"].as_str().unwrap_or_default().to_string();
+        (text, r["result"]["isError"] == true, r["result"]["structuredContent"].clone())
+    }
+}
+
+impl Drop for Mcp {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+    }
+}
+
+/// Every build slot of `m` held, as a machine running CI holds them.
+fn all_build_slots(m: &Machine) -> Vec<krowk_harness::slots::Slot> {
+    let pool = krowk_harness::slots::Pool::new(m.run.join("krowk"), "build-slots", 64);
+    std::iter::from_fn(|| pool.try_take().unwrap()).collect()
+}
+
+/// Slice 03 (R-ALLOC-2, D16): B's `krowk machines` lists A with its
+/// capacity, repository and acceptance and, for the current repository,
+/// ready; `--json` carries the same; `krowk machines` prints the same.
+#[test]
+fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
+    let w = World::new("machines");
+    let (_a, b, _serve) = allocating(&w);
+    let row = machines_row(&b, "a", |_| true);
+    assert!(row["capacity"]["cores"].as_u64().is_some_and(|c| c >= 1) && row["capacity"]["agentSlots"]["total"].as_u64().is_some_and(|t| t >= 1), "{row}");
+    assert_eq!(row["repositories"][0]["origin"], "github.com/acme/app", "{row}");
+    assert_eq!(row["here"], "ready", "ready for B's repository: {row}");
+    let shape = |args: &[&str]| -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_slice(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
+        v["machines"].as_array().unwrap().iter().map(|m| (m["name"].clone(), m.as_object().unwrap().keys().cloned().collect::<Vec<_>>())).map(|(n, k)| serde_json::json!([n, k])).collect()
+    };
+    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk machines is krowk machines");
+    let human = String::from_utf8_lossy(&b.command(&["machines", "--format", "human"]).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
+    assert!(human.lines().any(|l| l.starts_with("a ") && l.contains("accepting")) && human.contains("ready"), "{human}");
+}
+
+/// Slice 08 (R-ALLOC-11, D18): from krowk-mcp on B, a task pinned to A is
+/// delegated, collected while it runs, and collected again once done, its
+/// file landed in B's working tree.
+#[test]
+fn alloc_08_krowk_mcp_delegates_collects_and_lands_the_result() {
+    let w = World::new("delegate");
+    let (_a, b, _serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "a"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap_or_else(|| panic!("a task id: {started}")).to_string();
+    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 0}));
+    assert!(!err && said.contains("still running"), "{said}");
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "a", "{done}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "the change is in B's working tree");
+}
+
+/// `m` on a local branch with a commit its origin never saw and an
+/// uncommitted change: the state a task must start from (D8). Its HEAD.
+fn mid_work(m: &Machine) -> String {
+    let git = |args: &[&str]| {
+        let out = Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t"]).args(args).current_dir(&m.repo).output().unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["checkout", "-q", "-b", "local"]);
+    std::fs::write(m.repo.join("unpushed.rs"), "fn u() {}\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "unpushed"]);
+    std::fs::write(m.repo.join("lib.rs"), "fn a() {}\nfn uncommitted() {}\n").unwrap();
+    git(&["rev-parse", "HEAD"])
+}
+
+/// Slice 10, the CI case from krowk's own agent (R-ALLOC-7, 8, D8): B has
+/// every build slot held, A is idle; B's agent calls `subagent` with no
+/// host, the task runs on A from B's exact state, its file lands in B's
+/// working tree with B's own change and HEAD kept, and the parent's stream
+/// says why A. The job's session B registered for it is signed, as the
+/// registry requires of every session.
+#[test]
+fn alloc_10_with_this_machine_busy_krowks_own_subagent_runs_on_the_other() {
+    let w = World::new("ci-agent");
+    let (_a, b, _serve) = allocating(&w);
+    let head = mid_work(&b);
+    let _ci = all_build_slots(&b);
+    let out = b.command(&["-p", HAND_OVER, "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits"]).stdin(Stdio::null()).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr).into_owned();
+    assert!(out.status.success(), "{said}");
+    assert!(said.contains("Running on a: this machine is busy (") && said.contains("build slots in use)."), "the stream says why A: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap_or_default(), "delegated\n", "A's change is in B's working tree: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "B's own change is kept");
+    let now = Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&b.repo).output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&now.stdout).trim(), head, "B's HEAD is untouched");
+    for s in b.api.list_sync_sessions("", 100).unwrap().sessions {
+        assert!(!s.record_signature.is_empty() && !s.signer.is_empty(), "session {} carries its signed record", s.id);
+    }
+}
+
+/// Slice 10 (R-ALLOC-9), from krowk's own agent: B busy, its subagent
+/// runs on A, and A's host goes away mid-task; within OFFLINE_AFTER and a
+/// margin the call's result names A and says where the work is, and B's
+/// turn goes on to its end.
+#[test]
+fn alloc_10_a_target_that_drops_under_krowks_own_subagent_fails_naming_it() {
+    let w = World::new("dropped-agent");
+    let (a, b, serve) = allocating(&w);
+    let _ci = all_build_slots(&b);
+    let mut run = Running::spawn(b.command(&["-p", HAND_OVER_LONG, "--model", "claude-sonnet-4-6", "--permission-mode", "acceptEdits", "--output-format", "stream-json"]));
+    run.said("the task placed on A", |l| l.contains("Running on a: this machine is busy"));
+    drop(serve);
+    let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let dropped = Instant::now();
+    let result = run.heard_within("the turn's end", false, Duration::from_secs(150), is("result"));
+    assert!(dropped.elapsed() < Duration::from_secs(120), "within the offline limit and a margin: {:?}", dropped.elapsed());
+    assert_eq!(result["status"], "completed", "{result}");
+    assert!(run.seen.iter().any(|l| l.contains("a went offline mid-task; its work is in a worktree there.")), "the subagent's result names A: {:#?}", run.seen);
+}
+
+/// krowk_machines is `krowk machines --json`: the same machines with the
+/// same fields (their readings move, so the values are not compared).
+#[test]
+fn krowk_mcp_machines_lists_what_krowk_machines_json_does() {
+    let w = World::new("mcp-machines");
+    let (_a, b, _serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, got) = mcp.call("krowk_machines", serde_json::json!({}));
+    assert!(!err, "{said}");
+    let cli: serde_json::Value = serde_json::from_slice(&b.command(&["machines", "--json"]).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
+    let shape = |v: &serde_json::Value| -> Vec<(String, Vec<String>)> { v["machines"].as_array().unwrap().iter().map(|m| (m["name"].as_str().unwrap().to_string(), m.as_object().unwrap().keys().cloned().collect())).collect() };
+    assert_eq!(shape(&got), shape(&cli), "{got}");
+    assert!(shape(&got).iter().any(|(n, _)| n == "a"), "{got}");
+}
+
+/// A task pinned to this machine runs here, in a worktree of its own, and
+/// lands its file in the working tree. (Pinned, since a loaded CI runner
+/// can be busy by the rules and so send an unpinned task away.)
+#[test]
+fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
+    let w = World::new("mcp-here");
+    let (_a, b, _serve) = allocating(&w);
+    std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
+    std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "b", "pinned here: {done}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n", "{said}");
+}
+
+/// Slice 10, the CI case through krowk-mcp: B has every build slot held,
+/// A is idle; a task delegated with no host runs on A from B's exact
+/// state, an unpushed commit and an uncommitted change included, and its
+/// file lands in B's working tree.
+#[test]
+fn alloc_10_with_this_machine_busy_krowk_mcp_runs_the_task_on_the_other() {
+    let w = World::new("ci-mcp");
+    let (_a, b, _serve) = allocating(&w);
+    mid_work(&b);
+    let _ci = all_build_slots(&b);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    let (said, err, done) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(!err, "{said}");
+    assert_eq!(done["machine"], "a", "B is busy, so A: {done}");
+    assert!(said.contains("build slots in use"), "why A: {said}");
+    assert_eq!(std::fs::read_to_string(b.repo.join("delegated.txt")).unwrap(), "delegated\n");
+    assert_eq!(std::fs::read_to_string(b.repo.join("lib.rs")).unwrap(), "fn a() {}\nfn uncommitted() {}\n", "B's own change is kept");
+}
+
+/// Slice 10 (R-ALLOC-9): A stops announcing mid-task, its daemon gone; B's
+/// collect fails within OFFLINE_AFTER and a margin, naming A and where the
+/// work is.
+#[test]
+fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
+    let w = World::new("dropped");
+    let (a, b, serve) = allocating(&w);
+    let mut mcp = Mcp::start(&b);
+    let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": TEN_MINUTE_TASK, "host": "a"}));
+    assert!(!err, "{said}");
+    let id = started["task_id"].as_str().unwrap().to_string();
+    // Mid-task: once A has started it, not while it is still being placed
+    // (a machine gone before it answers is one that did not take it).
+    let since = Instant::now();
+    loop {
+        let (said, _, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 2}));
+        assert!(said.contains("still running"), "{said}");
+        if said.contains("running on a") {
+            break;
+        }
+        assert!(since.elapsed() < Duration::from_secs(60), "never started on A: {said}");
+    }
+    drop(serve);
+    let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let dropped = Instant::now();
+    let (said, err, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id}));
+    assert!(err && said.contains("a went offline mid-task; its work is in a worktree there."), "{said}");
+    assert!(dropped.elapsed() < Duration::from_secs(120), "within the offline limit and a margin: {:?}", dropped.elapsed());
 }

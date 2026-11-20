@@ -78,7 +78,7 @@ pub struct Index {
     pub updated_ms: u64,
     pub head: Option<Head>,
     pub checkpoint: Option<Mark>,
-    /// The machine that last took the session up, which `krowk hosts`
+    /// The machine that last took the session up, which `krowk machines`
     /// lists it under; absent from an index written before it was kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<HostedOn>,

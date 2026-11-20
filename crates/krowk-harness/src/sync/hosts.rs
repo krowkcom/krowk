@@ -1,4 +1,4 @@
-//! `krowk hosts` (R-NET-4): the machines of yours that host synced
+//! `krowk machines` (R-NET-4): the machines of yours that host synced
 //! sessions, found with no step in the Tailscale admin console. The
 //! registry's sessions say which of your devices host — each sealed index
 //! names the machine that last took its session up, and the lease which one
@@ -109,9 +109,85 @@ pub fn hosts(listed: &[Listed], announced: &[Announced], chain: &Chain, me: &str
     out
 }
 
+/// Whether the machine that announced `a` would take a task in the
+/// repository with normalised origin `origin` (R-ALLOC-2, D7): none when
+/// ready, else the fix, in the order a person meets them: `krowk machines
+/// accept on` when it is not accepting, `run: git clone <clone_url>` when it
+/// has no clone, and the instance's own fix line when no account there is
+/// ready. `clone_url` is the origin as this machine's clone has it; the
+/// fix shows it with any user or password left out.
+pub fn fix(a: &Announcement, origin: &str, clone_url: &str) -> Option<String> {
+    if !a.accepting {
+        return Some("krowk machines accept on".into());
+    }
+    if !a.repositories.iter().any(|r| r.origin == origin) {
+        return Some(format!("run: git clone {}", without_credentials(clone_url)));
+    }
+    if a.instances.iter().any(|i| i.ready) {
+        return None;
+    }
+    Some(match a.instances.first() {
+        None => "sign in an account: run krowk connect there".into(),
+        Some(i) => i.fix.clone().map_or_else(|| format!("{} is not ready ({})", i.name, i.state), |f| format!("{}: {f}", i.name)),
+    })
+}
+
+/// `url` with no user, password, query or fragment in it: an http(s) or git
+/// URL loses its whole userinfo, an ssh one (`ssh://`, `git+ssh://`) keeps
+/// the user alone (`git@`), which names no secret. A scp-style
+/// `git@host:path` has only that user and stays as it is.
+fn without_credentials(url: &str) -> String {
+    let url = url.split(['?', '#']).next().unwrap_or_default();
+    let Some((scheme, rest)) = url.split_once("://") else { return url.to_string() };
+    let (authority, path) = rest.split_once('/').map_or((rest, ""), |(a, p)| (a, p));
+    let Some((userinfo, host)) = authority.rsplit_once('@') else { return url.to_string() };
+    let user = scheme.to_ascii_lowercase().contains("ssh").then(|| userinfo.split(':').next().filter(|u| !u.is_empty()).map(|u| format!("{u}@"))).flatten();
+    let slash = if rest.contains('/') { "/" } else { "" };
+    format!("{scheme}://{}{host}{slash}{path}", user.unwrap_or_default())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Slice 03 (R-ALLOC-2, D7): for the current repository each machine
+    /// is ready, or says the fix.
+    #[test]
+    fn alloc_03_each_machine_is_ready_or_says_its_fix() {
+        use krowk_client::presence::{AnnouncedInstance, AnnouncedRepository};
+        let ready = AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: Vec::new(), limit: None };
+        let a = Announcement { device: "d".into(), name: "desktop".into(), os: "linux".into(), version: "dev".into(), online_since_ms: 0, instances: vec![ready.clone()], directories: vec!["/w/app".into()], sessions: Vec::new(), capacity: None, repositories: vec![AnnouncedRepository { directory: "/w/app".into(), origin: "github.com/acme/app".into() }], accepting: true };
+        let (origin, url) = ("github.com/acme/app", "git@github.com:acme/app.git");
+        assert_eq!(fix(&a, origin, url), None, "ready");
+        let unclone = Announcement { repositories: Vec::new(), ..a.clone() };
+        assert_eq!(fix(&unclone, origin, url).as_deref(), Some("run: git clone git@github.com:acme/app.git"));
+        assert_eq!(fix(&unclone, origin, "https://ann:ghp_secret@github.com/acme/app.git").as_deref(), Some("run: git clone https://github.com/acme/app.git"), "never a credential");
+        let off = Announcement { accepting: false, ..a.clone() };
+        assert_eq!(fix(&off, origin, url).as_deref(), Some("krowk machines accept on"));
+        let signed_out = Announcement { instances: vec![AnnouncedInstance { ready: false, state: "loggedOut".into(), fix: Some("run claude /login".into()), ..ready }], ..a };
+        assert!(fix(&signed_out, origin, url).unwrap().contains("claude /login"));
+    }
+
+    /// The fix names no secret, in any way a URL carries one, and a machine
+    /// with no account at all is told to sign one in.
+    #[test]
+    fn a_fix_never_carries_a_credential_and_a_machine_with_no_account_says_so() {
+        use krowk_client::presence::AnnouncedRepository;
+        let a = Announcement { device: "d".into(), name: "desktop".into(), os: "linux".into(), version: "dev".into(), online_since_ms: 0, instances: Vec::new(), directories: Vec::new(), sessions: Vec::new(), capacity: None, repositories: vec![AnnouncedRepository { directory: "/w".into(), origin: "github.com/acme/app".into() }], accepting: true };
+        assert_eq!(fix(&a, "github.com/acme/app", "u").as_deref(), Some("sign in an account: run krowk connect there"));
+        for (url, shown) in [
+            ("https://tok@github.com/acme/app.git", "https://github.com/acme/app.git"),
+            ("https://ann:p%40ss@github.com:8443/acme/app", "https://github.com:8443/acme/app"),
+            ("ssh://git:pw@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
+            ("ssh://git@github.com/acme/app.git", "ssh://git@github.com/acme/app.git"),
+            ("git+ssh://git@github.com/acme/app.git", "git+ssh://git@github.com/acme/app.git"),
+            ("https://github.com/acme/app.git?access_token=x#frag", "https://github.com/acme/app.git"),
+            ("git@github.com:acme/app.git", "git@github.com:acme/app.git"),
+            ("https://github.com/acme/app.git", "https://github.com/acme/app.git"),
+        ] {
+            assert_eq!(without_credentials(url), shown);
+        }
+    }
     use crate::sync::store::{HostedOn, Index};
     use krowk_client::device_chain::{Change, Subject};
     use krowk_client::e2e::{DeviceKey, SigningKey};
@@ -211,7 +287,7 @@ mod tests {
         assert!(got[0].peer.is_some() && !got[0].direct(), "on the tailnet, offline there");
     }
     fn announced(device: &str, online: bool) -> Announced {
-        let announcement = Announcement { device: device.into(), name: "claimed".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: Vec::new(), directories: vec!["/work".into()], sessions: Vec::new() };
+        let announcement = Announcement { device: device.into(), name: "claimed".into(), os: "linux".into(), version: "0.31.0".into(), online_since_ms: 0, instances: Vec::new(), directories: vec!["/work".into()], sessions: Vec::new(), capacity: None, repositories: Vec::new(), accepting: false };
         Announced { online, updated_at: "2026-10-25T10:00:00Z".into(), announcement }
     }
 

@@ -202,8 +202,6 @@ Commands (krowk sessions …)
                               transcript
   budget <id> [--max-usd N] [--max-tokens N]
                               Check a session against a spend limit
-  sync [--no-network]         Import what changed since the last import, refresh
-                              prices
 
 Flags
   --harness <string>          Only sessions from this harness, e.g. claude
@@ -376,7 +374,8 @@ stdout:
       "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
       "repeatable": true
     }
-  ]
+  ],
+  "hidden": false
 }
 exit: 0
 
@@ -495,7 +494,8 @@ stdout:
           "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "list",
@@ -520,7 +520,8 @@ stdout:
           "default": "",
           "usage": "Narrow it to what one run produced. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "show",
@@ -532,7 +533,8 @@ stdout:
           "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
           "required": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "attach",
@@ -552,7 +554,8 @@ stdout:
           "default": "",
           "usage": "The run to put it under — required, and it must be one this workspace holds. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "delete",
@@ -569,7 +572,8 @@ stdout:
           "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
           "required": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "claim",
@@ -594,9 +598,11 @@ stdout:
           "default": "",
           "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": false
     }
-  ]
+  ],
+  "hidden": true
 }
 exit: 0
 
@@ -651,7 +657,8 @@ stdout:
           "default": "false",
           "usage": "Show full thinking parts instead of one line each"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "import",
@@ -676,7 +683,8 @@ stdout:
           "default": "0",
           "usage": "Read at most this many transcripts per source (0 is all)"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "rebuild",
@@ -689,7 +697,8 @@ stdout:
           "default": "false",
           "usage": "Delete without asking — required when nobody is at a terminal to confirm"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "budget",
@@ -715,7 +724,8 @@ stdout:
           "default": "",
           "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "sync",
@@ -728,9 +738,11 @@ stdout:
           "default": "false",
           "usage": "Skip the models.dev price refresh"
         }
-      ]
+      ],
+      "hidden": true
     }
-  ]
+  ],
+  "hidden": false
 }
 exit: 0
 
