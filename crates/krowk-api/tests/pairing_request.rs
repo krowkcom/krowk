@@ -229,5 +229,6 @@ fn a_request_is_its_machines_and_its_text_is_plain() {
         assert_eq!((e.code().as_str(), e.status), ("invalid", 422), "{name:?} {os:?}");
         assert!(e.body.get("details").and_then(|d| d.get(field)).is_some(), "{e:?}");
     }
+    assert_eq!(c.request_pairing("\u{a0}", "Linux").unwrap_err().code(), "invalid");
     assert_eq!(c.request_pairing("  desk 2  ", "Linux").unwrap().name, "desk 2");
 }

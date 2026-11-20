@@ -107,13 +107,17 @@ pub fn answered(s: &mut SyncStore, person: &str, now: Timestamp) {
     }
 }
 
-/// One text field of the body's `pairing_request`: a string, trimmed, not
-/// blank, within its length, with no control characters (they are printed on
-/// other devices' terminals).
-fn text(given: &Value, field: &str, max: usize) -> Result<String, Resp> {
+/// One text field of the body's `pairing_request`, as the registry reads it
+/// before anything else: a string, trimmed of ASCII whitespace.
+fn raw_text(given: &Value, field: &str) -> Result<String, Resp> {
     let Some(Value::Str(s)) = given.get(field).map(|m| &m.value) else { return Err(invalid(field, "must be a string")) };
-    let s = s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')).to_owned();
-    if s.is_empty() {
+    Ok(s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')).to_owned())
+}
+
+/// Not blank, within its length, with no control characters (they are
+/// printed on other devices' terminals) and none of the invisible ones.
+fn check_text(s: &str, field: &str, max: usize) -> Result<(), Resp> {
+    if s.chars().all(char::is_whitespace) {
         return Err(invalid(field, "can't be blank"));
     }
     if s.chars().count() > max {
@@ -122,12 +126,13 @@ fn text(given: &Value, field: &str, max: usize) -> Result<String, Resp> {
     if s.chars().any(|c| c.is_control() || is_invisible_format(c)) {
         return Err(invalid(field, "cannot hold control or invisible formatting characters"));
     }
-    Ok(s)
+    Ok(())
 }
 
-/// The registry also refuses format characters (Unicode Cf: bidi overrides,
-/// zero-width) and line and paragraph separators: the text is untrusted and
-/// shown on the person's other machines.
+/// The registry also refuses format characters (Unicode Cf) and line and
+/// paragraph separators: the text is untrusted and shown on the person's
+/// other machines. The usual ones here (bidi overrides, zero-width, joiners);
+/// the registry's list is the whole of Cf, which this does not mirror.
 fn is_invisible_format(c: char) -> bool {
     matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
 }
@@ -150,11 +155,13 @@ pub fn create(app: &App, req: &mut Req) -> Resp {
         }
         let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
         let given = v.get("pairing_request").map(|m| m.value.clone()).filter(|v| matches!(v, Value::Obj(_))).unwrap_or(Value::Null);
+        let (name, os) = (raw_text(&given, "name")?, raw_text(&given, "os")?);
         s.sync.pairing_requests.retain(|_, r| r.expires_at + GRACE > now);
         if s.sync.pairing_requests.values().any(|r| r.person == who.person && r.pending(now)) {
             return Err(error(409, "pairing_request_pending", "another machine's pairing request is still waiting — it lapses in 10 minutes, or when a pairing opens for it", None));
         }
-        let (name, os) = (text(&given, "name", MAX_NAME_CHARS)?, text(&given, "os", MAX_OS_CHARS)?);
+        check_text(&name, "name", MAX_NAME_CHARS)?;
+        check_text(&os, "os", MAX_OS_CHARS)?;
         // A pairing already open is the one this machine joins: answered at
         // once, and no host is nudged to open another.
         let opened = s.sync.pairings.values().any(|p| p.person == who.person && p.live_at(now));
