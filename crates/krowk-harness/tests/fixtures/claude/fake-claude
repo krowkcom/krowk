@@ -42,6 +42,13 @@
 #   @replay            prints that line back, as `--replay-user-messages`
 #                      does once the model reads it
 #   @sleep <seconds>   waits
+#   @type <n> <seconds> <word> [<per>]
+#                      types an answer of <n> words, `<word>0 <word>1 …`,
+#                      as stream events, <per> words (1 without it) and
+#                      then a wait of <seconds> (none for 0), and then the
+#                      whole `assistant` message: a model typing at a known rate
+#   @touch <path>      makes the file, in the working directory if relative,
+#                      as an allowed Bash or Write call would
 #   @exit <code>       exits mid-turn, as a crashed process would
 #   @exit-once <code>  the same, the first time only (a marker in the config dir)
 #   @mode <mode>       the mode later turns report, as an approved
@@ -57,6 +64,9 @@
 # line is `@by-itself` plays as soon as the one before it ends, with no
 # user line from krowk: what Claude Code does between turns, while a
 # background agent runs and when it begins a turn to answer it.
+# A section whose first line is `@when <text>` is out of that order: it
+# plays, every time, for a user line holding <text> (the first such section
+# that matches), as a model answers by what it is asked.
 #
 # `--resume <id>` needs the session's transcript in this config directory
 # (`projects/<cwd slug>/<id>.jsonl`, where each turn's prompt is appended),
@@ -151,7 +161,29 @@ LINES=()
 if [ -n "${FAKE_CLAUDE_SCENARIO:-}" ]; then
   while IFS= read -r l || [ -n "$l" ]; do LINES+=("$l"); done <"$FAKE_CLAUDE_SCENARIO"
 fi
+# The `@when` sections: WHEN[i] the text, WHEN_AT[i] the line after it.
+WHEN=()
+WHEN_AT=()
+i=0
+while [ $i -lt ${#LINES[@]} ]; do
+  case "${LINES[$i]}" in
+  '@when '*) WHEN+=("${LINES[$i]#@when }"); WHEN_AT+=($((i + 1))) ;;
+  esac
+  i=$((i + 1))
+done
 POS=0
+# Steps over the `@when` sections in order's way.
+skip_when() {
+  while [ $POS -lt ${#LINES[@]} ]; do
+    case "${LINES[$POS]}" in
+    '@when '*) ;;
+    *) return ;;
+    esac
+    while [ $POS -lt ${#LINES[@]} ] && [ "${LINES[$POS]}" != --- ]; do POS=$((POS + 1)); done
+    POS=$((POS + 1))
+  done
+}
+skip_when
 ASKED=0
 ANSWER=""
 STEER=""
@@ -341,6 +373,20 @@ turn() {
     emit '{"type":"result","subtype":"success","is_error":true,"result":"Not logged in · Please run /login","session_id":"{{SESSION}}"}'
     return
   fi
+  local w=0 back
+  while [ $w -lt ${#WHEN[@]} ]; do
+    case "$1" in
+    *"${WHEN[$w]}"*)
+      back=$POS
+      POS=${WHEN_AT[$w]}
+      log "when ${WHEN[$w]}"
+      play
+      POS=$back
+      return
+      ;;
+    esac
+    w=$((w + 1))
+  done
   if [ $POS -ge ${#LINES[@]} ]; then
     emit '{"type":"assistant","message":{"id":"msg_plain","model":"{{MODEL}}","role":"assistant","content":[{"type":"text","text":"ok"}],"usage":{"input_tokens":3,"output_tokens":1}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}'
     emit '{"type":"result","subtype":"success","is_error":false,"result":"ok","session_id":"{{SESSION}}"}'
@@ -349,14 +395,38 @@ turn() {
   play
 }
 
+# `@type <n> <seconds> <word> [<per>]`
+type_words() {
+  local n="$1" pause="$2" word="$3" per="${4:-1}" i=0 text="" piece id="msg_typed_$POS"
+  local tail='"session_id":"{{SESSION}}","parent_tool_use_id":null}'
+  emit '{"type":"stream_event","event":{"type":"message_start","message":{"model":"{{MODEL}}","id":"'$id'","type":"message","role":"assistant","content":[],"usage":{"input_tokens":3,"output_tokens":1}}},'"$tail"
+  emit '{"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}},'"$tail"
+  while [ $i -lt "$n" ]; do
+    piece="$word$i "
+    text="$text$piece"
+    emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"'"$piece"'"}},'"$tail"
+    i=$((i + 1))
+    [ "$pause" != 0 ] && [ $((i % per)) -eq 0 ] && sleep "$pause"
+  done
+  emit '{"type":"stream_event","event":{"type":"content_block_stop","index":0},'"$tail"
+  emit '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":'"$n"'}},'"$tail"
+  emit '{"type":"stream_event","event":{"type":"message_stop"},'"$tail"
+  emit '{"type":"assistant","message":{"model":"{{MODEL}}","id":"'$id'","type":"message","role":"assistant","content":[{"type":"text","text":"'"$text"'"}],"usage":{"input_tokens":3,"output_tokens":'"$n"'}},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}'
+}
+
 # The scenario's lines up to the next `---`.
 play() {
   while [ $POS -lt ${#LINES[@]} ]; do
     local l="${LINES[$POS]}"
     POS=$((POS + 1))
     case "$l" in
-    ---) return ;;
+    ---)
+      skip_when
+      return
+      ;;
     '') ;;
+    '@type '*) type_words ${l#@type } ;;
+    '@touch '*) : >"${l#@touch }" && log "touched ${l#@touch }" ;;
     '@ask '*) ask "${l#@ask }" ;;
     '@tool_result '*) tool_result "${l#@tool_result }" ;;
     @await-interrupt) await_interrupt ;;
