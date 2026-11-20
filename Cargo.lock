@@ -1388,7 +1388,6 @@ dependencies = [
  "krowk-client",
  "krowk-devregistry",
  "krowk-harness",
- "libc",
  "serde",
  "serde_json",
  "toml",
