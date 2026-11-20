@@ -72,10 +72,10 @@ fn all_checks(ctx: &Ctx, report: &Map<String, Value>, signed_in: bool, verified:
     // The older checks, which carry a `hint` for the fix.
     let mut older = ["providers", "store", "pricing", "rollover"].into_iter().filter_map(|k| report.get(k)).map(|c| {
         let mut c = c.clone();
-        if c["status"] != "pass" {
-            if let Some(hint) = c.get("hint").cloned() {
-                c["fix"] = hint;
-            }
+        if c["status"] != "pass"
+            && let Some(hint) = c.get("hint").cloned()
+        {
+            c["fix"] = hint;
         }
         c
     });

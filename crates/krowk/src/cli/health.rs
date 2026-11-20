@@ -207,14 +207,20 @@ pub(super) fn local(ctx: &Ctx, signed_in: bool, lookup: &Lookup) -> (Vec<Check>,
 
 /// The most important problem with this setup, said for the status line:
 /// from the disk alone, so it costs the TUI no wait. Only what is broken
-/// counts. Left out on purpose: the recovery kit (the status line's own
-/// reminder, once per session), repository trust (the TUI asks it before
-/// the first prompt), and the always-on service (a person may have said no).
+/// counts, and only for a person who has an account: one who never signed in
+/// is not nagged on every start (doctor says so, and the first run asked),
+/// and a key the registry rejects is found by asking it, which is doctor's.
+/// Left out on purpose: the recovery kit (the status line's own reminder,
+/// once per session), repository trust (the TUI asks it before the first
+/// prompt), and the always-on service (a person may have said no).
 pub(super) fn top_problem(ctx: &Ctx) -> Option<String> {
     let client = super::agent::new_client(ctx).ok()?;
     let signed_in = client.authenticated() && ctx.env("KROWK_TOKEN").is_empty();
+    if !signed_in {
+        return None;
+    }
     let machine = Machine::here(ctx, signed_in);
-    [account(signed_in, chose_local(ctx), &Lookup::Unchecked), registered(signed_in, &machine)].into_iter().find(|c| c.status == Status::Fail).map(|c| c.said())
+    [registered(signed_in, &machine)].into_iter().find(|c| c.status == Status::Fail).map(|c| c.said())
 }
 
 #[cfg(feature = "harness")]

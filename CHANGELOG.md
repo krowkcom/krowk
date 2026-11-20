@@ -21,7 +21,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   every check under `checks`, and doctor exits non-zero when a check failed
   (warnings do not count). A machine set to use krowk locally is not asked to
   sign in. The TUI status line shows the single most important problem, if any
-  (not signed in, or this machine not registered), and nothing when all is well.
+  (for now, that this machine is signed in but not registered for sync), and
+  nothing when all is well.
 
 - **The first machine sets up in one flow from `krowk`.** On a terminal with
   nothing to run a model on, `krowk` asks once: sign in to krowk in the browser
