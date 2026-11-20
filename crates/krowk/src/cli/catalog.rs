@@ -517,7 +517,7 @@ pub fn catalog(version: &str) -> Catalog {
                 ..cmd(
                     "sessions",
                     "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
-                    "List and read agent sessions, here and on your other machines",
+                    "List and read agent sessions on this machine",
                 )
             },
             Command {
@@ -575,6 +575,7 @@ pub fn catalog(version: &str) -> Catalog {
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
         sessions.subcommands.extend(machine_commands());
+        sessions.summary = "List and read agent sessions, here and on your other machines";
     }
     c
 }
@@ -1063,7 +1064,7 @@ pub fn about(name: &str) -> &'static str {
         "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
-        "sessions" => "Lists every agent thread on this machine, newest first, then the sessions on your other machines that you can open, with the machine each runs on.",
+        "sessions" => "Lists every agent thread on this machine, newest first.",
         "upgrade" => "Upgrades krowk to the latest release.",
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]
