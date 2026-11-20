@@ -850,7 +850,7 @@ fn connect_commands() -> Vec<Command> {
             ..cmd(
                 "connect",
                 "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-                "Connect a Claude Code or Codex account: subscription or API key",
+                "Connect a Claude Code or Codex account, by login or API key",
             )
         },
         Command {
