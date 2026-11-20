@@ -287,7 +287,7 @@ fn read_state(path: &Path) -> Value {
     std::fs::read(path).ok().and_then(|d| serde_json::from_slice::<Value>(&d).ok()).filter(Value::is_object).unwrap_or(json!({}))
 }
 
-/// By rename: the TUI's refresh runs on a thread the process may end
+/// By rename: the refresh runs on a thread the process may end
 /// mid-write, and a torn file would lose what was already shown.
 fn write_state(path: &Path, state: &Value) {
     let Some(dir) = path.parent() else { return };

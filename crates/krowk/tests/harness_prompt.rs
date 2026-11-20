@@ -711,6 +711,11 @@ fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_po
         let (said, st) = on_a_tty(&[if with_p { &["-p", "hi"][..] } else { &[] }, &["--resume"]].concat());
         assert!(!st.success() && said.contains("--resume needs a value"), "-p {with_p}: {said}");
     }
+    // Help is still help, and a refusal in JSON is a JSON refusal.
+    assert!(b.krowk(&["--help", "--model", "x"]).status.success());
+    let out = b.krowk(&["--json", "--model", "x"]);
+    let said: Value = serde_json::from_slice(&out.stderr).expect("a JSON refusal");
+    assert!(!out.status.success() && said["error"]["error"] == "bad_flag", "{said}");
     // The commands that own the flags are unchanged.
     let out = b.krowk(&["sessions", "--worktree", "/nowhere", "--json"]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

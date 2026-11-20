@@ -136,15 +136,9 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     // failure on a terminal is red even while stdout is piped.
     let colour = output::colour_for(io.tty, io.env);
     let err_colour = output::colour_for(io.err_tty, io.env);
-    // A bare `--resume` is the missing value it always was.
-    #[cfg(feature = "harness")]
-    let parsed = parsed.and_then(|()| match f.resume_pick {
-        true => Err("--resume needs a value".to_string()),
-        false => Ok(()),
-    });
     // A resumed session runs in the directory it ran in.
     #[cfg(feature = "harness")]
-    let parsed = parsed.and_then(|()| match f.own_worktree && (f.resume_pick || !f.resume.is_empty()) {
+    let parsed = parsed.and_then(|()| match f.own_worktree && !f.resume.is_empty() {
         true => Err("--worktree starts a new session in a worktree of its own, and --resume continues one in the directory it ran in — drop one of them".to_string()),
         false => Ok(()),
     });
