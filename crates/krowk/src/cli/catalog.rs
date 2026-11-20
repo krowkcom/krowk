@@ -1237,7 +1237,7 @@ always-on machine.",
 /// `ALL_ONLY`; `krowk help --all` each with everything under it, and the
 /// last heading, which holds what the overview leaves out. Every command the
 /// build has sits under exactly one heading. The overview's Start header
-/// (`krowk`, `krowk -p`, `krowk --resume`) is flags, so not here.
+/// (`krowk`, `krowk -p`, `krowk -p --resume`) is flags, so not here.
 pub const GROUPS: &[(&str, &[&str])] = &[
     (
         "Accounts",

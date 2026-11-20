@@ -1497,7 +1497,7 @@ fn allocating(w: &World) -> (Machine, Machine, Running) {
     a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
     a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
     std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
-    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let serve = Running::spawn(a.command(&["host", "serve"]));
     let _ = machines_row(&b, "a", |m| m["online"] == true && m["accepting"] == true && m["repositories"].as_array().is_some_and(|r| !r.is_empty()));
     (a, b, serve)
@@ -1691,7 +1691,7 @@ fn krowk_mcp_runs_a_task_pinned_here_in_a_worktree() {
     let w = World::new("mcp-here");
     let (_a, b, _serve) = allocating(&w);
     std::fs::write(b.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [b.repo]}).to_string()).unwrap();
-    std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
+    std::fs::write(b.home.join(".krowk/config.json"), serde_json::json!({"permissions": {"defaultMode": "acceptEdits"}}).to_string()).unwrap();
     let mut mcp = Mcp::start(&b);
     let (said, err, started) = mcp.call("krowk_delegate", serde_json::json!({"task": DELEGATED, "host": "b"}));
     assert!(!err, "{said}");

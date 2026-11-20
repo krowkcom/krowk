@@ -570,8 +570,8 @@ mod tests {
         assert_eq!(store.recorded().unwrap(), std::slice::from_ref(&repo));
         assert!(store.revoke(&repo).unwrap() && !store.trusts(&repo) && store.recorded().unwrap().is_empty());
         assert!(store.recorded_mcp(&repo).is_none() && !store.revoke(&repo).unwrap());
-        assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains("mcp\""), "the digest went with it");
-        assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains(&repo.display().to_string()), "and its fingerprints");
+        let raw = std::fs::read_to_string(base.join("config/trusted.json")).unwrap();
+        assert!(!raw.contains("mcp\"") && !raw.contains(&repo.display().to_string()), "the digest and the fingerprints went with it");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
         assert!(!store.trusts(&repo), "a file that cannot be read trusts nothing");
         let _ = std::fs::remove_dir_all(&base);
