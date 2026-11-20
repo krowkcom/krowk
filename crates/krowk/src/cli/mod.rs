@@ -316,6 +316,7 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["upgrade", ..] => upgrade::upgrade(ctx),
         ["doctor", ..] => doctor::doctor(ctx),
         ["config", "show", ..] => workspace::config_show(ctx),
+        ["config", "get", ..] => workspace::config_get(ctx, rest(2)),
         ["config", "set", ..] => workspace::config_set(ctx, rest(2)),
         ["config", "unset", ..] => workspace::config_unset(ctx, rest(2)),
         ["workspaces"] | ["workspaces", "list", ..] => workspace::workspaces_list(ctx),

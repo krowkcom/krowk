@@ -436,8 +436,12 @@ pub fn catalog(version: &str) -> Catalog {
                 subcommands: vec![
                     cmd("show", "krowk config show", "The effective configuration, and which layer set each value"),
                     Command {
+                        args: vec![arg("key", "workspace, defaultMode or rollover", true)],
+                        ..cmd("get", "krowk config get <key>", "One key's effective value and where it comes from")
+                    },
+                    Command {
                         args: vec![
-                            arg("key", "A configuration key, e.g. `workspace`", true),
+                            arg("key", "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config", true),
                             arg(
                                 "value",
                                 "What to set it to, e.g. ws_9hj3kd8a — for `workspace`, a person at a terminal may omit it and pick from the stored keys instead",
@@ -1019,7 +1023,7 @@ pub fn about(name: &str) -> &'static str {
         "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
         "auth" => "Manage the API key — your krowk account.",
         "workspaces" => WORKSPACES_ABOUT,
-        "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
+        "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n`config get <key>` prints one key's effective value and its source. `config set\ndefaultMode default|unhinged` and `config set rollover auto|offer|off` set the\npermission mode new sessions start in and what happens at a usage limit, always\nin the global config.",
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
