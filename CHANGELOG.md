@@ -86,6 +86,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it had already expired), so other devices can show it for about as long as
   the new message that uses it.
 
+### Removed
+
+- **The terminal UI.** Bare `krowk` no longer opens a full-screen agent: on
+  a terminal it prints the same overview it prints piped, and `krowk -p` is
+  how to run the agent. The flags that opened the TUI (`--model`,
+  `--permission-mode`, `--toolset`, `--effort`, `--resume`, `--worktree`,
+  `--max-usd`, `--max-tokens`), given with no command and without `-p`, now
+  fail with a hint to use `-p`; `krowk sync new --model`,
+  `krowk sessions --worktree` and `krowk sessions budget --max-usd` are
+  unchanged. `KROWK_TUI_HOST` is gone, and `tui.*` keys in config files are
+  ignored. `krowk sync attach` and `krowk --resume <synced-id>` on a
+  terminal print stream-json, as they do without one, and take `/approve`,
+  `/deny` and `/steer` on stdin.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

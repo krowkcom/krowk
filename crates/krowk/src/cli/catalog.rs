@@ -143,18 +143,9 @@ const PUSH_SHORTCUT_ABOUT: &str = concat!("The short form of `krowk artifacts cr
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
-On a terminal, opens the TUI on the session: its history, then live. The
-prompt box sends prompts, approvals are answered in the usual dialog, Esc
-interrupts, and the status line says whether the host is there (prompts
-wait for it when it is not) and whether the session comes by the relay or
-directly. The host runs prompts from here in the session's default mode, so
-/mode, /new and /sessions are its to change, not this TUI's; this TUI has no
-/model yet either, while --json takes one.
-
-With --json, or stdout not a terminal, prints the session as stream-json on
-stdout instead, and ends when stdin does, once every command sent is
-answered. Each line typed on stdin is a prompt to it, queued while no host
-is online, except these:
+Prints the session as stream-json on stdout — its history, then live — and
+ends when stdin does, once every command sent is answered. Each line typed on
+stdin is a prompt to it, queued while no host is online, except these:
 
   /approve REQUEST_ID        allow the tool call an approval.requested names
   /allow-session REQUEST_ID  allow it, and calls like it for the session
@@ -556,8 +547,6 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
             EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
-            #[cfg(feature = "harness")]
-            EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],
     };
     #[cfg(feature = "harness")]
@@ -649,7 +638,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session as stream-json"),
             #[cfg(unix)]
             cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
             #[cfg(unix)]
@@ -917,7 +906,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "worktree",
             BOOL,
-            "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
+            "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
         ),
         with_default(
             flag(
@@ -954,12 +943,12 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "max-usd",
             STRING,
-            "With -p, and in the TUI: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
+            "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
         ),
         flag(
             "max-tokens",
             STRING,
-            "With -p, and in the TUI: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
+            "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
         ),
         flag(
             "trust",
@@ -1087,8 +1076,7 @@ A server that asks for OAuth, like Mobbin:
 `login` opens your browser, or with --no-browser (or over SSH) prints the page
 and reads the address your browser lands on. Tokens are stored in
 credentials.json and refreshed by krowk; a call to a server that needs sign-in
-says so and names this command. In the TUI, /mcp shows each server's status and
-tools, and signs in, signs out or reconnects it.",
+says so and names this command.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]

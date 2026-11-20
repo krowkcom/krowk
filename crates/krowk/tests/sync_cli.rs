@@ -20,8 +20,6 @@
 mod mock;
 #[path = "common/pty.rs"]
 mod pty;
-#[path = "common/tmux.rs"]
-mod tmux;
 
 use krowk_client::e2e::{self, AccountKey};
 use krowk_client::keystore::Keystore;
@@ -401,66 +399,6 @@ fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
     assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
 }
 
-/// R-SUB-12, R-SUB-11: a TUI attached to a synced session opens a child of
-/// it in the child view — its prompt first and what it has said so far,
-/// from what the session's chunks and stream carried, with no log of it on
-/// this machine — sees what it says next arrive, and stops it alone with
-/// `x`, on the host.
-#[test]
-fn r_sub_12_an_attached_tui_opens_a_childs_transcript_and_stops_it() {
-    let w = World::new("childview");
-    let (a, b, c) = (w.machine("a"), w.machine("b"), w.machine("c"));
-    let (host, session) = hosted(&w, &a);
-    // B, on the command line, starts the child; C opens it in its TUI.
-    let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
-    view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
-    view.type_line("start a slower subagent");
-    let started = view.until("the subagent", is("subagent.started"));
-    let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
-    view.until("the subagent's search", |v| v["type"] == "item.completed" && v["sessionId"] == child.as_str() && v["item"]["kind"] == "toolResult");
-    // In tmux, so what is on the screen is read, not the bytes that drew it.
-    let mut env = c.env.clone();
-    env.push(("TERM".into(), "xterm-256color".into()));
-    let Some(tm) = tmux::Tmux::start("childview", 120, 40, &c.repo, &env, &["sync", "attach", &session]) else { return };
-    let until = |what: &str, ok: &dyn Fn(&str) -> bool| -> String {
-        let deadline = Instant::now() + Duration::from_secs(40);
-        loop {
-            let screen = tm.screen();
-            if ok(&screen) {
-                return screen;
-            }
-            assert!(Instant::now() < deadline, "no {what}: {screen}\nA: {:?}", host.stderr());
-            std::thread::sleep(Duration::from_millis(50));
-        }
-    };
-    // The child view is open: its header first, its footer last, and
-    // nothing of the conversation or the Agents overlay on the screen.
-    let in_view = |s: &str| {
-        let rows: Vec<&str> = s.lines().filter(|l| !l.trim().is_empty()).collect();
-        rows.first().is_some_and(|r| r.contains("a slower look · by krowk")) && rows.last().is_some_and(|r| r.contains("esc back · ← → siblings · x stop")) && !s.contains("enter opens")
-    };
-    until("attach", &|s| s.contains("Attached to a"));
-    assert!(!c.home.join(".krowk/sessions").join(&child).exists(), "C holds no log of the child");
-    tm.keys(&["C-g"]);
-    until("the Agents overlay", &|s| s.contains("enter opens"));
-    tm.keys(&["Enter"]);
-    // Its history, read here: the parent's prompt, then its finished search.
-    let screen = until("the child's history", &|s| in_view(s) && s.contains("look slower") && s.contains("Find *"));
-    assert!(!screen.contains("could not be read"), "its history is read here: {screen}");
-    assert!(!screen.contains("slowword"), "nothing of its answer yet: {screen}");
-    // Its answer, begun only now, drawn in the view as it arrives.
-    SLOWER.open();
-    until("the answer, live in the view", &|s| in_view(s) && s.contains("slowword3"));
-    tm.keys(&["x"]);
-    let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
-    assert_eq!(ended["status"], "interrupted", "{ended}");
-    let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
-    assert_eq!(result["status"], "completed", "the turn went on past its stopped subagent: {result}");
-    let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&child).join("events.jsonl")).unwrap();
-    assert!(log.contains("\"status\":\"interrupted\""), "stopped on A: {log}");
-    until("the view saying so", &|s| in_view(s) && s.contains("interrupted after"));
-}
-
 /// Todo 29b: a prompt from `krowk sync attach` that A's daemon refuses
 /// before its turn starts — a Claude Code session made with `-p --trust`,
 /// its repository on no trusted list — is acked with the refusal, not
@@ -600,85 +538,45 @@ fn hosted_on(a: &Machine, model: &str) -> (Running, String) {
     (host, session)
 }
 
-/// D11: `krowk sync attach` with a terminal opens the TUI on the session —
-/// its history drawn as a resumed session's is, the host's presence on the
-/// status line, a prompt typed in the prompt box answered by A's model, and
-/// an approval answered with the dialog's `y`. Mode switches, which the
-/// host would refuse, are refused here, saying so.
+/// R-CUT-9, D3: `krowk sync attach` on a terminal prints stream-json as it
+/// does without one — the session's history, the host's presence — takes a
+/// prompt typed on stdin (acked), and ends with stdin once it is answered.
 #[test]
-fn d11_sync_attach_on_a_terminal_draws_the_session_in_the_tui() {
-    let w = World::new("tui");
+fn r_cut_9_sync_attach_on_a_terminal_prints_stream_json_and_takes_stdin_commands() {
+    let w = World::new("ptyattach");
     let a = w.machine("a");
     let b = w.machine("b");
     let (host, session) = hosted(&w, &a);
-    // The registry lists the session before A's host is on the relay, and
-    // the attach line says what the relay first says of the host: the test
-    // waits, as another viewer, until A is there.
-    let mut there = Running::spawn(b.command(&["sync", "attach", &session]));
-    there.until("A on the relay", |v| v["type"] == "sync.host" && v["present"] == true);
-    drop(there);
     let mut c = b.command(&["sync", "attach", &session]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 40);
-    let wait = |t: &pty::Pty, what: &str| assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
-    // History: A's first answer, from the chunks; then the attach line,
-    // naming A by its name on the device list, and A on the status line.
-    // No splash: the session is picked up, not opened.
-    wait(&t, ANSWER);
-    // The pty's text is raw: the glyph and the words are styled apart, and
-    // the status line is drawn a run of cells at a time.
-    // `krowk sync host` seals no title: A is named alone, never the id.
-    wait(&t, "⇄ \u{1b}[0mAttached to a\r");
-    wait(&t, "●");
-    assert!(!t.text().contains("Directory:"), "no splash mid-session: {:?}", t.text());
-    // A prompt round trip.
+    for what in [ANSWER, "\"sync.host\""] {
+        assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
+    }
     t.write(b"tui round trip\r");
-    wait(&t, TUI_ANSWER);
-    // And its turn ended here, on the host's result: the footer under it,
-    // after the one the history drew.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while t.text().matches("Worked for").count() < 2 {
-        assert!(Instant::now() < deadline, "the turn ends: {:?}", t.text());
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    // An approval, answered in the dialog. The dialog takes no key until it
-    // has been up a moment (a key typed ahead is no answer).
-    t.write(b"make the allowed file\r");
-    // On the screen, not in the bytes: the dialog's row is drawn over the
-    // one before it, and a cell the two share (a space) is not drawn again.
-    assert!(t.wait_on_screen("y allow once", Duration::from_secs(20)).is_some(), "no dialog: {}\nA: {:?}", t.screen(), host.stderr());
-    assert!(!a.repo.join("allowed.txt").exists(), "A waits on B");
-    std::thread::sleep(Duration::from_millis(600));
-    t.write(b"y");
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while !a.repo.join("allowed.txt").exists() {
-        assert!(Instant::now() < deadline, "B's y ran the call on A: {:?}", t.text());
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    assert!(!t.text().contains("for this project"), "a viewer is not offered A's project rules");
-    // The host caps remote prompts at its default mode: no switch offered.
-    t.write(b"/mode plan\r");
-    assert!(t.wait_on_screen("is the host's to change", Duration::from_secs(20)).is_some(), "no refusal: {}", t.screen());
-    t.write(b"\x04\x04");
-    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+    assert!(t.wait_for("\"sync.acked\"", Duration::from_secs(20)).is_some(), "no ack: {:?}", t.text());
+    assert!(t.wait_for(TUI_ANSWER, Duration::from_secs(20)).is_some(), "no answer: {:?}", t.text());
+    assert!(!t.text().contains("Attached to"), "nothing is drawn: {:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "attach ends with stdin: {:?}", t.text());
 }
 
-/// D11: `krowk --resume` of a session only another machine holds opens the
-/// TUI on it through sync, on a terminal, as `krowk sync attach` does.
+/// R-CUT-9: `krowk --resume` of a session only another machine holds, on a
+/// terminal, follows it through sync as stream-json and says so on stderr.
 #[test]
-fn d11_resume_of_a_synced_session_on_a_terminal_opens_the_tui() {
-    let w = World::new("tuiresume");
+fn r_cut_9_resume_of_a_synced_session_on_a_terminal_follows_it_as_stream_json() {
+    let w = World::new("ptyresume");
     let a = w.machine("a");
     let b = w.machine("b");
     let (host, session) = hosted(&w, &a);
     let mut c = b.command(&["--resume", &session]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 40);
-    for what in [ANSWER, "Attached to", "●"] {
+    for what in [ANSWER, "following it through sync as stream-json", "\"sync.host\""] {
         assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
     }
-    t.write(b"\x04\x04");
-    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
+    t.write(b"\x04");
+    assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "B leaves: {:?}", t.text());
 }
 
 /// D11: `krowk sync attach` printing stream-json ends when its stdin does,

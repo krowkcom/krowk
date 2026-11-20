@@ -4,7 +4,7 @@
 //! (`codex:team`), SuperGrok through krowk's own OAuth, or an API key read
 //! from an environment variable — and `krowk providers add|list|remove`,
 //! the same instances by backend kind, one level down. The sign-in itself
-//! is `krowk_harness::connect`, which the TUI shares; this file is the
+//! is `krowk_harness::connect`, which every front end shares; this file is the
 //! terminal it asks and tells through, and the words of each result.
 //!
 //! A definition names the variable its key is read from and never holds the

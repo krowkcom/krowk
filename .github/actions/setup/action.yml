@@ -33,15 +33,14 @@ runs:
       with:
         tool: cargo-nextest@0.9.146
 
-    # The opencode fixture is built from SQL at case time, and the TUI's
-    # scrollback and offline checks read the screen through tmux, failing
-    # rather than skipping under CI on Linux.
-    - name: Ensure sqlite3 and tmux
+    # The opencode fixture is built from SQL at case time, failing rather
+    # than skipping under CI on Linux.
+    - name: Ensure sqlite3
       if: runner.os == 'Linux'
       shell: bash
       run: |
-        command -v sqlite3 && command -v tmux \
-          || (sudo apt-get update && sudo apt-get install -y sqlite3 tmux)
+        command -v sqlite3 \
+          || (sudo apt-get update && sudo apt-get install -y sqlite3)
 
     # R-PERM-3: the OS sandbox's escape tests fail rather than skip under
     # CI on Linux, so bubblewrap is installed and allowed the unprivileged

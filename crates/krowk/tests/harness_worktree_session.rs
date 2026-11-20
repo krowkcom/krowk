@@ -263,11 +263,11 @@ fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
     // `krowk help flags` has it among the agent's flags, whole.
     let o = b.krowk_in(&b.repo(), &["help", "flags"]);
     let flags = String::from_utf8_lossy(&o.stdout).split_whitespace().collect::<Vec<_>>().join(" ");
-    assert!(flags.contains("--worktree With -p, and in the TUI: start the session in a new git worktree of this repository"), "{flags}");
+    assert!(flags.contains("--worktree With -p: start the session in a new git worktree of this repository"), "{flags}");
     // `krowk sessions --worktree <path>` still filters the listing.
     let o = b.krowk_in(&b.repo(), &["sessions", "--worktree", "/nowhere", "--json"]);
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // Anywhere else, it is named as the flag of what takes it.
     let o = b.krowk_in(&b.repo(), &["worktrees", "list", "--worktree"]);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("`krowk -p` and the TUI"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("`krowk -p`"), "{}", String::from_utf8_lossy(&o.stderr));
 }

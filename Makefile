@@ -202,10 +202,9 @@ bin/devregistry:
 # stamped with one no release will ever carry.
 GOLDEN_VERSION := 0.0.0-golden
 
-# Two builds. The device build runs every case. The full build, which opens
-# the TUI when a person is at the terminal, runs tests/golden/cases-full:
-# bare `krowk` with no terminal to open it on, recorded from the full build
-# before the TUI existed, so any difference is a behaviour change. The full
+# Two builds. The device build runs every case. The full build runs
+# tests/golden/cases-full: bare `krowk` and the full build's help, so any
+# difference is a behaviour change. The full
 # build has a target directory of its own, so the two build at once and
 # $(GOLDEN_DIR) holds the device build `golden-update` expects. The cases'
 # own test binary builds apart from `test-build`'s too, so neither waits on

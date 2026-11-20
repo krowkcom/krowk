@@ -43,8 +43,6 @@ mod reseal;
 mod sync;
 #[cfg(all(feature = "harness", unix))]
 mod synced;
-#[cfg(feature = "harness")]
-mod tui;
 mod upgrade;
 mod workspace;
 #[cfg(feature = "harness")]
@@ -71,7 +69,7 @@ pub struct Io<'a> {
     pub tty: bool,
     /// Whether stderr is: a string --jq prints raw there could repaint it.
     pub err_tty: bool,
-    /// Whether stdin is: with stdout, whether bare `krowk` opens the TUI.
+    /// Whether stdin is: with stdout, whether `krowk -p` may ask a question.
     pub stdin_tty: bool,
 }
 
@@ -138,16 +136,9 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     // failure on a terminal is red even while stdout is piped.
     let colour = output::colour_for(io.tty, io.env);
     let err_colour = output::colour_for(io.err_tty, io.env);
-    // A bare `--resume` opens the session picker in the TUI; anywhere else
-    // it is the missing value it always was.
-    #[cfg(feature = "harness")]
-    let parsed = parsed.and_then(|()| match f.resume_pick && !tui::wanted(io, &f, format, &positionals, jq_given) {
-        true => Err("--resume needs a value".to_string()),
-        false => Ok(()),
-    });
     // A resumed session runs in the directory it ran in.
     #[cfg(feature = "harness")]
-    let parsed = parsed.and_then(|()| match f.own_worktree && (f.resume_pick || !f.resume.is_empty()) {
+    let parsed = parsed.and_then(|()| match f.own_worktree && !f.resume.is_empty() {
         true => Err("--worktree starts a new session in a worktree of its own, and --resume continues one in the directory it ran in — drop one of them".to_string()),
         false => Ok(()),
     });
@@ -225,21 +216,20 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     } else {
         (io, f, filter)
     };
-    // Bare `krowk` with a person at the terminal: the agent (R-PKG-1).
-    // Without one — a pipe, a file, CI capturing output — everything below
-    // runs exactly as it did before the TUI existed.
+    // The flags that once opened the TUI mean nothing without a command
+    // or `-p`: refused with the way to the same thing, on a terminal or not.
     #[cfg(feature = "harness")]
-    if tui::wanted(io, &f, format, &positionals, jq_given) {
-        let mut ctx = Ctx { io, f, format, colour, filter };
-        return match tui::run(&mut ctx) {
-            Ok(()) => exit::OK,
-            Err(e) => {
-                let quiet = ctx.f.quiet;
-                report(ctx.io, &e, format, quiet, err_colour, None)
+    if positionals.is_empty() && !f.help {
+        for name in ["model", "permission-mode", "toolset", "effort", "resume", "worktree", "max-usd", "max-tokens"] {
+            if f.given.contains(name) {
+                let e = fail("bad_flag", format!("`--{name}` has nothing to act on without a command or `-p` — krowk has no interactive screen; run `krowk -p \"<prompt>\" --{name} …`"));
+                return report(io, &e, format, f.quiet, err_colour, None);
             }
-        };
+        }
     }
-    if positionals.is_empty() && !f.help && format != Format::Json {
+    // Bare `krowk` is the overview wherever it runs; the short greeting is
+    // for the build with no agent, or when the human format is asked for.
+    if positionals.is_empty() && !f.help && format != Format::Json && (!cfg!(feature = "harness") || f.format == "human") {
         let _ = write!(io.stdout, "{}", help::greeting(VERSION));
         return exit::OK;
     }
@@ -617,7 +607,7 @@ const ALL_OWNERS: &str = "`krowk help`";
 /// the listing, and in the agent's build a new session, which starts in a
 /// worktree of its own.
 #[cfg(feature = "harness")]
-const WORKTREE_OWNERS: &str = "`krowk sessions` (`--worktree <path>`), `krowk -p` and the TUI";
+const WORKTREE_OWNERS: &str = "`krowk sessions` (`--worktree <path>`) and `krowk -p`";
 #[cfg(not(feature = "harness"))]
 const WORKTREE_OWNERS: &str = "`krowk sessions`";
 
@@ -670,13 +660,12 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`")));
             }
         }
-        // A budget holds a -p session (and the TUI's, which takes no words)
-        // or is the one `sessions budget` checks; anywhere else it would
+        // A budget holds a -p session or is the one `sessions budget` checks; anywhere else it would
         // hold nothing.
         let budget = words.starts_with(&["sessions", "budget"]);
         for name in ["max-usd", "max-tokens"] {
             if f.given.contains(name) && !f.print && !budget {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p`, the TUI and `krowk sessions budget`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk -p` and `krowk sessions budget`")));
             }
         }
         let add = words.starts_with(&["providers", "add"]);

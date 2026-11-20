@@ -4,7 +4,6 @@ stdout:
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Usage
-  krowk                      Open the agent here
   krowk -p "…"               One prompt, headless
   krowk <command> [flags]
 
@@ -43,7 +42,7 @@ Other
   upgrade       Upgrade krowk
 
 Flags
-  --model <instance/model>   Which model (e.g. claude/sonnet)
+  --model <instance/model>   With -p: which model (e.g. claude/sonnet)
   --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
@@ -80,7 +79,7 @@ Agent
   sync join         Add this machine by the code `krowk devices add` shows
   sync sessions     The synced sessions this machine can open
   sync host         Run a session here and sync it until interrupted
-  sync attach       Follow a synced session in the TUI, or as stream-json
+  sync attach       Follow a synced session as stream-json
   sync take         Move a live session here, uncommitted work and all
   sync new          Start a session on another machine of yours, and follow it
   devices list      The devices on your device list, this one marked
@@ -183,10 +182,10 @@ Agent flags (krowk, krowk -p)
                               --resume, the session moves there
   --resume <string>           With -p: continue this krowk session — the
                               sessionId a result names, or its krowk.db id
-  --worktree                  With -p, and in the TUI: start the session in a
-                              new git worktree of this repository, on a branch
-                              krowk/<hex> — removed at the end if nothing
-                              changed, kept and named if something did
+  --worktree                  With -p: start the session in a new git worktree
+                              of this repository, on a branch krowk/<hex> —
+                              removed at the end if nothing changed, kept and
+                              named if something did
   --permission-mode <string> (default default)
                               With -p and the agent: default, acceptEdits, plan
                               or bypassPermissions, as in Claude Code, or
@@ -222,15 +221,14 @@ Agent flags (krowk, krowk -p)
                               to 20. Each is shrunk to fit (2000 px a side, JPEG
                               if still over 2.75 MiB); a missing or non-image
                               file refuses the run before any turn starts
-  --max-usd <string>          With -p, and in the TUI: stop the session before
-                              the model call that would take it, with its
-                              subagents, past this many dollars — metered,
-                              priced from models.dev. Exits 4, like `krowk
-                              sessions budget`
-  --max-tokens <string>       With -p, and in the TUI: stop the session before
-                              the model call that would take its generated
-                              tokens (output and reasoning, subagents included)
-                              past this many. Exits 4
+  --max-usd <string>          With -p: stop the session before the model call
+                              that would take it, with its subagents, past this
+                              many dollars — metered, priced from models.dev.
+                              Exits 4, like `krowk sessions budget`
+  --max-tokens <string>       With -p: stop the session before the model call
+                              that would take its generated tokens (output and
+                              reasoning, subagents included) past this many.
+                              Exits 4
   --trust                     With -p: let a backend (Claude Code, Codex) run in
                               a repository not yet trusted — it runs the
                               repository's hooks and MCP servers without asking.

@@ -4,7 +4,6 @@ stdout:
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Usage
-  krowk                      Open the agent here
   krowk -p "…"               One prompt, headless
   krowk <command> [flags]
 
@@ -43,7 +42,7 @@ Other
   upgrade       Upgrade krowk
 
 Flags
-  --model <instance/model>   Which model (e.g. claude/sonnet)
+  --model <instance/model>   With -p: which model (e.g. claude/sonnet)
   --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
@@ -1364,7 +1363,7 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json"
+          "summary": "Follow a synced session as stream-json"
         },
         {
           "name": "take",
@@ -1676,7 +1675,7 @@ stdout:
       "name": "worktree",
       "type": "bool",
       "default": "false",
-      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
+      "usage": "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",
@@ -1719,13 +1718,13 @@ stdout:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p, and in the TUI: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p, and in the TUI: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
     },
     {
       "name": "trust",
@@ -1774,10 +1773,6 @@ stdout:
     {
       "name": "NO_COLOR",
       "usage": "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same"
-    },
-    {
-      "name": "KROWK_TUI_HOST",
-      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -1803,7 +1798,6 @@ stdout:
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
 Usage
-  krowk                      Open the agent here
   krowk -p "…"               One prompt, headless
   krowk <command> [flags]
 
@@ -1842,7 +1836,7 @@ Other
   upgrade       Upgrade krowk
 
 Flags
-  --model <instance/model>   Which model (e.g. claude/sonnet)
+  --model <instance/model>   With -p: which model (e.g. claude/sonnet)
   --resume · --worktree      Continue a session, or start one in a worktree
   --json · --jq <expr>       Output as JSON, or filter it
   -h, --help · -v, --version
@@ -1855,16 +1849,57 @@ exit: 0
 
 $ @tty krowk
 tty:
+█  █  \e[1mKrowk\e[0m 0.0.0-golden
+█▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-█  █
-█▀▀▄
+\e[1mUsage\e[0m
+  krowk -p "…"               One prompt, headless
+  krowk <command> [flags]
 
-Krowk 0.0.0-golden
-A coding agent harness: one session, any machine, model or agent
+\e[1mExamples\e[0m
+  krowk connect anthropic    Connect a model to run the agent on
+  krowk push shot.png        Upload a screenshot and get a link to paste
+  krowk sessions --json      Every agent session on this machine, as data
 
-  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs
-  krowk help                 The commands; --all for every one, --json as data
+\e[1mAgent\e[0m
+  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  disconnect    Sign a connected model out
+  status        What's connected, and whether each is ready
+  sessions      List and read agent sessions on this machine
+  sync          Sync sessions between your machines, end-to-end encrypted
+  devices       The machines that sync this workspace's sessions
+
+\e[1mPublish\e[0m
+  push          Upload files, get a link for each
+  runs          Group uploads under a run
+  artifacts     Create, list, show, attach, delete or claim artifacts
+  claim         Keep an anonymous upload past expiry
+
+\e[1mAccount\e[0m
+  login         Sign in to your krowk account
+  logout        Remove this machine's key
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+  workspaces    Switch between stored keys
+
+\e[1mOther\e[0m
+  providers     Low-level instance config (add, list, rename, remove)
+  worktrees     The git worktrees krowk made for agents, across repositories
+  host          The daemon sessions run in, which outlives the terminal
+  config        Show or set configuration
+  doctor        Check this machine's setup
+  upgrade       Upgrade krowk
+
+\e[1mFlags\e[0m
+  --model <instance/model>   With -p: which model (e.g. claude/sonnet)
+  --resume · --worktree      Continue a session, or start one in a worktree
+  --json · --jq <expr>       Output as JSON, or filter it
+  -h, --help · -v, --version
+
+krowk help <command>  A command's own flags
+krowk help --all      Every command and subcommand
+krowk help topics     Flags, exit codes, environment, workspaces, links
+krowk help agents     For AI agents and scripts: the output contract
 exit: 0
 
 $ @tty krowk --json
@@ -3177,7 +3212,7 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json"
+          "summary": "Follow a synced session as stream-json"
         },
         {
           "name": "take",
@@ -3489,7 +3524,7 @@ tty:
       "name": "worktree",
       "type": "bool",
       "default": "false",
-      "usage": "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
+      "usage": "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did"
     },
     {
       "name": "permission-mode",
@@ -3532,13 +3567,13 @@ tty:
       "name": "max-usd",
       "type": "string",
       "default": "",
-      "usage": "With -p, and in the TUI: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
+      "usage": "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`"
     },
     {
       "name": "max-tokens",
       "type": "string",
       "default": "",
-      "usage": "With -p, and in the TUI: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
+      "usage": "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4"
     },
     {
       "name": "trust",
@@ -3587,10 +3622,6 @@ tty:
     {
       "name": "NO_COLOR",
       "usage": "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same"
-    },
-    {
-      "name": "KROWK_TUI_HOST",
-      "usage": "local — the TUI runs its sessions in its own process, not the host daemon"
     }
   ]
 }
@@ -3605,15 +3636,9 @@ exit: 1
 
 $ @tty krowk --model claude-x
 tty:
-
-█  █
-█▀▀▄
-
-Krowk 0.0.0-golden
-A coding agent harness: one session, any machine, model or agent
-
-  krowk push screenshot.png  Upload a file, get a link — no key, lasts a day
-  krowk login --token …      Add a key: uploads keep, group under runs
-  krowk help                 The commands; --all for every one, --json as data
-exit: 0
+\e[31m✗\e[0m \e[1m`--model` has nothing to act on without a command or `-p`.\e[0m
+\e[2m  Krowk has no interactive screen.\e[0m
+\e[2m  Try:\e[0m \e[36mkrowk -p "<prompt>" --model …\e[0m
+\e[2m  Code: bad_flag\e[0m
+exit: 1
 

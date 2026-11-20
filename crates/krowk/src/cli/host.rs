@@ -43,8 +43,8 @@ fn engine(e: EngineError) -> Error {
 /// makes its own, save what only a person at a terminal could answer. A
 /// repository is trusted for a backend only when it is on the trusted
 /// list — a daemon asks nobody — and a turn asks approval of the clients
-/// following its session only when the client that ran it answers them
-/// (the TUI); a `krowk -p` client's turn refuses what would be asked, as
+/// following its session only when the client that ran it answers them;
+/// a `krowk -p` client's turn refuses what would be asked, as
 /// in-process `-p` does.
 pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let config = prompt::config_json()?;
@@ -338,7 +338,7 @@ pub(super) fn enable(ctx: &mut Ctx, on: bool) -> Result<(), Error> {
     if active && platform == service::Platform::Launchd {
         let _ = ran(&service::commands(platform, false, &file, uid)[0]);
     }
-    // Forced: an open TUI reconnects to the service's daemon.
+    // Forced: an open client reconnects to the service's daemon.
     let stopped = if on && !active { daemon::stop(ctx.io.env, super::VERSION, true).map_err(engine)? } else { None };
     for c in service::commands(platform, on, &file, uid) {
         let ran = std::process::Command::new(&c[0]).args(&c[1..]).stdin(std::process::Stdio::null()).output();
