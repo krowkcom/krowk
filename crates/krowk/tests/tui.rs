@@ -1345,6 +1345,9 @@ const TRUST_ASKED: &str = "trusts it, ";
 fn subscription_only(b: &Sandbox, key: bool, delay: &str) -> Command {
     std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    // Past the sign-in card: these cases are about the model, not the account.
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true}\n").unwrap();
     let mut c = b.command("http://127.0.0.1:9", &[]);
     if !key {
         c.env_remove("ANTHROPIC_API_KEY");
