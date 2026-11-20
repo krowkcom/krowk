@@ -167,6 +167,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **`krowk help` is one short screen.** It shows a Start header (`krowk`,
+  `krowk -p`, `krowk --resume`) and five groups: Accounts (`login`, `connect`,
+  `disconnect`, `whoami`, `billing`), Work (`sessions`, `machines`,
+  `worktrees`, `mcp`), Publish (`push`) and Health (`status`, `doctor`,
+  `upgrade`, `config`). The duplicates and low-level commands (`auth`, `runs`,
+  `artifacts`, `claim`, `providers`, `workspaces`, `host`, `hosts`, `devices`,
+  `sync`, `relay`, `pricing`, `logout`) are hidden from it, not removed: they
+  run as before, so scripts and the GitHub Action are unaffected. `krowk help
+  --all` lists every command, hidden ones included, and `krowk help --json`
+  marks each command `hidden` or not.
+
 - **A removed machine can start over without moving files by hand.** `krowk
   sync join` on a machine whose keys were removed from your devices now asks
   `This machine was removed from your devices. Start it over as a new

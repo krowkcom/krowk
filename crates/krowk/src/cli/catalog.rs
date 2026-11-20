@@ -32,9 +32,10 @@ pub struct Command {
     /// --jq has nothing to read on.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_json: bool,
-    /// Works, but is left out of its group's command list: an older form
-    /// another one replaced. `help --all` still lists it.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    /// Works, but is left out of `krowk help` (a top-level command, by
+    /// `ALL_ONLY`) or its group's command list (a subcommand): an older or
+    /// low-level form. `help --all` still lists it, and `help --json` says so
+    /// for every command.
     pub hidden: bool,
 }
 
@@ -590,6 +591,9 @@ pub fn catalog(version: &str) -> Catalog {
         sessions.subcommands.extend(vintage_commands());
         sessions.subcommands.extend(machine_commands());
     }
+    for cmd in &mut c.commands {
+        cmd.hidden = ALL_ONLY.contains(&cmd.name.as_str());
+    }
     c
 }
 
@@ -829,8 +833,8 @@ fn host_command() -> Command {
                 flags: vec![flag("force", BOOL, "Stop it though other clients are connected; each reconnects to the next daemon")],
                 ..cmd("stop", "krowk host stop [--force]", "Stop the daemon, once no turn runs in it")
             },
-            cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service"),
-            cmd("disable", "krowk host disable", "Stop the service and remove it"),
+            Command { hidden: true, ..cmd("enable", "krowk host enable", "Run the daemon as a systemd or launchd user service") },
+            Command { hidden: true, ..cmd("disable", "krowk host disable", "Stop the service and remove it") },
         ],
         ..cmd("host", "", "The daemon sessions run in, which outlives the terminal")
     }
@@ -1039,7 +1043,7 @@ impl Catalog {
                 out.push(Command { subcommands: Vec::new(), ..c.clone() });
             }
             for sub in &c.subcommands {
-                out.push(Command { name: format!("{} {}", c.name, sub.name), ..sub.clone() });
+                out.push(Command { name: format!("{} {}", c.name, sub.name), hidden: c.hidden || sub.hidden, ..sub.clone() });
             }
         }
         out
@@ -1202,66 +1206,105 @@ always-on machine.",
 }
 
 /// A heading in the human help, and the commands under it in reading order.
-/// `krowk help` lists each command; `krowk help --all` each with everything
-/// under it. Every command the build has sits under exactly one heading.
+/// `krowk help` lists the commands under the first four, bar those in
+/// `ALL_ONLY`; `krowk help --all` each with everything under it, and the
+/// last heading, which holds what the overview leaves out. Every command the
+/// build has sits under exactly one heading. The overview's Start header
+/// (`krowk`, `krowk -p`, `krowk --resume`) is flags, so not here.
 pub const GROUPS: &[(&str, &[&str])] = &[
-    // The harness build's own commands, and the sessions they run. Sync and
-    // devices carry a session from one machine to the next, so they sit here:
-    // a heading of their own would push the overview past one screen.
-    #[cfg(feature = "harness")]
-    ("Agent", &["connect", "disconnect", "status", "sessions", "sync", "devices"]),
-    ("Publish", &["push", "runs", "artifacts", "claim"]),
-    ("Account", &["login", "logout", "whoami", "billing", "workspaces", "auth"]),
     (
-        "Other",
+        "Accounts",
         &[
             #[cfg(feature = "harness")]
-            "providers",
+            "connect",
+            #[cfg(feature = "harness")]
+            "disconnect",
+            "login",
+            "whoami",
+            "billing",
+        ],
+    ),
+    (
+        "Work",
+        &[
+            #[cfg(feature = "sessions")]
+            "sessions",
+            #[cfg(all(feature = "harness", unix))]
+            "machines",
             #[cfg(feature = "harness")]
             "worktrees",
             #[cfg(feature = "harness")]
             "mcp",
+        ],
+    ),
+    ("Publish", &["push"]),
+    (
+        "Health",
+        &[
+            #[cfg(feature = "harness")]
+            "status",
+            "doctor",
+            "upgrade",
+            "config",
+        ],
+    ),
+    (
+        MORE_HEADING,
+        &[
+            "logout",
+            "workspaces",
+            "auth",
+            "runs",
+            "artifacts",
+            "claim",
+            #[cfg(feature = "harness")]
+            "providers",
+            #[cfg(feature = "harness")]
+            "sync",
+            #[cfg(feature = "harness")]
+            "devices",
             #[cfg(all(feature = "harness", unix))]
             "host",
-            #[cfg(all(feature = "harness", unix))]
-            "machines",
             #[cfg(all(feature = "harness", unix))]
             "hosts",
             #[cfg(all(feature = "harness", unix))]
             "relay",
-            #[cfg(all(feature = "sessions", not(feature = "harness")))]
-            "sessions",
-            "config",
-            "doctor",
             #[cfg(feature = "sessions")]
             "pricing",
-            "upgrade",
             "help",
         ],
     ),
 ];
 
-/// Listed by `krowk help --all` alone: the long forms of what the overview
-/// already lists, help itself, and the relay, which a person runs only to
-/// host one.
+/// The heading `krowk help --all` puts the hidden commands under.
+pub const MORE_HEADING: &str = "More";
+
+/// Hidden: still routed, but listed by `krowk help --all` alone, and marked
+/// `hidden` in `krowk help --json`. The duplicates and the low-level
+/// commands; the GitHub Action and scripts call them by name, and nothing
+/// about how they run changes.
 pub const ALL_ONLY: &[&str] = &[
+    "logout",
+    "workspaces",
     "auth",
-    // Its commands live under `krowk machines` now: add, remove and list.
+    "runs",
+    "artifacts",
+    "claim",
+    #[cfg(feature = "harness")]
+    "providers",
+    #[cfg(feature = "harness")]
+    "sync",
     #[cfg(feature = "harness")]
     "devices",
-    "help",
-    #[cfg(feature = "harness")]
-    "mcp",
     #[cfg(all(feature = "harness", unix))]
-    "relay",
-    // Only for a person with more than one machine syncing.
-    #[cfg(all(feature = "harness", unix))]
-    "machines",
+    "host",
     #[cfg(all(feature = "harness", unix))]
     "hosts",
-    // Upkeep the prices mostly do for themselves; its line went to `billing`.
+    #[cfg(all(feature = "harness", unix))]
+    "relay",
     #[cfg(feature = "sessions")]
     "pricing",
+    "help",
 ];
 
 #[cfg(test)]
@@ -1284,6 +1327,64 @@ mod tests {
         commands.sort_unstable();
         assert_eq!(listed, commands);
         assert!(ALL_ONLY.iter().all(|n| listed.contains(n)));
+    }
+
+    /// D12: the overview lists these and no others, in this order.
+    #[test]
+    fn the_overview_lists_exactly_the_short_list() {
+        let c = catalog("dev");
+        let shown: Vec<&str> = GROUPS
+            .iter()
+            .filter(|(title, _)| *title != MORE_HEADING)
+            .flat_map(|(_, names)| names.iter().copied())
+            .filter(|n| !ALL_ONLY.contains(n))
+            .collect();
+        let want: &[&str] = if cfg!(feature = "harness") {
+            &["connect", "disconnect", "login", "whoami", "billing", "sessions", "machines", "worktrees", "mcp", "push", "status", "doctor", "upgrade", "config"]
+        } else {
+            &["login", "whoami", "billing", "sessions", "push", "doctor", "upgrade", "config"]
+        };
+        let want: Vec<&str> = want.iter().copied().filter(|n| cfg!(unix) || *n != "machines").filter(|n| cfg!(feature = "sessions") || *n != "sessions").collect();
+        assert_eq!(shown, want);
+        // The catalog says the same: every other command is hidden.
+        for cmd in &c.commands {
+            assert_eq!(cmd.hidden, !shown.contains(&cmd.name.as_str()), "{}", cmd.name);
+        }
+    }
+
+    #[test]
+    fn help_json_carries_a_hidden_flag_for_every_command() {
+        let v = serde_json::to_value(catalog("dev")).unwrap();
+        fn walk(commands: &serde_json::Value) {
+            for c in commands.as_array().unwrap() {
+                assert!(c["hidden"].is_boolean(), "{}", c["name"]);
+                if let Some(subs) = c.get("subcommands") {
+                    walk(subs);
+                }
+            }
+        }
+        walk(&v["commands"]);
+    }
+
+    /// Hidden is not removed: the router still has an arm for every hidden
+    /// command, since the GitHub Action and scripts call them by name.
+    /// (Running them would start daemons and reach the network, so the
+    /// router's own source is read.)
+    #[test]
+    fn every_hidden_command_still_routes() {
+        let router = include_str!("mod.rs");
+        let c = catalog("dev");
+        let mut checked = 0;
+        for leaf in c.leaves().iter().filter(|l| l.hidden && l.name != "help") {
+            let words: Vec<String> = leaf.name.split(' ').map(|w| format!("\"{w}\"")).collect();
+            let arm = format!("[{}", words.join(", "));
+            let alone = format!("[{}]", words.join(", "));
+            assert!(router.contains(&arm) || router.contains(&alone), "no route for hidden `krowk {}`", leaf.name);
+            checked += 1;
+        }
+        assert!(checked >= 10, "{checked}");
+        // `help` routes before dispatch.
+        assert!(router.contains("positionals[0] == \"help\""));
     }
 
     #[test]

@@ -3,43 +3,37 @@ stdout:
 █  █  Krowk 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-Usage
+Start
   krowk                      Open the agent here
   krowk -p "…"               One prompt, headless
-  krowk <command> [flags]
+  krowk --resume             Continue a session
 
 Examples
   krowk connect anthropic    Connect a model to run the agent on
   krowk push shot.png        Upload a screenshot and get a link to paste
   krowk sessions --json      Every agent session on this machine, as data
 
-Agent
+Accounts
   connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
   disconnect    Sign a connected model out
-  status        What's connected, and whether each is ready
+  login         Sign in to your krowk account
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+
+Work
   sessions      List and read agent sessions on this machine
-  sync          Sync sessions between your machines, end-to-end encrypted
+  machines      Your machines, and what each can take
+  worktrees     The git worktrees krowk made for agents, across repositories
+  mcp           MCP servers krowk's agent uses (add, remove, list, login)
 
 Publish
   push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
 
-Account
-  login         Sign in to your krowk account
-  logout        Remove this machine's key
-  whoami        Show the key and its workspace
-  billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
-
-Other
-  providers     Low-level instance config (add, list, rename, remove)
-  worktrees     The git worktrees krowk made for agents, across repositories
-  host          The daemon sessions run in, which outlives the terminal
-  config        Show or set configuration
+Health
+  status        What's connected, and whether each is ready
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --model <instance/model>   Which model (e.g. claude/sonnet)
@@ -57,10 +51,14 @@ $ krowk help --all --format human
 stdout:
 krowk — every command and subcommand
 
-Agent
+Accounts
   connect             Connect a model: Claude, ChatGPT, SuperGrok or an API key
   disconnect          Sign a connected model out
-  status              What's connected, and whether each is ready
+  login               Sign in to your krowk account
+  whoami              Show the key and its workspace
+  billing             Choose or manage the workspace's plan
+
+Work
   sessions            List and read agent sessions on this machine
   sessions show       Read one session back, with its turns, messages and parts
   sessions import     Import this machine's agent transcripts
@@ -75,6 +73,58 @@ Agent
   sessions attach     Follow a session on another machine, live
   sessions take       Move a live session here, uncommitted work and all
   sessions new        Start a session on another machine of yours, and follow it
+  machines list       Your machines, and what each can take
+  machines accept     Take work from your other machines, or not
+  machines add        Show a code and QR that adds a phone or a machine
+  machines remove     Take a machine off your list and rotate your key
+  machines always-on  Keep this machine available while you're away
+  machines recovery   Your recovery kit: see it, make a new one, test it
+  worktrees list      Each one: branch, commits ahead, changes, session, age
+  worktrees add       Make one for an agent to work in, and print its directory
+  worktrees remove    Remove one, its branch kept; not while its session runs
+  worktrees apply     Bring one's changes into a checkout, uncommitted
+  worktrees prune     Clear what deleted worktrees left, and old snapshots
+  mcp login           Sign in to a remote MCP server that asks for OAuth
+  mcp logout          Forget a server's sign-in
+  mcp add             Add an MCP server to krowk's config.json
+  mcp remove          Remove a server from config.json, and its stored sign-in
+  mcp list            List the servers krowk would load here, without connecting
+
+Publish
+  push                Upload files, get a link for each
+
+Health
+  status              What's connected, and whether each is ready
+  doctor              Check this machine's setup
+  upgrade             Upgrade krowk
+  config show         The effective configuration, and which layer set each
+                      value
+  config set          Write one value into the repo config, or the global one
+  config unset        Remove one value from the repo config, or the global one
+
+More
+  logout              Remove this machine's key
+  workspaces list     List the stored keys, and which workspace resolves here
+  workspaces use      Make a stored key the machine-wide default
+  auth login          The long form of `krowk login`
+  auth logout         The long form of `krowk logout`
+  auth token          Print the stored token
+  auth verify         The long form of `krowk whoami`
+  runs start          Open a run to group uploads under
+  runs list           List the workspace's runs, newest first
+  runs show           Read one run back, with its metadata
+  runs finish         Close a run
+  artifacts create    Upload files: the long form of `krowk push`
+  artifacts list      List artifacts, newest first: a run's, or the workspace's
+  artifacts show      Read one artifact back
+  artifacts attach    Put an artifact under a run afterwards
+  artifacts delete    Take an artifact down — immediate, cannot be undone
+  artifacts claim     The long form of `krowk claim`
+  claim               Keep an anonymous upload past expiry
+  providers add       Add an instance, or sign one in
+  providers list      List every instance, and whether it is ready
+  providers remove    Remove an instance's definition, and forget its login
+  providers rename    Rename an instance; its login and sessions follow
   sync init           Set up sync: this device, your user key and a recovery kit
   sync recover        Back in from the recovery kit's 12 words, on a new machine
   sync status         This device's list, recovery kit and auto-sync, checked
@@ -88,68 +138,14 @@ Agent
   devices list        The devices on your device list, this one marked
   devices add         Show a code that adds a new machine to your devices
   devices remove      Take a device off your list and rotate your key
-
-Publish
-  push                Upload files, get a link for each
-  runs start          Open a run to group uploads under
-  runs list           List the workspace's runs, newest first
-  runs show           Read one run back, with its metadata
-  runs finish         Close a run
-  artifacts create    Upload files: the long form of `krowk push`
-  artifacts list      List artifacts, newest first: a run's, or the workspace's
-  artifacts show      Read one artifact back
-  artifacts attach    Put an artifact under a run afterwards
-  artifacts delete    Take an artifact down — immediate, cannot be undone
-  artifacts claim     The long form of `krowk claim`
-  claim               Keep an anonymous upload past expiry
-
-Account
-  login               Sign in to your krowk account
-  logout              Remove this machine's key
-  whoami              Show the key and its workspace
-  billing             Choose or manage the workspace's plan
-  workspaces list     List the stored keys, and which workspace resolves here
-  workspaces use      Make a stored key the machine-wide default
-  auth login          The long form of `krowk login`
-  auth logout         The long form of `krowk logout`
-  auth token          Print the stored token
-  auth verify         The long form of `krowk whoami`
-
-Other
-  providers add       Add an instance, or sign one in
-  providers list      List every instance, and whether it is ready
-  providers remove    Remove an instance's definition, and forget its login
-  providers rename    Rename an instance; its login and sessions follow
-  worktrees list      Each one: branch, commits ahead, changes, session, age
-  worktrees add       Make one for an agent to work in, and print its directory
-  worktrees remove    Remove one, its branch kept; not while its session runs
-  worktrees apply     Bring one's changes into a checkout, uncommitted
-  worktrees prune     Clear what deleted worktrees left, and old snapshots
-  mcp login           Sign in to a remote MCP server that asks for OAuth
-  mcp logout          Forget a server's sign-in
-  mcp add             Add an MCP server to krowk's config.json
-  mcp remove          Remove a server from config.json, and its stored sign-in
-  mcp list            List the servers krowk would load here, without connecting
   host status         Whether the daemon runs: socket, pid, uptime, sessions
   host attach         Follow a session in the daemon, live, as stream-json
   host stop           Stop the daemon, once no turn runs in it
   host enable         Run the daemon as a systemd or launchd user service
   host disable        Stop the service and remove it
-  machines list       Your machines, and what each can take
-  machines accept     Take work from your other machines, or not
-  machines add        Show a code and QR that adds a phone or a machine
-  machines remove     Take a machine off your list and rotate your key
-  machines always-on  Keep this machine available while you're away
-  machines recovery   Your recovery kit: see it, make a new one, test it
   hosts               The same as krowk machines
   relay serve         Carry sealed sessions between their host and viewers
-  config show         The effective configuration, and which layer set each
-                      value
-  config set          Write one value into the repo config, or the global one
-  config unset        Remove one value from the repo config, or the global one
-  doctor              Check this machine's setup
   pricing refresh     Refresh the models.dev price cache
-  upgrade             Upgrade krowk
   help                This, a command's help, or a topic
 
 krowk help <command>  A command's own flags and explanation
