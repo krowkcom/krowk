@@ -109,9 +109,9 @@ impl Sandbox {
         std::fs::read_to_string(self.root.join("pass.log")).unwrap_or_default().lines().count()
     }
 
-    /// How many times the fake harnesses logged `line`.
-    fn logged(&self, line: &str) -> usize {
-        std::fs::read_to_string(self.root.join("fake.log")).unwrap_or_default().lines().filter(|l| *l == line).count()
+    /// How many lines the fake harnesses logged that start with `start`.
+    fn logged(&self, start: &str) -> usize {
+        std::fs::read_to_string(self.root.join("fake.log")).unwrap_or_default().lines().filter(|l| l.starts_with(start)).count()
     }
 
     /// Every file under the sandbox holding `needle`, but the credentials
@@ -170,7 +170,9 @@ fn r_cred_1_a_pasted_key_is_stored_0600_used_first_and_never_shown_anywhere() {
     assert_eq!((row["state"].as_str(), row["source"].as_str()), (Some("ready"), Some("stored, handed to Claude Code")), "{row}");
     let turn = b.krowk(&["-p", "hello", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(b.logged("env ANTHROPIC_API_KEY=set ANTHROPIC_BASE_URL="), 1, "handed to Claude Code");
+    // The sandbox's ANTHROPIC_BASE_URL made it a gateway's account: the key
+    // goes on as the gateway's token.
+    assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 1, "the stored key, not the environment's, handed to Claude Code");
 
     let mut outs = vec![out, turn];
     for args in [&["status", "--json"][..], &["status"], &["providers", "list", "--json"], &["providers", "list"], &["doctor", "--json"], &["doctor"]] {
@@ -202,14 +204,14 @@ fn r_cred_1_a_var_and_a_command_reference_resolve_and_one_that_fails_has_no_fall
     // Failing: `unknown` with why, the turn refused, nothing of its output
     // shown, and the environment's key never sent in its place.
     std::fs::write(b.root.join("pass.fail"), "").unwrap();
-    let asked = b.logged("env ANTHROPIC_API_KEY=set ANTHROPIC_BASE_URL=");
+    let asked = b.logged("env ANTHROPIC_AUTH_TOKEN=");
     let row = b.row("anthropic", &env);
     assert_eq!(row["state"], "unknown", "{row}");
     assert!(row["reason"].as_str().unwrap().contains("`fake-pass …`, which stopped"), "{row}");
     let failed = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6"], &env);
     assert_eq!(failed.status.code(), Some(3), "{}", printed(&failed));
     assert!(printed(&failed).contains("does not fall back to $ANTHROPIC_API_KEY"), "{}", printed(&failed));
-    assert_eq!(b.logged("env ANTHROPIC_API_KEY=set ANTHROPIC_BASE_URL="), asked, "nothing was started");
+    assert_eq!(b.logged("env ANTHROPIC_AUTH_TOKEN="), asked, "nothing was started");
     for o in [&row.to_string(), &printed(&failed)] {
         assert!(!o.contains(SENTINEL) && !o.contains("gpg:"), "{o}");
     }
@@ -265,6 +267,7 @@ fn assert_a_command_reference(b: &Sandbox, env: &[(&str, &str)]) {
     assert_eq!(b.pass_runs(), 2);
     let turn = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "stream-json"], env);
     assert!(turn.status.success(), "{}", printed(&turn));
+    assert_eq!(b.logged(&format!("env ANTHROPIC_AUTH_TOKEN={SENTINEL}")), 2, "the command's key, handed to Claude Code");
     assert_eq!(b.pass_runs(), 3, "once for the turn's process");
 }
 

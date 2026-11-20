@@ -216,7 +216,9 @@ pub(crate) fn apply(instances: &mut BTreeMap<String, Resolved>, credentials: &Pa
                 Some(k) => k,
                 None => continue,
             },
-            Err(e) if r.auth == Auth::ApiKey || r.backend.is_some() => {
+            // A hand-written keyed backend (a router naming `apiKeyEnv`)
+            // never had a stored key, and reads its variable as before.
+            Err(e) if (r.backend.is_none() && r.auth == Auth::ApiKey) || crate::connect::key_account(r) => {
                 (r.stored, r.api_key) = (Stored::Unreadable(e.message.clone()), String::new());
                 hand_over(r);
                 continue;

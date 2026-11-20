@@ -485,7 +485,7 @@ pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::Instanc
     let path = super::providers::config_path()?;
     let credentials = super::providers::credentials_path()?;
     let env = krowk_api::home::process_env;
-    let converted = krowk_harness::connect::ProviderAuth { config: path.clone(), credentials, env: &env }.convert_native().map_err(|e| fail(&e.code, e.message))?;
+    let converted = krowk_harness::connect::ProviderAuth { config: path.clone(), credentials, env: &env }.convert_native();
     let now;
     let v = match converted.is_empty() {
         true => v,

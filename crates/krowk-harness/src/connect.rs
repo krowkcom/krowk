@@ -216,6 +216,12 @@ fn way_of(r: &Resolved) -> Option<&'static MethodInfo> {
     }
 }
 
+/// A Claude Code or Codex account made from an API key or a gateway, whose
+/// stored key owns it as a native instance's does.
+pub(crate) fn key_account(r: &Resolved) -> bool {
+    r.backend.is_some() && way_of(r).is_some_and(|w| w.method == Method::ApiKey)
+}
+
 /// D3: the account an API key or a gateway krowk ran itself becomes, in
 /// `dir`, a directory of its own: an Anthropic key a Claude Code account,
 /// a gateway's base URL in its env; the rest a Codex account on a model
@@ -224,17 +230,21 @@ fn way_of(r: &Resolved) -> Option<&'static MethodInfo> {
 /// native one resolved, with its stored key: the variable it reads is the
 /// account's — the one the key was in, never another vendor's — and a
 /// server with only a stored key (or `stores`, one about to be) gets one
-/// made from its name. No key is written: the definition names the
-/// variable, and the key stays in it or in the credentials file.
+/// of krowk's own, made from its name. The base URL is the one the native
+/// one sent to, a variable's too (`ANTHROPIC_BASE_URL` beside
+/// `ANTHROPIC_API_KEY`), so its key goes on going there and nowhere else.
+/// No key is written: the definition names the variable, and the key stays
+/// in it or in the credentials file.
 fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) -> Option<InstanceKind> {
     let var = match r.api_key_env.trim() {
         "" if r.stored == crate::keys::Stored::No && !stores => None,
-        "" => Some(format!("{}_API_KEY", env_part(&r.name))),
+        "" => Some(format!("KROWK_{}_API_KEY", env_part(&r.name))),
         v => Some(v.to_string()),
     };
     let (vendor, label, effort) = match native {
-        InstanceKind::AnthropicApi { base_url, effort, .. } => {
-            let env = clean(base_url).map(|u| [("ANTHROPIC_BASE_URL".to_string(), u)].into()).unwrap_or_default();
+        InstanceKind::AnthropicApi { effort, .. } => {
+            let gateway = Some(r.base_url.clone()).filter(|u| !u.is_empty() && u != instances::ANTHROPIC_API_URL);
+            let env = gateway.map(|u| [("ANTHROPIC_BASE_URL".to_string(), u)].into()).unwrap_or_default();
             return Some(InstanceKind::ClaudeCode { binary: None, config_dir: Some(dir), env, args: Vec::new(), api_key_env: var, effort: *effort });
         }
         InstanceKind::OpenaiApi { effort, .. } => (Vendor::Openai, "OpenAI", effort),
@@ -287,12 +297,12 @@ fn native_of(def: &InstanceKind) -> Option<InstanceKind> {
     }
 }
 
-/// An existing definition as `connect` merges into it, and the directory
-/// it keeps: a key's account as the native one it was made from.
-fn as_native(def: Option<&InstanceKind>, harness: Option<&str>) -> (Option<InstanceKind>, Option<String>) {
+/// An existing definition as `connect` merges into it: a key's account as
+/// the native one it was made from.
+fn as_native(def: Option<&InstanceKind>, harness: Option<&str>) -> Option<InstanceKind> {
     match (def, harness) {
-        (Some(d), Some(h)) if d.tag() == h => (Some(native_of(d).unwrap_or_else(|| d.clone())), dir_of(d)),
-        (d, _) => (d.cloned(), None),
+        (Some(d), Some(h)) if d.tag() == h => Some(native_of(d).unwrap_or_else(|| d.clone())),
+        (d, _) => d.cloned(),
     }
 }
 
@@ -1090,15 +1100,44 @@ impl ProviderAuth<'_> {
     /// D3: the Claude Code or Codex account a key's native definition is,
     /// in a directory of its own — the one it has, or `accounts/<name>`.
     /// Any other definition (no `harness`) as it is.
-    fn as_account(&self, instance: &str, native: InstanceKind, harness: Option<&str>, dir: Option<String>, stores: bool) -> Result<InstanceKind, EngineError> {
+    /// One there already keeps what krowk does not make of a key: a
+    /// `binary`, more `env`, `-c` args of its own.
+    fn as_account(&self, instance: &str, native: InstanceKind, harness: Option<&str>, had: Option<&InstanceKind>, stores: bool) -> Result<InstanceKind, EngineError> {
         if harness.is_none() {
             return Ok(native);
         }
-        let dir = match dir {
+        let had = had.filter(|d| harness == Some(d.tag()));
+        let dir = match had.and_then(dir_of) {
             Some(d) => d,
             None => self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string(),
         };
-        Ok(to_harness(&native, &self.resolve(instance, &native)?, dir, stores).expect("a way in by key is a native kind"))
+        let made = to_harness(&native, &self.resolve(instance, &native)?, dir, stores).expect("a way in by key is a native kind");
+        let Some(had) = had else { return Ok(made) };
+        let mut merged = serde_json::to_value(had).expect("a definition serializes");
+        let (Some(m), Value::Object(new)) = (merged.as_object_mut(), serde_json::to_value(&made).expect("a definition serializes")) else { return Ok(made) };
+        // krowk's own `-c` pairs are made again; the person's are kept.
+        let own = |a: &str| a.starts_with("model_providers.krowk-") || a.starts_with("model_provider=") || a.starts_with("model=");
+        let kept: Vec<Value> = match m.get("args") {
+            Some(Value::Array(a)) => a.chunks(2).filter(|p| !(p.len() == 2 && p[0] == "-c" && p[1].as_str().is_some_and(own))).flatten().cloned().collect(),
+            _ => Vec::new(),
+        };
+        m.remove("args");
+        for (k, v) in new {
+            match (m.get_mut(&k), v) {
+                (Some(Value::Object(old)), Value::Object(v)) if k == "env" => old.extend(v),
+                (_, Value::Array(mut v)) if k == "args" => {
+                    v.splice(0..0, kept.iter().cloned());
+                    m.insert(k, Value::Array(v));
+                }
+                (_, v) => {
+                    m.insert(k, v);
+                }
+            }
+        }
+        if !kept.is_empty() && !m.contains_key("args") {
+            m.insert("args".into(), Value::Array(kept));
+        }
+        serde_json::from_value(merged).map_err(|e| EngineError::new("bad_config", format!("{instance}: {e}")))
     }
 
     /// Connects: writes the definition — after the sign-in, which must
@@ -1241,7 +1280,7 @@ impl ProviderAuth<'_> {
         };
         // A key's account that exists is updated as the native definition it
         // was made from, and made again, in the directory it has.
-        let (old, kept_dir) = as_native(existing.instances.get(&instance), harness);
+        let old = as_native(existing.instances.get(&instance), harness);
         // One that exists is updated: the fields given replace its own, and
         // the rest — an issuer, a pinned wire API — are kept.
         let kind = match old.as_ref() {
@@ -1273,7 +1312,7 @@ impl ProviderAuth<'_> {
 
         let stored_key = self.key_to_store(&instance, &kind, provider, o, ui)?;
 
-        let kind = self.as_account(&instance, kind, harness, kept_dir, stored_key.is_some())?;
+        let kind = self.as_account(&instance, kind, harness, existing.instances.get(&instance), stored_key.is_some())?;
 
         // A new named account gets a directory of its own in krowk's home,
         // `accounts/<name>`; the unnamed one is the vendor as the person
@@ -1615,41 +1654,55 @@ impl ProviderAuth<'_> {
     /// and sessions on it carry on; its key where it was, in the
     /// credentials file or the variable it names; and a directory of its
     /// own in krowk's home, made `0700`. Run on first use: a line for each
-    /// one converted, and none once there are none left.
-    pub fn convert_native(&self) -> Result<Vec<String>, EngineError> {
-        let defs = self.definitions()?;
+    /// one converted, and none once there are none left. One that cannot be
+    /// converted — its directory another account's, a config.json that
+    /// cannot be written — is said and left as it was: the run goes on.
+    pub fn convert_native(&self) -> Vec<String> {
+        let Ok(defs) = self.definitions() else { return Vec::new() };
+        let Ok(accounts) = self.home().map(|h| h.join(krowk_api::home::ACCOUNTS)) else { return Vec::new() };
         let known = Registry::resolve(&defs, self.env);
-        let mut made = Vec::new();
+        let mut said = Vec::new();
+        let mut made: Vec<(String, InstanceKind, Option<Made>)> = Vec::new();
         for (name, def) in &defs.instances {
             let Some(harness) = by_kind(def.tag()).and_then(harness_of) else { continue };
             let Ok(r) = known.get(name) else { continue };
-            let dir = self.home()?.join(krowk_api::home::ACCOUNTS).join(name.replace(':', "-"));
-            if let Some(other) = known.instances.values().find(|o| o.name != *name && o.backend.as_ref().and_then(|b| b.home.as_deref()).is_some_and(|h| same_dir(h, &dir))) {
-                return Err(EngineError::new(
-                    "config_unwritable",
-                    format!("{name} cannot become a {harness} account: {} is {}'s directory already — rename one of them (`krowk providers rename`)", dir.display(), other.name),
-                ));
+            let dir = accounts.join(name.replace(':', "-"));
+            let homes = known.instances.values().filter(|o| o.name != *name).filter_map(|o| o.backend.as_ref()?.home.clone());
+            let taken = homes.chain(made.iter().filter_map(|(_, k, _)| dir_of(k).map(PathBuf::from))).any(|h| same_dir(&h, &dir));
+            let ready = match taken {
+                true => Err(format!("{} is another account's directory already", dir.display())),
+                false => made_dir(Some(&dir)).map_err(|e| e.message),
+            };
+            match (ready, to_harness(def, r, dir.display().to_string(), false)) {
+                (Ok(m), Some(kind)) => made.push((name.clone(), kind, m)),
+                (Err(why), _) => {
+                    let harness = if harness == "codex-app-server" { "Codex" } else { "Claude Code" };
+                    said.push(format!("{name} could not become a {harness} account ({why}) — it runs as before for now"));
+                }
+                (Ok(m), None) => {
+                    let _ = undo(&m, EngineError::new("", ""));
+                }
             }
-            let Some(kind) = to_harness(def, r, dir.display().to_string(), false) else { continue };
-            made.push((name.clone(), kind, dir));
         }
         if made.is_empty() {
-            return Ok(Vec::new());
+            return said;
         }
-        for (_, _, dir) in &made {
-            private_dir(dir).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", dir.display())))?;
-        }
-        self.edit(|raw| {
+        let written = self.edit(|raw| {
             let all = raw.entry("instances").or_insert_with(|| Value::Object(Map::new()));
             if let Some(all) = all.as_object_mut() {
                 for (name, kind, _) in &made {
                     all.insert(name.clone(), serde_json::to_value(kind).expect("a definition serializes"));
                 }
             }
-        })?;
-        Ok(made
-            .iter()
-            .map(|(name, kind, _)| {
+        });
+        if let Err(e) = written {
+            for (_, _, m) in &made {
+                let _ = undo(m, EngineError::new("", ""));
+            }
+            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — they run as before for now", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            return said;
+        }
+        said.extend(made.iter().map(|(name, kind, _)| {
                 readiness::forget(name);
                 let (harness, keyed) = match kind {
                     InstanceKind::CodexAppServer { api_key_env, .. } => ("Codex", api_key_env.is_some()),
@@ -1657,8 +1710,8 @@ impl ProviderAuth<'_> {
                 };
                 let on = if keyed { "key" } else { "server" };
                 format!("{name} now runs in {harness}, on the same {on} — krowk no longer runs models directly")
-            })
-            .collect())
+            }));
+        said
     }
 }
 
