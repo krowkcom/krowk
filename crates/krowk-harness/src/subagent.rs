@@ -60,6 +60,7 @@ use crate::engine::{EngineEvent, Events};
 use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
+#[cfg(unix)]
 use crate::sync::placement::{stream_line, Failure, Handle, Here, HostPin, Outcome, Placer, Progress, TaskSpec};
 use crate::protocol::{ChildState, ChildTool, Item, ItemKind, LiveEvent, ModelRef, PermissionMode, StreamLine, TurnStatus, Waiting};
 use crate::worktree::InUse;
@@ -69,6 +70,7 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+#[cfg(unix)]
 use std::time::Duration;
 use tokio::sync::{mpsc, watch, Semaphore};
 
@@ -274,7 +276,11 @@ pub struct AgentsConfig {
 }
 
 /// The `Placer` a subagent's call places by, if this machine has one.
+#[cfg(unix)]
 pub type PlacerSource = Arc<dyn Fn() -> Option<Arc<crate::sync::placement::Placer>> + Send + Sync>;
+/// Sync, and so placing, is unix-only: elsewhere there is never a `Placer`.
+#[cfg(not(unix))]
+pub type PlacerSource = Arc<dyn Fn() -> Option<std::convert::Infallible> + Send + Sync>;
 
 impl AgentsConfig {
     /// No definitions of the person's, and a catalog that lists nothing:
@@ -728,9 +734,17 @@ impl Subagents {
         concluded(result, worktree, (!background).then(|| p.cwd.clone())).await
     }
 
+    /// Without sync nothing is placed: every call runs here, and one that
+    /// names a machine is refused.
+    #[cfg(not(unix))]
+    async fn placed_elsewhere(&self, input: &SubagentInput, _def: Option<&AgentDef>, _model: &ModelRef, _events: &Events, _cancel: &mut watch::Receiver<bool>) -> Option<(String, bool, Option<&'static str>)> {
+        pin_of(input).err().map(|e| (e, true, None))
+    }
+
     /// The call's answer when it ran on another machine (or could not be
     /// placed), none when it runs here. An agent with a tool allowlist
     /// always runs here: allowlists do not travel (D12).
+    #[cfg(unix)]
     async fn placed_elsewhere(&self, input: &SubagentInput, def: Option<&AgentDef>, model: &ModelRef, events: &Events, cancel: &mut watch::Receiver<bool>) -> Option<(String, bool, Option<&'static str>)> {
         let pin = match pin_of(input) {
             Ok(pin) => pin,
@@ -761,6 +775,7 @@ impl Subagents {
     /// Places the call (`Placer`): `Here` when it runs on this machine as
     /// any subagent does, else the call's answer, the child having run on
     /// another machine and its changes landed in the parent's working tree.
+    #[cfg(unix)]
     async fn place(&self, placer: &Arc<Placer>, input: &SubagentInput, def: Option<&AgentDef>, model: &ModelRef, events: &Events, cancel: &mut watch::Receiver<bool>) -> Placed {
         let pin = pin_of(input).ok().flatten();
         let pin_is_none = pin.is_none();
@@ -888,6 +903,7 @@ impl Subagents {
 }
 
 /// The machine the call asks for, if it asks.
+#[cfg(unix)]
 fn pin_of(input: &SubagentInput) -> Result<Option<HostPin>, String> {
     match input.host.as_deref().map(str::trim).filter(|h| !h.is_empty()).map(HostPin::parse) {
         Some(Ok(pin)) => Ok(Some(pin)),
@@ -896,7 +912,18 @@ fn pin_of(input: &SubagentInput) -> Result<Option<HostPin>, String> {
     }
 }
 
+/// Placing needs sync, which is unix-only: a call that names a machine is
+/// refused.
+#[cfg(not(unix))]
+fn pin_of(input: &SubagentInput) -> Result<Option<()>, String> {
+    match input.host.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        Some(_) => Err("host is not available on this platform: a subagent runs on this machine here".to_string()),
+        None => Ok(None),
+    }
+}
+
 /// Where `place` put a call.
+#[cfg(unix)]
 enum Placed {
     /// On this machine, to run as a subagent here.
     Here,
@@ -907,6 +934,7 @@ enum Placed {
 
 /// What is left of the parent's tree budget, which a child on another
 /// machine runs under (D12).
+#[cfg(unix)]
 async fn remaining(budget: &Budget) -> crate::protocol::BudgetLimits {
     let limits = budget.limits();
     if limits.is_empty() {
@@ -919,6 +947,7 @@ async fn remaining(budget: &Budget) -> crate::protocol::BudgetLimits {
 /// The call's answer for a child that ran on another machine: its summary,
 /// where it ran, what landed in the working tree or was kept, and the
 /// approvals it was denied (R-ALLOC-8, R-ALLOC-14).
+#[cfg(unix)]
 pub fn told(o: &Outcome) -> String {
     let mut text = o.summary.trim_end().to_string();
     text.push_str(&format!("\n\nRan on {}.", o.machine));
