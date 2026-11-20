@@ -125,7 +125,7 @@ const STALE: &str = "changed-before-upgrade";
 const MAX_FILES: usize = 4000;
 const MAX_FILE: u64 = 32 << 20;
 const MAX_DEPTH: usize = 12;
-const MAX_DIRS: usize = 5000;
+const MAX_DIRS: usize = 20000;
 const MAX_BYTES: u64 = 256 << 20;
 const MAX_VISITS: usize = 20000;
 const MAX_DEPTH_DIRS: usize = 6;
@@ -154,7 +154,7 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
         let mut names: Vec<String> = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
         names.sort();
         for name in names {
-            if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".claude" | ".codex" | ".krowk") {
+            if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".claude" | ".codex" | ".krowk" | ".venv" | "venv" | "__pycache__" | ".mypy_cache" | ".pytest_cache" | ".tox" | ".next" | ".gradle" | ".terraform" | ".cache") {
                 continue;
             }
             let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
