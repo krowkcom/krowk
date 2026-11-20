@@ -32,7 +32,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   ten minutes; a second machine asking meanwhile waits its turn.
 
 - **Joining another machine is signing in there and typing one code.** On the
-  new machine, `krowk sync join` asks your other machines for a pairing and
+  new machine, `krowk` (signing in to an account that already has machines) or
+  `krowk sync join` asks your other machines for a pairing and
   says `Type the code shown on your other machine: ____-____`. Whichever of
   your machines runs the host opens the pairing on its own (only one does) and
   shows `A new machine signed in to your account. Its code: K7QF-9M3X` in any

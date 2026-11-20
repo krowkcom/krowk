@@ -657,6 +657,19 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         super::auth::login(ctx, &[])?;
         client = keyed_client(ctx, "`krowk sync join`")?;
     }
+    join_with(ctx, client, true)
+}
+
+/// The first-run flow's hand-off for an account that already has machines
+/// (`first_run::add_a_machine`): the same join, as the machine just signed
+/// in, ending at "Joined as …". The always-on offer is not made here — the
+/// setup flow asks it after the model step.
+pub(super) fn join_new_machine(ctx: &mut Ctx) -> Result<(), Error> {
+    terminal(ctx, JOIN_OFF_TERMINAL)?;
+    join_with(ctx, keyed_client(ctx, "joining your other machines")?, false)
+}
+
+fn join_with(ctx: &mut Ctx, client: Client, offers: bool) -> Result<(), Error> {
     let key = client.verify_key()?;
     let who = if !key.email.is_empty() { &key.email } else if key.workspace_name.is_empty() { &key.workspace } else { &key.workspace_name };
     let _ = writeln!(ctx.io.stderr, "Signed in as {}", printable(who));
@@ -709,6 +722,9 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let summary = format!("Joined as '{name}'. This machine syncs in every workspace you're a member of.");
     if ctx.format == Format::Human {
         let _ = writeln!(ctx.io.stdout, "{summary}");
+    }
+    if !offers {
+        return Ok(());
     }
     let service = offer_service(ctx);
     let _ = writeln!(ctx.io.stderr, "{TAKES_WORK}");
