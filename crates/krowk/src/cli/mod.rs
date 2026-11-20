@@ -15,6 +15,8 @@ mod budget;
 mod chain;
 #[cfg(feature = "harness")]
 mod devices;
+#[cfg(feature = "harness")]
+mod first_run;
 #[cfg(all(feature = "harness", unix))]
 mod delegate;
 #[cfg(all(feature = "harness", unix))]

@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The first machine sets up in one flow from `krowk`.** On a terminal with
+  nothing to run a model on, `krowk` asks once: sign in to krowk in the browser
+  (`[Enter]`), or use krowk locally without an account (`[l]`). Signing in
+  leaves this machine with a workspace key and registered for sync, with no
+  further prompt, and the model step follows ("Connect a model": a Claude,
+  ChatGPT or SuperGrok subscription, an API key, or your own Claude Code or
+  Codex login). Each step can be cancelled and picked up by running `krowk`
+  again; "use locally" is not offered a second time, and `krowk login` on a
+  terminal later runs the flow from the sign-in. An account that already has
+  machines is not given a device list of its own: this machine is meant to be
+  added to them, which is not built yet and says so. Nothing changes without a
+  terminal.
+
 - **A new machine can ask your other machines for a pairing.** Once signed in
   to an account that already has devices, a machine that is not on the list can
   record a request with its proposed name and OS. It opens nothing and carries

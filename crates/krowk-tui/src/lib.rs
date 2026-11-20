@@ -3481,6 +3481,7 @@ impl<'h> Ui<'h> {
             return;
         }
         let (title, prefer) = match &job {
+            connect::Job::Connect(_) if first_run => ("Connect a model", None),
             connect::Job::Connect(_) => ("Connect a provider", None),
             // Alone, it starts on the session's instance.
             connect::Job::Disconnect(t) => ("Disconnect", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
@@ -3636,6 +3637,9 @@ impl<'h> Ui<'h> {
                     notes.push("another account is added by name: /connect, then + Add account".into());
                 }
                 app.done(if c.renewed { "Renewed" } else { "Connected" }, &c.instance, &s.facts, &notes);
+                if first_run {
+                    self.after_model_step(app);
+                }
                 match krowk_harness::connect::default_model(c.definition.tag()) {
                     Some(model) if c.default_model.is_some() || stuck || first_run => self.adopt(app, ModelRef { instance: c.instance.clone(), model: model.to_string() }),
                     Some(model) => app.gap_say(&format!("/model {}/{model} runs it", c.instance)),
@@ -3661,6 +3665,13 @@ impl<'h> Ui<'h> {
             Err(e) => app.error(&e.info()),
         }
     }
+
+    /// The first-run flow's model step is done: what the first machine's
+    /// setup asks next goes here, after the account and model steps.
+    ///
+    /// TICKET 02 fills this in: the always-on step (`Keep this machine
+    /// available while you're away?`) and the recovery kit.
+    fn after_model_step(&mut self, _app: &mut App) {}
 
     /// An instance renamed: the session, and whatever it holds of the old
     /// name, on the new one — the same instance, so nothing is asked again.
