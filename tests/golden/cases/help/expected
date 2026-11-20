@@ -759,7 +759,8 @@ stdout:
               "summary": "workspace",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",

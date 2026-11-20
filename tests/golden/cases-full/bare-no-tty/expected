@@ -3,9 +3,10 @@ stdout:
 █  █  Krowk 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-Usage
+Start
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk --resume             Continue a session
+  krowk -p --resume          Continue a session
 
 Examples
   krowk connect anthropic    Connect a model to run the agent on
@@ -24,6 +25,7 @@ Work
   machines      Your machines, and what each can take
   worktrees     The git worktrees krowk made for agents, across repositories
   mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 Publish
   push          Upload files, get a link for each
@@ -684,7 +686,8 @@ stdout:
               "summary": "workspace, defaultMode or rollover",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",
@@ -1395,7 +1398,7 @@ stdout:
         {
           "name": "add",
           "usage": "krowk machines add",
-          "summary": "Show a code and QR that adds a phone or a machine",
+          "summary": "Show a code that adds another machine",
           "hidden": false
         },
         {
@@ -1580,7 +1583,8 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session as stream-json"
+          "summary": "Follow a synced session as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
@@ -1773,7 +1777,8 @@ stdout:
           "default": "false",
           "usage": "List every trusted directory instead; takes no path"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "worktrees",
@@ -2059,9 +2064,10 @@ stdout:
 █  █  Krowk 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-Usage
+Start
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk --resume             Continue a session
+  krowk -p --resume          Continue a session
 
 Examples
   krowk connect anthropic    Connect a model to run the agent on
@@ -2080,6 +2086,7 @@ Work
   machines      Your machines, and what each can take
   worktrees     The git worktrees krowk made for agents, across repositories
   mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 Publish
   push          Upload files, get a link for each
@@ -2107,43 +2114,38 @@ tty:
 █  █  \e[1mKrowk\e[0m 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-\e[1mUsage\e[0m
+\e[1mStart\e[0m
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk <command> [flags]
+  krowk -p --resume          Continue a session
 
 \e[1mExamples\e[0m
   krowk connect anthropic    Connect a model to run the agent on
   krowk push shot.png        Upload a screenshot and get a link to paste
   krowk sessions --json      Every agent session on this machine, as data
 
-\e[1mAgent\e[0m
+\e[1mAccounts\e[0m
   connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
   disconnect    Sign a connected model out
-  status        What's connected, and whether each is ready
+  login         Sign in to your krowk account
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+
+\e[1mWork\e[0m
   sessions      List and read agent sessions on this machine
-  sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
+  machines      Your machines, and what each can take
+  worktrees     The git worktrees krowk made for agents, across repositories
+  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 \e[1mPublish\e[0m
   push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
 
-\e[1mAccount\e[0m
-  login         Sign in to your krowk account
-  logout        Remove this machine's key
-  whoami        Show the key and its workspace
-  billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
-
-\e[1mOther\e[0m
-  providers     Low-level instance config (add, list, rename, remove)
-  worktrees     The git worktrees krowk made for agents, across repositories
-  host          The daemon sessions run in, which outlives the terminal
-  config        Show or set configuration
+\e[1mHealth\e[0m
+  status        What's connected, and whether each is ready
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 \e[1mFlags\e[0m
   --model <instance/model>   With -p: which model (e.g. claude/sonnet)
@@ -2795,7 +2797,8 @@ tty:
               "summary": "workspace, defaultMode or rollover",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",
@@ -3506,7 +3509,7 @@ tty:
         {
           "name": "add",
           "usage": "krowk machines add",
-          "summary": "Show a code and QR that adds a phone or a machine",
+          "summary": "Show a code that adds another machine",
           "hidden": false
         },
         {
@@ -3691,7 +3694,8 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session as stream-json"
+          "summary": "Follow a synced session as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
@@ -3884,7 +3888,8 @@ tty:
           "default": "false",
           "usage": "List every trusted directory instead; takes no path"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "worktrees",
