@@ -10,4 +10,6 @@ pub mod output;
 #[cfg(feature = "sessions")]
 pub mod pricing;
 pub mod runctx;
+#[cfg(feature = "harness")]
+pub mod settings;
 pub mod termclean;

@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk config set defaultMode` and `rollover`, and `krowk config get`.**
+  `krowk config set defaultMode default|unhinged` chooses the permission
+  mode new sessions start in, and `krowk config set rollover auto|offer|off`
+  what happens when a session's instance hits a usage limit. Both always
+  write the global `~/.krowk/config.json` (`defaultMode` as
+  `permissions.defaultMode`), leave every other key alone, and refuse any
+  other value naming the valid ones. `krowk config get <key>` prints the
+  effective value of `workspace`, `defaultMode` or `rollover` and where it
+  comes from (for `rollover`: `repo` when a trusted repository sets it,
+  else `global`, else `default`). Until now only the terminal UI's settings
+  screen could change the first two.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`

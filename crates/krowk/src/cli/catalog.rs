@@ -210,6 +210,25 @@ const LOGIN_ABOUT: &str = login_about!("`krowk connect`");
 #[cfg(not(feature = "harness"))]
 const LOGIN_ABOUT: &str = login_about!("the full build's\n`krowk connect`");
 
+#[cfg(feature = "harness")]
+const CONFIG_ABOUT: &str = concat!(
+    "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n",
+    "`config get <key>` prints one key's effective value and its source. `config set\n",
+    "defaultMode default|unhinged` and `config set rollover auto|offer|off` set the\n",
+    "permission mode new sessions start in and what happens at a usage limit, always\n",
+    "in the global config."
+);
+#[cfg(not(feature = "harness"))]
+const CONFIG_ABOUT: &str = "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n`config get <key>` prints one key's effective value and its source.";
+#[cfg(feature = "harness")]
+const CONFIG_GET_KEYS: &str = "workspace, defaultMode or rollover";
+#[cfg(not(feature = "harness"))]
+const CONFIG_GET_KEYS: &str = "workspace";
+#[cfg(feature = "harness")]
+const CONFIG_SET_KEYS: &str = "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config";
+#[cfg(not(feature = "harness"))]
+const CONFIG_SET_KEYS: &str = "A configuration key, e.g. `workspace`";
+
 const WORKSPACES_ABOUT: &str = "\
 The stored keys, one per workspace. A key belongs to one workspace, and the
 credentials file holds one key per workspace: logging in against a second
@@ -436,8 +455,12 @@ pub fn catalog(version: &str) -> Catalog {
                 subcommands: vec![
                     cmd("show", "krowk config show", "The effective configuration, and which layer set each value"),
                     Command {
+                        args: vec![arg("key", CONFIG_GET_KEYS, true)],
+                        ..cmd("get", "krowk config get <key>", "One key's effective value and where it comes from")
+                    },
+                    Command {
                         args: vec![
-                            arg("key", "A configuration key, e.g. `workspace`", true),
+                            arg("key", CONFIG_SET_KEYS, true),
                             arg(
                                 "value",
                                 "What to set it to, e.g. ws_9hj3kd8a — for `workspace`, a person at a terminal may omit it and pick from the stored keys instead",
@@ -1019,7 +1042,7 @@ pub fn about(name: &str) -> &'static str {
         "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
         "auth" => "Manage the API key — your krowk account.",
         "workspaces" => WORKSPACES_ABOUT,
-        "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
+        "config" => CONFIG_ABOUT,
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
