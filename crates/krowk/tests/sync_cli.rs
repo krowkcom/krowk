@@ -55,13 +55,25 @@ fn scenario_text() -> String {
     let limited = std::fs::read_to_string(fixtures.join("limited.jsonl")).unwrap();
     let limited = limited.split("\n---\n").next().unwrap().trim_end().to_string();
     let low = std::fs::read_to_string(fixtures.join("low.jsonl")).unwrap().replace("claude-code answered", ANSWER);
-    let interrupted = r#"{"type":"assistant","message":{"model":"{{MODEL}}","id":"msg_long","type":"message","role":"assistant","content":[{"type":"text","text":"word0 word1"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}","aborted":true}
+    // A long answer, four words in when the interrupt comes: the stream
+    // stops there, and Claude Code ends the message as aborted.
+    let event = |e: serde_json::Value| serde_json::json!({"type": "stream_event", "event": e, "session_id": "{{SESSION}}", "parent_tool_use_id": null}).to_string();
+    let mut long = vec![
+        event(serde_json::json!({"type": "message_start", "message": {"model": "{{MODEL}}", "id": "msg_long", "type": "message", "role": "assistant", "content": [], "usage": {"input_tokens": 3, "output_tokens": 1}}})),
+        event(serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})),
+    ];
+    for i in 0..4 {
+        long.push(event(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": format!("word{i} ")}})));
+        long.push("@sleep 0.02".into());
+    }
+    let long = long.join("\n");
+    let interrupted = r#"{"type":"assistant","message":{"model":"{{MODEL}}","id":"msg_long","type":"message","role":"assistant","content":[{"type":"text","text":"word0 word1 word2 word3 "}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}","aborted":true}
 {"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
 {"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":[],"session_id":"{{SESSION}}"}"#;
     let sections = [
         format!("@when make the allowed file\n{}\n@touch allowed.txt\n{}", fake::asks_bash("toolu_allowed", "touch allowed.txt"), fake::answer("made it")),
         format!("@when make the denied file\n{}\n{}", fake::asks_bash("toolu_denied", "touch denied.txt"), "@touch denied.txt\n".to_string() + &fake::answer("did not")),
-        format!("@when a long answer\n@type 40 0.02 word\n@await-interrupt\n{interrupted}"),
+        format!("@when a long answer\n{long}\n@await-interrupt\n{interrupted}"),
         format!("@when run two agents\n{}", agents().0),
         format!("@when {LIMITED}\n{limited}"),
         format!("@when {NEARLY_OUT}\n{}", low.trim_end()),
@@ -379,7 +391,7 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     view.type_line("/interrupt");
     let result = view.until("the turn's end", is("result"));
     assert_eq!(result["status"], "interrupted", "B's /interrupt stopped the turn: {result}");
-    assert!(!result["result"].as_str().unwrap_or_default().contains("word39"), "short of its end: {result}");
+    assert_eq!(result["result"], "word0 word1 word2 word3 ", "the answer as far as it got: {result}");
 
     // Said on stderr beside each approval line: what answers it.
     let said = view.stderr();
