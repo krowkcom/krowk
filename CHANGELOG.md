@@ -100,6 +100,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
   terminal print stream-json, as they do without one, and take `/approve`,
   `/deny` and `/steer` on stdin.
 
+- **The pairing QR and the other phone-only code.** `krowk devices add` no
+  longer draws a QR code or prints "scan this with the krowk app on your
+  iPhone"; it still prints the pairing code, and `krowk sync join` on the new
+  machine takes it as before. Gone with it: the `krowk://pair` invite link,
+  the registry client's push-token and session-notification calls, the sync
+  host's notifications about approvals and finished turns, the phone's
+  connection supervisor in `krowk-client`, and the stand-in registry's push
+  and notification routes and its fleet test hooks. Nothing ever received a
+  push, so nothing a person used changes.
+
 ## [0.17.0] - 2026-11-10
 
 ### Added

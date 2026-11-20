@@ -3,17 +3,15 @@
 //! the host's answers, welcome and batches hold, sealed over the relay by
 //! `relay_link`, and (`store`) the sealed index and chunks a session's log
 //! is kept in, with the reader a device attaching opens them by. The wire
-//! shapes are types only, with no IO: the harness's host and viewer, and
-//! the phone's viewer later, read and write the same JSON. `join` is the
+//! shapes are types only, with no IO: the harness's host and viewer
+//! read and write the same JSON. `join` is the
 //! relay's join handshake, `viewer` what a viewer shows and `ViewerCore`,
 //! the viewer's whole state machine, and `commands` the book a viewer keeps
-//! of the commands it sends, all without IO; `supervisor` when a phone's
-//! viewer connects and tries again (backoff, wake, background).
+//! of the commands it sends, all without IO.
 
 pub mod commands;
 pub mod join;
 pub mod store;
-pub mod supervisor;
 pub mod viewer;
 
 use serde::{Deserialize, Serialize};

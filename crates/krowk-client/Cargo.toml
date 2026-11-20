@@ -1,6 +1,4 @@
-# What every krowk client shares — the terminal today, the desktop app
-# (gpui, linked directly) and the phones (UniFFI bindings, ticket 33) later
-# (R-CLIENT-1): the end-to-end encryption and the protocol types, and in
+# What every krowk client shares (R-CLIENT-1): the end-to-end encryption and the protocol types, and in
 # time sync. Crypto is implemented here and nowhere else (R-E2E-2); the
 # crypto-import test (tests/crypto_boundary.rs) fails when another crate
 # names a crypto crate as a dependency.

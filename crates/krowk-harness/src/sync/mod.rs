@@ -165,8 +165,7 @@ pub fn run_host(o: host::Options, env: &dyn Fn(&str) -> String, cwd: &std::path:
             }),
         }
     });
-    // The lease is given back by now; a notification still on its way
-    // (`host::Hosting::notify`, fire and forget) never holds up the exit.
+    // The lease is given back by now; nothing still on its way holds up the exit.
     rt.shutdown_background();
     ended
 }

@@ -1,6 +1,5 @@
-//! R-CLIENT-1: `krowk-client` is what the desktop app (gpui) and the
-//! phones (UniFFI, ticket 33) link, and they link it without the engine,
-//! tokio or reqwest. So nothing it pulls in — directly or
+//! R-CLIENT-1: `krowk-client` is what any client links, and it links it
+//! without the engine, tokio or reqwest. So nothing it pulls in — directly or
 //! through another crate, on any target — may be `krowk-harness`, `tokio`
 //! or `reqwest`.
 //!
