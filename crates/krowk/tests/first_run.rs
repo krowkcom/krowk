@@ -173,7 +173,9 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     connects_claude(&mut t);
     assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
     says(&t, "Keep this machine available while you're away?");
-    says(&t, "It syncs your sessions and takes work from your other machines. [Y/n]");
+    // `[Y/n]` on a desktop, `[y/N]` on a machine with a battery: answered
+    // either way.
+    says(&t, "It syncs your sessions and takes work from your other machines. [");
     types(&mut t, b"n\r");
     says(&t, "Not enabled. `krowk machines always-on on` does it later.");
     says(&t, "12 words that stand in for a device of yours");
@@ -200,7 +202,9 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
 /// "Later" at the kit leaves the list without one, and the overview reminds
 /// the person while it is their only machine, as `krowk machines` does; the
 /// kit is not offered again. A yes at the always-on question installs the
-/// service (the service manager here only logs).
+/// service (the service manager here only logs): on Linux only, where that
+/// stand-in is `systemctl`.
+#[cfg(target_os = "linux")]
 #[test]
 fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_one_machine() {
     let (r, api) = registry(Default::default());
@@ -210,8 +214,8 @@ fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_o
     types(&mut t, b"\r");
     signs_in(&r, &t);
     connects_claude(&mut t);
-    says(&t, "[Y/n]");
-    types(&mut t, b"\r");
+    says(&t, "It syncs your sessions and takes work from your other machines. [");
+    types(&mut t, b"y\r");
     says(&t, "This machine stays available");
     says(&t, "[Enter] saved   [s] later");
     types(&mut t, b"s\r");
