@@ -847,7 +847,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
                 std::thread::sleep(ANSWER_EVERY * tries);
             }
             // The last try may have landed with its answer lost.
-            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sync sessions will list it", e.code()))),
+            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sessions will list it", e.code()))),
             Err(e) => return Err(e),
         }
     }
@@ -864,7 +864,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
             Err(e) => return Err(e),
         }
         if std::time::Instant::now() >= deadline {
-            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; krowk sync sessions will list it")));
+            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; krowk sessions will list it")));
         }
         std::thread::sleep(ANSWER_EVERY);
     };
@@ -884,7 +884,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<
             Ok(_) => break,
             Err(e) if (e.status == 404 || unreachable(&e)) && std::time::Instant::now() < deadline => std::thread::sleep(ANSWER_EVERY),
             Err(e) if e.status == 404 => {
-                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `krowk sync attach {session}` follows it once it does")));
+                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `krowk sessions attach {session}` follows it once it does")));
             }
             Err(e) => return Err(e),
         }
@@ -1018,7 +1018,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     // Said plainly, on stderr, where no TUI draws it: what follows is
     // stream-json, as `krowk sync attach` prints it.
     if !on_a_terminal(ctx) {
-        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`)");
+        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sessions attach`)");
     }
     Some(attach(ctx, &[id]))
 }

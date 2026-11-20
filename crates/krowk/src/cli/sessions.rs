@@ -406,7 +406,7 @@ struct Elsewhere {
 /// Synced sessions come after the local ones, only where sync is set up, and
 /// not under a filter, which is about the local store.
 #[cfg(all(feature = "harness", unix))]
-fn elsewhere(ctx: &Ctx, local: &[SessionRow], limit: i64) -> Elsewhere {
+fn elsewhere(ctx: &Ctx, conn: &Connection, limit: i64) -> Elsewhere {
     if !ctx.f.harness.is_empty() || !ctx.f.worktree.is_empty() {
         return Elsewhere::default();
     }
@@ -414,7 +414,11 @@ fn elsewhere(ctx: &Ctx, local: &[SessionRow], limit: i64) -> Elsewhere {
         None => Elsewhere::default(),
         Some(Err(note)) => Elsewhere { note: Some(note), ..Elsewhere::default() },
         Some(Ok((this, mut rows))) => {
-            rows.retain(|s| !local.iter().any(|r| r.id == s.id || r.foreign_session_id == s.id));
+            // Against every local session, not only the page shown.
+            if let Ok(local) = krowk_store::list_sessions(conn, "", "", -1) {
+                let known: BTreeSet<&str> = local.iter().flat_map(|r| [r.id.as_str(), r.foreign_session_id.as_str()]).collect();
+                rows.retain(|s| !known.contains(s.id.as_str()));
+            }
             if let Ok(n @ 1..) = usize::try_from(limit) {
                 rows.truncate(n);
             }
@@ -423,7 +427,7 @@ fn elsewhere(ctx: &Ctx, local: &[SessionRow], limit: i64) -> Elsewhere {
     }
 }
 #[cfg(not(all(feature = "harness", unix)))]
-fn elsewhere(_: &Ctx, _: &[SessionRow], _: i64) -> Elsewhere {
+fn elsewhere(_: &Ctx, _: &Connection, _: i64) -> Elsewhere {
     Elsewhere::default()
 }
 
@@ -447,7 +451,7 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let priced: Vec<Priced> = rows.iter().map(|r| price_session(ctx, r, groups.get(&r.id))).collect();
     let bases: BTreeSet<pricing::Basis> = priced.iter().flat_map(|p| p.bases.iter().copied()).collect();
     let now = now_ms();
-    let other = elsewhere(ctx, &rows, limit);
+    let other = elsewhere(ctx, &conn, limit);
     let this = if other.this.is_empty() { "this machine" } else { other.this.as_str() };
     if ctx.format != Format::Human {
         let mut sessions: Vec<Value> = rows
@@ -484,19 +488,15 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     }
     // One option per row: an unbounded page would hang the terminal building
     // them, so the picker only fires on a paged list.
-    if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT && other.rows.is_empty() {
+    if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT {
         let id = pick_session(&rows, now, &archived_rows(ctx, &rows))?;
         let _ = writeln!(ctx.io.stdout, "krowk sessions show {id}");
+        let _ = write!(ctx.io.stdout, "{}", elsewhere_text(&other, ctx.colour, now, "\n"));
         return Ok(());
     }
     let table = human_sessions_list(&rows, &priced, ctx.colour, now);
     let _ = write!(ctx.io.stdout, "{table}");
-    if !other.rows.is_empty() {
-        let _ = write!(ctx.io.stdout, "\n\n{}", human_synced_list(&other.rows, ctx.colour, now));
-    }
-    if let Some(note) = &other.note {
-        let _ = write!(ctx.io.stdout, "\n\n{}", paint(ctx.colour, "2", &format!("Sessions on your other machines are not listed: {note}")));
-    }
+    let _ = write!(ctx.io.stdout, "{}", elsewhere_text(&other, ctx.colour, now, "\n\n"));
     if rows.is_empty() {
         let _ = writeln!(ctx.io.stdout);
     } else {
@@ -880,6 +880,19 @@ fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now
         );
     }
     lines.join("\n")
+}
+
+/// What follows the local list: the other machines' sessions, or why they
+/// are not listed; each block after `gap`.
+fn elsewhere_text(other: &Elsewhere, colour: bool, now: i64, gap: &str) -> String {
+    let mut out = String::new();
+    if !other.rows.is_empty() {
+        out += &format!("{gap}{}", human_synced_list(&other.rows, colour, now));
+    }
+    if let Some(note) = &other.note {
+        out += &format!("{gap}{}", paint(colour, "2", &format!("Sessions on your other machines are not listed: {note}")));
+    }
+    out
 }
 
 /// The sessions on other machines, under the machine each runs on; `krowk
