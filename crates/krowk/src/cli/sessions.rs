@@ -452,15 +452,18 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let bases: BTreeSet<pricing::Basis> = priced.iter().flat_map(|p| p.bases.iter().copied()).collect();
     let now = now_ms();
     let other = elsewhere(ctx, &conn, limit);
-    let this = if other.this.is_empty() { "this machine" } else { other.this.as_str() };
     if ctx.format != Format::Human {
         let mut sessions: Vec<Value> = rows
             .iter()
             .zip(&priced)
             .map(|(r, p)| {
                 let mut v = session_row_json(r, p, now);
-                v["machine"] = json!(this);
-                v["this_machine"] = json!(true);
+                // Named only where sync gives this machine a name: output
+                // for everyone else stays as it was.
+                if !other.this.is_empty() {
+                    v["machine"] = json!(other.this);
+                    v["this_machine"] = json!(true);
+                }
                 v
             })
             .collect();
