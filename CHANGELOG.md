@@ -34,14 +34,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   comes from (for `rollover`: `repo` when a trusted repository sets it,
   else `global`, else `default`). Until now only the terminal UI's settings
   screen could change the first two.
+
 - **The README is three steps, and the installer says "Run krowk".** The README
-  now opens with what krowk is, then the first machine, another machine and the
-  phone; the Worktrees detail, the MCP sign-in walkthroughs, Development and the
+  now opens with what krowk is, then the first machine and another machine;
+  the Worktrees detail, the MCP sign-in walkthroughs, Development and the
   lean build moved to the website's docs, which the README links. The
   installer's closing list is headed "Run krowk" and names only the commands
   `krowk help` shows.
 
-- **`krowk doctor` checks everything, and the TUI names the top problem.**
+- **`krowk doctor` checks everything, and `krowk` names the top problem.**
   Beyond the store, prices and providers, doctor now checks that you are signed
   in, that this machine is registered for sync, that the always-on service is
   on, that this directory's repository is trusted, that you have a recovery kit
@@ -50,22 +51,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it (`✗ Always-on service off — krowk machines always-on on`), `--json` carries
   every check under `checks`, and doctor exits non-zero when a check failed
   (warnings do not count). A machine set to use krowk locally is not asked to
-  sign in. The TUI status line shows the single most important problem, if any
-  (for now, that this machine is signed in but not registered for sync), and
-  nothing when all is well.
+  sign in. The overview bare `krowk` prints ends with the single most
+  important problem, if any (for now, that this machine is signed in but not
+  registered for sync), and says nothing when all is well.
 
 - **The first machine sets up in one flow from `krowk`.** On a terminal with
-  nothing to run a model on, `krowk` asks once: sign in to krowk in the browser
-  (`[Enter]`), or use krowk locally without an account (`[l]`). Signing in
-  leaves this machine with a workspace key and registered for sync, with no
-  further prompt, and the model step follows ("Connect a model": a Claude,
+  no krowk account and nothing to run a model on, bare `krowk` asks in plain
+  text before its overview: `Sign in to krowk` (`[Enter]` opens the browser,
+  `[l]` uses krowk locally without an account). Signing in leaves this machine
+  with a workspace key and registered for sync, with no further prompt, and
+  "Connect a model" follows with `krowk connect`'s own pickers (a Claude,
   ChatGPT or SuperGrok subscription, an API key, or your own Claude Code or
   Codex login). Each step can be cancelled and picked up by running `krowk`
   again; "use locally" is not offered a second time, and `krowk login` on a
-  terminal later runs the flow from the sign-in. An account that already has
-  machines is not given a device list of its own: this machine is meant to be
-  added to them, which is not built yet and says so. Nothing changes without a
-  terminal.
+  terminal runs the sign-in step, the next `krowk` going on from there. An
+  account that already has machines is not given a device list of its own:
+  this machine is added to them with a code (below). Nothing changes without
+  a terminal, and once the machine is set up `krowk` prints only the
+  overview.
 
 - **The first machine offers to stay available, then the recovery kit.** After
   the model step, "Keep this machine available while you're away? It syncs your
@@ -76,27 +79,24 @@ the versions are the `v*` tags a release is cut from. Entries land under
   recovery kit is offered once with what it is for: 12 words that stand in for a
   device of yours, the only way back in if every device is lost or stolen.
   `[Enter]` says they are saved, `[s]` puts it off. While you have fewer than two
-  machines (a phone does not count) and no kit, `krowk machines` and the TUI's
-  status line, once per session, say "One machine, no recovery kit: losing it
+  machines (a phone does not count) and no kit, `krowk machines` and the
+  overview bare `krowk` prints say "One machine, no recovery kit: losing it
   loses your sessions. krowk machines recovery."; with two machines the reminder
-  stops. The status line used to say "no recovery kit" for every list without
-  one.
+  stops.
 
 - **A new machine can ask your other machines for a pairing.** Once signed in
   to an account that already has devices, a machine that is not on the list can
   record a request with its proposed name and OS. It opens nothing and carries
-  no keys. Your hosts hear of it within one presence refresh, your phone is
-  told only that a new machine signed in (no name, no OS), and it lapses after
-  ten minutes; a second machine asking meanwhile waits its turn.
+  no keys. Your hosts hear of it within one presence refresh, and it lapses
+  after ten minutes; a second machine asking meanwhile waits its turn.
 
 - **Joining another machine is signing in there and typing one code.** On the
   new machine, `krowk` (signing in to an account that already has machines) or
   `krowk sync join` asks your other machines for a pairing and
   says `Type the code shown on your other machine: ____-____`. Whichever of
   your machines runs the host opens the pairing on its own (only one does) and
-  shows `A new machine signed in to your account. Its code: K7QF-9M3X` in any
-  open TUI and in `krowk machines`; once the code is typed there, `krowk
-  machines` asks `Add 'B' (Linux) to your devices? [Y/n]`, showing the new
+  shows `A new machine signed in to your account. Its code: K7QF-9M3X` in
+  `krowk machines`; once the code is typed there, `krowk machines` asks `Add 'B' (Linux) to your devices? [Y/n]`, showing the new
   machine's name and OS only after the code's checks, as `krowk devices add`
   does. Nothing about who may add a machine changed: an existing machine
   opens the pairing, a wrong code ends it, and a yes needs a person at a
@@ -114,8 +114,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   are no longer listed in the help (`krowk help --all` still has them).
 
 - **Manage your machines in one place: `krowk machines add`, `remove`,
-  `always-on` and `recovery`.** `add` shows the code and QR that adds a phone
-  or a machine that can't sign in, `remove NAME` takes a machine off and rotates
+  `always-on` and `recovery`.** `add` shows the code that adds a machine that
+  can't sign in, `remove NAME` takes a machine off and rotates
   your key, `always-on on|off` keeps this machine running as a service so it
   syncs and takes work while you're away, and `recovery` says whether you have
   a recovery kit (`recovery new`, `check` and `discard-old` make, test and tidy
@@ -202,6 +202,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   terminal nothing is asked: it refuses, or `--trust` runs it once. The
   question is no longer a full-screen card answered with one key, so it needs
   Enter.
+
 ### Security
 
 - **Trusting a repository now fingerprints every file that can run code.**
@@ -218,9 +219,9 @@ the versions are the `v*` tags a release is cut from. Entries land under
 ### Changed
 
 - **`krowk help` is one short screen.** It shows a Start header (`krowk`,
-  `krowk -p`, `krowk --resume`) and five groups: Accounts (`login`, `connect`,
-  `disconnect`, `whoami`, `billing`), Work (`sessions`, `machines`,
-  `worktrees`, `mcp`), Publish (`push`) and Health (`status`, `doctor`,
+  `krowk -p`, `krowk -p --resume`) and four groups: Accounts (`login`,
+  `connect`, `disconnect`, `whoami`, `billing`), Work (`sessions`, `machines`,
+  `worktrees`, `mcp`, `trust`), Publish (`push`) and Health (`status`, `doctor`,
   `upgrade`, `config`). The duplicates and low-level commands (`auth`, `runs`,
   `artifacts`, `claim`, `providers`, `workspaces`, `host`, `hosts`, `devices`,
   `sync`, `relay`, `pricing`, `logout`) are hidden from it, not removed: they
