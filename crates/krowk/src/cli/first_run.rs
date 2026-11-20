@@ -50,14 +50,15 @@ fn save(ctx: &mut Ctx, s: &State) {
 /// the card is "not now": asked again next time.
 pub(super) fn account_step(ctx: &mut Ctx, runnable: bool) {
     let mut state = load(ctx);
-    // A key in the environment is another account's word, not the one the
-    // browser just stored: it neither skips the card nor finishes a sign-in.
+    // A key in the environment is the caller's own, not this machine's
+    // account: with it set, the step is not asked and nothing owed is finished.
     if !ctx.env("KROWK_TOKEN").is_empty() {
         return;
     }
     let Ok(client) = agent::new_client(ctx) else { return };
     if client.authenticated() {
         if state.pending {
+            let _ = writeln!(ctx.io.stderr, "Finishing setting this machine up to sync…");
             finish(ctx, client, &mut state);
         }
         return;
@@ -97,7 +98,12 @@ fn sign_in(ctx: &mut Ctx, state: &mut State) {
         Ok((token, _)) => {
             finish(ctx, Client::new(&krowk_api::base_url_for(ctx.f.dev, ctx.io.env), &token), state);
         }
-        Err(e) => ctx.warn(&format!("could not sign in: {} — run krowk again to retry", e.fix())),
+        // Nothing was stored: no key, nothing owed.
+        Err(e) => {
+            state.pending = false;
+            save(ctx, state);
+            ctx.warn(&format!("could not sign in: {} — run krowk again to retry", e.fix()));
+        }
     }
 }
 
@@ -106,15 +112,21 @@ fn sign_in(ctx: &mut Ctx, state: &mut State) {
 fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
     match register_first_device(ctx, &client) {
         Ok(Registered::New { name }) => {
-            let _ = writeln!(ctx.io.stderr, "Signed in. '{name}' is set up to sync.");
             state.pending = false;
             save(ctx, state);
+            let _ = writeln!(ctx.io.stderr, "Signed in. '{name}' is set up to sync.");
         }
         Ok(Registered::Already) => {
             state.pending = false;
             save(ctx, state);
         }
         Ok(Registered::OthersExist) => add_a_machine(ctx, &client, state),
+        // A key the registry refuses is not retried on every launch.
+        Err(e) if e.status == 401 || e.status == 403 => {
+            state.pending = false;
+            save(ctx, state);
+            ctx.warn(&format!("this machine is not set up to sync: {} — `krowk login` signs in again", e.fix()));
+        }
         Err(e) => ctx.warn(&format!("signed in, but this machine is not set up to sync yet: {} — run krowk again to retry", e.fix())),
     }
 }
