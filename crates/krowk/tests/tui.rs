@@ -1345,6 +1345,9 @@ const TRUST_ASKED: &str = "trusts it, ";
 fn subscription_only(b: &Sandbox, key: bool, delay: &str) -> Command {
     std::fs::create_dir_all(b.root.join("home/.claude")).unwrap();
     std::fs::write(b.root.join("home/.claude/fake-login"), "").unwrap();
+    // Past the sign-in card: these cases are about the model, not the account.
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true}\n").unwrap();
     let mut c = b.command("http://127.0.0.1:9", &[]);
     if !key {
         c.env_remove("ANTHROPIC_API_KEY");
@@ -1690,7 +1693,16 @@ fn a_frame_drawn_over_another_says_what_the_screen_shows() {
 /// No key, no config, and a `claude` signed in to nothing: nothing here
 /// can run a model. `FAKE_CLAUDE_LOGIN=ask` makes its login wait for a line
 /// on the terminal, as the real one waits on a person.
+/// A machine that chose "use krowk locally" already: the first-run cases
+/// that are about the model card start from there. The sign-in step is
+/// `account_command`'s.
 fn fresh(b: &Sandbox, url: &str) -> Vec<(String, String)> {
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true}\n").unwrap();
+    fresh_env(b, url)
+}
+
+fn fresh_env(b: &Sandbox, url: &str) -> Vec<(String, String)> {
     let mut env: Vec<(String, String)> = b.env(url).into_iter().filter(|(k, _)| k != "ANTHROPIC_API_KEY").collect();
     env.push(("FAKE_CLAUDE_LOG".into(), b.root.join("fake.log").display().to_string()));
     env.push(("FAKE_CLAUDE_LOGIN".into(), "ask".into()));
@@ -2815,4 +2827,208 @@ fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_end
 #[test]
 fn r_pres_4_three_subagents_are_records_of_their_own_cleared_before_the_turn_ends_fullscreen() {
     each_subagent_is_a_record("fullscreen");
+}
+
+// ---- the first machine: sign in, then a model ------------------------------------
+
+/// `krowk` on a home with no key and no way to run a model, signing in at
+/// the stand-in registry `api`; headless, so no real browser opens.
+fn account_command(b: &Sandbox, url: &str, api: &str) -> Command {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_krowk"));
+    let mut env = fresh_env(b, url);
+    env.push(("KROWK_API_URL".into(), api.into()));
+    env.push(("SSH_CONNECTION".into(), "x 1 y 2".into()));
+    env.push(("KROWK_DEVICE_NAME".into(), "first".into()));
+    c.env_clear().envs(env).current_dir(b.root.join("repo"));
+    c
+}
+
+fn registry() -> (krowk_devregistry::Running, String) {
+    let r = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", r.url());
+    (r, api)
+}
+
+/// The person at the browser: approves the login whose page names `code`.
+fn approve(r: &krowk_devregistry::Running, code: &str) {
+    let mut s = TcpStream::connect(r.addr()).unwrap();
+    write!(s, "POST /_approve/cli/authorizations/{code}/approval HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    s.read_to_string(&mut answer).unwrap();
+    assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+}
+
+/// The code on the approval page's link in what the terminal shows.
+fn page_code(text: &str) -> Option<String> {
+    let at = text.find("authorizations/new?code=")? + "authorizations/new?code=".len();
+    let code: String = text[at..].chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-').collect();
+    (code.len() >= 4).then_some(code)
+}
+
+fn signs_in(r: &krowk_devregistry::Running, t: &pty::Pty) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let code = loop {
+        if let Some(c) = page_code(&t.text()) {
+            break c;
+        }
+        assert!(Instant::now() < deadline, "no sign-in page shown: {:?}", t.text());
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    approve(r, &code);
+}
+
+fn first_run_state(b: &Sandbox) -> serde_json::Value {
+    serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/first-run.json")).unwrap_or_else(|_| "{}".into())).unwrap()
+}
+
+fn keystore(b: &Sandbox) -> krowk_client::keystore::Keystore {
+    krowk_client::keystore::Keystore::new(&b.root.join("home/.krowk"))
+}
+
+fn connects_claude(t: &mut pty::Pty) {
+    assert!(says(t, 0, "Connect which provider?", Duration::from_secs(5)), "{:?}", t.text());
+    for expected in ["How do you connect anthropic?", "not signed in, reconnect", "Press Enter to sign in to Claude"] {
+        let at = t.output().len();
+        settle();
+        t.write(b"\r");
+        assert!(says(t, at, expected, Duration::from_secs(10)), "{expected:?}: {:?}", t.text());
+    }
+    let at = t.output().len();
+    t.write(b"\r");
+    assert!(says(t, at, "Connected claude", Duration::from_secs(10)), "{:?}", t.text());
+}
+
+/// A fresh home goes sign-in, registered for sync with a workspace key, then
+/// the model, with no other prompt. Cancelled at the model step, the next
+/// `krowk` goes straight back to it: the account is not asked again.
+#[test]
+fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
+    let (r, api) = registry();
+    let b = Sandbox::new("firstmachine");
+    b.full_width();
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    assert!(says(&t, 0, "[Enter] open the browser", Duration::from_secs(5)) && says(&t, 0, "[l] use krowk locally, without an account", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\r");
+    signs_in(&r, &t);
+    assert!(t.wait_for("is set up to sync", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some_and(|c| c.devices().len() == 1), "registered on a list of one");
+    assert!(std::fs::read_dir(b.root.join("home/.krowk")).unwrap().flatten().any(|e| e.file_name().to_string_lossy().contains("credentials")), "a workspace key is kept");
+    assert_eq!(first_run_state(&b)["pending"], false);
+    // Cancelled at the model step.
+    let at = t.output().len();
+    t.write(b"\x1b");
+    assert!(says(&t, at, "/connect when you are ready", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    // Run again: no account question, the model step.
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    connects_claude(&mut t);
+    assert!(says(&t, 0, "now on claude/claude-opus-5-5", Duration::from_secs(5)), "{:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// "Use locally" goes to the model step and is not offered again;
+/// `krowk login` afterwards runs the flow from the top: signed in, and
+/// registered.
+#[test]
+fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_flow_from_step_one() {
+    let (r, api) = registry();
+    let b = Sandbox::new("locally");
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"l");
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(!t.text().contains("Waiting for approval"), "{:?}", t.text());
+    assert_eq!(first_run_state(&b)["local"], true);
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    // `krowk login`: the same flow from the account step.
+    let mut login = account_command(&b, "http://127.0.0.1:9", &api);
+    login.arg("login");
+    let mut t = pty::Pty::spawn(login, 110, 34);
+    signs_in(&r, &t);
+    assert!(t.wait_for("is set up to sync", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+    assert_eq!(first_run_state(&b)["local"], false);
+    assert!(keystore(&b).device_list().unwrap().is_some());
+}
+
+/// An account that already has machines is not given a device list of its
+/// own: this machine goes to the add-a-machine flow (a stub until it is
+/// built), and the model step still follows.
+#[test]
+fn an_account_with_machines_goes_to_the_add_a_machine_flow() {
+    let r = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config { login_person: Some("krowk_sk_first".into()), ..Default::default() }).unwrap();
+    let api = format!("{}/v1", r.url());
+    // The first machine's list, begun as `sync init` does.
+    let other = Sandbox::new("others-first");
+    let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+        .args(["sync", "init", "--save"])
+        .arg(other.root.join("kit"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", other.root.join("home"))
+        .env("KROWK_NO_UPDATE_CHECK", "1")
+        .env("KROWK_API_URL", &api)
+        .env("KROWK_TOKEN", "krowk_sk_first#laptop")
+        .env("KROWK_DEVICE_NAME", "laptop")
+        .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .current_dir(&other.root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let b = Sandbox::new("others-second");
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"\r");
+    signs_in(&r, &t);
+    assert!(t.wait_for("already has machines", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_none(), "no list of its own");
+    assert_eq!(first_run_state(&b)["pending"], false, "the stub owes nothing on every launch");
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+}
+
+/// A registration left owed — signed in, then stopped or failed — is taken
+/// up by the next `krowk`, even on a machine that can run a model by now;
+/// Escape at the sign-in card is "not now", and the TUI opens.
+#[test]
+fn a_registration_left_owed_is_finished_by_the_next_krowk_and_escape_is_not_now() {
+    let (_r, api) = registry();
+    let b = Sandbox::new("owed");
+    // Not now: the TUI opens on the model step, nothing is kept.
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert_eq!(first_run_state(&b), serde_json::json!({}));
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    // A key stored, the registration owed, and a model ready.
+    let login = account_command(&b, "http://127.0.0.1:9", &api).args(["login", "--token", "krowk_sk_owed#a"]).output().unwrap();
+    assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true}\n").unwrap();
+    assert!(keystore(&b).device_list().unwrap().is_none());
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("ANTHROPIC_API_KEY", "sk-test");
+    let mut t = pty::Pty::spawn(cmd, 110, 34);
+    assert!(t.wait_for("is set up to sync", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some());
+    assert_eq!(first_run_state(&b)["pending"], false);
+    assert!(t.wait_for("anything", Duration::from_secs(15)).is_some(), "the prompt: {:?}", t.text());
+    settle();
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
 }

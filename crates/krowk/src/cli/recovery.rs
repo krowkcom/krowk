@@ -155,6 +155,37 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     say(ctx, json!({ "device": me.device.id().to_string(), "name": name, "generation": 1, "recovery_kit": kept, "started_over": start_over, "resealed": count.as_ref().map(|c| c.sealed), "left": count.as_ref().map(|c| c.left) }), summary)
 }
 
+/// What `register_first_device` came to.
+pub(super) enum Registered {
+    /// Seq 0 posted: this machine is the first on a new list, with no kit.
+    New { name: String },
+    /// This machine keeps a list or user keys already.
+    Already,
+    /// The account has a list: this machine is added from one on it.
+    OthersExist,
+}
+
+/// The first-machine flow's registration (the effect of `sync init` with no
+/// kit, and no prompt): `client`, a key naming the person, starts the list
+/// with this machine. The kit is offered afterwards, not here
+/// (`krowk sync recovery new` makes one on a list without).
+pub(super) fn register_first_device(ctx: &Ctx, client: &Client) -> Result<Registered, Error> {
+    let store = super::sync::keystore(ctx)?;
+    let holds = |slot| store.holds(slot).map_err(|e| fail("keys_unreadable", e));
+    if holds(Slot::DeviceList)? || holds(Slot::UserKeys)? {
+        return Ok(Registered::Already);
+    }
+    if !chain::decode(&client.device_list_all()?)?.is_empty() {
+        return Ok(Registered::OthersExist);
+    }
+    let me = Me::load(ctx)?;
+    let first = this_subject(ctx, &me.device, &me.signing);
+    let (new_chain, batch) = Chain::start(first.clone(), &me.signing, None, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
+    me.sign(client).init_device_list(&krowk_api::sync::ListPost { start_over: false, ..post_of(&batch) })?;
+    keep_new(ctx, &new_chain, &batch)?;
+    Ok(Registered::New { name: first.name })
+}
+
 /// Generation 1 and the new list, kept in place of the old ones — before
 /// any re-seal, so a device cut short in one still syncs.
 fn keep_new(ctx: &Ctx, new: &Chain, batch: &Batch) -> Result<UserKeys, Error> {

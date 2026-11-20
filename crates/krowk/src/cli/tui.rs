@@ -62,6 +62,17 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
             r => Some(prompt::resolve_resume(ctx, &sessions_dir, r)?),
         }
     };
+    // Step 1 of the first machine, asked on the terminal's stderr, so only
+    // where a person can see it. "Runnable" is what needs no vendor asked: a
+    // key, a login krowk keeps, a server. The vendors are not asked here —
+    // the TUI does, behind its first frame (R-PERF-1) — so one whose own
+    // login is signed in is not told apart from none.
+    if !synced && resume.is_none() && asked.is_none() && ctx.io.err_tty {
+        use krowk_harness::readiness::{self, Readiness};
+        let credentials = super::providers::credentials_path()?;
+        let runnable = registry.instances.values().filter_map(|i| readiness::local(i, &credentials)).any(|r| matches!(r, Readiness::Ready { .. } | Readiness::Unknown { .. }));
+        super::first_run::account_step(ctx, runnable);
+    }
     let (settings, notices) = krowk_tui::settings::from_config(&config);
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
     // Beside krowk.db and the session logs, so it goes where they go.
