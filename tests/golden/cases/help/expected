@@ -909,7 +909,8 @@ stdout:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         }
       ]
     },

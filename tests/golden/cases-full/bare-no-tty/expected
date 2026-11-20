@@ -833,7 +833,8 @@ stdout:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         },
         {
           "name": "archive",
@@ -907,6 +908,62 @@ stdout:
               "name": "id",
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sessions attach <id>",
+          "summary": "Follow a session on another machine, live",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "take",
+          "usage": "krowk sessions take <id>",
+          "summary": "Move a live session here, uncommitted work and all",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "new",
+          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "on",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
           ]
         }
@@ -1365,7 +1422,8 @@ stdout:
         {
           "name": "sessions",
           "usage": "krowk sync sessions",
-          "summary": "The synced sessions this machine can open"
+          "summary": "The synced sessions this machine can open",
+          "hidden": true
         },
         {
           "name": "host",
@@ -1375,12 +1433,14 @@ stdout:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json"
+          "summary": "Follow a synced session in the TUI, or as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
           "usage": "krowk sync take SESSION",
-          "summary": "Move a live session here, uncommitted work and all"
+          "summary": "Move a live session here, uncommitted work and all",
+          "hidden": true
         },
         {
           "name": "new",
@@ -1412,7 +1472,8 @@ stdout:
               "default": "",
               "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
-          ]
+          ],
+          "hidden": true
         }
       ]
     },
@@ -2657,7 +2718,8 @@ tty:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         },
         {
           "name": "archive",
@@ -2731,6 +2793,62 @@ tty:
               "name": "id",
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
+            }
+          ]
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sessions attach <id>",
+          "summary": "Follow a session on another machine, live",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "take",
+          "usage": "krowk sessions take <id>",
+          "summary": "Move a live session here, uncommitted work and all",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "new",
+          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "on",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
           ]
         }
@@ -3189,7 +3307,8 @@ tty:
         {
           "name": "sessions",
           "usage": "krowk sync sessions",
-          "summary": "The synced sessions this machine can open"
+          "summary": "The synced sessions this machine can open",
+          "hidden": true
         },
         {
           "name": "host",
@@ -3199,12 +3318,14 @@ tty:
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session in the TUI, or as stream-json"
+          "summary": "Follow a synced session in the TUI, or as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
           "usage": "krowk sync take SESSION",
-          "summary": "Move a live session here, uncommitted work and all"
+          "summary": "Move a live session here, uncommitted work and all",
+          "hidden": true
         },
         {
           "name": "new",
@@ -3236,7 +3357,8 @@ tty:
               "default": "",
               "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
-          ]
+          ],
+          "hidden": true
         }
       ]
     },

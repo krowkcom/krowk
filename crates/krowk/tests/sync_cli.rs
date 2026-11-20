@@ -1287,6 +1287,64 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     assert_eq!(a.session(), session);
 }
 
+/// R-EASE-10: `krowk sessions new --on` starts a session on A as `sync new
+/// --host` does; `krowk sessions` on B then lists it after B's own, under A's
+/// name, as data too, and `sessions attach` follows it.
+#[test]
+fn r_ease_10_sessions_lists_every_machine_and_new_on_and_attach_work() {
+    let w = World::new("easenew");
+    let (a, b, _serve) = serving(&w);
+    let repo = a.repo.display().to_string();
+    let mut view = Running::spawn(b.command(&["sessions", "new", "--on", "A", "--cwd", &repo, "--json", "say hi"]));
+    let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
+    view.until("the turn's end", |v| v["type"] == "turn.completed");
+    let session = started["sessionId"].as_str().unwrap().to_string();
+    drop(view);
+
+    // A's automatic sync takes the session up to the registry shortly after;
+    // a loaded runner is given room.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let listed = loop {
+        let out = b.command(&["sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if let Some(s) = v["data"]["sessions"].as_array().and_then(|l| l.iter().find(|s| s["id"] == session.as_str())) {
+            break s.clone();
+        }
+        assert!(Instant::now() < deadline, "B never listed {session}: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!((listed["machine"].as_str(), listed["this_machine"].as_bool(), listed["synced"].as_bool(), listed["directory"].as_str()), (Some("a"), Some(false), Some(true), Some(repo.as_str())), "{listed}");
+    let out = b.command(&["sessions", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Machine") && text.lines().any(|l| l.contains(&session) && l.split_whitespace().any(|w| w == "a")), "{text}");
+
+    let mut view = Running::spawn(b.command(&["sessions", "attach", &session, "--json"]));
+    view.heard_within("the host", true, Duration::from_secs(45), |v| v["type"] == "sync.host" && v["present"] == true);
+}
+
+/// R-EASE-10: the `sync` forms and `sessions sync` work as before and are
+/// left out of the help lists; `help --all` still has them.
+#[test]
+fn r_ease_10_the_old_forms_stay_but_are_hidden() {
+    let w = World::new("easehid");
+    let b = w.machine("b");
+    let help = |args: &[&str]| String::from_utf8_lossy(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
+    let (sessions, sync, all) = (help(&["help", "sessions"]), help(&["help", "sync"]), help(&["help", "--all"]));
+    let has = |text: &str, usage: &str| text.lines().any(|l| l.trim_start().starts_with(usage));
+    assert!(has(&sessions, "attach <id>") && has(&sessions, "take <id>") && has(&sessions, "new --on"), "{sessions}");
+    assert!(!sessions.contains("krowk sessions sync") && !has(&sessions, "sync [--no-network]"), "{sessions}");
+    assert!(!has(&sync, "sessions") && !has(&sync, "attach") && !has(&sync, "take") && !has(&sync, "new") && has(&sync, "status"), "{sync}");
+    for old in ["sync sessions", "sync attach", "sync take", "sync new", "sessions sync"] {
+        assert!(has(&all, old), "{old} is in help --all: {all}");
+    }
+    // Still routed: refused for want of keys or a session id, not as unknown.
+    for args in [&["sync", "sessions"][..], &["sync", "attach", "x"], &["sync", "take", "x"], &["sync", "new", "--host", "a", "--cwd", "/x", "hi"], &["sessions", "attach", "x"], &["sessions", "take", "x"], &["sessions", "new", "--on", "a", "--cwd", "/x", "hi"]] {
+        let out = b.command(args).stdin(Stdio::null()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("unknown command") && !err.contains("unknown flag"), "{args:?}: {err}");
+    }
+}
+
 /// R-HOST-4: A stopped cleanly takes its presence with it. B's `sync new`
 /// says A is offline and how to bring it up, and sends nothing.
 #[test]

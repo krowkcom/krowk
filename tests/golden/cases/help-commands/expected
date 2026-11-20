@@ -200,8 +200,6 @@ Commands (krowk sessions …)
                               transcript
   budget <id> [--max-usd N] [--max-tokens N]
                               Check a session against a spend limit
-  sync [--no-network]         Import what changed since the last import, refresh
-                              prices
 
 Flags
   --harness <string>          Only sessions from this harness, e.g. claude
@@ -726,7 +724,8 @@ stdout:
           "default": "false",
           "usage": "Skip the models.dev price refresh"
         }
-      ]
+      ],
+      "hidden": true
     }
   ]
 }
