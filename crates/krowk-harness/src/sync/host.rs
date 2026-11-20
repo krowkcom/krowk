@@ -1918,7 +1918,9 @@ fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::Log
     let task = super::commands::read_task(&o.sessions, &o.session)?;
     let LogBody::TurnCompleted { turn_id, status, .. } = &completed.body else { return None };
     let stored = || -> Result<(Option<String>, Option<String>), String> {
-        let bundle = super::handoff::pack_result(std::path::Path::new(&task.worktree), &task.snapshot, &o.session)?;
+        // Said whole when it is one of the result's own refusals; else what
+        // failed is named, as the supervisor shows it as the task's failure.
+        let bundle = super::handoff::pack_result(std::path::Path::new(&task.worktree), &task.snapshot, &o.session).map_err(|e| if e == super::handoff::RESULT_TOO_BIG || e == super::handoff::RESULT_CONFIG { e } else { format!("the result could not be packed: {e}") })?;
         if bundle.diff.is_empty() && bundle.untracked.is_empty() {
             return Ok((None, None));
         }

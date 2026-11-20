@@ -545,12 +545,12 @@ pub(super) fn source(f: &super::flags::Flags, local: bool) -> krowk_harness::sub
 /// set up here.
 fn made(f: &super::flags::Flags, local: bool) -> Option<Arc<krowk_harness::sync::placement::Placer>> {
     use krowk_harness::sync::{fleet::Registry as Fleet, placement::{Placer, Timing}};
-    let announcer = super::host::own_ctx(f, |ctx| ready(ctx).ok().and_then(|()| announcer(ctx, false).ok()))?;
+    let (announcer, signing) = super::host::own_ctx(f, |ctx| ready(ctx).ok().and_then(|()| Some((announcer(ctx, false).ok()?, keys(ctx).ok()?.signing))))?;
     let env = |k: &str| std::env::var(k).unwrap_or_default();
     let config = super::prompt::config_json().ok()?;
     let registry = krowk_harness::instances::Registry::resolve(&super::prompt::instances_from(&config).ok()?, &env);
     let stop_flags = f.clone();
-    let mut fleet = Fleet::new(announcer).with_stop(Box::new(move |child| super::host::own_ctx(&stop_flags, |ctx| interrupt(ctx, child))));
+    let mut fleet = Fleet::new(announcer).with_signing(signing).with_stop(Box::new(move |child| super::host::own_ctx(&stop_flags, |ctx| interrupt(ctx, child))));
     if let (Some(builds), Some(agents)) = (registry.builds.pool.clone(), registry.agents.clone()) {
         fleet = fleet.with_pools(builds, agents);
     }

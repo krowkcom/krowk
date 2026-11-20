@@ -922,6 +922,9 @@ async fn remaining(budget: &Budget) -> crate::protocol::BudgetLimits {
 pub fn told(o: &Outcome) -> String {
     let mut text = o.summary.trim_end().to_string();
     text.push_str(&format!("\n\nRan on {}.", o.machine));
+    if !o.why.is_empty() {
+        text.push_str(&format!("\nPlaced there because {}.", o.why));
+    }
     if !o.applied.is_empty() {
         text.push_str(&format!("\nChanges applied to your working tree: {}", crate::worktree::apply::named(&o.applied)));
     }

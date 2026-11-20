@@ -58,7 +58,6 @@ fn machine(name: &str, here: bool, builds_in_use: u32) -> Candidate {
 /// state, and B's changes land in A's working tree, A's index and HEAD
 /// untouched.
 #[test]
-#[ignore = "slice 10: the CI case end to end"]
 fn alloc_10_with_this_machine_busy_the_task_runs_on_the_other_and_lands_here() {
     let model = ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() };
     let ask = Ask { origin: ORIGIN, clone_url: "https://github.com/acme/app.git", model: &model, host: None };
@@ -105,7 +104,6 @@ fn alloc_10_with_this_machine_busy_the_task_runs_on_the_other_and_lands_here() {
 /// Slice 10 (D11, R-ALLOC-9): with B refusing there is a third machine to
 /// move to, once; a machine dropping mid-run fails with the message.
 #[test]
-#[ignore = "slice 10: refusal and a dropped machine end to end"]
 fn alloc_10_a_refusal_moves_on_once_and_a_dropped_machine_fails_plainly() {
     let model = ModelRef { instance: "anthropic".into(), model: "claude-opus-5-5".into() };
     let ask = Ask { origin: ORIGIN, clone_url: "https://github.com/acme/app.git", model: &model, host: None };

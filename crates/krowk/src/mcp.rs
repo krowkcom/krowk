@@ -760,21 +760,12 @@ fn render_push(artifacts: &[Artifact], run: Option<&Run>, notes: &[String]) -> (
 mod delegation {
     use super::*;
     use krowk_harness::sync::placement::{Failure, Handle, HostPin, Progress};
-    use std::collections::HashMap;
-    use std::sync::Mutex;
     use std::time::Duration;
 
     /// How long krowk_collect waits when it is not told, and the most it
     /// will: under what an MCP client gives one call.
     const WAIT: u64 = 300;
     const WAIT_MOST: u64 = 600;
-
-    /// Why each started task was placed where it was, as it was seen
-    /// while the task was running, for the answer that ends it.
-    fn placed() -> &'static Mutex<HashMap<String, String>> {
-        static PLACED: std::sync::OnceLock<Mutex<HashMap<String, String>>> = std::sync::OnceLock::new();
-        PLACED.get_or_init(Mutex::default)
-    }
 
     #[derive(Deserialize, Default)]
     #[serde(default)]
@@ -823,23 +814,14 @@ mod delegation {
         let h = handle(a.task_id.trim())?;
         let unknown = || fail("unknown_task", Failure::Unknown(h.id.clone()).to_string() + " Tasks live in the krowk-mcp process that started them, so a restart forgets them (the child keeps running on its machine, and its work stays in that machine's worktree).");
         let placer = crate::cli::placer().ok_or_else(unknown)?;
-        // Where it is now, for the line that says why it went where it did.
-        if let Ok(Progress::Running { why, .. }) | Ok(Progress::Here { why }) = placer.placed(&h, Duration::ZERO) {
-            placed().lock().unwrap_or_else(|e| e.into_inner()).insert(h.id.clone(), why);
-        }
         let most = Duration::from_secs(a.wait_seconds.unwrap_or(WAIT).min(WAIT_MOST));
         let progress = placer.wait(&h, most).map_err(|f| match f {
             Failure::Unknown(_) => unknown(),
             f => fail("task_failed", f.to_string()),
         })?;
-        let why = placed().lock().unwrap_or_else(|e| e.into_inner()).get(&h.id).cloned();
         match progress {
             Progress::Done(o) => {
-                placed().lock().unwrap_or_else(|e| e.into_inner()).remove(&h.id);
-                let mut text = krowk_harness::subagent::told(&o);
-                if let Some(why) = why.filter(|w| !w.is_empty()) {
-                    text.push_str(&format!("\nPlaced there because {why}."));
-                }
+                let text = krowk_harness::subagent::told(&o);
                 let u = o.usage;
                 let usage = json!({ "input_tokens": u.input_tokens, "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "cache_write_tokens": u.cache_write_tokens, "reasoning_tokens": u.reasoning_tokens });
                 Ok((text, json!({ "status": "done", "task_id": h.id, "machine": o.machine, "summary": o.summary, "applied": o.applied, "kept": o.kept, "denied": o.denied, "usage": usage })))
