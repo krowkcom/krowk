@@ -9,6 +9,16 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+### Breaking change
+
+- **krowk no longer runs models itself, and the SuperGrok sign-in is gone.**
+  Every session now runs inside Claude Code or Codex, so `krowk -p`, the host
+  and delegation need a connected Claude Code or Codex account. API keys and
+  gateways keep working: `krowk connect` turns them into Claude Code or Codex
+  accounts, and the key stays in krowk's credentials. Signing in with
+  SuperGrok is not carried over; connect a Claude Code or Codex account
+  instead. It is announced and removed in the same release.
+
 ### Added
 
 - **`krowk trust` grants, revokes and lists repo trust.** `krowk trust

@@ -33,6 +33,7 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 - **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
 - **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
 - **Multiple accounts.** You can connect several accounts per provider and rename them with `krowk providers rename`. A second account is added with `--name work`.
+- **Claude Code or Codex accounts only.** krowk no longer runs models itself and drops the SuperGrok sign-in; API keys and gateways keep working as Claude Code or Codex accounts (`krowk connect` converts them).
 - **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
 
 ## Worktrees
