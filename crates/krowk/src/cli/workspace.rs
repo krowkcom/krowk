@@ -101,12 +101,16 @@ fn config_set_global(ctx: &mut Ctx, key: &str, value: Option<&str>) -> Result<()
         return Err(fail("missing_argument", format!("pass the value: `krowk config set {key} <{valid}>`")));
     };
     let path = config::global_path()?;
-    let wrote = if key == "rollover" {
-        Rollover::parse(value).and_then(|r| settings::set_rollover(&path, r).map(|_| settings::rollover_name(r)))
+    let write_failed = |e: String| fail("config_unwritable", format!("could not write {}: {e}", path.display()));
+    let value = if key == "rollover" {
+        let r = Rollover::parse(value).map_err(|e| fail("bad_config_value", e))?;
+        settings::set_rollover(&path, r).map_err(write_failed)?;
+        settings::rollover_name(r)
     } else {
-        settings::parse_default_mode(value).and_then(|m| settings::set_default_mode(&path, m).map(|_| m.name()))
+        let m = settings::parse_default_mode(value).map_err(|e| fail("bad_config_value", e))?;
+        settings::set_default_mode(&path, m).map_err(write_failed)?;
+        m.name()
     };
-    let value = wrote.map_err(|e| fail("bad_config_value", e))?;
     let rendered = render::config_wrote(key, value, &path.display().to_string(), ctx.format, ctx.f.quiet, ctx.colour);
     ctx.emit(&rendered)
 }

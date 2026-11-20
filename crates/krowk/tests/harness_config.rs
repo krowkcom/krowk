@@ -96,6 +96,10 @@ fn r_cut_6_an_invalid_value_is_refused_naming_the_valid_ones() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned() + &String::from_utf8_lossy(&out.stdout);
         assert!(!out.status.success() && err.contains(valid), "{key}: {err}");
     }
+    let out = b.krowk(&["config", "set", "rollover"], "http://127.0.0.1:9");
+    assert!(!out.status.success() && (String::from_utf8_lossy(&out.stderr) + String::from_utf8_lossy(&out.stdout)).contains("auto|offer|off"), "a missing value names them too");
+    let out = b.krowk(&["config", "unset", "defaultMode"], "http://127.0.0.1:9");
+    assert!(!out.status.success(), "these two are set, not removed");
     assert!(!b.global().exists(), "nothing was written");
 }
 
