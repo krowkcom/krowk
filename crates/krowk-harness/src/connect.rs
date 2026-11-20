@@ -559,8 +559,9 @@ impl Connected {
         let mut signed_in_already = false;
         if let Some(v) = &self.vendor {
             // The vendor's own account says it better than the kind does —
-            // when there is one: a keyed router runs on its key, not a login.
-            if v.logged_in {
+            // when there is one: an account on a key runs on that key, not
+            // a login, and says so.
+            if v.logged_in && harness_of(self.way).is_none() {
                 facts[0] = v.describe.chars().filter(|c| !c.is_control()).collect();
             }
             if codex && !v.shared.is_empty() {
