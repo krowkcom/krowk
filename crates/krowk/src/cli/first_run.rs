@@ -166,6 +166,12 @@ pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
     }
 }
 
+/// Whether `after_model_step` has anything to ask.
+pub(super) fn steps_due(ctx: &Ctx) -> bool {
+    let state = load(ctx);
+    !state.always_on_asked || (!state.kit_offered && recovery::reminder_due_here(ctx))
+}
+
 /// The questions after the model step (D4, D5), on the terminal, each asked
 /// once: keep this machine available, then the recovery kit. Cancelled or
 /// failed, a step is said and not retried every launch; the kit's reminder

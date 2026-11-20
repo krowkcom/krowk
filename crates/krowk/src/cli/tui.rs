@@ -344,13 +344,13 @@ fn pick(ctx: &mut Ctx) -> Result<String, Error> {
 /// terminal given up to them: a context of their own, on the real streams,
 /// since the command's own is borrowed for the whole run.
 fn after_model_step(ctx: &Ctx) -> krowk_tui::AfterModelStep {
-    let (f, format) = (ctx.f.clone(), ctx.format);
-    Box::new(move || {
-        use super::Io;
+    fn own<R>(f: &super::flags::Flags, format: Format, body: impl FnOnce(&mut Ctx) -> R) -> R {
         let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
         let env = |k: &str| std::env::var(k).unwrap_or_default();
         let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: true, err_tty: true, stdin_tty: true };
-        let mut ctx = Ctx { io: &mut io, f: f.clone(), format, colour: true, filter: None };
-        super::first_run::after_model_step(&mut ctx)
-    })
+        body(&mut Ctx { io: &mut io, f: f.clone(), format, colour: true, filter: None })
+    }
+    let (f, format) = (ctx.f.clone(), ctx.format);
+    let due = (f.clone(), format);
+    krowk_tui::AfterModelStep { due: Box::new(move || own(&due.0, due.1, |ctx| super::first_run::steps_due(ctx))), run: Box::new(move || own(&f, format, super::first_run::after_model_step)) }
 }

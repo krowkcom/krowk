@@ -257,7 +257,14 @@ pub struct Daemon {
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// The setup steps that follow the first run's model step (`Options`).
-pub type AfterModelStep = Box<dyn Fn() -> bool>;
+pub struct AfterModelStep {
+    /// Whether anything is left to ask: read first, so a machine with
+    /// nothing to ask never gives up its terminal.
+    pub due: Box<dyn Fn() -> bool>,
+    /// Asks it, on the terminal; says whether the recovery-kit reminder is
+    /// still due afterwards.
+    pub run: Box<dyn Fn() -> bool>,
+}
 
 /// Restores an archived session: what the person should know about the
 /// copy it came back from, or why it did not.
@@ -3714,7 +3721,7 @@ impl<'h> Ui<'h> {
     /// The first-run flow's model step is done: the always-on step and the
     /// recovery kit follow, asked on the terminal once `finished` is over.
     fn after_model_step(&mut self, _app: &mut App) {
-        self.setup_due = self.after_model_step.is_some();
+        self.setup_due = self.after_model_step.as_ref().is_some_and(|s| (s.due)());
     }
 
     /// Those steps, with the terminal given up to them as a vendor's login
@@ -3724,7 +3731,7 @@ impl<'h> Ui<'h> {
         let Some(steps) = self.after_model_step.take() else { return Ok(()) };
         self.draw(app, term)?;
         self.give_up(term)?;
-        let remind = steps();
+        let remind = (steps.run)();
         self.take_back(app, term)?;
         app.no_recovery_kit = remind;
         app.touch();
