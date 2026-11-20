@@ -620,6 +620,24 @@ fn r_nat_2_connecting_a_keys_codex_account_again_keeps_its_home_and_key() {
     assert_eq!((again["data"]["renewed"].as_bool(), &def["codexHome"]), (Some(true), &first["data"]["definition"]["codexHome"]), "{again}");
     assert!(overrides(def).contains(&r#"model_providers.krowk-xai.base_url="https://other.example/v1""#.to_string()), "{def}");
     assert_eq!((def["apiKeyEnv"].as_str(), &b.credentials()["keys"]["xai"]), (Some("XAI_API_KEY"), &json!({"env": "VENDOR_KEY"})));
+
+    // What the person added is kept, in its place; krowk's own pairs are
+    // made again, once, and the base URL moves only when one is given.
+    let mut cfg = b.config();
+    let args = cfg["instances"]["xai"]["args"].as_array_mut().unwrap();
+    args.insert(0, json!("--flag"));
+    args.extend([json!("-c"), json!("hide_agent_reasoning=true")]);
+    std::fs::write(b.config_path(), cfg.to_string()).unwrap();
+    b.json(&["connect", "xai", "--base-url", "https://third.example/v1", "--json"], &[]);
+    let def = &b.json(&["connect", "xai", "--json"], &[])["data"]["definition"];
+    let args: Vec<&str> = def["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert_eq!((args[0], args[1], args[2]), ("--flag", "-c", "hide_agent_reasoning=true"), "{args:?}");
+    assert_eq!(args.iter().filter(|a| a.starts_with("model_providers.krowk-xai.base_url=")).collect::<Vec<_>>(), [&r#"model_providers.krowk-xai.base_url="https://third.example/v1""#], "{args:?}");
+
+    // A gateway's account taken back to Anthropic itself loses the gateway.
+    b.json(&["connect", "anthropic", "--method", "api-key", "--name", "gw", "--base-url", "https://gateway.example/api", "--key-ref", "$GW_KEY"], &[]);
+    let back = b.json(&["connect", "anthropic:gw", "--base-url", "https://api.anthropic.com", "--json"], &[]);
+    assert!(back["data"]["definition"].get("env").is_none(), "{back}");
 }
 
 /// R-NAT-2: an API key or a gateway config.json defines for krowk to run

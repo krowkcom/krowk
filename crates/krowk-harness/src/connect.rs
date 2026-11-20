@@ -200,7 +200,8 @@ fn harness_of(way: &MethodInfo) -> Option<&'static str> {
 /// The vendor whose model provider a Codex account's args name
 /// (`model_provider="krowk-xai"`): one made from a key.
 fn codex_provider(args: &[String]) -> Option<Vendor> {
-    args.iter().find_map(|a| a.strip_prefix("model_provider="))?.trim_matches('"').strip_prefix("krowk-").and_then(Vendor::parse)
+    // The last one: the one Codex applies.
+    args.iter().rev().find_map(|a| a.strip_prefix("model_provider="))?.trim_matches('"').strip_prefix("krowk-").and_then(Vendor::parse)
 }
 
 /// The way an instance was connected: an Anthropic key's Claude Code
@@ -281,7 +282,7 @@ fn native_of(def: &InstanceKind) -> Option<InstanceKind> {
             let v = codex_provider(args)?;
             let field = |f: &str| {
                 let at = format!("model_providers.krowk-{}.{f}=", v.id());
-                args.iter().find_map(|a| a.strip_prefix(at.as_str())).and_then(|s| serde_json::from_str::<String>(s).ok())
+                args.iter().rev().find_map(|a| a.strip_prefix(at.as_str())).and_then(|s| serde_json::from_str::<String>(s).ok())
             };
             let (api_key_env, base_url, effort) = (api_key_env.clone(), field("base_url"), *effort);
             let wire_api = field("wire_api").map(|w| if w == "responses" { WireApi::OpenaiResponses } else { WireApi::ChatCompletions });
@@ -1115,13 +1116,26 @@ impl ProviderAuth<'_> {
         let Some(had) = had else { return Ok(made) };
         let mut merged = serde_json::to_value(had).expect("a definition serializes");
         let (Some(m), Value::Object(new)) = (merged.as_object_mut(), serde_json::to_value(&made).expect("a definition serializes")) else { return Ok(made) };
-        // krowk's own `-c` pairs are made again; the person's are kept.
-        let own = |a: &str| a.starts_with("model_providers.krowk-") || a.starts_with("model_provider=") || a.starts_with("model=");
-        let kept: Vec<Value> = match m.get("args") {
-            Some(Value::Array(a)) => a.chunks(2).filter(|p| !(p.len() == 2 && p[0] == "-c" && p[1].as_str().is_some_and(own))).flatten().cloned().collect(),
-            _ => Vec::new(),
-        };
-        m.remove("args");
+        // krowk's own `-c` pairs and gateway are made again; the person's
+        // args, in their order, and other variables are kept.
+        let own = |a: &Value| a.as_str().is_some_and(|a| a.starts_with("model_providers.krowk-") || a.starts_with("model_provider=") || a.starts_with("model="));
+        let mut kept: Vec<Value> = Vec::new();
+        if let Some(Value::Array(a)) = m.remove("args") {
+            let mut at = a.into_iter().peekable();
+            while let Some(arg) = at.next() {
+                if arg == "-c" && at.peek().is_some_and(own) {
+                    at.next();
+                } else {
+                    kept.push(arg);
+                }
+            }
+        }
+        if let Some(Value::Object(env)) = m.get_mut("env") {
+            env.remove("ANTHROPIC_BASE_URL");
+            if env.is_empty() {
+                m.remove("env");
+            }
+        }
         for (k, v) in new {
             match (m.get_mut(&k), v) {
                 (Some(Value::Object(old)), Value::Object(v)) if k == "env" => old.extend(v),
@@ -1703,13 +1717,20 @@ impl ProviderAuth<'_> {
             return said;
         }
         said.extend(made.iter().map(|(name, kind, _)| {
+            // A gateway the environment named is the account's now: said.
+            let from_env = match (defs.instances.get(name), kind) {
+                (Some(InstanceKind::AnthropicApi { base_url: None, .. }), InstanceKind::ClaudeCode { env, .. }) => env.get("ANTHROPIC_BASE_URL").map(|u| format!(", sent to {u} (from ANTHROPIC_BASE_URL)")),
+                (Some(InstanceKind::OpenaiApi { base_url: None, .. }), InstanceKind::CodexAppServer { .. }) => known.get(name).ok().map(|r| r.base_url.clone()).filter(|u| u != instances::OPENAI_API_URL).map(|u| format!(", sent to {u} (from OPENAI_BASE_URL)")),
+                _ => None,
+            }
+            .unwrap_or_default();
                 readiness::forget(name);
                 let (harness, keyed) = match kind {
                     InstanceKind::CodexAppServer { api_key_env, .. } => ("Codex", api_key_env.is_some()),
                     _ => ("Claude Code", true),
                 };
                 let on = if keyed { "key" } else { "server" };
-                format!("{name} now runs in {harness}, on the same {on} — krowk no longer runs models directly")
+                format!("{name} now runs in {harness}, on the same {on}{from_env} — krowk no longer runs models directly")
             }));
         said
     }
