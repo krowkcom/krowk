@@ -1,7 +1,7 @@
 //! `krowk status`, `krowk providers list` and `krowk doctor` — the one
 //! readiness check — the built binary against fake `claude` and `codex`
 //! binaries on PATH (no real login anywhere) and a stand-in environment:
-//! the seven implicit instances with no config, each in the state its
+//! the two implicit Claude Code and Codex accounts with no config, each in the state its
 //! credential puts it in; vendor checks run in parallel; the `--json`
 //! shape; and no secret in any output, checked with sentinel values.
 
@@ -117,12 +117,12 @@ fn row(rows: &[Value], name: &str) -> Value {
 }
 
 #[test]
-fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
+fn status_with_no_config_lists_the_two_implicit_accounts_in_their_states() {
     let b = Sandbox::new("implicit");
     b.install_fakes();
     // Claude Code signed in (the fake's marker in its default ~/.claude),
-    // Codex not; an Anthropic key; a SuperGrok login whose access token is
-    // spent with no refresh token to get another.
+    // Codex not; an Anthropic key and a SuperGrok login, neither of which
+    // is an account krowk runs (D4, D6): neither is listed.
     std::fs::create_dir_all(b.home().join(".claude")).unwrap();
     std::fs::write(b.home().join(".claude/fake-login"), "").unwrap();
     b.write_logins(json!({"supergrok": login(TOKEN_SENTINEL, None, 1_000)}));
@@ -132,14 +132,10 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
     let v = stdout_json(&out);
     let rows = instances(&v["data"]);
     let names: Vec<&str> = rows.iter().map(|r| r["instance"].as_str().unwrap()).collect();
-    assert_eq!(names, ["anthropic", "claude", "codex", "openai", "openrouter", "supergrok", "xai"]);
+    assert_eq!(names, ["claude", "codex"]);
     let state = |n: &str| row(&rows, n)["state"].as_str().unwrap().to_string();
-    assert_eq!(
-        names.iter().map(|n| (n.to_string(), state(n))).collect::<Vec<_>>(),
-        [("anthropic", "ready"), ("claude", "ready"), ("codex", "not_signed_in"), ("openai", "key_not_set"), ("openrouter", "key_not_set"), ("supergrok", "expired"), ("xai", "key_not_set")]
-            .map(|(n, s)| (n.to_string(), s.to_string()))
-    );
-    assert_eq!(v["data"]["ready"], 2);
+    assert_eq!((state("claude"), state("codex")), ("ready".to_string(), "not_signed_in".to_string()));
+    assert_eq!(v["data"]["ready"], 1);
     // The documented shape: every key on every row, null when it has no value.
     for r in &rows {
         let keys: Vec<&String> = r.as_object().unwrap().keys().collect();
@@ -147,12 +143,8 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
         assert_eq!(r["ready"].as_bool(), Some(r["state"] == "ready"));
         assert_eq!(r["fix"].is_null(), r["state"] == "ready", "a fix exactly when it is not ready: {r}");
     }
-    assert_eq!(row(&rows, "anthropic")["source"], "env ANTHROPIC_API_KEY", "a key is named by its variable");
-    assert_eq!(row(&rows, "openai")["var"], "OPENAI_API_KEY");
     assert_eq!(row(&rows, "claude")["source"], format!("Claude Code's own login in {} (signed in with a Claude max subscription)", b.home().join(".claude").display()));
     assert_eq!(row(&rows, "codex")["fix"], "sign in with `krowk connect openai --method subscription`, which runs Codex's own login");
-    assert_eq!(row(&rows, "supergrok")["fix"], "sign in with `krowk connect xai --method subscription`");
-    assert_eq!(row(&rows, "supergrok")["kind"], "xai-oauth");
     let printed = format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
     assert!(!printed.contains(KEY_SENTINEL) && !printed.contains(TOKEN_SENTINEL), "no secret is printed: {printed}");
 
@@ -160,8 +152,8 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
     let out = b.krowk(&["status", "--format", "human"], &[("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
     assert_eq!(out.status.code(), Some(0));
     let table = String::from_utf8_lossy(&out.stdout).into_owned();
-    assert!(table.lines().any(|l| l.starts_with("supergrok") && l.contains("expired") && l.contains("krowk connect xai --method subscription")), "{table}");
-    assert!(table.ends_with("2 of 7 instances ready\n"), "{table}");
+    assert!(!table.contains("supergrok") && !table.contains("anthropic "), "{table}");
+    assert!(table.ends_with("1 of 2 instances ready\n"), "{table}");
     assert!(!table.contains(KEY_SENTINEL) && !table.contains(TOKEN_SENTINEL));
 
     // Nothing ready: every row still printed, and exit 3 with the rows as
@@ -173,10 +165,10 @@ fn status_with_no_config_lists_the_seven_implicit_instances_in_their_states() {
     let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
     assert_eq!(err["error"]["error"], "none_ready", "{err}");
     let details = instances(&err["error"]["details"]);
-    assert_eq!((details.len(), row(&details, "codex")["state"].as_str(), row(&details, "claude")["state"].as_str()), (7, Some("not_installed"), Some("not_signed_in")));
+    assert_eq!((details.len(), row(&details, "codex")["state"].as_str(), row(&details, "claude")["state"].as_str()), (2, Some("not_installed"), Some("not_signed_in")));
     let out = b.krowk(&["status", "--format", "human"], &[]);
     assert_eq!(out.status.code(), Some(3));
-    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 7, "the table, before the failure");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).lines().count(), 2, "the table, before the failure");
 }
 
 #[test]
@@ -212,7 +204,7 @@ fn r_roll_14_doctor_names_the_rollover_order_entries_rollover_ignores() {
 }
 
 #[test]
-fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
+fn no_secret_reaches_status_list_or_doctor() {
     let b = Sandbox::new("secrets");
     b.install_fakes();
     b.write_config(json!({"instances": {
@@ -221,18 +213,20 @@ fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
         "anthropic:work": {"kind": "anthropic-api", "apiKeyEnv": "WORK_KEY"},
         "supergrok:team": {"kind": "xai-oauth"},
     }}));
-    // An expired access token with a refresh token is still good: the next
-    // call refreshes it.
+    // A SuperGrok login left from before: never listed, never printed.
     b.write_logins(json!({"supergrok:team": login(TOKEN_SENTINEL, Some(REFRESH_SENTINEL), 1_000)}));
     let env = [("ANTHROPIC_API_KEY", KEY_SENTINEL), ("WORK_KEY", KEY_SENTINEL), ("OR_KEY", ROUTER_SENTINEL)];
 
     let status = b.krowk(&["status", "--json"], &env);
     let rows = instances(&stdout_json(&status)["data"]);
-    assert_eq!(rows.len(), 11, "the seven implicit and the four configured");
-    assert_eq!(row(&rows, "supergrok:team")["state"], "ready");
+    assert_eq!(rows.len(), 5, "the two implicit accounts and the three configured; SuperGrok runs nothing (D4)");
+    assert!(!rows.iter().any(|r| r["instance"] == "supergrok:team"));
     assert_eq!(row(&rows, "claude:router")["source"], "env OR_KEY, handed to Claude Code");
     assert_eq!(row(&rows, "codex:router")["source"], "env OR_KEY, handed to Codex");
     assert_eq!(row(&rows, "anthropic:work")["source"], "env WORK_KEY, handed to Claude Code", "converted on first use");
+    // R-NAT-4: an account on a key reads as one, not as a subscription.
+    let labels: Vec<&str> = ["claude", "claude:router", "codex:router", "anthropic:work"].iter().map(|n| rows.iter().find(|r| r["instance"] == *n).unwrap()["label"].as_str().unwrap()).collect();
+    assert_eq!(labels, ["Claude subscription", "Claude Code, API key", "Codex, API key", "Claude Code, API key"]);
 
     let list = b.krowk(&["providers", "list", "--json"], &env);
     let listed = instances(&stdout_json(&list)["data"]);
@@ -244,7 +238,6 @@ fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
     let doctor = b.krowk(&["doctor", "--json"], &env);
     let d = stdout_json(&doctor);
     assert_eq!(d["providers"]["status"], "pass", "{d}");
-    assert_eq!(d["providers"]["instances"]["supergrok:team"], "ready");
     assert_eq!(d["providers"]["instances"]["codex"], "not_signed_in");
 
     for out in [&status, &list, &doctor, &b.krowk(&["status", "--format", "human"], &env), &b.krowk(&["providers", "list", "--format", "human"], &env), &b.krowk(&["doctor", "--format", "human"], &env)] {
@@ -277,8 +270,10 @@ fn status_asks_vendors_in_krowks_own_directory_so_planted_settings_change_nothin
         std::fs::create_dir_all(d.join(".claude")).unwrap();
         std::fs::write(d.join(".claude/settings.json"), r#"{"apiKeyHelper":"echo planted"}"#).unwrap();
     }
-    let out = b.krowk(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap()), ("ANTHROPIC_API_KEY", KEY_SENTINEL)]);
-    let rows = instances(&stdout_json(&out)["data"]);
+    let out = b.krowk(&["status", "--json"], &[("TMPDIR", tmp.to_str().unwrap())]);
+    assert_eq!(out.status.code(), Some(3), "nothing is ready: {}", String::from_utf8_lossy(&out.stderr));
+    let err: Value = serde_json::from_str(String::from_utf8_lossy(&out.stderr).trim()).unwrap();
+    let rows = instances(&err["error"]["details"]);
     assert_eq!(row(&rows, "claude")["state"], "not_signed_in", "{rows:?}");
     let own = b.home().join(".krowk/readiness");
     use std::os::unix::fs::PermissionsExt;

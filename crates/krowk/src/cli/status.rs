@@ -64,7 +64,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         return super::sessions::emit_data(ctx, data.clone(), summary);
     }
     let width = |f: &dyn Fn(&Report) -> usize| reports.iter().map(f).max().unwrap_or(0);
-    let label = |r: &Report| krowk_harness::instances::kind_label(r.kind);
+    let label = |r: &Report| r.label;
     let (wn, wk, ws) = (width(&|r| r.instance.len()), width(&|r| label(r).len()), width(&|r| r.readiness.label().len()));
     let out = &mut *ctx.io.stdout;
     for r in &reports {

@@ -28,8 +28,13 @@ fn connect_hint(word: &str) -> String {
         // An instance's name: its prefix is the method's — `anthropic:work`
         // an API key, `claude:work` a subscription — as a fix line says it.
         use krowk_harness::connect;
-        let cmd = match connect::by_provider(&prefix.to_ascii_lowercase(), false) {
-            Some(m) => connect::connect_command(&format!("{}:{}", prefix.to_ascii_lowercase(), &word[prefix.len() + 1..]), m.kind),
+        // SuperGrok no longer connects (D6): its words mean an xAI key.
+        let prefix = match prefix.to_ascii_lowercase() {
+            p if p == "supergrok" => "xai".to_string(),
+            p => p,
+        };
+        let cmd = match connect::by_provider(&prefix, false) {
+            Some(m) => connect::connect_command(&format!("{prefix}:{}", &word[word.find(':').unwrap_or(0) + 1..]), m.kind),
             None => format!("krowk connect {word}"),
         };
         return format!("to connect a model provider, run `{cmd}`");

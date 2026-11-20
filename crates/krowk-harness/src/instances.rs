@@ -406,6 +406,20 @@ pub fn kind_label(kind: &str) -> &'static str {
     }
 }
 
+/// What an account is, in a person's words (R-NAT-4): `kind_label`, but a
+/// Claude Code or Codex account on an API key (one naming `apiKeyEnv`), or a
+/// Codex account on a server of its own, says so rather than "subscription".
+pub fn account_label(inst: &Resolved) -> &'static str {
+    let keyed = !inst.api_key_env.is_empty();
+    let server = inst.backend.as_ref().is_some_and(|b| b.args.iter().any(|a| a.starts_with("model_provider=")));
+    match inst.kind {
+        "claude-code" if keyed => "Claude Code, API key",
+        "codex-app-server" if keyed => "Codex, API key",
+        "codex-app-server" if server => "Codex, own server",
+        k => kind_label(k),
+    }
+}
+
 impl InstanceKind {
     /// `kind_label` of this kind.
     pub fn label(&self) -> &'static str {

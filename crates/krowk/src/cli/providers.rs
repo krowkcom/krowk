@@ -22,7 +22,7 @@ use crate::output::Format;
 use krowk_api::{fail, Error};
 use krowk_harness::connect::{self, Answer, AuthInteraction, Connected, MakeDefault, Method, Notice, Options, Prompt, ProviderAuth, Request, SignedOut};
 use krowk_harness::engine::EngineError;
-use krowk_harness::instances::{kind_label, Auth};
+use krowk_harness::instances::Auth;
 use krowk_harness::keys::KeyRef;
 use serde_json::{json, Value};
 use std::io::Write;
@@ -347,7 +347,7 @@ pub(super) fn list(ctx: &mut Ctx) -> Result<(), Error> {
     for (rep, row) in reports.iter().zip(&rows) {
         let s = |k: &str| row[k].as_str().unwrap_or_default().to_string();
         let place = if row.get("binary").is_some() { s("binary") } else { s("base_url") };
-        let _ = writeln!(out, "{:<width$}  {:<20}  {:<13}  {place}  ({})", rep.instance, kind_label(rep.kind), rep.readiness.label(), rep.source);
+        let _ = writeln!(out, "{:<width$}  {:<20}  {:<13}  {place}  ({})", rep.instance, rep.label, rep.readiness.label(), rep.source);
     }
     Ok(())
 }

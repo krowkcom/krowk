@@ -190,7 +190,8 @@ nothing there can approve it — that is what --token is for, and --token never
 opens or waits for anything.
 
 `krowk login` is your krowk account; a model provider — a Claude Code or
-Codex account, on a subscription or an API key — is connected with ",
+Codex account, on a subscription or an API key — is connected with
+",
             $connect,
             ".\nA key belongs to one workspace: `krowk help workspaces`."
         )
@@ -849,7 +850,7 @@ fn connect_commands() -> Vec<Command> {
             ..cmd(
                 "connect",
                 "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-                "Connect a model: a Claude Code or Codex account, by subscription or API key",
+                "Connect a Claude Code or Codex account: subscription or API key",
             )
         },
         Command {

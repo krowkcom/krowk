@@ -225,7 +225,10 @@ fn with_a_keyed_account_and_a_subscription_a_bare_id_is_refused_as_ambiguous_unt
 #[test]
 fn r_nat_3_krowk_p_runs_on_a_codex_subscription_and_a_codex_account_on_a_key() {
     let b = Sandbox::new("codex", false);
-    let keyed = json!({"kind": "codex-app-server", "binary": b.root.join("bin/codex").display().to_string(), "codexHome": b.account("openai"), "apiKeyEnv": "OPENAI_API_KEY"});
+    let home = b.account("openai");
+    // How the fake tells a key's account from a ChatGPT login.
+    std::fs::write(Path::new(&home).join("fake-login"), "apiKey\n").unwrap();
+    let keyed = json!({"kind": "codex-app-server", "binary": b.root.join("bin/codex").display().to_string(), "codexHome": home, "apiKeyEnv": "OPENAI_API_KEY"});
     b.config_with_codex(&json!({"instances": {"openai": keyed}}));
     let key = [("OPENAI_API_KEY", "sk-openai-test")];
     assert_eq!(b.ran_on(&["--model", "codex/gpt-5.5", "--trust"], &key), "codex/gpt-5.5");
@@ -303,8 +306,6 @@ fn an_explicit_instance_is_never_rerouted_even_when_only_another_one_is_ready() 
     let b = Sandbox::new("explicit", true);
     // `codex` is not installed here; `claude` is signed in.
     let out = b.krowk(&["-p", "hi", "--model", "codex/gpt-5.5", "--trust"], &[]);
-    let err = String::from_utf8_lossy(&out.stderr).into_owned();
-    assert_eq!(out.status.code(), Some(3), "{err}");
-    assert!(err.contains("not_installed") || err.contains("not installed") || err.contains("no-codex"), "the codex instance's own refusal: {err}");
+    assert!(fail(&out, "backend_not_found").contains("bin/no-codex was not found"), "the codex instance's own refusal");
     assert!(b.turns().is_empty(), "claude never ran in its place: {}", b.fake_log());
 }
