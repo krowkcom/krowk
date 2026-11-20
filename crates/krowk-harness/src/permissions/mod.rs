@@ -37,8 +37,7 @@
 //!    about.
 //!
 //! **Asking** is an `approval.requested` frame on the session's stream,
-//! answered by `Command::Approve` from whichever client is attached — the
-//! TUI today, a phone through the daemon later (R-PERM-2). A host no
+//! answered by `Command::Approve` from whichever client is attached (R-PERM-2). A host no
 //! client answers for — `krowk -p` — never waits: the call is refused, and
 //! the result says what to allow or which mode to rerun in.
 //!

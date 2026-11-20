@@ -43,7 +43,7 @@
 //!                               stdin stays /dev/null, so a path that asks a question —
 //!                               the rebuild confirmation, the sessions picker — takes its
 //!                               nobody-is-here branch. Interactive prompts are drawn by a
-//!                               TUI library whose bytes no port reproduces, so they are
+//!                               prompt library whose bytes no port reproduces, so they are
 //!                               outside this gate and checked by hand.
 //!
 //! Every command runs with an empty environment apart from PATH, HOME, TMPDIR,
@@ -65,7 +65,7 @@
 //! `GOLDEN_CASE=substr` runs only the matching cases. `GOLDEN_CASES=dir`
 //! reads the cases from another directory beside cases/: `cases-full/` holds
 //! what the full build (`--features harness`) must print exactly as it did
-//! before the TUI existed, which `make golden` runs against that build.
+//! before the agent existed, which `make golden` runs against that build.
 
 use regex::{Captures, Regex};
 use std::collections::HashMap;

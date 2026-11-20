@@ -575,7 +575,7 @@
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
             },
             "description": {
-              "description": "The few words the model gave it, which the TUI shows.",
+              "description": "The few words the model gave it, which an interactive client shows.",
               "type": "string"
             },
             "agent": {

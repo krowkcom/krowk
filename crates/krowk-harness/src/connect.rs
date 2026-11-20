@@ -1,6 +1,6 @@
 //! Connecting a model source, and disconnecting it — one way for every front
 //! end: `krowk connect`, `krowk disconnect` and `krowk providers add|remove`
-//! on the command line, and the TUI's `/connect` and `/disconnect`. Before
+//! on the command line, and any other front end. Before
 //! this the sign-in lived in the CLI's `providers add`, where nothing else
 //! could reach it.
 //!
@@ -25,7 +25,7 @@
 //! prompt (text, a secret, a choice) and a notice (a line of information, a
 //! URL to open, a device code, progress). The CLI answers at the terminal,
 //! or — with nobody there — fails with the flag that would have answered;
-//! the TUI answers in an overlay. No method prints anything itself.
+//! another front end answers its own way. No method prints anything itself.
 //!
 //! An API key is read from the environment variable its definition names,
 //! unless one is stored (`crate::keys`): connecting one with `--key-stdin`,
@@ -319,7 +319,7 @@ pub struct Request {
     pub default: MakeDefault,
 }
 
-/// What `/connect`'s pickers came to: a connection to make, or one of the
+/// What the connect pickers came to: a connection to make, or one of the
 /// accounts picked to rename instead, and its whole new name.
 pub enum Chosen {
     Connect(Request),
@@ -362,8 +362,8 @@ pub struct Connected {
     pub stored_key: Option<String>,
 }
 
-/// A connection in words, one way for `krowk connect` and the TUI's
-/// `/connect`: what it is and where its key or login comes from (`facts`,
+/// A connection in words, one way for `krowk connect` and a client's
+/// `krowk connect`: what it is and where its key or login comes from (`facts`,
 /// one dimmed line), and what is still the person's to do (`notes`).
 pub struct Summary {
     pub facts: Vec<String>,
@@ -453,7 +453,7 @@ pub struct Removed {
     pub kept: Option<(String, bool)>,
 }
 
-/// What `rename` (`krowk providers rename`, `/connect`'s rename) did.
+/// What `rename` (`krowk providers rename`) did.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Renamed {
     pub from: String,
@@ -470,7 +470,7 @@ pub struct Renamed {
 
 impl Renamed {
     /// What it moved, and what it left the person to do — the same words
-    /// for `krowk providers rename` and the TUI's `/connect`.
+    /// for `krowk providers rename`.
     pub fn notes(&self) -> Vec<String> {
         let mut notes = Vec::new();
         if self.login {
@@ -660,7 +660,7 @@ impl ProviderAuth<'_> {
         }
     }
 
-    /// `request`, as `/connect` asks it: beside the accounts of the way in
+    /// `request`, as `krowk connect` asks it: beside the accounts of the way in
     /// picked is renaming one of them, when one has a name of its own.
     pub fn request_or_rename(&self, target: Option<&str>, ui: &mut dyn AuthInteraction) -> Result<Chosen, EngineError> {
         self.choice(target, None, Options::default(), true, ui)
@@ -1574,11 +1574,11 @@ pub fn read_config(path: &Path) -> Result<Map<String, Value>, String> {
     }
 }
 
-/// Writes config.json whole, by rename, never in place: how `/connect`
-/// writes its definitions and the TUI's `/settings` what it sets. The
+/// Writes config.json whole, by rename, never in place: how `krowk connect`
+/// writes its definitions and `krowk config set` what it sets. The
 /// file's mode is kept (0644 for a new one) but never writable by anyone
 /// else: config.json says what runs unasked. Each write has its own
-/// temporary file, so a `/connect` on its thread and `/settings` never
+/// temporary file, so a `krowk connect` and a `krowk config set` never
 /// share one.
 pub fn write_config(path: &Path, raw: &Map<String, Value>) -> std::io::Result<()> {
     static WRITES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

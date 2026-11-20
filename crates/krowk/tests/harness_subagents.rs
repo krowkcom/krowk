@@ -1,5 +1,5 @@
 //! Subagents and todos, end to end against a stand-in Anthropic API: three
-//! subagents fanned out in parallel, one interrupted alone while the TUI
+//! subagents fanned out in parallel, one interrupted alone while an interactive client
 //! draws each as a line; only their summaries back in the parent's
 //! context; a child's spend stopping the parent at `--max-usd`; a Claude
 //! Code agent definition used as it is; the todo list across `--resume`;
@@ -641,7 +641,7 @@ fn r_sub_5_an_untrusted_repositorys_definition_stays_on_the_parents_instance() {
     let out = b.krowk(&["-p", "use the far agent", "--model", "claude-sonnet-4-6", "--output-format", "json"]);
     let stderr = text(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(stderr.contains("agent far asks for openai/gpt-5.5") && stderr.contains("not a repository you have trusted"), "the person is told: {stderr}");
+    assert!(stderr.contains("agent far asks for openai/gpt-5.5") && stderr.contains("not a repository you have trusted") && stderr.contains("`krowk trust`"), "the person is told, and where to fix it: {stderr}");
     let parent = serde_json::from_slice::<Value>(&out.stdout).unwrap()["sessionId"].as_str().unwrap().to_string();
     let started = b.log(&parent).into_iter().find(|e| e["type"] == "subagent.started").unwrap();
     assert_eq!(started["model"], json!({"instance": "anthropic", "model": "claude-sonnet-4-6"}), "the parent's instance, not the definition's");

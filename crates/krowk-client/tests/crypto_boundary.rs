@@ -1,7 +1,7 @@
 //! R-E2E-2, R-CLIENT-1: crypto is implemented once, in `krowk-client`. No
 //! other crate in the workspace may name a crypto crate as a dependency —
 //! normal, dev or build, on any target — so a primitive cannot be reached
-//! for from the harness, the TUI or the CLI and quietly become a second
+//! for from the harness, an interactive client or the CLI and quietly become a second
 //! implementation. Modelled on `make lean-deps`: the workspace's declared
 //! dependencies, from `cargo metadata --no-deps`, held to a rule.
 //!

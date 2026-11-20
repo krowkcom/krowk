@@ -257,7 +257,7 @@ impl Pty {
     }
 
     /// As `wait_for`, on the output's words: its escape sequences taken out
-    /// and every run of spaces and line breaks one space, so a hint the TUI
+    /// and every run of spaces and line breaks one space, so a hint an interactive client
     /// wrapped (at a width a long path pushes it to) still matches.
     pub fn wait_for_words(&self, needle: &str, timeout: Duration) -> Option<Instant> {
         let needle = words(needle);
@@ -271,7 +271,7 @@ impl Pty {
         None
     }
 
-    /// The screen the output draws, a row a line, as far as the TUI's own
+    /// The screen the output draws, a row a line, as far as a client's own
     /// drawing goes (`screen`). What `wait_for` cannot see: a frame draws
     /// only the cells that changed, so a row's words can arrive with a cell
     /// the frame before left in place between them, never in one run.
@@ -316,7 +316,7 @@ impl Pty {
     /// terminal or on their way through the reader thread, and a loaded
     /// machine lets a test look before they land. Nothing waiting on the
     /// master side, then one more turn of the reader's loop, says they have
-    /// landed. The terminal closing is not waited for: a daemon the TUI
+    /// landed. The terminal closing is not waited for: a daemon an interactive client
     /// started can hold it open long after.
     fn drain(&self) {
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -394,8 +394,8 @@ pub fn words(text: &str) -> String {
 
 /// `out` played onto a `cols` by `rows` screen that starts blank with the
 /// cursor at the top left (where the CSI 6n answer puts it): text, CR, LF
-/// (scrolling at the bottom), backspace, the cursor moves and erases the
-/// TUI draws with (CSI A B C D G H J K, ESC 7 and 8, autowrap on and off);
+/// (scrolling at the bottom), backspace, the cursor moves and erases a
+/// screen program draws with (CSI A B C D G H J K, ESC 7 and 8, autowrap on and off);
 /// every other sequence, colour and OSC included, is read and dropped. A
 /// character is one cell. The rows, trailing blanks trimmed, a line each.
 pub fn screen(out: &[u8], (cols, rows): (u16, u16)) -> String {

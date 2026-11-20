@@ -566,7 +566,7 @@ fn paid_fix(error: &str) -> String {
 
 /// One bridge: its options built, its own daemon client connected in the
 /// session's own directory — a background one, so it never keeps the
-/// daemon up, and answering, so viewers and the phone can approve — and
+/// daemon up, and answering, so viewers can approve — and
 /// `host::run` until `stop` or its end.
 async fn bridge(c: Arc<Config>, lists: Arc<Lists>, session: String, cwd: PathBuf, stop: watch::Receiver<bool>, supervised: host::Supervised) -> Result<(), String> {
     let built = {
@@ -897,7 +897,7 @@ pub const PARKED_RECHECK: Duration = Duration::from_secs(60);
 
 /// The longest a viewer keeps a session with no turn bridged: past it, the
 /// session is let go (and parked) all the same, so a viewer whose link
-/// went without the relay ever hearing it — a laptop asleep, a phone out
+/// went without the relay ever hearing it — a laptop asleep, a device out
 /// of signal, a half-open socket — never holds a bridge for good. One still
 /// there wakes it with its next prompt, which the parked link reads as a
 /// viewer wanting it. Never shorter than the idle window.

@@ -10,7 +10,7 @@
 //! `<number>-<fnv>.<ext>` are still read, by the name the log gives.
 //!
 //! A client is expected to have made them small enough for any provider
-//! already (the TUI does, as it pastes them); the host holds them to the
+//! already (an interactive client does, as it pastes them); the host holds them to the
 //! limits below and never resizes. Every image in a session's history
 //! goes with every model call, so a call sends the newest that fit
 //! (`SENT_IMAGES`, `SENT_BYTES`) and names the rest, and a model that

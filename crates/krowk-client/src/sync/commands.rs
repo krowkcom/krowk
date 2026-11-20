@@ -4,12 +4,11 @@
 //! and runs once because the host dedups by that id. With no host a command
 //! waits here, and goes, in order, at the next welcome (R-HAND-4).
 //!
-//! **Ids** are `<device>-<run id>-<counter>` (R-IOS-5's intent, not its
-//! UUIDv7): the run id is random per viewer run, so a restarted viewer's
+//! **Ids** are `<device>-<run id>-<counter>` (not a UUIDv7): the run id is random per viewer run, so a restarted viewer's
 //! ids never read as repeats of an earlier run's at the host.
 //!
-//! The harness's tokio viewer and the phone's keep the socket and seal
-//! what this hands them; the bookkeeping is the same for both.
+//! The harness's tokio viewer keeps the socket and seals what this hands
+//! it; the bookkeeping lives here.
 
 use super::viewer::Update;
 use super::{Handed, Remote, ViewerFrame};
@@ -183,10 +182,10 @@ mod tests {
         assert_eq!(b.welcomed().len(), 3, "a welcome does not duplicate");
     }
 
-    /// R-IOS-5, R-LAG-8: twelve commands sent and none acked come back at a
+    /// R-LAG-8: twelve commands sent and none acked come back at a
     /// welcome in the order first sent — `…-10` after `…-9`, not before it.
     #[test]
-    fn r_ios_5_unacked_commands_resend_in_first_sent_order_past_ten() {
+    fn r_lag_8_unacked_commands_resend_in_first_sent_order_past_ten() {
         let mut b = CommandBook::new(DEVICE);
         for n in 1..=12 {
             assert!(b.command(stop(n), true).0.is_some());
@@ -198,12 +197,12 @@ mod tests {
         assert_eq!(ids, (1..=12).collect::<Vec<u64>>());
     }
 
-    /// R-IOS-5: an id is the device, a random run id and a counter from 1
+    /// An id is the device, a random run id and a counter from 1
     /// that commands and handoffs share; another run of the same device —
     /// a restarted viewer — never mints one this run did, so the host
     /// never takes it for a repeat.
     #[test]
-    fn r_ios_5_ids_are_device_run_counter_and_two_books_never_share_one() {
+    fn ids_are_device_run_counter_and_two_books_never_share_one() {
         let mut a = CommandBook::new(DEVICE);
         let mut b = CommandBook::new(DEVICE);
         let first = a.mint();

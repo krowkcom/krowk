@@ -277,8 +277,7 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
         let lines = rt.block_on(async {
             let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
             let turn = host.execute(prompt("make the file", PermissionMode::Default), tx);
-            // The client: whatever asks, it answers, as the TUI does (or a
-            // phone, later) — by the request's id, with `approve`.
+            // The client: whatever asks, it answers, as an attached client does — by the request's id, with `approve`.
             let client = async {
                 let mut lines = Vec::new();
                 while let Some(l) = rx.recv().await {

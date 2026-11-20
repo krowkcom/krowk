@@ -266,7 +266,7 @@ fn r_off_2_batches_between_the_welcome_and_the_read_are_held_then_applied() {
     assert_eq!((lines, shown.iter().filter(|u| matches!(u, Update::Gap)).count()), (2, 1), "{shown:?}");
 }
 
-/// R-LAG-4, R-IOS-1: the relay ack never names a batch whose updates have
+/// R-LAG-4: the relay ack never names a batch whose updates have
 /// not been shown. Four batches in one display frame are acked only as the
 /// `Show` holding their lines goes out, and then with the fourth; the next
 /// frame's at the next tick.
@@ -722,7 +722,7 @@ fn session(origin: u64) -> Vec<String> {
 }
 
 /// R-CLIENT-3, R-CLIENT-1: the core reads no clock and opens no socket, so
-/// the phone and the terminal run the same rules. A whole session
+/// every client and the terminal run the same rules. A whole session
 /// driven through `now_ms` alone, from two origins far apart, does the same
 /// things at the same offsets: what it does depends on the times passed in
 /// and on nothing else.
@@ -1177,12 +1177,12 @@ fn places(r: &mut Relay) -> Vec<(u64, Option<String>)> {
     std::mem::take(&mut r.saved).into_iter().map(|c| (c.after_seq, c.newest)).collect()
 }
 
-/// R-OFF-2, R-IOS-1: a batch that opens but does not parse is a gap — the
+/// R-OFF-2: a batch that opens but does not parse is a gap — the
 /// stream's counter refuses it if it comes again — so it shows `Gap` and
 /// the host is asked for the events after the one before it. The cursor
 /// moves past it, so the next batch is no second gap.
 #[test]
-fn r_off_2_r_ios_1_a_batch_that_does_not_parse_is_a_gap() {
+fn r_off_2_a_batch_that_does_not_parse_is_a_gap() {
     let mut r = Relay::new(vec![], 0);
     r.live();
     r.answer(&Answer::CatchUp { events: vec![], more: false });
@@ -1203,12 +1203,12 @@ fn r_off_2_r_ios_1_a_batch_that_does_not_parse_is_a_gap() {
     assert_eq!(r.core.cursor_extra(), json!({"stream": stream, "afterSeq": 3}));
 }
 
-/// R-IOS-1: `Saved` ends each `Show` that moved the viewer's place, and
+/// `Saved` ends each `Show` that moved the viewer's place, and
 /// names the stream, the last batch shown and the newest event shown. While
 /// a catch-up for a gap is out it names the event the catch-up asks from,
 /// so a place kept across launches never catches up from past the gap.
 #[test]
-fn r_ios_1_saved_ends_the_show_and_names_the_newest_event_shown() {
+fn saved_ends_the_show_and_names_the_newest_event_shown() {
     let mut r = Relay::new(vec![logged(0)], 0);
     r.live();
     r.answer(&Answer::CatchUp { events: vec![], more: false });
@@ -1249,11 +1249,11 @@ fn r_ios_1_saved_ends_the_show_and_names_the_newest_event_shown() {
     assert_eq!(places(&mut r), [(5, Some(id(4)))]);
 }
 
-/// R-IOS-1: a logged event this build cannot read (a newer host's event
+/// A logged event this build cannot read (a newer host's event
 /// type) is skipped like any line it does not know, and the place never
 /// reaches past it: a relaunch on a build that reads it catches it up.
 #[test]
-fn r_ios_1_the_place_stays_before_a_logged_event_this_build_cannot_read() {
+fn the_place_stays_before_a_logged_event_this_build_cannot_read() {
     let mut r = Relay::new(vec![], 0);
     r.live();
     r.answer(&Answer::CatchUp { events: vec![], more: false });
@@ -1273,11 +1273,11 @@ fn r_ios_1_the_place_stays_before_a_logged_event_this_build_cannot_read() {
     assert_eq!(places(&mut r), [(4, Some(id(1)))], "nor later");
 }
 
-/// R-IOS-1: a catch-up page holding a logged event this build cannot read
+/// A catch-up page holding a logged event this build cannot read
 /// still applies the rest, and the place holds from where the catch-up
 /// asked: never past the events the page brought.
 #[test]
-fn r_ios_1_a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest() {
+fn a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest() {
     let mut r = Relay::new(vec![], 0);
     r.live();
     r.answer(&Answer::CatchUp { events: vec![], more: false });
@@ -1300,13 +1300,13 @@ fn r_ios_1_a_catch_up_page_with_an_event_this_build_cannot_read_applies_the_rest
     assert_eq!(places(&mut r), [(4, Some(id(1)))]);
 }
 
-/// R-IOS-1 (ticket 131): a viewer opened from the place the app read to,
+/// A viewer opened from the place its caller read to,
 /// its cache holding the session up to an event, asks the host at the
 /// welcome only for what came after that event — or after the newest the
 /// chunks read since held, when that is newer. With nothing held, from the
 /// start.
 #[test]
-fn r_ios_1_a_resumed_viewers_catch_up_starts_after_the_cached_newest() {
+fn a_resumed_viewers_catch_up_starts_after_the_cached_newest() {
     for (at_rest, newest, after) in [(vec![], Some(id(5)), Some(id(5))), (vec![logged(7)], Some(id(5)), Some(id(7))), (vec![logged(3)], Some(id(5)), Some(id(5))), (vec![], None, None)] {
         let key = SessionKey::generate();
         let host = HostLink::new(&key, uuid(SESSION));

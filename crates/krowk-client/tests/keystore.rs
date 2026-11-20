@@ -320,7 +320,7 @@ fn r_client_4_a_slot_is_named_by_its_storage_and_files_keep_their_names() {
 }
 
 /// R-CLIENT-4, R-CLIENT-1: a keystore names a slot in its errors as its
-/// storage does, so one with no files (the iPhone's Keychain, here memory)
+/// storage does, so one with no files (here, memory)
 /// never names a path — not for its own slots, not for another storage's
 /// it reads, and not in what `holds` and `describe` say.
 #[test]

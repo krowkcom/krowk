@@ -551,8 +551,8 @@ pub enum Step<'a> {
 ///
 /// It builds a runtime of its own and blocks until the browser answers, the
 /// device code is entered, or `LOGIN_TIMEOUT` passes: nothing cancels it
-/// sooner. A front end that must stay responsive meanwhile (the TUI's
-/// `/connect`) runs it off its own thread and needs a cancel added here.
+/// sooner. A front end that must stay responsive meanwhile (a long-lived host)
+/// runs it off its own thread and needs a cancel added here.
 pub fn sign_in(login: &Login, device: bool, tell: &mut dyn FnMut(Step<'_>)) -> Result<Stored, EngineError> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()

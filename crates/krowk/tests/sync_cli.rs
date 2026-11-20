@@ -7,8 +7,8 @@
 //! registry's published ticket keys, or says in one line why it does not.
 //! And `krowk hosts` listing the machines that host, with no Tailscale tag
 //! (ticket 43). And a subagent of A's turn stopped alone from B by its id,
-//! and opened in a TUI attached on a third machine, which reads its
-//! history there and stops it with `x` (R-SUB-12). And `krowk sync new`
+//! and opened by `sync attach` on a third machine, which reads its
+//! history there and stops it (R-SUB-12). And `krowk sync new`
 //! from B starting a session on A's host daemon and following it, or
 //! refusing, with nothing sent, a host that is offline, a directory it did
 //! not offer and a model it cannot run (R-HOST-4).
@@ -35,8 +35,8 @@ use std::time::{Duration, Instant};
 
 const TOKEN: &str = "krowk_sk_sync_cli_000000000000000000000";
 const ANSWER: &str = "the-answer-marker-5c2e";
-/// What the model answers a prompt typed into the TUI on B.
-const TUI_ANSWER: &str = "tui-round-trip-answer-81aa";
+/// What the model answers a prompt typed into `sync attach` on B.
+const ATTACH_ANSWER: &str = "attach-round-trip-answer-81aa";
 
 /// A prompt A's `anthropic` instance answers with its rate limit.
 const LIMITED: &str = "past-the-limit-prompt-3e0a";
@@ -57,7 +57,7 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
     let text = last.to_string();
     // The slower subagent: a search, then, once the test lets it
-    // (`SLOWER`), a slow answer — an item begun while a TUI looks on.
+    // (`SLOWER`), a slow answer — an item begun while a viewer looks on.
     if body["system"].to_string().contains("You are a subagent") && messages.first().is_some_and(|m| m.to_string().contains("look slower")) {
         if !has_result {
             return mock::Reply::sse(&mock::tool_use("toolu_01Glob", "glob", &serde_json::json!({"pattern": "*"})));
@@ -82,8 +82,8 @@ fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
     if !has_result && text.contains(NEARLY_OUT) {
         return mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(ANSWER)) };
     }
-    if !has_result && text.contains("tui round trip") {
-        return mock::Reply::paced(mock::text_stream(TUI_ANSWER), Duration::from_millis(5));
+    if !has_result && text.contains("attach round trip") {
+        return mock::Reply::paced(mock::text_stream(ATTACH_ANSWER), Duration::from_millis(5));
     }
     if !has_result && text.contains("a long answer") {
         let words: String = (0..400).map(|i| format!("word{i} ")).collect();
@@ -144,9 +144,7 @@ impl World {
         let home = self.root.join(name);
         let repo = home.join("repo");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        // The inline renderer: the TUI's output here is read as it is sent.
         std::fs::create_dir_all(home.join(".krowk")).unwrap();
-        std::fs::write(home.join(".krowk/config.json"), r#"{"tui": {"screen": "inline"}}"#).unwrap();
         let run = PathBuf::from(format!("/tmp/krowk-sc-{}-{name}-{}", self.name, std::process::id()));
         let _ = std::fs::remove_dir_all(&run);
         std::fs::create_dir_all(&run).unwrap();
@@ -458,7 +456,7 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     let a = w.machine("a");
     let b = w.machine("b");
     let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
-    let config = serde_json::json!({"tui": {"screen": "inline"}, "instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
+    let config = serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
     std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
     let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
@@ -495,7 +493,7 @@ fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     let a = w.machine("a");
     let b = w.machine("b");
     let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
-    let config = serde_json::json!({"tui": {"screen": "inline"}, "instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
+    let config = serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
     std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
     let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
@@ -553,9 +551,9 @@ fn r_cut_9_sync_attach_on_a_terminal_prints_stream_json_and_takes_stdin_commands
     for what in [ANSWER, "\"sync.host\""] {
         assert!(t.wait_for(what, Duration::from_secs(20)).is_some(), "no {what:?}: {:?}\nA: {:?}", t.text(), host.stderr());
     }
-    t.write(b"tui round trip\r");
+    t.write(b"attach round trip\r");
     assert!(t.wait_for("\"sync.acked\"", Duration::from_secs(20)).is_some(), "no ack: {:?}", t.text());
-    assert!(t.wait_for(TUI_ANSWER, Duration::from_secs(20)).is_some(), "no answer: {:?}", t.text());
+    assert!(t.wait_for(ATTACH_ANSWER, Duration::from_secs(20)).is_some(), "no answer: {:?}", t.text());
     assert!(!t.text().contains("Attached to"), "nothing is drawn: {:?}", t.text());
     t.write(b"\x04");
     assert!(t.wait(Duration::from_secs(20)).is_some_and(|s| s.success()), "attach ends with stdin: {:?}", t.text());
@@ -941,7 +939,7 @@ fn r_sync_3_sync_status_says_what_applies_here() {
     assert_eq!(data["directory"]["synced"], false, "{data}");
 
     let repo = a.repo.display().to_string();
-    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"tui": {"screen": "inline"}, "sync": {"exclude": [repo]}}).to_string()).unwrap();
+    std::fs::write(a.home.join(".krowk/config.json"), serde_json::json!({"sync": {"exclude": [repo]}}).to_string()).unwrap();
     let data = sync_status(&a, &[]);
     assert_eq!(data["directory"]["synced"], false, "{data}");
     assert!(data["directory"]["optedOutBy"].as_str().is_some_and(|by| by.contains("sync.exclude") && by.contains(&repo)), "names the entry: {data}");
@@ -1258,8 +1256,8 @@ impl Drop for Takes {
 /// A, B and C on one person's list. A and B hold clones of one repository
 /// with a commit, and B's host daemon is kept up offering its clone, with
 /// `b_env` its environment's change; A hosts a session it made in its
-/// clone with `krowk sync host`. C, a third home that never hosts (as the
-/// phone), sees B announced.
+/// clone with `krowk sync host`. C, a third home that never hosts (as a
+/// viewer would), sees B announced.
 struct Moving {
     // Dropped first, in this order: the take B ran, then the hosts, then
     // the machines, whose drops stop their daemons for good.
@@ -1309,7 +1307,7 @@ impl Moving {
     }
 
     /// C's take `n` of the session into B's `cwd`, sent through krowk-api
-    /// as the phone sends it, and B's answer, opened.
+    /// as a viewer sends it, and B's answer, opened.
     fn ask(&self, w: &World, n: u32, cwd: &std::path::Path) -> krowk_client::host_command::HostAnswer {
         use krowk_client::host_command::{self, HostCommand};
         let [_, b, c] = &self.ids;
@@ -1338,7 +1336,7 @@ impl Moving {
 }
 
 /// R-HAND-4, R-HAND-1, R-SYNC-2, R-HOST-4: C, a third device that never
-/// hosts (as the phone), moves A's session to B. A directory B does not
+/// hosts (as a viewer), moves A's session to B. A directory B does not
 /// offer is refused first, and nothing moves. Then a `take` into B's clone
 /// of the session's repository: B runs `krowk sync take` itself and answers
 /// `taken`; the lease is B's, B's log has `session.moved`, and the next

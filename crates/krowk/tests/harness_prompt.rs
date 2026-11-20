@@ -680,7 +680,7 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
 }
 
 /// R-CUT-8, D9: bare `krowk` on a terminal prints the overview it prints without
-/// one; a flag that once opened the TUI, given with no command and no `-p`,
+/// one; a flag that once opened an interactive client, given with no command and no `-p`,
 /// is refused with the way to `-p`, and `--resume` with no value is refused
 /// whatever else is given; the commands that own those flags still take them.
 #[cfg(unix)]

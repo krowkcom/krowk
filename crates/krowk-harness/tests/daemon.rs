@@ -460,7 +460,7 @@ fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
         let b = home.client().await;
         assert_eq!(b.stop(false).await.unwrap_err().code, "host_busy");
         exec.await.unwrap();
-        // A's still connected: an open TUI, say.
+        // A's still connected: an open viewer, say.
         assert_eq!(b.stop(false).await.unwrap_err().code, "host_in_use");
         b.stop(true).await.unwrap();
     });
@@ -470,7 +470,7 @@ fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {
     assert!(!home.socket().exists());
 }
 
-/// R-HOST-1: what the TUI reattaches with — a client following a running
+/// R-HOST-1: what an interactive client reattaches with — a client following a running
 /// turn gets its frames and its result as the client that sent it does;
 /// one following a session with nothing running is told so at once.
 #[test]
@@ -517,7 +517,7 @@ fn r_host_1_a_follower_gets_the_running_turns_frames_and_its_result() {
 /// R-STEER-2: a job outlives the client whose turn started it, the idle
 /// window included; a client that follows the session after it left is
 /// told the count once caught up, before anything changes it; a turn of
-/// the session on another host (a TUI's, which answers approvals) leaves
+/// the session on another host (an interactive client's, which answers approvals) leaves
 /// the job running on the first; and once it ends the daemon lets the
 /// session go and exits after its window.
 #[test]
@@ -630,7 +630,7 @@ fn r_proto_1_a_client_in_two_sessions_keeps_their_streams_apart() {
     daemon.join().unwrap().unwrap();
 }
 
-/// `/connect` in the TUI: the daemon reads every host's instances again.
+/// `krowk connect` from another process: the daemon reads every host's instances again.
 #[test]
 fn r_proto_1_reload_reads_every_hosts_instances_again() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
@@ -889,7 +889,7 @@ fn r_host_1_following_after_the_replays_last_event_misses_and_repeats_nothing() 
     daemon.join().unwrap().unwrap();
 }
 
-/// R-LAG-4: a TUI's connection let go mid-turn — as the daemon lets go of a
+/// R-LAG-4: an interactive client's connection let go mid-turn — as the daemon lets go of a
 /// client it cannot catch up without a gap — is re-followed on the next
 /// from its cursor, its last `seq` and logged event: the turn's typing
 /// comes on where it stopped, nothing twice and nothing skipped, and the

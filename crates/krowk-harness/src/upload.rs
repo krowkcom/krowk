@@ -1,5 +1,5 @@
 //! Sending a prompt's or steer's images ahead of it, one `put_image` after
-//! another: what the TUI's link, `krowk -p` on a daemon and the typed line
+//! another: what a client's link, `krowk -p` on a daemon and the typed line
 //! of `krowk sync attach` share (R-IMG-2, R-IMG-5, R-IMG-7).
 
 use crate::engine::EngineError;
