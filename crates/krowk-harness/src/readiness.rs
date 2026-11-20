@@ -466,7 +466,7 @@ fn expected_source(inst: &Resolved, credentials: &Path) -> String {
         Auth::ApiKey => inst.stored.source().unwrap_or_else(|| format!("env {}", inst.api_key_env)),
         Auth::Keyless => "no key".into(),
         Auth::OAuth { .. } => format!("OAuth login in {}", credentials.display()),
-        Auth::Vendor if !inst.api_key_env.is_empty() => format!("env {}, handed to {}", inst.api_key_env, inst.vendor),
+        Auth::Vendor if !inst.api_key_env.is_empty() => format!("{}, handed to {}", inst.stored.source().unwrap_or_else(|| format!("env {}", inst.api_key_env)), inst.vendor),
         Auth::Vendor => vendor_login_source(inst, None),
     }
 }

@@ -477,9 +477,26 @@ pub(super) fn load_instances() -> Result<instances::InstancesConfig, Error> {
 }
 
 /// The person's own config's instances, with their stored keys: the one
-/// place the CLI names the credentials file keys are read from.
+/// place the CLI names the credentials file keys are read from. An API key
+/// or a gateway it defines for krowk to run itself is turned into a Claude
+/// Code or Codex account here, on first use, with a line on stderr for
+/// each (R-NAT-2).
 pub(super) fn instances_from(v: &serde_json::Value) -> Result<instances::InstancesConfig, Error> {
     let path = super::providers::config_path()?;
+    let credentials = super::providers::credentials_path()?;
+    let env = krowk_api::home::process_env;
+    let converted = krowk_harness::connect::ProviderAuth { config: path.clone(), credentials, env: &env }.convert_native();
+    let now;
+    let v = match converted.is_empty() {
+        true => v,
+        false => {
+            for line in &converted {
+                eprintln!("krowk: {line}");
+            }
+            now = config_json()?;
+            &now
+        }
+    };
     let mut cfg = instances::from_config_json(v).map_err(|e| fail("bad_config", format!("{}: {e}", path.display())))?;
     cfg.keys_from = Some(super::providers::credentials_path()?);
     Ok(cfg)

@@ -601,6 +601,7 @@ fn nearly_out(text: &str) -> mock::Reply {
 /// by offering the next instance in its JSON result, marked early, and
 /// says how to continue there on stderr; the turn itself succeeded.
 #[test]
+#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
     let low = mock::serve(|_, _| nearly_out("low-answer-marker"));
     let ok = mock::serve(mock::readme_script);
@@ -626,6 +627,7 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 /// `off` fails a limit with no offer; a resumed session keeps its value; any
 /// other value is refused naming the three.
 #[test]
+#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})) });
     let ok = mock::serve(mock::readme_script);

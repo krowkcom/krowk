@@ -236,7 +236,7 @@ fn report(ctx: &mut Ctx, done: &Connected, verb: &str) -> Result<(), Error> {
     lines.extend(notes.iter().map(|n| format!("  {}", crate::output::warning(colour, n))));
     let try_it = match &done.default_model {
         Some(_) => "krowk".to_string(),
-        None => format!("krowk --model {instance}/{}", connect::default_model(kind.tag()).unwrap_or("<model>")),
+        None => format!("krowk --model {instance}/{}", done.model().unwrap_or("<model>")),
     };
     // A stored $VAR that is unset cannot run anything yet.
     if !matches!(&r.stored, krowk_harness::keys::Stored::Env(_) if r.api_key.is_empty()) {

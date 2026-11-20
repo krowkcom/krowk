@@ -197,30 +197,50 @@ impl Stored {
 }
 
 /// The one place precedence is decided: every instance that calls an API
-/// with a key (not a backend, not OAuth) takes its stored key when the
-/// credentials file has one — a literal or a variable read now, a command
-/// left to `materialise` — and a compatible server with one is keyed.
+/// with a key (not OAuth) takes its stored key when the credentials file
+/// has one — a literal or a variable read now, a command left to
+/// `materialise` — and a compatible server with one is keyed. A keyed
+/// Claude Code or Codex account (one naming `apiKeyEnv`: an API key or a
+/// gateway turned into one) hands the harness its stored key, under the
+/// name it would have handed the variable's; one on its own login has none.
 pub(crate) fn apply(instances: &mut BTreeMap<String, Resolved>, credentials: &Path, env: &dyn Fn(&str) -> String) {
     let stored = crate::oauth::Store::new(credentials.to_path_buf()).keys();
     let dir = credentials.parent().unwrap_or(Path::new(".")).to_path_buf();
-    for r in instances.values_mut().filter(|r| r.backend.is_none() && matches!(r.auth, Auth::ApiKey | Auth::Keyless)) {
+    let keyed = |r: &Resolved| match &r.backend {
+        Some(b) => b.key.is_some(),
+        None => matches!(r.auth, Auth::ApiKey | Auth::Keyless),
+    };
+    for r in instances.values_mut().filter(|r| keyed(r)) {
         let k = match &stored {
             Ok(all) => match all.get(&r.name) {
                 Some(k) => k,
                 None => continue,
             },
-            Err(e) if r.auth == Auth::ApiKey => {
+            // A hand-written keyed backend (a router naming `apiKeyEnv`)
+            // never had a stored key, and reads its variable as before.
+            Err(e) if (r.backend.is_none() && r.auth == Auth::ApiKey) || crate::connect::key_account(r) => {
                 (r.stored, r.api_key) = (Stored::Unreadable(e.message.clone()), String::new());
+                hand_over(r);
                 continue;
             }
             Err(_) => continue,
         };
-        r.auth = Auth::ApiKey;
+        if r.backend.is_none() {
+            r.auth = Auth::ApiKey;
+        }
         (r.stored, r.api_key) = match k {
             KeyRef::Literal(v) => (Stored::Literal, v.trim().to_string()),
             KeyRef::Env(v) => (Stored::Env(v.clone()), env(v).trim().to_string()),
             KeyRef::Command(c) => (Stored::Command { command: c.clone(), dir: dir.clone() }, ran(c).unwrap_or_default()),
         };
+        hand_over(r);
+    }
+}
+
+/// A backend's key, as it is handed to the process: the instance's own.
+fn hand_over(r: &mut Resolved) {
+    if let Some((_, v)) = r.backend.as_mut().and_then(|b| b.key.as_mut()) {
+        v.clone_from(&r.api_key);
     }
 }
 
@@ -270,6 +290,7 @@ pub fn materialise(inst: &Resolved) -> Result<Cow<'_, Resolved>, EngineError> {
             let key = run(&inst.name, command, dir, None).map_err(|why| EngineError::new("not_authenticated", no_fallback(inst, &why)))?;
             let mut r = inst.clone();
             r.api_key = key;
+            hand_over(&mut r);
             Ok(Cow::Owned(r))
         }
         _ => Ok(Cow::Borrowed(inst)),

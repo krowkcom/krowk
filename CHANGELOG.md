@@ -69,6 +69,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Changed
 
+- **API keys and gateways now run in Claude Code or Codex.** `krowk connect`
+  turns an Anthropic API key into a Claude Code account, and an
+  Anthropic-compatible gateway (`--base-url`) into one that sends to it; an
+  OpenAI, xAI, OpenRouter or OpenAI-compatible key becomes a Codex account
+  on a model provider of its own, with that provider's default model. Each
+  keeps the name it had (`anthropic`, `openai:work`), gets a directory of its
+  own under `~/.krowk/accounts`, and its key stays where it was: in krowk's
+  credentials file (pasted, `$VAR` or `!command`) or the variable it names,
+  handed to Claude Code or Codex when it starts, never written into that
+  directory. A key or gateway your `config.json` already defines is turned
+  into one the first time krowk uses it, with one line saying so; a default
+  model naming it still works. SuperGrok can no longer be
+  connected: `krowk connect` says "krowk no longer runs models directly;
+  connect a Claude Code or Codex account."
+
 - **On Free, `krowk sessions archive` keeps the session on this machine.**
   Free's synced history expires after 7 days, so an archived session's
   encrypted copy was soon its only one, then gone. On Free, archiving now
