@@ -320,6 +320,39 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert_eq!(last, "env ANTHROPIC_AUTH_TOKEN=");
 }
 
+/// `krowk -p` on a terminal, on a Claude Code instance, in a repository
+/// nobody trusted: what it would run, then `Trust <repo>? [y/N]` in plain
+/// text. A `y` remembers the repository and runs the prompt on the fake
+/// claude; anything else refuses, with nothing spawned and nothing recorded.
+#[test]
+fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
+    for yes in [true, false] {
+        let b = Sandbox::new(if yes { "p-yes" } else { "p-no" });
+        b.json(&["providers", "add", "claude", "--json"], &[]);
+        std::fs::write(b.root.join("repo/.mcp.json"), "{\"mcpServers\":{\"s\":{\"command\":\"true\"}}}").unwrap();
+        let cmd = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
+        // Wide enough that a long temporary path does not wrap the question.
+        let mut t = pty::Pty::spawn(cmd, 400, 30);
+        assert!(t.wait_for("[y/N]", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
+        let text = t.text();
+        assert!(text.contains("Claude Code runs a repository's own hooks") && text.contains("It has ") && text.contains("MCP"), "what would run is listed: {text:?}");
+        assert!(text.contains("Trust ") && text.contains("? [y/N]"), "{text:?}");
+        assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
+        t.write(if yes { b"y\r" } else { b"n\r" });
+        let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits");
+        let trusted = b.root.join("home/.krowk/trusted.json");
+        if yes {
+            assert!(st.success(), "{st}: {:?}", t.text());
+            assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
+            assert!(b.fake_log().contains("argv -p"));
+        } else {
+            assert!(!st.success(), "{st}");
+            assert!(!trusted.exists());
+            assert!(!b.fake_log().contains("argv -p"), "claude never ran");
+        }
+    }
+}
+
 /// Bare `krowk` on a terminal, on a Claude Code instance, in a repository
 /// nobody trusted: the trust prompt comes before the TUI takes the
 /// terminal, a yes is remembered and the session runs on the fake claude;
@@ -333,10 +366,10 @@ fn r_back_6_the_tui_asks_before_claude_runs_in_an_untrusted_repository() {
         let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
         // Wide enough that a long temporary path does not wrap the question.
         let mut t = pty::Pty::spawn(cmd, 400, 30);
-        assert!(t.wait_for("remember", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
+        assert!(t.wait_for("[y/N]", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
         assert!(t.text().contains("Trust ") && t.text().contains("Claude Code runs a repository's own hooks"), "{:?}", t.text());
         assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
-        t.write(if yes { b"y" } else { b"n" });
+        t.write(if yes { b"y\r" } else { b"n\r" });
         assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "the TUI opens: {:?}", t.text());
         t.write(b"hello\r");
         let trusted = b.root.join("home/.krowk/trusted.json");

@@ -25,6 +25,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   or the refusal with `billing_contacts`. `krowk upgrade` still updates krowk
   itself.
 
+- **`krowk -p` asks whether to trust a repository in plain text.** On a
+  terminal, in a repository nobody trusted, it lists what would run there
+  (hooks, MCP servers) and asks `Trust <repo>? [y/N]`; `y` remembers the
+  repository and runs the prompt, anything else refuses as before. Without a
+  terminal nothing is asked: it refuses, or `--trust` runs it once. The
+  question is no longer a full-screen card answered with one key, so it needs
+  Enter.
+
 ### Changed
 
 - **On Free, `krowk sessions archive` keeps the session on this machine.**
