@@ -123,9 +123,10 @@ struct Listed {
 const STALE: &str = "changed-before-upgrade";
 
 const MAX_FILES: usize = 4000;
-const MAX_FILE: u64 = 8 << 20;
+const MAX_FILE: u64 = 64 << 20;
 const MAX_DEPTH: usize = 12;
-const MAX_DIRS: usize = 3000;
+const MAX_DIRS: usize = 2000;
+const MAX_VISITS: usize = 20000;
 const MAX_DEPTH_DIRS: usize = 6;
 
 type Prints = std::collections::BTreeMap<String, (String, Option<std::time::SystemTime>)>;
@@ -140,9 +141,9 @@ const TRUNCATED: &str = "(too many files to fingerprint)";
 /// (a vendor reads `.claude/settings.json` and Codex a `.codex` from the
 /// working directory up to the root). A directory with a `.git` of its own is
 /// a repository asked about on its own. Bounded in directories and depth.
-fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
+fn roots_of_prints(root: &Path) -> Vec<String> {
     let mut paths: Vec<String> = FINGERPRINTED.iter().map(|p| p.to_string()).collect();
-    let (mut seen, mut cut) = (0, false);
+    let mut seen = 0;
     let mut stack = vec![(String::new(), 0usize)];
     while let Some((rel, depth)) = stack.pop() {
         let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
@@ -160,8 +161,10 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
                 continue;
             }
             seen += 1;
+            // Past the limits a deeper directory is not looked into: a
+            // large tree is not a change, and a settings file that deep is
+            // one a session would have to start that far down to read.
             if seen > MAX_DIRS || depth >= MAX_DEPTH_DIRS {
-                cut = true;
                 continue;
             }
             for f in [".claude/settings.json", ".claude/hooks", ".codex", ".krowk/config.json"] {
@@ -170,18 +173,21 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
             stack.push((sub, depth + 1));
         }
     }
-    (paths, cut)
+    paths
 }
 
 /// Each fingerprinted file of `root` with its digest and modification time:
 /// regular files, and symlinks, which are followed when they point inside
 /// the repository (their target's contents count) and are otherwise hashed
 /// by their target's text, so a FIFO or a link out reads nothing. Bounded
-/// in count, depth and size; a limit hit is recorded as a change.
+/// in count, depth and size (every path looked at, links included); a limit hit inside a fingerprinted path is recorded as a change.
 fn fingerprints(root: &Path) -> Prints {
     use sha2::Digest;
-    fn walk(root: &Path, canon_root: &Path, rel: &str, depth: usize, out: &mut Prints) {
-        if out.len() >= MAX_FILES {
+    fn walk(root: &Path, canon_root: &Path, rel: &str, depth: usize, visits: &mut usize, out: &mut Prints) {
+        // Every path looked at counts, so a directory link back up the
+        // tree ends in the limit rather than in a walk of every route.
+        *visits += 1;
+        if out.len() >= MAX_FILES || *visits > MAX_VISITS {
             out.insert(TRUNCATED.into(), (nonce(), None));
             return;
         }
@@ -204,16 +210,24 @@ fn fingerprints(root: &Path) -> Prints {
                 let mut names: Vec<_> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
                 names.sort();
                 for n in names {
-                    walk(root, canon_root, &format!("{rel}/{n}"), depth + 1, out);
+                    walk(root, canon_root, &format!("{rel}/{n}"), depth + 1, visits, out);
                 }
             }
             return;
         } else if meta.is_file() {
-            let body = if meta.len() <= MAX_FILE { std::fs::read(&path).ok() } else { None };
             let mut h = sha2::Sha256::new();
-            match body {
-                Some(b) => h.update(&b),
-                None => h.update(format!("size:{}", meta.len()).as_bytes()),
+            // Streamed, so a large file costs no memory; one past the cap
+            // is never taken as unchanged.
+            if meta.len() > MAX_FILE {
+                out.insert(TRUNCATED.into(), (nonce(), None));
+            }
+            let mut f = std::fs::File::open(&path).ok().map(std::io::BufReader::new);
+            let mut buf = [0u8; 64 * 1024];
+            while let Some(r) = f.as_mut() {
+                match std::io::Read::read(r, &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => h.update(&buf[..n]),
+                }
             }
             #[cfg(unix)]
             h.update([std::os::unix::fs::PermissionsExt::mode(&meta.permissions()) as u8 & 0o111]);
@@ -227,13 +241,10 @@ fn fingerprints(root: &Path) -> Prints {
         format!("{:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default())
     }
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
-    let (paths, cut) = roots_of_prints(root);
     let mut out = Prints::new();
-    for p in &paths {
-        walk(root, &canon_root, p, 0, &mut out);
-    }
-    if cut {
-        out.insert(TRUNCATED.into(), (nonce(), None));
+    let mut visits = 0;
+    for p in &roots_of_prints(root) {
+        walk(root, &canon_root, p, 0, &mut visits, &mut out);
     }
     out
 }
@@ -575,6 +586,28 @@ mod tests {
             store.trust(&repo).unwrap();
             put(&base, "outside.sh", "b");
             assert!(store.trusts(&repo), "a target outside the repository is not read");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A deep tree is not a change, and a directory link back up the tree
+    /// ends in the walk's limit instead of a walk of every route.
+    #[test]
+    fn r_ease_7_a_deep_tree_stays_trusted_and_a_link_loop_ends() {
+        let (base, repo, store) = repo("deep");
+        put(&repo, "src/main/java/com/example/app/service/deeper/X.java", "x");
+        store.trust(&repo).unwrap();
+        assert!(store.trusts(&repo), "a deep tree is not a change");
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(repo.join(".claude/skills")).unwrap();
+            for n in 0..10 {
+                std::os::unix::fs::symlink(&repo, repo.join(format!(".claude/skills/s{n}"))).unwrap();
+            }
+            let started = std::time::Instant::now();
+            let _ = store.trusts(&repo);
+            assert!(started.elapsed() < std::time::Duration::from_secs(20), "the loop ended");
+            assert!(store.changes(&repo).iter().any(|c| c == TRUNCATED), "and is not taken as unchanged");
         }
         let _ = std::fs::remove_dir_all(&base);
     }
