@@ -1,14 +1,14 @@
-//! The host daemon's WebSocket transport and the no-lag rules, against a
-//! stand-in Anthropic API that types at a known rate (R-PROTO-1, R-LAG-1,
-//! 2, 3, 4, 5, 9, 10). A test binary of its own, its tests one at a time:
+//! The host daemon's WebSocket transport and the no-lag rules, against the
+//! fake `claude` typing at a known rate (R-PROTO-1, R-LAG-1, 2, 3, 4, 5, 9,
+//! 10). A test binary of its own, its tests one at a time:
 //! they measure time, and a daemon under another test's load would measure
 //! that instead. The client is tungstenite's, not the daemon's code, so a
 //! framing mistake cannot pass on both ends.
 
 #![cfg(unix)]
 
-#[path = "common/mock.rs"]
-mod mock;
+#[path = "common/fake.rs"]
+mod fake;
 #[path = "common/scratch.rs"]
 mod scratch;
 
@@ -19,7 +19,7 @@ use krowk_harness::daemon::{self, client::Client, server};
 use krowk_harness::host::HostConfig;
 use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::log;
-use krowk_harness::protocol::{ClientFrame, Command, Delta, LiveEvent, PermissionMode, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use krowk_harness::protocol::{ClientFrame, Command, Delta, LiveEvent, ModelRef, PermissionMode, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -28,38 +28,66 @@ use tokio_tungstenite::tungstenite::Message;
 
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
-/// How long a configuration read takes, and the Anthropic API it reads.
-type Read = (Duration, Option<String>);
+/// How long a configuration read takes, and the instances it reads.
+type Read = (Duration, Option<InstancesConfig>);
 
 struct Home {
     root: PathBuf,
-    url: String,
+    /// The instances a configuration read finds: the fake `claude`, as
+    /// `claude`, under `root/claude`.
+    instances: InstancesConfig,
+    /// The stand-in Anthropic API of a test of the native loop's own
+    /// client, which runs on the `anthropic` instance instead.
+    url: Option<String>,
     /// The daemon's thread's worst lateness, in µs, since last zeroed.
     late: Arc<AtomicU64>,
     /// How the next configuration reads go, one each, first first: how long
-    /// each takes, and the Anthropic API it reads, when another. Reads past
-    /// these are at once, of `url`.
+    /// each takes, and the instances it reads, when others. Reads past
+    /// these are at once, of `instances`.
     reads: Arc<Mutex<std::collections::VecDeque<Read>>>,
     /// Configuration reads begun.
     begun: Arc<AtomicU64>,
 }
 
 impl Home {
-    fn new(name: &str, url: &str) -> Home {
+    /// A home whose model is the fake `claude` playing `scenario` (a plain
+    /// `ok` a turn without one).
+    fn new(name: &str, scenario: Option<&str>) -> Home {
+        Home::on(name, "claude", scenario)
+    }
+
+    /// The same, the fake's account under `root/<dir>`, logging to `root/<dir>.log`.
+    fn on(name: &str, dir: &str, scenario: Option<&str>) -> Home {
+        let root = Home::root(name);
+        let instances = Home::claude(&root, dir, scenario);
+        Home { root, instances, url: None, late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
+    }
+
+    fn root(name: &str) -> PathBuf {
         let root = scratch::root(&format!("ws-{name}"));
         for d in ["home", "run", "repo/.git"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
         }
-        Home { root, url: url.into(), late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
+        root
+    }
+
+    /// The fake under `root/<dir>` as the one instance, `claude`.
+    fn claude(root: &Path, dir: &str, scenario: Option<&str>) -> InstancesConfig {
+        InstancesConfig { instances: [("claude".to_string(), fake::claude(root, dir, scenario))].into_iter().collect(), ..Default::default() }
+    }
+
+    /// A home whose model is the native `anthropic` instance at `url`.
+    fn native(name: &str, url: &str) -> Home {
+        Home { root: Home::root(name), instances: InstancesConfig::default(), url: Some(url.into()), late: Arc::default(), reads: Arc::default(), begun: Arc::default() }
     }
 
     fn env(&self) -> impl Fn(&str) -> String + Clone + Send + 'static {
         let (root, url) = (self.root.clone(), self.url.clone());
-        move |k| match k {
-            "HOME" => root.join("home").display().to_string(),
-            "XDG_RUNTIME_DIR" => root.join("run").display().to_string(),
-            "ANTHROPIC_API_KEY" => "sk-test".into(),
-            "ANTHROPIC_BASE_URL" => url.clone(),
+        move |k| match (k, &url) {
+            ("HOME", _) => root.join("home").display().to_string(),
+            ("XDG_RUNTIME_DIR", _) => root.join("run").display().to_string(),
+            ("ANTHROPIC_API_KEY", Some(_)) => "sk-test".into(),
+            ("ANTHROPIC_BASE_URL", Some(url)) => url.clone(),
             _ => String::new(),
         }
     }
@@ -78,19 +106,13 @@ impl Home {
         let (env, socket) = (self.env(), self.socket());
         let credentials = self.root.join("home/.krowk/credentials.json");
         let late = self.late.clone();
-        let (reads, begun) = (self.reads.clone(), self.begun.clone());
+        let (reads, begun, instances) = (self.reads.clone(), self.begun.clone(), self.instances.clone());
         let t = std::thread::spawn(move || {
             let factory: server::Factory = Box::new(move |cwd: &Path, answers: bool| {
-                let (delay, url) = reads.lock().unwrap().pop_front().unwrap_or_default();
+                let (delay, read) = reads.lock().unwrap().pop_front().unwrap_or_default();
                 begun.fetch_add(1, Ordering::SeqCst);
                 std::thread::sleep(delay);
-                let env = {
-                    let env = env.clone();
-                    move |k: &str| match (k, &url) {
-                        ("ANTHROPIC_BASE_URL", Some(u)) => u.clone(),
-                        _ => env(k),
-                    }
-                };
+                let instances = read.unwrap_or_else(|| instances.clone());
                 // A directory named `slow` takes a second to read, as one
                 // on a slow disk would: a turn there is working, not yet
                 // running, for that long.
@@ -105,7 +127,7 @@ impl Home {
                 Ok(HostConfig {
                     sessions_dir: log::sessions_dir(&env).unwrap(),
                     cwd: cwd.to_path_buf(),
-                    registry: Registry::resolve(&InstancesConfig::default(), &env),
+                    registry: Registry::resolve(&instances, &env),
                     krowk_version: "test".into(),
                     pricer: Arc::new(|_, _, _| None),
                     catalog: Arc::new(|_, _| None),
@@ -150,7 +172,10 @@ impl Home {
     }
 
     fn prompt(&self, text: &str, mode: PermissionMode) -> Command {
-        let model = Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap();
+        let model = match self.url {
+            Some(_) => Registry::resolve(&InstancesConfig::default(), &self.env()).parse_model("claude-sonnet-4-6").unwrap(),
+            None => ModelRef { instance: "claude".into(), model: "sonnet".into() },
+        };
         Command::Prompt { session_id: None, text: text.into(), images: Vec::new(), model: Some(model), permission_mode: mode, toolset: None, effort: None, rollover: None, budget: None }
     }
 }
@@ -165,13 +190,51 @@ fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap()
 }
 
-/// `n` distinct words, so a word twice or missing shows.
+/// `n` distinct words, so a word twice or missing shows: what the fake's
+/// `@type n … w` types.
 fn words(n: usize) -> String {
-    (1..=n).map(|i| format!("w{i} ")).collect::<String>().trim_end().to_string()
+    (0..n).map(|i| format!("w{i} ")).collect()
 }
 
-fn prompt_of(body: &serde_json::Value) -> String {
-    body["messages"][0]["content"].to_string()
+/// A turn typing `words(n)`, `per` words every `pause` seconds: on average
+/// a word every `pause / per`. Several at a time where a word each would be
+/// faster than a `sleep` wakes; a batch is 16 ms of the daemon's time, so a
+/// burst inside one is the same to it as the words spread over it.
+fn typing(n: usize, pause: f64, per: usize) -> String {
+    format!("@type {n} {pause} w {per}\n{}", fake::result(&words(n)))
+}
+
+/// `typing(n, pause, 1)`, the stream then held open `hold` seconds after
+/// its last word before it ends and the whole message comes.
+fn held_typing(n: usize, pause: f64, hold: f64) -> String {
+    let event = |e: serde_json::Value| serde_json::json!({"type": "stream_event", "event": e, "session_id": "{{SESSION}}", "parent_tool_use_id": null}).to_string();
+    let mut out = vec![
+        event(serde_json::json!({"type": "message_start", "message": {"model": "{{MODEL}}", "id": "msg_held", "type": "message", "role": "assistant", "content": [], "usage": {"input_tokens": 3, "output_tokens": 1}}})),
+        event(serde_json::json!({"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}})),
+    ];
+    for i in 0..n {
+        out.push(event(serde_json::json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": format!("w{i} ")}})));
+        out.push(format!("@sleep {pause}"));
+    }
+    out.push(format!("@sleep {hold}"));
+    out.push(event(serde_json::json!({"type": "content_block_stop", "index": 0})));
+    out.push(event(serde_json::json!({"type": "message_stop"})));
+    out.push(fake::answer(&words(n)));
+    out.join("\n")
+}
+
+/// A Bash call the model makes and runs, which takes `seconds`, and then
+/// `answer`.
+fn runs_bash(command: &str, seconds: f64, answer: &str) -> String {
+    let call = serde_json::json!({"type": "assistant", "message": {"id": "msg_bash", "model": "{{MODEL}}", "role": "assistant", "content": [{"type": "tool_use", "id": "toolu_01Bash", "name": "Bash", "input": {"command": command}}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    let result = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_01Bash", "type": "tool_result", "content": [{"type": "text", "text": ""}], "is_error": false}]}, "parent_tool_use_id": null, "session_id": "{{SESSION}}"});
+    format!("{call}\n@sleep {seconds}\n{result}\n{answer}")
+}
+
+/// `section` for every turn, of every process: each prompt answered alike,
+/// however many turns came before it and whether the session was resumed.
+fn every_turn(section: &str) -> String {
+    format!("@when \"role\":\"user\"\n{section}")
 }
 
 type Wire = tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -259,8 +322,7 @@ fn delta_text(f: &ServerFrame) -> Option<(&str, &str)> {
 fn r_proto_1_a_websocket_client_runs_a_turn_and_one_without_the_token_is_refused() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(40);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
-    let home = Home::new("turn", &m.url);
+    let home = Home::new("turn", Some(&typing(40, 0.008, 4)));
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
@@ -313,8 +375,7 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
     use base64::Engine as _;
     use krowk_harness::protocol::ImageInput;
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("Three dots.")));
-    let home = Home::new("images", &m.url);
+    let home = Home::new("images", Some(&fake::answer("Three dots.")));
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let header = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01\x08\x02\0\0\0";
     let images: Vec<Vec<u8>> = (1u8..=3).map(|n| [&header[..], &vec![n; 1_800_000][..]].concat()).collect();
@@ -374,30 +435,24 @@ fn r_img_1_three_images_past_the_message_cap_reach_the_model_each_as_its_own_mes
         let held: Vec<_> = std::fs::read_dir(krowk_harness::log::sessions_dir(&home.env()).unwrap().join(&session).join("images")).unwrap().collect();
         assert_eq!(held.len(), 3, "one file each");
     });
-    let seen = m.seen.lock().unwrap();
-    let content = seen[0].body["messages"][0]["content"].as_array().unwrap();
+    let prompts = fake::prompts(&home.root, "claude");
+    let content = prompts[0]["message"]["content"].as_array().unwrap();
     let sent = content.iter().filter(|b| b["type"] == "image").count();
     assert_eq!(sent, 3, "the model call carries all three: {}", content.len());
-    drop(seen);
     daemon.join().unwrap().unwrap();
 }
 
 /// R-LAG-1: while the model types, nothing under krowk's home is written —
 /// neither the log nor krowk.db nor anything else: the deltas go from the
-/// provider's stream to the socket through memory alone, and only the
+/// model's stream to the socket through memory alone, and only the
 /// finished item is logged. The stream is held open after its last word
-/// until every word is read, so the finished item's write, one pace behind
-/// it, cannot land before a slow client has looked.
+/// for two seconds after its last word, so the finished item's write cannot
+/// land before a slow client has looked.
 #[test]
 fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(60);
-    let gate = mock::Gate::default();
-    let m = {
-        let (a, g) = (answer.clone(), gate.clone());
-        mock::serve(move |_, _| mock::Reply { hold: Some(("content_block_stop", g.clone())), ..mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(10)) })
-    };
-    let home = Home::new("nowrite", &m.url);
+    let home = Home::new("nowrite", Some(&held_typing(60, 0.01, 2.0)));
     let queued = log::queued_syncs();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     fn written(dir: &Path, into: &mut Vec<(PathBuf, u64, std::time::SystemTime)>) {
@@ -445,7 +500,6 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
         assert_eq!(events, 1, "the log was there all along, and did not move");
         // The stream ends, and the finished item is logged: the one write,
         // and one the snapshots would have seen.
-        gate.open();
         while let Some(got) = c.next().await {
             let Got::Batch(_, frames) = got else { continue };
             if frames.iter().any(|f| matches!(f, ServerFrame::Done { id: 1, .. })) {
@@ -473,8 +527,19 @@ fn r_lag_1_no_write_sits_between_the_provider_stream_and_the_socket() {
 /// Here the flood is 5,000 tokens a second, which the unoptimized build
 /// `make check` runs keeps up with; the release build takes the flood
 /// unpaced (`…_release_…`, run by `make bench`), since an unoptimized
-/// build spends tens of milliseconds parsing a provider's burst of
-/// hundreds of kilobytes on the thread.
+/// build spends tens of milliseconds parsing a burst of hundreds of
+/// kilobytes on the thread.
+///
+/// The model is the fake `claude`, a bash script: it types the paced
+/// sessions 4 words every 8 ms and the flood 40 every 8 ms, the same
+/// average rates, and "unpaced" is as fast as bash prints its lines, a few
+/// thousand a second, which is far below what a provider's burst was. So
+/// the unpaced variant now holds the limits under a gentler flood than it
+/// was written for. And a session's longest gap now counts the fake's own
+/// wakes too: four bash processes forking `sleep`, which a loaded machine
+/// holds up 50–150 ms where the daemon's thread is on time within 15 ms.
+/// The 50 ms limit is kept, so `make bench` needs its quiet machine more
+/// than it did; a failure with the thread's lateness low is the machine.
 ///
 /// The two limits, 30 ms and 50 ms, are held in the release build only,
 /// which `make bench` runs on a quiet machine, both variants. The
@@ -491,8 +556,8 @@ fn r_lag_2_r_lag_3_three_sessions_at_500_tokens_a_second_and_a_flood_stall_none(
     load(8_000, Some(Duration::from_micros(200)));
 }
 
-/// The same with the flood unpaced — every token the provider has, as fast
-/// as it sends them. Release only: `make bench` runs it.
+/// The same with the flood unpaced — every word the model has, as fast as
+/// it prints them. Release only: `make bench` runs it.
 #[test]
 #[cfg_attr(debug_assertions, ignore = "release only, as make bench runs it")]
 fn r_lag_2_r_lag_3_release_three_sessions_and_an_unpaced_flood_stall_none() {
@@ -503,19 +568,12 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let paced = words(1000);
     let flood = words(flood_words);
-    let m = {
-        let (p, f) = (paced.clone(), flood.clone());
-        mock::serve(move |body, _| {
-            if !prompt_of(body).contains("flood") {
-                mock::Reply::paced(mock::text_stream(&p), Duration::from_millis(2))
-            } else if let Some(pace) = flood_pace {
-                mock::Reply::paced(mock::text_stream(&f), pace)
-            } else {
-                mock::Reply::sse(&mock::text_stream(&f))
-            }
-        })
+    // The flood typed 40 words at a time, every 40 paces; unpaced, at once.
+    let flooding = match flood_pace {
+        Some(pace) => typing(flood_words, (pace * 40).as_secs_f64(), 40),
+        None => typing(flood_words, 0.0, 1),
     };
-    let home = Home::new("load", &m.url);
+    let home = Home::new("load", Some(&format!("@when flood\n{flooding}\n---\n{}", typing(1000, 0.008, 4))));
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let (arrivals, texts, late) = rt().block_on(async {
         let (addr, token) = home.websocket().await;
@@ -586,8 +644,7 @@ fn load(flood_words: usize, flood_pace: Option<Duration>) {
 fn r_lag_4_r_lag_10_a_slow_websocket_client_is_caught_up_from_its_cursor_in_bounded_memory() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(3000);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_micros(700))) };
-    let home = Home::new("slow", &m.url);
+    let home = Home::new("slow", Some(&typing(3000, 0.014, 20)));
     let cap = 32 * 1024;
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     rt().block_on(async {
@@ -640,8 +697,7 @@ fn r_lag_4_r_lag_10_a_suspended_unix_client_is_caught_up_from_its_cursor_in_boun
     use std::io::{BufRead, Write};
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(4000);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_micros(500))) };
-    let home = Home::new("suspended", &m.url);
+    let home = Home::new("suspended", Some(&typing(4000, 0.01, 20)));
     let cap = 32 * 1024;
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     let mut s = std::os::unix::net::UnixStream::connect(home.socket()).unwrap();
@@ -691,15 +747,7 @@ fn r_lag_4_r_lag_10_a_suspended_unix_client_is_caught_up_from_its_cursor_in_boun
 #[test]
 fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|body, _| {
-        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
-        if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) {
-            mock::Reply::sse(&mock::text_stream("Slept."))
-        } else {
-            mock::Reply::sse(&mock::tool_use("toolu_01Sleep", "bash", &serde_json::json!({"command": "sleep 5"})))
-        }
-    });
-    let home = Home::new("heartbeat", &m.url);
+    let home = Home::new("heartbeat", Some(&runs_bash("sleep 5", 5.0, &fake::answer("Slept."))));
     let beat = Duration::from_millis(100);
     let daemon = home.serve(beat, Caps::default());
     rt().block_on(async {
@@ -766,15 +814,7 @@ fn r_lag_9_a_tool_that_blocks_for_five_seconds_does_not_delay_heartbeats() {
 #[test]
 fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|body, _| {
-        let last = body["messages"].as_array().and_then(|m| m.last().cloned()).unwrap_or_default();
-        if last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result")) {
-            mock::Reply::sse(&mock::text_stream(&words(200)))
-        } else {
-            mock::Reply::sse(&mock::tool_use("toolu_01True", "bash", &serde_json::json!({"command": "true"})))
-        }
-    });
-    let home = Home::new("slow-disk", &m.url);
+    let home = Home::new("slow-disk", Some(&runs_bash("true", 0.0, &typing(200, 0.0, 200))));
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     const STALL: Duration = Duration::from_millis(40);
     let slow = log::simulate_slow_disk(STALL);
@@ -831,8 +871,7 @@ fn r_lag_9_a_turn_on_a_stalling_disk_writes_nothing_on_the_daemon_thread() {
 #[test]
 fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("slow-reload", &m.url);
+    let home = Home::new("slow-reload", None);
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     const STALL: Duration = Duration::from_millis(40);
     rt().block_on(async {
@@ -846,7 +885,7 @@ fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
             home.reads.lock().unwrap().push_back((STALL, None));
             home.lateness();
             let started = Instant::now();
-            c.send(&ClientFrame::Reload { id, changed: Some("anthropic".into()), renamed_from: None, renamed_to: None }).await;
+            c.send(&ClientFrame::Reload { id, changed: Some("claude".into()), renamed_from: None, renamed_to: None }).await;
             let error = done(&mut c, &[id]).await.remove(&id).unwrap();
             let took = started.elapsed();
             lates.push(home.lateness());
@@ -871,9 +910,9 @@ fn r_lag_9_a_reload_on_a_slow_disk_leaves_the_daemon_thread_on_time() {
 #[test]
 fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let old = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("old")));
-    let new = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("new")));
-    let home = Home::new("two-reloads", &old.url);
+    let home = Home::on("two-reloads", "old", None);
+    let new = Home::claude(&home.root, "new", None);
+    let (old_asked, new_asked) = (|| fake::prompts(&home.root, "old").len(), || fake::prompts(&home.root, "new").len());
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
@@ -882,8 +921,8 @@ fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
         done(&mut c, &[1]).await;
         // The first reads what was there before, slowly; the second what
         // is there now, sooner, but not before the prompt could reach the
-        // provider were it not held for it.
-        home.reads.lock().unwrap().extend([(Duration::from_millis(300), Some(old.url.clone())), (Duration::from_millis(100), Some(new.url.clone()))]);
+        // model were it not held for it.
+        home.reads.lock().unwrap().extend([(Duration::from_millis(300), Some(home.instances.clone())), (Duration::from_millis(100), Some(new))]);
         let before = home.begun.load(Ordering::SeqCst);
         c.send(&ClientFrame::Reload { id: 2, changed: None, renamed_from: None, renamed_to: None }).await;
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -895,12 +934,12 @@ fn r_proto_1_two_reloads_in_quick_succession_apply_the_seconds_registry() {
         c.send(&ClientFrame::Execute { id: 4, command: home.prompt("again", PermissionMode::Default), client_ref: None }).await;
         let answers = done(&mut c, &[2, 3, 4]).await;
         assert!(answers.values().all(Option::is_none), "every one answered without error: {answers:?}");
-        assert_eq!(old.seen.lock().unwrap().len(), 1, "the first prompt alone went to the old API");
-        assert_eq!(new.seen.lock().unwrap().len(), 1, "the one after the reloads went to the new");
+        assert_eq!(old_asked(), 1, "the first prompt alone went to the old account");
+        assert_eq!(new_asked(), 1, "the one after the reloads went to the new");
         // And it stays applied once the slow read is back.
         c.send(&ClientFrame::Execute { id: 5, command: home.prompt("once more", PermissionMode::Default), client_ref: None }).await;
         done(&mut c, &[5]).await;
-        assert_eq!(new.seen.lock().unwrap().len(), 2, "the slow first read did not replace the second's");
+        assert_eq!(new_asked(), 2, "the slow first read did not replace the second's");
     });
     daemon.join().unwrap().unwrap();
 }
@@ -956,7 +995,7 @@ fn tls_server() -> (String, Arc<AtomicU64>) {
 fn r_lag_9_a_turn_whose_tls_handshake_stalls_leaves_the_daemon_thread_on_time() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let (url, handshakes) = tls_server();
-    let home = Home::new("slow-tls", &url);
+    let home = Home::native("slow-tls", &url);
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     const STALL: Duration = Duration::from_millis(100);
     let slow = krowk_harness::http::simulate_slow_verify(STALL);
@@ -997,7 +1036,7 @@ fn r_lag_9_a_turn_whose_tls_handshake_stalls_leaves_the_daemon_thread_on_time() 
 #[test]
 fn r_lag_9_a_peer_that_answers_no_heartbeat_is_let_go() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let home = Home::new("dead", "http://127.0.0.1:9");
+    let home = Home::new("dead", None);
     let daemon = home.serve(Duration::from_millis(100), Caps::default());
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
@@ -1094,8 +1133,7 @@ fn typed_of(frames: &[ServerFrame]) -> String {
 fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_from_the_log() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let answer = words(200);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
-    let home = Home::new("seq", &m.url);
+    let home = Home::new("seq", Some(&every_turn(&typing(200, 0.008, 4))));
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     let mut a = Raw::connect(&home);
     a.send(&ClientFrame::Execute { id: 1, command: prompt_in(&home, None, "one"), client_ref: None });
@@ -1128,9 +1166,7 @@ fn r_proto_1_a_seq_is_never_reused_and_a_cursor_from_another_run_is_caught_up_fr
 #[test]
 fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let answer = words(1500);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_micros(300))) };
-    let home = Home::new("held", &m.url);
+    let home = Home::new("held", Some(&every_turn(&typing(1500, 0.006, 20))));
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 16 * 1024, control_bytes: 1 << 20 });
     // X runs the first turn and stops reading; Y runs the next one in the
     // same session while X is still behind.
@@ -1143,7 +1179,7 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
     drop(watcher);
     let mut y = Raw::connect(&home);
     // The first turn's command is over while X sleeps: waited for, not
-    // slept on, since a slow runner types slower than the mock's pace. Not
+    // slept on, since a slow runner types slower than the fake's pace. Not
     // by `status`, whose `running` is false until `turn.started`, after the
     // session's first line, and again from `turn.completed`, before the
     // command lets the session go: a prompt sent in either window is
@@ -1194,8 +1230,7 @@ fn r_lag_4_a_done_held_while_behind_goes_back_at_its_place() {
 #[test]
 fn r_lag_10_an_attach_to_a_long_log_is_paged_at_the_cap() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, n| mock::Reply::sse(&mock::text_stream(&format!("answer {n}: {}", words(300)))));
-    let home = Home::new("paged", &m.url);
+    let home = Home::new("paged", Some(&every_turn(&typing(300, 0.0, 300))));
     let cap = 4 * 1024;
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: cap, control_bytes: 1 << 20 });
     // Twelve turns: a log several times the cap.
@@ -1259,8 +1294,7 @@ fn a_page_near_the_end_of_a_long_log_reads_from_its_cursor() {
     use krowk_harness::protocol::{LogBody, LogEvent, Usage};
     use std::io::Write;
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, n| mock::Reply::sse(&mock::text_stream(&format!("answer {n}"))));
-    let home = Home::new("offset", &m.url);
+    let home = Home::new("offset", None);
     let daemon = home.serve(ws::HEARTBEAT, Caps { session_bytes: 1 << 20, control_bytes: 1 << 20 });
     let mut a = Raw::connect(&home);
     a.send(&ClientFrame::Execute { id: 0, command: prompt_in(&home, None, "turn"), client_ref: None });
@@ -1341,7 +1375,7 @@ fn a_page_near_the_end_of_a_long_log_reads_from_its_cursor() {
 #[test]
 fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let home = Home::new("preauth", "http://127.0.0.1:9");
+    let home = Home::new("preauth", None);
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
     rt().block_on(async {
         let (addr, token) = home.websocket().await;
@@ -1386,9 +1420,8 @@ fn r_proto_1_nothing_is_said_before_the_token_and_browsers_are_refused() {
 fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one() {
     use krowk_harness::protocol::{LogBody, LogEvent, TurnStatus};
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let answer = words(3000);
-    let m = { let a = answer.clone(); mock::serve(move |_, _| mock::Reply::paced(mock::text_stream(&a), Duration::from_millis(2))) };
-    let home = Home::new("sigterm", &m.url);
+    let interrupt = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/interrupt.jsonl")).unwrap();
+    let home = Home::new("sigterm", Some(&interrupt));
     let queued = log::queued_syncs();
     let slow = home.root.join("slow");
     std::fs::create_dir_all(slow.join(".git")).unwrap();
@@ -1426,8 +1459,7 @@ fn r_lag_9_a_sigterm_interrupts_the_running_turn_syncs_it_and_takes_no_new_one()
 #[test]
 fn r_lag_9_a_second_sigterm_exits_at_once() {
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("sigterm2", &m.url);
+    let home = Home::new("sigterm2", None);
     let stuck = home.root.join("stuck");
     std::fs::create_dir_all(stuck.join(".git")).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
@@ -1452,8 +1484,7 @@ fn r_lag_9_a_second_sigterm_exits_at_once() {
 fn r_mcp_21_a_daemon_hosted_session_reports_its_servers_and_reconnects_one() {
     use krowk_harness::protocol::McpState;
     let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
-    let m = mock::serve(|_, _| mock::Reply::sse(&mock::text_stream("hi")));
-    let home = Home::new("mcp", &m.url);
+    let home = Home::new("mcp", None);
     let fake = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mcp/fake-mcp");
     std::fs::write(home.repo().join(".mcp.json"), serde_json::json!({"mcpServers": {"fake": {"command": "bash", "args": [fake], "env": {"FAKE_TOOLS": "2"}}}}).to_string()).unwrap();
     let daemon = home.serve(ws::HEARTBEAT, Caps::default());
