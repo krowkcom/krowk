@@ -947,6 +947,9 @@ impl Shared {
         #[cfg(not(feature = "test-hooks"))]
         let lag = ();
         let children = SessionKids::new(session_id, self.watch.clone(), lag);
+        // A stored key's command, run once (`key_off_thread` ran it before
+        // the turn): the process is handed the key it gave.
+        let instance = &*crate::keys::materialise(instance)?;
         let e: Arc<dyn Engine> = match instance.wire_api {
             WireApi::CodexAppServer => Arc::new(CodexEngine::new(instance.clone(), &self.cfg.krowk_version)?),
             _ => Arc::new(ClaudeEngine::new(instance.clone(), &self.cfg.krowk_version)?.watched(self.teller(session_id, children.clone()))),

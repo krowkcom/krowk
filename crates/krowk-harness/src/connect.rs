@@ -34,6 +34,18 @@
 //! the definition, which still names only a variable. A command is run
 //! once before anything is written: one that fails stores nothing.
 //!
+//! **An API key or a gateway is a Claude Code or Codex account** (D3,
+//! R-NAT-2): krowk no longer runs models itself. An Anthropic key is a
+//! Claude Code account, a gateway's base URL in its env; an OpenAI, xAI,
+//! OpenRouter or OpenAI-compatible key a Codex account on a model provider
+//! of its own (`-c model_providers.krowk-<vendor>…`, its default model
+//! with it). The instance keeps the name it would have had, and its key
+//! stays where it was — in the credentials file or the variable the
+//! definition names — handed to the harness at launch; the account's
+//! directory holds no key. One that config.json defines for krowk to run
+//! itself is converted on first use (`convert_native`). SuperGrok is
+//! refused: `NO_DIRECT_MODELS`.
+//!
 //! **A failed sign-in writes nothing**: no definition, and no directory
 //! left behind of the ones it made. Connecting an instance that exists
 //! renews its login and keeps its definition, with the fields given
@@ -48,6 +60,13 @@ use crate::readiness::{self, Probe, Report};
 use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
+
+/// What a way in krowk no longer runs — SuperGrok — is refused with.
+pub const NO_DIRECT_MODELS: &str = "krowk no longer runs models directly; connect a Claude Code or Codex account.";
+
+fn no_direct_models() -> EngineError {
+    EngineError::new("removed_provider", NO_DIRECT_MODELS)
+}
 
 /// Who sells the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +188,112 @@ pub fn by_provider(provider: &str, device: bool) -> Option<&'static MethodInfo> 
 /// The way an existing definition was connected.
 fn by_kind(kind: &str) -> Option<&'static MethodInfo> {
     METHODS.iter().find(|m| m.kind == kind)
+}
+
+/// The harness a way in by API key runs in (D3): Claude Code for an
+/// Anthropic key, Codex for the rest. None for a subscription, which is one
+/// already, and SuperGrok.
+fn harness_of(way: &MethodInfo) -> Option<&'static str> {
+    (way.method == Method::ApiKey).then_some(if way.vendor == Vendor::Anthropic { "claude-code" } else { "codex-app-server" })
+}
+
+/// The vendor whose model provider a Codex account's args name
+/// (`model_provider="krowk-xai"`): one made from a key.
+fn codex_provider(args: &[String]) -> Option<Vendor> {
+    args.iter().find_map(|a| a.strip_prefix("model_provider="))?.trim_matches('"').strip_prefix("krowk-").and_then(Vendor::parse)
+}
+
+/// The way an instance was connected: an Anthropic key's Claude Code
+/// account by its name, a key's Codex account by its model provider,
+/// anything else by its kind.
+fn way_of(r: &Resolved) -> Option<&'static MethodInfo> {
+    let by_key = |v: Vendor| v.methods().into_iter().find(|m| m.method == Method::ApiKey);
+    let keyed = r.backend.as_ref().is_some_and(|b| b.key.is_some());
+    match (r.kind, r.backend.as_ref().and_then(|b| codex_provider(&b.args))) {
+        ("claude-code", _) if keyed && (r.name == "anthropic" || r.name.starts_with("anthropic:")) => by_key(Vendor::Anthropic),
+        ("codex-app-server", Some(v)) => by_key(v),
+        (k, _) => by_kind(k),
+    }
+}
+
+/// D3: the account an API key or a gateway krowk ran itself becomes, in
+/// `dir`, a directory of its own: an Anthropic key a Claude Code account,
+/// a gateway's base URL in its env; the rest a Codex account on a model
+/// provider of its own, its base URL, wire API and the variable it reads
+/// in the provider's entry, and the provider's default model. `r` is the
+/// native one resolved, with its stored key: the variable it reads is the
+/// account's — the one the key was in, never another vendor's — and a
+/// server with only a stored key (or `stores`, one about to be) gets one
+/// made from its name. No key is written: the definition names the
+/// variable, and the key stays in it or in the credentials file.
+fn to_harness(native: &InstanceKind, r: &Resolved, dir: String, stores: bool) -> Option<InstanceKind> {
+    let var = match r.api_key_env.trim() {
+        "" if r.stored == crate::keys::Stored::No && !stores => None,
+        "" => Some(format!("{}_API_KEY", env_part(&r.name))),
+        v => Some(v.to_string()),
+    };
+    let (vendor, label, effort) = match native {
+        InstanceKind::AnthropicApi { base_url, effort, .. } => {
+            let env = clean(base_url).map(|u| [("ANTHROPIC_BASE_URL".to_string(), u)].into()).unwrap_or_default();
+            return Some(InstanceKind::ClaudeCode { binary: None, config_dir: Some(dir), env, args: Vec::new(), api_key_env: var, effort: *effort });
+        }
+        InstanceKind::OpenaiApi { effort, .. } => (Vendor::Openai, "OpenAI", effort),
+        InstanceKind::XaiApi { effort, .. } => (Vendor::Xai, "xAI", effort),
+        InstanceKind::OpenrouterApi { effort, .. } => (Vendor::Openrouter, "OpenRouter", effort),
+        InstanceKind::OpenaiCompatible { effort, .. } => (Vendor::OpenaiCompatible, r.name.as_str(), effort),
+        _ => return None,
+    };
+    let id = format!("krowk-{}", vendor.id());
+    let q = |s: &str| serde_json::to_string(s).expect("a string serializes");
+    let wire = if r.wire_api == crate::protocol::WireApi::OpenaiResponses { "responses" } else { "chat" };
+    let mut set = vec![format!("model_providers.{id}.name={}", q(label)), format!("model_providers.{id}.base_url={}", q(&r.base_url)), format!("model_providers.{id}.wire_api={}", q(wire))];
+    if let Some(v) = &var {
+        set.push(format!("model_providers.{id}.env_key={}", q(v)));
+    }
+    set.push(format!("model_provider={}", q(&id)));
+    if let Some(m) = default_model(native.tag()) {
+        set.push(format!("model={}", q(m)));
+    }
+    let args = set.into_iter().flat_map(|s| ["-c".to_string(), s]).collect();
+    Some(InstanceKind::CodexAppServer { binary: None, codex_home: Some(dir), env: Default::default(), args, api_key_env: var, effort: *effort })
+}
+
+/// The native definition a key's account was made from, as far as it
+/// still says — its variable, base URL and wire API — so connecting it
+/// again merges what is given into it the way it always has.
+fn native_of(def: &InstanceKind) -> Option<InstanceKind> {
+    use crate::protocol::WireApi;
+    match def {
+        InstanceKind::ClaudeCode { env, api_key_env, effort, .. } => {
+            Some(InstanceKind::AnthropicApi { api_key_env: api_key_env.clone(), base_url: env.get("ANTHROPIC_BASE_URL").cloned(), thinking: None, max_tokens: None, effort: *effort })
+        }
+        InstanceKind::CodexAppServer { args, api_key_env, effort, .. } => {
+            let v = codex_provider(args)?;
+            let field = |f: &str| {
+                let at = format!("model_providers.krowk-{}.{f}=", v.id());
+                args.iter().find_map(|a| a.strip_prefix(at.as_str())).and_then(|s| serde_json::from_str::<String>(s).ok())
+            };
+            let (api_key_env, base_url, effort) = (api_key_env.clone(), field("base_url"), *effort);
+            let wire_api = field("wire_api").map(|w| if w == "responses" { WireApi::OpenaiResponses } else { WireApi::ChatCompletions });
+            Some(match v {
+                Vendor::Openai => InstanceKind::OpenaiApi { api_key_env, base_url, wire_api, effort },
+                Vendor::Xai => InstanceKind::XaiApi { api_key_env, base_url, effort },
+                Vendor::Openrouter => InstanceKind::OpenrouterApi { api_key_env, base_url, effort },
+                Vendor::OpenaiCompatible => InstanceKind::OpenaiCompatible { base_url: base_url.unwrap_or_default(), api_key_env, provider: None, wire_api, effort },
+                Vendor::Anthropic => return None,
+            })
+        }
+        _ => None,
+    }
+}
+
+/// An account's own directory, as its definition names it.
+fn dir_of(def: &InstanceKind) -> Option<String> {
+    match def {
+        InstanceKind::ClaudeCode { config_dir, .. } => config_dir.clone(),
+        InstanceKind::CodexAppServer { codex_home, .. } => codex_home.clone(),
+        _ => None,
+    }
 }
 
 /// The command that connects an instance, or renews its login, for a fix
@@ -360,6 +485,16 @@ pub struct Connected {
     /// Where a key stored by this connection comes from (`stored`, `stored
     /// ($VAR)`, `stored (!pass …)`), never the key.
     pub stored_key: Option<String>,
+    /// The way in it was connected by.
+    pub way: &'static MethodInfo,
+}
+
+impl Connected {
+    /// The model it runs when none is named: its vendor's, not the
+    /// harness's — an xAI key's Codex account runs Grok.
+    pub fn model(&self) -> Option<&'static str> {
+        default_model(self.way.kind)
+    }
 }
 
 /// A connection in words, one way for `krowk connect` and a client's
@@ -381,7 +516,11 @@ impl Connected {
         let key_env = (r.auth == Auth::ApiKey || !r.api_key_env.is_empty()).then(|| r.api_key_env.clone());
         let unset = key_env.is_some() && r.api_key.is_empty();
         let codex = self.definition.tag() == "codex-app-server";
-        let mut facts: Vec<String> = vec![instances::kind_label(self.definition.tag()).to_string()];
+        let what = match harness_of(self.way) {
+            Some(_) => format!("{} on {}", if codex { "Codex" } else { "Claude Code" }, instances::kind_label(self.way.kind)),
+            None => instances::kind_label(self.definition.tag()).to_string(),
+        };
+        let mut facts: Vec<String> = vec![what];
         let mut notes: Vec<String> = Vec::new();
         match &key_env {
             // A stored key, and where: never the key.
@@ -692,7 +831,7 @@ impl ProviderAuth<'_> {
         let t = target.expect("a target when no vendor was picked");
         let known = Registry::resolve(&self.definitions()?, self.env);
         let found = match known.instances.get(t) {
-            Some(r) => by_kind(r.kind).map(|m| (m, t.to_string())),
+            Some(r) => way_of(r).map(|m| (m, t.to_string())),
             None => t.split_once(':').and_then(|(p, _)| by_provider(p, false)).map(|m| (m, t.to_string())),
         };
         let Some((way, instance)) = found else {
@@ -723,7 +862,7 @@ impl ProviderAuth<'_> {
     fn pick_account(&self, way: &'static MethodInfo, offer_rename: bool, ui: &mut dyn AuthInteraction) -> Result<Picked, EngineError> {
         let defs = self.definitions()?;
         let reg = Registry::resolve(&defs, self.env);
-        let mine: Vec<&Resolved> = reg.instances.values().filter(|r| r.kind == way.kind).collect();
+        let mine: Vec<&Resolved> = reg.instances.values().filter(|r| way_of(r).is_some_and(|w| w.provider == way.provider)).collect();
         if mine.is_empty() {
             return Ok(Picked::Account(None));
         }
@@ -845,10 +984,10 @@ impl ProviderAuth<'_> {
     pub fn rename(&self, from: &str, new: &str) -> Result<Renamed, EngineError> {
         let (known, def) = self.renamable(from)?;
         let kind = def.tag();
-        let provider = by_kind(kind).map(|w| w.provider);
+        let provider = known.instances.get(from).and_then(way_of).map(|w| w.provider);
         let to = new.trim().to_string();
         check_name(&to)?;
-        match prefix_of(kind) {
+        match provider.filter(|p| *p != "openai-compatible") {
             Some(p) if to.split_once(':').is_none_or(|(pre, rest)| pre != p || rest.is_empty() || rest.contains(':')) => {
                 let rest = to.rsplit(':').next().filter(|r| !r.is_empty()).unwrap_or("personal");
                 return Err(bad_flag(format!("{to:?} is not a {p} name — give the whole new name, which starts with `{p}:`, e.g. {p}:{rest}")));
@@ -943,8 +1082,12 @@ impl ProviderAuth<'_> {
     /// succeed first — or renews the login of the one there is.
     pub fn connect(&self, req: &Request, ui: &mut dyn AuthInteraction) -> Result<Connected, EngineError> {
         let way = req.method;
+        if way.kind == "xai-oauth" {
+            return Err(no_direct_models());
+        }
         let o = &req.options;
         let provider = way.provider;
+        let harness = harness_of(way);
         let name = clean(&o.name);
         let instance = match (&req.instance, &name, provider) {
             (Some(i), _, _) => i.clone(),
@@ -986,7 +1129,7 @@ impl ProviderAuth<'_> {
         // are one directory on a disk that ignores case.
         let known = Registry::resolve(&existing, self.env);
         match known.instances.get(&instance) {
-            Some(r) if r.kind != way.kind => {
+            Some(r) if way_of(r).is_none_or(|w| w.provider != provider) => {
                 return Err(EngineError::new("instance_exists", format!("{instance} is already {} ({}) — give this one another --name", r.kind, instances::kind_label(r.kind))));
             }
             Some(_) => {}
@@ -1021,7 +1164,7 @@ impl ProviderAuth<'_> {
         // `MY_WORK`: two instances would share a key by accident.
         if clean(&o.api_key_env).is_none()
             && let Some(var) = &key_env
-            && let Some(other) = known.instances.values().find(|r| r.name != instance && r.api_key_env == *var)
+            && let Some(other) = known.instances.values().find(|r| r.name != instance && (r.api_key_env == *var || r.stored == crate::keys::Stored::Env(var.clone())))
         {
             return Err(bad_flag(format!("{instance} would read its key from ${var}, which {} reads already — name another with --api-key-env", other.name)));
         }
@@ -1073,9 +1216,16 @@ impl ProviderAuth<'_> {
             },
             _ => InstanceKind::XaiOauth { base_url, issuer: None, client_id: clean(&o.client_id), scope: None, effort: None },
         };
+        // A key's account that exists is updated as the native definition it
+        // was made from, and made again, in the directory it has.
+        let kept_dir = existing.instances.get(&instance).filter(|d| harness == Some(d.tag())).and_then(dir_of);
+        let old = existing.instances.get(&instance).map(|d| match harness {
+            Some(h) if d.tag() == h => native_of(d).unwrap_or_else(|| d.clone()),
+            _ => d.clone(),
+        });
         // One that exists is updated: the fields given replace its own, and
         // the rest — an issuer, a pinned wire API — are kept.
-        let kind = match existing.instances.get(&instance) {
+        let kind = match old.as_ref() {
             Some(old) if old.tag() != kind.tag() => {
                 return Err(EngineError::new("instance_exists", format!("{instance} is already defined as {} — disconnect it first with `krowk disconnect {instance} --remove`", old.tag())));
             }
@@ -1103,6 +1253,19 @@ impl ProviderAuth<'_> {
         };
 
         let stored_key = self.key_to_store(&instance, &kind, provider, o, ui)?;
+
+        // D3: an API key or a gateway is a Claude Code or Codex account, in
+        // a directory of its own — the one it has, or `accounts/<name>`.
+        let kind = match harness {
+            Some(_) => {
+                let dir = match kept_dir {
+                    Some(d) => d,
+                    None => self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string(),
+                };
+                to_harness(&kind, &self.resolve(&instance, &kind)?, dir, stored_key.is_some()).expect("a way in by key is a native kind")
+            }
+            None => kind,
+        };
 
         // A new named account gets a directory of its own in krowk's home,
         // `accounts/<name>`; the unnamed one is the vendor as the person
@@ -1173,7 +1336,7 @@ impl ProviderAuth<'_> {
         // config.json has none, and replaced only when asked.
         let unset = !self.raw_config()?.get("defaultModel").and_then(Value::as_str).is_some_and(|m| !m.trim().is_empty());
         let wanted = req.default == MakeDefault::Always || (req.default == MakeDefault::IfUnset && unset);
-        let default_model = default_model(kind.tag()).filter(|_| wanted).map(|m| format!("{instance}/{m}"));
+        let default_model = default_model(way.kind).filter(|_| wanted).map(|m| format!("{instance}/{m}"));
         if let Some(m) = &default_model {
             self.edit(|raw| {
                 raw.insert("defaultModel".into(), Value::String(m.clone()));
@@ -1181,7 +1344,7 @@ impl ProviderAuth<'_> {
         }
         let resolved = self.resolve(&instance, &kind)?;
         let stored_key = stored_key.map(|k| k.source());
-        Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model, stored_key })
+        Ok(Connected { instance, definition: kind, resolved, renewed, oauth, vendor, default_model, stored_key, way })
     }
 
     /// The key a way in by API key stores, if any: the one given, else —
@@ -1319,7 +1482,7 @@ impl ProviderAuth<'_> {
             _ => Vec::new(),
         };
         let status = codex_auth::signed_in(&backend, &probe).map_err(|e| undo(backend_failed(e)))?;
-        if status.logged_in || backend.key.is_some() {
+        if status.logged_in || backend.key.is_some() || codex_provider(&backend.args).is_some() {
             return Ok(VendorLogin { logged_in: status.logged_in, describe: status.describe(), ran: false, shared });
         }
         ui.notify(Notice::Info(&format!("Signing in to Codex as {instance} — Codex's own login follows.")));
@@ -1352,6 +1515,14 @@ impl ProviderAuth<'_> {
         let r = reg.instances.get(instance).ok_or_else(|| EngineError::new("no_instance", format!("no instance named {instance} — `krowk status` lists them")))?;
         let signed_out = match (&r.auth, &r.backend) {
             (Auth::OAuth { .. }, _) => SignedOut::Tokens { had: Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))? },
+            // A stored key is deleted — a key's Claude Code or Codex
+            // account's too; the variable the definition names is what the
+            // instance reads after.
+            (Auth::ApiKey | Auth::Vendor, _) if r.stored != crate::keys::Stored::No => {
+                Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
+                let var = Some(r.api_key_env.clone()).filter(|v| !v.is_empty());
+                SignedOut::StoredKey { set: var.as_ref().is_some_and(|v| !self.env(v).trim().is_empty()), var }
+            }
             (Auth::Vendor, Some(b)) if b.key.is_some() => SignedOut::Key { var: r.api_key_env.clone() },
             (Auth::Vendor, Some(b)) => {
                 let codex = r.kind == "codex-app-server";
@@ -1379,13 +1550,6 @@ impl ProviderAuth<'_> {
                     return Err(backend_failed(format!("`{command}` stopped ({exit}) for {instance} — run `{at}{command}` to see why")));
                 }
                 SignedOut::Vendor { command, home: b.home.clone() }
-            }
-            // A stored key is deleted; the variable the definition names is
-            // what the instance reads after.
-            (Auth::ApiKey, _) if r.stored != crate::keys::Stored::No => {
-                Store::new(self.credentials.clone()).remove(instance).map_err(|e| EngineError::new("credentials_unwritable", e.message))?;
-                let var = Some(r.api_key_env.clone()).filter(|v| !v.is_empty());
-                SignedOut::StoredKey { set: var.as_ref().is_some_and(|v| !self.env(v).trim().is_empty()), var }
             }
             (Auth::ApiKey, _) => SignedOut::Key { var: r.api_key_env.clone() },
             _ => SignedOut::Keyless,
@@ -1436,6 +1600,58 @@ impl ProviderAuth<'_> {
         };
         Ok(Removed { definition, login, kept })
     }
+
+    /// R-NAT-2: every API key and gateway config.json defines for krowk to
+    /// run itself, turned into the Claude Code or Codex account `connect`
+    /// makes of one now (`to_harness`): the same name, so a default model
+    /// and sessions on it carry on; its key where it was, in the
+    /// credentials file or the variable it names; and a directory of its
+    /// own in krowk's home, made `0700`. Run on first use: a line for each
+    /// one converted, and none once there are none left.
+    pub fn convert_native(&self) -> Result<Vec<String>, EngineError> {
+        let defs = self.definitions()?;
+        let known = Registry::resolve(&defs, self.env);
+        let mut made = Vec::new();
+        for (name, def) in &defs.instances {
+            let Some(harness) = by_kind(def.tag()).and_then(harness_of) else { continue };
+            let Ok(r) = known.get(name) else { continue };
+            let dir = self.home()?.join(krowk_api::home::ACCOUNTS).join(name.replace(':', "-"));
+            if let Some(other) = known.instances.values().find(|o| o.name != *name && o.backend.as_ref().and_then(|b| b.home.as_deref()).is_some_and(|h| same_dir(h, &dir))) {
+                return Err(EngineError::new(
+                    "config_unwritable",
+                    format!("{name} cannot become a {harness} account: {} is {}'s directory already — rename one of them (`krowk providers rename`)", dir.display(), other.name),
+                ));
+            }
+            let Some(kind) = to_harness(def, r, dir.display().to_string(), false) else { continue };
+            made.push((name.clone(), kind, dir));
+        }
+        if made.is_empty() {
+            return Ok(Vec::new());
+        }
+        for (_, _, dir) in &made {
+            private_dir(dir).map_err(|e| EngineError::new("config_unwritable", format!("create {}: {e}", dir.display())))?;
+        }
+        self.edit(|raw| {
+            let all = raw.entry("instances").or_insert_with(|| Value::Object(Map::new()));
+            if let Some(all) = all.as_object_mut() {
+                for (name, kind, _) in &made {
+                    all.insert(name.clone(), serde_json::to_value(kind).expect("a definition serializes"));
+                }
+            }
+        })?;
+        Ok(made
+            .iter()
+            .map(|(name, kind, _)| {
+                readiness::forget(name);
+                let (harness, keyed) = match kind {
+                    InstanceKind::CodexAppServer { api_key_env, .. } => ("Codex", api_key_env.is_some()),
+                    _ => ("Claude Code", true),
+                };
+                let on = if keyed { "key" } else { "server" };
+                format!("{name} now runs in {harness}, on the same {on} — krowk no longer runs models directly")
+            })
+            .collect())
+    }
 }
 
 /// The instance `name` is an old name of (`Registry::current`), when one has
@@ -1485,9 +1701,13 @@ fn capitalised(s: &str) -> String {
 
 /// The way in, given or asked: a vendor with one way in takes it.
 fn pick(vendor: Vendor, method: Option<Method>, ui: &mut dyn AuthInteraction) -> Result<&'static MethodInfo, EngineError> {
-    let offered = vendor.methods();
+    // SuperGrok is never offered, and refused when asked for.
+    let offered: Vec<_> = vendor.methods().into_iter().filter(|m| m.kind != "xai-oauth").collect();
     let ids = offered.iter().map(|m| m.method.id()).collect::<Vec<_>>();
     if let Some(m) = method {
+        if vendor.methods().iter().any(|o| o.method == m && o.kind == "xai-oauth") {
+            return Err(no_direct_models());
+        }
         return offered.iter().find(|o| o.method == m).copied().ok_or_else(|| bad_flag(format!("{} connects by {} — not {}", vendor.id(), ids.join(" or "), m.id())));
     }
     if let [only] = offered.as_slice() {
