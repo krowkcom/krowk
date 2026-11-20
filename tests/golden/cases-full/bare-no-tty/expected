@@ -1520,6 +1520,32 @@ stdout:
       ]
     },
     {
+      "name": "trust",
+      "usage": "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list",
+      "summary": "Trust a repository to run its hooks and MCP servers",
+      "args": [
+        {
+          "name": "path",
+          "summary": "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository",
+          "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "revoke",
+          "type": "bool",
+          "default": "false",
+          "usage": "Stop trusting it, and forget the MCP servers it was trusted with"
+        },
+        {
+          "name": "list",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every trusted directory instead; takes no path"
+        }
+      ]
+    },
+    {
       "name": "worktrees",
       "summary": "The git worktrees krowk made for agents, across repositories",
       "subcommands": [
@@ -3365,6 +3391,32 @@ tty:
           "name": "list",
           "usage": "krowk mcp list",
           "summary": "List the servers krowk would load here, without connecting"
+        }
+      ]
+    },
+    {
+      "name": "trust",
+      "usage": "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list",
+      "summary": "Trust a repository to run its hooks and MCP servers",
+      "args": [
+        {
+          "name": "path",
+          "summary": "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository",
+          "required": false
+        }
+      ],
+      "flags": [
+        {
+          "name": "revoke",
+          "type": "bool",
+          "default": "false",
+          "usage": "Stop trusting it, and forget the MCP servers it was trusted with"
+        },
+        {
+          "name": "list",
+          "type": "bool",
+          "default": "false",
+          "usage": "List every trusted directory instead; takes no path"
         }
       ]
     },

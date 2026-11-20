@@ -291,7 +291,7 @@ mod tests {
         assert!(!store.trusts(&repo), "r_tool_3: a changed .mcp.json is asked about");
         // Revoking drops the entry and its digest; a second revoke finds nothing.
         store.trust(&repo).unwrap();
-        assert_eq!(store.recorded().unwrap(), [repo.clone()]);
+        assert_eq!(store.recorded().unwrap(), std::slice::from_ref(&repo));
         assert!(store.revoke(&repo).unwrap() && !store.trusts(&repo) && store.recorded().unwrap().is_empty());
         assert!(store.recorded_mcp(&repo).is_none() && !store.revoke(&repo).unwrap());
         assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains("mcp\""), "the digest went with it");

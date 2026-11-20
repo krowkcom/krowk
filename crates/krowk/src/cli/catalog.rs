@@ -727,7 +727,7 @@ fn trust_command() -> Command {
             flag("revoke", BOOL, "Stop trusting it, and forget the MCP servers it was trusted with"),
             flag("list", BOOL, "List every trusted directory instead; takes no path"),
         ],
-        ..cmd("trust", "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list", "Trust a repository, so a backend or krowk's agent may run its hooks and MCP servers")
+        ..cmd("trust", "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list", "Trust a repository to run its hooks and MCP servers")
     }
 }
 
@@ -1172,9 +1172,9 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             #[cfg(feature = "harness")]
             "worktrees",
             #[cfg(feature = "harness")]
-            "trust",
-            #[cfg(feature = "harness")]
             "mcp",
+            #[cfg(feature = "harness")]
+            "trust",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
@@ -1201,6 +1201,9 @@ pub const ALL_ONLY: &[&str] = &[
     "help",
     #[cfg(feature = "harness")]
     "mcp",
+    // Run once per repository, so the overview's one screen goes to what is run daily.
+    #[cfg(feature = "harness")]
+    "trust",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.
