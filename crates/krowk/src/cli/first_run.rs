@@ -63,7 +63,8 @@ pub(super) fn chose_local(ctx: &Ctx) -> bool {
 /// takes it up again.
 pub(super) fn bare(ctx: &mut Ctx) {
     account_step(ctx, runnable(ctx));
-    let past_account = load(ctx).local || agent::new_client(ctx).is_ok_and(|c| c.authenticated());
+    // A key in the environment is the caller's, not this machine's account.
+    let past_account = load(ctx).local || (ctx.env("KROWK_TOKEN").is_empty() && agent::new_client(ctx).is_ok_and(|c| c.authenticated()));
     if !path(ctx).is_ok_and(|p| p.exists()) || !past_account || !steps_due(ctx) {
         return;
     }
