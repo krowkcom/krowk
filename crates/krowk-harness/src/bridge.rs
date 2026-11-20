@@ -148,12 +148,12 @@ pub const EXPOSED: &[Exposed] = &[
     Exposed {
         name: "session_info",
         description: "What krowk knows about this session: its krowk session id, the turn, the instance and model it runs on, and its working directory. Takes no input.",
-        input_schema: crate::tools::input_schema::<SessionInfoInput>,
+        input_schema: crate::schema::input_schema::<SessionInfoInput>,
         run: |env, input| Box::pin(std::future::ready(session_info(env, input))),
     },
     // The native `publish`, the same call: a backend's evidence lands under
     // the same run, tagged with the same krowk session.
-    Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::tools::input_schema::<evidence::PublishInput>, run: publish },
+    Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::schema::input_schema::<evidence::PublishInput>, run: publish },
 ];
 
 fn publish<'a>(env: &'a BridgeEnv<'a>, input: &'a Value) -> BoxFuture<'a, (String, bool)> {

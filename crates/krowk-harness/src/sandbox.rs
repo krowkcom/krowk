@@ -95,8 +95,8 @@
 //! and krowk adds only the file tools' fences.
 //!
 //! The file tools run in krowk's own process, not in the sandbox: under
-//! one they hold the same lines themselves (`tools::Scope::edit_path`,
-//! `tools::Scope::path`, the same fences via `Plan::fences`), open exactly
+//! one they hold the same lines themselves (`permissions::scope::Scope::edit_path`,
+//! `permissions::scope::Scope::path`, the same fences via `Plan::fences`), open exactly
 //! the path they checked (`tools::exact`), and no rule, grant, person or
 //! mode opens them.
 
@@ -1185,6 +1185,14 @@ pub fn in_container() -> bool {
 mod tests {
     use super::*;
 
+    /// A fresh scratch directory for one test.
+    fn dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("krowk-harness-tools-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
     fn plan(profile: Profile, base: &Path) -> Plan {
         let home = base.join("home");
         Plan::new(Sandbox { profile, by: By::Bubblewrap }, &base.join("ws"), &[], &[], &[home.join(".claude")], &[home.join(".krowk")], Some(&home))
@@ -1195,7 +1203,7 @@ mod tests {
     /// fences come after the writable bind they sit in.
     #[test]
     fn r_perm_3_the_plan_fences_git_and_settings_and_hides_credentials() {
-        let base = crate::tools::tests::dir("sandbox-plan");
+        let base = dir("sandbox-plan");
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
         std::fs::create_dir_all(base.join("ws")).unwrap();
@@ -1281,7 +1289,7 @@ mod tests {
     #[cfg(not(target_os = "linux"))]
     #[test]
     fn r_perm_3_a_platform_without_a_sandbox_refuses_with_a_fix() {
-        let base = crate::tools::tests::dir("sandbox-none");
+        let base = dir("sandbox-none");
         let e = bash(&plan(Profile::Workspace, &base), "true", &[]).unwrap_err();
         assert!(e.contains("not built yet") || e.contains("no sandbox"), "{e}");
     }

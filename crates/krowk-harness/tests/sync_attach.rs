@@ -392,7 +392,7 @@ impl World {
                     trust: krowk_harness::trust::allow_all(),
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
-                    agents: krowk_harness::subagent::AgentsConfig::none(),
+                    agents: krowk_harness::agents::AgentsConfig::none(),
                     session: Default::default(),
                 })
             });

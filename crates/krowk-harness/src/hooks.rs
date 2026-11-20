@@ -1,5 +1,6 @@
 //! Claude-format command hooks (R-COMPAT-1), run by krowk's native loop:
-//! the `hooks` of the settings `permissions::settings` reads, unchanged —
+//! the `hooks` of the settings `permissions::settings` reads, unchanged
+//! (read by `permissions::hooks`) —
 //!
 //! ```json
 //! {"hooks": {"PreToolUse": [{"matcher": "Bash|Edit", "hooks": [{"type": "command", "command": "./check.sh", "timeout": 30}]}]}}
@@ -42,128 +43,14 @@
 //! file the model can write (see `permissions::settings`). A backend runs
 //! its own vendor's hooks itself (Claude Code reads the same files).
 
+pub use crate::permissions::hooks::{parse, Decision, Event, Hooks};
+use crate::permissions::hooks::Command;
 use serde_json::{json, Value};
 use std::path::Path;
-use std::time::Duration;
 use tokio::sync::watch;
 
-/// The events krowk runs hooks for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Event {
-    SessionStart,
-    UserPromptSubmit,
-    PreToolUse,
-    PostToolUse,
-    Stop,
-    /// A subagent is done: Claude Code's `SubagentStop`, which blocks as
-    /// `Stop` does — the subagent goes on.
-    SubagentStop,
-}
-
-impl Event {
-    pub fn name(self) -> &'static str {
-        match self {
-            Event::SessionStart => "SessionStart",
-            Event::UserPromptSubmit => "UserPromptSubmit",
-            Event::PreToolUse => "PreToolUse",
-            Event::PostToolUse => "PostToolUse",
-            Event::Stop => "Stop",
-            Event::SubagentStop => "SubagentStop",
-        }
-    }
-
-    fn parse(s: &str) -> Option<Event> {
-        Some(match s {
-            "SessionStart" => Event::SessionStart,
-            "UserPromptSubmit" => Event::UserPromptSubmit,
-            "PreToolUse" => Event::PreToolUse,
-            "PostToolUse" => Event::PostToolUse,
-            "Stop" => Event::Stop,
-            "SubagentStop" => Event::SubagentStop,
-            _ => return None,
-        })
-    }
-}
-
-/// Claude Code's default: a minute.
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
-/// The longest a hook may be given.
-const MAX_TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
 /// What of a hook's stdout and stderr is kept.
 const MAX_OUTPUT: usize = 64 << 10;
-
-#[derive(Debug, Clone, PartialEq)]
-struct Command {
-    command: String,
-    timeout: Duration,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-struct Group {
-    event: Event,
-    matcher: Option<String>,
-    commands: Vec<Command>,
-    source: String,
-}
-
-/// Every hook that applies, in the order their files were read.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct Hooks {
-    groups: Vec<Group>,
-}
-
-impl Hooks {
-    pub fn is_empty(&self) -> bool {
-        self.groups.is_empty()
-    }
-
-    pub fn extend(&mut self, other: Hooks) {
-        self.groups.extend(other.groups);
-    }
-
-    /// Whether any hook is configured for `event`.
-    pub fn has(&self, event: Event) -> bool {
-        self.groups.iter().any(|g| g.event == event)
-    }
-}
-
-/// Reads a settings file's `hooks`. Events krowk does not run
-/// (`Notification`, `PreCompact`, …) and hook types other
-/// than `command` are skipped: a file written for a newer Claude Code still
-/// loads.
-pub fn parse(v: &Value, source: &str) -> Result<Hooks, String> {
-    let map = v.as_object().ok_or_else(|| format!("{source}: \"hooks\" must be an object of events"))?;
-    let mut out = Hooks::default();
-    for (name, groups) in map {
-        let Some(event) = Event::parse(name) else { continue };
-        let groups = groups.as_array().ok_or_else(|| format!("{source}: hooks.{name} must be a list"))?;
-        for g in groups {
-            let matcher = g.get("matcher").and_then(Value::as_str).map(str::trim).filter(|m| !m.is_empty() && *m != "*").map(String::from);
-            let list = g.get("hooks").and_then(Value::as_array).ok_or_else(|| format!("{source}: every hooks.{name} entry needs a \"hooks\" list"))?;
-            let mut commands = Vec::new();
-            for h in list {
-                if h.get("type").and_then(Value::as_str).unwrap_or("command") != "command" {
-                    continue;
-                }
-                let command = h.get("command").and_then(Value::as_str).filter(|c| !c.trim().is_empty()).ok_or_else(|| format!("{source}: a hooks.{name} command hook needs a \"command\""))?;
-                let timeout = match h.get("timeout") {
-                    None | Some(Value::Null) => DEFAULT_TIMEOUT,
-                    Some(t) => match t.as_f64().filter(|t| t.is_finite() && *t > 0.0) {
-                        // A day is more than any hook needs; what is longer
-                        // is held to it rather than overflowing a clock.
-                        Some(t) => Duration::from_secs_f64(t.min(MAX_TIMEOUT.as_secs_f64())),
-                        None => return Err(format!("{source}: a hooks.{name} hook's \"timeout\" must be a positive number of seconds, not {t}")),
-                    },
-                };
-                commands.push(Command { command: command.to_string(), timeout });
-            }
-            if !commands.is_empty() {
-                out.groups.push(Group { event, matcher, commands, source: source.to_string() });
-            }
-        }
-    }
-    Ok(out)
-}
 
 /// A matcher against a tool's name (or a session's source): a regular
 /// expression over the whole name, as Claude Code's are (`Edit|Write`,
@@ -193,16 +80,6 @@ pub struct Outcome {
     pub stop: Option<String>,
     /// `systemMessage`s: shown to the person, never to the model.
     pub messages: Vec<String>,
-}
-
-/// A `PreToolUse` hook's say in a call's permission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    /// Run it without asking — not past a deny rule, nor into a directory
-    /// the file tools keep out of.
-    Allow,
-    /// Ask the person, whatever the rules say.
-    Ask,
 }
 
 /// The fields every event's input carries.
@@ -370,6 +247,7 @@ async fn exec(c: &Command, input: &str, base: &Base<'_>, mut cancel: watch::Rece
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn base(dir: &Path) -> Base<'_> {
         Base { session_id: "s", transcript_path: "/t", cwd: dir, project_dir: dir, permission_mode: "default" }

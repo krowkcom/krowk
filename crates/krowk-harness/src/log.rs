@@ -28,6 +28,15 @@ use std::sync::Arc;
 pub const EVENTS_FILE: &str = "events.jsonl";
 pub const CONTEXT_FILE: &str = "context.jsonl";
 
+/// What a note of background work that ended starts with (`crate::jobs`):
+/// krowk's words in a user item, not the person's, as a log read later
+/// shows them.
+pub const BACKGROUND_DONE: &str = "<background-done ";
+
+/// What a reminder krowk adds to a user item starts with (`crate::todo`):
+/// krowk's words, not the person's.
+pub const REMINDER: &str = "<system-reminder>";
+
 /// `sessions/` in krowk's home, where krowk.db is too.
 pub fn sessions_dir(env: &dyn Fn(&str) -> String) -> Result<PathBuf, krowk_api::Error> {
     Ok(krowk_api::home::dir(env)?.join(krowk_api::home::SESSIONS))
@@ -552,7 +561,7 @@ fn head_prompt(path: &Path, cwd: &Path) -> Option<String> {
         _ => return None,
     }
     lines.take(HEAD_LINES).filter_map(|l| serde_json::from_str::<LogEvent>(&l).ok()).find_map(|ev| match ev.body {
-        LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if !text.starts_with(crate::todo::REMINDER) && !text.starts_with(crate::jobs::NOTE) => Some(text),
+        LogBody::ItemCompleted { item: Item::UserText { text, .. }, .. } if !text.starts_with(REMINDER) && !text.starts_with(BACKGROUND_DONE) => Some(text),
         _ => None,
     })
 }
@@ -713,7 +722,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let said = |text: &str| LogBody::ItemCompleted { turn_id: "t".into(), item_id: "i".into(), item: Item::user(text) };
         let (mut old, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
-        old.append(said(&format!("{} the todo list", crate::todo::REMINDER))).unwrap();
+        old.append(said(&format!("{} the todo list", REMINDER))).unwrap();
         old.append(said("fix the parser")).unwrap();
         let (mut new, _) = SessionLog::create(&dir, Path::new("/repo"), "dev").unwrap();
         new.append(said("add a flag")).unwrap();

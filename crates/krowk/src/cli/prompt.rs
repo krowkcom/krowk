@@ -16,7 +16,7 @@ use krowk_harness::permissions;
 use krowk_harness::sandbox::{self, By, Profile, Sandbox};
 use krowk_harness::protocol::{BudgetLimits, Effort, PermissionMode, Rollover, TurnStatus, Usage};
 use std::collections::HashMap;
-use krowk_harness::subagent::{AgentsConfig, Models};
+use krowk_harness::agents::{AgentsConfig, Models};
 use krowk_harness::trust;
 use crate::osc7501::{self, Report, State};
 use std::io::{IsTerminal, Read};

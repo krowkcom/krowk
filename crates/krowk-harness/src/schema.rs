@@ -6,6 +6,8 @@
 
 use crate::instances::InstancesConfig;
 use crate::protocol::{ClientFrame, Command, ContextRecord, LogEvent, ServerFrame, StreamLine};
+use schemars::JsonSchema;
+use serde_json::Value;
 
 /// Every schema file, by name, rendered as it is checked in.
 pub fn files() -> Vec<(&'static str, String)> {
@@ -20,4 +22,63 @@ pub fn files() -> Vec<(&'static str, String)> {
         ("client-frame.schema.json", render(schemars::schema_for!(ClientFrame))),
         ("server-frame.schema.json", render(schemars::schema_for!(ServerFrame))),
     ]
+}
+
+/// The schema of a tool's input — a native tool's, an MCP meta tool's, a
+/// bridge tool's — as the Anthropic API wants it: an object
+/// schema, without the `$schema` and `title` noise schemars adds, and
+/// tidied, since every byte of it rides on every model call: a nested type
+/// is written in place rather than referenced, and an optional field is its
+/// type alone — `required` already says it may be left out, so `null` and
+/// `default: null` beside it tell the model nothing.
+pub(crate) fn input_schema<T: JsonSchema>() -> Value {
+    let mut v = schemars::schema_for!(T).to_value();
+    let defs = match &mut v {
+        Value::Object(m) => {
+            m.remove("$schema");
+            m.remove("title");
+            m.remove("description");
+            m.remove("$defs")
+        }
+        _ => None,
+    };
+    tidy(&mut v, defs.as_ref());
+    v
+}
+
+fn tidy(v: &mut Value, defs: Option<&Value>) {
+    match v {
+        Value::Object(m) => {
+            if let Some(Value::String(r)) = m.get("$ref")
+                && let Some(def) = r.strip_prefix("#/$defs/").and_then(|name| defs?.get(name))
+            {
+                let mut def = def.clone();
+                if let Value::Object(d) = &mut def {
+                    // The field's own description says what it is for.
+                    d.remove("description");
+                }
+                m.remove("$ref");
+                if let Value::Object(d) = def {
+                    for (k, x) in d {
+                        m.entry(k).or_insert(x);
+                    }
+                }
+            }
+            if let Some(Value::Array(types)) = m.get("type")
+                && types.len() == 2
+                && types.iter().any(|t| t == "null")
+            {
+                let t = types.iter().find(|t| *t != "null").cloned().unwrap_or(Value::Null);
+                m.insert("type".into(), t);
+                if m.get("default") == Some(&Value::Null) {
+                    m.remove("default");
+                }
+            }
+            for x in m.values_mut() {
+                tidy(x, defs);
+            }
+        }
+        Value::Array(a) => a.iter_mut().for_each(|x| tidy(x, defs)),
+        _ => {}
+    }
 }

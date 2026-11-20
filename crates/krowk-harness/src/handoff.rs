@@ -254,7 +254,7 @@ fn summary(items: &[HistoryItem], t: &TurnSpan, n: usize) -> String {
     for h in &items[t.items.clone()] {
         match &h.item {
             // Background work that ended is krowk's note, not a request.
-            Item::UserText { text, .. } if text.starts_with(crate::jobs::NOTE) => {}
+            Item::UserText { text, .. } if text.starts_with(crate::log::BACKGROUND_DONE) => {}
             Item::UserText { text, .. } => asked.push(text.trim().to_string()),
             Item::ToolCall { name, input, .. } => calls.push(call_line(name, input)),
             Item::ToolResult { is_error: true, .. } => failed += 1,
@@ -299,7 +299,7 @@ fn verbatim(items: &[HistoryItem], t: &TurnSpan, n: usize) -> String {
     let mut s = format!("\n### Turn {n} ({})\n", t.model);
     for h in &items[t.items.clone()] {
         match &h.item {
-            Item::UserText { text, .. } if text.starts_with(crate::jobs::NOTE) => s.push_str(&format!("[krowk: background work ended]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
+            Item::UserText { text, .. } if text.starts_with(crate::log::BACKGROUND_DONE) => s.push_str(&format!("[krowk: background work ended]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::UserText { text, .. } => s.push_str(&format!("[the person]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::AssistantText { text } if !text.trim().is_empty() => s.push_str(&format!("[the model]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::AssistantText { .. } => {}

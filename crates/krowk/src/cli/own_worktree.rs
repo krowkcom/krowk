@@ -143,7 +143,7 @@ fn agent_slot(ctx: &mut Ctx, registry: &Registry) -> Option<krowk_harness::slots
             Ok(Some(slot)) => return Some(slot),
             Ok(None) if !said => {
                 said = true;
-                let _ = write!(ctx.io.stderr, "{}", krowk_harness::subagent::waiting_line(pool.size()));
+                let _ = write!(ctx.io.stderr, "{}", krowk_harness::children::waiting_line(pool.size()));
             }
             Ok(None) => {}
             Err(e) => {

@@ -73,7 +73,7 @@ impl Home {
             trust: gate,
             publisher: None,
             permissions: Default::default(),
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         })
     }

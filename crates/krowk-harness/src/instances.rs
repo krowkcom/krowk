@@ -133,13 +133,13 @@ impl SubagentsConfig {
 
     /// Subagents at once: the config's, at least one.
     pub fn max_parallel(&self) -> usize {
-        self.max_parallel.unwrap_or(crate::subagent::MAX_PARALLEL).max(1)
+        self.max_parallel.unwrap_or(crate::children::MAX_PARALLEL).max(1)
     }
 
     /// Agents at once on the machine: the config's, else
-    /// `crate::subagent::max_host`'s for this one.
+    /// `crate::children::max_host`'s for this one.
     pub fn max_host(&self) -> usize {
-        self.max_host.unwrap_or_else(crate::subagent::max_host).max(1)
+        self.max_host.unwrap_or_else(crate::children::max_host).max(1)
     }
 }
 
@@ -625,7 +625,7 @@ impl Registry {
             subagents: cfg.subagents.clone(),
             worktrees: cfg.worktrees.clone(),
             builds: crate::builds::Builds::resolve(&cfg.builds, env),
-            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::subagent::AGENT_SLOTS, cfg.subagents.max_host())),
+            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::children::AGENT_SLOTS, cfg.subagents.max_host())),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
@@ -1430,7 +1430,7 @@ mod tests {
     fn r_sub_2_subagents_config_is_read_and_a_zero_fan_out_refused() {
         let cfg = from_config_json(&serde_json::json!({"subagents": {"maxParallel": 2, "model": "inherit"}})).unwrap();
         assert_eq!((cfg.subagents.max_parallel(), cfg.subagents.model.as_deref()), (2, Some("inherit")));
-        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::children::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
         assert_eq!(from_config_json(&serde_json::json!({"subagents": {"maxHost": 2}})).unwrap().subagents.max_host(), 2);
         let default = from_config_json(&serde_json::json!({})).unwrap().subagents.max_host();

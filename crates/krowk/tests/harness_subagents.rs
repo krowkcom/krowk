@@ -100,7 +100,7 @@ impl Sandbox {
             publisher: None,
             // The sandbox's own home: the person's real settings stay out.
             permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..Default::default() },
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         }
     }
@@ -1247,7 +1247,7 @@ fn wt3_two_subagents_in_worktrees_each_get_their_own_and_a_changed_ones_work_is_
     git(&repo, &["commit", "-q", "-m", "one"]);
     let head = git(&repo, &["rev-parse", "HEAD"]);
     let root = b.root.join("worktrees");
-    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let cfg = HostConfig { agents: krowk_harness::agents::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::agents::AgentsConfig::none() }, ..b.host() };
     let r = run_in_process(&b, cfg, None, "two subagents in worktrees", PermissionMode::AcceptEdits);
     assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
     let cwd = |child: &str| b.log(child).iter().find(|e| e["type"] == "session.started").unwrap()["cwd"].as_str().unwrap().to_string();
@@ -1289,7 +1289,7 @@ fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
     // The sandbox's `.git` is an empty directory: no repository to git.
     let b = Sandbox::new("no-repo", &m.url);
     let root = b.root.join("worktrees");
-    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let cfg = HostConfig { agents: krowk_harness::agents::AgentsConfig { worktrees: Some(root.clone()), ..krowk_harness::agents::AgentsConfig::none() }, ..b.host() };
     let r = run_in_process(&b, cfg, None, "try a worktree", PermissionMode::AcceptEdits);
     let results = parent_results(&b, &r.session_id);
     let wt = results.iter().find(|(c, ..)| c == "toolu_wt").unwrap();
@@ -1327,7 +1327,7 @@ fn wt3_a_repositorys_anchored_deny_holds_inside_the_worktree() {
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["add", "README.md", ".claude/settings.json"]);
     git(&repo, &["commit", "-q", "-m", "one"]);
-    let cfg = HostConfig { agents: krowk_harness::subagent::AgentsConfig { worktrees: Some(b.root.join("worktrees")), ..krowk_harness::subagent::AgentsConfig::none() }, ..b.host() };
+    let cfg = HostConfig { agents: krowk_harness::agents::AgentsConfig { worktrees: Some(b.root.join("worktrees")), ..krowk_harness::agents::AgentsConfig::none() }, ..b.host() };
     let r = run_in_process(&b, cfg, None, "write where the repository forbids", PermissionMode::BypassPermissions);
     let (out, _) = parent_result(&b, &r.session_id);
     assert!(out.starts_with("CHILD-SAW error=true") && out.contains("Edit(/blocked/**)"), "{out}");
@@ -1352,7 +1352,7 @@ fn one_subagent(body: &Value, _: usize) -> mock::Reply {
 fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
     let m = mock::serve(one_subagent);
     let b = Sandbox::new("agent-slot", &m.url);
-    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::children::AGENT_SLOTS, 1);
     let mut held = Some(pool.try_take().unwrap().expect("the one slot"));
     let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
     registry.agents = Some(pool);
@@ -1400,7 +1400,7 @@ fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
 fn wt12_a_subagent_of_a_session_on_the_last_agent_slot_runs_on_it() {
     let m = mock::serve(one_subagent);
     let b = Sandbox::new("own-slot", &m.url);
-    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::subagent::AGENT_SLOTS, 1);
+    let pool = krowk_harness::slots::Pool::new(b.root.join("run"), krowk_harness::children::AGENT_SLOTS, 1);
     let _session = pool.try_take().unwrap().expect("the session's slot");
     let mut registry = Registry::resolve(&InstancesConfig::default(), &b.env());
     registry.agents = Some(pool);

@@ -31,7 +31,7 @@ pub const STALE_CALLS: usize = 10;
 
 /// What a reminder starts with: clients show it as krowk's, not the
 /// person's words.
-pub const REMINDER: &str = "<system-reminder>";
+pub use crate::log::REMINDER;
 
 /// Replace the todo list.
 #[derive(Debug, Deserialize, JsonSchema)]

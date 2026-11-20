@@ -6,13 +6,17 @@
 //!   implement, and the `EngineEvent`s they report.
 //! - `native` — krowk's own loop over a `ModelClient`, one per wire API:
 //!   `anthropic` (Messages), `openai` (Responses), `chat` (Chat
-//!   Completions: xAI, OpenRouter and anything compatible). `http` and
-//!   `sse` are what the three share.
+//!   Completions: xAI, OpenRouter and anything compatible). `wire` is the
+//!   call and stream loop the three share; `http` the HTTP client every
+//!   request krowk makes goes through, and `sse` the event-stream parser.
+//! - `neutral` — text krowk frames around words it did not write, made
+//!   unable to close the frame (a handoff, another model's reasoning).
 //! - `catalog` — what the models.dev cache says of a model; `effort` — the
 //!   one reasoning-effort ladder, mapped per model.
 //! - `oauth` — the SuperGrok login and its tokens.
 //! - `claude` — the Claude Code backend: the user's own `claude` binary,
-//!   driven over stream-json and its control protocol; `bridge` — krowk's
+//!   driven over stream-json and its control protocol, whose Messages
+//!   stream `claude::messages` decodes; `bridge` — krowk's
 //!   tools offered to a backend as an MCP server; `trust` — which
 //!   repositories a backend may run in.
 //! - `codex` — the Codex backend: the user's own `codex`, driven as `codex
@@ -24,15 +28,19 @@
 //!   `todo_write` and the stale-list reminder.
 //! - `subagent` — the `subagent` tool: child sessions with their own
 //!   context, model and tools, fanned out in parallel; `agents` — the agent
-//!   definitions they run, krowk's and Claude Code's; `worktree` — the git
-//!   worktree an agent can run in, made, readied and removed.
+//!   definitions they run, krowk's and Claude Code's; `children` — how many
+//!   child sessions run at once, the machine's agent slots, and the watch
+//!   that frames each for its parent; `worktree` — the git worktree an
+//!   agent can run in, made, readied and removed.
 //! - `budget` — what a session may spend, checked before every model call.
 //! - `paste_guard` — refuses a `gh` post whose body carries a bare krowk
 //!   card link, on every backend and in every mode.
 //! - `tooling_guard` — refuses a worktree made by hand and a file sent to
 //!   a paste site, pointing at krowk's own, alongside the paste guard.
 //! - `permissions` — Claude-Code-compatible modes, rules and approvals:
-//!   the one evaluator every call is judged by, native or a backend's.
+//!   the one evaluator every call is judged by, native or a backend's, with
+//!   the file tools' reach (`permissions::scope`), its globs and the hooks
+//!   the settings name.
 //! - `compat` — the instructions (`AGENTS.md`, `CLAUDE.md`, `.cursor/rules`)
 //!   and skills a native turn reads; `hooks` — Claude-format command hooks.
 //! - `mcp` — the person's and a trusted repository's MCP servers, their
@@ -64,6 +72,7 @@ pub mod bridge;
 pub mod budget;
 pub mod builds;
 pub mod catalog;
+pub mod children;
 pub mod chat;
 pub mod claude;
 pub mod codex;

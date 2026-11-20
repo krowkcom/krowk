@@ -10,7 +10,7 @@
 pub mod instructions;
 pub mod skills;
 
-use crate::hooks::Hooks;
+use crate::permissions::hooks::Hooks;
 use crate::permissions::Config;
 use std::path::{Path, PathBuf};
 

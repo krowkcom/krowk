@@ -62,7 +62,7 @@ impl Home {
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             permissions: Default::default(),
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         };
         let opts = headless::Options {
@@ -204,7 +204,7 @@ fn r_prov_4_a_grok_task_runs_signed_in_with_supergrok_and_its_token_is_refreshed
         trust: krowk_harness::trust::allow_all(),
         publisher: None,
         permissions: Default::default(),
-        agents: krowk_harness::subagent::AgentsConfig::none(),
+        agents: krowk_harness::agents::AgentsConfig::none(),
         session: Default::default(),
     };
     let opts = headless::Options { rollover: None, prompt: "hi".into(), images: Vec::new(), resume: None, model: Some(reg.parse_model("supergrok/grok-4.7").unwrap()), permission_mode: PermissionMode::Default, toolset: None, effort: None, budget: None, format: OutputFormat::Json, worktree: None };

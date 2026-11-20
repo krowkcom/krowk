@@ -53,19 +53,19 @@
 //!   with the files; one whose changes do not apply is kept, and its
 //!   summary names the files that conflict and where it is.
 
-use crate::agents::AgentDef;
+use crate::agents::{AgentDef, AgentRun, Isolation, MCP_PREFIX};
+use crate::children::waiting_line;
 use crate::budget::Budget;
 use crate::catalog::{self, Listed};
-use crate::engine::{EngineEvent, Events};
+use crate::engine::Events;
 use crate::evidence::Evidence;
 use crate::host::Shared;
 use crate::instances::{Registry, ALIASES};
-use crate::protocol::{ChildState, ChildTool, Item, ItemKind, LiveEvent, ModelRef, PermissionMode, StreamLine, TurnStatus, Waiting};
+use crate::protocol::{ModelRef, PermissionMode, StreamLine, TurnStatus};
 use crate::worktree::InUse;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::{mpsc, watch, Semaphore};
@@ -75,65 +75,6 @@ pub const SUBAGENT: &str = "subagent";
 /// What the model is told. Short: it rides on every call. The agent
 /// definitions there are, when any, are listed after it.
 pub const DESCRIPTION: &str = "Start a subagent with a fresh context for one task; only its final summary comes back. Use it for searches and reviews that would fill your context. Calls in one response run in parallel.";
-
-/// Subagents at once, per parent turn, when the config does not say.
-pub const MAX_PARALLEL: usize = 4;
-
-/// The pool of the machine's agent slots (`subagents.maxHost`).
-pub const AGENT_SLOTS: &str = "agent-slots";
-
-/// Agents at once on the machine when the config does not say: twice the
-/// cores or twice the GiB of memory, whichever is fewer — an agent's
-/// builds want cores, its language servers memory — kept to 4 … 64. Twice
-/// the cores alone when the memory cannot be read.
-pub fn max_host() -> usize {
-    let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
-    let memory = memory_bytes().map_or(usize::MAX, |b| usize::try_from(b / (1 << 30)).unwrap_or(usize::MAX));
-    (cores * 2).min(memory.saturating_mul(2)).clamp(4, 64)
-}
-
-/// The machine's memory, in bytes, when it can be read.
-#[cfg(unix)]
-fn memory_bytes() -> Option<u64> {
-    // SAFETY: sysconf has no preconditions; -1 is its failure.
-    let (pages, size) = unsafe { (libc::sysconf(libc::_SC_PHYS_PAGES), libc::sysconf(libc::_SC_PAGESIZE)) };
-    (pages > 0 && size > 0).then(|| pages as u64 * size as u64)
-}
-
-#[cfg(windows)]
-fn memory_bytes() -> Option<u64> {
-    // Filled by the call; only the total is read.
-    #[repr(C)]
-    #[allow(dead_code)]
-    struct MemoryStatusEx {
-        length: u32,
-        load: u32,
-        total_phys: u64,
-        avail_phys: u64,
-        total_page_file: u64,
-        avail_page_file: u64,
-        total_virtual: u64,
-        avail_virtual: u64,
-        avail_extended_virtual: u64,
-    }
-    #[link(name = "kernel32")]
-    unsafe extern "system" {
-        fn GlobalMemoryStatusEx(status: *mut MemoryStatusEx) -> i32;
-    }
-    let mut status = MemoryStatusEx { length: std::mem::size_of::<MemoryStatusEx>() as u32, load: 0, total_phys: 0, avail_phys: 0, total_page_file: 0, avail_page_file: 0, total_virtual: 0, avail_virtual: 0, avail_extended_virtual: 0 };
-    // SAFETY: `status` is a MEMORYSTATUSEX with its length set, as the call asks.
-    (unsafe { GlobalMemoryStatusEx(&mut status) } != 0).then_some(status.total_phys)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn memory_bytes() -> Option<u64> {
-    None
-}
-
-/// What a subagent waiting for an agent slot says on its call.
-pub fn waiting_line(in_use: usize) -> String {
-    format!("waiting for an agent slot ({in_use} in use)\n")
-}
 
 /// Start a subagent.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -155,37 +96,8 @@ pub struct SubagentInput {
     pub run_in_background: Option<bool>,
 }
 
-/// Where a subagent works: the parent's directory, or a git worktree of
-/// its own (`crate::worktree`). Claude Code's agent files spell it the same.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
-pub enum Isolation {
-    #[default]
-    None,
-    Worktree,
-}
-
 /// What a subagent is told when it is asked for a worktree outside one.
 pub const NEEDS_A_REPOSITORY: &str = "isolation: worktree needs a git repository";
-
-/// What a subagent's turn runs with, from its definition.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct AgentRun {
-    /// The definition's name, or none for a general subagent.
-    pub name: Option<String>,
-    /// The definition's body, after krowk's own prompt.
-    pub instructions: String,
-    /// The tools it may use, krowk's names with the edit tool as `edit`,
-    /// and the MCP servers and tools it may reach as `mcp__<server>` and
-    /// `mcp__<server>__<tool>`; none is every tool but `subagent`, and every
-    /// server.
-    pub tools: Option<Vec<String>>,
-    /// The session that started it, and its log: what a hook is told the
-    /// session is, as Claude Code tells a subagent's hooks — the
-    /// subagent's own id rides beside it as `agent_session_id`.
-    pub parent_session: String,
-    pub parent_transcript: String,
-}
 
 impl AgentRun {
     /// Whether the turn offers the tool `name`, whose edit tool is `edit`.
@@ -206,32 +118,7 @@ impl AgentRun {
             Some(t) => t.iter().any(|a| a == name || (a == "edit" && name == edit)),
         }
     }
-
-    /// Whether it may reach `server`'s `tool` — or, `tool` none, the
-    /// server at all, which is whether it is started and named for it:
-    /// every one with no list or with `mcp__*`, else the servers its list
-    /// names whole and those it names a tool of. Held at search, at call
-    /// and at the servers' start, under the parent's deny rules and hooks,
-    /// which still judge every call it may make.
-    pub fn reaches(&self, server: &str, tool: Option<&str>) -> bool {
-        let Some(t) = &self.tools else { return true };
-        t.iter().filter_map(|a| a.strip_prefix(MCP_PREFIX)).any(|a| match a.split_once("__") {
-            None => a == "*" || a == server,
-            Some((s, named)) => s == server && tool.is_none_or(|t| t == named),
-        })
-    }
-
-    /// Why a call to `server`'s `tool` outside its list is refused, naming
-    /// what the list does reach, as `mcp_call` names a tool.
-    pub fn unreached(&self, server: &str, tool: &str) -> String {
-        let reached: Vec<String> = self.tools.iter().flatten().filter_map(|a| a.strip_prefix(MCP_PREFIX)).map(|a| a.split_once("__").map_or_else(|| if a == "*" { "every server".into() } else { format!("{a} (any tool)") }, |(s, t)| format!("{s}:{t}"))).collect();
-        let agent = self.name.as_deref().map_or_else(|| "this subagent".to_string(), |n| format!("agent {n}"));
-        format!("{server}:{tool} was not run: {agent} reaches only the MCP tools its definition names — {}", reached.join(", "))
-    }
 }
-
-/// How an allowlist names an MCP server or tool, as Claude Code does.
-const MCP_PREFIX: &str = "mcp__";
 
 /// What a subagent is told after krowk's own system prompt: that only its
 /// last message goes back, then its definition's instructions.
@@ -242,32 +129,6 @@ pub fn system_prompt(base: &str, run: &AgentRun) -> String {
         s.push_str(run.instructions.trim());
     }
     s
-}
-
-/// Every model the catalog lists for a provider, for choosing a
-/// subagent's model: supplied by the caller, which owns the models.dev cache.
-pub type Models = Arc<dyn Fn(&str) -> Vec<Listed> + Send + Sync>;
-
-/// Where agent definitions come from beyond the repository, and how a
-/// subagent's model is chosen.
-#[derive(Clone)]
-pub struct AgentsConfig {
-    /// The person's own definition directories — krowk's, then Claude
-    /// Code's — read after the repository's.
-    pub user_dirs: Vec<PathBuf>,
-    pub models: Models,
-    /// Where a subagent's worktree is made (`krowk_api::home::worktrees_root`);
-    /// none refuses `isolation: "worktree"`.
-    pub worktrees: Option<PathBuf>,
-}
-
-impl AgentsConfig {
-    /// No definitions of the person's, and a catalog that lists nothing:
-    /// subagents run on the parent's model unless told otherwise, and in
-    /// no worktree.
-    pub fn none() -> AgentsConfig {
-        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None }
-    }
 }
 
 /// The model a subagent runs on. `asked` is the definition's `model`,
@@ -821,132 +682,6 @@ async fn finish(i: InUse, to: Option<PathBuf>) -> Option<String> {
     }
 }
 
-/// A child's state as its `subagent.status` frames say it (R-SUB-9), kept
-/// by the writer of the child's own turn from the events that turn
-/// handles: the call it is in, what it waits on the person for, its tokens
-/// and when anything last came from it.
-pub(crate) struct ChildWatch {
-    session_id: String,
-    /// The tool each call the model made names, by call id, until it runs.
-    named: HashMap<String, String>,
-    /// The calls running, oldest first, by call id.
-    tools: Vec<(String, ChildTool)>,
-    /// The requests waiting on the person, by request id.
-    waiting: Vec<(String, Waiting)>,
-    /// The call each waiting request asks about, when the engine said
-    /// (`EngineEvent::AskedFor`).
-    asked: HashMap<String, String>,
-    last_event_ms: i64,
-    tokens: i64,
-    /// A backend's agent: its items come whole, a call's result started
-    /// and completed at once, so its tool runs from its call (`backend`).
-    at_call: bool,
-}
-
-impl ChildWatch {
-    /// The watch of a turn's session when the turn is a subagent's: one
-    /// with a parent.
-    pub fn of<P>(parent: Option<&P>, session_id: &str) -> Option<ChildWatch> {
-        parent.map(|_| ChildWatch::new(session_id))
-    }
-
-    pub fn new(session_id: &str) -> ChildWatch {
-        ChildWatch { session_id: session_id.into(), named: HashMap::new(), tools: Vec::new(), waiting: Vec::new(), asked: HashMap::new(), last_event_ms: krowk_store::now_ms(), tokens: 0, at_call: false }
-    }
-
-    /// The watch of a backend's agent (R-SUB-7), whose items come whole:
-    /// a tool runs from its call, the only moment before its result, and
-    /// its tokens are the backend's count (`EngineEvent::Progress`).
-    pub fn backend(session_id: &str) -> ChildWatch {
-        ChildWatch { at_call: true, ..ChildWatch::new(session_id) }
-    }
-
-    /// The tokens its frames say it has used.
-    pub fn tokens(&self) -> i64 {
-        self.tokens
-    }
-
-    /// Takes in what the child's engine said at `now`: true when its state
-    /// changed, so a frame is due. A text delta, or anything else that only
-    /// shows it is alive, changes `lastEventMs` and nothing a frame is sent
-    /// for: the next frame carries it.
-    pub fn note(&mut self, ev: &EngineEvent, now: i64) -> bool {
-        self.last_event_ms = now;
-        match ev {
-            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } if self.at_call => {
-                self.tools.push((call_id.clone(), ChildTool { name: name.clone(), started_ms: now }));
-                true
-            }
-            EngineEvent::ItemCompleted { item: Item::ToolCall { call_id, name, .. }, .. } => {
-                self.named.insert(call_id.clone(), name.clone());
-                false
-            }
-            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { .. }, .. } if self.at_call => false,
-            EngineEvent::ItemStarted { kind: ItemKind::ToolResult { call_id }, .. } => {
-                let name = self.named.remove(call_id).unwrap_or_default();
-                self.tools.push((call_id.clone(), ChildTool { name, started_ms: now }));
-                true
-            }
-            EngineEvent::ItemCompleted { item: Item::ToolResult { call_id, .. }, .. } => {
-                let before = self.tools.len();
-                self.tools.retain(|(c, _)| c != call_id);
-                self.tools.len() != before
-            }
-            EngineEvent::Approval(r) => {
-                let what = if r.questions.is_empty() { Waiting::Approval } else { Waiting::Question };
-                self.waiting.push((r.request_id.clone(), what));
-                true
-            }
-            // Answered, the call it held runs from now: the time it waited
-            // on the person is not the tool's.
-            EngineEvent::ApprovalResolved { request_id, .. } => {
-                let before = self.waiting.len();
-                self.waiting.retain(|(r, _)| r != request_id);
-                let answered = self.waiting.len() != before;
-                // The call it asked about when known, else the latest.
-                let call = self.asked.remove(request_id);
-                let held = match &call {
-                    Some(c) => self.tools.iter_mut().find(|(id, _)| id == c),
-                    None => self.tools.last_mut(),
-                };
-                if answered && let Some((_, t)) = held {
-                    t.started_ms = now;
-                }
-                answered
-            }
-            EngineEvent::AskedFor { request_id, call_id } => {
-                self.asked.insert(request_id.clone(), call_id.clone());
-                false
-            }
-            EngineEvent::ResponseCompleted { usage, .. } => {
-                self.tokens += usage.total();
-                true
-            }
-            // A count, never less than the last one.
-            EngineEvent::Progress { tokens } if *tokens > self.tokens => {
-                self.tokens = *tokens;
-                true
-            }
-            _ => false,
-        }
-    }
-
-    /// The frame for where the child stands: an ended child is in no call
-    /// and waits on nobody, and one waiting on the person is in no call
-    /// yet — the call it waits to run starts once answered.
-    pub fn frame(&self, status: ChildState) -> LiveEvent {
-        let running = status == ChildState::Running;
-        LiveEvent::SubagentStatus {
-            session_id: self.session_id.clone(),
-            status,
-            tool: self.tools.first().filter(|_| running && self.waiting.is_empty()).map(|(_, t)| t.clone()),
-            last_event_ms: self.last_event_ms,
-            waiting: self.waiting.first().filter(|_| running).map(|(_, w)| *w),
-            tokens: self.tokens,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -995,51 +730,6 @@ mod tests {
         theirs["backendId"] = "task_1".into();
         let claude: LogEvent = serde_json::from_value(theirs).unwrap();
         assert!(matches!(claude.body, LogBody::SubagentStarted { ran_by: RanBy::Claude, backend_id: Some(ref b), .. } if b == "task_1"));
-    }
-
-    /// R-SUB-9: a backend's agent's items come whole — its call's result
-    /// started and completed at once — so its tool runs from its call, is
-    /// none while it waits on the person, runs again from the answer, and
-    /// ends at its result; its tokens are the backend's count, never less.
-    #[test]
-    fn r_sub_9_a_backend_agents_tool_runs_from_its_call_and_its_tokens_are_the_backends_count() {
-        use crate::protocol::{ApprovalDecision, ApprovalRequest};
-        let mut w = ChildWatch::backend("k");
-        let call = Item::ToolCall { call_id: "c1".into(), name: "Bash".into(), input: serde_json::json!({}) };
-        let result = Item::ToolResult { call_id: "c1".into(), output: "ok".into(), is_error: false, images: Vec::new() };
-        let frame = |w: &ChildWatch| match w.frame(ChildState::Running) {
-            LiveEvent::SubagentStatus { tool, waiting, tokens, .. } => (tool.map(|t| (t.name, t.started_ms)), waiting, tokens),
-            other => panic!("{other:?}"),
-        };
-        assert!(w.note(&EngineEvent::Progress { tokens: 1200 }, 1));
-        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i1".into(), item: call }, 2));
-        assert_eq!(frame(&w), (Some(("Bash".into(), 2)), None, 1200), "running from its call");
-        let req = ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: "r1".into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `sleep 30`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() };
-        assert!(w.note(&EngineEvent::Approval(req), 3));
-        assert_eq!(frame(&w), (None, Some(Waiting::Approval), 1200), "waiting, in no call yet");
-        assert!(w.note(&EngineEvent::ApprovalResolved { request_id: "r1".into(), decision: ApprovalDecision::Allow }, 9));
-        assert_eq!(frame(&w), (Some(("Bash".into(), 9)), None, 1200), "its clock starts at the answer");
-        assert!(!w.note(&EngineEvent::Progress { tokens: 1100 }, 10), "a count never goes down");
-        assert!(w.note(&EngineEvent::Progress { tokens: 1300 }, 11));
-        assert!(!w.note(&EngineEvent::ItemStarted { item_id: "i2".into(), kind: ItemKind::ToolResult { call_id: "c1".into() } }, 20), "its result's start ends nothing");
-        assert!(w.note(&EngineEvent::ItemCompleted { item_id: "i2".into(), item: result }, 20));
-        assert_eq!(frame(&w), (None, None, 1300));
-        assert!(matches!(w.frame(ChildState::Done), LiveEvent::SubagentStatus { status: ChildState::Done, tool: None, waiting: None, tokens: 1300, .. }));
-        // Two calls in one message, the first asked about: its clock starts
-        // again at the answer, the other's runs on.
-        let mut w = ChildWatch::backend("k");
-        for (c, at) in [("c1", 2), ("c2", 3)] {
-            w.note(&EngineEvent::ItemCompleted { item_id: c.into(), item: Item::ToolCall { call_id: c.into(), name: "Bash".into(), input: serde_json::json!({}) } }, at);
-        }
-        assert!(!w.note(&EngineEvent::AskedFor { request_id: "r2".into(), call_id: "c1".into() }, 4));
-        w.note(&EngineEvent::Approval(req_for("r2")), 4);
-        w.note(&EngineEvent::ApprovalResolved { request_id: "r2".into(), decision: ApprovalDecision::Allow }, 9);
-        let started: Vec<(&str, i64)> = w.tools.iter().map(|(c, t)| (c.as_str(), t.started_ms)).collect();
-        assert_eq!(started, [("c1", 9), ("c2", 3)]);
-    }
-
-    fn req_for(id: &str) -> crate::protocol::ApprovalRequest {
-        crate::protocol::ApprovalRequest { session_id: "k".into(), turn_id: "t".into(), request_id: id.into(), tool: "Bash".into(), input: serde_json::json!({}), summary: "Bash `x`".into(), reason: "x".into(), remember: Vec::new(), questions: Vec::new() }
     }
 
     #[test]

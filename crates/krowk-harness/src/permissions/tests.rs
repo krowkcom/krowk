@@ -580,7 +580,7 @@ fn r_sub_1_krowks_session_tools_need_no_mode_but_deny_and_ask_rules_and_a_hooks_
     for mode in [PermissionMode::Default, PermissionMode::AcceptEdits, PermissionMode::Plan, PermissionMode::BypassPermissions] {
         assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"), None)), 'Y', "{mode:?}: no mode holds it, plan's included");
         assert_eq!(letter(&gate(&none, mode).verdict(&todo, None)), 'Y', "{mode:?}");
-        assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"), Some(crate::hooks::Decision::Ask))), '?', "{mode:?}: a hook's ask asks");
+        assert_eq!(letter(&gate(&none, mode).verdict(&task("reviewer"), Some(crate::permissions::hooks::Decision::Ask))), '?', "{mode:?}: a hook's ask asks");
     }
     let ask = policy(&cwd, &[(Kind::Ask, "Task(reviewer)"), (Kind::Deny, "TodoWrite")]);
     let bypass = gate(&ask, PermissionMode::BypassPermissions);
