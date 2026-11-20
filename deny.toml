@@ -13,10 +13,6 @@ targets = [
   "x86_64-apple-darwin",
   "aarch64-apple-darwin",
   "x86_64-pc-windows-gnu",
-  # The phone's static library ships too (`make ios-core`), so a crate only
-  # iOS links is judged as well.
-  "aarch64-apple-ios",
-  "aarch64-apple-ios-sim",
 ]
 # The full build is `--features harness`, a superset of the lean one.
 all-features = true
@@ -27,13 +23,7 @@ all-features = true
 # advisory's id and why it does not reach krowk, never as a blanket level.
 unmaintained = "all"
 yanked = "deny"
-ignore = [
-  # basic-toml 0.1.10 is archived, not vulnerable. It reaches the tree only
-  # through uniffi's bindgen (askama's derive macro reading its own config
-  # at compile time); no krowk binary links it or parses TOML with it.
-  # Drop this once uniffi moves askama to a release without it.
-  { id = "RUSTSEC-2026-0374", reason = "unmaintained, not vulnerable; build-time only, via uniffi_bindgen's askama derive" },
-]
+ignore = []
 
 [licenses]
 # What krowk's own MIT licence can ship beside. Where a crate offers a
@@ -53,10 +43,6 @@ allow = [
   "Zlib",
   # webpki-roots: Mozilla's root store, as data.
   "CDLA-Permissive-2.0",
-  # nucleo-matcher, the TUI's fuzzy match: file-level copyleft, which asks
-  # only that its own files stay available under MPL, as they are on
-  # crates.io. krowk's code is not touched by it.
-  "MPL-2.0",
 ]
 confidence-threshold = 0.9
 # The workspace's own crates carry `license-file` and `publish = false`.
