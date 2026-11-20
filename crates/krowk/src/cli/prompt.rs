@@ -101,6 +101,12 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     let trusted = flag_trust || store.trusts(&trust_as.root(&trust::root(&runs_in)));
     let model = route(ctx, &registry, asked.as_ref(), session_model.as_ref(), &runs_in, trusted)?;
     let runs_native = model.as_ref().or(session_model.as_ref()).and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_none());
+    // D4: krowk runs a turn only in Claude Code or Codex — an instance named
+    // here (`--model`, `defaultModel`, a resumed session's) that is neither
+    // is refused before anything starts.
+    if runs_native {
+        return Err(fail("removed_provider", krowk_harness::connect::NO_DIRECT_MODELS));
+    }
     let vendor = vendor_of(model.clone().or(session_model).as_ref(), &registry);
     let as_repo = trust_as.clone();
     let mut permissions = permissions_config(ctx, &config, Arc::new(move |root: &std::path::Path| flag_trust || store.trusts(&as_repo.root(root))), false);

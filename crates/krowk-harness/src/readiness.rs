@@ -401,6 +401,8 @@ pub fn route(
     };
     match pool.as_slice() {
         [one] => spell(one),
+        // D4: with no model asked, nothing connected is the one line.
+        [] if bare.is_none() => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
         [] => {
             let run: Vec<String> = crate::instances::serving(bare)
                 .1
@@ -413,18 +415,9 @@ pub fn route(
                 Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
                 None => String::new(),
             };
-            // A router or a compatible server that is ready may serve it:
-            // krowk cannot tell, but the person can name it.
-            let named: Vec<String> = reg
-                .instances
-                .values()
-                .filter(|i| i.backend.is_none() && suggested(i).is_none() && local(i, credentials).is_some_and(|r| r.is_ready()))
-                .map(|i| format!("`--model {}/<id>`", i.name))
-                .collect();
-            let named = if named.is_empty() { String::new() } else { format!(", or name one that may serve it: {}", named.join(", ")) };
             let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, kind_label(i.kind), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
-            let for_what = if bare.is_some() { format!(" serves {what} (asked for {asked})") } else { " can run a model here (no --model, and config names no defaultModel)".into() };
-            Err(EngineError::new("none_ready", format!("no connected instance{for_what} — run {run}{named}. What each one needs:\n{}", needs.join("\n"))))
+            let needs = if needs.is_empty() { String::new() } else { format!(". What each one needs:\n{}", needs.join("\n")) };
+            Err(EngineError::new("none_ready", format!("no connected account serves {what} (asked for {asked}) — run {run}, or name the account that runs it: `--model <account>/<id>`{needs}")))
         }
         several => {
             let picks: Vec<String> = several
@@ -500,9 +493,10 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
 /// The command routing suggests for an instance — `connect::connect_command`,
 /// the one every fix line uses — for a kind `krowk connect` sets up by a
 /// vendor's own method. None for a router or a compatible server, whose
-/// models krowk cannot tell: routing only ever names those.
+/// models krowk cannot tell: routing only ever names those; none for
+/// SuperGrok, which no longer connects (D6).
 fn suggested(i: &Resolved) -> Option<String> {
-    (!matches!(i.kind, "openrouter-api" | "openai-compatible")).then(|| connect::connect_command(&i.name, i.kind))
+    (!matches!(i.kind, "openrouter-api" | "openai-compatible" | "xai-oauth")).then(|| connect::connect_command(&i.name, i.kind))
 }
 
 /// Vendor answers that said "signed in", by instance, and when.

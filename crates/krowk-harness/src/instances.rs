@@ -777,16 +777,15 @@ impl Registry {
 
     /// The instances that could run a bare `model` — with none, any model —
     /// by name, whether they are ready or not (that is the router's to
-    /// ask): every instance of a kind that serves the id's line. An
-    /// Anthropic model runs on `anthropic-api` or `claude-code`, a GPT on
-    /// `openai-api` or `codex-app-server`, a Grok on `xai-api` or
-    /// `xai-oauth`. A router or a compatible server serves whatever it
-    /// serves, which krowk cannot tell, so it is reached only by naming it.
-    /// None is ranked above another: which one runs is `readiness::route`'s
-    /// rule, and never a guess between an API key and a subscription.
+    /// ask): every Claude Code or Codex account that serves the id's line
+    /// (D4: krowk runs no model itself). An Anthropic model runs on
+    /// `claude-code`, a GPT on `codex-app-server`; a Grok, or a model behind
+    /// a gateway, runs on the account that names it. None is ranked above
+    /// another: which one runs is `readiness::route`'s rule, and never a
+    /// guess between an API key and a subscription.
     pub fn candidates(&self, model: Option<&str>) -> Vec<&Resolved> {
         let line = model.map(line_of);
-        self.instances.values().filter(|i| line_of_kind(i.kind).is_some_and(|l| line.is_none_or(|m| m == l))).collect()
+        self.instances.values().filter(|i| i.backend.is_some() && line_of_kind(i.kind).is_some_and(|l| line.is_none_or(|m| m == l))).collect()
     }
 
     /// A bare id as `inst` takes it: Claude Code takes its aliases
@@ -1378,16 +1377,17 @@ mod tests {
             &env,
         );
         let names = |m: Option<&str>| reg.candidates(m).iter().map(|i| i.name.clone()).collect::<Vec<_>>();
-        let claude = ["anthropic", "anthropic:work", "claude", "claude:work"];
+        // Only Claude Code and Codex accounts run a turn (D4): an instance
+        // krowk would run itself is never a candidate.
+        let claude = ["claude", "claude:work"];
         assert_eq!(names(Some("sonnet")), claude);
         assert_eq!(names(Some("claude-sonnet-4-6")), claude);
         assert_eq!(names(Some("router/some/model")), claude, "an id with a / of its own is Claude's line, as it always was");
-        assert_eq!(names(Some("gpt-5.5")), ["codex", "codex:team", "openai"]);
-        assert_eq!(names(Some("o3")), ["codex", "codex:team", "openai"]);
-        assert_eq!(names(Some("grok-4.7")), ["grok:team", "supergrok", "xai"]);
-        // With no id, every instance with a default model; a router or a
-        // compatible server serves what krowk cannot tell: only ever named.
-        assert_eq!(names(None), ["anthropic", "anthropic:work", "claude", "claude:work", "codex", "codex:team", "grok:team", "openai", "supergrok", "xai"]);
+        assert_eq!(names(Some("gpt-5.5")), ["codex", "codex:team"]);
+        assert_eq!(names(Some("o3")), ["codex", "codex:team"]);
+        assert!(names(Some("grok-4.7")).is_empty(), "a Grok runs on the Codex account that names it");
+        // With no id, every account with a default model.
+        assert_eq!(names(None), ["claude", "claude:work", "codex", "codex:team"]);
         // What each is, in a person's words.
         let labels: Vec<&str> = ["anthropic", "claude", "openai", "codex", "xai", "supergrok", "openrouter", "router"].iter().map(|n| kind_label(reg.get(n).unwrap().kind)).collect();
         assert_eq!(labels, ["Anthropic API key", "Claude subscription", "OpenAI API key", "ChatGPT subscription", "xAI API key", "SuperGrok", "OpenRouter", "OpenAI-compatible"]);

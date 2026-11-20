@@ -17,7 +17,10 @@ the versions are the `v*` tags a release is cut from. Entries land under
   gateways keep working: `krowk connect` turns them into Claude Code or Codex
   accounts, and the key stays in krowk's credentials. Signing in with
   SuperGrok is not carried over; connect a Claude Code or Codex account
-  instead. It is announced and removed in the same release.
+  instead. A key that is only in your environment (`ANTHROPIC_API_KEY`,
+  `OPENAI_API_KEY`) is no longer an account by itself: connect it once with
+  `krowk connect anthropic --method api-key` (or `openai`). It is announced
+  and removed in the same release.
 
 ### Added
 
@@ -83,6 +86,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   model naming it still works. SuperGrok can no longer be
   connected: `krowk connect` says "krowk no longer runs models directly;
   connect a Claude Code or Codex account."
+
+- **Every session runs on a Claude Code or Codex account.** `krowk -p`,
+  sessions the host starts (`krowk sync new --host`) and a model switch go
+  only to a Claude Code or Codex account: the one named, else the default,
+  else the one that is ready. With none connected, or when `--model`,
+  `defaultModel` or a resumed session names a provider krowk no longer runs
+  (an API key krowk ran itself, SuperGrok), they stop with one line: "krowk
+  no longer runs models directly; connect a Claude Code or Codex account."
+  (exit 3, `none_ready` or `removed_provider`). `krowk status`, `providers
+  list` and `doctor` list only those accounts, and `krowk connect`, `login`
+  and the help no longer offer SuperGrok.
 
 - **On Free, `krowk sessions archive` keeps the session on this machine.**
   Free's synced history expires after 7 days, so an archived session's

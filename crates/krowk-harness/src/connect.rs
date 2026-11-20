@@ -61,10 +61,11 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-/// What a way in krowk no longer runs — SuperGrok — is refused with.
+/// What a way in krowk no longer runs — SuperGrok, or any instance that is
+/// not a Claude Code or Codex account — is refused with (D4).
 pub const NO_DIRECT_MODELS: &str = "krowk no longer runs models directly; connect a Claude Code or Codex account.";
 
-fn no_direct_models() -> EngineError {
+pub fn no_direct_models() -> EngineError {
     EngineError::new("removed_provider", NO_DIRECT_MODELS)
 }
 

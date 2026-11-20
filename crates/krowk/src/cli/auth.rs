@@ -38,7 +38,7 @@ fn connect_hint(word: &str) -> String {
         let way = match word.to_ascii_lowercase().as_str() {
             "anthropic" | "claude" => "anthropic --method subscription",
             "openai" | "chatgpt" | "codex" | "gpt" => "openai --method subscription",
-            "xai" | "grok" | "supergrok" => "xai --method subscription",
+            "xai" | "grok" | "supergrok" => "xai --method api-key",
             "openrouter" => "openrouter",
             _ => return "to connect a model provider, run `krowk connect openai-compatible --name <name> --base-url <url>`".into(),
         };
