@@ -280,7 +280,7 @@ pub fn open(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Chain) ->
     // Any device that ever held an older generation could have sealed one
     // under it, a device removed since included.
     if generation < chain.generation() {
-        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk devices`) and announces itself again", chain.generation()));
+        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk machines`) and announces itself again", chain.generation()));
     }
     let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
     // serde's message can quote what the host wrote, so it is escaped.
