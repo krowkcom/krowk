@@ -6,7 +6,7 @@
 //! registry's one-pairing-per-person rule decides which: the others'
 //! `open_pairing` is `pairing_open`, and they leave it be.
 //!
-//! **The roles are today's** (`krowk devices add`, `krowk sync join`): this
+//! **The roles are today's** (`krowk machines add`, `krowk sync join`): this
 //! host is A. It makes the code, opens the pairing, and runs A's side of
 //! the SPAKE2 exchange, never B's. A request carries no keys and opens
 //! nothing: its name and OS are untrusted hints that are not even shown.
@@ -236,7 +236,7 @@ impl Introductions {
         }
     }
 
-    /// A's whole side, as `krowk devices add` runs it.
+    /// A's whole side, as `krowk machines add` runs it.
     fn drive(&self) -> Over {
         let failed = |why: String| Over::Failed(why);
         let i = match (self.build)() {
@@ -288,8 +288,8 @@ impl Introductions {
         let (name, os) = (sealed.name, sealed.os);
         match (acked, posted) {
             (Ok(_), Ok(())) => Over::Added(name, os),
-            (Err(_), Ok(())) => failed(format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: krowk devices remove '{name}'")),
-            (_, Err(e)) => failed(format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check krowk devices list; rotate your key with the next krowk devices remove", e.code())),
+            (Err(_), Ok(())) => failed(format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: krowk machines remove '{name}'")),
+            (_, Err(e)) => failed(format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check krowk machines; rotate your key with the next krowk machines remove", e.code())),
         }
     }
 
