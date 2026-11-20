@@ -478,6 +478,8 @@ pub struct Outcome {
     pub usage: Usage,
     /// The machine it ran on.
     pub machine: String,
+    /// Why there: what `Progress` said as it started.
+    pub why: String,
 }
 
 /// Why a task did not run, or did not finish.
@@ -865,12 +867,12 @@ impl Placer {
                     if let Some((prev, _, m)) = refused.last() {
                         why = format!("{prev} would not take it ({m})");
                     }
-                    task.set(State::Running { machine: name.clone(), child: session_id.clone(), why });
+                    task.set(State::Running { machine: name.clone(), child: session_id.clone(), why: why.clone() });
                     if task.is_cancelled() {
                         let _ = f.stop(&session_id);
                         return Err(Failure::Failed { machine: name, reason: "the task was interrupted".into() });
                     }
-                    return self.follow(task, &spec, &bundle, &name, &to.device, &session_id).map(Some);
+                    return self.follow(task, &spec, &bundle, &name, &to.device, &session_id).map(|o| Some(Outcome { why, ..o }));
                 }
                 Ok(Some(HostAnswer::Started { session_id })) => refused.push((name, "bad_answer".into(), format!("it answered with {session_id:?}, which is no session id"))),
                 Ok(Some(HostAnswer::Refused { code, message })) => refused.push((name, code, message)),
@@ -899,7 +901,7 @@ impl Placer {
             task.set(State::Here(why));
             return Ok(None);
         }
-        task.set(State::Running { machine: name.to_string(), child: String::new(), why });
+        task.set(State::Running { machine: name.to_string(), child: String::new(), why: why.clone() });
         let failed = |reason: String| Failure::Failed { machine: name.to_string(), reason };
         let ran = f.run_local(spec, model).map_err(&failed)?;
         let (applied, kept) = match &ran.worktree {
@@ -909,7 +911,7 @@ impl Placer {
             }
             None => (Vec::new(), None),
         };
-        Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string() }))
+        Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string(), why }))
     }
 
     /// Follows the child `child` on `machine` until its one turn is over,
@@ -977,7 +979,7 @@ impl Placer {
             }
             _ => (Vec::new(), None),
         };
-        Ok(Outcome { summary: done.summary, applied, kept, denied: done.denied, usage: done.usage, machine: machine.to_string() })
+        Ok(Outcome { summary: done.summary, applied, kept, denied: done.denied, usage: done.usage, machine: machine.to_string(), why: String::new() })
     }
 }
 
