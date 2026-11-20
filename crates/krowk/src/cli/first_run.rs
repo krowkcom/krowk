@@ -120,7 +120,7 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
             state.pending = false;
             save(ctx, state);
         }
-        Ok(Registered::OthersExist) => add_a_machine(ctx, &client, state),
+        Ok(Registered::OthersExist) => add_a_machine(ctx, client, state),
         // A key the registry refuses is not retried on every launch.
         Err(e) if e.status == 401 || e.status == 403 => {
             state.pending = false;
@@ -139,9 +139,9 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
 /// stays set until the machine has joined, so a cancelled or failed one —
 /// no machine online, a wrong code — resumes at the next `krowk`; the model
 /// step follows either way.
-pub(super) fn add_a_machine(ctx: &mut Ctx, _client: &Client, state: &mut State) {
+pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
     let _ = writeln!(ctx.io.stderr, "Your account already has machines. Adding this one to them takes a code from one of them.");
-    match super::pairing::join_new_machine(ctx) {
+    match super::pairing::join_new_machine(ctx, client) {
         Ok(()) => {
             state.pending = false;
             save(ctx, state);

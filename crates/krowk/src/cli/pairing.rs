@@ -664,9 +664,9 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// (`first_run::add_a_machine`): the same join, as the machine just signed
 /// in, ending at "Joined as …". The always-on offer is not made here — the
 /// setup flow asks it after the model step.
-pub(super) fn join_new_machine(ctx: &mut Ctx) -> Result<(), Error> {
+pub(super) fn join_new_machine(ctx: &mut Ctx, client: Client) -> Result<(), Error> {
     terminal(ctx, JOIN_OFF_TERMINAL)?;
-    join_with(ctx, keyed_client(ctx, "joining your other machines")?, false)
+    join_with(ctx, client, false)
 }
 
 fn join_with(ctx: &mut Ctx, client: Client, offers: bool) -> Result<(), Error> {
