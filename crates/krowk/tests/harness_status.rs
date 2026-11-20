@@ -239,14 +239,21 @@ fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_chec
     assert_eq!(check(&d, "account")["status"], "skip", "{d}");
     assert!(out.status.success(), "no failed check, exit 0: {d}");
 
-    // Signed in with a key, on a machine never registered: the registration
-    // and the always-on service fail, each with its fix.
+    // A key in KROWK_TOKEN (CI, an agent): signed in, and no machine of the
+    // person's, so nothing about registration or the service is asked.
+    let out = b.krowk(&["doctor", "--json"], &[("KROWK_TOKEN", "krowk_sk_ci#a")]);
+    let d = stdout_json(&out);
+    assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "machine")["status"].as_str(), check(&d, "always_on")["status"].as_str()), (Some("pass"), Some("skip"), Some("skip")), "{d}");
+    assert!(out.status.success(), "{d}");
+
+    // Signed in with a key, on a machine never registered: that fails with
+    // its fix, and the service has no machine to keep on.
     std::fs::write(b.home().join(".krowk/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
     let out = b.krowk(&["doctor", "--json"], &[("KROWK_API_URL", "http://127.0.0.1:9")]);
     let d = stdout_json(&out);
     assert_eq!(check(&d, "account")["status"], "pass", "{d}");
     assert_eq!((check(&d, "machine")["status"].as_str(), check(&d, "machine")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");
-    assert_eq!((check(&d, "always_on")["status"].as_str(), check(&d, "always_on")["fix"].as_str()), (Some("fail"), Some("krowk machines always-on on")), "{d}");
+    assert_eq!(check(&d, "always_on")["status"], "skip", "{d}");
     assert!(!out.status.success());
 }
 

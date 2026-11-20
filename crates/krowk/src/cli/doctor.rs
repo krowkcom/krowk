@@ -61,9 +61,10 @@ fn all_checks(ctx: &Ctx, report: &Map<String, Value>, signed_in: bool, verified:
     let lookup = match verified {
         None => Lookup::Unchecked,
         Some(Ok(k)) => Lookup::Ok { email: k.email.clone(), workspace: k.workspace.clone() },
-        // Neither a good key nor a bad one: the registry did not answer.
-        Some(Err(e)) if e.code() == "network_unreachable" || e.status >= 500 => Lookup::Offline,
-        Some(Err(e)) => Lookup::Rejected(e.code()),
+        // A key is bad when the registry says so; any other answer (down,
+        // slow, rate-limited) leaves it neither good nor bad.
+        Some(Err(e)) if matches!(e.status, 401 | 403) => Lookup::Rejected(e.code()),
+        Some(Err(_)) => Lookup::Offline,
     };
     let (mut ours, machine) = health::local(ctx, signed_in, &lookup);
     let plan = verified.as_ref().and_then(|v| v.as_ref().ok()).map(|k| k.plan.as_str());

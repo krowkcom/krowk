@@ -85,11 +85,12 @@ enum Rank {
     Subagents,
     Tasks,
     Cost,
+    /// Longer than the cost, and dropped before the model is cut short: a
+    /// narrow row names the model, and the details overlay has the rest.
+    Problem,
     /// Cut short rather than dropped.
     Model,
     Kit,
-    /// Kept longer than the kit's reminder: it is what to fix.
-    Problem,
     Sync,
     Offline,
     Help,
@@ -5325,7 +5326,6 @@ mod tests {
         assert_eq!(a.status_bar(), "Haiku (claude:work) | ? help\n$0.00");
     }
 
-    /// D6: until a kit exists, the status line says there is none.
     /// D9: the status line names the one problem, and nothing when all pass.
     #[test]
     fn d9_the_status_line_shows_the_top_problem_and_nothing_when_all_pass() {
@@ -5338,6 +5338,7 @@ mod tests {
         assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
     }
 
+    /// D6: until a kit exists, the status line says there is none.
     #[test]
     fn d6_the_status_line_says_there_is_no_recovery_kit_until_there_is_one() {
         let mut a = app();

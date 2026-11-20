@@ -13,6 +13,8 @@
 //! session reminder is the status line's own (`Options::no_recovery_kit`,
 //! ticket 02), so `top_problem` never names it: one owner, never twice.
 
+#![cfg_attr(not(feature = "harness"), allow(dead_code))]
+
 use super::Ctx;
 use serde_json::{json, Value};
 
@@ -92,7 +94,7 @@ pub(super) fn account(signed_in: bool, local: bool, lookup: &Lookup) -> Check {
         Lookup::Rejected(code) => Check::new("account", Status::Fail, format!("The registry rejected this key ({code})"), Some(FIX)),
         Lookup::Ok { email, .. } if !email.is_empty() => Check::new("account", Status::Pass, format!("Signed in as {email}"), None),
         Lookup::Ok { workspace, .. } if !workspace.is_empty() => Check::new("account", Status::Pass, format!("Signed in to {workspace}"), None),
-        Lookup::Offline => Check::new("account", Status::Pass, "Signed in (the registry could not be reached to check the key)", None),
+        Lookup::Offline => Check::new("account", Status::Pass, "Signed in (the registry did not confirm the key just now)", None),
         _ => Check::new("account", Status::Pass, "Signed in", None),
     }
 }
@@ -103,7 +105,8 @@ pub(super) fn account(signed_in: bool, local: bool, lookup: &Lookup) -> Check {
 pub(super) enum Machine {
     /// No registration to ask about, and why.
     NotApplicable(&'static str),
-    Unreadable(String),
+    /// Said without the reason, which can be a path.
+    Unreadable,
     NotRegistered,
     /// A list is kept, and this machine is not on it.
     Removed,
@@ -117,7 +120,7 @@ pub(super) fn registered(signed_in: bool, machine: &Machine) -> Check {
     }
     match machine {
         Machine::NotApplicable(why) => Check::new("machine", Status::Skip, *why, None),
-        Machine::Unreadable(e) => Check::new("machine", Status::Fail, format!("This machine's keys could not be read: {e}"), Some(FIX)),
+        Machine::Unreadable => Check::new("machine", Status::Fail, "This machine's keys could not be read", Some(FIX)),
         Machine::NotRegistered => Check::new("machine", Status::Fail, "This machine is not registered for sync", Some(FIX)),
         Machine::Removed => Check::new("machine", Status::Fail, "This machine is no longer on your device list", Some(FIX)),
         Machine::Registered { name, .. } => Check::new("machine", Status::Pass, format!("This machine is registered as '{name}'"), None),
@@ -125,14 +128,15 @@ pub(super) fn registered(signed_in: bool, machine: &Machine) -> Check {
 }
 
 /// `service`: whether the service file is installed, or `None` where this
-/// platform has none.
-pub(super) fn always_on(signed_in: bool, service: Option<bool>) -> Check {
+/// platform has none. It keeps a registered machine syncing, so a machine
+/// that is not one has nothing to keep on.
+pub(super) fn always_on(machine: &Machine, service: Option<bool>) -> Check {
     const FIX: &str = "krowk machines always-on on";
-    match (signed_in, service) {
+    match (machine, service) {
         (_, None) => Check::new("always_on", Status::Skip, "The always-on service is not available on this platform", None),
-        (false, _) => Check::new("always_on", Status::Skip, "The always-on service syncs your sessions, which needs an account", None),
-        (true, Some(true)) => Check::new("always_on", Status::Pass, "Always-on service is on", None),
-        (true, Some(false)) => Check::new("always_on", Status::Fail, "Always-on service off", Some(FIX)),
+        (Machine::Registered { .. }, Some(true)) => Check::new("always_on", Status::Pass, "Always-on service is on", None),
+        (Machine::Registered { .. }, Some(false)) => Check::new("always_on", Status::Fail, "Always-on service off", Some(FIX)),
+        _ => Check::new("always_on", Status::Skip, "The always-on service syncs your sessions, which needs a machine registered for sync", None),
     }
 }
 
@@ -201,7 +205,7 @@ pub(super) fn plan(plan: Option<&str>, machine: &Machine) -> Check {
 /// status line picks from, and the first part of the doctor's report.
 pub(super) fn local(ctx: &Ctx, signed_in: bool, lookup: &Lookup) -> (Vec<Check>, Machine) {
     let machine = Machine::here(ctx, signed_in);
-    let checks = vec![account(signed_in, chose_local(ctx), lookup), registered(signed_in, &machine), always_on(signed_in, service_installed(ctx))];
+    let checks = vec![account(signed_in, chose_local(ctx), lookup), registered(signed_in, &machine), always_on(&machine, service_installed(ctx))];
     (checks, machine)
 }
 
@@ -260,7 +264,7 @@ impl Machine {
             Ok::<_, String>((ks.device_list()?, ks.device()?))
         })();
         match kept {
-            Err(e) => Machine::Unreadable(e),
+            Err(_) => Machine::Unreadable,
             Ok((None, _)) => Machine::NotRegistered,
             Ok((Some(_), None)) => Machine::NotRegistered,
             Ok((Some(chain), Some(me))) => match chain.devices().iter().find(|d| d.id() == me.id()) {
@@ -339,7 +343,7 @@ mod tests {
     fn the_machine_line_passes_when_registered_and_fails_otherwise_with_krowk_login() {
         let pass = registered(true, &registered_machine("desk", 1, false));
         assert_eq!((pass.status, pass.message.as_str()), (Status::Pass, "This machine is registered as 'desk'"));
-        for m in [Machine::NotRegistered, Machine::Removed, Machine::Unreadable("denied".into())] {
+        for m in [Machine::NotRegistered, Machine::Removed, Machine::Unreadable] {
             let c = registered(true, &m);
             assert_eq!(c.status, Status::Fail, "{m:?}");
             assert_fixed_by_a_visible_command(&c);
@@ -350,12 +354,14 @@ mod tests {
 
     #[test]
     fn the_always_on_line_passes_with_the_service_and_fails_without_it() {
-        assert_eq!(always_on(true, Some(true)).status, Status::Pass);
-        let off = always_on(true, Some(false));
+        let here = registered_machine("desk", 2, true);
+        assert_eq!(always_on(&here, Some(true)).status, Status::Pass);
+        let off = always_on(&here, Some(false));
         assert_eq!((off.status, off.fix.as_deref(), off.message.as_str()), (Status::Fail, Some("krowk machines always-on on"), "Always-on service off"));
         assert_fixed_by_a_visible_command(&off);
-        assert_eq!(always_on(false, Some(false)).status, Status::Skip);
-        assert_eq!(always_on(true, None).status, Status::Skip);
+        assert_eq!(always_on(&Machine::NotApplicable("a key"), Some(false)).status, Status::Skip);
+        assert_eq!(always_on(&Machine::NotRegistered, Some(false)).status, Status::Skip);
+        assert_eq!(always_on(&here, None).status, Status::Skip);
     }
 
     #[test]
