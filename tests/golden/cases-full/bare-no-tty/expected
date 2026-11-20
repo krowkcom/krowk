@@ -19,7 +19,6 @@ Agent
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
   sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
 
 Publish
   push          Upload files, get a link for each
@@ -1321,6 +1320,65 @@ stdout:
               "required": true
             }
           ]
+        },
+        {
+          "name": "add",
+          "usage": "krowk machines add",
+          "summary": "Show a code and QR that adds a phone or a machine"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk machines remove NAME",
+          "summary": "Take a machine off your list and rotate your key",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The machine's name, as `krowk machines` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "always-on",
+          "usage": "krowk machines always-on on|off",
+          "summary": "Keep this machine available while you're away",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk machines recovery [new|check|discard-old]",
+          "summary": "Your recovery kit: see it, make a new one, test it",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk machines recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk machines recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk machines recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
+            }
+          ]
         }
       ]
     },
@@ -1409,7 +1467,7 @@ stdout:
         {
           "name": "join",
           "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk devices add` shows",
+          "summary": "Add this machine by the code `krowk machines add` shows",
           "flags": [
             {
               "name": "name",
@@ -1890,7 +1948,6 @@ Agent
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
   sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
 
 Publish
   push          Upload files, get a link for each
@@ -3206,6 +3263,65 @@ tty:
               "required": true
             }
           ]
+        },
+        {
+          "name": "add",
+          "usage": "krowk machines add",
+          "summary": "Show a code and QR that adds a phone or a machine"
+        },
+        {
+          "name": "remove",
+          "usage": "krowk machines remove NAME",
+          "summary": "Take a machine off your list and rotate your key",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The machine's name, as `krowk machines` lists it",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "always-on",
+          "usage": "krowk machines always-on on|off",
+          "summary": "Keep this machine available while you're away",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ]
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk machines recovery [new|check|discard-old]",
+          "summary": "Your recovery kit: see it, make a new one, test it",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk machines recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ]
+            },
+            {
+              "name": "check",
+              "usage": "krowk machines recovery check",
+              "summary": "Test the kit's words against your device list, locally"
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk machines recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside"
+            }
+          ]
         }
       ]
     },
@@ -3294,7 +3410,7 @@ tty:
         {
           "name": "join",
           "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk devices add` shows",
+          "summary": "Add this machine by the code `krowk machines add` shows",
           "flags": [
             {
               "name": "name",
