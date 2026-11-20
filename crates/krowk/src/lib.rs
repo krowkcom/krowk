@@ -6,6 +6,7 @@
 pub mod cli;
 pub mod config;
 pub mod mcp;
+#[cfg(feature = "harness")]
 pub mod osc7501;
 pub mod output;
 #[cfg(feature = "sessions")]
@@ -13,6 +14,7 @@ pub mod pricing;
 pub mod runctx;
 pub mod termclean;
 
+#[cfg(feature = "harness")]
 /// `~/…` for a directory under the home directory.
 pub fn home_relative(dir: &std::path::Path) -> String {
     match std::env::var_os("HOME").map(std::path::PathBuf::from) {
