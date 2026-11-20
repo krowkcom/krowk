@@ -9,13 +9,9 @@ Plumbing for independent agents: they travel between your machines to use comput
 
 ---
 
-Krowk is plumbing for agents running in other harnesses, built for power users who run coding agents all day. It has no interface of its own: a command line, a background daemon and the agent engines. It drives Claude Code and Codex, or runs Claude, GPT, Grok or any OpenAI-compatible model with your existing subscription or an API key. A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
+Krowk is plumbing for agents running in other harnesses, built for power users who run coding agents all day. It has no interface of its own: a command line, a background daemon and the agent engines. It drives Claude Code and Codex, or runs Claude, GPT, Grok or any OpenAI-compatible model with your existing subscription or an API key, and reads your Claude Code permissions, skills and hooks as they are.
 
-```bash
-krowk connect            # sign in with a Claude, ChatGPT or SuperGrok subscription, or an API key
-krowk -p "fix the build" # run one prompt headless (--output-format json)
-krowk -p --resume <id> "go on" # continue an earlier session
-```
+Sessions follow you across machines, end-to-end encrypted, and your machines share the work. Agents publish screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp.
 
 ## Install
 
@@ -29,158 +25,30 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 
 ## Three moments
 
-- **Headless.** `krowk -p` runs one prompt and prints the answer, or `--output-format json` or `stream-json` for another program to read. It never takes over the terminal, so it runs the same in a script, over SSH or inside another harness. Bare `krowk` prints an overview of the commands.
-- **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
-- **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
-- **Multiple accounts.** You can connect several accounts per provider and rename them with `krowk providers rename`. A second account is added with `--name work`.
-- **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
-
-## Worktrees
-
-Agents running at once can each work in a git worktree of their own, on a branch `krowk/<hex>`, so they don't overwrite each other's files.
-
-- **Subagents.** `isolation: "worktree"` on the `subagent` call, or `isolation: worktree` in an agent definition's frontmatter, runs the child in a new worktree started from your files as they are, uncommitted changes included. When it finishes, an unchanged worktree is removed; a changed one is applied back to your working tree (never your index or HEAD) and removed. A conflict, a submodule change or a change to `.git`, `.claude`, `.codex` or `.krowk` keeps it, and the summary names it.
-- **A session of its own.** `krowk --worktree` (or `krowk -p --worktree`) starts the session in a new worktree. On exit an unchanged one is removed and a kept one is named.
-- **By default.** `"worktrees": { "default": true }`, in your config or a trusted repository's `.krowk/config.json`, starts every new session in a repository that way, whatever model or agent runs it. A worktree it can't make stops the session rather than letting it run in your checkout; `--worktree=false` runs one in place. As with `--worktree`, the session runs in krowk's own process rather than the background host, so it ends with the terminal, and `/new` carries on in the same worktree.
-- **No hand-made ones.** Whatever the backend or mode, an agent's `git worktree add`, or Claude Code's `EnterWorktree` and `Agent` with `isolation: "worktree"`, is refused and pointed to `krowk worktrees add`. So is an upload to a paste site (`gh gist create`, `curl -F` to 0x0.st, transfer.sh and the like), pointed to `publish`. You can still run any of these at your own prompt.
-- **Ready to build.** Submodules are initialised from your checkout, `target` and `node_modules` are cloned in where the file system makes that nearly free (`worktrees.seed`), the ignored files your `.worktreeinclude` lists (`.env`, local config) are copied, and `worktrees.setup` runs a command such as `npm ci` in the sandbox. A repository's own setup command runs only once you trust it. On btrfs a worktree is a snapshot, made in tens of milliseconds whatever the repository's size.
-- **The machine's limits.** Build and test commands (`cargo`, `make`, `npm`, `pytest`, …) from every krowk on the machine queue for `builds.slots` slots, a quarter of the cores by default. Subagents and `--worktree` sessions share `subagents.maxHost` agent slots. A worktree is refused when its disk is short of 4 GiB beyond twice its expected size.
-
-| Command | What it does |
-| --- | --- |
-| `krowk worktrees` | List krowk's worktrees: base, commits ahead, uncommitted changes, whose session |
-| `krowk worktrees add [--from <ref>]` | Make one for an agent on Claude Code or Codex to work in, and print its directory. It's outside the session's working directory, so its commands there may ask for approval. It stays until applied or removed |
-| `krowk worktrees apply <hex> [--to <dir>]` | Bring a kept worktree's changes into your checkout, uncommitted |
-| `krowk worktrees remove <hex> [--force]` | Remove one; `--force` saves its changes as a ref first, and the branch is kept |
-| `krowk worktrees prune` | Clear what deleted worktrees left, and snapshots over 30 days old (also runs daily) |
-
-```json
-{ "worktrees": { "setup": "npm ci" }, "builds": { "slots": 4 }, "subagents": { "maxHost": 16 } }
-```
-
-`scripts/bench-worktrees` measures all of this on this repository: 20 worktrees made and checked at once, and three subagents applied back.
-
-## Sessions
-
-The full build keeps a local store of your agent sessions, whether they came from krowk, Claude Code, Cursor or opencode.
-
-| Command | What it does |
-| --- | --- |
-| `krowk sessions` | List every session on this machine, newest first |
-| `krowk sessions show <id>` | Read a session back, turn by turn |
-| `krowk sessions import` / `sync` | Import transcripts and reconcile usage |
-| `krowk sessions budget <id> --max-usd 5` | Exit 4 when a session costs more than the limit, for use in a hook |
-
-## Sync
-
-Sessions sync between your machines end-to-end encrypted: neither krowk's servers nor its relay can read them. Run a session on one machine, then follow it and prompt it from another.
-
-Once sync is set up, every session that runs a turn in the host daemon syncs by itself. Set `"sync": {"auto": false}` in `~/.krowk/config.json` to turn that off, or keep one directory off sync with `sync.exclude` or a `.krowk/no-sync` file. A session nobody has used or watched for 10 minutes (`sync.idleMinutes`) stops syncing until its next prompt on this machine, or until another device opens it while the host daemon runs and has stayed online. `krowk sync status` says what applies where you are, and `krowk host enable` keeps sessions synced on an always-on machine.
-
-| Command | What it does |
-| --- | --- |
-| `krowk sync init` | Set up sync on this machine, with a recovery kit |
-| `krowk devices add` / `krowk sync join` | Show a code on one machine, enter it on the new one |
-| `krowk sync status` | Your device list, and whether sessions here sync by themselves |
-| `krowk sync host <session>` | Sync one session by hand, an opted-out one included |
-| `krowk sync sessions` | The synced sessions this machine can open |
-| `krowk sync attach <session>` | Follow a synced session as text, or as stream-json for another program |
-
-## Publishing
+**Your first machine.** Run `krowk` in a terminal. It asks you to sign in in the browser, then to connect a model: a Claude, ChatGPT or SuperGrok subscription, an API key, or your own Claude Code or Codex login. Then it asks whether to keep the machine available while you're away, and offers your recovery kit. That is the whole setup; after it, `krowk` prints an overview of the commands and anything that needs fixing.
 
 ```bash
-krowk                    # sign in, connect a model, open the agent
-krowk -p "fix the build" # run one prompt headless
-krowk --resume           # continue an earlier session
+krowk                          # set this machine up, then an overview
+krowk -p "fix the build"       # run one prompt headless (--output-format json)
+krowk -p --resume <id> "go on" # continue an earlier session
 ```
 
-**Another machine.** Install krowk and run `krowk`. Sign in there and type the code your other machine shows. The new machine joins your account, and your sessions are there.
+`krowk -p` asks before it runs a repository's own hooks and MCP servers, and asks again when one of them changes; `krowk trust` answers for good.
 
-**Your phone.** Get the app, then run `krowk machines add`. It shows a QR code; scan it and your machines and sessions appear on the phone.
+**Another machine.** Install krowk and run `krowk`. Sign in there and type the code `krowk machines` shows on a machine you already have. The new machine joins your account, and your sessions are there.
+
+**Your phone.** The phone app is not part of this release.
 
 ## More
 
-- **Sessions.** The full build keeps a local store of every agent session on the machine, whether it came from krowk, Claude Code, Cursor or opencode. `krowk sessions` lists them and `krowk --resume` opens one. [Sessions](https://krowk.com/docs#sessions)
+- **Sessions.** The full build keeps a local store of every agent session on the machine, whether it came from krowk, Claude Code, Cursor or opencode, and lists the ones on your other machines too. `krowk sessions` lists them and `krowk -p --resume` continues one. [Sessions](https://krowk.com/docs#sessions)
 - **Machines.** `krowk machines` shows each machine's load, free memory and slots, and whether it accepts work from your others. `always-on` keeps one available and `recovery` guards your recovery kit. [Machines](https://krowk.com/docs#machines)
 - **Worktrees.** Agents running at once each work in a git worktree of their own, so they never overwrite each other. `krowk worktrees` lists, applies and removes them. [Worktrees](https://krowk.com/docs#worktrees)
 - **Publishing.** `krowk push screenshot.png` uploads a file and prints a link whose card shows the repo, commit, branch, PR and session. It works without an account for a day. In CI, this repository is also a GitHub Action (`uses: krowkcom/krowk@v0`). [Publishing](https://krowk.com/docs#first-push)
 - **MCP.** The agent uses the MCP servers you set up for Claude Code. `krowk mcp add`, `login` and `list` manage them, and `krowk-mcp` serves krowk itself to other MCP clients. [MCP servers](https://krowk.com/docs#mcp), [signing in to OAuth servers](https://krowk.com/docs#mcp-sign-in)
 - **Configuration.** Everything lives in `~/.krowk/`, and a repository can commit `.krowk/config.json`. `krowk config` reads and sets it; `krowk status` and `krowk doctor` check health and `krowk upgrade` updates. [Configuration](https://krowk.com/docs#configuration)
 
-In CI, the repository doubles as a GitHub Action:
-
-```yaml
-- uses: krowkcom/krowk@v0
-  id: krowk
-  with:
-    files: screenshots/**/*.png
-    token: ${{ secrets.KROWK_TOKEN }}
-```
-
-It outputs `urls`, `markdown` (ready to post as a PR comment), `run-slug` and `json`, and adds the links to the job summary.
-
-## Using krowk from other agents
-
-- [`skills/krowk/SKILL.md`](skills/krowk/SKILL.md) teaches another agent how to use krowk. The installer adds it to `~/.claude/skills`.
-- In Claude Code, `/plugin marketplace add krowkcom/krowk` and then `/plugin install krowk@krowk` add the skill and the MCP server together. When krowk drives Claude Code itself, the plugin's server stays off and krowk's own tools are used.
-- Output is JSON when piped. `krowk help --json` describes every command, and `--jq` filters the output without needing jq installed: `URL=$(krowk push shot.png --jq '.data.artifacts[0].url')`.
-- `krowk-mcp` serves the same features over MCP stdio, for any other MCP client, or for Claude Code without the plugin: `claude mcp add krowk -- krowk-mcp`.
-- Exit codes: `0` ok · `1` bad command · `2` not found · `3` needs credentials · `4` refused · `5` rate limited · `6` transfer failed · `7` server error · `8` gone.
-
-## Configuration
-
-Everything krowk keeps is in `~/.krowk/` (move it with `KROWK_HOME`): settings in `config.json`, keys in `credentials.json`, and sessions in `sessions/`. A repository can commit `.krowk/config.json` to pin a workspace or add permission rules.
-
-| Variable | Purpose |
-| --- | --- |
-| `KROWK_TOKEN` | API token (takes precedence over stored credentials) |
-| `KROWK_WORKSPACE` | Which stored workspace key to use |
-| `KROWK_API_URL` | Point at a self-hosted registry |
-| `KROWK_NO_UPDATE_CHECK` | `1` disables release checks |
-
-### MCP servers
-
-krowk's own agent uses the MCP servers you already set up for Claude Code: `mcpServers` in `~/.claude.json` (user and per-project) and in Claude's `settings.json`, plus `mcpServers` in `~/.krowk/config.json`. A repository's `.mcp.json` is used only after you trust the repository, and your own servers of the same name win over it. Each server takes Claude Code's shape, with `${VAR}` and `${VAR:-default}` expanded:
-
-```json
-{
-  "mcpServers": {
-    "github": { "command": "github-mcp-server", "args": ["stdio"], "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" } },
-    "docs":   { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ${DOCS_TOKEN}" } }
-  }
-}
-```
-
-| Key | Purpose |
-| --- | --- |
-| `command`, `args`, `env` | A stdio server: the program krowk starts, and its arguments and environment |
-| `type: "http"`, `url`, `headers` | A streamable-HTTP server |
-
-`krowk mcp` manages the servers in `~/.krowk/config.json` without editing it by hand:
-
-| Command | Does |
-| --- | --- |
-| `krowk mcp add <name> <url> [--header "Name: value"]` | Adds a remote server; `${VAR}` in a header keeps a token out of the file |
-| `krowk mcp add <name> [--env K=V] -- <command> [args…]` | Adds a local (stdio) server |
-| `krowk mcp login <name> [--no-browser]` | Signs in to a server that asks for OAuth |
-| `krowk mcp logout <name>` | Forgets the sign-in |
-| `krowk mcp list [--json]` | Lists every server krowk would load here, with where it comes from and whether you are signed in, without connecting |
-| `krowk mcp remove <name>` | Removes a server from `config.json`, and its sign-in |
-
-`add` refuses a name already in `config.json` unless you pass `--force`. Servers in a repository's `.mcp.json` or Claude Code's files are edited there; `remove` only touches `config.json`.
-
-Mobbin, whose server asks for OAuth, takes two commands:
-
-```bash
-krowk mcp add mobbin https://api.mobbin.com/mcp
-krowk mcp login mobbin
-```
-
-`login` registers krowk with the server, opens your browser, and stores the tokens in the `mcp` section of `~/.krowk/credentials.json` (`0600`). Over SSH, or with `--no-browser`, it prints the sign-in page and waits for you to paste the address your browser lands on. krowk refreshes the tokens itself; if a refresh fails, a call to that server says "mobbin needs sign-in: run `krowk mcp login mobbin` ". krowk never opens a browser in the middle of a turn. After that, ask krowk's agent for screens: it finds `search_screens` with `mcp_search`, and the images the server returns reach the model.
-
-Servers stay connected for the life of a session. They restart only when their configuration or the repository's trust changes, after a failure, or on reconnect. `krowk mcp list` lists each server with where it is configured; sign in and out with `krowk mcp login` and `krowk mcp logout`. It does not enable or disable servers, since that would edit files krowk does not own. On a Claude Code backend your servers are reached through krowk's own `mcp_search` and `mcp_call` tools (Claude Code itself loads only krowk's tools), judged by krowk's `Mcp(...)` rules; the Codex backend does not get them.
-
-The model sees two tools, `mcp_search` and `mcp_call`, however many MCP tools there are, so they cost no context until one is used. No server starts until the first search. Permission rules name a tool as `Mcp(server:tool)` or `mcp__server__tool`, and `Mcp(server)` names all of a server's tools; a server denied whole is never started.
+`krowk help` lists the commands, `krowk help --all` every one, and `--json` gives them as data. [`skills/krowk/SKILL.md`](skills/krowk/SKILL.md) teaches another agent to use krowk, and in Claude Code `/plugin marketplace add krowkcom/krowk` adds the skill and the MCP server.
 
 ## Development
 
