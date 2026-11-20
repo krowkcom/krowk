@@ -16,6 +16,8 @@ use std::process::Command;
 
 
 const TOKEN: &str = "krowk_sk_vintage_000000000000000000000";
+/// A key to a Free workspace: the stand-in reads the plan off the key.
+const FREE_TOKEN: &str = "krowk_sk_free_vin_00000000000000000000";
 const DAY_MS: i64 = 86_400_000;
 
 /// A native session whose every event is `age_days` old, asking `prompt`.
@@ -52,6 +54,7 @@ fn session_of(sessions: &Path, cwd: &Path, prompt: &str, age_days: i64, turned: 
 struct Machine {
     home: PathBuf,
     api_url: String,
+    token: &'static str,
 }
 
 impl Machine {
@@ -65,7 +68,7 @@ impl Machine {
             .env("TMPDIR", "/tmp")
             .env("KROWK_NO_UPDATE_CHECK", "1")
             .env("KROWK_API_URL", &self.api_url)
-            .env("KROWK_TOKEN", TOKEN)
+            .env("KROWK_TOKEN", self.token)
             .env("KROWK_DEVICE_NAME", "this machine")
             .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
             .current_dir(&self.home)
@@ -85,6 +88,7 @@ fn archived_and_listed(m: &Machine, sessions: &Path, old: &str, pinned: &str, fr
     assert!(ok, "{out}");
     let archived: Vec<String> = v["data"]["archived"].as_array().into_iter().flatten().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect();
     assert_eq!(archived, vec![old.to_owned()], "{out}");
+    assert!(!out.contains("On Free"), "a paid plan says nothing of Free: {out}");
     assert!(sessions.join(pinned).join(log::EVENTS_FILE).is_file(), "a pinned session is never archived");
     assert!(sessions.join(fresh).join(log::EVENTS_FILE).is_file(), "a recent one stays");
     let (ok, v, out) = m.krowk(&["sessions", "archive", "--weekly"]);
@@ -92,6 +96,7 @@ fn archived_and_listed(m: &Machine, sessions: &Path, old: &str, pinned: &str, fr
 
     // R-VINT-3: the bodies left; the index row did not.
     assert!(!sessions.join(old).join(log::EVENTS_FILE).exists() && !sessions.join(old).join(log::CONTEXT_FILE).exists());
+    assert!(!sessions.join(old).join(krowk_harness::vintage::KEPT_DIR).exists(), "a paid plan keeps no local copy");
     assert!(sessions.join(old).join(krowk_harness::vintage::STUB_FILE).is_file());
     let (ok, v, out) = m.krowk(&["sessions"]);
     assert!(ok, "{out}");
@@ -113,7 +118,7 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
     let _ = std::fs::remove_dir_all(&root);
     std::fs::create_dir_all(&root).unwrap();
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
-    let m = Machine { home: root.clone(), api_url: format!("{}/v1", registry.url()) };
+    let m = Machine { home: root.clone(), api_url: format!("{}/v1", registry.url()), token: TOKEN };
 
     // Ticket 41: this machine set sync up with `krowk sync init` and
     // nothing else — a user key and a device list, no account key.
@@ -181,15 +186,20 @@ fn r_vint_1_r_vint_2_r_vint_3_r_vint_4_an_idle_session_is_archived_listed_and_re
 /// A stand-in machine with sync set up at `root`, the registry it syncs
 /// through, the registry client signed as it, and its user keys.
 fn synced_machine(root: &Path) -> (krowk_devregistry::Running, Machine, krowk_api::Client, krowk_client::user_key::UserKeys) {
+    synced_machine_on(root, TOKEN)
+}
+
+/// `synced_machine`, its key `token`.
+fn synced_machine_on(root: &Path, token: &'static str) -> (krowk_devregistry::Running, Machine, krowk_api::Client, krowk_client::user_key::UserKeys) {
     let _ = std::fs::remove_dir_all(root);
     std::fs::create_dir_all(root).unwrap();
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), Default::default()).unwrap();
-    let m = Machine { home: root.to_path_buf(), api_url: format!("{}/v1", registry.url()) };
+    let m = Machine { home: root.to_path_buf(), api_url: format!("{}/v1", registry.url()), token };
     let (ok, _, out) = m.krowk(&["sync", "init", "--save", root.join("kit.txt").to_str().unwrap()]);
     assert!(ok, "{out}");
     let ks = Keystore::new(&root.join(".krowk"));
     let keys = ks.user_keys().unwrap().expect("a user key");
-    let api = krowk_api::Client::new(&m.api_url, TOKEN).signed_by(e2e::DeviceSigner::new(ks.device().unwrap().unwrap().id(), ks.signing_key().unwrap()).shared());
+    let api = krowk_api::Client::new(&m.api_url, token).signed_by(e2e::DeviceSigner::new(ks.device().unwrap().unwrap().id(), ks.signing_key().unwrap()).shared());
     (registry, m, api, keys)
 }
 
@@ -266,7 +276,7 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
     assert!(ok, "{out}");
 
     // Its stub, on a machine that never set sync up.
-    let bare = Machine { home: root.join("bare"), api_url: m.api_url.clone() };
+    let bare = Machine { home: root.join("bare"), api_url: m.api_url.clone(), token: TOKEN };
     let dir = bare.home.join(".krowk").join("sessions").join(&id);
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::copy(sessions.join(&id).join(krowk_harness::vintage::STUB_FILE), dir.join(krowk_harness::vintage::STUB_FILE)).unwrap();
@@ -278,6 +288,61 @@ fn r_vint_3_an_archived_session_opened_without_sync_shows_its_stub_and_says_why(
     assert_eq!(v["data"]["archived"]["error"]["code"], "not_set_up", "{out}");
     assert!(v["data"]["archived"]["summary"].as_str().unwrap().contains("asked on the synced machine"), "{out}");
     assert!(dir.join(krowk_harness::vintage::STUB_FILE).is_file() && !dir.join(log::EVENTS_FILE).exists(), "left archived");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Sync paywall ticket 08: on Free, whose vintages expire after 7 days,
+/// archiving keeps the session's log on the machine, takes it out of
+/// `krowk sessions` and says so once; restoring brings it back from that
+/// copy, with no registry to read the vintage from.
+#[test]
+fn on_free_archiving_keeps_the_local_copy_hides_the_session_and_restore_brings_it_back() {
+    let root = std::env::temp_dir().join(format!("krowk-vintage-free-{}", std::process::id()));
+    let (_registry, m, api, _) = synced_machine_on(&root, FREE_TOKEN);
+    let sessions = root.join(".krowk").join("sessions");
+    let a = session(&sessions, &root, "a free idle session", 20);
+    let b = session(&sessions, &root, "another free idle session", 20);
+    std::fs::write(sessions.join(&a).join(log::CONTEXT_FILE), "{\"system\":\"kept\",\"tools\":[]}\n").unwrap();
+    let original = std::fs::read(sessions.join(&a).join(log::EVENTS_FILE)).unwrap();
+    let original_context = std::fs::read(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap();
+    let (ok, _, out) = m.krowk(&["sessions", "import", "--from", "all"]);
+    assert!(ok, "{out}");
+
+    let (ok, v, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    assert_eq!(v["data"]["archived"].as_array().map(Vec::len), Some(2), "{out}");
+    assert_eq!(out.matches("On Free, archived sessions stay on this machine; the synced copy expires after 7 days.").count(), 1, "said once a run: {out}");
+    let kept = sessions.join(&a).join(krowk_harness::vintage::KEPT_DIR);
+    assert!(krowk_harness::vintage::is_archived(&sessions, &a) && kept.join(log::EVENTS_FILE).is_file(), "archived, its log kept here");
+    assert_eq!(std::fs::read(kept.join(log::CONTEXT_FILE)).unwrap(), original_context);
+    let week = krowk_harness::vintage::read_stub(&sessions, &a).unwrap().week;
+    assert!(api.week_vintage(&week).unwrap().is_some(), "the vintage is still written");
+    let (ok, v, out) = m.krowk(&["sessions"]);
+    assert!(ok && !v.to_string().contains(&a) && !v.to_string().contains(&b), "hidden from the list: {out}");
+
+    // No registry at all, as good as the vintage expired: the copy restores.
+    let offline = Machine { home: root.clone(), api_url: "http://127.0.0.1:9/v1".into(), token: FREE_TOKEN };
+    let (ok, v, out) = offline.krowk(&["sessions", "restore", &a]);
+    assert!(ok && v["data"]["vintage"] == "", "no vintage read: {out}");
+    assert_eq!(std::fs::read(sessions.join(&a).join(log::EVENTS_FILE)).unwrap(), original);
+    assert_eq!(std::fs::read(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap(), original_context, "and its context");
+    assert!(!kept.exists() && !sessions.join(&a).join(krowk_harness::vintage::STUB_FILE).exists());
+    let (ok, v, out) = m.krowk(&["sessions"]);
+    assert!(ok && v.to_string().contains(&a) && !v.to_string().contains(&b), "listed again, the other still hidden: {out}");
+    // Opening one restores it too.
+    let (ok, v, out) = offline.krowk(&["sessions", "show", &b]);
+    assert!(ok && v.to_string().contains("answering another free idle session"), "{out}");
+
+    // A copy kept from an archive before is older than the log, and an
+    // archive again keeps the log, not it.
+    std::fs::create_dir_all(&kept).unwrap();
+    std::fs::write(kept.join(log::EVENTS_FILE), "stale\n").unwrap();
+    std::fs::write(kept.join(log::CONTEXT_FILE), "stale\n").unwrap();
+    std::fs::remove_file(sessions.join(&a).join(log::CONTEXT_FILE)).unwrap();
+    let (ok, _, out) = m.krowk(&["sessions", "archive"]);
+    assert!(ok, "{out}");
+    assert_eq!(std::fs::read(kept.join(log::EVENTS_FILE)).unwrap(), original, "{out}");
+    assert!(!kept.join(log::CONTEXT_FILE).exists(), "nor its stale context");
     let _ = std::fs::remove_dir_all(&root);
 }
 

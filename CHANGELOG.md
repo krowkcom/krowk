@@ -94,6 +94,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   `repositories`, `accepting` and `here`. Errors that pointed at `krowk hosts`
   point at `krowk machines`.
 
+- **On Free, `krowk sessions archive` keeps the session on this machine.**
+  Free's synced history expires after 7 days, so an archived session's
+  encrypted copy was soon its only one, then gone. On Free, archiving now
+  still writes that copy but keeps the session's log here too, takes the
+  session out of `krowk sessions`, and says once: `On Free, archived sessions
+  stay on this machine; the synced copy expires after 7 days.`
+  `krowk sessions restore <id>`, or opening the session, brings it back from
+  this machine without the registry. Paid plans archive as before.
+
 - **A sync refused for needing a paid plan points at `krowk billing`**
   instead of the dashboard's address.
 
@@ -114,6 +123,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   checked as strictly as before, and the viewer says once `Older history
   expired (Free keeps 7 days).`; a host taking the session up again writes
   on after it. Any other gap in a log is still refused as tampering.
+
+### Fixed
+
+- **An image pasted again in a long synced session no longer disappears
+  early.** On Free a session's images are kept 7 days from when they were
+  stored, and the host stored each image only the first time. Pasting the
+  same image again days later now renews its 7 days (or stores it again if
+  it had already expired), so other devices can show it for about as long as
+  the new message that uses it.
 
 ## [0.17.0] - 2026-11-10
 
