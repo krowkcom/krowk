@@ -1,5 +1,5 @@
 //! Adding a device by a short code (R-E2E-3; canon, engineering/devices.md
-//! → Adding a device): `krowk devices add` on a device already on the
+//! → Adding a device): `krowk machines add` on a device already on the
 //! person's list (A), `krowk sync join` on the new machine (B). The crypto
 //! is `krowk_client::pairing` and `device_chain`; this is the command line
 //! around them and the registry's mailbox between them.
@@ -12,7 +12,7 @@
 //! 0 and its last entry adds exactly B's keys, signed by A. A posts the
 //! entry and the wrap once B has acked — and also once the reply has gone
 //! out and B never acks: the reply carries the user key, so a machine that
-//! may hold it is put on the list, where `krowk devices remove` can take it
+//! may hold it is put on the list, where `krowk machines remove` can take it
 //! off and rotate the key away from it, rather than left holding the key
 //! where nothing can see it. devices.md states the same rule; a reply
 //! that never went out posts nothing.
@@ -185,7 +185,7 @@ fn wait_for(client: &Client, id: &str, field: Field, failed: &dyn Fn(Option<Erro
 
 // ------------------------------------------------------------ A: devices add
 
-const ADD_OFF_TERMINAL: &str = "`krowk devices add` hands your key to another machine once a person has said yes to it, so it needs a person at a terminal — run it in one";
+const ADD_OFF_TERMINAL: &str = "`krowk machines add` hands your key to another machine once a person has said yes to it, so it needs a person at a terminal — run it in one";
 
 /// A: shows a code, waits for the new machine, checks its confirmation,
 /// asks the person and sends the reply. Once the reply, which carries the
@@ -196,7 +196,7 @@ const ADD_OFF_TERMINAL: &str = "`krowk devices add` hands your key to another ma
 /// pairing that ends before the reply posts nothing.
 pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if !args.is_empty() {
-        return Err(fail("bad_argument", "`krowk devices add` takes no arguments — it shows a code for the new machine to type"));
+        return Err(fail("bad_argument", "`krowk machines add` takes no arguments — it shows a code for the new machine to type"));
     }
     terminal(ctx, ADD_OFF_TERMINAL)?;
     // ^C from here on ends the pairing rather than leaving it open.
@@ -211,7 +211,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         return Err(setup_first());
     }
     let (signing, shared) = signer(&store, &device)?;
-    let client = keyed_client(ctx, "`krowk devices add`")?.signed_by(shared);
+    let client = keyed_client(ctx, "`krowk machines add`")?.signed_by(shared);
 
     let (served_entries, chain, keys) = current_list(&store, &client, &device)?;
     if !chain.devices().iter().any(|d| d.id() == device.id() && d.kind == Kind::Device) {
@@ -246,13 +246,13 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             let _ = store.save_device_list(&sealed.entries);
             return Err(fail(
                 "pairing_unconfirmed",
-                format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: `krowk devices remove '{name}'`"),
+                format!("'{name}' was sent your key but never confirmed it. It is on your devices so you can take it off and rotate your key away from it: `krowk machines remove '{name}'`"),
             ));
         }
         (_, Err(e)) => {
             return Err(fail(
                 "pairing_unconfirmed",
-                format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check `krowk devices list`; rotate your key with the next `krowk devices remove`", e.code()),
+                format!("'{name}' was sent your key, but it could not be added to your devices ({}) — it may hold your key without being listed. Check `krowk machines`; rotate your key with the next `krowk machines remove`", e.code()),
             ));
         }
     }
@@ -267,7 +267,7 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 }
 
 /// What the host daemon opens a pairing for a new machine with: this
-/// machine's keys and its list, read as `krowk devices add` reads them — a
+/// machine's keys and its list, read as `krowk machines add` reads them — a
 /// machine not on the list has nothing to add anyone with, and the list is
 /// the registry's current one, verified from this machine's pin.
 #[cfg(unix)]
@@ -313,7 +313,7 @@ fn caught_up(store: &Keystore, client: &Client, chain: &Chain, device: &DeviceKe
     let setup = |e: String| fail("sync_setup_failed", e);
     let held = store.user_keys().map_err(setup)?.ok_or_else(|| fail("no_user_key", "this machine holds no user key — add it from another device with `krowk sync join`"))?;
     if held.newest().generation() < chain.generation() {
-        let behind = || fail("user_key_behind", "the registry holds no wrap of your current user key for this machine — it may have been removed; check `krowk devices list`");
+        let behind = || fail("user_key_behind", "the registry holds no wrap of your current user key for this machine — it may have been removed; check `krowk machines`");
         let served = client.user_key()?;
         let g = chain.generation();
         let wrap = served.wraps.iter().find(|w| w.generation == g).and_then(|w| e2e::unhex(&w.wrapped_key)).ok_or_else(behind)?;
@@ -327,7 +327,7 @@ fn caught_up(store: &Keystore, client: &Client, chain: &Chain, device: &DeviceKe
 
 fn a_failed(e: Option<Error>) -> Error {
     let why = e.map(|e| format!(" ({})", e.code())).unwrap_or_default();
-    fail("pairing_failed", format!("the pairing ended before the new device was added{why} — nothing was added; run `krowk devices add` again for a new code"))
+    fail("pairing_failed", format!("the pairing ended before the new device was added{why} — nothing was added; run `krowk machines add` again for a new code"))
 }
 
 /// One of A's steps, sent once. When its answer is lost, the pairing is
@@ -390,14 +390,14 @@ fn seal_reply(ctx: &mut Ctx, client: &Client, id: &str, (a, user): (PairA, &str)
     // A wrong code fails here: the pairing ends, and the person is asked
     // nothing.
     let confirmed = await_confirm.receive_confirm(&confirmation).map_err(|_| {
-        fail("pairing_failed", "the new device's confirmation did not check — the code was wrong, or someone else tried it; nothing was added. Run `krowk devices add` again for a new code")
+        fail("pairing_failed", "the new device's confirmation did not check — the code was wrong, or someone else tried it; nothing was added. Run `krowk machines add` again for a new code")
     })?;
     let new = confirmed.device().clone();
     let (name, os) = (printable(&new.name), printable(&new.os));
     // Before the person is asked: a name that reads like a listed device's
     // is the new machine's to change, and the pairing ends here.
     if let Some(d) = chain.devices().iter().find(|d| krowk_client::device_chain::confusable_names(&d.name, &new.name)) {
-        return Err(fail("device_name_taken", format!("the new device calls itself '{name}', which reads like '{}' already on your devices — nothing was added. On the new device run `krowk sync join --name <another name>`, and here `krowk devices add` again", printable(&d.name))));
+        return Err(fail("device_name_taken", format!("the new device calls itself '{name}', which reads like '{}' already on your devices — nothing was added. On the new device run `krowk sync join --name <another name>`, and here `krowk machines add` again", printable(&d.name))));
     }
     ask(ctx, &format!("Add '{name}' ({os}) to your devices?"))?;
     if interrupted() {
@@ -631,7 +631,7 @@ const JOIN_OFF_TERMINAL: &str = "`krowk sync join` takes a pairing code typed by
 fn b_failed(from: &str) -> Error {
     fail(
         "pairing_failed",
-        format!("the pairing failed, and a code works once — run `krowk sync join` here again for a new one from '{from}' or another of your machines. Nothing was kept"),
+        format!("the pairing failed, and a code works once — run `krowk` here again for a new one from '{from}' or another of your machines. Nothing was kept"),
     )
 }
 
@@ -655,7 +655,7 @@ fn typed_code(ctx: &Ctx) -> Result<PairingCode, Error> {
 /// chain A sealed adds exactly this machine.
 pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     if !args.is_empty() {
-        return Err(fail("bad_argument", "`krowk sync join` takes the code at its prompt, never as an argument — one given here is in your shell history now, so get a new code with `krowk devices add` and type it when asked"));
+        return Err(fail("bad_argument", "`krowk sync join` takes the code at its prompt, never as an argument — one given here is in your shell history now, so get a new code with `krowk machines add` and type it when asked"));
     }
     terminal(ctx, JOIN_OFF_TERMINAL)?;
     let mut client = super::agent::new_client(ctx)?;
@@ -721,7 +721,7 @@ fn join_with(ctx: &mut Ctx, client: Client, offers: bool) -> Result<(), Error> {
         Err(JoinFailed::NotAdded) => {
             return Err(fail(
                 "pairing_failed",
-                format!("'{from}' did not add this machine to your device list, or the registry could not be reached to see it — the keys were forgotten and the code is used up; run `krowk sync join` here again for a new code"),
+                format!("'{from}' did not add this machine to your device list, or the registry could not be reached to see it — the keys were forgotten and the code is used up; run `krowk` here again for a new code"),
             ));
         }
     };
@@ -854,7 +854,7 @@ fn offer_service(ctx: &mut Ctx) -> bool {
         inquire::Confirm::new(question).with_default(true).prompt().unwrap_or(false)
     };
     if !yes {
-        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk host enable` does it later.");
+        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk machines always-on on` does it later.");
         return false;
     }
     match super::host::set_service(ctx, true) {
@@ -863,7 +863,7 @@ fn offer_service(ctx: &mut Ctx) -> bool {
             true
         }
         Err(e) => {
-            let _ = writeln!(ctx.io.stderr, "The host service did not start: {e} Run `krowk host enable` to try again.");
+            let _ = writeln!(ctx.io.stderr, "The host service did not start: {e} Run `krowk machines always-on on` to try again.");
             false
         }
     }

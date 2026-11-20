@@ -159,7 +159,7 @@ pub struct Joined {
 }
 
 /// A scanned invite (`krowk://pair?v=1&code=…&user=…&device=…`), as
-/// `krowk devices add` draws it under the code. `code` is the pairing code
+/// `krowk machines add` draws it under the code. `code` is the pairing code
 /// as `XXXX-XXXX`, `user_id` the person it is for and `device` the id of
 /// the device showing it, 32 lowercase hex: [`Account::join_invite`]
 /// checks both before it spends the code.
@@ -202,7 +202,7 @@ pub fn parse_pairing_invite(uri: String) -> Option<PairingInvite> {
 #[uniffi::export]
 impl Account {
     /// Joins the person's open pairing with `code`, the eight characters
-    /// another of their devices shows (`krowk devices add`), as `name`
+    /// another of their devices shows (`krowk machines add`), as `name`
     /// (the characters a device list refuses dropped, trimmed, cut to 64
     /// bytes). Blocks until the other device has added this one, up to
     /// ten minutes while the person approves there: call it off the main
@@ -274,7 +274,7 @@ struct Expected {
 fn code_of(text: String) -> Result<PairingCode, KrowkError> {
     let text = Zeroizing::new(text);
     PairingCode::parse(&text).ok_or_else(|| KrowkError::InvalidInput {
-        detail: "that is not a pairing code — it is the eight characters `krowk devices add` shows, like K7QF-9M3X; nothing was sent".into(),
+        detail: "that is not a pairing code — it is the eight characters `krowk machines add` shows, like K7QF-9M3X; nothing was sent".into(),
     })
 }
 
@@ -362,11 +362,11 @@ impl Account {
             Err(_) if mailbox.cancelled() => Err(cancelled()),
             Err(JoinFailed::CodeUsedUp) => Err(refused(
                 "pairing_failed",
-                "the pairing failed, and a code works once — get a new one: run `krowk devices add` again on the other device, then enter its code here. Nothing was kept",
+                "the pairing failed, and a code works once — get a new one: run `krowk machines add` again on the other device, then enter its code here. Nothing was kept",
             )),
             Err(JoinFailed::NotAdded) => Err(refused(
                 "not_added",
-                "the other device did not add this one to your device list, or the registry could not be reached to see it — the keys were forgotten and the code is used up; run `krowk devices add` again there for a new code",
+                "the other device did not add this one to your device list, or the registry could not be reached to see it — the keys were forgotten and the code is used up; run `krowk machines add` again there for a new code",
             )),
         }
     }
@@ -379,7 +379,7 @@ fn refused(code: &str, detail: &str) -> KrowkError {
 /// The registry's `no_pairing`, in the phone's words; anything else as it came.
 fn no_pairing(e: krowk_api::Error) -> KrowkError {
     if e.code() == "no_pairing" {
-        refused("no_pairing", "none of your devices has a pairing open — run `krowk devices add` on a device already set up")
+        refused("no_pairing", "none of your devices has a pairing open — run `krowk machines add` on a device already set up")
     } else {
         e.into()
     }

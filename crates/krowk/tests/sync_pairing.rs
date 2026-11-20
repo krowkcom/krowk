@@ -121,7 +121,7 @@ fn code_shown(rx: &std::sync::mpsc::Receiver<String>) -> String {
             seen.push('\n');
         }
     }
-    panic!("`krowk devices add` showed no code:\n{seen}");
+    panic!("`krowk machines add` showed no code:\n{seen}");
 }
 
 fn rest(rx: &std::sync::mpsc::Receiver<String>) -> String {
@@ -211,7 +211,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let b = join(&desktop, &api, &wrong);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("krowk sync join") && err.contains("a code works once"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("run `krowk` here again") && err.contains("a code works once"), "{err}");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
@@ -321,7 +321,7 @@ fn r_e2e_3_a_connection_dropped_after_confirming_asks_for_a_new_code() {
     let code = code_shown(&a_err);
     let b = join(&desktop, &format!("http://{proxy}/v1"), &code);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("run `krowk sync join` here again for a new one from 'laptop'"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("run `krowk` here again for a new one from 'laptop'"), "{err}");
     let calls = seen.lock().unwrap().clone();
     assert_eq!(calls.iter().filter(|l| l.contains("/join")).count(), 1, "one start with the code, never a second: {calls:?}");
     assert!(calls.last().unwrap().contains("/confirmation"), "{calls:?}");
@@ -538,7 +538,7 @@ fn a_new_device_that_never_acknowledges_is_listed_so_it_can_be_removed() {
 
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
-    assert!(!a.status.success() && said.contains("pairing_unconfirmed") && said.contains("krowk devices remove 'stranger'"), "{said}");
+    assert!(!a.status.success() && said.contains("pairing_unconfirmed") && said.contains("krowk machines remove 'stranger'"), "{said}");
     let chain = served(&api);
     assert!(chain.devices().iter().any(|d| d.name == "stranger"), "listed, so it can be removed");
     let _ = std::fs::remove_dir_all(&r);

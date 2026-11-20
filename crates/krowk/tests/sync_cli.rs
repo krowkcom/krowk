@@ -994,7 +994,7 @@ fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
 }
 
 /// R-SYNC-3, R-HOST-2 (ticket 95): A runs a turn in its host daemon with no
-/// sync command — kept up as `krowk host enable` keeps it, with no idle
+/// sync command — kept up as `krowk machines always-on on` keeps it, with no idle
 /// exit — and B lists the session within 5 seconds of the command's start,
 /// then follows a prompt it sends to its result. `krowk sync status` on A
 /// counts the bridge, `krowk sync host` of the session says it is synced
@@ -1168,7 +1168,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
 }
 
 /// R-HOST-3, R-NET-4: A's host daemon runs with sync set up and no
-/// Tailscale anywhere; B's `krowk hosts --json` lists A as announced and
+/// Tailscale anywhere; B's `krowk machines --json` lists A as announced and
 /// online, with its instances and its trusted repository, and the text
 /// says so under A's line.
 #[test]
@@ -1225,7 +1225,7 @@ fn serving(w: &World) -> (Machine, Machine, Running) {
     (a, b, serve)
 }
 
-/// A's row in B's `krowk hosts --json`, once it passes `want`.
+/// A's row in B's `krowk machines --json`, once it passes `want`.
 fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -1366,7 +1366,7 @@ fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
-    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk host enable"), "{err}");
+    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk machines always-on on"), "{err}");
     let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
     assert!(err.contains("no machine named 'nobody' — krowk machines lists yours"), "{err}");
 }
@@ -1687,7 +1687,7 @@ fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
         let v: serde_json::Value = serde_json::from_slice(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
         v["machines"].as_array().unwrap().iter().map(|m| (m["name"].clone(), m.as_object().unwrap().keys().cloned().collect::<Vec<_>>())).map(|(n, k)| serde_json::json!([n, k])).collect()
     };
-    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk hosts is krowk machines");
+    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk machines is krowk machines");
     let human = String::from_utf8_lossy(&b.command(&["machines", "--format", "human"]).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
     assert!(human.lines().any(|l| l.starts_with("a ") && l.contains("accepting")) && human.contains("ready"), "{human}");
 }

@@ -49,3 +49,61 @@ fn alloc_09_accept_off_and_on_set_sync_accept() {
     assert_eq!(config(&home)["sync"], json!({"idleMinutes": 5}), "on is the default, so the key goes");
     let _ = std::fs::remove_dir_all(&home);
 }
+
+/// R-EASE-9: each `krowk machines` subcommand answers exactly as the old
+/// command it stands for, and every old command still routes. Off a terminal
+/// and with no sync set up, each refuses the same way, in the same words.
+#[test]
+fn ease_07_each_machines_subcommand_answers_as_its_old_command() {
+    let home = home("old-and-new");
+    let pairs: [(&[&str], &[&str]); 7] = [
+        (&["devices", "add"], &["machines", "add"]),
+        (&["devices", "remove", "desk"], &["machines", "remove", "desk"]),
+        (&["devices", "remove"], &["machines", "remove"]),
+        (&["sync", "recovery", "new"], &["machines", "recovery", "new"]),
+        (&["sync", "recovery", "check"], &["machines", "recovery", "check"]),
+        (&["sync", "recovery", "discard-old"], &["machines", "recovery", "discard-old"]),
+        (&["sync", "status"], &["machines", "recovery"]),
+    ];
+    for (old, new) in pairs {
+        let (o, n) = (krowk(&home, old), krowk(&home, new));
+        assert_eq!(o.status.code(), n.status.code(), "{old:?} against {new:?}");
+        assert_eq!(String::from_utf8_lossy(&o.stderr), String::from_utf8_lossy(&n.stderr), "{old:?} against {new:?}");
+        assert_eq!(o.stdout, n.stdout, "{old:?} against {new:?}");
+        assert!(!String::from_utf8_lossy(&o.stderr).contains("unknown_command"), "{old:?} still routes");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// `always-on` takes on or off, and `host enable` and `host disable` still
+/// route; none of them is left to guess what was meant.
+#[test]
+fn ease_07_always_on_needs_on_or_off_and_the_host_forms_still_route() {
+    let home = home("always-on");
+    for args in [&["machines", "always-on"][..], &["machines", "always-on", "maybe"]] {
+        let out = krowk(&home, args);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("always-on on"), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+    for args in [&["host", "enable"][..], &["host", "disable"], &["hosts"], &["machines", "accept", "on"]] {
+        let out = krowk(&home, args);
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("unknown_command"), "{args:?} still routes");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// The old names leave `krowk help`, stay in `help --all`, and no hint any
+/// command prints sends a person to one of them.
+#[test]
+fn ease_07_old_commands_are_hidden_from_help_but_listed_by_all() {
+    let home = home("hidden");
+    let help = String::from_utf8_lossy(&krowk(&home, &["help"]).stdout).to_string();
+    for old in ["devices", "hosts"] {
+        assert!(!help.lines().any(|l| l.trim_start().starts_with(old)), "{old} is hidden:\n{help}");
+    }
+    let all = String::from_utf8_lossy(&krowk(&home, &["help", "--all"]).stdout).to_string();
+    for sub in ["machines add", "machines remove", "machines always-on", "machines recovery", "devices add", "host enable"] {
+        assert!(all.contains(sub), "{sub} in help --all:\n{all}");
+    }
+    let _ = std::fs::remove_dir_all(&home);
+}

@@ -52,7 +52,7 @@
 //!
 //! A signed-in phone holds no user key until it is paired (R-E2E-3).
 //! [`Account::join_pairing`] takes the code another of the person's
-//! devices shows (`krowk devices add`), typed — or [`Account::join_invite`]
+//! devices shows (`krowk machines add`), typed — or [`Account::join_invite`]
 //! an invite read from its QR code by [`parse_pairing_invite`], checked
 //! against the account and the open pairing first — and runs
 //! krowk-client's joining side, `pairing_join::join`, over
@@ -208,7 +208,7 @@ pub fn protocol_version() -> u32 {
 #[uniffi::export]
 pub fn parse_pairing_code(text: String) -> Result<String, KrowkError> {
     let code = PairingCode::parse(&text).ok_or_else(|| KrowkError::InvalidInput {
-        detail: "that is not a pairing code — it is the eight characters `krowk devices add` shows, like K7QF-9M3X; nothing was sent".into(),
+        detail: "that is not a pairing code — it is the eight characters `krowk machines add` shows, like K7QF-9M3X; nothing was sent".into(),
     })?;
     Ok(code.to_string())
 }

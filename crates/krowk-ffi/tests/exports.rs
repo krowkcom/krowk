@@ -29,7 +29,7 @@ fn r_ffi_1_a_bad_pairing_code_is_invalid_input() {
     }
 }
 
-/// Ticket 68's own sample, as `krowk devices add` draws it.
+/// Ticket 68's own sample, as `krowk machines add` draws it.
 const INVITE: &str = "krowk://pair?v=1&code=K7QF9M3X&user=0192f5a0-7e1c-7cc3-9d1a-5b6f00000001&device=0123456789abcdef0123456789abcdef";
 
 #[test]

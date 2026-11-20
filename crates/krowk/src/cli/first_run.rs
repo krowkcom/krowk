@@ -211,14 +211,14 @@ fn always_on(ctx: &mut Ctx) {
         _ => false,
     };
     if !yes {
-        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk host enable` does it later.");
+        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk machines always-on on` does it later.");
         return;
     }
     match super::host::set_service(ctx, true) {
         Ok((file, _)) => {
             let _ = writeln!(ctx.io.stderr, "This machine stays available: the host runs as a service ({}).", file.display());
         }
-        Err(e) => ctx.warn(&format!("the always-on service did not start: {} — `krowk host enable` tries again", e.fix())),
+        Err(e) => ctx.warn(&format!("the always-on service did not start: {} — `krowk machines always-on on` tries again", e.fix())),
     }
 }
 

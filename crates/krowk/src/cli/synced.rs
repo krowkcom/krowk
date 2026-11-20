@@ -258,7 +258,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         .map(|(h, online)| {
             let (origin, url) = here.as_ref().filter(|_| !h.this_machine)?;
             Some(match &h.announced {
-                None => "no announcement yet: run krowk host enable there".to_string(),
+                None => "no announcement yet: run krowk machines always-on on there".to_string(),
                 Some(_) if !online => "offline: start krowk's host service there".to_string(),
                 Some(a) => krowk_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into()),
             })
@@ -969,7 +969,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
 
 /// The refusal of a host that is offline, `seen` saying since when.
 fn offline(name: &str, seen: &str) -> Error {
-    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk host enable", super::sync::printable(name)))
+    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk machines always-on on", super::sync::printable(name)))
 }
 
 /// `dir` as the host is asked for it: `~` expanded to `home`, made absolute
@@ -1077,8 +1077,8 @@ mod tests {
         a.announcement.instances.retain(|i| !i.ready);
         assert_eq!(refused(Some(&a), "/srv/x", ""), ("no_ready_model".into(), "desk has no ready model: openai — set the key of openai".into()));
         a.online = false;
-        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start krowk there, or krowk host enable".into()));
-        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start krowk there, or krowk host enable");
+        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start krowk there, or krowk machines always-on on".into()));
+        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start krowk there, or krowk machines always-on on");
     }
 
     /// R-HOST-4: `--host` names a machine on the list by its name in any

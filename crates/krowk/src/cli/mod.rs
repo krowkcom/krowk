@@ -401,6 +401,24 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["machines"] | ["machines", "list", ..] | ["hosts", ..] => synced::machines(ctx),
         #[cfg(all(feature = "harness", unix))]
+        ["machines", "add", ..] => pairing::add(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "remove", ..] => devices::remove(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "always-on", ..] => match rest(2).first().map(String::as_str) {
+            Some("on") => host::enable(ctx, true),
+            Some("off") => host::enable(ctx, false),
+            _ => Err(fail("missing_argument", "say on or off: `krowk machines always-on on` keeps this machine available while you're away, `off` stops that")),
+        },
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery"] => recovery::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "new", ..] => recovery::new_kit(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "check", ..] => recovery::check(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "discard-old", ..] => recovery::discard_old(ctx),
+        #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),
         #[cfg(all(feature = "harness", unix))]
         ["relay", "serve", ..] => relay::serve(ctx),
@@ -713,9 +731,9 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
         }
-        let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]);
+        let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]) || words.starts_with(&["machines", "recovery", "new"]);
         if f.given.contains("save") && !kit {
-            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"));
+            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk machines recovery new`"));
         }
         if f.given.contains("to") && !words.starts_with(&["worktrees", "apply"]) {
             return Err(fail("bad_flag", "`--to` is only a flag of `krowk worktrees apply`"));

@@ -368,7 +368,7 @@ pub(super) fn set_service(ctx: &mut Ctx, on: bool) -> Result<(std::path::PathBuf
             Ok(o) if o.status.success() => {}
             // Stopping one that is not loaded is no failure: it is stopped.
             Ok(_) | Err(_) if !on => {}
-            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `krowk host enable` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
+            Ok(o) => return Err(fail("service_failed", format!("`{}` failed: {} — {} is written; fix that and run `krowk machines always-on on` again", c.join(" "), String::from_utf8_lossy(&o.stderr).trim(), file.display()))),
             Err(e) => return Err(fail("service_failed", format!("`{}` could not run: {e} — {} is written; start it with your service manager", c.join(" "), file.display()))),
         }
     }

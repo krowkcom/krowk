@@ -268,7 +268,7 @@ impl Account {
         let chain = self.keystore.device_list().map_err(internal)?;
         match (keys, chain) {
             (Some(k), Some(c)) => Ok((k, c)),
-            _ => Err(KrowkError::Refused { code: "not_paired".into(), detail: "this phone is not paired yet — add it from a computer with `krowk devices add`".into() }),
+            _ => Err(KrowkError::Refused { code: "not_paired".into(), detail: "this phone is not paired yet — add it from a computer with `krowk machines add`".into() }),
         }
     }
 }

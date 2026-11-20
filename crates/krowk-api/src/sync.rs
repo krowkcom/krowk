@@ -1009,7 +1009,7 @@ impl Client {
     pub fn show_pairing(&self, id: &str) -> Result<Pairing, Error> {
         let p: Pairing = self.get(&format!("{}/pairing", self.user_path()?))?;
         if p.id != id {
-            return Err(crate::fail("pairing_gone", format!("{id} has ended — run `krowk devices add` again for a new code")));
+            return Err(crate::fail("pairing_gone", format!("{id} has ended — run `krowk machines add` again for a new code")));
         }
         Ok(p)
     }

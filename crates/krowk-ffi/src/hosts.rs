@@ -1,6 +1,6 @@
 //! The person's hosts, as the phone picks one, a session started on one
 //! (R-HOST-3, R-HOST-4), and a session moved to one (R-HAND-1, R-HAND-4):
-//! what `krowk hosts`, `krowk sync new` and `krowk sync take` there do,
+//! what `krowk machines`, `krowk sync new` and `krowk sync take` there do,
 //! behind [`Account`]. Each host's announcement is opened against the
 //! device list this phone pinned, as `list_sessions` checks records; the
 //! start is sealed to the person's devices, bound to its id and the two

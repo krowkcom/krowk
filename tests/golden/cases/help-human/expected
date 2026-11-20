@@ -91,45 +91,46 @@ stdout:
 krowk — every command and subcommand
 
 Publish
-  push              Upload files, get a link for each
-  runs start        Open a run to group uploads under
-  runs list         List the workspace's runs, newest first
-  runs show         Read one run back, with its metadata
-  runs finish       Close a run
-  artifacts create  Upload files: the long form of `krowk push`
-  artifacts list    List artifacts, newest first: a run's, or the workspace's
-  artifacts show    Read one artifact back
-  artifacts attach  Put an artifact under a run afterwards
-  artifacts delete  Take an artifact down — immediate, cannot be undone
-  artifacts claim   The long form of `krowk claim`
-  claim             Keep an anonymous upload past expiry
+  push                Upload files, get a link for each
+  runs start          Open a run to group uploads under
+  runs list           List the workspace's runs, newest first
+  runs show           Read one run back, with its metadata
+  runs finish         Close a run
+  artifacts create    Upload files: the long form of `krowk push`
+  artifacts list      List artifacts, newest first: a run's, or the workspace's
+  artifacts show      Read one artifact back
+  artifacts attach    Put an artifact under a run afterwards
+  artifacts delete    Take an artifact down — immediate, cannot be undone
+  artifacts claim     The long form of `krowk claim`
+  claim               Keep an anonymous upload past expiry
 
 Account
-  login             Sign in to your krowk account
-  logout            Remove this machine's key
-  whoami            Show the key and its workspace
-  billing           Choose or manage the workspace's plan
-  workspaces list   List the stored keys, and which workspace resolves here
-  workspaces use    Make a stored key the machine-wide default
-  auth login        The long form of `krowk login`
-  auth logout       The long form of `krowk logout`
-  auth token        Print the stored token
-  auth verify       The long form of `krowk whoami`
+  login               Sign in to your krowk account
+  logout              Remove this machine's key
+  whoami              Show the key and its workspace
+  billing             Choose or manage the workspace's plan
+  workspaces list     List the stored keys, and which workspace resolves here
+  workspaces use      Make a stored key the machine-wide default
+  auth login          The long form of `krowk login`
+  auth logout         The long form of `krowk logout`
+  auth token          Print the stored token
+  auth verify         The long form of `krowk whoami`
 
 Other
-  sessions          List and read agent sessions on this machine
-  sessions show     Read one session back, with its turns, messages and parts
-  sessions import   Import this machine's agent transcripts
-  sessions rebuild  Delete the local store and re-import every transcript
-  sessions budget   Check a session against a spend limit
-  sessions sync     Import what changed since the last import, refresh prices
-  config show       The effective configuration, and which layer set each value
-  config set        Write one value into the repo config, or the global one
-  config unset      Remove one value from the repo config, or the global one
-  doctor            Check this machine's setup
-  pricing refresh   Refresh the models.dev price cache
-  upgrade           Upgrade krowk
-  help              This, a command's help, or a topic
+  sessions            List and read agent sessions on this machine
+  sessions show       Read one session back, with its turns, messages and parts
+  sessions import     Import this machine's agent transcripts
+  sessions rebuild    Delete the local store and re-import every transcript
+  sessions budget     Check a session against a spend limit
+  sessions sync       Import what changed since the last import, refresh prices
+  config show         The effective configuration, and which layer set each
+                      value
+  config set          Write one value into the repo config, or the global one
+  config unset        Remove one value from the repo config, or the global one
+  doctor              Check this machine's setup
+  pricing refresh     Refresh the models.dev price cache
+  upgrade             Upgrade krowk
+  help                This, a command's help, or a topic
 
 krowk help <command>  A command's own flags and explanation
 krowk help topics     Flags, exit codes, environment, workspaces, links

@@ -109,7 +109,7 @@ pub fn help(c: &Catalog, all: bool, colour: bool) -> String {
         for name in *names {
             if all {
                 for leaf in leaves.iter().filter(|l| l.name.split(' ').next() == Some(name)) {
-                    row(&mut out, "  ", 18, &leaf.name, leaf.summary);
+                    row(&mut out, "  ", 20, &leaf.name, leaf.summary);
                 }
             } else if !ALL_ONLY.contains(name) {
                 row(&mut out, "  ", 14, name, c.commands.iter().find(|c| c.name == *name).map_or("", |c| c.summary));
