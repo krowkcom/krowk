@@ -475,3 +475,218 @@ fn a_hand_written_relative_or_dotdot_config_dir_is_never_made_by_krowk() {
         assert!(!nothing.exists(), "{} was made", nothing.display());
     }
 }
+
+/// A key nobody has: it may be in the credentials file, and nowhere else.
+const KEY: &str = "sk-NL03-DUMMY-SENTINEL-4f1c";
+
+impl Sandbox {
+    /// krowk with `input` on its stdin, for `--key-stdin`.
+    fn piped(&self, args: &[&str], input: &str) -> Output {
+        use std::io::Write;
+        let mut child = self.command(args, &[]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    }
+
+    fn credentials(&self) -> Value {
+        std::fs::read_to_string(self.data().join("credentials.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
+    }
+
+    /// Every file under `dir` holding `needle`.
+    fn holding(dir: &Path, needle: &str) -> Vec<PathBuf> {
+        let mut found = Vec::new();
+        for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p.is_dir() && !p.is_symlink() {
+                found.extend(Sandbox::holding(&p, needle));
+            } else if std::fs::read(&p).is_ok_and(|b| b.windows(needle.len()).any(|w| w == needle.as_bytes())) {
+                found.push(p);
+            }
+        }
+        found
+    }
+
+    /// The account's own directory, made 0700, with no key in it, and no
+    /// key in config.json either.
+    fn holds_no_key(&self, instance: &str) -> PathBuf {
+        let dir = self.data().join("accounts").join(instance.replace(':', "-"));
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(std::fs::metadata(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).permissions().mode() & 0o777, 0o700, "{instance}");
+        assert_eq!(Sandbox::holding(&dir, KEY), Vec::<PathBuf>::new(), "{instance}'s directory holds no key");
+        assert!(!std::fs::read_to_string(self.config_path()).unwrap().contains(KEY), "config.json holds no key");
+        dir
+    }
+}
+
+/// The `-c` overrides a Codex account's args set, as `key=value`.
+fn overrides(def: &Value) -> Vec<String> {
+    let args: Vec<&str> = def["args"].as_array().unwrap().iter().map(|a| a.as_str().unwrap()).collect();
+    assert!(args.chunks(2).all(|p| p[0] == "-c"), "{args:?}");
+    args.chunks(2).map(|p| p[1].to_string()).collect()
+}
+
+/// R-NAT-2, D3: `krowk connect` turns an Anthropic key and a gateway into
+/// Claude Code accounts in directories of their own, the key kept in
+/// krowk's credentials and handed to Claude Code at launch.
+#[test]
+fn r_nat_2_an_anthropic_key_and_a_gateway_become_claude_code_accounts() {
+    let b = Sandbox::new("claude-keys");
+    // An Anthropic key: a Claude Code account, its key stored.
+    let out = b.piped(&["connect", "anthropic", "--method", "api-key", "--key-stdin", "--json"], KEY);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let c: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let dir = b.holds_no_key("anthropic");
+    assert_eq!((c["data"]["kind"].as_str(), c["data"]["key_source"].as_str()), (Some("claude-code"), Some("stored")), "{c}");
+    assert_eq!(c["data"]["definition"], json!({"kind": "claude-code", "configDir": dir.display().to_string(), "apiKeyEnv": "ANTHROPIC_API_KEY"}));
+    assert_eq!(b.credentials()["keys"]["anthropic"], json!({"literal": KEY}));
+    assert_eq!(b.config()["defaultModel"], "anthropic/claude-opus-5-5");
+    assert_eq!(b.logins("argv auth login"), 0, "a key needs no login");
+
+    // An Anthropic-compatible gateway: Claude Code with its base URL, the
+    // key from a variable, handed over as the gateway's bearer token.
+    let c = b.json(&["connect", "anthropic", "--method", "api-key", "--name", "gw", "--base-url", "https://gateway.example/api", "--key-ref", "$GW_KEY", "--json"], &[]);
+    let dir = b.holds_no_key("anthropic:gw");
+    assert_eq!(c["data"]["definition"], json!({"kind": "claude-code", "configDir": dir.display().to_string(), "env": {"ANTHROPIC_BASE_URL": "https://gateway.example/api"}, "apiKeyEnv": "ANTHROPIC_GW_API_KEY"}));
+    assert_eq!(b.credentials()["keys"]["anthropic:gw"], json!({"env": "GW_KEY"}));
+    let turn = b.krowk(&["-p", "hi", "--trust", "--model", "anthropic:gw/claude-sonnet-4-6"], &[("GW_KEY", KEY), ("ANTHROPIC_GW_API_KEY", "sk-decoy")]);
+    assert!(turn.status.success(), "{}", stderr(&turn));
+    assert_eq!(b.logins(&format!("env ANTHROPIC_AUTH_TOKEN={KEY}")), 1, "the stored reference's key, handed to Claude Code");
+
+    // Connecting one again keeps its directory and its key.
+    let again = b.json(&["connect", "anthropic:gw", "--json"], &[]);
+    assert_eq!((again["data"]["renewed"].as_bool(), again["data"]["definition"]["env"]["ANTHROPIC_BASE_URL"].as_str()), (Some(true), Some("https://gateway.example/api")), "{again}");
+    assert_eq!(b.credentials()["keys"]["anthropic:gw"], json!({"env": "GW_KEY"}));
+}
+
+/// R-NAT-2, D3: an OpenAI, xAI, OpenRouter or OpenAI-compatible key is a
+/// Codex account on a model provider of its own, with the provider's
+/// default model, its key handed to Codex at launch.
+#[test]
+fn r_nat_2_openai_xai_openrouter_and_compatible_keys_become_codex_accounts() {
+    let b = Sandbox::new("codex-keys");
+    // An OpenAI key: a Codex account on a model provider of its own.
+    let out = b.piped(&["connect", "openai", "--method", "api-key", "--key-stdin", "--json"], KEY);
+    assert!(out.status.success(), "{}", stderr(&out));
+    let c: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let dir = b.holds_no_key("openai");
+    let def = &c["data"]["definition"];
+    assert_eq!((def["kind"].as_str(), def["codexHome"].as_str(), def["apiKeyEnv"].as_str()), (Some("codex-app-server"), Some(&*dir.display().to_string()), Some("OPENAI_API_KEY")), "{def}");
+    assert_eq!(
+        overrides(def),
+        [
+            r#"model_providers.krowk-openai.name="OpenAI""#,
+            r#"model_providers.krowk-openai.base_url="https://api.openai.com/v1""#,
+            r#"model_providers.krowk-openai.wire_api="responses""#,
+            r#"model_providers.krowk-openai.env_key="OPENAI_API_KEY""#,
+            r#"model_provider="krowk-openai""#,
+            r#"model="gpt-5.4""#,
+        ]
+    );
+    assert_eq!(b.logins("argv login"), 0, "a key needs no login");
+    let turn = b.krowk(&["-p", "hi", "--trust", "--model", "openai/gpt-5.4"], &[("OPENAI_API_KEY", "sk-decoy")]);
+    assert!(turn.status.success(), "{}", stderr(&turn));
+    assert!(b.logins(&format!("env OPENAI_API_KEY={KEY} ROUTER_KEY=<unset>")) >= 1, "the stored key, handed to Codex, not the environment's");
+
+    // xAI and OpenRouter: Codex, on the chat wire API and the provider's default model.
+    for (vendor, base, model) in [("xai", "https://api.x.ai/v1", "grok-4.7"), ("openrouter", "https://openrouter.ai/api/v1", "openai/gpt-5.4")] {
+        let c = b.json(&["connect", vendor, "--key-ref", "$VENDOR_KEY", "--json"], &[]);
+        b.holds_no_key(vendor);
+        let def = &c["data"]["definition"];
+        assert_eq!((def["kind"].as_str(), def["apiKeyEnv"].as_str()), (Some("codex-app-server"), Some(&*format!("{}_API_KEY", vendor.to_uppercase()))), "{def}");
+        let set = overrides(def);
+        for want in [format!("model_providers.krowk-{vendor}.base_url=\"{base}\""), format!("model_providers.krowk-{vendor}.wire_api=\"chat\""), format!("model=\"{model}\"")] {
+            assert!(set.contains(&want), "{vendor}: {want} in {set:?}");
+        }
+        assert_eq!(b.credentials()["keys"][vendor], json!({"env": "VENDOR_KEY"}));
+    }
+
+    // An OpenAI-compatible server with no key: Codex, and no variable at all.
+    let c = b.json(&["connect", "openai-compatible", "--name", "local", "--base-url", "http://127.0.0.1:11434/v1", "--json"], &[]);
+    b.holds_no_key("local");
+    let def = &c["data"]["definition"];
+    assert!(def.get("apiKeyEnv").is_none() && !overrides(def).iter().any(|s| s.contains("env_key")), "{def}");
+    assert!(overrides(def).contains(&r#"model_providers.krowk-openai-compatible.base_url="http://127.0.0.1:11434/v1""#.to_string()), "{def}");
+    assert_eq!(b.logins("argv login"), 0, "a server needs no login");
+}
+
+/// Connecting a key's Codex account again keeps its home and its key, and
+/// takes the base URL given.
+#[test]
+fn r_nat_2_connecting_a_keys_codex_account_again_keeps_its_home_and_key() {
+    let b = Sandbox::new("codex-again");
+    let first = b.json(&["connect", "xai", "--key-ref", "$VENDOR_KEY", "--json"], &[]);
+    let again = b.json(&["connect", "xai", "--base-url", "https://other.example/v1", "--json"], &[]);
+    let def = &again["data"]["definition"];
+    assert_eq!((again["data"]["renewed"].as_bool(), &def["codexHome"]), (Some(true), &first["data"]["definition"]["codexHome"]), "{again}");
+    assert!(overrides(def).contains(&r#"model_providers.krowk-xai.base_url="https://other.example/v1""#.to_string()), "{def}");
+    assert_eq!((def["apiKeyEnv"].as_str(), &b.credentials()["keys"]["xai"]), (Some("XAI_API_KEY"), &json!({"env": "VENDOR_KEY"})));
+}
+
+/// R-NAT-2: an API key or a gateway config.json defines for krowk to run
+/// itself is a Claude Code or Codex account from its first use on, with one
+/// notice; its name, default model and key stay as they were.
+#[test]
+fn r_nat_2_an_existing_native_key_account_is_converted_on_first_use_with_one_notice() {
+    let b = Sandbox::new("convert");
+    std::fs::create_dir_all(b.data()).unwrap();
+    std::fs::write(
+        b.config_path(),
+        json!({
+            "defaultModel": "anthropic:work/claude-sonnet-4-6",
+            "instances": {
+                "anthropic:work": {"kind": "anthropic-api", "apiKeyEnv": "WORK_KEY", "baseUrl": "https://gateway.example/api"},
+                "openrouter": {"kind": "openrouter-api"},
+                "local": {"kind": "openai-compatible", "baseUrl": "http://127.0.0.1:11434/v1"},
+            },
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::write(b.data().join("credentials.json"), json!({"keys": {"openrouter": {"literal": KEY}}}).to_string()).unwrap();
+
+    let first = b.krowk(&["status", "--json"], &[]);
+    let said: Vec<String> = stderr(&first).lines().filter(|l| l.contains("now runs in")).map(String::from).collect();
+    assert_eq!(
+        said,
+        [
+            "krowk: anthropic:work now runs in Claude Code, on the same key — krowk no longer runs models directly",
+            "krowk: local now runs in Codex, on the same server — krowk no longer runs models directly",
+            "krowk: openrouter now runs in Codex, on the same key — krowk no longer runs models directly",
+        ],
+        "{}",
+        stderr(&first)
+    );
+    let cfg = b.config();
+    let work = b.holds_no_key("anthropic:work");
+    assert_eq!(cfg["instances"]["anthropic:work"], json!({"kind": "claude-code", "configDir": work.display().to_string(), "env": {"ANTHROPIC_BASE_URL": "https://gateway.example/api"}, "apiKeyEnv": "WORK_KEY"}));
+    let router = &cfg["instances"]["openrouter"];
+    b.holds_no_key("openrouter");
+    assert_eq!((router["kind"].as_str(), router["apiKeyEnv"].as_str()), (Some("codex-app-server"), Some("OPENROUTER_API_KEY")), "{router}");
+    assert!(overrides(router).contains(&r#"model_provider="krowk-openrouter""#.to_string()), "{router}");
+    assert_eq!(cfg["instances"]["local"]["kind"], "codex-app-server");
+    b.holds_no_key("local");
+    assert_eq!(cfg["defaultModel"], "anthropic:work/claude-sonnet-4-6", "the name carries on");
+    assert_eq!(b.credentials()["keys"]["openrouter"], json!({"literal": KEY}), "the key stays where it was");
+    let row = b.status().into_iter().find(|r| r["instance"] == "openrouter").unwrap();
+    assert_eq!((row["kind"].as_str(), row["source"].as_str()), (Some("codex-app-server"), Some("stored, handed to Codex")), "{row}");
+
+    // Once: the next run says nothing.
+    let again = b.krowk(&["status", "--json"], &[]);
+    assert!(!stderr(&again).contains("now runs in"), "{}", stderr(&again));
+    // And the stored key reaches Codex.
+    let turn = b.krowk(&["-p", "hi", "--trust", "--model", "openrouter/openai/gpt-5.4"], &[]);
+    assert!(turn.status.success(), "{}", stderr(&turn));
+}
+
+/// D4, D6: SuperGrok is refused with the one line, however it is asked
+/// for, and nothing is written.
+#[test]
+fn r_nat_2_supergrok_is_refused_with_the_line() {
+    let b = Sandbox::new("supergrok");
+    for args in [&["connect", "xai", "--method", "subscription"][..], &["connect", "xai", "--method", "device"], &["connect", "supergrok"], &["providers", "add", "supergrok"]] {
+        let out = b.krowk(args, &[]);
+        assert!(!out.status.success(), "{args:?}");
+        assert!(stderr(&out).contains("krowk no longer runs models directly; connect a Claude Code or Codex account."), "{args:?}: {}", stderr(&out));
+    }
+    assert!(!b.config_path().exists(), "nothing was written");
+}

@@ -232,7 +232,7 @@ fn no_secret_reaches_status_list_or_doctor_and_a_refreshable_login_is_ready() {
     assert_eq!(row(&rows, "supergrok:team")["state"], "ready");
     assert_eq!(row(&rows, "claude:router")["source"], "env OR_KEY, handed to Claude Code");
     assert_eq!(row(&rows, "codex:router")["source"], "env OR_KEY, handed to Codex");
-    assert_eq!(row(&rows, "anthropic:work")["source"], "env WORK_KEY");
+    assert_eq!(row(&rows, "anthropic:work")["source"], "env WORK_KEY, handed to Claude Code", "converted on first use");
 
     let list = b.krowk(&["providers", "list", "--json"], &env);
     let listed = instances(&stdout_json(&list)["data"]);

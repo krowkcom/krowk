@@ -216,7 +216,7 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
     assert_eq!(b.row("claude:work")["state"], "ready");
 
     // One file, two writers, and neither drops the other's.
-    let stored = b.krowk(&["connect", "openai", "--method", "api-key", "--key-ref", "$OPENAI_KEY_ELSEWHERE"], &[]);
+    let stored = b.krowk(&["connect", "anthropic", "--method", "api-key", "--name", "other", "--key-ref", "$ANTHROPIC_KEY_ELSEWHERE"], &[]);
     assert!(stored.status.success(), "{}", printed(&stored));
     assert_eq!(b.credentials()["workspaces"]["ws_mig"]["token"], REGISTRY_KEY);
     let logout = b.krowk(&["logout"], &[]);

@@ -287,6 +287,15 @@ fn native_of(def: &InstanceKind) -> Option<InstanceKind> {
     }
 }
 
+/// An existing definition as `connect` merges into it, and the directory
+/// it keeps: a key's account as the native one it was made from.
+fn as_native(def: Option<&InstanceKind>, harness: Option<&str>) -> (Option<InstanceKind>, Option<String>) {
+    match (def, harness) {
+        (Some(d), Some(h)) if d.tag() == h => (Some(native_of(d).unwrap_or_else(|| d.clone())), dir_of(d)),
+        (d, _) => (d.cloned(), None),
+    }
+}
+
 /// An account's own directory, as its definition names it.
 fn dir_of(def: &InstanceKind) -> Option<String> {
     match def {
@@ -1078,6 +1087,20 @@ impl ProviderAuth<'_> {
         Ok(Renamed { from: from.into(), to, kind, login, default_model, key_env })
     }
 
+    /// D3: the Claude Code or Codex account a key's native definition is,
+    /// in a directory of its own — the one it has, or `accounts/<name>`.
+    /// Any other definition (no `harness`) as it is.
+    fn as_account(&self, instance: &str, native: InstanceKind, harness: Option<&str>, dir: Option<String>, stores: bool) -> Result<InstanceKind, EngineError> {
+        if harness.is_none() {
+            return Ok(native);
+        }
+        let dir = match dir {
+            Some(d) => d,
+            None => self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string(),
+        };
+        Ok(to_harness(&native, &self.resolve(instance, &native)?, dir, stores).expect("a way in by key is a native kind"))
+    }
+
     /// Connects: writes the definition — after the sign-in, which must
     /// succeed first — or renews the login of the one there is.
     pub fn connect(&self, req: &Request, ui: &mut dyn AuthInteraction) -> Result<Connected, EngineError> {
@@ -1218,11 +1241,7 @@ impl ProviderAuth<'_> {
         };
         // A key's account that exists is updated as the native definition it
         // was made from, and made again, in the directory it has.
-        let kept_dir = existing.instances.get(&instance).filter(|d| harness == Some(d.tag())).and_then(dir_of);
-        let old = existing.instances.get(&instance).map(|d| match harness {
-            Some(h) if d.tag() == h => native_of(d).unwrap_or_else(|| d.clone()),
-            _ => d.clone(),
-        });
+        let (old, kept_dir) = as_native(existing.instances.get(&instance), harness);
         // One that exists is updated: the fields given replace its own, and
         // the rest — an issuer, a pinned wire API — are kept.
         let kind = match old.as_ref() {
@@ -1254,18 +1273,7 @@ impl ProviderAuth<'_> {
 
         let stored_key = self.key_to_store(&instance, &kind, provider, o, ui)?;
 
-        // D3: an API key or a gateway is a Claude Code or Codex account, in
-        // a directory of its own — the one it has, or `accounts/<name>`.
-        let kind = match harness {
-            Some(_) => {
-                let dir = match kept_dir {
-                    Some(d) => d,
-                    None => self.home()?.join(krowk_api::home::ACCOUNTS).join(instance.replace(':', "-")).display().to_string(),
-                };
-                to_harness(&kind, &self.resolve(&instance, &kind)?, dir, stored_key.is_some()).expect("a way in by key is a native kind")
-            }
-            None => kind,
-        };
+        let kind = self.as_account(&instance, kind, harness, kept_dir, stored_key.is_some())?;
 
         // A new named account gets a directory of its own in krowk's home,
         // `accounts/<name>`; the unnamed one is the vendor as the person

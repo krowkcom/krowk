@@ -83,6 +83,7 @@ impl Drop for Sandbox {
 }
 
 #[test]
+#[ignore = "native loop: krowk connect makes Claude Code and Codex accounts now (NL03); goes with the native loop (NL06)"]
 fn r_prov_4_a_named_openai_profile_runs_a_gpt_that_patches_a_file_and_reads_the_cache() {
     let m = mock::serve(providers::responses_script);
     let b = Sandbox::new("openai");
@@ -131,6 +132,7 @@ fn r_prov_4_a_named_openai_profile_runs_a_gpt_that_patches_a_file_and_reads_the_
 }
 
 #[test]
+#[ignore = "native loop: krowk connect makes Claude Code and Codex accounts now (NL03); goes with the native loop (NL06)"]
 fn a_renamed_instance_keeps_its_key_its_default_and_its_sessions() {
     let m = mock::serve(providers::responses_script);
     let b = Sandbox::new("rename");
@@ -194,6 +196,7 @@ fn a_renamed_instance_keeps_its_key_its_default_and_its_sessions() {
 }
 
 #[test]
+#[ignore = "native loop: krowk connect makes Claude Code and Codex accounts now (NL03); goes with the native loop (NL06)"]
 fn r_prov_4_a_supergrok_device_login_writes_0600_credentials_and_runs_a_grok_task() {
     let auth = providers::auth_server(3600);
     let chat = providers::chat_behind(auth.state.clone());
