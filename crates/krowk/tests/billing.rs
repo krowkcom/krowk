@@ -1,7 +1,8 @@
 //! R-BILL-6: `krowk billing` opens the plan chooser on Free and the billing
 //! route on a paid plan, and refuses a member with who to ask. Against the
-//! stand-in registry, whose key markers fake the plan and role; with no
-//! display, so the page is printed rather than opened.
+//! stand-in registry, whose key markers fake the plan and role; with
+//! `--no-browser`, so the page is printed rather than opened, whatever
+//! display the machine has (macOS always has one).
 
 use serde_json::Value;
 use std::net::TcpListener;
@@ -9,7 +10,7 @@ use std::process::{Command, Output};
 
 fn billing(home: &std::path::Path, api: &str, token: &str, format: &str) -> Output {
     Command::new(env!("CARGO_BIN_EXE_krowk"))
-        .args(["billing", "--format", format])
+        .args(["billing", "--no-browser", "--format", format])
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)

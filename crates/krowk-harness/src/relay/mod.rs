@@ -999,9 +999,9 @@ async fn challenge(ws: &mut Ws, relay: &Rc<Relay>, session: [u8; 16], env: Optio
     // A listener that ever published an origin holds to them, even with
     // every one let go: it never falls back to trusting `Host`.
     let published = !relay.config.origins.is_empty() || !relay.added.borrow().is_empty() || !relay.removed.borrow().is_empty();
-    // Network.framework's WebSocket sends `Host` without the port: a
+    // Some WebSocket clients send `Host` without the port: a
     // direct listener takes the one the connection came in on, which the
-    // phone dialed and signed. The origin must still be one it published.
+    // client dialed and signed. The origin must still be one it published.
     let host = match port {
         Some(p) if published && !has_port(host) => format!("{host}:{p}"),
         _ => host.to_string(),
@@ -1807,7 +1807,7 @@ mod tests {
     }
 
     /// R-NET-2: a `Host` with its port is taken as it is; one without (as
-    /// Network.framework's WebSocket sends it) is given the port the
+    /// some WebSocket clients send it) is given the port the
     /// connection came in on, IPv6 brackets read right.
     #[test]
     fn r_net_2_a_host_header_names_its_port_or_does_not() {

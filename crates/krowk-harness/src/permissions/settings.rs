@@ -69,7 +69,7 @@ pub struct Config {
     pub krowk_dir: Option<PathBuf>,
     /// Which repositories are trusted; none trusts none.
     pub trusted: Option<Trusted>,
-    /// A client is attached that answers approval requests (the TUI). A
+    /// A client is attached that answers approval requests (a viewer). A
     /// host without one — `krowk -p` — never waits on a person: what would
     /// be asked is refused, with the reason.
     pub approvals: bool,

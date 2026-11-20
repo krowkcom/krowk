@@ -495,13 +495,13 @@ pub struct Pool {
     kept: std::sync::Mutex<Vec<(Server, Cell)>>,
     retry: Duration,
     credentials: Option<PathBuf>,
-    /// A sign-in begun from the TUI (`sign_in_start`), per server, until it
+    /// A sign-in begun from an interactive client (`sign_in_start`), per server, until it
     /// finishes, is replaced, or expires.
     signins: std::sync::Mutex<std::collections::HashMap<String, SignIn>>,
     signin_ttl: Duration,
 }
 
-/// A sign-in begun from the TUI: what it waits on, and since when.
+/// A sign-in begun from an interactive client: what it waits on, and since when.
 struct SignIn {
     at: std::time::Instant,
     wait: SignInWait,
@@ -1082,7 +1082,7 @@ impl Auth {
 
 /// What a call to a server that needs sign-in returns (R-MCP-11).
 fn needs_sign_in(name: &str) -> String {
-    format!("{name} needs sign-in: run `krowk mcp login {name}` or open /mcp")
+    format!("{name} needs sign-in: run `krowk mcp login {name}`")
 }
 
 struct StdioIo {
@@ -1143,7 +1143,7 @@ impl Conn {
                     .current_dir(cwd)
                     .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
-                    // Its logging would land on the terminal the TUI draws.
+                    // Its logging would land on the terminal an interactive client draws.
                     .stderr(std::process::Stdio::null())
                     .kill_on_drop(true)
                     .spawn()

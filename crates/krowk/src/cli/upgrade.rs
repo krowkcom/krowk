@@ -287,7 +287,7 @@ fn read_state(path: &Path) -> Value {
     std::fs::read(path).ok().and_then(|d| serde_json::from_slice::<Value>(&d).ok()).filter(Value::is_object).unwrap_or(json!({}))
 }
 
-/// By rename: the TUI's refresh runs on a thread the process may end
+/// By rename: the refresh runs on a thread the process may end
 /// mid-write, and a torn file would lose what was already shown.
 fn write_state(path: &Path, state: &Value) {
     let Some(dir) = path.parent() else { return };
@@ -403,30 +403,6 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     let _ = writeln!(ctx.io.stderr, "krowk {} is available {what}(this is {VERSION}) — run `krowk upgrade`", n.latest);
     mark_shown(&mut state, &n.line, now);
     write_state(&path, &state);
-}
-
-/// For the TUI, which waits on no network before its prompt (R-PERF-1): the
-/// last check's answer, marked shown when it is due, and a check for the
-/// next start run on a thread of its own when that one is a day old.
-#[cfg(feature = "harness")]
-pub(crate) fn for_tui(ctx: &Ctx) -> Option<Newer> {
-    if !enabled(ctx) {
-        return None;
-    }
-    let path = state_path(ctx)?;
-    let mut state = read_state(&path);
-    let now = jiff::Timestamp::now();
-    let n = newer(&state, VERSION, now);
-    // Marked before the refresh starts, which reads the file again only
-    // once its answer is in.
-    if let Some(n) = n.as_ref().filter(|n| n.due) {
-        mark_shown(&mut state, &n.line, now);
-        write_state(&path, &state);
-    }
-    if stale(&state, now) {
-        std::thread::spawn(move || refresh(&path, Duration::from_secs(10)));
-    }
-    n
 }
 
 #[cfg(test)]

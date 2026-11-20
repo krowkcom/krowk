@@ -82,16 +82,24 @@ pub fn repo_path(dir: &str) -> Option<PathBuf> {
     start.ancestors().find(|d| d.join(".git").symlink_metadata().is_ok()).map(|root| root.join(".krowk").join("config.json"))
 }
 
+/// The keys that only ever live in the global config, never a repo's.
+#[cfg(feature = "harness")]
+pub const GLOBAL_ONLY: &[&str] = &["defaultMode", "rollover"];
+#[cfg(not(feature = "harness"))]
+pub const GLOBAL_ONLY: &[&str] = &[];
+
+/// Every key `config set` takes.
 pub fn known_keys() -> Vec<&'static str> {
-    KEYS.to_vec()
+    KEYS.iter().chain(GLOBAL_ONLY).copied().collect()
 }
 
 /// A plain refusal for a key nobody has heard of.
 pub fn known(name: &str) -> Result<(), String> {
-    if KEYS.contains(&name) {
+    let keys = known_keys();
+    if keys.contains(&name) {
         return Ok(());
     }
-    Err(format!("unknown config key {name:?}, valid keys: {}", KEYS.join(", ")))
+    Err(format!("unknown config key {name:?}, valid keys: {}", keys.join(", ")))
 }
 
 pub fn set(path: &Path, key: &str, value: &str) -> Result<(), String> {

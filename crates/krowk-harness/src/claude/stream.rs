@@ -145,7 +145,7 @@ pub fn rate_limits(info: &Value) -> Vec<LimitStatus> {
     if out.is_empty() || (status != LimitState::Allowed && !out.iter().any(|l| l.window.as_deref() == Some(named))) {
         out.push(LimitStatus { status, window: Some(named.to_string()).filter(|w| !w.is_empty()), used_percent: percent(info), resets_at_ms: seconds(info) });
     }
-    // The TUI keeps the last report per instance: the binding one goes last.
+    // An interactive client keeps the last report per instance: the binding one goes last.
     out.sort_by(|a, b| (a.status == LimitState::Limited, a.used_percent.unwrap_or(0.0)).partial_cmp(&(b.status == LimitState::Limited, b.used_percent.unwrap_or(0.0))).unwrap_or(std::cmp::Ordering::Equal));
     out
 }

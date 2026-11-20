@@ -9,7 +9,7 @@
 //! pair of devices, does not open.
 //!
 //! Pure code: the host that runs a command is krowk-harness's presence
-//! thread, and the clients that send one are `krowk sync new` and the phone.
+//! thread, and the clients that send one are `krowk sync new` and `krowk sync take`.
 //! A `take` runs there as `krowk sync take` runs: the target still asks.
 
 use crate::device_chain::{Chain, Kind};
@@ -18,7 +18,7 @@ use crate::protocol::ModelRef;
 use crate::user_key::UserKeys;
 use serde::{Deserialize, Serialize};
 
-/// The longest prompt a `start` carries, the phone's limit too.
+/// The longest prompt a `start` carries.
 pub const MAX_PROMPT: usize = 256 * 1024;
 /// The most sealed bytes the registry takes for a command
 /// (`HostCommand::SEALED_BYTES`): a prompt that seals to more is refused

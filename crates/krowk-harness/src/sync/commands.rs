@@ -273,7 +273,7 @@ fn run(me: &Arc<Commands>, c: &Config, host: &str, command: HostCommand, tell: &
     let offered = offered(c, o, &policy);
     if !offered.contains(&cwd) {
         let pick = if offered.is_empty() { "it offers none yet".to_string() } else { format!("pick one of: {}", offered.join(", ")) };
-        return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: on {host}, run krowk there once and trust it, or {pick}")));
+        return tell(HostAnswer::refused("directory_not_offered", format!("{host} does not offer {cwd}: run `krowk trust {}` on {host}, or {pick}", crate::worktree::manage::quote(Path::new(&cwd)))));
     }
     let (model, prompt) = match command {
         HostCommand::Start { model, prompt, .. } => (model, prompt),

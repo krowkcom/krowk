@@ -64,234 +64,17 @@ id = "full.size"
 req = "R-OSS-7"
 what = "Full build (--features harness): release binary size"
 unit = "bytes"
-# 6,253,544 bytes (5.96 MiB) when this budget was set. The harness is
-# growing: a ticket that adds a dependency raises this in its own PR, with
-# the dependency's cost in the justification. Raised 6.50 -> 7.00 MiB by
-# ticket 04 (the same number ticket 06 sets): the TUI (ratatui, crossterm's
-# event stream) on top of ticket 05's three wire clients measured 6,903,624
-# bytes (6.58 MiB) together. Ticket 06's Claude Code backend (the process,
-# the control protocol, the stream translation, the MCP bridge, trust,
-# `providers add claude`; no new crate) adds 183,392 bytes: 7,087,016
-# (6.76 MiB) on x86_64 Linux with both, 253,016 bytes under this. Ticket
-# 07's Codex backend (the app-server JSON-RPC client, the stream
-# translation, approvals, `providers add codex`; no new crate) adds 141,408
-# bytes, and its review round 26,824 more: 7,240,840 (6.91 MiB), 99,192
-# bytes under this.
-# Ticket 08's budget and `publish` (no new crate) add 126,656 bytes of its
-# own (measured on the umbrella before ticket 07); with 07 they measure
-# 7,365,736 (7.02 MiB), 25,704 bytes over 7.00 MiB. Raised 7.00 -> 7.25 MiB
-# by ticket 08: no crate is added — the growth is the budget, the
-# evidence tool, the stream frames and their tests' code paths — and the
-# raise leaves 236,440 bytes for the rest of Harness P0 to justify.
-# Ticket 09's permissions (no new crate: the rule evaluator and its shell
-# splitter, the settings loader, remembered grants, approval frames and the
-# TUI's prompt for them, Claude-format hooks, instructions and skills) adds
-# 172,864 bytes: 7,538,600 (7.19 MiB), and its review round (bash's
-# quoting, opaque program names, anchored path rules, skill and hook
-# fields) 26,880 more, and round 2 (git's program-running forms, glob-safe
-# grants) 5,600, and the final review (git's safe-option lists, the TUI's
-# expand key) 20,992, and bare-repository checks 2,272: 7,594,344
-# (7.24 MiB), 7,832 under this — the next
-# harness ticket that grows the build raises it with its own reason.
-# Ticket 10's subagents and todos (no new crate: the subagent tool and
-# child turns on the shared host, agent definitions and their parser, the
-# catalog's tier listing, incremental tree metering, `todo_write` and its
-# reminder, Codex sub-thread metering, the TUI's subagent lines and
-# overlays, and routing all of it through ticket 09's evaluator and hooks)
-# add 151,520 bytes on top of 09: 7,745,864 (7.39 MiB), 143,688 over 7.25
-# MiB. Raised 7.25 -> 7.50 MiB by ticket 10, for 09 and 10 together — no
-# crate is added, the growth is their code — leaving 118,456 bytes for the
-# rest of Harness P0 to justify.
-# Ticket 10 merged at 7,752,680 (7.39 MiB). Ticket 11's switching (no new
-# crate: the handoff that seeds a backend and its framing, transcripts
-# carried between accounts and the checks on their paths, switchModel and
-# the rollover loop, rate-limit detection and headers on every engine, the
-# TUI's picker, offer and per-instance usage) adds 143,200 bytes on top of
-# 10: 7,895,880 (7.53 MiB), 31,560 over 7.50 MiB. Raised 7.50 -> 7.75 MiB
-# by ticket 11, for 10 and 11 together — no crate is added, the growth is
-# their code — leaving 230,584 bytes for the rest of Harness P0.
-# Main measured 8,112,744 (7.74 MiB) before Claude Code's background agents
-# were followed between turns (no new crate: the process's one stdout
-# reader and its idle loop, agent tracking and the meter moved onto the
-# process, `continue` and the unprompted turn, `backend.agents` and
-# `turn.unprompted`, `Host::watch`, the TUI's count, overlay and
-# auto-continue) adds 51,136 bytes, and its review round (the unprompted
-# turn's mode, agents said gone with their process, the meter on the
-# engine) 9,088 more: 8,172,968 (7.79 MiB), 46,504 over 7.75 MiB. Raised
-# 7.75 -> 8.00 MiB for it — no crate is added, the growth is its code —
-# leaving 215,640 bytes.
-# Provider auth starts at 8,112,488 bytes (7.74 MiB), 13,976 under. Its
-# ticket 01, provider readiness (no new crate: the readiness module and its
-# parallel, bounded vendor checks, Codex's account/read over app-server,
-# `krowk status`, doctor's providers line, and the host's switch, settle and
-# rollover checks made async to ask a vendor off the runtime's thread),
-# adds 68,192 bytes: 8,180,680 (7.80 MiB), 54,216 over 7.75 MiB. Raised
-# 7.75 -> 8.00 MiB by provider auth 01 — no crate is added, the growth is
-# its code — leaving 207,928 bytes for the rest of Provider auth.
-# Provider auth 05, routing a bare model and the default to the one ready
-# instance (no new crate: the router and its refusals, the kind labels),
-# adds 21,856 bytes on the umbrella's 8,181,000: 8,202,856 (7.82 MiB), and
-# its review round 1 (the TUI's own routing and trust question, connect
-# commands) 9,792 more, and round 2 (the settled trust question, held
-# prompts, /model off the loop, registered check groups) 3,360: 8,216,008
-# (7.84 MiB), 172,600 under this.
-# Ticket 02, `krowk connect` and `disconnect` (no new crate: the sign-in
-# moved into the harness behind ProviderAuth and AuthInteraction, the
-# vendor, method and account pickers, the default model, each kind's
-# sign-out; review rounds 1 to 3: naming rules, own-login confirmation,
-# path normalising, undoing only what a sign-in made), adds 89,344 bytes on
-# top of the umbrella's 8,181,000 before 05: 8,270,344 (7.89 MiB).
-# With 05 merged in (one connect command, one label table kept): 8,303,816
-# (7.92 MiB), leaving 84,792 bytes.
-# Provider auth 06 (the short `krowk --help`, with `help --all`, topics and
-# each command's own prose) takes 1,376 off: 8,302,440.
-# Provider auth 03 (stored keys) and 07 (one home) bring the umbrella to
-# 8,379,336, 9,272 under this, and CI measures some 7 KB more than a local
-# build. Provider auth 04, the TUI's `/connect` and `/disconnect` (no new
-# crate: the sign-in on a thread of its own asking through an overlay, the
-# terminal handed to a vendor's login and taken back, the first-run card,
-# readiness marks in `/model`, the host's instances replaced after a
-# connection, OSC 8 links), adds 58,432 bytes: 8,437,768 (8.05 MiB). Raised
-# 8.00 -> 8.25 MiB by 04 — the growth is its code — leaving 212,984 bytes.
-# Its review round 1 (SIGINT kept from krowk while a login has the
-# terminal, a backend not reused after a connection, the overlay's keys)
-# adds 1,696: 8,439,464, 211,288 under this.
-# Main merged into the umbrella (the unhinged permission mode, Claude
-# Code's background agents followed between turns): 8,502,056 (8.11 MiB),
-# 148,696 under this.
-# Provider auth 07's review round 3 (the move from the old layout made
-# small: config and keys read into a staged home renamed into place, the
-# rest named once) takes 10,176 bytes off: 8,491,880, 158,872 under this.
-# Its review (krowk's own files deleted by name, never a directory whole;
-# the two key files merged entry by entry; a held key compared as it is;
-# a linked key file named) adds 6,336: 8,498,216, 152,536 under this.
-# The Harness P1 umbrella measures 8,628,168, 22,584 under this. Harness P1
-# ticket 13, the host daemon, adds no new crate. What it does add: the
-# socket server around Host (per-directory hosts, per-session fan-out,
-# catching up a late client, the idle exit and stop, tokio's LocalSet and
-# unix listener, linked but unused until now), its client and the
-# lock-guarded spawn, Deserialize for StreamLine, Command and RunResult,
-# which the socket's frames pull in, headless compiled for both
-# transports, `krowk host` and the service files. It measures 8,997,096
-# (8.58 MiB) in review, and 9,010,408 after review round 1 (approvals by the
-# client's capability, the per-home socket, config re-read per turn,
-# enable's handover): 382,240 over the umbrella, 360,008 over 8.25 MiB.
-# Raised 8.25 -> 8.75 MiB by ticket 13, leaving 164,632 bytes for the rest
-# of Harness P1.
-# Ticket 13b, the TUI on the daemon (no new crate: the link seam, following
-# a running session, per-session streams in the client, reload, settled,
-# `krowk host stop`), adds 78,912 bytes: 9,089,320 (8.67 MiB), 85,720
-# under this.
-# Ticket 14, the daemon's WebSocket transport and bounded queues, starts
-# from the umbrella at 9,110,984 and measures 9,411,752 (8.98 MiB): 300,768
-# more, 236,712 over 8.75 MiB. Two new crates pay most of it: ruzstd, the
-# batches' compression (about 81 KB of symbols), and tokio-tungstenite's
-# server handshake and framing with sha1 and futures-sink (about 51 KB);
-# the rest is the code — the envelope and its writer, the outboxes, the
-# bounded replay and catching a client up from its cursor. zstd (libzstd
-# through zstd-sys) was the alternative, not measured: it links the whole C
-# library and needs a C cross-compiler for every release target. A
-# hand-written RFC 6455 would save the 51 KB and cost a parser of our own
-# on a listening socket.
-# Raised 8.75 -> 9.00 MiB by ticket 14, leaving 25,432 bytes.
-# Its review round 1 (no new crate: per-session seq counters and the
-# epoch, paged catching up with held frames put back in place, the
-# session log's create/open and fsync off the daemon's thread, the shared
-# TLS configuration, the pre-auth checks and the Origin refusal) adds
-# 38,176 bytes: 9,449,928 (9.01 MiB), 12,744 over. Raised 9.00 -> 9.25
-# MiB, leaving 249,400 bytes for the rest of Harness P1.
-# Ticket 15, krowk-client's end-to-end keys and `krowk sync init` /
-# `recover`, takes the umbrella from 9,449,928 to 9,543,688 (9.10 MiB):
-# 93,760 bytes, 155,640 under this, so no raise. Spec R-E2E-2 names HPKE
-# and XChaCha20-Poly1305, neither of which ring (linked for TLS) has, so
-# the crates are RustCrypto's and dalek's: hpke with hkdf and hmac,
-# x25519-dalek on curve25519-dalek, chacha20poly1305 with poly1305 and
-# cipher, and the embedded 13 KB BIP-0039 word list; sha2, getrandom and
-# zeroize were linked already. The expectation written here before, that
-# 15 would fit only on ring's primitives, did not hold: it fits on these.
-# Ticket 17, the relay's contract and `krowk relay serve`, takes the
-# umbrella (tickets 16 and 16b merged) from 9,616,008 to 9,767,496 (9.32
-# MiB): 151,488 bytes, 68,168 over 9.25 MiB. One new crate: ed25519-dalek
-# for each device's relay signing key, on the curve25519-dalek that
-# x25519-dalek already links, with its SHA-512 from the sha2 already
-# linked and without `fast`'s precomputed tables; the rest is the relay —
-# the join and its checks, the per-stream ring buffer and resume, routing,
-# windows and token buckets, the roster file and the command. Raised 9.25
-# -> 9.50 MiB by ticket 17, leaving 193,976 bytes for the rest of Harness
-# P1. Its review round 1 (no new crate: canonical origins, per-channel
-# join ceilings, the pre-join read budget and per-address caps, overflow
-# said on every queue, idle channels forgotten) adds 44,256 bytes:
-# 9,811,752 (9.36 MiB), 149,720 under this.
-# Ticket 19's sync (no new crate: tokio-tungstenite's client half of the
-# handshake it already links for the daemon, `connect`; the relay link's
-# three sealed chains, the host bridge, the viewer, chunks and checkpoints,
-# `krowk sync sessions|host|attach` and `--resume` of a synced session)
-# adds 426,304 bytes on ticket 18's 9,840,744: 10,267,048 (9.79 MiB).
-# Raised 9.50 -> 10.00 MiB by ticket 19, leaving 218,712 bytes.
-# Main measured 8,648,392 before code in colour (syntect and two-face,
-# bat's grammars: fenced blocks in answers, written files and edits
-# highlighted in the TUI), which adds 2,225,888 bytes: 10,874,280
-# (10.37 MiB), 2,223,528 over 8.25 MiB. About 0.95 MB is the grammars'
-# dump; the rest is syntect, fancy-regex and the dump's decoding. Loaded
-# lazily (2 ms on the first code shown), so startup and idle RSS do not
-# move. Raised 8.25 -> 10.50 MiB for it, leaving 135,768 bytes.
-# Raised again 10.50 -> 11.00 MiB so the next features do not each raise
-# it: 660,056 bytes of room over 10,874,280. Still light for what it is:
-# the other agent CLIs ship a 242 MB (Claude Code) or 287 MB (Codex)
-# binary, and Cursor Agent a 547 MB install. A curated grammar set could
-# win back some of the highlighter's share later.
-# Main merged into the umbrella again (code in colour, whose 11 MiB
-# ceiling main raised to; the two-press quit, the per-turn krowk.db
-# projection) measures 12,703,304 (12.11 MiB): the umbrella's daemon, sync
-# and relay on top of main's highlighter, 1,168,968 over 11.00 MiB. Raised
-# 11.00 -> 12.50 MiB by the merge, leaving 403,896 bytes for the rest of
-# Harness P1.
-# Main measured 13,244,296 here before image paste (already over 12.50 MiB
-# on this machine). Images on the protocol and to every provider add
-# 100,704 bytes (no new crate): 13,345,000. The TUI's paste adds the
-# `image` crate for PNG, JPEG, GIF and WebP, to make a screenshot small
-# enough for any provider as it is pasted: 585,184 bytes, 13,930,184
-# (13.28 MiB). BMP and TIFF were left out (237,024 bytes more); a
-# clipboard is asked for PNG. Raised 12.50 -> 13.50 MiB, leaving 225,592.
-# Main measured 14,633,608 (13.96 MiB) before the worktrees wave, already
-# 477,832 over 13.50 MiB (ask_user, `krowk artifacts`, the paste guard;
-# bench runs on release only, so no PR caught it). The wave (WT1-WT16: the
-# git helper, build and agent slots, worktree creation, seeding, the btrfs
-# template, apply-back, `krowk worktrees`, `--worktree`; no new crate)
-# adds 388,608: 15,022,216 (14.33 MiB), and 15,028,888 on the release
-# runner. Raised 13.50 -> 14.75 MiB, leaving 437,608.
-# Main measured 15,596,296 (14.87 MiB) before ticket 27, already 129,800
-# over 14.75 MiB (bench runs on release only). Direct paths on the LAN
-# without Tailscale add mdns-sd (the responder and browser: its daemon
-# thread, RFC 6762's probing, announcing and caching) and if-addrs, with
-# flume, socket-pktinfo, spin and fastrand under them: 349,568 bytes,
-# 15,945,864 (15.21 MiB). iroh, the ticket's other half, was measured at
-# about 6.9 MB alone and is not built. Raised 14.75 -> 15.50 MiB, leaving
-# 307,064.
-# Main measured 16,245,832 (15.49 MiB) before ticket 104, 7,096 under
-# 15.50 MiB (the sync waves since ticket 27; bench runs on release only).
-# The bridge ringing the person's devices (no new crate: sha2 and
-# krowk-api's notify were linked already; the decision, the bounded set,
-# the off-loop call and its messages) adds 15,488: 16,261,320 (15.51 MiB).
-# Raised 15.50 -> 15.75 MiB, leaving 253,752.
-# Ticket 68's QR code of the pairing invite in `krowk devices add`
-# (qrcodegen, Project Nayuki's encoder, MIT, no dependencies, and the
-# invite URI) takes main's 16,275,944 to 16,291,784 (15.54 MiB): 15,840
-# bytes. On the main before ticket 104 it measured 8,768 bytes smaller,
-# the link laid out differently, and `qrcode` without its image feature
-# 18,624 bytes larger than it. 223,288 under this.
-# Main measured 16,540,264 (15.77 MiB) before ticket 130, already 25,192
-# over 15.75 MiB (the sync waves since ticket 68; bench runs on release
-# only). The viewer's place moving only once a batch is shown, and `Saved`
-# naming it (no new crate: the shown counter, the place and its update)
-# measured 16,542,504 (15.78 MiB), 2,240 over main, and after its review
-# round 16,489,032 (15.73 MiB): the link's layout moves it by tens of KB.
-# Raised 15.75 -> 16.00 MiB, since main is over 15.75 without it, leaving
-# 288,184.
-# 0.16.0's release run broke 16.00 MiB: MCP in krowk's own agent (OAuth
-# sign-in, persistent connections, the /mcp view, images in tool results)
-# and images in `krowk -p` and `krowk sync attach`, with no new crate.
-# Raised 16.00 -> 20.00 MiB at the maintainer's call, to release 0.16.0.
+# 6,253,544 bytes (5.96 MiB) when this budget was set. The harness grew from
+# there, ticket by ticket: the engines, permissions, subagents, the host
+# daemon and its transports, end-to-end sync and the relay, code highlighting,
+# image handling, worktrees and direct LAN paths. A ticket that adds a
+# dependency raises this in its own PR, with the dependency's cost in the
+# justification (bench runs on release only, so a PR's own build is not
+# measured until the release run). Main's earlier ceilings are in git history.
+# Raised 16.00 -> 20.00 MiB at the maintainer's call, to release 0.16.0: MCP in
+# krowk's own agent (OAuth sign-in, persistent connections, images in tool
+# results) and images in `krowk -p` and `krowk sync attach`, with no new
+# crate.
 max = { x86_64-linux = 20_971_520 }
 status = "enforced"
 
@@ -302,8 +85,8 @@ id = "startup.version"
 req = "R-PERF-1"
 what = "Agent build: `krowk --version`, cold process"
 unit = "ms"
-# ~2.3 ms locally. A tripwire well under R-PERF-1's 150 ms cold prompt:
-# nothing krowk does before its prompt may cost more than printing a version.
+# ~2.3 ms locally. A tripwire: nothing krowk does before its prompt may cost
+# more than printing a version.
 max = 15
 runs = 21
 status = "enforced"
@@ -315,31 +98,6 @@ what = "Full build: `krowk sessions` on an empty store, cold process"
 unit = "ms"
 # ~3.5 ms locally: opening krowk.db and listing it, the picker's first step.
 max = 30
-runs = 21
-status = "enforced"
-
-[[budget]]
-id = "tui.startup_cold"
-req = "R-PERF-1"
-what = "Bare `krowk` to an interactive prompt, no daemon running"
-unit = "ms"
-# Spawn to the first complete frame (the end of the first synchronized
-# update), which is the prompt, on a pseudo-terminal answering the cursor
-# query; the startup connectivity probe is not waited for. Since ticket 13b
-# the TUI starts the host daemon and connects to it first: that is in here.
-max = 150
-runs = 21
-status = "enforced"
-
-[[budget]]
-id = "tui.startup_warm"
-req = "R-PERF-1"
-what = "Bare `krowk` to an interactive prompt, daemon warm"
-unit = "ms"
-# Spawn to the first complete frame with the host daemon already up: the
-# TUI connects over its socket, says hello and asks its status before it
-# draws. Turned on by ticket 13b, when the TUI became the daemon's client.
-max = 50
 runs = 21
 status = "enforced"
 
@@ -370,56 +128,10 @@ id = "engine.idle_rss"
 req = "R-PERF-3"
 what = "`krowk -p` waiting on a silent provider: resident memory"
 unit = "MB"
-# The engine alone, held to the TUI-plus-engine number: if the engine does
-# not fit, the pair cannot.
+# The whole process, held to 30 MB: a silent provider's turn is the most idle
+# the engine gets.
 max = 30
 window_s = 10
-status = "enforced"
-
-[[budget]]
-id = "tui.idle_cpu"
-req = "R-PERF-2"
-what = "TUI with an idle session: CPU ticks over 10 s"
-unit = "ticks"
-# At its prompt, nothing running, the start-up probe answered: the crossterm
-# reader parked on the terminal and the runtime on nothing. Wakeups are
-# printed beside it.
-max = 0
-window_s = 10
-status = "enforced"
-
-[[budget]]
-id = "tui.turn_cpu"
-req = "R-PERF-2"
-what = "TUI with a turn waiting on a silent provider: CPU ticks over 5 s"
-unit = "ticks"
-# Not idle — a turn is running, so the clock and spinner redraw at 8 fps
-# (40 frames in the window) — but nothing else happens, and a frame of a
-# few rows costs well under a tick: 0-1 measured. 10 ticks is 2% of one
-# core; a deadline that has fallen into the past, which spins the loop and
-# redraws at 60 fps, is hundreds.
-max = 10
-window_s = 5
-status = "enforced"
-
-[[budget]]
-id = "tui.idle_rss"
-req = "R-PERF-3"
-what = "TUI plus engine with an idle session: resident memory"
-unit = "MB"
-# The same idle TUI: the whole process, engine and runtime included.
-max = 30
-status = "enforced"
-
-[[budget]]
-id = "session.replay_rss"
-req = "R-PERF-3"
-what = "TUI plus engine replaying a synthetic 200k-token session: peak resident memory"
-unit = "MB"
-# `krowk --resume` on a synthetic session of 100 turns and 200k tokens of
-# answer: the history drawn into scrollback, then one more turn that sends
-# all of it to the provider. VmHWM, the process's peak.
-max = 100
 status = "enforced"
 
 # --- The session log ---
@@ -485,16 +197,6 @@ status = "enforced"
 # --- Rendering and remote ---
 
 [[budget]]
-id = "tui.redraw_fps"
-req = "R-PERF-4"
-what = "TUI under a synthetic token stream: redraws per second"
-unit = "fps"
-# The most frames begun inside any one second while an answer streams at
-# 500 tokens a second (one delta every 2 ms, for about four seconds).
-max = 60
-status = "enforced"
-
-[[budget]]
 id = "remote.attach"
 req = "R-PERF-6"
 what = "Attach from a checkpoint on a remote device"
@@ -512,8 +214,8 @@ req = "R-PERF-6"
 what = "Attach on a remote device from where its last reading stopped"
 unit = "ms"
 # The sealed index and the five chunks after a kept place (store::resume),
-# from the stand-in registry over loopback HTTP: what a phone holding the
-# session's events in its cache reads (R-IOS-1).
+# from the stand-in registry over loopback HTTP: what a viewer holding the
+# session's events in its cache reads.
 max = 500
 runs = 11
 status = "enforced"

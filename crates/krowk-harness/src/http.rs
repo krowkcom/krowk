@@ -537,7 +537,7 @@ pub fn transport_error(e: &reqwest::Error, peer: Peer<'_>) -> EngineError {
         src = s.source();
     }
     // R-OFF-1: the sentence a person reads first says what is wrong in the
-    // words the TUI's notice uses, never a generic failure.
+    // words a client's notice uses, never a generic failure.
     if e.is_timeout() {
         return EngineError::new(
             "network_unreachable",

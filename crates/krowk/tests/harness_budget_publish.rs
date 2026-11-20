@@ -139,7 +139,7 @@ fn r_budget_1_max_tokens_stops_the_session_the_same_way() {
     assert_eq!(blank.status.code(), Some(1));
     assert!(text(&blank.stderr).contains("--max-tokens was given with no value"));
     let elsewhere = b.krowk(&["push", "README.md", "--max-usd", "1"]);
-    assert!(text(&elsewhere.stderr).contains("only a flag of `krowk -p`, the TUI and `krowk sessions budget`"));
+    assert!(text(&elsewhere.stderr).contains("only a flag of `krowk -p` and `krowk sessions budget`"));
 }
 
 #[test]

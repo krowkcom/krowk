@@ -52,7 +52,7 @@ stderr:
   "ok": false,
   "error": {
     "error": "unknown_command",
-    "fix": "the config command needs a subcommand: show, set or unset; run `krowk help config`",
+    "fix": "the config command needs a subcommand: show, get, set or unset; run `krowk help config`",
     "retryable": false
   }
 }

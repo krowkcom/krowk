@@ -1,5 +1,5 @@
 //! Subagents and todos, end to end against a stand-in Anthropic API: three
-//! subagents fanned out in parallel, one interrupted alone while the TUI
+//! subagents fanned out in parallel, one interrupted alone while an interactive client
 //! draws each as a line; only their summaries back in the parent's
 //! context; a child's spend stopping the parent at `--max-usd`; a Claude
 //! Code agent definition used as it is; the todo list across `--resume`;
@@ -212,28 +212,18 @@ fn fan_out(body: &Value, _: usize) -> mock::Reply {
     mock::Reply::sse(&mock::text_stream("SUMMARY-C: hello."))
 }
 
-/// The text of the TUI's rows, as a terminal would show them.
-macro_rules! row_text {
-    ($rows:expr) => {
-        $rows.iter().map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect::<String>()).collect::<Vec<String>>()
-    };
-}
-
 #[test]
-fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_one_is_interrupted_alone() {
+fn r_sub_1_r_sub_2_three_subagents_run_in_parallel_and_one_is_interrupted_alone() {
     let m = mock::serve(fan_out);
     let b = Sandbox::new("fan-out", &m.url);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let host = Host::new(b.host());
-    let mut app = krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 160, krowk_tui::settings::Settings::default(), None, None);
     let mut lines: Vec<StreamLine> = Vec::new();
-    let mut most_lines = 0;
     let mut essay: Option<String> = None;
     let result = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
         let cmd = Command::Prompt { session_id: None, text: "look into three things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
-        app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut interrupted = false;
@@ -242,9 +232,6 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
         let result = loop {
             tokio::select! {
                 Some(line) = rx.recv() => {
-                    app.on_line(&line);
-                    let shown = row_text!(app.view(std::time::Instant::now()).0).iter().filter(|r| r.contains("Agent ")).count();
-                    most_lines = most_lines.max(shown);
                     if let StreamLine::Log(ev) = &line
                         && let LogBody::SubagentStarted { subagent_session_id, description, .. } = &ev.body
                     {
@@ -278,7 +265,6 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
             }
         };
         while let Ok(line) = rx.try_recv() {
-            app.on_line(&line);
             lines.push(line);
         }
         result
@@ -301,14 +287,6 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
     assert!(started.iter().all(|(i, _)| *i < first_end), "every child started before the first ended");
     let others: Vec<&String> = started.iter().map(|(_, s)| s).filter(|s| **s != essay).collect();
     assert!(others.iter().all(|s| ended(s) < ended(&essay)), "A and C finished while B ran");
-    // R-SUB-3: each drew its own line in the TUI while it ran.
-    assert_eq!(most_lines, 3, "three subagent lines at once");
-    let done = row_text!(app.take_pending());
-    for d in ["Agent summarise the readme", "Agent write an essay", "Agent say hello"] {
-        assert!(done.iter().any(|l| l.contains(d)), "{d} is in scrollback: {done:?}");
-    }
-    assert!(done.iter().any(|l| l.contains("Agent write an essay") && l.contains("interrupted")), "{done:?}");
-
     // One interrupted, the others untouched.
     let status = |sid: &str| b.log(sid).iter().rev().find(|e| e["type"] == "turn.completed").unwrap()["status"].as_str().unwrap().to_string();
     assert_eq!(status(&essay), "interrupted");
@@ -348,139 +326,6 @@ fn r_sub_1_r_sub_2_r_sub_3_three_subagents_run_in_parallel_each_on_a_line_and_on
 
 }
 
-/// The parent starts two subagents: A reads the README and sums it up, B
-/// answers with words of its own.
-fn two_children(body: &Value, _: usize) -> mock::Reply {
-    if !is_child(body) {
-        if answered(body) {
-            return mock::Reply::sse(&mock::text_stream("PARENT-DONE: both reported."));
-        }
-        return mock::Reply::sse(&tool_calls(&[
-            ("toolu_a", "subagent", json!({"description": "summarise the readme", "prompt": "TASK-A: read README.md and summarise it"})),
-            ("toolu_b", "subagent", json!({"description": "say hello", "prompt": "TASK-B: say hello"})),
-        ]));
-    }
-    if task(body).contains("TASK-A") {
-        if answered(body) {
-            return mock::Reply::paced(mock::text_stream("SUMMARY-A: krowk makes permalinks.\nSECOND-A: of agent output.\n"), Duration::from_millis(5));
-        }
-        return mock::Reply::sse(&mock::tool_use("toolu_read", "read", &json!({"path": "README.md"})));
-    }
-    mock::Reply::paced(mock::text_stream("SIBLING-B: hello from B.\n"), Duration::from_millis(5))
-}
-
-/// The child view's rows, tall enough to hold a child's whole transcript.
-fn child_rows(app: &mut krowk_tui::app::App) -> Vec<String> {
-    row_text!(app.child_rows(120, 400, None).expect("the child view is open"))
-}
-
-/// R-SUB-11: Enter on a child in the Agents overlay opens its transcript —
-/// its log read at once, the parent's prompt first, then its tool call and
-/// text as they arrive, and nothing of its sibling — while the main App
-/// goes on drawing the conversation. Resumed later, a finished child opens
-/// the same way, whole, from its log.
-#[test]
-fn r_sub_11_a_childs_transcript_opens_from_its_log_and_follows_it_live_and_whole_after_a_resume() {
-    let m = mock::serve(two_children);
-    let b = Sandbox::new("child-view", &m.url);
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    let host = Host::new(b.host());
-    let new_app = || krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 120, krowk_tui::settings::Settings::default(), None, None);
-    let read = |sid: &str| krowk_tui::child::read_log(&b.sessions().join(sid).join(log::EVENTS_FILE));
-    let mut app = new_app();
-    let mut a: Option<String> = None;
-    // What the view showed when A's call came back, and when its first line
-    // of text did: before its turn ended.
-    let (mut at_result, mut at_text): (Option<Vec<String>>, Option<Vec<String>>) = (None, None);
-    let result = rt.block_on(async {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
-        let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
-        let cmd = Command::Prompt { session_id: None, text: "look into two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
-        app.start_turn(std::time::Instant::now());
-        let exec = host.execute(cmd, tx);
-        tokio::pin!(exec);
-        let mut on = |app: &mut krowk_tui::app::App, line: &StreamLine| {
-            app.on_line(line);
-            if let StreamLine::Log(ev) = line
-                && let LogBody::SubagentStarted { subagent_session_id, description, .. } = &ev.body
-                && description == "summarise the readme"
-            {
-                // Ctrl-G, down to A, Enter.
-                app.open_agents();
-                while app.agent_selected().as_deref() != Some(subagent_session_id.as_str()) {
-                    app.agent_move(1);
-                }
-                app.open_child(subagent_session_id, read(subagent_session_id));
-                a = Some(subagent_session_id.clone());
-            }
-            if let StreamLine::Log(ev) = line
-                && Some(&ev.session_id) == a.as_ref()
-                && let LogBody::ItemCompleted { item: krowk_harness::protocol::Item::ToolResult { .. }, .. } = &ev.body
-            {
-                at_result = Some(child_rows(app));
-            }
-            if at_text.is_none()
-                && let StreamLine::Live(LiveEvent::ItemDelta { session_id, .. }) = line
-                && Some(session_id) == a.as_ref()
-                && child_rows(app).iter().any(|r| r.contains("SUMMARY-A"))
-            {
-                at_text = Some(child_rows(app));
-            }
-        };
-        let result = loop {
-            tokio::select! {
-                Some(line) = rx.recv() => on(&mut app, &line),
-                r = &mut exec => break r,
-            }
-        };
-        while let Ok(line) = rx.try_recv() {
-            on(&mut app, &line);
-        }
-        result
-    });
-    let result = result.unwrap().unwrap();
-    assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
-    let a = a.expect("A was opened");
-
-    // Its prompt first, then its call, then its text as it came, before the
-    // turn ended; and nothing of B.
-    let at_result = at_result.expect("A's call came back with the view open");
-    let prompt = at_result.iter().position(|r| r.contains("TASK-A: read README.md and summarise it")).unwrap_or_else(|| panic!("the prompt is shown: {at_result:#?}"));
-    let read_call = at_result.iter().position(|r| r.contains("Read README.md")).unwrap_or_else(|| panic!("the call is shown: {at_result:#?}"));
-    assert!(prompt < read_call, "the prompt first: {at_result:#?}");
-    assert_eq!(at_result.iter().filter(|r| r.contains("TASK-A")).count(), 1, "once, though it was read and sent too: {at_result:#?}");
-    let at_text = at_text.expect("A's text was shown as it streamed");
-    assert!(!at_text.iter().any(|r| r.contains("Worked for")), "before A's turn ended: {at_text:#?}");
-    let all = child_rows(&mut app);
-    let summary = all.iter().position(|r| r.contains("SUMMARY-A")).unwrap();
-    assert!(read_call < summary && all.iter().any(|r| r.contains("SECOND-A")), "{all:#?}");
-    assert!(!all.iter().any(|r| r.contains("TASK-B") || r.contains("SIBLING-B") || r.contains("PARENT-DONE")), "nothing of the sibling or the parent: {all:#?}");
-
-    // Closed, the conversation has everything that happened meanwhile.
-    app.child = None;
-    let done = row_text!(app.take_pending());
-    for d in ["Agent summarise the readme", "Agent say hello", "PARENT-DONE: both reported."] {
-        assert!(done.iter().any(|l| l.contains(d)), "{d} is in scrollback: {done:#?}");
-    }
-    assert!(!done.iter().any(|l| l.contains("SUMMARY-A")), "a child's text is its own: {done:#?}");
-
-    // Resumed: A, finished, opens whole from its log.
-    let parent = read(&result.session_id).unwrap();
-    let head = parent.last().unwrap().id.clone();
-    let mut app = new_app();
-    app.replay(&log::branch(&parent, &head));
-    app.end_replayed_children(true);
-    app.open_agents();
-    while app.agent_selected().as_deref() != Some(a.as_str()) {
-        app.agent_move(1);
-    }
-    app.open_child(&a, read(&a));
-    let all = child_rows(&mut app);
-    let at = |s: &str| all.iter().position(|r| r.contains(s)).unwrap_or_else(|| panic!("{s} is shown: {all:#?}"));
-    assert!(at("TASK-A: read README.md") < at("Read README.md") && at("Read README.md") < at("SUMMARY-A") && at("SUMMARY-A") < at("SECOND-A") && at("SECOND-A") < at("Worked for"), "{all:#?}");
-    assert!(all[0].contains("summarise the readme"), "titled by its description: {all:#?}");
-}
-
 /// The parent starts two subagents that both write slowly: A for ten
 /// seconds, B for about two, ending `B-END`.
 fn two_writers(body: &Value, _: usize) -> mock::Reply {
@@ -499,20 +344,16 @@ fn two_writers(body: &Value, _: usize) -> mock::Reply {
     mock::Reply::paced(mock::text_stream(&format!("{}B-END", "note ".repeat(80))), Duration::from_millis(25))
 }
 
-/// R-SUB-10, R-SUB-11: `x` in the child view of a running native child
-/// interrupts it alone: its header reads stopping, then interrupted, while
-/// its sibling, writing all the while, goes on streaming to its end, and
-/// the parent's turn completes.
+/// R-SUB-10: interrupting a running native child stops it alone: its
+/// sibling, writing all the while, goes on streaming to its end, and the
+/// parent's turn completes.
 #[test]
-fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_running() {
+fn r_sub_10_interrupting_a_child_stops_it_alone_and_its_sibling_keeps_running() {
     let m = mock::serve(two_writers);
     let b = Sandbox::new("child-stop", &m.url);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let host = Host::new(b.host());
-    let read = |sid: &str| krowk_tui::child::read_log(&b.sessions().join(sid).join(log::EVENTS_FILE));
-    let mut app = krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 120, krowk_tui::settings::Settings::default(), None, None);
     let (mut a, mut sibling): (Option<String>, Option<String>) = (None, None);
-    let mut stopping: Option<String> = None;
     // B's deltas after the interrupt was sent, and the order the two ended.
     let mut b_after = 0;
     let mut ends: Vec<String> = Vec::new();
@@ -520,14 +361,12 @@ fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_run
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
         let cmd = Command::Prompt { session_id: None, text: "write two things at once".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None };
-        app.start_turn(std::time::Instant::now());
         let exec = host.execute(cmd, tx);
         tokio::pin!(exec);
         let mut sent = false;
         let result = loop {
             tokio::select! {
                 Some(line) = rx.recv() => {
-                    app.on_line(&line);
                     if let StreamLine::Log(ev) = &line
                         && let LogBody::SubagentStarted { subagent_session_id, description, .. } = &ev.body
                     {
@@ -543,20 +382,10 @@ fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_run
                         if sent && Some(session_id) == sibling.as_ref() {
                             b_after += 1;
                         }
-                        // Both writing: Ctrl-G, A, Enter, then x.
+                        // Both writing: interrupt A.
                         if !sent && Some(session_id) == a.as_ref() && sibling.is_some() {
-                            let id = a.clone().unwrap();
-                            app.open_agents();
-                            while app.agent_selected().as_deref() != Some(id.as_str()) {
-                                app.agent_move(1);
-                            }
-                            app.open_child(&id, read(&id));
-                            let to = app.child_to_stop().expect("a running native child can be stopped");
-                            assert_eq!(to, id);
                             let (itx, _irx) = tokio::sync::mpsc::channel(1);
-                            host.execute(Command::Interrupt { session_id: to.clone() }, itx).await.expect("the child's turn is running");
-                            app.stopping(&to);
-                            stopping = Some(row_text!(app.child_rows(120, 10, None).unwrap())[0].clone());
+                            host.execute(Command::Interrupt { session_id: session_id.clone() }, itx).await.expect("the child's turn is running");
                             sent = true;
                         }
                     }
@@ -564,20 +393,12 @@ fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_run
                 r = &mut exec => break r,
             }
         };
-        while let Ok(line) = rx.try_recv() {
-            app.on_line(&line);
-        }
+        while rx.try_recv().is_ok() {}
         result
     });
     let result = result.unwrap().unwrap();
     assert_eq!(result.status, TurnStatus::Completed, "{:?}", result.error);
     let (a, sibling) = (a.expect("A was started"), sibling.expect("B was started"));
-
-    // A's header said it was stopping, then how it ended.
-    let stopping = stopping.expect("x was pressed");
-    assert!(stopping.starts_with("write an essay · by krowk · stopping…"), "{stopping}");
-    let header = child_rows(&mut app)[0].clone();
-    assert!(header.starts_with("write an essay · by krowk · interrupted after"), "{header}");
 
     // A alone stopped; B wrote on after it, to its end, and ended last.
     let status = |sid: &str| b.log(sid).iter().rev().find(|e| e["type"] == "turn.completed").unwrap()["status"].as_str().unwrap().to_string();
@@ -587,9 +408,7 @@ fn r_sub_10_x_in_the_child_view_stops_that_child_alone_and_its_sibling_keeps_run
     assert_eq!(ends, [a.clone(), sibling.clone()], "A ended first, B ran on");
     let b_text: String = b.log(&sibling).iter().filter(|e| e["type"] == "item.completed" && e["item"]["kind"] == "assistantText").map(|e| e["item"]["text"].as_str().unwrap().to_string()).collect();
     assert!(b_text.ends_with("B-END"), "B wrote to its end: {b_text}");
-    let done = row_text!(app.take_pending());
-    assert!(done.iter().any(|l| l.contains("Agent write an essay") && l.contains("interrupted")), "{done:#?}");
-    assert!(done.iter().any(|l| l.contains("PARENT-DONE")), "the parent's turn went on: {done:#?}");
+    assert_eq!(result.result, "PARENT-DONE: one stopped, one reported.", "the parent's turn went on");
 }
 
 /// The parent starts one subagent that rereads the README, each call
@@ -709,15 +528,10 @@ fn r_todo_1_r_todo_2_the_todo_list_lives_in_the_log_and_survives_resume() {
     let resumed = seen.last().unwrap().body.to_string();
     assert!(resumed.contains("todo_write") && resumed.contains("fix the typo"), "{resumed}");
     drop(seen);
-    // …and a client resuming it shows it: the TUI's overlay, from the log.
-    let events = log::read_events(&b.sessions().join(&session).join(log::EVENTS_FILE)).unwrap();
-    let head = events.last().unwrap().id.clone();
-    let mut app = krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 80, krowk_tui::settings::Settings::default(), None, None);
-    app.replay(&log::branch(&events, &head));
-    app.overlay = krowk_tui::app::Overlay::Todos;
-    let rows = row_text!(app.view(std::time::Instant::now()).0);
-    assert_eq!(&rows[..3], ["☒ read the README", "◐ fix the typo", "☐ run the tests"]);
-    assert!(app.status_bar().contains("[2 tasks]"), "the open ones: {}", app.status_bar());
+    // …and the log still holds it, for any client that reads it back.
+    let updated: Vec<Value> = b.log(&session).into_iter().filter(|e| e["type"] == "todos.updated").collect();
+    assert_eq!(updated.len(), 1);
+    assert_eq!(updated[0]["todos"], json!([{"content": "read the README", "status": "completed"}, {"content": "fix the typo", "status": "in_progress"}, {"content": "run the tests", "status": "pending"}]));
 }
 
 /// The session tree as `krowk sessions` lists it: each listed child of the
@@ -827,7 +641,7 @@ fn r_sub_5_an_untrusted_repositorys_definition_stays_on_the_parents_instance() {
     let out = b.krowk(&["-p", "use the far agent", "--model", "claude-sonnet-4-6", "--output-format", "json"]);
     let stderr = text(&out.stderr);
     assert!(out.status.success(), "{stderr}");
-    assert!(stderr.contains("agent far asks for openai/gpt-5.5") && stderr.contains("not a repository you have trusted"), "the person is told: {stderr}");
+    assert!(stderr.contains("agent far asks for openai/gpt-5.5") && stderr.contains("not a repository you have trusted") && stderr.contains("`krowk trust`"), "the person is told, and where to fix it: {stderr}");
     let parent = serde_json::from_slice::<Value>(&out.stdout).unwrap()["sessionId"].as_str().unwrap().to_string();
     let started = b.log(&parent).into_iter().find(|e| e["type"] == "subagent.started").unwrap();
     assert_eq!(started["model"], json!({"instance": "anthropic", "model": "claude-sonnet-4-6"}), "the parent's instance, not the definition's");
@@ -1030,22 +844,16 @@ fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
     let b = Sandbox::new("child-approval", &m.url);
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let host = Host::new(b.host_with(json!({}), true));
-    let mut app = krowk_tui::app::App::new(krowk_tui::editor::Editor::new(None), 160, krowk_tui::settings::Settings::default(), None, None);
     let mut asked = None;
     let r = rt.block_on(async {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1024);
         let model = host.registry().parse_model("claude-sonnet-4-6").unwrap();
         let exec = host.execute(Command::Prompt { session_id: None, text: "run it in a subagent".into(), images: Vec::new(), model: Some(model), permission_mode: PermissionMode::Default, toolset: None, effort: None, rollover: None, budget: None }, tx);
         tokio::pin!(exec);
-        app.start_turn(std::time::Instant::now());
         loop {
             tokio::select! {
                 Some(line) = rx.recv() => {
-                    app.on_line(&line);
                     if let StreamLine::Live(LiveEvent::ApprovalRequested(req)) = &line {
-                        // The TUI shows it, and says whose it is.
-                        let shown = row_text!(app.view(std::time::Instant::now()).0).join("\n");
-                        assert!(shown.contains("subagent “run a command”: allow"), "{shown}");
                         asked = Some(req.clone());
                         let (itx, _irx) = tokio::sync::mpsc::channel(1);
                         host.execute(Command::Approve { session_id: req.session_id.clone(), request_id: req.request_id.clone(), decision: krowk_harness::protocol::ApprovalDecision::Allow, answers: Vec::new() }, itx).await.unwrap();

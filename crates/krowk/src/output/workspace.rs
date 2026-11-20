@@ -158,6 +158,22 @@ pub fn config_show(v: &ConfigView, f: Format, quiet: bool, colour: bool) -> Stri
     lines.join("\n")
 }
 
+/// `config get`: one key's effective value and the layer that set it.
+pub fn config_got(key: &str, value: &str, source: &str, f: Format, quiet: bool, colour: bool) -> String {
+    let r = json!({ "key": key, "value": value, "source": source });
+    if f != Format::Human {
+        if quiet {
+            return encode(&r);
+        }
+        let said = if value.is_empty() { format!("{key} is not set") } else { format!("{key} = {value} ({source})") };
+        return ok(r, said, vec![crumb("see every layer", "krowk config show", "names the files the configuration is read from")]);
+    }
+    if value.is_empty() {
+        return paint(colour, DIM, &format!("{key} is not set."));
+    }
+    format!("{value}  {}", paint(colour, DIM, &format!("({source})")))
+}
+
 pub fn config_wrote(key: &str, value: &str, path: &str, f: Format, quiet: bool, colour: bool) -> String {
     let mut r = serde_json::Map::new();
     r.insert("key".into(), json!(key));

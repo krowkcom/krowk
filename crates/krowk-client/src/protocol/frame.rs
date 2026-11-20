@@ -1,7 +1,7 @@
 //! The daemon's frame envelope: the 28-byte header every WebSocket message
 //! of the protocol starts with, and the values its bytes take. Declared
-//! here rather than in the daemon so a client that links no engine — the
-//! desktop app, a phone — reads and writes the same header the daemon and
+//! here rather than in the daemon so a client that links no engine
+//! reads and writes the same header the daemon and
 //! the relay do (R-CLIENT-1). The layout, byte by byte, is
 //! `krowk_harness::daemon::ws`'s module doc; `Envelope`, which compresses,
 //! stays there.

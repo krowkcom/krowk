@@ -143,18 +143,9 @@ const PUSH_SHORTCUT_ABOUT: &str = concat!("The short form of `krowk artifacts cr
 
 #[cfg(feature = "harness")]
 const SYNC_ATTACH_ABOUT: &str = "\
-On a terminal, opens the TUI on the session: its history, then live. The
-prompt box sends prompts, approvals are answered in the usual dialog, Esc
-interrupts, and the status line says whether the host is there (prompts
-wait for it when it is not) and whether the session comes by the relay or
-directly. The host runs prompts from here in the session's default mode, so
-/mode, /new and /sessions are its to change, not this TUI's; this TUI has no
-/model yet either, while --json takes one.
-
-With --json, or stdout not a terminal, prints the session as stream-json on
-stdout instead, and ends when stdin does, once every command sent is
-answered. Each line typed on stdin is a prompt to it, queued while no host
-is online, except these:
+Prints the session as stream-json on stdout — its history, then live — and
+ends when stdin does, once every command sent is answered. Each line typed on
+stdin is a prompt to it, queued while no host is online, except these:
 
   /approve REQUEST_ID        allow the tool call an approval.requested names
   /allow-session REQUEST_ID  allow it, and calls like it for the session
@@ -209,6 +200,25 @@ subscription, SuperGrok, an API key — is connected with ",
 const LOGIN_ABOUT: &str = login_about!("`krowk connect`");
 #[cfg(not(feature = "harness"))]
 const LOGIN_ABOUT: &str = login_about!("the full build's\n`krowk connect`");
+
+#[cfg(feature = "harness")]
+const CONFIG_ABOUT: &str = concat!(
+    "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n",
+    "`config get <key>` prints one key's effective value and its source. `config set\n",
+    "defaultMode default|unhinged` and `config set rollover auto|offer|off` set the\n",
+    "permission mode new sessions start in and what happens at a usage limit, always\n",
+    "in the global config."
+);
+#[cfg(not(feature = "harness"))]
+const CONFIG_ABOUT: &str = "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.\n`config get <key>` prints one key's effective value and its source.";
+#[cfg(feature = "harness")]
+const CONFIG_GET_KEYS: &str = "workspace, defaultMode or rollover";
+#[cfg(not(feature = "harness"))]
+const CONFIG_GET_KEYS: &str = "workspace";
+#[cfg(feature = "harness")]
+const CONFIG_SET_KEYS: &str = "A configuration key: `workspace`, or `defaultMode` and `rollover`, which always write the global config";
+#[cfg(not(feature = "harness"))]
+const CONFIG_SET_KEYS: &str = "A configuration key, e.g. `workspace`";
 
 const WORKSPACES_ABOUT: &str = "\
 The stored keys, one per workspace. A key belongs to one workspace, and the
@@ -436,8 +446,12 @@ pub fn catalog(version: &str) -> Catalog {
                 subcommands: vec![
                     cmd("show", "krowk config show", "The effective configuration, and which layer set each value"),
                     Command {
+                        args: vec![arg("key", CONFIG_GET_KEYS, true)],
+                        ..cmd("get", "krowk config get <key>", "One key's effective value and where it comes from")
+                    },
+                    Command {
                         args: vec![
-                            arg("key", "A configuration key, e.g. `workspace`", true),
+                            arg("key", CONFIG_SET_KEYS, true),
                             arg(
                                 "value",
                                 "What to set it to, e.g. ws_9hj3kd8a — for `workspace`, a person at a terminal may omit it and pick from the stored keys instead",
@@ -533,8 +547,6 @@ pub fn catalog(version: &str) -> Catalog {
             EnvVar { name: "KROWK_NO_UPDATE_CHECK", usage: "1/true/yes/on — never check for or mention new releases", default: "" },
             EnvVar { name: "KROWK_HOME", usage: "Where krowk keeps its files, an absolute path", default: "~/.krowk" },
             EnvVar { name: "NO_COLOR", usage: "Set to anything — no colour, even on a terminal (no-color.org); TERM=dumb does the same", default: "" },
-            #[cfg(feature = "harness")]
-            EnvVar { name: "KROWK_TUI_HOST", usage: "local — the TUI runs its sessions in its own process, not the host daemon", default: "" },
         ],
     };
     #[cfg(feature = "harness")]
@@ -555,6 +567,8 @@ pub fn catalog(version: &str) -> Catalog {
     c.commands.push(devices_command());
     #[cfg(feature = "harness")]
     c.commands.push(mcp_command());
+    #[cfg(feature = "harness")]
+    c.commands.push(trust_command());
     #[cfg(feature = "harness")]
     c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
@@ -626,7 +640,7 @@ fn sync_command() -> Command {
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
+            cmd("attach", "krowk sync attach SESSION", "Follow a synced session as stream-json"),
             #[cfg(unix)]
             cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
             #[cfg(unix)]
@@ -700,6 +714,20 @@ fn worktrees_command() -> Command {
             cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
         ],
         ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
+    }
+}
+
+/// `krowk trust`: which repositories a backend or krowk's agent may run
+/// the hooks and MCP servers of.
+#[cfg(feature = "harness")]
+fn trust_command() -> Command {
+    Command {
+        args: vec![arg("path", "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository", false)],
+        flags: vec![
+            flag("revoke", BOOL, "Stop trusting it, and forget the MCP servers it was trusted with"),
+            flag("list", BOOL, "List every trusted directory instead; takes no path"),
+        ],
+        ..cmd("trust", "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list", "Trust a repository to run its hooks and MCP servers")
     }
 }
 
@@ -894,7 +922,7 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "worktree",
             BOOL,
-            "With -p, and in the TUI: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
+            "With -p: start the session in a new git worktree of this repository, on a branch krowk/<hex> — removed at the end if nothing changed, kept and named if something did",
         ),
         with_default(
             flag(
@@ -931,12 +959,12 @@ fn prompt_flags() -> Vec<Flag> {
         flag(
             "max-usd",
             STRING,
-            "With -p, and in the TUI: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
+            "With -p: stop the session before the model call that would take it, with its subagents, past this many dollars — metered, priced from models.dev. Exits 4, like `krowk sessions budget`",
         ),
         flag(
             "max-tokens",
             STRING,
-            "With -p, and in the TUI: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
+            "With -p: stop the session before the model call that would take its generated tokens (output and reasoning, subagents included) past this many. Exits 4",
         ),
         flag(
             "trust",
@@ -1019,7 +1047,7 @@ pub fn about(name: &str) -> &'static str {
         "logout" => "Takes the key that resolves here (what `krowk whoami` shows) off this machine.",
         "auth" => "Manage the API key — your krowk account.",
         "workspaces" => WORKSPACES_ABOUT,
-        "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
+        "config" => CONFIG_ABOUT,
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
         "sessions" => "Lists every agent thread on this machine, newest first.",
@@ -1064,8 +1092,7 @@ A server that asks for OAuth, like Mobbin:
 `login` opens your browser, or with --no-browser (or over SSH) prints the page
 and reads the address your browser lands on. Tokens are stored in
 credentials.json and refreshed by krowk; a call to a server that needs sign-in
-says so and names this command. In the TUI, /mcp shows each server's status and
-tools, and signs in, signs out or reconnects it.",
+says so and names this command.",
         #[cfg(feature = "harness")]
         "providers" => "Below `krowk connect`: API keys, logins, Claude Code and Codex accounts.",
         #[cfg(feature = "harness")]
@@ -1146,6 +1173,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "worktrees",
             #[cfg(feature = "harness")]
             "mcp",
+            #[cfg(feature = "harness")]
+            "trust",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
@@ -1172,6 +1201,9 @@ pub const ALL_ONLY: &[&str] = &[
     "help",
     #[cfg(feature = "harness")]
     "mcp",
+    // Run once per repository, so the overview's one screen goes to what is run daily.
+    #[cfg(feature = "harness")]
+    "trust",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.

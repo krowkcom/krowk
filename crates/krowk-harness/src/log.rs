@@ -170,7 +170,7 @@ impl SessionLog {
     // stream and heartbeats with it (R-LAG-9). Each is awaited before its
     // event is sent anywhere, so no client ever sees an event the log does
     // not have. A process with one session and no heartbeats (`krowk -p`,
-    // the TUI on its own host) does them where it is: a blocking pool's
+    // an interactive client on its own host) does them where it is: a blocking pool's
     // thread there would outlive the work and wake the idle process.
 
     /// `create_as`, off the thread.
@@ -491,7 +491,7 @@ pub fn list(sessions: &Path) -> std::io::Result<Vec<(String, PathBuf)>> {
     Ok(out)
 }
 
-/// A session as the TUI's `/sessions` lists it, read from the head of its log.
+/// A session as `krowk sessions` lists it, read from the head of its log.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Recent {
     pub id: String,
@@ -734,7 +734,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// R-VINT-4: `/sessions` lists an archived session of this directory
+    /// R-VINT-4: `krowk sessions` lists an archived session of this directory
     /// from its stub, by its first prompt and when it was last active,
     /// marked archived, among the others by that time; an archived
     /// subagent's, or another directory's, is not listed.

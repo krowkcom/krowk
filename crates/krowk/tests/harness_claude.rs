@@ -3,9 +3,7 @@
 //! recorded stream-json; no real login anywhere): two accounts signed in
 //! through Claude's own flow, each running a session; a tool-using turn
 //! that lands in the log and in `krowk sessions`; Ctrl-C mid-turn and a
-//! resume; the trust prompt's headless refusal; and in the TUI, a
-//! background agent Claude Code runs, counted, and the turn it begins by
-//! itself when the agent finishes, run without a prompt.
+//! resume; and the trust prompt, headless and on a terminal.
 
 #![cfg(all(feature = "harness", unix))]
 
@@ -40,9 +38,7 @@ impl Sandbox {
         std::os::unix::fs::symlink(fixture("fake-claude"), &bin).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
-        // The inline renderer: the TUI's output here is read as it is sent.
         std::fs::create_dir_all(root.join("home/.krowk")).unwrap();
-        std::fs::write(root.join("home/.krowk/config.json"), r#"{"tui": {"screen": "inline"}}"#).unwrap();
         Sandbox { root: root.canonicalize().unwrap() }
     }
 
@@ -54,9 +50,6 @@ impl Sandbox {
             .env("PATH", format!("{}:{}", self.root.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
             .env("HOME", self.root.join("home"))
             .env("KROWK_NO_UPDATE_CHECK", "1")
-            // The TUI runs its sessions in this process here: the daemon has
-            // its own tests (tui.rs, host_daemon), and none is left behind.
-            .env("KROWK_TUI_HOST", "local")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
@@ -264,8 +257,9 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     assert!(!b.root.join("home/.krowk/trusted.json").exists(), "--trust is not remembered");
     // A repository trusted before (a yes at the prompt) needs no flag, and
     // covers its subdirectories.
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    assert!(err.contains("`krowk trust`"), "the refusal names the fix: {err}");
+    let granted = b.json(&["trust", "--json"], &[]);
+    assert_eq!(granted["data"]["trusted"], true, "{granted}");
     std::fs::create_dir_all(b.root.join("repo/src")).unwrap();
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]).current_dir(b.root.join("repo/src")).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
@@ -320,47 +314,35 @@ fn r_inst_1_providers_add_claude_with_a_router_hands_it_the_named_key_and_nothin
     assert_eq!(last, "env ANTHROPIC_AUTH_TOKEN=");
 }
 
-/// Bare `krowk` on a terminal, on a Claude Code instance, in a repository
-/// nobody trusted: the trust prompt comes before the TUI takes the
-/// terminal, a yes is remembered and the session runs on the fake claude;
-/// a no opens the TUI anyway, and the first prompt is refused with why,
-/// with nothing spawned.
+/// `krowk -p` on a terminal, on a Claude Code instance, in a repository
+/// nobody trusted: what it would run, then `Trust <repo>? [y/N]` in plain
+/// text. A `y` remembers the repository and runs the prompt on the fake
+/// claude; anything else refuses, with nothing spawned and nothing recorded.
 #[test]
-fn r_back_6_the_tui_asks_before_claude_runs_in_an_untrusted_repository() {
+fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
     for yes in [true, false] {
-        let b = Sandbox::new(if yes { "tui-yes" } else { "tui-no" });
+        let b = Sandbox::new(if yes { "p-yes" } else { "p-no" });
         b.json(&["providers", "add", "claude", "--json"], &[]);
-        let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
+        std::fs::write(b.root.join("repo/.mcp.json"), "{\"mcpServers\":{\"s\":{\"command\":\"true\"}}}").unwrap();
+        let cmd = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
         // Wide enough that a long temporary path does not wrap the question.
         let mut t = pty::Pty::spawn(cmd, 400, 30);
-        assert!(t.wait_for("remember", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
-        assert!(t.text().contains("Trust ") && t.text().contains("Claude Code runs a repository's own hooks"), "{:?}", t.text());
+        assert!(t.wait_for("[y/N]", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
+        let text = t.text();
+        assert!(text.contains("Claude Code runs a repository's own hooks") && text.contains("It has ") && text.contains("MCP"), "what would run is listed: {text:?}");
+        assert!(text.contains("Trust ") && text.contains("? [y/N]"), "{text:?}");
         assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
-        t.write(if yes { b"y" } else { b"n" });
-        assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "the TUI opens: {:?}", t.text());
-        t.write(b"hello\r");
+        t.write(if yes { b"y\r" } else { b"n\r" });
+        let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk -p exits");
         let trusted = b.root.join("home/.krowk/trusted.json");
         if yes {
-            assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
+            assert!(st.success(), "{st}: {:?}", t.text());
             assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
             assert!(b.fake_log().contains("argv -p"));
         } else {
-            assert!(t.wait_for_words("type /trust", std::time::Duration::from_secs(10)).is_some(), "the refusal says why, and how to take the no back: {:?}", t.text());
-            assert!(!b.fake_log().contains("argv -p"), "claude never ran");
+            assert!(!st.success(), "{st}");
             assert!(!trusted.exists());
-            // The no taken back: `/trust`, and the next prompt runs.
-            t.write(b"/trust\r");
-            assert!(t.wait_for_words("and remembered", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
-            assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "remembered");
-            t.write(b"again\r");
-            assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
-            assert!(b.fake_log().contains("argv -p"));
-        }
-        t.write(b"\x04\x04");
-        let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
-        assert!(st.success(), "{st}");
-        if yes {
-            assert!(b.fake_log().lines().last() == Some("eof"), "the TUI let Claude Code go cleanly: {}", b.fake_log());
+            assert!(!b.fake_log().contains("argv -p"), "claude never ran");
         }
     }
 }
@@ -394,8 +376,8 @@ fn claude_pids(b: &Sandbox) -> (i32, i32) {
     (pid("pid "), pid("grandchild "))
 }
 
-/// A second Ctrl-C leaves at once, headless or in the TUI, and takes Claude
-/// Code's whole process group with it.
+/// A second Ctrl-C leaves at once and takes Claude Code's whole process
+/// group with it.
 #[test]
 fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group() {
     let b = Sandbox::new("ctrlc2");
@@ -418,108 +400,6 @@ fn r_back_1_a_second_ctrl_c_leaves_at_once_and_kills_claude_codes_process_group(
     assert_eq!(child.wait().unwrap().code(), Some(130));
     assert!(started.elapsed() < std::time::Duration::from_secs(5));
     assert!(gone(server) && gone(grandchild), "Claude Code's group outlived krowk -p");
-
-    // The TUI.
-    let _ = std::fs::remove_file(b.root.join("fake.log"));
-    let trusted = b.root.join("home/.krowk/trusted.json");
-    std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
-    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
-    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("hang.jsonl"))]);
-    let mut t = pty::Pty::spawn(cmd, 200, 30);
-    assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"work for a long time\r");
-    let (server, grandchild) = claude_pids(&b);
-    t.write(b"\x03");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    t.write(b"\x03");
-    let st = t.wait(std::time::Duration::from_secs(5)).expect("the TUI leaves on the second Ctrl-C, not after Claude Code");
-    assert_eq!(st.code(), Some(130), "{st}");
-    assert!(gone(server) && gone(grandchild), "Claude Code's group outlived the TUI");
-}
-
-/// The terminal closing under a TUI whose Claude Code turn answers no
-/// interrupt ends krowk all the same — one hangup is all a closed terminal
-/// sends — and takes Claude Code's process group with it: at once where
-/// the terminal is seen to go (Linux, exit 130 as a second Ctrl-C, or 1 when
-/// a write to it fails first), and on
-/// the one SIGHUP alone, the terminal still there to see, as macOS has it:
-/// the interrupted turn ended, Claude Code stopped when it does not end it
-/// itself, and krowk out cleanly.
-#[test]
-fn a_closed_terminal_ends_the_tui_though_claude_code_never_answers_the_interrupt() {
-    for closed in [true, false] {
-        let b = Sandbox::new(&format!("tui-closed-{closed}"));
-        b.json(&["providers", "add", "claude", "--json"], &[]);
-        let trusted = b.root.join("home/.krowk/trusted.json");
-        std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
-        std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
-        let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("hang.jsonl"))]);
-        let mut t = pty::Pty::spawn(cmd, 200, 30);
-        assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
-        t.write(b"work for a long time\r");
-        let (server, grandchild) = claude_pids(&b);
-        if closed {
-            t.hang_up();
-        } else {
-            // SAFETY: a signal to the child this test started.
-            unsafe { libc::kill(t.child.id() as i32, libc::SIGHUP) };
-        }
-        let st = t.wait(std::time::Duration::from_secs(30)).expect("the TUI outlived its terminal by 30 s");
-        assert!(gone(server) && gone(grandchild), "closed {closed}: Claude Code's group outlived the TUI ({st})");
-        // How it ends is the platform's: Linux sees the hangup on the
-        // terminal and leaves as a second Ctrl-C does (130), unless its first
-        // write to the gone terminal fails before it does (1, seen on arm64);
-        // macOS has no such watch, so the write or SIGHUP decides. A SIGHUP
-        // with the terminal still there ends it cleanly everywhere.
-        match (closed, cfg!(target_os = "linux")) {
-            (true, true) => assert!(matches!(st.code(), Some(1 | 130)), "closed: {st}"),
-            (true, false) => assert!(matches!(st.code(), Some(0 | 1 | 130)), "closed: {st}"),
-            (false, _) => assert_eq!(st.code(), Some(0), "SIGHUP: {st}"),
-        }
-    }
-}
-
-/// R-SUB-3 for Claude Code's own agents, in the TUI: one the model runs in
-/// the background is counted in the status bar while the session is idle,
-/// the turn Claude Code begins when it finishes runs with nobody typing —
-/// shown as krowk's note, not a prompt — and the count clears.
-#[test]
-fn r_sub_3_the_tui_counts_a_background_agent_and_runs_the_turn_claude_code_begins() {
-    let b = Sandbox::new("tui-bg");
-    b.json(&["providers", "add", "claude", "--json"], &[]);
-    // At the terminal's whole width: the note read below is wider than
-    // prose's 80 columns.
-    let config = b.root.join("home/.krowk/config.json");
-    let mut cfg: Value = serde_json::from_str(&std::fs::read_to_string(&config).unwrap()).unwrap();
-    cfg["tui"]["contentWidth"] = "full-width".into();
-    std::fs::write(&config, cfg.to_string()).unwrap();
-    let trusted = b.root.join("home/.krowk/trusted.json");
-    std::fs::create_dir_all(trusted.parent().unwrap()).unwrap();
-    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
-    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario("background_agent.jsonl"))]);
-    let mut t = pty::Pty::spawn(cmd, 200, 30);
-    let secs = std::time::Duration::from_secs;
-    assert!(t.wait_for("anything", secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"survey the repo in the background\r");
-    assert!(t.wait_for("[1 subagent]", secs(10)).is_some(), "the agent is counted: {:?}", t.text());
-    assert!(t.wait_for("Claude Code began this turn by itself: background agent “survey the repo” completed", secs(10)).is_some(), "shown as krowk's note: {:?}", t.text());
-    assert!(t.wait_for("The agent is done: the repo is small.", secs(10)).is_some(), "the turn ran with nobody typing: {:?}", t.text());
-    assert_eq!(b.fake_log().matches("in {\"type\":\"user\"").count(), 1, "and without a prompt");
-    // A resize redraws the whole live region: the status bar as it is now.
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let mark = t.output().len();
-    t.resize(180, 30);
-    let redrawn = (0..200).find_map(|_| {
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        let now = String::from_utf8_lossy(&t.output()[mark..]).into_owned();
-        now.contains(" help").then_some(now)
-    });
-    let redrawn = redrawn.expect("the status bar redrawn");
-    assert!(!redrawn.contains("subagent"), "the count cleared: {redrawn:?}");
-    t.write(b"\x04\x04");
-    let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
-    assert!(st.success(), "{st}");
-    assert_eq!(b.fake_log().lines().last(), Some("eof"), "Claude Code let go cleanly");
 }
 
 /// A recording of Claude Code (`recorded/<name>`) as a scenario for the
@@ -620,54 +500,4 @@ fn r_sub_7_claude_codes_parallel_agents_are_child_sessions_their_prompt_first_an
     let out = b.krowk(&["sessions", "rebuild", "--yes"], &[]);
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     assert_eq!(listed_children(&b, &session), kids, "the children hang from the parent again");
-}
-
-/// R-SUB-7, R-SUB-11: in the TUI, the recorded turn's two agents are two
-/// child rows and `[2 subagents]` while they run — never four, though the
-/// deprecated `backend.agents` names them too — and Enter on one in the
-/// Agents overlay opens its transcript, its prompt first.
-#[test]
-fn r_sub_7_the_tui_shows_claude_codes_two_agents_as_two_children_counted_once() {
-    let b = Sandbox::new("tui-agents");
-    b.json(&["providers", "add", "claude", "--json"], &[]);
-    let trusted = b.root.join("home/.krowk/trusted.json");
-    std::fs::write(&trusted, serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
-    let (scenario, _) = recorded_pausing(&b, "agents_parallel.txt", Some(6));
-    let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color"), ("FAKE_CLAUDE_SCENARIO", &scenario)]);
-    let mut t = pty::Pty::spawn(cmd, 160, 40);
-    let secs = std::time::Duration::from_secs;
-    assert!(t.wait_for("anything", secs(10)).is_some(), "{:?}", t.text());
-    t.write(b"run two agents\r");
-    assert!(t.wait_for("sleeper", secs(10)).is_some(), "both started: {:?}", t.text());
-    // The renderer draws what changed: a resize redraws the live region
-    // whole, rows and status bar as they are now.
-    let since = |t: &pty::Pty, mark: usize, needle: &str| {
-        (0..250).find_map(|_| {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-            let now = String::from_utf8_lossy(&t.output()[mark..]).into_owned();
-            now.contains(needle).then_some(now)
-        })
-    };
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let mark = t.output().len();
-    t.resize(150, 40);
-    let redrawn = since(&t, mark, " help").expect("redrawn");
-    assert!(redrawn.contains("[2 subagents]"), "two children, counted once each: {redrawn:?}");
-    assert!(redrawn.contains("Agent read notes · general-purpose · running") && redrawn.contains("Agent sleeper · general-purpose · running"), "{redrawn:?}");
-    // Ctrl-G lists them as children; Enter opens the first, its prompt first.
-    let mark = t.output().len();
-    t.write(b"\x07");
-    let overlay = since(&t, mark, "enter").expect("the Agents overlay");
-    assert!(!overlay.contains("running in Claude Code"), "not the deprecated read-only list: {overlay:?}");
-    let mark = t.output().len();
-    t.write(b"\r");
-    let view = since(&t, mark, "Read the file notes.txt").expect("the child view, its prompt first");
-    assert!(view.contains("siblings") && view.contains("by Claude Code"), "its header and footer: {view:?}");
-    t.write(b"\x1b");
-    assert!(t.wait_for("Worked for", secs(15)).is_some(), "the turn ends: {:?}", t.text());
-    let all = t.text();
-    assert!(!all.contains("[4 subagents]") && !all.contains("[3 subagents]"), "each agent once: {all:?}");
-    t.write(b"\x04\x04");
-    let st = t.wait(secs(10)).expect("krowk exits on Ctrl-D");
-    assert!(st.success(), "{st}");
 }

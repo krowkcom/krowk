@@ -40,7 +40,7 @@
 //!   alone, and its call is answered with what it had; interrupting the
 //!   parent interrupts every child it is waiting on.
 //! - **Visible**: every line of a child's stream goes to the parent's
-//!   client under the child's session id, which is how the TUI draws each
+//!   client under the child's session id, which is how an interactive client draws each
 //!   subagent's line (R-SUB-3).
 //! - **In a worktree of its own, when asked** (`isolation: "worktree"`, on
 //!   the call or in the definition, the call's winning): the child works in
@@ -617,7 +617,7 @@ impl Subagents {
                 let _ = events
                     .send(crate::engine::EngineEvent::Notice {
                         text: format!(
-                            "agent {} asks for {model}, on another instance than this session's, and {} is not a repository you have trusted — it runs on {fallback} instead",
+                            "agent {} asks for {model}, on another instance than this session's, and {} is not a repository you have trusted (`krowk trust` trusts it) — it runs on {fallback} instead",
                             d.name,
                             crate::trust::root(&p.cwd).display()
                         ),

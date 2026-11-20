@@ -124,6 +124,7 @@ Other
   sessions budget   Check a session against a spend limit
   sessions sync     Import what changed since the last import, refresh prices
   config show       The effective configuration, and which layer set each value
+  config get        One key's effective value and where it comes from
   config set        Write one value into the repo config, or the global one
   config unset      Remove one value from the repo config, or the global one
   doctor            Check this machine's setup

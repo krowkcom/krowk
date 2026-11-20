@@ -2,8 +2,7 @@
 //! (R-CLIENT-1; engineering/harness.md → Sync): the updates a screen draws
 //! from, a stream batch applied to them once, the logged events deduped,
 //! the ack to the relay, the direct-path timings, and the catch-ups a gap
-//! asks for. The harness's viewer runs them on its tokio loop; the phone's
-//! viewer will run the same. The clock is the caller's: nothing here reads
+//! asks for. The harness's viewer runs them on its tokio loop. The clock is the caller's: nothing here reads
 //! it.
 //!
 //! `ViewerCore` is the whole viewer built from them, sans IO (R-CLIENT-3):
@@ -111,7 +110,7 @@ pub fn newest(last: &mut Option<String>, id: &str) {
 /// are tried again: the network may have changed meanwhile.
 pub const REPROBE: Duration = Duration::from_secs(10);
 
-/// The longest a viewer waits between races: a phone off the tailnet asks
+/// The longest a viewer waits between races: a viewer off the tailnet asks
 /// the registry for a ticket and tries each candidate this often, no more.
 pub const REPROBE_MAX: Duration = Duration::from_secs(300);
 
@@ -405,15 +404,14 @@ const RETRY_MS: u64 = 1000;
 pub const REREAD_MAX: Duration = Duration::from_secs(30);
 
 /// How a `Note` about a failed join ends: the cadence of `RETRY_MS`. A
-/// caller that times the retries itself (the phone's `supervisor`) says
-/// its own.
+/// caller that times the retries itself says its own.
 pub const EVERY_SECOND: &str = "; trying again every second";
 
 /// A viewer of a synced session following its host live, without IO
 /// (R-CLIENT-3; engineering/harness.md → Sync): the caller passes in what
 /// arrived and the time, a monotonic `now_ms` from any origin, and gets
 /// back the `Effect`s to carry out. It opens no socket, starts no thread
-/// and reads no clock, so the phone owns its sockets in Swift and the
+/// and reads no clock, so the caller owns its sockets and the
 /// rules run under `cargo test`.
 ///
 /// It joins the relay, says hello, holds batches until the welcome, reads
@@ -499,9 +497,9 @@ impl ViewerCore {
         ViewerCore::resumed(key, session, device, relay, at_rest, None, now_ms)
     }
 
-    /// `new`, for a viewer whose app already holds the session up to event
+    /// `new`, for a viewer whose caller already holds the session up to event
     /// `held` with every event before it (its cache's `Cursor::newest`,
-    /// ticket 131): `at_rest` is only what came after the place the app
+    /// ticket 131): `at_rest` is only what came after the place the caller
     /// read to (`store::resume`), so the welcome's catch-up asks the host
     /// only for events after the newer of `held` and what `at_rest` holds.
     pub fn resumed(key: SessionKeys, session: &str, device: DeviceId, relay: &str, at_rest: Attached, held: Option<String>, now_ms: u64) -> (ViewerCore, Vec<Effect>) {
@@ -795,9 +793,8 @@ impl ViewerCore {
     }
 
     /// The next race as soon as one may run, its backoff started over:
-    /// the network changed (another Wi-Fi, a VPN up or down) or the app
-    /// came forward, so a phone that lost races on the café's network
-    /// finds the host as soon as it is home (R-NET-2, R-IOS-2). A race out
+    /// the network changed (another Wi-Fi, a VPN up or down), so a viewer
+    /// that lost races on the café's network finds the host as soon as it is home (R-NET-2). A race out
     /// is let go uncounted (the caller drops its candidates), and the
     /// reset holds through a fall back to the relay before the next race.
     pub fn race_now(&mut self, now_ms: u64) {
@@ -1441,10 +1438,10 @@ mod tests {
         assert_eq!(shown(vec![requested("r1"), requested("r1")]), ["asked r1"], "the turn ended: shown again, once");
     }
 
-    /// R-IOS-1: an event seen before does not move the newest event held,
+    /// An event seen before does not move the newest event held,
     /// even one newer than it: the place names only what was applied.
     #[test]
-    fn r_ios_1_a_duplicate_event_does_not_move_newest() {
+    fn a_duplicate_event_does_not_move_newest() {
         let (mut link, [b1, b2, _]) = three_batches();
         let (mut seen, mut last, mut asked, mut frame, mut applied) = (HashSet::from([id(2)]), Some(id(0)), HashSet::new(), Vec::new(), 0);
         apply(&mut link, &b1, &mut seen, &mut last, &mut None, &mut asked, &mut frame, &mut applied);

@@ -1,5 +1,5 @@
 //! The stand-in Anthropic API the tests use, as a process, for driving a
-//! built `krowk -p` — or the TUI — by hand without a key:
+//! built `krowk -p` — or an interactive client — by hand without a key:
 //!
 //! ```text
 //! cargo run -p krowk-harness --example mock_anthropic -- 8788 &
@@ -29,12 +29,12 @@
 //!
 //! `fan-out` writes a todo list of five (one done, one in progress, three
 //! to do), then starts one subagent, then answers; the subagent answers
-//! slowly — a line every two seconds, for a minute — so the TUI's status
+//! slowly — a line every two seconds, for a minute — so a client's status
 //! line can be seen counting both.
 //!
 //! `--long LINES` answers every prompt instead with that many numbered lines
 //! (about twelve tokens each), streamed at `--rate TOKENS` a second (default
-//! 500): the long, steady answer the TUI's scrollback and redraw checks
+//! 500): the long, steady answer a client's scrollback and redraw checks
 //! stream.
 
 #[path = "../tests/common/mock.rs"]

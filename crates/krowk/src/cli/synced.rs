@@ -13,9 +13,8 @@
 //!   checkpoints, ships its uncommitted work and hands its lease over; the
 //!   work lands in a fresh worktree of this clone, and this machine hosts
 //!   the session from there until interrupted.
-//! - `attach <session>`: follows it from another machine. On a terminal it
-//!   opens the TUI on it (D11); otherwise, or with `--json`, as stream-json
-//!   on stdout, each line typed on stdin a prompt to it, queued while no
+//! - `attach <session>`: follows it from another machine, as stream-json
+//!   on stdout, terminal or not, each line typed on stdin a prompt to it, queued while no
 //!   host is online, or a command: `/approve`, `/allow-session` and `/deny`
 //!   a request, `/interrupt` or `/steer` the turn, `/model` to switch its
 //!   model, `/switch` to take a rate limit's offer, or `/interrupt` one of
@@ -616,7 +615,7 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
     let root = trust::root(cwd);
     if !store.trusts(&root) {
-        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run krowk there once on a terminal and trust it, then take it again", root.display(), inst.vendor)));
+        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run `krowk trust` there, then take it again", root.display(), inst.vendor)));
     }
     Ok(b.home.clone())
 }
@@ -628,9 +627,6 @@ pub(super) fn attach(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let api = Arc::new(signed(ctx, &k, "krowk sync attach")?);
     let env = krowk_api::relay_env(&api.base_url, ctx.io.env).to_string();
     let o = viewer::Options { relay: relay(ctx, &api.base_url), env, api, device: k.device, signing: k.signing, keys: k.user, chain: k.chain, session: session.clone(), known: None, addrs: None };
-    if on_a_terminal(ctx) {
-        return super::tui::run_synced(ctx, o);
-    }
     krowk_harness::sync::run_attach(o, &mut *ctx.io.stdout).map_err(|e| fail("sync_failed", e))
 }
 
@@ -789,7 +785,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
         _ => return Err(offline(name, &announced.map_or_else(|| "not announced".to_string(), |a| format!("last seen {}", ago(&a.updated_at, now))))),
     };
     if !a.directories.iter().any(|d| d == cwd) {
-        let offers = if a.directories.is_empty() { "none yet — run krowk in a repository there once and trust it".to_string() } else { a.directories.join(", ") };
+        let offers = if a.directories.is_empty() { "none yet — run `krowk trust` in a repository there".to_string() } else { a.directories.join(", ") };
         return Err(fail("directory_not_offered", super::sync::printable(&format!("{shown} does not offer {cwd}; it offers: {offers}"))));
     }
     let model = model.trim();
@@ -849,13 +845,6 @@ fn command_id() -> String {
     format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
 }
 
-/// Whether the session is drawn in the TUI: a person at both ends of a
-/// terminal that can draw it, and no `--json`. Anything else — a pipe, a
-/// script — gets stream-json, as `krowk sync attach` always printed.
-fn on_a_terminal(ctx: &Ctx) -> bool {
-    ctx.format == crate::output::Format::Human && ctx.io.tty && ctx.io.stdin_tty && ctx.env("TERM") != "dumb"
-}
-
 /// `krowk --resume <id>` for a session this machine does not have but can
 /// open from sync: it follows it as `krowk sync attach` does, so the
 /// command an artifact card copies works on any of the workspace's
@@ -875,11 +864,9 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     let api = signed(ctx, &k, "krowk --resume").ok()?;
     let s = api.show_sync_session(&id).ok()?;
     krowk_harness::sync::store::open_session_key(&s, &id, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).ok()?;
-    // Said plainly, on stderr, where no TUI draws it: what follows is
-    // stream-json, as `krowk sync attach` prints it.
-    if !on_a_terminal(ctx) {
-        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`)");
-    }
+    // Said plainly, on stderr: what follows is stream-json, as
+    // `krowk sync attach` prints it.
+    let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`)");
     Some(attach(ctx, &[id]))
 }
 

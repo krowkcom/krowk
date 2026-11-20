@@ -1,6 +1,5 @@
-//! What every krowk client shares (R-CLIENT-1): the terminal links it
-//! today, the desktop app (gpui) and the phones (UniFFI) later, so the
-//! end-to-end encryption is written once and never again per platform.
+//! What every krowk client shares (R-CLIENT-1): the CLI links it,
+//! so the end-to-end encryption is written once and never again per client.
 //!
 //! - `e2e`: the constructions — device keypairs, the account key wrapped to
 //!   each device with HPKE, session keys wrapped under the account key, and

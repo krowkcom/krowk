@@ -732,6 +732,18 @@ stdout:
           "summary": "The effective configuration, and which layer set each value"
         },
         {
+          "name": "get",
+          "usage": "krowk config get <key>",
+          "summary": "One key's effective value and where it comes from",
+          "args": [
+            {
+              "name": "key",
+              "summary": "workspace",
+              "required": true
+            }
+          ]
+        },
+        {
           "name": "set",
           "usage": "krowk config set <key> <value> [--global]",
           "summary": "Write one value into the repo config, or the global one",

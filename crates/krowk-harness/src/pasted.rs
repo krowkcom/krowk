@@ -1,5 +1,5 @@
 //! An image made ready to send, and a pasted or dropped path read as one:
-//! what the TUI's composer, `krowk -p --image` and the typed line of
+//! what a client's composer, `krowk -p --image` and the typed line of
 //! `krowk sync attach` all use, so there is one way an image is made small
 //! enough for any provider. At most `MAX_SIDE` pixels a side and
 //! `MAX_BYTES`, kept as it came when it already is, else resized and

@@ -8,7 +8,6 @@
     "agent-harness",
     "agent",
     "llm",
-    "tui",
     "cli",
     "permalink",
     "screenshot"

@@ -17,7 +17,7 @@ fn main() {
     // its first frame and the command waiting on the thread forever.
     let (mut stdout, mut stderr) = (std::io::stdout().lock(), std::io::stderr());
     let (tty, err_tty) = (std::io::stdout().is_terminal(), std::io::stderr().is_terminal());
-    // Only the full build asks: stdin matters to nothing but its TUI.
+    // Only the full build asks: stdin is read only for the questions the full build asks.
     let stdin_tty = cfg!(feature = "harness") && std::io::stdin().is_terminal();
     let mut io = krowk::cli::Io { stdout: &mut stdout, stderr: &mut stderr, env: &env, tty, err_tty, stdin_tty };
     std::process::exit(krowk::cli::run(&args, &mut io));

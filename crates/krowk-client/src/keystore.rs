@@ -31,7 +31,7 @@
 //! every rule above itself — the pin, a generation never going back, a wrap
 //! checked against this device — and reaches storage only through
 //! `KeyStorage`, one slot per file. `FileStorage` is krowk's home, as above;
-//! the iPhone's Keychain plugs in the same way, and no platform writes a
+//! another platform's store plugs in the same way, and none writes a
 //! rule again (R-CLIENT-1). `MemoryStorage` holds them in memory, for tests
 //! and fakes.
 

@@ -57,9 +57,6 @@ pub struct Flags {
     pub model: String,
     #[cfg(feature = "harness")]
     pub resume: String,
-    /// `--resume` with no value: pick the session from a list.
-    #[cfg(feature = "harness")]
-    pub resume_pick: bool,
     /// `--worktree` anywhere but `krowk sessions`, whose `--worktree <path>`
     /// is `worktree`: start the session in a worktree of its own (WT6).
     #[cfg(feature = "harness")]
@@ -81,6 +78,11 @@ pub struct Flags {
     /// `-p`: run the turn in the host daemon.
     #[cfg(feature = "harness")]
     pub daemon: bool,
+    /// `trust`: list every trusted directory, or forget one.
+    #[cfg(feature = "harness")]
+    pub list: bool,
+    #[cfg(feature = "harness")]
+    pub revoke: bool,
     /// `host stop`: even with clients connected.
     #[cfg(feature = "harness")]
     pub force: bool,
@@ -207,15 +209,6 @@ pub fn parse(args: &[String]) -> (Flags, Vec<String>, Result<(), String>) {
                 i += 1;
                 args[i - 1].clone()
             } else {
-                // Last on the line with no value: `krowk --resume`, which
-                // picks the session. Only the TUI takes it; `cli::run`
-                // refuses it everywhere else the way it always was.
-                #[cfg(feature = "harness")]
-                if spec.name == "resume" {
-                    f.resume_pick = true;
-                    f.given.insert(spec.name.to_string());
-                    continue;
-                }
                 return Err(format!("--{name} needs a value"));
             };
             #[cfg(feature = "harness")]
@@ -400,6 +393,10 @@ impl Flags {
                     "trust" => &mut self.trust,
                     #[cfg(feature = "harness")]
                     "daemon" => &mut self.daemon,
+                    #[cfg(feature = "harness")]
+                    "list" => &mut self.list,
+                    #[cfg(feature = "harness")]
+                    "revoke" => &mut self.revoke,
                     #[cfg(feature = "harness")]
                     "force" => &mut self.force,
                     #[cfg(feature = "harness")]

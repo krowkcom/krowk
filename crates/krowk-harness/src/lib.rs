@@ -48,7 +48,7 @@
 //!   native sessions beside imported ones.
 //! - `instances` — the named provider instances in krowk's config;
 //!   `readiness` — whether each can run a turn here, and what fixes it;
-//!   `connect` — connecting one and signing it out, for the CLI and the TUI.
+//!   `connect` — connecting one and signing it out, for the CLI and an interactive client.
 //! - `headless` — `krowk -p`.
 //! - `daemon` — the per-user host daemon a session outlives the terminal
 //!   in, its unix socket, and the service that keeps it up (R-HOST-1,

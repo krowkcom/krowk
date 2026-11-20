@@ -2,8 +2,7 @@
 //! own, made from the current directory's repository at its working state,
 //! so sessions in separate terminals stop sharing one checkout. The
 //! worktree is made, readied and finished by `krowk_harness::worktree`, as a
-//! subagent's is; this is the command line around it, for `krowk -p` and
-//! the TUI alike:
+//! subagent's is; this is the command line around it, for `krowk -p`:
 //!
 //! - **Made before the session**, whose id is chosen first: the worktree is
 //!   locked in that session's name, and the host gives the id to its first
@@ -38,9 +37,7 @@
 //!   every new session in a repository this way without the flag, whatever
 //!   model or agent runs it (`wanted`). `--worktree=false` runs one in
 //!   place, a resumed one or one already in a krowk worktree stays where it
-//!   is, and `-p --daemon` is refused, as with the flag. A TUI session in a
-//!   worktree runs in this process, not the host daemon, and the sessions
-//!   `/new` starts after it share its worktree. A repository's own counts once it
+//!   is, and `-p --daemon` is refused, as with the flag. A repository's own counts once it
 //!   is trusted. A worktree the default cannot make refuses the session,
 //!   naming `--worktree=false` (`start`). Like `--worktree`, it holds an
 //!   agent slot, so it waits when every one is taken.

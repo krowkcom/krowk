@@ -2,20 +2,19 @@
 
 # Krowk
 
-A coding agent harness: one session, on any machine, model or agent.
+Plumbing for independent agents: they travel between your machines to use compute, get tooling that makes them better at the work, and nobody has to watch them.
 
 <a href="https://github.com/krowkcom/krowk/releases"><img alt="Latest release" src="https://img.shields.io/github/v/release/krowkcom/krowk?color=1a1a19"></a>
 <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-1a1a19"></a>
 
 ---
 
-Krowk is an agent harness built for power users who run coding agents all day. It runs Claude, GPT, Grok or any OpenAI-compatible model, using your existing subscription or an API key, or drives Claude Code and Codex. A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
+Krowk is plumbing for agents running in other harnesses, built for power users who run coding agents all day. It has no interface of its own: a command line, a background daemon and the agent engines. It drives Claude Code and Codex, or runs Claude, GPT, Grok or any OpenAI-compatible model with your existing subscription or an API key. A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
 
 ```bash
 krowk connect            # sign in with a Claude, ChatGPT or SuperGrok subscription, or an API key
-krowk                    # open the agent
 krowk -p "fix the build" # run one prompt headless (--output-format json)
-krowk --resume           # continue an earlier session
+krowk -p --resume <id> "go on" # continue an earlier session
 ```
 
 ## Install
@@ -30,13 +29,11 @@ Builds are published for Linux and macOS (amd64/arm64) and Windows (amd64). On a
 
 ## The agent
 
-- **A prompt that stays put.** The agent takes the whole terminal, and the prompt and status line stay on the bottom rows while you scroll the conversation with the mouse wheel or PgUp/PgDn, and dragging over it copies. When you leave, your shell comes back as it was, with the `krowk --resume <id>` line to open the session again. Choose Screen: inline in `/settings` (or set `"tui": {"screen": "inline"}` in `~/.krowk/config.json`) to draw at the bottom of the terminal instead, with everything in your normal scrollback as it streams, which suits SSH, tmux and phone terminals.
+- **Headless.** `krowk -p` runs one prompt and prints the answer, or `--output-format json` or `stream-json` for another program to read. It never takes over the terminal, so it runs the same in a script, over SSH or inside another harness. Bare `krowk` prints an overview of the commands.
 - **Tools.** It can read, write, edit, run bash, grep, glob and publish. It also keeps a todo list, runs subagents in parallel, each with its own context and a cheaper model, and asks you with options to pick from when a choice is yours.
 - **Compatible with Claude Code.** It uses the same permission modes, `allow`/`ask`/`deny` rules and settings files. It reads `AGENTS.md`, `CLAUDE.md` and `.cursor/rules`, and loads Claude-format skills, hooks and `.claude/agents` without changes. It adds an `unhinged` mode that never asks for permission.
-- **Multiple accounts.** You can connect several accounts per provider and rename them in `/connect`. A second account is added with `--name work`.
+- **Multiple accounts.** You can connect several accounts per provider and rename them with `krowk providers rename`. A second account is added with `--name work`.
 - **Cost limits.** `--max-usd` and `--max-tokens` stop a session before it goes over a limit, subagents included.
-
-In the prompt, `/` lists the commands and `?` shows the keys.
 
 ## Worktrees
 
@@ -78,7 +75,7 @@ The full build keeps a local store of your agent sessions, whether they came fro
 
 Sessions sync between your machines end-to-end encrypted: neither krowk's servers nor its relay can read them. Run a session on one machine, then follow it and prompt it from another.
 
-Once sync is set up, every session that runs a turn in the host daemon syncs by itself. Set `"sync": {"auto": false}` in `~/.krowk/config.json` to turn that off, or keep one directory off sync with `sync.exclude` or a `.krowk/no-sync` file. A session nobody has used or watched for 10 minutes (`sync.idleMinutes`) stops syncing until its next prompt on this machine, or until another device, your phone included, opens it while the host daemon runs and has stayed online. `krowk sync status` says what applies where you are, and `krowk host enable` keeps sessions synced on an always-on machine.
+Once sync is set up, every session that runs a turn in the host daemon syncs by itself. Set `"sync": {"auto": false}` in `~/.krowk/config.json` to turn that off, or keep one directory off sync with `sync.exclude` or a `.krowk/no-sync` file. A session nobody has used or watched for 10 minutes (`sync.idleMinutes`) stops syncing until its next prompt on this machine, or until another device opens it while the host daemon runs and has stayed online. `krowk sync status` says what applies where you are, and `krowk host enable` keeps sessions synced on an always-on machine.
 
 | Command | What it does |
 | --- | --- |
@@ -87,7 +84,7 @@ Once sync is set up, every session that runs a turn in the host daemon syncs by 
 | `krowk sync status` | Your device list, and whether sessions here sync by themselves |
 | `krowk sync host <session>` | Sync one session by hand, an opted-out one included |
 | `krowk sync sessions` | The synced sessions this machine can open |
-| `krowk sync attach <session>` | Follow a synced session in the TUI |
+| `krowk sync attach <session>` | Follow a synced session as text, or as stream-json for another program |
 
 ## Publishing
 
@@ -180,9 +177,9 @@ krowk mcp add mobbin https://api.mobbin.com/mcp
 krowk mcp login mobbin
 ```
 
-`login` registers krowk with the server, opens your browser, and stores the tokens in the `mcp` section of `~/.krowk/credentials.json` (`0600`). Over SSH, or with `--no-browser`, it prints the sign-in page and waits for you to paste the address your browser lands on. krowk refreshes the tokens itself; if a refresh fails, a call to that server says "mobbin needs sign-in: run `krowk mcp login mobbin` or open /mcp". krowk never opens a browser in the middle of a turn. After that, ask krowk's agent for screens: it finds `search_screens` with `mcp_search`, and the images the server returns reach the model.
+`login` registers krowk with the server, opens your browser, and stores the tokens in the `mcp` section of `~/.krowk/credentials.json` (`0600`). Over SSH, or with `--no-browser`, it prints the sign-in page and waits for you to paste the address your browser lands on. krowk refreshes the tokens itself; if a refresh fails, a call to that server says "mobbin needs sign-in: run `krowk mcp login mobbin` ". krowk never opens a browser in the middle of a turn. After that, ask krowk's agent for screens: it finds `search_screens` with `mcp_search`, and the images the server returns reach the model.
 
-Servers stay connected for the life of a session. They restart only when their configuration or the repository's trust changes, after a failure, or on reconnect. In the TUI, `/mcp` lists each server with where it is configured, its status and its tool count; open one to see its tools, and sign in, sign out or reconnect from there. It does not enable or disable servers, since that would edit files krowk does not own. On a Claude Code backend your servers are reached through krowk's own `mcp_search` and `mcp_call` tools (Claude Code itself loads only krowk's tools), judged by krowk's `Mcp(...)` rules; the Codex backend does not get them.
+Servers stay connected for the life of a session. They restart only when their configuration or the repository's trust changes, after a failure, or on reconnect. `krowk mcp list` lists each server with where it is configured; sign in and out with `krowk mcp login` and `krowk mcp logout`. It does not enable or disable servers, since that would edit files krowk does not own. On a Claude Code backend your servers are reached through krowk's own `mcp_search` and `mcp_call` tools (Claude Code itself loads only krowk's tools), judged by krowk's `Mcp(...)` rules; the Codex backend does not get them.
 
 The model sees two tools, `mcp_search` and `mcp_call`, however many MCP tools there are, so they cost no context until one is used. No server starts until the first search. Permission rules name a tool as `Mcp(server:tool)` or `mcp__server__tool`, and `Mcp(server)` names all of a server's tools; a server denied whole is never started.
 

@@ -601,7 +601,7 @@ fn failed(week: &str, id: &str, tried: &[(String, String)], more: &str) -> Strin
 }
 
 /// A restore's outcome: the vintage the session came from, and what the
-/// person should know about it — said on stderr, or in the TUI.
+/// person should know about it — said on stderr, or in an interactive client.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Restored {
     pub vintage: String,

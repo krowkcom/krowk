@@ -11,6 +11,30 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
+  [<path>]` trusts the repository `<path>` (default: the current directory)
+  is in, so `krowk -p`, the host and `sync take` may run its hooks and MCP
+  servers; a krowk worktree is trusted as its main repository.
+  `krowk trust --revoke [<path>]` takes the entry back, with the MCP servers
+  it was trusted with, and `krowk trust --list` prints every trusted
+  directory. All three work without a terminal, and with `--json` print
+  `{"directories": [...]}` or `{"directory": ..., "trusted": ...}`. `/` and
+  your home directory are still refused. Every refusal for an untrusted
+  repository now names `krowk trust` as the fix instead of telling you to
+  run krowk there on a terminal.
+
+- **`krowk config set defaultMode` and `rollover`, and `krowk config get`.**
+  `krowk config set defaultMode default|unhinged` chooses the permission
+  mode new sessions start in, and `krowk config set rollover auto|offer|off`
+  what happens when a session's instance hits a usage limit. Both always
+  write the global `~/.krowk/config.json` (`defaultMode` as
+  `permissions.defaultMode`), leave every other key alone, and refuse any
+  other value naming the valid ones. `krowk config get <key>` prints the
+  effective value of `workspace`, `defaultMode` or `rollover` and where it
+  comes from (for `rollover`: `repo` when a trusted repository sets it,
+  else `global`, else `default`). Until now only the terminal UI's settings
+  screen could change the first two.
+
 - **`krowk whoami` shows the workspace's plan.** A `Plan` line reads Free,
   Pro or Business; owners and admins of a paid plan also see when it renews
   or, once cancelled, when it ends (`Pro · renews 19 Dec 2026`). `--json`
@@ -24,6 +48,14 @@ the versions are the `v*` tags a release is cut from. Entries land under
   browser (SSH, CI, `--no-browser`) it prints the page; `--json` gives `url`,
   or the refusal with `billing_contacts`. `krowk upgrade` still updates krowk
   itself.
+
+- **`krowk -p` asks whether to trust a repository in plain text.** On a
+  terminal, in a repository nobody trusted, it lists what would run there
+  (hooks, MCP servers) and asks `Trust <repo>? [y/N]`; `y` remembers the
+  repository and runs the prompt, anything else refuses as before. Without a
+  terminal nothing is asked: it refuses, or `--trust` runs it once. The
+  question is no longer a full-screen card answered with one key, so it needs
+  Enter.
 
 ### Changed
 
@@ -65,6 +97,48 @@ the versions are the `v*` tags a release is cut from. Entries land under
   same image again days later now renews its 7 days (or stores it again if
   it had already expired), so other devices can show it for about as long as
   the new message that uses it.
+
+### Removed
+
+- **The terminal UI, the iPhone app and the FFI bindings.** Krowk is now
+  the command line, the host daemon and the agent engines, for agents
+  running in other harnesses; it has no interface of its own. The terminal
+  UI (`krowk-tui`), the iPhone app (`apps/ios`) and its UniFFI bindings
+  (`krowk-ffi`) moved, frozen and unmaintained, to the archived
+  [krowkcom/krowk-apps](https://github.com/krowkcom/krowk-apps) repository,
+  whose head, `bd7f891b945831c61d42550f812b9b325e4b703c`, is this
+  repository's last commit before the cut and builds today's krowk with the
+  TUI. Nothing a person did through them is lost: `krowk trust`,
+  `krowk config set defaultMode` and `rollover`, `krowk -p` and
+  `krowk sync attach` replace the trust card, the settings screen and
+  following a session.
+
+- **What went with the terminal UI.** Bare `krowk` no longer opens a
+  full-screen agent: on a terminal it prints the same overview it prints
+  piped, and `krowk -p` is how to run the agent. The flags that opened the
+  TUI (`--model`, `--permission-mode`, `--toolset`, `--effort`, `--resume`,
+  `--worktree`, `--max-usd`, `--max-tokens`), given with no command and
+  without `-p`, now fail with a hint to use `-p`; `krowk sync new --model`,
+  `krowk sessions --worktree` and `krowk sessions budget --max-usd` are
+  unchanged. `KROWK_TUI_HOST` is gone, and `tui.*` keys in config files are
+  ignored. `krowk sync attach` and `krowk --resume <synced-id>` on a
+  terminal print stream-json, as they do without one, and take `/approve`,
+  `/deny` and `/steer` on stdin. The `/mcp` view is `krowk mcp list`, and a server that needs sign-in says to run `krowk mcp login`.
+
+- **The pairing QR and the other phone-only code.** `krowk devices add` no
+  longer draws a QR code or prints "scan this with the krowk app on your
+  iPhone"; it still prints the pairing code, and `krowk sync join` on the new
+  machine takes it as before. Gone with it: the `krowk://pair` invite link,
+  the registry client's push-token and session-notification calls, the sync
+  host's notifications about approvals and finished turns, the phone's
+  connection supervisor in `krowk-client`, and the stand-in registry's push
+  and notification routes and its fleet test hooks. Nothing ever received a
+  push, so nothing a person used changes.
+
+- **The TUI's bench budgets and tmux in CI.** `make bench` no longer holds
+  the six `tui.*` budgets or `session.replay_rss`, and CI no longer
+  installs tmux or builds the iOS targets. The iOS and TestFlight workflows
+  no longer exist, which ends their macOS minutes.
 
 ## [0.17.0] - 2026-11-10
 

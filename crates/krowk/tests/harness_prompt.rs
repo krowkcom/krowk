@@ -370,8 +370,8 @@ fn reports(out: &str) -> Vec<&str> {
 }
 
 #[cfg(unix)]
-fn root(state: krowk_tui::osc7501::State, msg: &str) -> String {
-    krowk_tui::osc7501::encode(&krowk_tui::osc7501::Report { state, msg, ..Default::default() }).unwrap()
+fn root(state: krowk::osc7501::State, msg: &str) -> String {
+    krowk::osc7501::encode(&krowk::osc7501::Report { state, msg, ..Default::default() }).unwrap()
 }
 
 /// `krowk -p` with its stderr on a terminal and its stdout piped: the
@@ -400,7 +400,7 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 #[cfg(unix)]
 #[test]
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
-    use krowk_tui::osc7501::State;
+    use krowk::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("pres6", &m.url);
@@ -484,7 +484,7 @@ fn steady(out: &str) -> String {
 #[cfg(unix)]
 #[test]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
-    use krowk_tui::osc7501::State;
+    use krowk::osc7501::State;
     // A model that takes the request and holds its answer: the turn is
     // running once the request is seen.
     let gate = mock::Gate::default();
@@ -677,4 +677,48 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     let out = b.krowk(&["-p", "hi"]);
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("bad_config") && err.contains("auto, offer, off"), "{err}");
+}
+
+/// R-CUT-8, D9: bare `krowk` on a terminal prints the overview it prints without
+/// one; a flag that once opened an interactive client, given with no command and no `-p`,
+/// is refused with the way to `-p`, and `--resume` with no value is refused
+/// whatever else is given; the commands that own those flags still take them.
+#[cfg(unix)]
+#[test]
+fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
+    let b = Sandbox::new("bare-tty", &m.url);
+    let on_a_tty = |args: &[&str]| {
+        let mut c = b.command(args, "sk-test");
+        c.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+        let mut t = pty::Pty::spawn(c, 120, 40);
+        let st = t.wait(std::time::Duration::from_secs(20)).expect("krowk exits at once");
+        (t.text().replace("\r\n", "\n"), st)
+    };
+    let mut piped = b.command(&[], "sk-test");
+    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+    let piped = piped.output().unwrap();
+    assert!(piped.status.success());
+    let (greeting, st) = on_a_tty(&[]);
+    assert!(st.success(), "{greeting}");
+    assert_eq!(greeting, String::from_utf8_lossy(&piped.stdout), "the same greeting on a terminal as off it");
+
+    for args in [&["--model", "x"][..], &["--permission-mode", "plan"], &["--toolset", "none"], &["--effort", "low"], &["--resume", "abc"], &["--worktree"], &["--max-usd", "1"], &["--max-tokens", "10"]] {
+        let (said, st) = on_a_tty(args);
+        assert!(!st.success() && said.contains("-p") && said.contains(&format!("--{}", &args[0][2..])), "{args:?}: {said}");
+    }
+    for with_p in [false, true] {
+        let (said, st) = on_a_tty(&[if with_p { &["-p", "hi"][..] } else { &[] }, &["--resume"]].concat());
+        assert!(!st.success() && said.contains("--resume needs a value"), "-p {with_p}: {said}");
+    }
+    // Help is still help, and a refusal in JSON is a JSON refusal.
+    assert!(b.krowk(&["--help", "--model", "x"]).status.success());
+    let out = b.krowk(&["--json", "--model", "x"]);
+    let said: Value = serde_json::from_slice(&out.stderr).expect("a JSON refusal");
+    assert!(!out.status.success() && said["error"]["error"] == "bad_flag", "{said}");
+    // The commands that own the flags are unchanged.
+    let out = b.krowk(&["sessions", "--worktree", "/nowhere", "--json"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = b.krowk(&["sessions", "budget", "--max-usd", "1", "--json"]);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("only a flag"), "{}", String::from_utf8_lossy(&out.stderr));
 }
