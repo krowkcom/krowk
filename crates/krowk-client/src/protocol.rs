@@ -1331,7 +1331,9 @@ pub enum ClientFrame {
     /// The person's yes or no to adding the new machine a `pairingOffer`
     /// named at the `confirm` stage; answered by `done`, with
     /// `no_pairing_offer` when none waits for an answer.
-    PairingAnswer { id: u64, yes: bool },
+    /// `pairing` is the offer's own, so a yes meant for one pairing is never
+    /// taken for the next.
+    PairingAnswer { id: u64, pairing: String, yes: bool },
     /// Asks the MCP servers of a session, as its host holds them; answered
     /// by `mcp`, with none for a session that has no servers. Protocol 3.
     McpStatus { id: u64, session_id: String },
@@ -1498,6 +1500,8 @@ pub enum McpState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PairingOffer {
+    /// The registry's id of the pairing: what an answer names.
+    pub pairing: String,
     pub code: String,
     pub stage: OfferStage,
     #[serde(default, skip_serializing_if = "String::is_empty")]

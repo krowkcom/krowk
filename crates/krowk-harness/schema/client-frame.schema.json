@@ -169,13 +169,16 @@
       ]
     },
     {
-      "description": "The person's yes or no to adding the new machine a `pairingOffer`\nnamed at the `confirm` stage; answered by `done`, with\n`no_pairing_offer` when none waits for an answer.",
+      "description": "The person's yes or no to adding the new machine a `pairingOffer`\nnamed at the `confirm` stage; answered by `done`, with\n`no_pairing_offer` when none waits for an answer.\n`pairing` is the offer's own, so a yes meant for one pairing is never\ntaken for the next.",
       "type": "object",
       "properties": {
         "id": {
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "pairing": {
+          "type": "string"
         },
         "yes": {
           "type": "boolean"
@@ -188,6 +191,7 @@
       "required": [
         "type",
         "id",
+        "pairing",
         "yes"
       ]
     },

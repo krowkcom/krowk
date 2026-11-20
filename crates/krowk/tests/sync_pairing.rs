@@ -679,7 +679,7 @@ fn r_ease_5_a_new_machine_asks_and_the_hosts_code_joins_it() {
         }
     };
     assert_eq!(asked.name, "desktop");
-    assert!(host.answer(true));
+    assert!(host.answer(&asked.pairing, true));
     let b = wait(b, Duration::from_secs(60));
     stop.store(true, Ordering::SeqCst);
     let _ = refresher.join();

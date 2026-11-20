@@ -161,10 +161,11 @@ impl Introductions {
         s.offer.clone()
     }
 
-    /// The person's answer to the question. False when none is asked.
-    pub fn answer(&self, yes: bool) -> bool {
+    /// The person's answer to the question about `pairing`. False when none
+    /// is asked, or it is about another.
+    pub fn answer(&self, pairing: &str, yes: bool) -> bool {
         let mut s = self.lock();
-        let asked = s.offer.as_ref().is_some_and(|o| o.stage == OfferStage::Confirm) && s.answer.is_none();
+        let asked = s.offer.as_ref().is_some_and(|o| o.stage == OfferStage::Confirm && o.pairing == pairing) && s.answer.is_none();
         if asked {
             s.answer = Some(yes);
             self.changed.notify_all();
@@ -184,8 +185,8 @@ impl Introductions {
             // Nothing was made: the request is delivered again until a
             // pairing opens for it or it lapses.
             Over::Elsewhere => None,
-            Over::Added(name, os) => Some(PairingOffer { code: String::new(), stage: OfferStage::Added, note: format!("Added '{name}' ({os})."), name, os }),
-            Over::Failed(note) => Some(PairingOffer { code: String::new(), stage: OfferStage::Failed, name: String::new(), os: String::new(), note }),
+            Over::Added(name, os) => Some(PairingOffer { pairing: String::new(), code: String::new(), stage: OfferStage::Added, note: format!("Added '{name}' ({os})."), name, os }),
+            Over::Failed(note) => Some(PairingOffer { pairing: String::new(), code: String::new(), stage: OfferStage::Failed, name: String::new(), os: String::new(), note }),
         };
         if s.offer.is_some() {
             // Taken up, whatever came of it.
@@ -221,7 +222,7 @@ impl Introductions {
             Err(e) if e.code() == "pairing_open" => return Over::Elsewhere,
             Err(e) => return failed(format!("the pairing could not be opened: {}", words(&e))),
         };
-        self.set(PairingOffer { code: a.code().to_string(), stage: OfferStage::Waiting, name: String::new(), os: String::new(), note: String::new() });
+        self.set(PairingOffer { pairing: opened.id.clone(), code: a.code().to_string(), stage: OfferStage::Waiting, name: String::new(), os: String::new(), note: String::new() });
         // Up to the reply, anything that goes wrong ends the pairing on the
         // registry too, so the new machine hears it at once, and adds nothing.
         let sealed = match self.seal_reply(&i, &opened.id, a) {
@@ -286,7 +287,7 @@ impl Introductions {
         {
             let mut s = self.lock();
             s.answer = None;
-            s.offer = Some(PairingOffer { code: String::new(), stage: OfferStage::Confirm, name: name.into(), os: os.into(), note: String::new() });
+            s.offer = Some(PairingOffer { pairing: id.into(), code: String::new(), stage: OfferStage::Confirm, name: name.into(), os: os.into(), note: String::new() });
         }
         loop {
             let mut s = self.lock();

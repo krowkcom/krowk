@@ -554,8 +554,8 @@ impl Client {
     }
 
     /// The person's answer to the offer's question (`ClientFrame::PairingAnswer`).
-    pub async fn pairing_answer(&self, yes: bool) -> Result<(), EngineError> {
-        let rx = self.ask(|id| ClientFrame::PairingAnswer { id, yes }, None)?;
+    pub async fn pairing_answer(&self, pairing: &str, yes: bool) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::PairingAnswer { id, pairing: pairing.to_string(), yes }, None)?;
         match rx.await {
             Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
             Ok(ServerFrame::Done { .. }) => Ok(()),

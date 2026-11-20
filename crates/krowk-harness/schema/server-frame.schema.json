@@ -2346,6 +2346,10 @@
       "description": "The pairing a host daemon opened for a new machine that signed in to\nthe person's account (`krowk machines`, the terminal UI): the code to\ntype there and where the pairing stands. `name` and `os` are the new\nmachine's own, set only once the code's confirmation checks passed.",
       "type": "object",
       "properties": {
+        "pairing": {
+          "description": "The registry's id of the pairing: what an answer names.",
+          "type": "string"
+        },
         "code": {
           "type": "string"
         },
@@ -2364,6 +2368,7 @@
         }
       },
       "required": [
+        "pairing",
         "code",
         "stage"
       ]

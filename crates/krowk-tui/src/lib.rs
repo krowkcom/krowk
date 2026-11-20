@@ -1140,6 +1140,20 @@ async fn recv(rx: &mut Option<mpsc::Receiver<StreamLine>>) -> StreamLine {
     }
 }
 
+/// What woke the loop besides the terminal and the stream: a synced
+/// session's event, or a line about a new machine that signed in.
+enum News {
+    Sync(Option<synced::Event>),
+    NewMachine(String),
+}
+
+async fn recv_news(sync: &mut Option<mpsc::UnboundedReceiver<synced::Event>>, machine: &mut mpsc::UnboundedReceiver<String>) -> News {
+    tokio::select! {
+        e = recv_sync(sync) => News::Sync(e),
+        l = newmachine::next(machine) => News::NewMachine(l),
+    }
+}
+
 /// The next of a synced session's events, or never; none once its link is
 /// gone.
 async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> Option<synced::Event> {
@@ -1347,8 +1361,7 @@ impl<'h> Ui<'h> {
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => self.on_watched(app, &line),
-                e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
-                l = newmachine::next(&mut self.new_machine) => app.notice(&l),
+                n = recv_news(&mut self.sync_events, &mut self.new_machine) => self.on_news(app, n),
                 r = finish(&mut self.turn) => {
                     if self.on_turn_end(app, r, &mut reach, quitting).await {
                         return Ok(());
@@ -2044,6 +2057,13 @@ impl<'h> Ui<'h> {
         app.on_line(line);
         self.follow(app, Turn::Watched);
         self.go_on(app);
+    }
+
+    fn on_news(&mut self, app: &mut App, n: News) {
+        match n {
+            News::Sync(e) => self.on_sync(app, e),
+            News::NewMachine(l) => app.notice(&l),
+        }
     }
 
     /// A synced session's news: the status line's host and path, a note,

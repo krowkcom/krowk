@@ -181,7 +181,7 @@ fn r_ease_5_a_host_opens_the_pairing_and_a_typed_code_adds_the_new_machine() {
     assert_eq!((waiting.name.as_str(), waiting.os.as_str()), ("", ""), "no name or OS before the checks: {waiting:?}");
     assert_eq!(waiting.code.len(), 9, "XXXX-XXXX");
     assert!(!format!("{waiting:?}").contains("SECRET-HINT"), "the request's hints are never shown");
-    assert!(!host.answer(true), "nothing is asked yet, so a yes is refused");
+    assert!(!host.answer(&waiting.pairing, true), "nothing is asked yet, so a yes is refused");
 
     let before = listed(&p).len();
     let joining = join(&p, "laptop", &waiting.code);
@@ -189,13 +189,14 @@ fn r_ease_5_a_host_opens_the_pairing_and_a_typed_code_adds_the_new_machine() {
     assert_eq!((asked.name.as_str(), asked.os.as_str(), asked.code.as_str()), ("laptop", "Linux", ""), "the pairing's own name and OS, after the checks: {asked:?}");
     assert_eq!(listed(&p).len(), before, "nothing is on the list before the yes");
 
-    assert!(host.answer(true));
+    assert!(!host.answer("another-pairing", true), "a yes about another pairing is refused");
+    assert!(host.answer(&asked.pairing, true));
     let joined = joining.join().unwrap().unwrap();
     assert_eq!(joined.name, "laptop");
     let added = stage(&host, OfferStage::Added);
     assert_eq!(added.name, "laptop");
     assert_eq!(listed(&p).len(), before + 1, "B is on the device list");
-    assert!(!host.answer(true), "answered once");
+    assert!(!host.answer(&asked.pairing, true), "answered once");
     // The request is answered: no host hears of it again.
     assert!(p.requests(0).is_empty() && p.requests(1).is_empty());
 }
@@ -253,8 +254,8 @@ fn a_no_adds_nothing() {
     let waiting = stage(&host, OfferStage::Waiting);
     let before = listed(&p).len();
     let joining = join(&p, "laptop", &waiting.code);
-    stage(&host, OfferStage::Confirm);
-    assert!(host.answer(false));
+    let asked = stage(&host, OfferStage::Confirm);
+    assert!(host.answer(&asked.pairing, false));
     assert_eq!(stage(&host, OfferStage::Failed).note, "not added — the new machine was told, and nothing reached your device list");
     assert!(joining.join().unwrap().is_err());
     assert_eq!(listed(&p).len(), before);

@@ -557,10 +557,13 @@ pub(super) fn show_offer(ctx: &mut Ctx) {
         let Ok(Some(offer)) = krowk_harness::daemon::pairing_offer(ctx.io.env, super::VERSION) else { return };
         match offer.stage {
             OfferStage::Waiting => {
-                let _ = writeln!(ctx.io.stdout, "A new machine signed in to your account. Its code: {}", printable(&offer.code));
+                // The code goes only to a person at a terminal: an agent that
+                // runs `krowk machines` is not shown it.
                 if !ask_here {
+                    let _ = writeln!(ctx.io.stdout, "A new machine signed in to your account. Run krowk machines in a terminal to see its code.");
                     return;
                 }
+                let _ = writeln!(ctx.io.stdout, "A new machine signed in to your account. Its code: {}", printable(&offer.code));
                 said_code = true;
                 // The person walks to the new machine and types it: the
                 // question comes when its checks have passed.
@@ -579,7 +582,7 @@ pub(super) fn show_offer(ctx: &mut Ctx) {
                 }
                 let question = format!("Add '{}' ({}) to your devices?", printable(&offer.name), printable(&offer.os));
                 let yes = ask(ctx, &question).is_ok();
-                if let Err(e) = krowk_harness::daemon::pairing_answer(ctx.io.env, super::VERSION, yes) {
+                if let Err(e) = krowk_harness::daemon::pairing_answer(ctx.io.env, super::VERSION, &offer.pairing, yes) {
                     let _ = writeln!(ctx.io.stderr, "{}", printable(&e.message));
                     return;
                 }

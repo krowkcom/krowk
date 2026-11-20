@@ -66,7 +66,7 @@ mod tests {
     use super::*;
 
     fn offer(stage: OfferStage) -> PairingOffer {
-        PairingOffer { code: "K7QF-9M3X".into(), stage, name: "B\x1b[2J".into(), os: "Linux".into(), note: "Added 'B' (Linux).".into() }
+        PairingOffer { pairing: "p".into(), code: "K7QF-9M3X".into(), stage, name: "B\x1b[2J".into(), os: "Linux".into(), note: "Added 'B' (Linux).".into() }
     }
 
     /// The code is told as the spec words it; the new machine's name only at

@@ -125,8 +125,8 @@ impl Remote {
         self.fresh().await?.pairing_offer().await
     }
 
-    pub async fn pairing_answer(&self, yes: bool) -> Result<(), EngineError> {
-        self.fresh().await?.pairing_answer(yes).await
+    pub async fn pairing_answer(&self, pairing: &str, yes: bool) -> Result<(), EngineError> {
+        self.fresh().await?.pairing_answer(pairing, yes).await
     }
 
     pub async fn mcp_status(&self, session_id: &str) -> Result<Vec<crate::protocol::McpServer>, EngineError> {
