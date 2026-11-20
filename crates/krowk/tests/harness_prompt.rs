@@ -370,8 +370,8 @@ fn reports(out: &str) -> Vec<&str> {
 }
 
 #[cfg(unix)]
-fn root(state: krowk_tui::osc7501::State, msg: &str) -> String {
-    krowk_tui::osc7501::encode(&krowk_tui::osc7501::Report { state, msg, ..Default::default() }).unwrap()
+fn root(state: krowk::osc7501::State, msg: &str) -> String {
+    krowk::osc7501::encode(&krowk::osc7501::Report { state, msg, ..Default::default() }).unwrap()
 }
 
 /// `krowk -p` with its stderr on a terminal and its stdout piped: the
@@ -400,7 +400,7 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 #[cfg(unix)]
 #[test]
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
-    use krowk_tui::osc7501::State;
+    use krowk::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("pres6", &m.url);
@@ -484,7 +484,7 @@ fn steady(out: &str) -> String {
 #[cfg(unix)]
 #[test]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
-    use krowk_tui::osc7501::State;
+    use krowk::osc7501::State;
     // A model that takes the request and holds its answer: the turn is
     // running once the request is seen.
     let gate = mock::Gate::default();

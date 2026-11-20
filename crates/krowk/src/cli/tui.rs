@@ -127,7 +127,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
     // now, not after the answer was kept.
     krowk_harness::permissions::settings::load(&probe, &runs_in).map_err(prompt::bad_settings)?;
     let widens = krowk_harness::permissions::settings::widens(&probe, &runs_in);
-    let (trust, trusted, trust_ask) = prompt::tui_trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens, trust_as.clone());
+    let (trust, trusted, trust_ask) = trust_gate(effective.as_ref(), &registry, &runs_in, super::providers::krowk_dir()?, home, widens, trust_as.clone());
     let permissions = prompt::permissions_config(ctx, &config, trusted, true);
     let (permission_mode, mode_notices) = prompt::resolve_mode(flag_mode, &permissions, &runs_in)?;
     // Everything that can still refuse the TUI is asked first: a worktree
@@ -330,4 +330,59 @@ fn pick(ctx: &mut Ctx) -> Result<String, Error> {
 fn no_recovery_kit(ctx: &Ctx) -> bool {
     let Ok(home) = krowk_api::home::dir(ctx.io.env) else { return false };
     matches!(krowk_client::keystore::Keystore::new(&home).device_list(), Ok(Some(chain)) if chain.recovery().is_none())
+}
+
+/// The TUI's gate. The TUI owns the terminal in raw mode once it opens, so
+/// the question is asked before that — for the model its session will run
+/// on (the flag, a resumed session's last, the default), in the directory
+/// it will run in — and the gate then answers from that answer and the
+/// trusted list. A no, or a home directory, is refused when the first
+/// prompt is sent, and the TUI shows why. A model known only once the TUI
+/// has routed it is asked about there instead (the returned `TrustAsk`),
+/// and a yes there counts in the gate and the rules the same way.
+///
+/// A native session is asked the same question when the repository's own
+/// settings would widen what krowk may do there (allow rules, directories,
+/// hooks): the returned `Trusted` is what the permission rules consult.
+fn trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, registry: &Registry, cwd: &std::path::Path, dir: std::path::PathBuf, home: Option<std::path::PathBuf>, widens: bool, trust_as: own_worktree::TrustAs) -> (krowk_harness::trust::Gate, krowk_harness::permissions::settings::Trusted, krowk_tui::TrustAsk) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let store = krowk_harness::trust::Store::new(Some(dir.join(krowk_harness::trust::FILE)), home);
+    let backend = model.and_then(|m| registry.get(&m.instance).ok()).is_some_and(|i| i.backend.is_some());
+    // A krowk worktree is asked about as its repository (WT6).
+    let asked = trust_as.root(&krowk_harness::trust::root(cwd));
+    let vendor = if backend { prompt::vendor_of(model, registry) } else { "krowk" };
+    // The card is drawn on stderr: with that not a terminal it would be a
+    // question nobody sees, answered by the next key.
+    let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    // Yes now, or later in the TUI, when a routed model lands on a backend.
+    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && prompt::ask_trust(&store, &asked, vendor)));
+    let (s2, a2, acc2, t2) = (store.clone(), asked.clone(), accepted.clone(), trust_as.clone());
+    let trusted: krowk_harness::permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| {
+        let root = t2.root(root);
+        s2.trusts(&root) || (acc2.load(Ordering::SeqCst) && root == a2)
+    });
+    let (s3, a3, acc3) = (store.clone(), asked.clone(), accepted.clone());
+    let (s4, a4, acc4) = (store.clone(), asked.clone(), accepted.clone());
+    let ask = krowk_tui::TrustAsk {
+        root: asked.clone(),
+        trusted: Arc::new(move || s3.trusts(&a3) || acc3.load(Ordering::SeqCst)),
+        refuses: store.refuses(&asked),
+        accept: Arc::new(move || {
+            acc4.store(true, Ordering::SeqCst);
+            s4.trust(&a4).err().map(|e| format!("trusted for this run, but not remembered: {e}"))
+        }),
+    };
+    let gate: krowk_harness::trust::Gate = Arc::new(move |root: &std::path::Path| {
+        let root = &trust_as.root(root);
+        if store.trusts(root) || (accepted.load(Ordering::SeqCst) && *root == asked) {
+            return Ok(());
+        }
+        if let Some(why) = store.refuses(root) {
+            return Err(krowk_harness::trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `krowk -p --trust` there for one run, or start krowk from a repository of its own.")));
+        }
+        // `/trust` trusts the session's own repository, and only that.
+        let how = if *root == asked { "Nothing was run — type /trust to trust it after all." } else { "Nothing was run — start krowk again there and answer its trust prompt." };
+        Err(krowk_harness::trust::untrusted(root, how))
+    });
+    (gate, trusted, ask)
 }
