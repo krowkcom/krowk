@@ -123,9 +123,10 @@ struct Listed {
 const STALE: &str = "changed-before-upgrade";
 
 const MAX_FILES: usize = 4000;
-const MAX_FILE: u64 = 64 << 20;
+const MAX_FILE: u64 = 32 << 20;
 const MAX_DEPTH: usize = 12;
-const MAX_DIRS: usize = 2000;
+const MAX_DIRS: usize = 5000;
+const MAX_BYTES: u64 = 256 << 20;
 const MAX_VISITS: usize = 20000;
 const MAX_DEPTH_DIRS: usize = 6;
 
@@ -141,58 +142,62 @@ const TRUNCATED: &str = "(too many files to fingerprint)";
 /// (a vendor reads `.claude/settings.json` and Codex a `.codex` from the
 /// working directory up to the root). A directory with a `.git` of its own is
 /// a repository asked about on its own. Bounded in directories and depth.
-fn roots_of_prints(root: &Path) -> Vec<String> {
+fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
     let mut paths: Vec<String> = FINGERPRINTED.iter().map(|p| p.to_string()).collect();
-    let mut seen = 0;
-    let mut stack = vec![(String::new(), 0usize)];
-    while let Some((rel, depth)) = stack.pop() {
+    let (mut seen, mut cut) = (0, false);
+    // Shallow first and in name order, so the directories looked into are
+    // the same every time and a limit leaves out the deepest, not a branch.
+    let mut queue = std::collections::VecDeque::from([(String::new(), 0usize)]);
+    while let Some((rel, depth)) = queue.pop_front() {
         let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
         let Ok(entries) = std::fs::read_dir(&dir) else { continue };
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if matches!(name.as_str(), ".git" | "node_modules" | "target") || !e.file_type().is_ok_and(|t| t.is_dir()) {
+        let mut names: Vec<String> = entries.flatten().filter(|e| e.file_type().is_ok_and(|t| t.is_dir())).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        for name in names {
+            if matches!(name.as_str(), ".git" | "node_modules" | "target" | ".claude" | ".codex" | ".krowk") {
                 continue;
             }
             let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            if name == ".claude" || name == ".codex" || name == ".krowk" {
+            if root.join(&sub).join(".git").symlink_metadata().is_ok() {
                 continue;
             }
-            if e.path().join(".git").symlink_metadata().is_ok() {
+            // Deeper than a session would start is left alone, and is not a
+            // change; a tree wider than the limit is, since which of its
+            // directories hold a settings file is then unknown.
+            if depth >= MAX_DEPTH_DIRS {
                 continue;
             }
             seen += 1;
-            // Past the limits a deeper directory is not looked into: a
-            // large tree is not a change, and a settings file that deep is
-            // one a session would have to start that far down to read.
-            if seen > MAX_DIRS || depth >= MAX_DEPTH_DIRS {
+            if seen > MAX_DIRS {
+                cut = true;
                 continue;
             }
             for f in [".claude/settings.json", ".claude/hooks", ".codex", ".krowk/config.json"] {
                 paths.push(format!("{sub}/{f}"));
             }
-            stack.push((sub, depth + 1));
+            queue.push_back((sub, depth + 1));
         }
     }
-    paths
+    (paths, cut)
 }
 
 /// Each fingerprinted file of `root` with its digest and modification time:
 /// regular files, and symlinks, which are followed when they point inside
 /// the repository (their target's contents count) and are otherwise hashed
 /// by their target's text, so a FIFO or a link out reads nothing. Bounded
-/// in count, depth and size (every path looked at, links included); a limit hit inside a fingerprinted path is recorded as a change.
+/// in count, depth and size (every path looked at, links included); a limit hit is recorded as a change, and bytes read are bounded overall.
 fn fingerprints(root: &Path) -> Prints {
     use sha2::Digest;
-    fn walk(root: &Path, canon_root: &Path, rel: &str, depth: usize, visits: &mut usize, out: &mut Prints) {
-        // Every path looked at counts, so a directory link back up the
-        // tree ends in the limit rather than in a walk of every route.
-        *visits += 1;
-        if out.len() >= MAX_FILES || *visits > MAX_VISITS {
+    fn walk(root: &Path, canon_root: &Path, rel: &str, depth: usize, budget: &mut (usize, u64), out: &mut Prints) {
+        if out.len() >= MAX_FILES || budget.0 > MAX_VISITS {
             out.insert(TRUNCATED.into(), (nonce(), None));
             return;
         }
         let path = root.join(rel);
         let Ok(mut meta) = path.symlink_metadata() else { return };
+        // Every path that exists counts, so a directory link back up the
+        // tree ends in the limit rather than in a walk of every route.
+        budget.0 += 1;
         let mut link = None;
         if meta.file_type().is_symlink() {
             let inside = path.canonicalize().ok().filter(|c| c.starts_with(canon_root));
@@ -210,18 +215,21 @@ fn fingerprints(root: &Path) -> Prints {
                 let mut names: Vec<_> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
                 names.sort();
                 for n in names {
-                    walk(root, canon_root, &format!("{rel}/{n}"), depth + 1, visits, out);
+                    walk(root, canon_root, &format!("{rel}/{n}"), depth + 1, budget, out);
                 }
             }
             return;
         } else if meta.is_file() {
             let mut h = sha2::Sha256::new();
-            // Streamed, so a large file costs no memory; one past the cap
-            // is never taken as unchanged.
-            if meta.len() > MAX_FILE {
+            // Streamed, so a large file costs no memory, and read no further
+            // than the file or the whole walk may be: past either, it is
+            // never taken as unchanged.
+            let allowed = MAX_FILE.min(MAX_BYTES.saturating_sub(budget.1));
+            if meta.len() > allowed {
                 out.insert(TRUNCATED.into(), (nonce(), None));
             }
-            let mut f = std::fs::File::open(&path).ok().map(std::io::BufReader::new);
+            budget.1 += meta.len().min(allowed);
+            let mut f = std::fs::File::open(&path).ok().map(|f| std::io::BufReader::new(std::io::Read::take(f, allowed)));
             let mut buf = [0u8; 64 * 1024];
             while let Some(r) = f.as_mut() {
                 match std::io::Read::read(r, &mut buf) {
@@ -242,9 +250,13 @@ fn fingerprints(root: &Path) -> Prints {
     }
     let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     let mut out = Prints::new();
-    let mut visits = 0;
-    for p in &roots_of_prints(root) {
-        walk(root, &canon_root, p, 0, &mut visits, &mut out);
+    let mut budget = (0, 0);
+    let (paths, cut) = roots_of_prints(root);
+    for p in &paths {
+        walk(root, &canon_root, p, 0, &mut budget, &mut out);
+    }
+    if cut {
+        out.insert(TRUNCATED.into(), (nonce(), None));
     }
     out
 }
