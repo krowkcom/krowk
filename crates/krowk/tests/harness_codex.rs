@@ -14,9 +14,6 @@ use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
-#[path = "common/pty.rs"]
-mod pty;
-
 fn fixture(name: &str) -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/codex").join(name)
 }
