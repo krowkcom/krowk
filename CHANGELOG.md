@@ -9,6 +9,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-11-20
+
 ### Added
 
 - **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
@@ -3594,7 +3596,8 @@ was released on GitHub but never published to npm.
   credentials travel, and a refusal is written to stderr and into the JSON
   envelope.
 
-[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.17.0...HEAD
+[Unreleased]: https://github.com/krowkcom/krowk/compare/v0.18.0...HEAD
+[0.18.0]: https://github.com/krowkcom/krowk/compare/v0.17.0...v0.18.0
 [0.17.0]: https://github.com/krowkcom/krowk/compare/v0.16.2...v0.17.0
 [0.16.2]: https://github.com/krowkcom/krowk/compare/v0.16.1...v0.16.2
 [0.16.1]: https://github.com/krowkcom/krowk/compare/v0.16.0...v0.16.1
