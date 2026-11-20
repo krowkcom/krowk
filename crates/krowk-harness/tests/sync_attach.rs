@@ -1929,7 +1929,7 @@ async fn ack_rtt(v: &mut viewer::Viewer, session: &str, frames: &mut Vec<Instant
 /// there and names it to B inside the welcome, sealed — the relay never
 /// sees the address — and B moves onto it, after which B's live frames no
 /// longer cross the relay. A names itself and its tailnet node in the
-/// sealed index, for `krowk hosts` (R-NET-4).
+/// sealed index, for `krowk machines` (R-NET-4).
 #[tokio::test]
 async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_relay() {
     let w = World::new("direct");
@@ -1941,7 +1941,7 @@ async fn r_net_2_the_session_moves_to_the_direct_path_and_live_frames_leave_the_
     w.synced(&session).await;
 
     // R-NET-4: A names itself in the sealed index, with its tailnet node,
-    // which is how `krowk hosts` finds it with no tag on it.
+    // which is how `krowk machines` finds it with no tag on it.
     let (api, id, keys, chain) = (w.client(), session.clone(), w.keys(), w.chain());
     let index = tokio::task::spawn_blocking(move || {
         let s = api.show_sync_session(&id).unwrap();
@@ -3345,6 +3345,7 @@ impl World {
             trusted,
             mode_for: Box::new(|_| Ok(PermissionMode::Default)),
             take: None,
+            introductions: None,
         }
     }
 

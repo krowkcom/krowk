@@ -1324,6 +1324,16 @@ pub enum ClientFrame {
     },
     /// Asks how the daemon is; answered by `status`.
     Status { id: u64 },
+    /// Asks the pairing this host opened because a new machine signed in
+    /// to the person's account: answered by `pairingOffer`, with none when
+    /// there is no such pairing.
+    PairingOffer { id: u64 },
+    /// The person's yes or no to adding the new machine a `pairingOffer`
+    /// named at the `confirm` stage; answered by `done`, with
+    /// `no_pairing_offer` when none waits for an answer.
+    /// `pairing` is the offer's own, so a yes meant for one pairing is never
+    /// taken for the next.
+    PairingAnswer { id: u64, pairing: String, yes: bool },
     /// Asks the MCP servers of a session, as its host holds them; answered
     /// by `mcp`, with none for a session that has no servers. Protocol 3.
     McpStatus { id: u64, session_id: String },
@@ -1359,7 +1369,7 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         renamed_to: Option<String>,
     },
-    /// Asks the daemon to exit — `krowk host stop`, or `krowk host enable`
+    /// Asks the daemon to exit — `krowk host stop`, or `krowk machines always-on on`
     /// handing over to the service. Refused with `host_busy` while a turn
     /// runs, and with `host_in_use` while another client is connected
     /// unless `force` (a TUI connected to it reconnects to the next one);
@@ -1433,6 +1443,8 @@ pub enum ServerFrame {
         error: Option<ErrorInfo>,
     },
     Status { id: u64, status: HostStatus },
+    /// The answer to `pairingOffer`.
+    PairingOffer { id: u64, offer: Option<PairingOffer> },
     /// The answer to `mcpStatus`: each server of the session, in the order
     /// it is configured.
     Mcp { id: u64, servers: Vec<McpServer> },
@@ -1478,6 +1490,38 @@ pub enum McpState {
     Connecting,
     Connected,
     NeedsSignIn,
+    Failed,
+}
+
+/// The pairing a host daemon opened for a new machine that signed in to
+/// the person's account (`krowk machines`, the terminal UI): the code to
+/// type there and where the pairing stands. `name` and `os` are the new
+/// machine's own, set only once the code's confirmation checks passed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PairingOffer {
+    /// The registry's id of the pairing: what an answer names.
+    pub pairing: String,
+    pub code: String,
+    pub stage: OfferStage,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub os: String,
+    /// What came of it, at `added` and `failed`.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum OfferStage {
+    /// The code is shown; the new machine has not typed it, or its checks
+    /// have not passed.
+    Waiting,
+    /// The checks passed: the person is asked to add `name` (`os`).
+    Confirm,
+    Added,
     Failed,
 }
 

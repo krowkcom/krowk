@@ -1,7 +1,7 @@
 //! The phone joins a pairing the terminal shows, end to end against the
 //! stand-in registry (R-E2E-3, R-CLIENT-1; canon, engineering/devices.md →
 //! Adding a device): the laptop, already on the person's device list, runs
-//! the real `krowk devices add`; the phone is krowk-ffi's `Account`, as the
+//! the real `krowk machines add`; the phone is krowk-ffi's `Account`, as the
 //! iPhone app calls it, with its Keychain in memory. It ends up holding the
 //! person's user key and a pin of the chain that adds it, through the same
 //! `pairing_join` the terminal's `krowk sync join` runs.
@@ -117,14 +117,14 @@ fn code_shown(rx: &std::sync::mpsc::Receiver<String>) -> String {
             seen.push('\n');
         }
     }
-    panic!("`krowk devices add` showed no code:\n{seen}");
+    panic!("`krowk machines add` showed no code:\n{seen}");
 }
 
 fn rest(rx: &std::sync::mpsc::Receiver<String>) -> String {
     rx.try_iter().collect::<Vec<_>>().join("\n")
 }
 
-/// A `krowk devices add` that a failing test leaves neither stopped nor
+/// A `krowk machines add` that a failing test leaves neither stopped nor
 /// running: on a panic its process is continued and killed.
 struct Reaped(u32);
 
@@ -139,7 +139,7 @@ impl Drop for Reaped {
     }
 }
 
-/// The laptop's `krowk devices add`, its stderr lines, and the code it shows.
+/// The laptop's `krowk machines add`, its stderr lines, and the code it shows.
 fn add(laptop: &Path, api: &str) -> (Child, Reaped, std::sync::mpsc::Receiver<String>, String) {
     let mut a = krowk(laptop, api, LAPTOP, &["devices", "add"]).spawn().unwrap();
     let reaped = Reaped(a.id());
@@ -286,7 +286,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_phone_keeps_no_user_key() {
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let (code, detail) = refusal(account.join_pairing(wrong, "Test iPhone".into(), "iOS 26.1".into()));
     assert_eq!(code, "pairing_failed");
-    assert!(detail.contains("a code works once") && detail.contains("krowk devices add"), "{detail}");
+    assert!(detail.contains("a code works once") && detail.contains("krowk machines add"), "{detail}");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
@@ -313,7 +313,7 @@ fn r_e2e_3_a_malformed_code_sends_nothing_and_no_open_pairing_says_where_to_open
     // Another person's invite says so, pairing open or not.
     let foreign = krowk_ffi::PairingInvite { code: "K7QF-9M3X".into(), user_id: "someone-else".into(), device: "0123456789abcdef0123456789abcdef".into() };
     assert_eq!(refusal(account.join_invite(foreign, "Test iPhone".into(), "iOS 26.1".into())).0, "invite_other_account");
-    assert!(detail.contains("krowk devices add"), "{detail}");
+    assert!(detail.contains("krowk machines add"), "{detail}");
     let _ = std::fs::remove_dir_all(&r);
 }
 

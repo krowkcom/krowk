@@ -6,6 +6,7 @@ mod auth;
 mod billing;
 pub mod catalog;
 mod doctor;
+mod health;
 pub mod exit;
 pub mod flags;
 pub mod help;
@@ -15,12 +16,16 @@ mod budget;
 mod chain;
 #[cfg(feature = "harness")]
 mod devices;
+#[cfg(feature = "harness")]
+mod first_run;
 #[cfg(all(feature = "harness", unix))]
 mod delegate;
 #[cfg(all(feature = "harness", unix))]
 mod host;
 #[cfg(all(feature = "harness", unix))]
 mod accept;
+#[cfg(all(feature = "harness", unix))]
+mod power;
 mod machine;
 #[cfg(feature = "harness")]
 mod mcp;
@@ -396,6 +401,24 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["machines"] | ["machines", "list", ..] | ["hosts", ..] => synced::machines(ctx),
         #[cfg(all(feature = "harness", unix))]
+        ["machines", "add", ..] => pairing::add(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "remove", ..] => devices::remove(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "always-on", ..] => match rest(2).first().map(String::as_str) {
+            Some("on") => host::enable(ctx, true),
+            Some("off") => host::enable(ctx, false),
+            _ => Err(fail("missing_argument", "say on or off: `krowk machines always-on on` keeps this machine available while you're away, `off` stops that")),
+        },
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery"] => recovery::status(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "new", ..] => recovery::new_kit(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "check", ..] => recovery::check(ctx),
+        #[cfg(all(feature = "harness", unix))]
+        ["machines", "recovery", "discard-old", ..] => recovery::discard_old(ctx),
+        #[cfg(all(feature = "harness", unix))]
         ["relay"] => show_help(ctx, p),
         #[cfg(all(feature = "harness", unix))]
         ["relay", "serve", ..] => relay::serve(ctx),
@@ -426,7 +449,13 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         #[cfg(all(feature = "harness", unix))]
         ["sync", "take", ..] => synced::take(ctx, rest(2)),
         #[cfg(all(feature = "harness", unix))]
-        ["sync", "new", ..] => synced::new_session(ctx, rest(2)),
+        ["sync", "new", ..] => synced::new_session(ctx, rest(2), "sync new"),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "attach", ..] => synced::attach(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "take", ..] => synced::take(ctx, rest(2)),
+        #[cfg(all(feature = "harness", unix))]
+        ["sessions", "new", ..] => synced::new_session(ctx, rest(2), "sessions new"),
         #[cfg(feature = "harness")]
         ["worktrees"] | ["worktrees", "list", ..] => worktrees::list(ctx),
         #[cfg(feature = "harness")]
@@ -659,17 +688,17 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         // `sync new` takes its own flags and those every command takes, no
         // other: no `--permission-mode` above all, since the host runs the
         // session in its own default mode (R-HOST-4).
-        let new = cfg!(unix) && words.starts_with(&["sync", "new"]);
+        let new = cfg!(unix) && (words.starts_with(&["sync", "new"]) || words.starts_with(&["sessions", "new"]));
         if new {
-            let own = catalog::catalog("").find(&["sync".into(), "new".into()]).map(|c| c.flags).unwrap_or_default();
+            let own = catalog::catalog("").find(&[words[0].into(), "new".into()]).map(|c| c.flags).unwrap_or_default();
             let takes = |name: &str| own.iter().chain(&catalog::global_flags()[..catalog::CORE_FLAGS]).any(|f| f.name == name);
             if let Some(name) = f.given.iter().find(|n| !takes(n)) {
-                return Err(fail("bad_flag", format!("unknown flag --{name} for `krowk sync new`, which takes --host, --cwd and --model; the host runs the session in its own default permission mode")));
+                return Err(fail("bad_flag", format!("unknown flag --{name} for `krowk {} new`, which takes {}, --cwd and --model; the host runs the session in its own default permission mode", words[0], if words[0] == "sync" { "--host" } else { "--on" })));
             }
         }
-        for name in ["host", "cwd"] {
+        for name in ["host", "on", "cwd"] {
             if f.given.contains(name) && !new {
-                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk sync new`")));
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk sessions new` (`krowk sync new` for --host)")));
             }
         }
         for name in ["output-format", "model", "resume", "permission-mode", "toolset", "effort", "rollover", "image", "trust", "daemon", "sandbox"] {
@@ -702,9 +731,9 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk connect` and `krowk providers add`")));
             }
         }
-        let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]);
+        let kit = words.starts_with(&["sync", "init"]) || words.starts_with(&["sync", "recovery", "new"]) || words.starts_with(&["machines", "recovery", "new"]);
         if f.given.contains("save") && !kit {
-            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk sync recovery new`"));
+            return Err(fail("bad_flag", "`--save` is only a flag of `krowk sync init` and `krowk machines recovery new`"));
         }
         if f.given.contains("to") && !words.starts_with(&["worktrees", "apply"]) {
             return Err(fail("bad_flag", "`--to` is only a flag of `krowk worktrees apply`"));

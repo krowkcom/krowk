@@ -19,7 +19,7 @@ pub(super) fn keystore(ctx: &Ctx) -> Result<Keystore, Error> {
 #[cfg(unix)]
 pub(super) fn vintage_keys(ctx: &Ctx) -> Result<(Client, krowk_harness::vintage::Keys), Error> {
     let ks = keystore(ctx)?;
-    let not_set_up = || fail("not_set_up", "archived sessions are sealed under your user key, which this machine does not hold yet — set sync up with `krowk sync init`, or add this machine from one that syncs with `krowk devices add` and `krowk sync join`");
+    let not_set_up = || fail("not_set_up", "archived sessions are sealed under your user key, which this machine does not hold yet — set sync up with `krowk sync init`, or add this machine from one that syncs with `krowk machines add` and `krowk sync join`");
     let device = ks.device().map_err(|e| fail("keys_unreadable", e))?.ok_or_else(not_set_up)?.id();
     // The list first: a vintage is sealed only under the generation the
     // verified list leaves current, never under one a removed device holds.

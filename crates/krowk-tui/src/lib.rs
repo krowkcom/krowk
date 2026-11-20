@@ -40,6 +40,7 @@ pub mod child;
 pub mod clipboard;
 pub mod connect;
 pub mod link;
+pub mod newmachine;
 pub mod device;
 pub mod pr;
 pub mod presence;
@@ -211,10 +212,15 @@ pub struct Options {
     pub history_file: Option<PathBuf>,
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
-    /// Sync is set up here and the person's device list has no recovery
-    /// kit: the status line says so until one is made (canon, devices.md →
-    /// Skippable, with a reminder).
+    /// The person has fewer than two machines and no recovery kit: the
+    /// status line says so once per session (D5).
     pub no_recovery_kit: bool,
+    /// The most important problem with the setup, as `krowk doctor` would
+    /// name it with its fix, for the status line: none when all is well.
+    pub top_problem: Option<String>,
+    /// What the first machine's setup asks after the model step, with the
+    /// terminal given up to it (the always-on service, the recovery kit).
+    pub after_model_step: Option<AfterModelStep>,
     /// A newer release: a header row when it is due, and always a line in
     /// the details overlay (canon, harness.md → Update notice).
     pub update: Option<app::Update>,
@@ -250,6 +256,16 @@ pub struct Daemon {
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
 
+/// The setup steps that follow the first run's model step (`Options`).
+pub struct AfterModelStep {
+    /// Whether anything is left to ask: read first, so a machine with
+    /// nothing to ask never gives up its terminal.
+    pub due: Box<dyn Fn() -> bool>,
+    /// Asks it, on the terminal; says whether the recovery-kit reminder is
+    /// still due afterwards.
+    pub run: Box<dyn Fn() -> bool>,
+}
+
 /// Restores an archived session: what the person should know about the
 /// copy it came back from, or why it did not.
 pub type Restore = Arc<dyn Fn(&str) -> Result<Vec<String>, String> + Send + Sync>;
@@ -274,6 +290,9 @@ pub struct TrustAsk {
     /// Why it cannot be trusted for good (the home directory, `/`); then
     /// nothing is asked.
     pub refuses: Option<String>,
+    /// The files of it that changed since it was trusted, when it was:
+    /// named when it is asked about again.
+    pub changed: Vec<String>,
     /// Trusts it: for this run, and remembered when it can be — an error
     /// when it could not be.
     pub accept: Arc<dyn Fn() -> Option<String> + Send + Sync>,
@@ -515,6 +534,7 @@ async fn session(opts: Options) -> Outcome {
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
     app.no_recovery_kit = opts.no_recovery_kit;
+    app.top_problem = opts.top_problem;
     app.update = opts.update;
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();
@@ -603,9 +623,12 @@ async fn session(opts: Options) -> Outcome {
         looked_in: None,
         first_run: false,
         first_run_pending: false,
+        after_model_step: opts.after_model_step,
+        setup_due: false,
         host: &host,
         watch: host.watch(),
         sync_events: host.synced().and_then(|s| s.events()),
+        new_machine: newmachine::watch(opts.version.clone()),
         live: live.clone(),
         named: opts.model.is_some(),
         model: opts.model,
@@ -785,12 +808,20 @@ struct Ui<'h> {
     first_run: bool,
     /// The marks being checked decide whether the first-run card opens.
     first_run_pending: bool,
+    /// What the setup asks after the model step (`Options`).
+    after_model_step: Option<AfterModelStep>,
+    /// The model step is done: those questions are asked as soon as the
+    /// sign-in's thread has ended and the terminal is the TUI's to give up.
+    setup_due: bool,
     /// What the host says between turns: a backend's agents, and a turn it
     /// began by itself, which the TUI runs (`continue`).
     watch: broadcast::Receiver<StreamLine>,
     /// A synced session's news besides its lines: a host there or not, the
     /// path, a turn begun elsewhere.
     sync_events: Option<mpsc::UnboundedReceiver<synced::Event>>,
+    /// What the host daemon says of a new machine that signed in: its code,
+    /// and how adding it went (`newmachine`).
+    new_machine: mpsc::UnboundedReceiver<String>,
     model: Option<ModelRef>,
     /// The model the person named (`--model`, a `/model` switch): with the
     /// session's own, what a bare `/model` id stays beside. A routed
@@ -1135,6 +1166,20 @@ async fn recv(rx: &mut Option<mpsc::Receiver<StreamLine>>) -> StreamLine {
     }
 }
 
+/// What woke the loop besides the terminal and the stream: a synced
+/// session's event, or a line about a new machine that signed in.
+enum News {
+    Sync(Option<synced::Event>),
+    NewMachine(String),
+}
+
+async fn recv_news(sync: &mut Option<mpsc::UnboundedReceiver<synced::Event>>, machine: &mut mpsc::UnboundedReceiver<String>) -> News {
+    tokio::select! {
+        e = recv_sync(sync) => News::Sync(e),
+        l = newmachine::next(machine) => News::NewMachine(l),
+    }
+}
+
 /// The next of a synced session's events, or never; none once its link is
 /// gone.
 async fn recv_sync(rx: &mut Option<mpsc::UnboundedReceiver<synced::Event>>) -> Option<synced::Event> {
@@ -1342,7 +1387,7 @@ impl<'h> Ui<'h> {
                 },
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => self.on_watched(app, &line),
-                e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
+                n = recv_news(&mut self.sync_events, &mut self.new_machine) => self.on_news(app, n),
                 r = finish(&mut self.turn) => {
                     if self.on_turn_end(app, r, &mut reach, quitting).await {
                         return Ok(());
@@ -1967,6 +2012,7 @@ impl<'h> Ui<'h> {
                 None => {
                     let runs = krowk_harness::trust::what_runs(&t.root);
                     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+                    let has = if t.changed.is_empty() { has } else { format!("{has} You trusted it before; {} changed since.", t.changed.join(", ")) };
                     let q = format!("{m} runs {vendor}, which runs a repository's own hooks and MCP servers without asking. {has} Trust {}? `y` trusts it, `n` or `esc` does not", home_relative(&t.root).replace('`', "'"));
                     self.needs_trust = Some((m.clone(), q));
                     if self.held.is_some() {
@@ -2038,6 +2084,13 @@ impl<'h> Ui<'h> {
         app.on_line(line);
         self.follow(app, Turn::Watched);
         self.go_on(app);
+    }
+
+    fn on_news(&mut self, app: &mut App, n: News) {
+        match n {
+            News::Sync(e) => self.on_sync(app, e),
+            News::NewMachine(l) => app.notice(&l),
+        }
     }
 
     /// A synced session's news: the status line's host and path, a note,
@@ -3481,6 +3534,7 @@ impl<'h> Ui<'h> {
             return;
         }
         let (title, prefer) = match &job {
+            connect::Job::Connect(_) if first_run => ("Connect a model", None),
             connect::Job::Connect(_) => ("Connect a provider", None),
             // Alone, it starts on the session's instance.
             connect::Job::Disconnect(t) => ("Disconnect", t.is_none().then(|| self.model.as_ref().map(|m| m.instance.clone())).flatten()),
@@ -3577,6 +3631,9 @@ impl<'h> Ui<'h> {
                 }
                 self.auth = None;
                 self.finished(app, done, registry);
+                if std::mem::take(&mut self.setup_due) {
+                    self.setup(app, term)?;
+                }
             }
         }
         Ok(())
@@ -3636,6 +3693,9 @@ impl<'h> Ui<'h> {
                     notes.push("another account is added by name: /connect, then + Add account".into());
                 }
                 app.done(if c.renewed { "Renewed" } else { "Connected" }, &c.instance, &s.facts, &notes);
+                if first_run {
+                    self.after_model_step(app);
+                }
                 match krowk_harness::connect::default_model(c.definition.tag()) {
                     Some(model) if c.default_model.is_some() || stuck || first_run => self.adopt(app, ModelRef { instance: c.instance.clone(), model: model.to_string() }),
                     Some(model) => app.gap_say(&format!("/model {}/{model} runs it", c.instance)),
@@ -3660,6 +3720,26 @@ impl<'h> Ui<'h> {
             Err(e) if e.code == "selection_cancelled" => app.gap_say(if first_run { "nothing connected — /connect when you are ready" } else { &e.message }),
             Err(e) => app.error(&e.info()),
         }
+    }
+
+    /// The first-run flow's model step is done: the always-on step and the
+    /// recovery kit follow, asked on the terminal once `finished` is over.
+    fn after_model_step(&mut self, _app: &mut App) {
+        self.setup_due = self.after_model_step.as_ref().is_some_and(|s| (s.due)());
+    }
+
+    /// Those steps, with the terminal given up to them as a vendor's login
+    /// has it, and taken back after. Whether the recovery-kit reminder is
+    /// still due is then the status line's to say.
+    fn setup<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
+        let Some(steps) = self.after_model_step.take() else { return Ok(()) };
+        self.draw(app, term)?;
+        self.give_up(term)?;
+        let remind = (steps.run)();
+        self.take_back(app, term)?;
+        app.no_recovery_kit = remind;
+        app.touch();
+        Ok(())
     }
 
     /// An instance renamed: the session, and whatever it holds of the old

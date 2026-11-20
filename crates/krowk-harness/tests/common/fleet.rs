@@ -10,7 +10,7 @@
 //! Host A's keys are kept on disk, in the fleet's `home/.krowk`, as `krowk
 //! sync init` keeps a device's: so a `krowk` run with that home and the
 //! fleet's API *is* host A, and `Pairer` (ticket 76) answers a phone's
-//! pairing with the real `krowk devices add` rather than a copy of it.
+//! pairing with the real `krowk machines add` rather than a copy of it.
 //!
 //! The crate including it declares `mock` and `scratch` beside it.
 #![allow(dead_code)]
@@ -692,6 +692,7 @@ impl Hosting {
                 trusted,
                 mode_for: Box::new(|_| Ok(PermissionMode::Default)),
                 take: None,
+                introductions: None,
             }),
         };
         auto::Supervisor::spawn(c, turns)
@@ -966,7 +967,7 @@ fn synced(api: &krowk_api::Client, session: &str, keys: &UserKeys, chain: &Chain
 /// Host A's side of pairing (ticket 76), played by the real CLI: a debug
 /// `krowk` (`cargo build -p krowk --features harness`, never `--release`,
 /// whose build ignores the unattended approval) with host A's home and the
-/// fleet's API, logged in as A once and then run as `krowk devices add`, one
+/// fleet's API, logged in as A once and then run as `krowk machines add`, one
 /// at a time, saying yes to the device that joins (R-E2E-3).
 pub struct Pairer {
     bin: PathBuf,
@@ -1025,12 +1026,12 @@ impl Pairer {
     /// types the code, and its lines and exit status go to stderr.
     pub fn pair(&mut self) -> Result<String, String> {
         self.end();
-        let mut child = self.krowk(&["devices", "add"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let mut child = self.krowk(&["machines", "add"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
         let stderr = child.stderr.take().expect("piped");
         let (code, shown) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             for line in std::io::BufReader::new(stderr).lines().map_while(Result::ok) {
-                eprintln!("fleet: krowk devices add: {line}");
+                eprintln!("fleet: krowk machines add: {line}");
                 if let Some(c) = code_of(&line) {
                     let _ = code.send(c);
                 }
@@ -1045,32 +1046,32 @@ impl Pairer {
                 // Its own statement, so the lock is let go before the sleep.
                 let status = waited.lock().unwrap().try_wait();
                 match status {
-                    Ok(Some(s)) => eprintln!("fleet: krowk devices add ended: {s}"),
+                    Ok(Some(s)) => eprintln!("fleet: krowk machines add ended: {s}"),
                     Ok(None) => {
                         std::thread::sleep(Duration::from_millis(50));
                         continue;
                     }
-                    Err(e) => eprintln!("fleet: krowk devices add could not be waited for: {e}"),
+                    Err(e) => eprintln!("fleet: krowk machines add could not be waited for: {e}"),
                 }
                 break;
             }
             let _ = done.send(());
         });
         self.running = Some(Running { child, ended });
-        shown.recv_timeout(Duration::from_secs(30)).map_err(|_| "`krowk devices add` showed no code (its lines are above) — is KROWK_BIN a debug build, `cargo build -p krowk --features harness`?".to_string())
+        shown.recv_timeout(Duration::from_secs(30)).map_err(|_| "`krowk machines add` showed no code (its lines are above) — is KROWK_BIN a debug build, `cargo build -p krowk --features harness`?".to_string())
     }
 
-    /// `krowk devices remove <name>` as host A, saying yes (R-E2E-3): the
+    /// `krowk machines remove <name>` as host A, saying yes (R-E2E-3): the
     /// device is off the list, its keys are refused, and the user key
     /// rotates to the devices left. The running `devices add` is ended
     /// first: its code was for the list as it was, so the next pairing
     /// asks for a fresh one. Its lines, on failure, are the error.
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
         self.end();
-        let out = self.krowk(&["devices", "remove", name]).env("KROWK_TEST_ANSWERS", "y").output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let out = self.krowk(&["machines", "remove", name]).env("KROWK_TEST_ANSWERS", "y").output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
         let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        eprintln!("fleet: krowk devices remove: {said}");
-        if out.status.success() { Ok(()) } else { Err(format!("`krowk devices remove` as host A failed ({}): {said}", out.status)) }
+        eprintln!("fleet: krowk machines remove: {said}");
+        if out.status.success() { Ok(()) } else { Err(format!("`krowk machines remove` as host A failed ({}): {said}", out.status)) }
     }
 
     /// Ends the running `devices add`: ^C, on which it ends its pairing on

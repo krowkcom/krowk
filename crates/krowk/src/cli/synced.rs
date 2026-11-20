@@ -30,6 +30,7 @@
 //! address.
 
 use super::sync::{keyed_client, keystore};
+use super::sessions::SyncedRow;
 use super::Ctx;
 use krowk_api::{fail, Client, Error};
 use krowk_client::e2e::{DeviceId, SigningKey};
@@ -257,7 +258,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
         .map(|(h, online)| {
             let (origin, url) = here.as_ref().filter(|_| !h.this_machine)?;
             Some(match &h.announced {
-                None => "no announcement yet: run krowk host enable there".to_string(),
+                None => "no announcement yet: run krowk machines always-on on there".to_string(),
                 Some(_) if !online => "offline: start krowk's host service there".to_string(),
                 Some(a) => krowk_harness::sync::hosts::fix(&a.announcement, origin, url).unwrap_or_else(|| "ready".into()),
             })
@@ -276,7 +277,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
                     "capacity": a.and_then(|a| a.announcement.capacity.as_ref()), "repositories": a.map(|a| &a.announcement.repositories[..]).unwrap_or_default(), "accepting": a.is_some_and(|a| a.announcement.accepting), "here": ready})
             })
             .collect();
-        return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
+        return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened, "recoveryReminder": super::recovery::reminder_due(&k.chain)}).to_string());
     }
     let now = jiff::Timestamp::now();
     for (h, online) in hosts.iter().zip(&online) {
@@ -309,9 +310,16 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     if unopened > 0 {
         let _ = writeln!(ctx.io.stdout, "{unopened} host{} announcement could not be opened on this machine", if unopened == 1 { "'s" } else { "s'" });
     }
+    // D5: while the person has one machine and no kit.
+    if super::recovery::reminder_due(&k.chain) {
+        let _ = writeln!(ctx.io.stdout, "\n{}", krowk_tui::app::RECOVERY_REMINDER);
+    }
     if hosts.is_empty() {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
     }
+    // A new machine that signed in, and the code to type on it: last, as it
+    // waits on a person.
+    super::pairing::show_offer(ctx);
     Ok(())
 }
 
@@ -399,6 +407,38 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
         [s] => Ok(s.clone()),
         _ => Err(fail("bad_args", format!("`krowk sync {what}` takes one session id"))),
     }
+}
+
+/// What `krowk sessions` adds to this machine's own list: this machine's name
+/// on the device list, and the synced sessions it can open, newest first.
+/// `None` when sync is not set up here, so nothing is asked of the registry;
+/// `Err` is why the other machines' sessions could not be listed.
+pub(super) fn listing(ctx: &Ctx) -> Option<Result<(String, Vec<SyncedRow>), String>> {
+    let k = match keys(ctx) {
+        Ok(k) => k,
+        Err(e) if e.code() == "not_set_up" => return None,
+        Err(e) => return Some(Err(e.fix())),
+    };
+    let run = || -> Result<(String, Vec<SyncedRow>), Error> {
+        let api = signed(ctx, &k, "krowk sessions")?;
+        let (listed, _) = viewer::list(&api, &k.user, &k.chain)?;
+        let name_of = |id: &str| k.chain.devices().iter().find(|d| d.kind == krowk_client::device_chain::Kind::Device && d.id().to_string() == id).map(|d| super::sync::printable(&d.name));
+        let this = name_of(&k.device.to_string()).unwrap_or_else(|| "this machine".into());
+        let mut rows: Vec<SyncedRow> = listed
+            .iter()
+            .map(|s| SyncedRow {
+                id: s.id.clone(),
+                title: s.index.title.clone(),
+                cwd: s.index.cwd.clone(),
+                updated_ms: i64::try_from(s.index.updated_ms).unwrap_or(i64::MAX),
+                machine: s.holder.clone().or_else(|| s.index.host.as_ref().map(|h| h.device.clone())).and_then(|d| name_of(&d)),
+                hosted: s.holder.is_some(),
+            })
+            .collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.updated_ms));
+        Ok((this, rows))
+    };
+    Some(run().map_err(|e| e.fix()))
 }
 
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
@@ -619,7 +659,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     use krowk_harness::sync::{handoff, store};
     let session = one(args, "take")?;
     if !krowk_harness::log::valid_id(&session) {
-        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sync sessions` lists the synced ones")));
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists them")));
     }
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     current(ctx)?;
@@ -627,7 +667,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let api = Arc::new(signed(ctx, &k, "krowk sync take")?);
     let me = k.device.to_string();
     let read_log = |api: &Client| -> Result<Vec<serde_json::Value>, Error> {
-        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sync sessions` lists them")) } else { e })?;
+        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sessions` lists them")) } else { e })?;
         let key = store::open_session_key(&s, &session, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).map_err(|e| fail("sync_failed", e))?;
         let index = store::open_index(&key, &session, &s.sealed_index).map_err(|e| fail("sync_failed", e))?;
         Ok(store::attach(api, &key, &session, index, None).map_err(|e| fail("sync_failed", e))?.events)
@@ -759,19 +799,20 @@ const APPEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// instance for are refused here, from its announcement, before anything is
 /// sent; the host checks again, and its own refusal is said the same way.
 /// The permission mode is the host's (`--permission-mode` is refused).
-pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<(), Error> {
     use krowk_client::host_command::{self, HostAnswer, HostCommand};
     let prompt = args.join(" ");
-    let example = "e.g. krowk sync new --host desktop --cwd ~/code/app \"fix the tests\"";
+    let on = if form == "sync new" { "--host" } else { "--on" };
+    let example = format!("e.g. krowk {form} {on} desktop --cwd ~/code/app \"fix the tests\"");
     if prompt.trim().is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` takes the session's first prompt — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` takes the session's first prompt — {example}")));
     }
     let (asked, dir) = (ctx.f.host.trim().to_string(), ctx.f.cwd.trim().to_string());
     if asked.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --host, the machine to start the session on (`krowk machines` lists yours) — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` needs {on}, the machine to start the session on (`krowk machines` lists yours) — {example}")));
     }
     if dir.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
     }
     let here = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let cwd = absolute(&dir, &ctx.env("HOME"), &here)?;
@@ -813,7 +854,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
                 std::thread::sleep(ANSWER_EVERY * tries);
             }
             // The last try may have landed with its answer lost.
-            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sync sessions will list it", e.code()))),
+            Err(e) if unreachable(&e) => return Err(fail(&e.code(), format!("the start could not be sent to {name} ({}) — it may still have reached it and start the session; krowk sessions will list it", e.code()))),
             Err(e) => return Err(e),
         }
     }
@@ -830,7 +871,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             Err(e) => return Err(e),
         }
         if std::time::Instant::now() >= deadline {
-            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; krowk sync sessions will list it")));
+            return Err(fail("host_silent", format!("{name} didn't answer within 30 s — it may still start the session; krowk sessions will list it")));
         }
         std::thread::sleep(ANSWER_EVERY);
     };
@@ -850,7 +891,7 @@ pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
             Ok(_) => break,
             Err(e) if (e.status == 404 || unreachable(&e)) && std::time::Instant::now() < deadline => std::thread::sleep(ANSWER_EVERY),
             Err(e) if e.status == 404 => {
-                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `krowk sync attach {session}` follows it once it does")));
+                return Err(fail("no_session", format!("{name} started session {session}, but it has not reached the registry within 10 s — `krowk sessions attach {session}` follows it once it does")));
             }
             Err(e) => return Err(e),
         }
@@ -928,7 +969,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
 
 /// The refusal of a host that is offline, `seen` saying since when.
 fn offline(name: &str, seen: &str) -> Error {
-    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk host enable", super::sync::printable(name)))
+    fail("host_offline", format!("{} is offline ({seen}): start krowk there, or krowk machines always-on on", super::sync::printable(name)))
 }
 
 /// `dir` as the host is asked for it: `~` expanded to `home`, made absolute
@@ -984,7 +1025,7 @@ pub(super) fn resume(ctx: &mut Ctx) -> Option<Result<(), Error>> {
     // Said plainly, on stderr, where no TUI draws it: what follows is
     // stream-json, as `krowk sync attach` prints it.
     if !on_a_terminal(ctx) {
-        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sync attach`)");
+        let _ = writeln!(ctx.io.stderr, "krowk: session {id} runs on another machine — following it through sync as stream-json (`krowk sessions attach`)");
     }
     Some(attach(ctx, &[id]))
 }
@@ -1036,8 +1077,8 @@ mod tests {
         a.announcement.instances.retain(|i| !i.ready);
         assert_eq!(refused(Some(&a), "/srv/x", ""), ("no_ready_model".into(), "desk has no ready model: openai — set the key of openai".into()));
         a.online = false;
-        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start krowk there, or krowk host enable".into()));
-        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start krowk there, or krowk host enable");
+        assert_eq!(refused(Some(&a), "/srv/x", ""), ("host_offline".into(), "desk is offline (last seen 12m ago): start krowk there, or krowk machines always-on on".into()));
+        assert_eq!(refused(None, "/srv/x", "").1, "desk is offline (not announced): start krowk there, or krowk machines always-on on");
     }
 
     /// R-HOST-4: `--host` names a machine on the list by its name in any

@@ -15,6 +15,7 @@ pub mod fleet;
 pub mod handoff;
 pub mod host;
 pub mod hosts;
+pub mod introduce;
 pub mod mdns;
 pub mod placement;
 pub mod store;

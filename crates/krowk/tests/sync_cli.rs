@@ -994,7 +994,7 @@ fn sync_status(m: &Machine, env: &[(&str, &str)]) -> serde_json::Value {
 }
 
 /// R-SYNC-3, R-HOST-2 (ticket 95): A runs a turn in its host daemon with no
-/// sync command — kept up as `krowk host enable` keeps it, with no idle
+/// sync command — kept up as `krowk machines always-on on` keeps it, with no idle
 /// exit — and B lists the session within 5 seconds of the command's start,
 /// then follows a prompt it sends to its result. `krowk sync status` on A
 /// counts the bridge, `krowk sync host` of the session says it is synced
@@ -1168,7 +1168,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
 }
 
 /// R-HOST-3, R-NET-4: A's host daemon runs with sync set up and no
-/// Tailscale anywhere; B's `krowk hosts --json` lists A as announced and
+/// Tailscale anywhere; B's `krowk machines --json` lists A as announced and
 /// online, with its instances and its trusted repository, and the text
 /// says so under A's line.
 #[test]
@@ -1225,7 +1225,7 @@ fn serving(w: &World) -> (Machine, Machine, Running) {
     (a, b, serve)
 }
 
-/// A's row in B's `krowk hosts --json`, once it passes `want`.
+/// A's row in B's `krowk machines --json`, once it passes `want`.
 fn a_as_b_sees_it(b: &Machine, a: &Machine, want: impl Fn(&serde_json::Value) -> bool) -> serde_json::Value {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
@@ -1287,6 +1287,64 @@ fn r_host_4_sync_new_starts_a_session_on_a_and_b_follows_it_live() {
     assert_eq!(a.session(), session);
 }
 
+/// R-EASE-10: `krowk sessions new --on` starts a session on A as `sync new
+/// --host` does; `krowk sessions` on B then lists it after B's own, under A's
+/// name, as data too, and `sessions attach` follows it.
+#[test]
+fn r_ease_10_sessions_lists_every_machine_and_new_on_and_attach_work() {
+    let w = World::new("easenew");
+    let (a, b, _serve) = serving(&w);
+    let repo = a.repo.display().to_string();
+    let mut view = Running::spawn(b.command(&["sessions", "new", "--on", "A", "--cwd", &repo, "--json", "say hi"]));
+    let started = view.heard_within("the turn", true, Duration::from_secs(45), |v| v["type"] == "turn.started");
+    view.until("the turn's end", |v| v["type"] == "turn.completed");
+    let session = started["sessionId"].as_str().unwrap().to_string();
+    drop(view);
+
+    // A's automatic sync takes the session up to the registry shortly after;
+    // a loaded runner is given room.
+    let deadline = Instant::now() + Duration::from_secs(60);
+    let listed = loop {
+        let out = b.command(&["sessions", "--json"]).stdin(Stdio::null()).output().unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap_or_default();
+        if let Some(s) = v["data"]["sessions"].as_array().and_then(|l| l.iter().find(|s| s["id"] == session.as_str())) {
+            break s.clone();
+        }
+        assert!(Instant::now() < deadline, "B never listed {session}: {v}");
+        std::thread::sleep(Duration::from_millis(250));
+    };
+    assert_eq!((listed["machine"].as_str(), listed["this_machine"].as_bool(), listed["synced"].as_bool(), listed["directory"].as_str()), (Some("a"), Some(false), Some(true), Some(repo.as_str())), "{listed}");
+    let out = b.command(&["sessions", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("Machine") && text.lines().any(|l| l.contains(&session) && l.split_whitespace().any(|w| w == "a")), "{text}");
+
+    let mut view = Running::spawn(b.command(&["sessions", "attach", &session, "--json"]));
+    view.heard_within("the host", true, Duration::from_secs(45), |v| v["type"] == "sync.host" && v["present"] == true);
+}
+
+/// R-EASE-10: the `sync` forms and `sessions sync` work as before and are
+/// left out of the help lists; `help --all` still has them.
+#[test]
+fn r_ease_10_the_old_forms_stay_but_are_hidden() {
+    let w = World::new("easehid");
+    let b = w.machine("b");
+    let help = |args: &[&str]| String::from_utf8_lossy(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
+    let (sessions, sync, all) = (help(&["help", "sessions"]), help(&["help", "sync"]), help(&["help", "--all"]));
+    let has = |text: &str, usage: &str| text.lines().any(|l| l.trim_start().starts_with(usage));
+    assert!(has(&sessions, "attach <id>") && has(&sessions, "take <id>") && has(&sessions, "new --on"), "{sessions}");
+    assert!(!sessions.contains("krowk sessions sync") && !has(&sessions, "sync [--no-network]"), "{sessions}");
+    assert!(!has(&sync, "sessions") && !has(&sync, "attach") && !has(&sync, "take") && !has(&sync, "new") && has(&sync, "status"), "{sync}");
+    for old in ["sync sessions", "sync attach", "sync take", "sync new", "sessions sync"] {
+        assert!(has(&all, old), "{old} is in help --all: {all}");
+    }
+    // Still routed: refused for want of keys or a session id, not as unknown.
+    for args in [&["sync", "sessions"][..], &["sync", "attach", "x"], &["sync", "take", "x"], &["sync", "new", "--host", "a", "--cwd", "/x", "hi"], &["sessions", "attach", "x"], &["sessions", "take", "x"], &["sessions", "new", "--on", "a", "--cwd", "/x", "hi"]] {
+        let out = b.command(args).stdin(Stdio::null()).output().unwrap();
+        let err = String::from_utf8_lossy(&out.stderr);
+        assert!(!err.contains("unknown command") && !err.contains("unknown flag"), "{args:?}: {err}");
+    }
+}
+
 /// R-HOST-4: A stopped cleanly takes its presence with it. B's `sync new`
 /// says A is offline and how to bring it up, and sends nothing.
 #[test]
@@ -1308,7 +1366,7 @@ fn r_host_4_an_offline_host_is_refused_and_nothing_is_sent() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let err = sync_new_refused(&w, &b, &["--host", "a", "--cwd", &a.repo.display().to_string(), "say hi"]);
-    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk host enable"), "{err}");
+    assert!(err.contains("a is offline (") && err.contains("): start krowk there, or krowk machines always-on on"), "{err}");
     let err = sync_new_refused(&w, &b, &["--host", "nobody", "--cwd", "/x", "say hi"]);
     assert!(err.contains("no machine named 'nobody' — krowk machines lists yours"), "{err}");
 }
@@ -1629,7 +1687,7 @@ fn alloc_03_krowk_machines_lists_each_machine_and_hosts_is_its_alias() {
         let v: serde_json::Value = serde_json::from_slice(&b.command(args).stdin(Stdio::null()).output().unwrap().stdout).unwrap();
         v["machines"].as_array().unwrap().iter().map(|m| (m["name"].clone(), m.as_object().unwrap().keys().cloned().collect::<Vec<_>>())).map(|(n, k)| serde_json::json!([n, k])).collect()
     };
-    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk hosts is krowk machines");
+    assert_eq!(shape(&["hosts", "--json"]), shape(&["machines", "--json"]), "krowk machines is krowk machines");
     let human = String::from_utf8_lossy(&b.command(&["machines", "--format", "human"]).stdin(Stdio::null()).output().unwrap().stdout).into_owned();
     assert!(human.lines().any(|l| l.starts_with("a ") && l.contains("accepting")) && human.contains("ready"), "{human}");
 }

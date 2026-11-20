@@ -29,9 +29,68 @@ stdout:
     "status": "skip",
     "message": "this build runs no model"
   },
-  "context": {}
+  "context": {},
+  "checks": [
+    {
+      "name": "account",
+      "status": "fail",
+      "message": "Not signed in to krowk",
+      "fix": "krowk login"
+    },
+    {
+      "name": "machine",
+      "status": "skip",
+      "message": "This machine is not registered for sync: there is no account"
+    },
+    {
+      "name": "always_on",
+      "status": "skip",
+      "message": "The always-on service is not available on this platform"
+    },
+    {
+      "name": "providers",
+      "status": "skip",
+      "message": "this build runs no model"
+    },
+    {
+      "name": "trust",
+      "status": "skip",
+      "message": "This directory is not in a repository"
+    },
+    {
+      "name": "recovery_kit",
+      "status": "skip",
+      "message": "No device list here to hold a recovery kit"
+    },
+    {
+      "name": "plan",
+      "status": "skip",
+      "message": "The plan is not known: the key was not checked"
+    },
+    {
+      "name": "store",
+      "status": "pass",
+      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    },
+    {
+      "name": "pricing",
+      "status": "warn",
+      "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
+      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
+      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    }
+  ]
 }
-exit: 0
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "doctor_failed",
+    "fix": "1 check failed — each ✗ line says what fixes it",
+    "retryable": false
+  }
+}
+exit: 1
 
 $ krowk doctor --format human
 stdout:
@@ -48,9 +107,19 @@ Runs            no
 Credentials     <scratch>/home/.krowk/credentials.json
 Config          global <scratch>/home/.krowk/config.json (absent)
 
+✗ Not signed in to krowk — krowk login
+- This machine is not registered for sync: there is no account
+- The always-on service is not available on this platform
+- Providers     This build runs no model
+- This directory is not in a repository
+- No device list here to hold a recovery kit
+- The plan is not known: the key was not checked
 ✓ Store         Healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)
 ! Pricing       No price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build
                 Run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day.
-- Providers     This build runs no model
-exit: 0
+stderr:
+✗ 1 check failed.
+  Each ✗ line says what fixes it.
+  Code: doctor_failed
+exit: 1
 

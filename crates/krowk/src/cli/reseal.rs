@@ -18,7 +18,7 @@
 //!    through what is left.
 //!
 //! The aside is never deleted on its own: the old sessions of a workspace
-//! not yet gone through need it. `krowk sync recovery discard-old` drops it,
+//! not yet gone through need it. `krowk machines recovery discard-old` drops it,
 //! when the person says so.
 
 use super::chain::{keystore_at, Me};

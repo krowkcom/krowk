@@ -71,6 +71,10 @@ pub struct Update {
 }
 use look::{bold, error as red, warning as yellow};
 
+/// The status line's reminder while a person has one machine and no recovery
+/// kit (D5), said once per session.
+pub const RECOVERY_REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. krowk machines recovery.";
+
 /// Between the status line's items.
 const BAR_SEP: &str = " | ";
 
@@ -85,6 +89,9 @@ enum Rank {
     Subagents,
     Tasks,
     Cost,
+    /// Longer than the cost, and dropped before the model is cut short: a
+    /// narrow row names the model, and the details overlay has the rest.
+    Problem,
     /// Cut short rather than dropped.
     Model,
     Kit,
@@ -858,8 +865,12 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
-    /// Sync is set up and there is no recovery kit (`Options`).
+    /// The person has fewer than two machines and no recovery kit, and the
+    /// session has not said so yet (`Options`).
     pub no_recovery_kit: bool,
+    /// The most important problem with the setup and its fix, in plain
+    /// colour (`Options::top_problem`).
+    pub top_problem: Option<String>,
     /// A newer krowk release (`Options::update`).
     pub update: Option<Update>,
     /// The session runs on another machine, followed through sync: whether
@@ -1105,6 +1116,7 @@ impl App {
             offline: None,
             device: None,
             no_recovery_kit: false,
+            top_problem: None,
             update: None,
             sync: None,
             follow: crate::pr::Follow::default(),
@@ -3392,10 +3404,15 @@ impl App {
                 StatusItem::Help => {}
             }
         }
-        // Whatever the list says, until there is a kit: losing every device
-        // without one loses every session.
+        // While the person has one machine and no kit, until the first prompt
+        // of the session is sent (D5): losing the machine loses every session.
         if self.no_recovery_kit {
-            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None, tail: None });
+            first.push(Part { rank: Rank::Kit, text: RECOVERY_REMINDER.into(), style: yellow(), url: None, mark: None, tail: None });
+        }
+        // Whatever the list says: the one thing most worth fixing, in the
+        // colour of the rest of the line.
+        if let Some(problem) = &self.top_problem {
+            first.push(Part { rank: Rank::Problem, text: problem.clone(), style: Style::default(), url: None, mark: None, tail: None });
         }
         // Whatever the list says: where a synced session's host is decides
         // whether a prompt runs now or waits.
@@ -3965,6 +3982,8 @@ impl App {
 
     /// A turn has started: `Command::Prompt` is on its way.
     pub fn start_turn(&mut self, now: Instant) {
+        // Said once per session: it has been on screen since the first frame.
+        self.no_recovery_kit = false;
         self.answer.clear();
         self.blocks.clear();
         self.block = None;
@@ -5314,13 +5333,28 @@ mod tests {
         assert_eq!(a.status_bar(), "Haiku (claude:work) | ? help\n$0.00");
     }
 
-    /// D6: until a kit exists, the status line says there is none.
+    /// D9: the status line names the one problem, and nothing when all pass.
     #[test]
-    fn d6_the_status_line_says_there_is_no_recovery_kit_until_there_is_one() {
+    fn d9_the_status_line_shows_the_top_problem_and_nothing_when_all_pass() {
+        let mut a = app();
+        assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
+        a.top_problem = Some("Not signed in to krowk — krowk login".into());
+        let bar = a.status_bar();
+        assert!(bar.contains("Not signed in to krowk — krowk login"), "{bar}");
+        a.top_problem = None;
+        assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
+    }
+
+    /// D5: the reminder is in the status line from the first frame and is
+    /// gone once the session's first prompt is sent.
+    #[test]
+    fn d5_the_status_line_reminds_once_per_session_of_the_missing_recovery_kit() {
         let mut a = app();
         assert!(!a.status_bar().contains("no recovery kit"));
         a.no_recovery_kit = true;
-        assert!(a.status_bar().contains("no recovery kit"), "{}", a.status_bar());
+        assert!(a.status_bar().contains(RECOVERY_REMINDER), "{}", a.status_bar());
+        a.start_turn(Instant::now());
+        assert!(!a.status_bar().contains("no recovery kit"), "{}", a.status_bar());
     }
 
     #[test]

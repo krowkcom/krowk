@@ -162,7 +162,10 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
+        #[cfg(unix)]
         agents: AgentsConfig { placer: Some(super::synced::placer_source(&ctx.f)), ..agents_config(ctx.io.env) },
+        #[cfg(not(unix))]
+        agents: agents_config(ctx.io.env),
         session,
     };
     // R-PRES-6: the run's record, on stderr when that is a terminal: working
@@ -541,9 +544,9 @@ fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run krowk -p from a repository of its own.")));
         }
         if !ask {
-            return Err(trust::untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run krowk -p there once on a terminal and answer its prompt."));
+            return Err(store.untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run krowk -p there once on a terminal and answer its prompt."));
         }
-        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(trust::untrusted(root, "Nothing was run.")) }
+        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(store.untrusted(root, "Nothing was run.")) }
     })
 }
 
@@ -564,6 +567,8 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
         v => format!("{v} runs a repository's own hooks and MCP servers without asking."),
     };
     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+    let changed = store.changes(root);
+    let has = if changed.is_empty() { has } else { format!("{has} You trusted it before; {} changed since.", changed.join(", ")) };
     let title = format!("Trust {}?", krowk_tui::home_relative(root));
     if !krowk_tui::card::confirm(&title, &[why, has], "trust and remember", "not now") {
         return false;
@@ -598,7 +603,7 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
     // question nobody sees, answered by the next key.
     let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
     // Yes now, or later in the TUI, when a routed model lands on a backend.
-    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor)));
+    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor) && !store.trusts(&asked)));
     let (s2, a2, acc2, t2) = (store.clone(), asked.clone(), accepted.clone(), trust_as.clone());
     let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| {
         let root = t2.root(root);
@@ -610,9 +615,14 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         root: asked.clone(),
         trusted: Arc::new(move || s3.trusts(&a3) || acc3.load(Ordering::SeqCst)),
         refuses: store.refuses(&asked),
+        changed: store.changes(&asked),
         accept: Arc::new(move || {
-            acc4.store(true, Ordering::SeqCst);
-            s4.trust(&a4).err().map(|e| format!("trusted for this run, but not remembered: {e}"))
+            // A yes the list remembers is the list's to answer from, so a
+            // later change to the repository asks again; only one it could
+            // not remember holds for the run.
+            let err = s4.trust(&a4).err();
+            acc4.store(err.is_some(), Ordering::SeqCst);
+            err.map(|e| format!("trusted for this run, but not remembered: {e}"))
         }),
     };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
@@ -625,7 +635,7 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         }
         // `/trust` trusts the session's own repository, and only that.
         let how = if *root == asked { "Nothing was run — type /trust to trust it after all." } else { "Nothing was run — start krowk again there and answer its trust prompt." };
-        Err(trust::untrusted(root, how))
+        Err(store.untrusted(root, how))
     });
     (gate, trusted, ask)
 }

@@ -279,7 +279,7 @@ pass "both binaries landed in $BIN"
 cmp -s "$BIN/krowk" "$WORK/full/krowk" || { cat "$WORK/install.log"; fail "R-PKG-3: a workstation install did not get the full build"; }
 grep -q "(full build)" "$WORK/install.log" || fail "the installer did not say which build it installed"
 pass "R-PKG-3: a workstation install gets the full build"
-grep -q "Open krowk's agent" "$WORK/install.log" || { cat "$WORK/install.log"; fail "a full install did not say bare krowk opens the agent"; }
+grep -q "connect a model and open the agent" "$WORK/install.log" || { cat "$WORK/install.log"; fail "a full install did not say bare krowk opens the agent"; }
 pass "a full install says bare krowk opens the agent"
 
 "$BIN/krowk" --version >/dev/null || fail "the installed krowk does not run"

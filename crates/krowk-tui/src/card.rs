@@ -31,6 +31,63 @@ pub fn confirm(title: &str, body: &[String], yes: &str, no: &str) -> bool {
     answer
 }
 
+/// What a person pressed at a card of keys.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pressed {
+    /// The key named `Enter` in the options.
+    Enter,
+    /// One of the options' single-character keys, lowercase.
+    Key(char),
+    /// Escape: not now.
+    Escape,
+}
+
+/// Draws `title` over one line per option — `keys` names the key, `what`
+/// says what it does — and waits for one of them: `"Enter"` or a single
+/// character. Any other key is ignored; Escape is its own answer; Ctrl-C
+/// leaves krowk, as it would at any prompt. What was typed before the card
+/// was drawn is thrown away. The options stay on screen, as the trust card's
+/// answer does.
+pub fn pick(title: &str, options: &[(&str, &str)]) -> Pressed {
+    let raw = crossterm::terminal::enable_raw_mode().is_ok();
+    while raw && event::poll(std::time::Duration::ZERO).unwrap_or(false) {
+        let _ = event::read();
+    }
+    let mut err = std::io::stderr();
+    let _ = write!(err, "\r\n  \x1b[1;35m{}\x1b[0m\r\n\r\n", clean(title));
+    for (keys, what) in options {
+        let _ = write!(err, "  \x1b[1m[{}]\x1b[0m \x1b[2m{}\x1b[0m\r\n", clean(keys), clean(what));
+    }
+    let _ = err.flush();
+    let pressed = if raw { read_key(options) } else { Pressed::Escape };
+    let _ = crossterm::terminal::disable_raw_mode();
+    let _ = write!(err, "\r\n");
+    let _ = err.flush();
+    pressed
+}
+
+fn read_key(options: &[(&str, &str)]) -> Pressed {
+    let wants = |c: char| options.iter().any(|(k, _)| k.chars().eq(std::iter::once(c)));
+    let enter = options.iter().any(|(k, _)| *k == "Enter");
+    loop {
+        match event::read() {
+            Ok(Event::Key(k)) if k.kind != KeyEventKind::Release => match k.code {
+                KeyCode::Char('c') if k.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let _ = crossterm::terminal::disable_raw_mode();
+                    let _ = write!(std::io::stderr(), "\r\n");
+                    std::process::exit(130);
+                }
+                KeyCode::Enter if enter => break Pressed::Enter,
+                KeyCode::Esc => break Pressed::Escape,
+                KeyCode::Char(c) if (k.modifiers - KeyModifiers::SHIFT).is_empty() && wants(c.to_ascii_lowercase()) => break Pressed::Key(c.to_ascii_lowercase()),
+                _ => {}
+            },
+            Ok(_) => {}
+            Err(_) => break Pressed::Escape,
+        }
+    }
+}
+
 fn read_answer() -> bool {
     loop {
         match event::read() {

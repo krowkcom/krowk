@@ -403,7 +403,7 @@ impl Proc {
     /// Waits until the fleet has logged a `devices add` child ending, with
     /// exit status 0 when `ok`, else with any other.
     fn ended(&self, ok: bool) {
-        const ENDED: &str = "fleet: krowk devices add ended: ";
+        const ENDED: &str = "fleet: krowk machines add ended: ";
         let deadline = Instant::now() + Duration::from_secs(30);
         while !self.err.lock().unwrap().lines().filter_map(|l| l.strip_prefix(ENDED)).any(|s| (s == "exit status: 0") == ok) {
             assert!(Instant::now() < deadline, "no `devices add` ended {}; stderr:\n{}", if ok { "0" } else { "failing" }, self.err.lock().unwrap());
@@ -511,7 +511,7 @@ fn said(out: &std::process::Output) -> String {
 }
 
 /// R-E2E-3, R-IOS-15: the fake fleet approves a phone through the real
-/// `krowk devices add`. Started with `--pair`, it prints a code before
+/// `krowk machines add`. Started with `--pair`, it prints a code before
 /// `ready`; a device signed in through its `approve` URL types it into
 /// `krowk sync join` and joins; A's `devices add` exits 0; and the person's
 /// device list holds host A and the phone.
@@ -605,7 +605,7 @@ fn r_ios_7_r_ios_15_r_hand_4_a_post_to_sessions_url_hosts_a_session_release_lets
 
 /// R-E2E-3, R-IOS-15: a simulator's test removes its phone from host A's
 /// devices through the fleet's control: a POST naming it to
-/// `devices_url/remove` runs the real `krowk devices remove` as host A and
+/// `devices_url/remove` runs the real `krowk machines remove` as host A and
 /// answers `removed` once the list no longer names it; the phone's key is
 /// refused from then on, and a fresh code still pairs the next phone.
 #[test]
