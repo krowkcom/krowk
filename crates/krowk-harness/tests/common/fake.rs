@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 /// The fake itself.
 pub fn binary() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/claude/fake-claude")
+    // Through the workspace, so a test of another crate including this file finds it too.
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude")
 }
 
 /// A signed-in Claude Code account under `root/<dir>` whose sessions play
