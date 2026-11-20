@@ -82,6 +82,20 @@ pub(super) fn ask(ctx: &mut Ctx, question: &str) -> Result<bool, Error> {
     inquire::Confirm::new(question).prompt().map_err(|_| fail("selection_cancelled", "not answered, so nothing was done"))
 }
 
+/// One key from a card of keys, as a string: `""` for Enter, the key for a
+/// character, `"esc"` for Escape. The debug build's test suite answers with
+/// the next stand-in answer instead.
+pub(super) fn ask_key(ctx: &mut Ctx, title: &str, options: &[(&str, &str)]) -> String {
+    if let Some(a) = test_answer(ctx) {
+        return a;
+    }
+    match krowk_tui::card::pick(title, options) {
+        krowk_tui::card::Pressed::Enter => String::new(),
+        krowk_tui::card::Pressed::Key(c) => c.to_string(),
+        krowk_tui::card::Pressed::Escape => "esc".into(),
+    }
+}
+
 /// A line from the person.
 pub(super) fn ask_line(ctx: &mut Ctx, prompt: &str) -> Result<String, Error> {
     if let Some(a) = test_answer(ctx) {

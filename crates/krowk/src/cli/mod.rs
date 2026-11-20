@@ -24,6 +24,8 @@ mod delegate;
 mod host;
 #[cfg(all(feature = "harness", unix))]
 mod accept;
+#[cfg(all(feature = "harness", unix))]
+mod power;
 mod machine;
 #[cfg(feature = "harness")]
 mod mcp;

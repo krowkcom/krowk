@@ -158,13 +158,18 @@ pub(super) fn trusted(t: &Trust) -> Check {
     }
 }
 
-/// D5's rule: fewer than two machines (phones are devices, not machines) and
-/// no kit on the list. // ticket 02: the same rule as `recovery::reminder_due`;
-/// once that merges, `Machine::here` reads `kit` and `machines` through it.
+/// D5's rule, the one place it is decided (`recovery::reminder_due` reads a
+/// device list through it, for `krowk machines` and the TUI's status line):
+/// remind while there are fewer than two machines (phones are devices, not
+/// machines) and no kit on the list.
+pub(super) fn reminder_due(machines: usize, kit: bool) -> bool {
+    !kit && machines < 2
+}
+
 pub(super) fn recovery_kit(machine: &Machine) -> Check {
     match machine {
         Machine::Registered { kit: true, .. } => Check::new("recovery_kit", Status::Pass, "Recovery kit is on your device list", None),
-        Machine::Registered { machines, .. } if *machines >= 2 => Check::new("recovery_kit", Status::Pass, format!("No recovery kit, but you have {machines} machines to stand in for each other"), None),
+        Machine::Registered { machines, kit, .. } if !reminder_due(*machines, *kit) => Check::new("recovery_kit", Status::Pass, format!("No recovery kit, but you have {machines} machines to stand in for each other"), None),
         Machine::Registered { .. } => Check::new("recovery_kit", Status::Fail, "One machine, no recovery kit: losing it loses your sessions", Some("krowk machines recovery")),
         _ => Check::new("recovery_kit", Status::Skip, "No device list here to hold a recovery kit", None),
     }
@@ -252,7 +257,6 @@ impl Machine {
     /// Read from the keys this machine keeps — never the network.
     #[cfg(feature = "harness")]
     pub(super) fn here(ctx: &Ctx, signed_in: bool) -> Machine {
-        use krowk_client::device_chain::Kind;
         if !signed_in {
             return Machine::NotApplicable("no account");
         }
@@ -271,7 +275,7 @@ impl Machine {
                 None => Machine::Removed,
                 Some(d) => Machine::Registered {
                     name: super::machine::printable(&d.name),
-                    machines: chain.devices().iter().filter(|d| d.kind == Kind::Device && !matches!(d.os.to_ascii_lowercase().as_str(), "ios" | "ipados" | "android")).count(),
+                    machines: super::recovery::machines_on(&chain),
                     kit: chain.recovery().is_some(),
                 },
             },

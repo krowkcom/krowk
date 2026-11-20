@@ -37,6 +37,21 @@ the versions are the `v*` tags a release is cut from. Entries land under
   added to them, which is not built yet and says so. Nothing changes without a
   terminal.
 
+- **The first machine offers to stay available, then the recovery kit.** After
+  the model step, "Keep this machine available while you're away? It syncs your
+  sessions and takes work from your other machines." installs the always-on host
+  service on yes (what `krowk host enable` does). It defaults to yes on a desktop
+  and no on a laptop, a laptop being a machine with a battery (a `BAT*` entry on
+  Linux, a power source on macOS, the system power status on Windows). Then the
+  recovery kit is offered once with what it is for: 12 words that stand in for a
+  device of yours, the only way back in if every device is lost or stolen.
+  `[Enter]` says they are saved, `[s]` puts it off. While you have fewer than two
+  machines (a phone does not count) and no kit, `krowk machines` and the TUI's
+  status line, once per session, say "One machine, no recovery kit: losing it
+  loses your sessions. krowk machines recovery."; with two machines the reminder
+  stops. The status line used to say "no recovery kit" for every list without
+  one.
+
 - **A new machine can ask your other machines for a pairing.** Once signed in
   to an account that already has devices, a machine that is not on the list can
   record a request with its proposed name and OS. It opens nothing and carries

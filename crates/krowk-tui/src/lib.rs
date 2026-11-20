@@ -212,13 +212,15 @@ pub struct Options {
     pub history_file: Option<PathBuf>,
     /// Lines shown above the first prompt: config warnings and the like.
     pub notices: Vec<String>,
-    /// Sync is set up here and the person's device list has no recovery
-    /// kit: the status line says so until one is made (canon, devices.md →
-    /// Skippable, with a reminder).
+    /// The person has fewer than two machines and no recovery kit: the
+    /// status line says so once per session (D5).
     pub no_recovery_kit: bool,
     /// The most important problem with the setup, as `krowk doctor` would
     /// name it with its fix, for the status line: none when all is well.
     pub top_problem: Option<String>,
+    /// What the first machine's setup asks after the model step, with the
+    /// terminal given up to it (the always-on service, the recovery kit).
+    pub after_model_step: Option<AfterModelStep>,
     /// A newer release: a header row when it is due, and always a line in
     /// the details overlay (canon, harness.md → Update notice).
     pub update: Option<app::Update>,
@@ -253,6 +255,16 @@ pub struct Daemon {
 }
 
 pub type Project = Arc<dyn Fn(&str) + Send + Sync>;
+
+/// The setup steps that follow the first run's model step (`Options`).
+pub struct AfterModelStep {
+    /// Whether anything is left to ask: read first, so a machine with
+    /// nothing to ask never gives up its terminal.
+    pub due: Box<dyn Fn() -> bool>,
+    /// Asks it, on the terminal; says whether the recovery-kit reminder is
+    /// still due afterwards.
+    pub run: Box<dyn Fn() -> bool>,
+}
 
 /// Restores an archived session: what the person should know about the
 /// copy it came back from, or why it did not.
@@ -608,6 +620,8 @@ async fn session(opts: Options) -> Outcome {
         looked_in: None,
         first_run: false,
         first_run_pending: false,
+        after_model_step: opts.after_model_step,
+        setup_due: false,
         host: &host,
         watch: host.watch(),
         sync_events: host.synced().and_then(|s| s.events()),
@@ -791,6 +805,11 @@ struct Ui<'h> {
     first_run: bool,
     /// The marks being checked decide whether the first-run card opens.
     first_run_pending: bool,
+    /// What the setup asks after the model step (`Options`).
+    after_model_step: Option<AfterModelStep>,
+    /// The model step is done: those questions are asked as soon as the
+    /// sign-in's thread has ended and the terminal is the TUI's to give up.
+    setup_due: bool,
     /// What the host says between turns: a backend's agents, and a turn it
     /// began by itself, which the TUI runs (`continue`).
     watch: broadcast::Receiver<StreamLine>,
@@ -3608,6 +3627,9 @@ impl<'h> Ui<'h> {
                 }
                 self.auth = None;
                 self.finished(app, done, registry);
+                if std::mem::take(&mut self.setup_due) {
+                    self.setup(app, term)?;
+                }
             }
         }
         Ok(())
@@ -3696,12 +3718,25 @@ impl<'h> Ui<'h> {
         }
     }
 
-    /// The first-run flow's model step is done: what the first machine's
-    /// setup asks next goes here, after the account and model steps.
-    ///
-    /// TICKET 02 fills this in: the always-on step (`Keep this machine
-    /// available while you're away?`) and the recovery kit.
-    fn after_model_step(&mut self, _app: &mut App) {}
+    /// The first-run flow's model step is done: the always-on step and the
+    /// recovery kit follow, asked on the terminal once `finished` is over.
+    fn after_model_step(&mut self, _app: &mut App) {
+        self.setup_due = self.after_model_step.as_ref().is_some_and(|s| (s.due)());
+    }
+
+    /// Those steps, with the terminal given up to them as a vendor's login
+    /// has it, and taken back after. Whether the recovery-kit reminder is
+    /// still due is then the status line's to say.
+    fn setup<W: Write>(&mut self, app: &mut App, term: &mut Screen<W>) -> std::io::Result<()> {
+        let Some(steps) = self.after_model_step.take() else { return Ok(()) };
+        self.draw(app, term)?;
+        self.give_up(term)?;
+        let remind = (steps.run)();
+        self.take_back(app, term)?;
+        app.no_recovery_kit = remind;
+        app.touch();
+        Ok(())
+    }
 
     /// An instance renamed: the session, and whatever it holds of the old
     /// name, on the new one — the same instance, so nothing is asked again.

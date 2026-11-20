@@ -1698,7 +1698,8 @@ fn a_frame_drawn_over_another_says_what_the_screen_shows() {
 /// `account_command`'s.
 fn fresh(b: &Sandbox, url: &str) -> Vec<(String, String)> {
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true}\n").unwrap();
+    // Past the always-on question too: these cases are about the model card.
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"local\": true, \"always_on_asked\": true}\n").unwrap();
     fresh_env(b, url)
 }
 
@@ -2928,8 +2929,78 @@ fn a_fresh_home_signs_in_registers_for_sync_and_then_connects_a_model() {
     assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
     connects_claude(&mut t);
     assert!(says(&t, 0, "now on claude/claude-opus-5-5", Duration::from_secs(5)), "{:?}", t.text());
+    // Then the always-on question: Escape declines it. Then the kit, with its
+    // explanation and the words; Enter says they are saved.
+    assert!(says(&t, 0, "Keep this machine available while you're away?", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "It syncs your sessions and takes work from your other machines.", Duration::from_secs(2)), "{:?}", t.text());
+    settle();
+    t.write(b"\x1b");
+    assert!(says(&t, 0, "12 words that stand in for a device of yours", Duration::from_secs(10)), "{:?}", t.text());
+    assert!(says(&t, 0, "Nobody else can do this for you, krowk included.", Duration::from_secs(2)), "{:?}", t.text());
+    assert!(says(&t, 0, "[Enter] saved", Duration::from_secs(5)) && says(&t, 0, "[s] later", Duration::from_secs(5)), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "no kit until it is saved");
+    settle();
+    t.write(b"\r");
+    assert!(says(&t, 0, "Your recovery kit is on your device list.", Duration::from_secs(20)), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some_and(|c| c.recovery().is_some()), "the kit is on the list");
+    let state = first_run_state(&b);
+    assert!(state["always_on_asked"] == true && state["kit_offered"] == true, "{state}");
+    assert!(!b.root.join("home/.config/systemd/user/krowk-host.service").exists(), "declined: nothing installed");
     t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some_and(|s| s.success()));
+}
+
+/// "Later" at the kit leaves the list without one, and the person is
+/// reminded — once per session in the status line, and in `krowk machines`
+/// — while it is their only machine; the kit is not offered again. A yes at
+/// the always-on question installs the service (the service manager here is
+/// a stand-in that only logs).
+#[test]
+fn later_at_the_kit_is_not_asked_again_and_the_reminder_follows_while_there_is_one_machine() {
+    let (r, api) = registry();
+    let b = Sandbox::new("kitlater");
+    b.full_width();
+    // The service manager, as a logging stand-in first on PATH.
+    let stub = b.root.join("bin/systemctl");
+    std::fs::write(&stub, format!("#!/bin/sh\necho \"$@\" >> {}\n", b.root.join("systemctl.log").display())).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1").env("KROWK_TEST_ANSWERS", "y|s");
+    let mut t = pty::Pty::spawn(cmd, 170, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"\r");
+    signs_in(&r, &t);
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(20)), "{:?}", t.text());
+    connects_claude(&mut t);
+    assert!(says(&t, 0, "Later: `krowk machines recovery` makes one when you want it.", Duration::from_secs(20)), "{:?}", t.text());
+    let unit = std::fs::read_to_string(b.root.join("home/.config/systemd/user/krowk-host.service")).unwrap_or_default();
+    assert!(unit.contains("KROWK_HOST_IDLE=0"), "a yes installs the service: {unit}");
+    let log = std::fs::read_to_string(b.root.join("systemctl.log")).unwrap_or_default();
+    assert!(log.contains("--user enable --now krowk-host.service"), "{log}");
+    assert!(keystore(&b).device_list().unwrap().is_some_and(|c| c.recovery().is_none()), "later: no kit");
+    // The reminder is in the status line, from the first frame of this session.
+    assert!(says(&t, 0, "One machine, no recovery kit: losing it loses your sessions. krowk machines recovery.", Duration::from_secs(10)), "{:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    // The next session: reminded again, never offered the kit again.
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("ANTHROPIC_API_KEY", "sk-test");
+    let mut t = pty::Pty::spawn(cmd, 170, 34);
+    // The key makes a model ready, and the repository's trust is asked first.
+    assert!(says(&t, 0, "trust and remember", Duration::from_secs(15)), "{:?}", t.text());
+    settle();
+    t.write(b"n");
+    assert!(says(&t, 0, "One machine, no recovery kit", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(!t.text().contains("12 words"), "{:?}", t.text());
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    // And `krowk machines` says it too.
+    let out = account_command(&b, "http://127.0.0.1:9", &api).args(["machines", "--format", "human"]).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success() && said.contains("One machine, no recovery kit: losing it loses your sessions. krowk machines recovery."), "{said} {}", String::from_utf8_lossy(&out.stderr));
 }
 
 /// "Use locally" goes to the model step and is not offered again;

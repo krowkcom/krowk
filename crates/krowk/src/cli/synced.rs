@@ -277,7 +277,7 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
                     "capacity": a.and_then(|a| a.announcement.capacity.as_ref()), "repositories": a.map(|a| &a.announcement.repositories[..]).unwrap_or_default(), "accepting": a.is_some_and(|a| a.announcement.accepting), "here": ready})
             })
             .collect();
-        return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
+        return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened, "recoveryReminder": super::recovery::reminder_due(&k.chain)}).to_string());
     }
     let now = jiff::Timestamp::now();
     for (h, online) in hosts.iter().zip(&online) {
@@ -309,6 +309,10 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     }
     if unopened > 0 {
         let _ = writeln!(ctx.io.stdout, "{unopened} host{} announcement could not be opened on this machine", if unopened == 1 { "'s" } else { "s'" });
+    }
+    // D5: while the person has one machine and no kit.
+    if super::recovery::reminder_due(&k.chain) {
+        let _ = writeln!(ctx.io.stdout, "\n{}", krowk_tui::app::RECOVERY_REMINDER);
     }
     if hosts.is_empty() {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");

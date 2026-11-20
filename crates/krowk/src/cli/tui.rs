@@ -199,8 +199,9 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         settings,
         history_file,
         notices: notices.into_iter().chain(mode_notices).collect(),
-        no_recovery_kit: no_recovery_kit(ctx),
+        no_recovery_kit: super::recovery::reminder_due_here(ctx),
         top_problem: super::health::top_problem(ctx),
+        after_model_step: (!synced).then(|| after_model_step(ctx)),
         // A synced session prints no header to say it under.
         update: if synced {
             None
@@ -339,10 +340,22 @@ fn pick(ctx: &mut Ctx) -> Result<String, Error> {
     Ok(d.session.foreign_session_id)
 }
 
-/// Whether sync is set up here with no recovery kit on the list, as this
-/// device last verified it: read from the list it keeps, never the network, so the
-/// TUI starts as fast without a registry as with one.
-fn no_recovery_kit(ctx: &Ctx) -> bool {
-    let Ok(home) = krowk_api::home::dir(ctx.io.env) else { return false };
-    matches!(krowk_client::keystore::Keystore::new(&home).device_list(), Ok(Some(chain)) if chain.recovery().is_none())
+/// The setup questions after the first run's model step, run with the
+/// terminal given up to them: a context of their own, on the real streams,
+/// since the command's own is borrowed for the whole run.
+fn after_model_step(ctx: &Ctx) -> krowk_tui::AfterModelStep {
+    fn own<R>(f: &super::flags::Flags, format: Format, ttys: (bool, bool), body: impl FnOnce(&mut Ctx) -> R) -> R {
+        let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
+        let env = |k: &str| std::env::var(k).unwrap_or_default();
+        let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: true, err_tty: ttys.0, stdin_tty: ttys.1 };
+        body(&mut Ctx { io: &mut io, f: f.clone(), format, colour: true, filter: None })
+    }
+    let (f, format, ttys) = (ctx.f.clone(), ctx.format, (ctx.io.err_tty, ctx.io.stdin_tty));
+    let due = f.clone();
+    // The questions and the kit's words go to stderr: with it not a terminal
+    // nobody would see them, so none is asked.
+    krowk_tui::AfterModelStep {
+        due: Box::new(move || ttys.0 && ttys.1 && own(&due, format, ttys, |ctx| super::first_run::steps_due(ctx))),
+        run: Box::new(move || own(&f, format, ttys, super::first_run::after_model_step)),
+    }
 }
