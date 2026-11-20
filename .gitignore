@@ -7,14 +7,5 @@ node_modules/
 /target/
 *.orig
 *.rej
-# make ios-core's outputs, and what SwiftPM and Xcode leave beside a package.
-/apps/ios/KrowkCore/build/
-/apps/ios/**/.build/
-/apps/ios/**/.swiftpm/
-# The iPhone app: Xcode's project is generated from apps/ios/project.yml,
-# and xtool writes its build and editor files beside apps/ios/xtool.yml.
-/apps/ios/Krowk.xcodeproj/
-/apps/ios/xtool/
-/apps/ios/.bsp/
 xcuserdata/
 DerivedData/
