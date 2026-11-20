@@ -11,6 +11,13 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **The README is three steps, and the installer says "Run krowk".** The README
+  now opens with what krowk is, then the first machine, another machine and the
+  phone; the Worktrees detail, the MCP sign-in walkthroughs, Development and the
+  lean build moved to the website's docs, which the README links. The
+  installer's closing list is headed "Run krowk" and names only the commands
+  `krowk help` shows.
+
 - **`krowk doctor` checks everything, and the TUI names the top problem.**
   Beyond the store, prices and providers, doctor now checks that you are signed
   in, that this machine is registered for sync, that the always-on service is
