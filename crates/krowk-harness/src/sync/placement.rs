@@ -411,8 +411,10 @@ pub fn result_of(events: &[LogEvent], child: &str) -> Result<Option<ResultRef>, 
                     Some(t) if t != turn_id => return Err(format!("the child's result is of turn {turn_id}, not of the turn {t} that completed")),
                     Some(_) => {}
                 }
+                // Said by the child's bridge, whole: why its result could
+                // not be packed or stored, its work kept in its worktree.
                 if let Some(why) = error {
-                    return Err(format!("the child's result could not be stored: {why}"));
+                    return Err(why.clone());
                 }
                 match (transport, key) {
                     (Some(t), Some(k)) if slug_shaped(t) && key_shaped(k) => {}
@@ -476,6 +478,8 @@ pub struct Outcome {
     pub usage: Usage,
     /// The machine it ran on.
     pub machine: String,
+    /// Why there: what `Progress` said as it started.
+    pub why: String,
 }
 
 /// Why a task did not run, or did not finish.
@@ -570,8 +574,9 @@ pub trait Fleet: Send + Sync {
     fn send_run(&self, to: &Announcement, task: &RunTask, wait: Duration) -> Result<Option<HostAnswer>, String>;
     /// The child's log so far, as events.
     fn watch(&self, child: &str) -> Result<Vec<Value>, String>;
-    /// How long ago the machine last announced; none when it never has.
-    fn seen(&self, device: &str) -> Option<Duration>;
+    /// When the machine last announced, in ms by the registry's clock;
+    /// none when it never has.
+    fn seen(&self, device: &str) -> Option<i64>;
     /// The result `task.result` named, opened.
     fn read_result(&self, child: &str, transport: &str, key: &str) -> Result<super::handoff::Bundle, String>;
     /// `handoff::apply_result`, into `to`.
@@ -659,9 +664,10 @@ pub struct Placer {
 
 impl Placer {
     /// A placer over the registry `announcer` reaches, with the default
-    /// pools and model resolution (`fleet::Registry::new`).
-    pub fn new(announcer: Announcer) -> Arc<Placer> {
-        Placer::with(Box::new(super::fleet::Registry::new(announcer)), Timing::default())
+    /// pools and model resolution (`fleet::Registry::new`); `signing` is
+    /// this device's key, which a job's session record is signed with.
+    pub fn new(announcer: Announcer, signing: krowk_client::e2e::SigningKey) -> Arc<Placer> {
+        Placer::with(Box::new(super::fleet::Registry::new(announcer).with_signing(signing)), Timing::default())
     }
 
     pub fn with(fleet: Box<dyn Fleet>, timing: Timing) -> Arc<Placer> {
@@ -861,12 +867,12 @@ impl Placer {
                     if let Some((prev, _, m)) = refused.last() {
                         why = format!("{prev} would not take it ({m})");
                     }
-                    task.set(State::Running { machine: name.clone(), child: session_id.clone(), why });
+                    task.set(State::Running { machine: name.clone(), child: session_id.clone(), why: why.clone() });
                     if task.is_cancelled() {
                         let _ = f.stop(&session_id);
                         return Err(Failure::Failed { machine: name, reason: "the task was interrupted".into() });
                     }
-                    return self.follow(task, &spec, &bundle, &name, &to.device, &session_id).map(Some);
+                    return self.follow(task, &spec, &bundle, &name, &to.device, &session_id).map(|o| Some(Outcome { why, ..o }));
                 }
                 Ok(Some(HostAnswer::Started { session_id })) => refused.push((name, "bad_answer".into(), format!("it answered with {session_id:?}, which is no session id"))),
                 Ok(Some(HostAnswer::Refused { code, message })) => refused.push((name, code, message)),
@@ -895,7 +901,7 @@ impl Placer {
             task.set(State::Here(why));
             return Ok(None);
         }
-        task.set(State::Running { machine: name.to_string(), child: String::new(), why });
+        task.set(State::Running { machine: name.to_string(), child: String::new(), why: why.clone() });
         let failed = |reason: String| Failure::Failed { machine: name.to_string(), reason };
         let ran = f.run_local(spec, model).map_err(&failed)?;
         let (applied, kept) = match &ran.worktree {
@@ -905,7 +911,7 @@ impl Placer {
             }
             None => (Vec::new(), None),
         };
-        Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string() }))
+        Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string(), why }))
     }
 
     /// Follows the child `child` on `machine` until its one turn is over,
@@ -918,6 +924,7 @@ impl Placer {
         let mut read = Instant::now();
         let mut ended: Option<Instant> = None;
         let mut seen_events = 0;
+        let mut announced: Option<i64> = None;
         let done = loop {
             std::thread::sleep(t.poll);
             if task.is_cancelled() {
@@ -945,8 +952,15 @@ impl Placer {
                 Err(e) if read.elapsed() >= t.offline_after * 3 => return Err(failed(format!("its log could not be read: {e}"))),
                 Err(_) => {}
             }
-            if f.seen(device).is_some_and(|ago| ago < t.offline_after) {
-                alive = Instant::now();
+            // Alive when its announcement is seen to move on: a machine gone
+            // quiet is offline `offline_after` past its last announcement
+            // (and a poll), not twice that. Only the registry's own times
+            // are compared, so this machine's clock never counts.
+            if let Some(at) = f.seen(device) {
+                if announced.is_some_and(|before| at > before) {
+                    alive = Instant::now();
+                }
+                announced = Some(announced.map_or(at, |before| before.max(at)));
             }
             if alive.elapsed() >= t.offline_after {
                 return Err(Failure::Offline { machine: machine.to_string() });
@@ -965,7 +979,7 @@ impl Placer {
             }
             _ => (Vec::new(), None),
         };
-        Ok(Outcome { summary: done.summary, applied, kept, denied: done.denied, usage: done.usage, machine: machine.to_string() })
+        Ok(Outcome { summary: done.summary, applied, kept, denied: done.denied, usage: done.usage, machine: machine.to_string(), why: String::new() })
     }
 }
 
@@ -1218,6 +1232,8 @@ mod tests {
         assert!(result_of(&[done(), result(CHILD, Some("art_1"), None)], CHILD).is_err(), "a transport with no key");
         let other_turn = ev(CHILD, LogBody::TaskResult { turn_id: "other".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: None });
         assert!(result_of(&[done(), other_turn], CHILD).is_err(), "a result of another turn");
+        let failed = ev(CHILD, LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "abc".into(), denied: Vec::new(), error: Some("the result could not be stored (too_large): the transport is over the limit".into()) });
+        assert_eq!(result_of(&[done(), failed], CHILD), Err("the result could not be stored (too_large): the transport is over the limit".into()), "a result the child could not store fails with why");
     }
 
     /// Slice 07 (D9): this supervisor's recent placements fill a machine's
@@ -1269,7 +1285,7 @@ mod tests {
         answers: Mutex<HashMap<String, VecDeque<Option<HostAnswer>>>>,
         sent: Mutex<Vec<(String, RunTask)>>,
         events: Mutex<Vec<Value>>,
-        seen: Mutex<Option<Duration>>,
+        seen: Mutex<Option<i64>>,
         others_read: AtomicUsize,
         landed: Mutex<Vec<String>>,
         spent: AtomicUsize,
@@ -1279,6 +1295,8 @@ mod tests {
         stopped: Mutex<Vec<String>>,
         /// How long `send_run` takes to answer.
         slow: Duration,
+        /// Announcing every `.1` since `.0`: `seen` moves on each time.
+        announcing: Option<(Instant, Duration)>,
     }
 
     struct Shared(Arc<Fake>);
@@ -1331,7 +1349,11 @@ mod tests {
         fn watch(&self, _: &str) -> Result<Vec<Value>, String> {
             Ok(self.0.events.lock().unwrap().clone())
         }
-        fn seen(&self, _: &str) -> Option<Duration> {
+        fn seen(&self, _: &str) -> Option<i64> {
+            if let Some((since, every)) = self.0.announcing {
+                let times = since.elapsed().as_nanos() / every.as_nanos();
+                return Some(times as i64 * every.as_millis() as i64);
+            }
             *self.0.seen.lock().unwrap()
         }
         fn read_result(&self, child: &str, _: &str, _: &str) -> Result<super::super::handoff::Bundle, String> {
@@ -1386,6 +1408,13 @@ mod tests {
         Arc::new(Fake { here: Some(here), others, answers: Mutex::new(answers), ..Fake::default() })
     }
 
+    /// `f`'s machine announcing every 40 ms from now on.
+    fn announcing(f: Arc<Fake>) -> Arc<Fake> {
+        let mut f = Arc::try_unwrap(f).ok().unwrap();
+        f.announcing = Some((Instant::now(), Duration::from_millis(40)));
+        Arc::new(f)
+    }
+
     fn placer(f: &Arc<Fake>) -> Arc<Placer> {
         Placer::with(Box::new(Shared(f.clone())), quick())
     }
@@ -1415,6 +1444,7 @@ mod tests {
         let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
         assert_eq!((out.machine.as_str(), out.summary.as_str(), out.applied.as_slice(), out.kept.as_deref()), ("b", "added fixed.rs", &["fixed.rs".to_string()][..], None));
         assert_eq!((out.usage.output_tokens, out.denied), (7, vec!["bash: rm -rf".to_string()]));
+        assert_eq!(out.why, "this machine is busy (4 of 4 build slots in use)", "the outcome says why b");
         assert_eq!(f.landed.lock().unwrap().as_slice(), [format!("{CHILD} -> /work/app")]);
         let sent = f.sent.lock().unwrap();
         let run = &sent[0].1;
@@ -1434,7 +1464,8 @@ mod tests {
         let Ok(Progress::Running { machine, why, .. }) = p.placed(&h, Duration::from_secs(5)) else { panic!("not running") };
         assert_eq!(machine, "c");
         assert!(why.contains("b would not take it"), "{why}");
-        assert!(matches!(p.wait(&h, Duration::from_secs(5)), Ok(Progress::Done(_))));
+        let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
+        assert!(out.why.contains("b would not take it"), "the outcome says why c: {}", out.why);
         let asked: Vec<String> = f.sent.lock().unwrap().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(asked, ["b", "c"]);
     }
@@ -1485,6 +1516,37 @@ mod tests {
         assert!(got.to_string().contains("work is in a worktree there"));
     }
 
+    /// R-ALLOC-9: a machine that announced as the task started and never
+    /// again is offline `offline_after` past that announcement, not past
+    /// the first reading of it as too old (twice as long).
+    #[test]
+    fn a_machine_is_offline_counted_from_its_last_announcement() {
+        let f = fleet(true, &["b"], &[("b", vec![started()])]);
+        let t = Timing { offline_after: Duration::from_secs(1), ..quick() };
+        let began = Instant::now();
+        *f.seen.lock().unwrap() = Some(1_790_000_000_000);
+        let p = Placer::with(Box::new(Shared(f.clone())), t);
+        let h = p.start(spec(), Here::Caller);
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Offline { machine: "b".into() });
+        assert!(began.elapsed() < Duration::from_millis(1500), "about 1 s, not 2: {:?}", began.elapsed());
+    }
+
+    /// R-ALLOC-9: a machine that keeps announcing is never offline, though
+    /// its child's log is quiet for longer than `offline_after`.
+    #[test]
+    fn a_machine_still_announcing_is_online_while_its_child_is_quiet() {
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
+        let t = Timing { offline_after: Duration::from_secs(1), ..quick() };
+        let p = Placer::with(Box::new(Shared(f.clone())), t);
+        let h = p.start(spec(), Here::Caller);
+        let later = f.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2500));
+            *later.events.lock().unwrap() = completed_child();
+        });
+        assert!(matches!(p.wait(&h, Duration::from_secs(10)), Ok(Progress::Done(_))), "still online");
+    }
+
     /// D11: after the child started, its failure comes back as the result.
     #[test]
     fn a_child_that_fails_after_it_started_is_the_tool_result() {
@@ -1494,6 +1556,20 @@ mod tests {
         let h = p.start(spec(), Here::Caller);
         assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: "the model quit".into() });
         assert_eq!(f.sent.lock().unwrap().len(), 1, "never retried");
+    }
+
+    /// D11: a child whose result could not be packed or stored fails the
+    /// task with why, and nothing is read or landed.
+    #[test]
+    fn a_result_the_child_could_not_store_fails_the_task_with_why() {
+        let f = fleet(true, &["b"], &[("b", vec![started()])]);
+        let mut events = completed_child();
+        events[2] = event(LogBody::TaskResult { turn_id: "t".into(), transport: None, key: None, against: "snap".into(), denied: Vec::new(), error: Some(super::super::handoff::RESULT_TOO_BIG.into()) });
+        *f.events.lock().unwrap() = events;
+        let p = placer(&f);
+        let h = p.start(spec(), Here::Caller);
+        assert_eq!(p.wait(&h, Duration::from_secs(5)).unwrap_err(), Failure::Failed { machine: "b".into(), reason: super::super::handoff::RESULT_TOO_BIG.into() });
+        assert!(f.landed.lock().unwrap().is_empty());
     }
 
     /// D9: a placement sent counts as an agent slot in use for 30 seconds,
@@ -1569,9 +1645,8 @@ mod tests {
     /// fails the task rather than waiting for ever.
     #[test]
     fn a_turn_that_ends_with_no_result_fails_the_task() {
-        let f = fleet(true, &["b"], &[("b", vec![started()])]);
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
         *f.events.lock().unwrap() = completed_child()[..2].to_vec();
-        *f.seen.lock().unwrap() = Some(Duration::ZERO);
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
         let Err(Failure::Failed { machine, reason }) = p.wait(&h, Duration::from_secs(5)) else { panic!("finished") };
@@ -1582,8 +1657,7 @@ mod tests {
     /// An interrupted caller stops the child and lands nothing.
     #[test]
     fn a_cancelled_task_stops_its_child_and_lands_nothing() {
-        let f = fleet(true, &["b"], &[("b", vec![started()])]);
-        *f.seen.lock().unwrap() = Some(Duration::ZERO);
+        let f = announcing(fleet(true, &["b"], &[("b", vec![started()])]));
         let p = placer(&f);
         let h = p.start(spec(), Here::Caller);
         assert!(matches!(p.placed(&h, Duration::from_secs(5)), Ok(Progress::Running { .. })));
