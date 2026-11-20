@@ -143,13 +143,31 @@ const TRUNCATED: &str = "(too many files to fingerprint)";
 /// and a session started in that folder would read it.
 const DEPENDENCY_DIRS: &[&str] = &["node_modules", "target", ".venv", "venv", "__pycache__", ".mypy_cache", ".pytest_cache", ".tox", ".next", ".gradle", ".terraform", ".cache"];
 
-/// Whether git tracks a file under `sub` of `root`. Run without the
-/// repository's hooks or fsmonitor (`krowk_api::git::query`), since the
-/// repository is not trusted yet. Without git, nothing is tracked.
-fn tracked_under(root: &Path, sub: &str) -> bool {
-    krowk_api::git::query(root)
-        .and_then(|mut c| c.args(["ls-files", "-z", "--cached", "--", sub]).stderr(std::process::Stdio::null()).output())
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
+/// Every directory of `root` that holds a file git tracks, at any depth, from
+/// one listing: no pathspec the repository's names could bend, and one git
+/// however many folders there are. Run without the repository's hooks or
+/// fsmonitor (`krowk_api::git::query`), since it is not trusted yet. Without
+/// git, nothing is tracked.
+fn tracked_dirs(root: &Path) -> std::collections::HashSet<String> {
+    let mut dirs = std::collections::HashSet::new();
+    let Ok(out) = krowk_api::git::query(root).and_then(|mut c| c.args(["ls-files", "-z", "--cached"]).stderr(std::process::Stdio::null()).output()) else {
+        return dirs;
+    };
+    if !out.status.success() {
+        return dirs;
+    }
+    for path in out.stdout.split(|b| *b == 0).filter(|p| !p.is_empty()) {
+        let path = String::from_utf8_lossy(path);
+        let mut end = path.len();
+        // An ancestor already in the set has its own ancestors in it too.
+        while let Some(i) = path[..end].rfind('/') {
+            if !dirs.insert(path[..i].to_string()) {
+                break;
+            }
+            end = i;
+        }
+    }
+    dirs
 }
 
 /// The paths to fingerprint, from the root: `FINGERPRINTED`, and the same
@@ -160,6 +178,8 @@ fn tracked_under(root: &Path, sub: &str) -> bool {
 fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
     let mut paths: Vec<String> = FINGERPRINTED.iter().map(|p| p.to_string()).collect();
     let (mut seen, mut cut) = (0, false);
+    // Listed on the first dependency folder met, at most once.
+    let mut tracked: Option<std::collections::HashSet<String>> = None;
     // Shallow first and in name order, so the directories looked into are
     // the same every time and a limit leaves out the deepest, not a branch.
     let mut queue = std::collections::VecDeque::from([(String::new(), 0usize)]);
@@ -173,7 +193,7 @@ fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
                 continue;
             }
             let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
-            if DEPENDENCY_DIRS.contains(&name.as_str()) && !tracked_under(root, &sub) {
+            if DEPENDENCY_DIRS.contains(&name.as_str()) && !tracked.get_or_insert_with(|| tracked_dirs(root)).contains(&sub) {
                 continue;
             }
             if root.join(&sub).join(".git").symlink_metadata().is_ok() {
@@ -598,6 +618,12 @@ mod tests {
         store.trust(&repo).unwrap();
         put(&repo, "venv/.claude/settings.json", "three");
         assert_eq!(store.changes(&repo), ["venv/.claude/settings.json"]);
+        // A name that would be pathspec magic is only a name.
+        store.trust(&repo).unwrap();
+        let magic = ":(attr:zz)q/node_modules/.claude/settings.json";
+        put(&repo, magic, "one");
+        git(&["--literal-pathspecs", "add", magic]);
+        assert_eq!(store.changes(&repo), [magic]);
         let _ = std::fs::remove_dir_all(&base);
     }
 
