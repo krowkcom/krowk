@@ -461,17 +461,21 @@ impl Store {
         self.write(&listed)
     }
 
-    /// Forgets `root`: its entry and the MCP digest recorded with it.
-    /// Whether it was listed at all; nothing is written when it was not.
+    /// Forgets `root`: its entry and the MCP digest and fingerprints recorded
+    /// with it. Whether it was listed at all; nothing is written when it was
+    /// not.
     pub fn revoke(&self, root: &Path) -> Result<bool, String> {
         let mut listed = self.read()?;
         let root = root.display().to_string();
         let had = listed.directories.contains(&root);
         let digest = listed.mcp.remove(&root).is_some();
-        if !had && !digest {
+        let files = listed.files.remove(&root).is_some();
+        if !had && !digest && !files {
             return Ok(false);
         }
         listed.directories.retain(|d| *d != root);
+        // Writing moves the age a legacy record is held to (`upgrade`).
+        self.upgrade(&mut listed, &root);
         self.write(&listed)?;
         Ok(had)
     }
@@ -567,6 +571,7 @@ mod tests {
         assert!(store.revoke(&repo).unwrap() && !store.trusts(&repo) && store.recorded().unwrap().is_empty());
         assert!(store.recorded_mcp(&repo).is_none() && !store.revoke(&repo).unwrap());
         assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains("mcp\""), "the digest went with it");
+        assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains(&repo.display().to_string()), "and its fingerprints");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
         assert!(!store.trusts(&repo), "a file that cannot be read trusts nothing");
         let _ = std::fs::remove_dir_all(&base);
@@ -777,6 +782,9 @@ mod tests {
         assert_eq!(store.changes(&repo), [".codex/config.toml"], "a later change is caught by the fingerprint");
 
         // A file changed after the record was made, before anything upgraded it.
+        // `.codex/config.toml` is older than that record: written in the same
+        // timestamp tick as the record, it would count as changed.
+        std::fs::File::options().write(true).open(repo.join(".codex/config.toml")).unwrap().set_modified(old).unwrap();
         legacy();
         std::fs::write(repo.join(".claude/settings.json"), r#"{"hooks": {}}"#).unwrap();
         assert!(!store.trusts(&repo));
