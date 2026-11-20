@@ -568,6 +568,8 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(feature = "harness")]
     c.commands.push(mcp_command());
     #[cfg(feature = "harness")]
+    c.commands.push(trust_command());
+    #[cfg(feature = "harness")]
     c.commands.push(worktrees_command());
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
@@ -712,6 +714,20 @@ fn worktrees_command() -> Command {
             cmd("prune", "krowk worktrees prune", "Clear what deleted worktrees left, and old snapshots"),
         ],
         ..cmd("worktrees", "", "The git worktrees krowk made for agents, across repositories")
+    }
+}
+
+/// `krowk trust`: which repositories a backend or krowk's agent may run
+/// the hooks and MCP servers of.
+#[cfg(feature = "harness")]
+fn trust_command() -> Command {
+    Command {
+        args: vec![arg("path", "A directory in the repository (default: the current directory); a krowk worktree counts as its main repository", false)],
+        flags: vec![
+            flag("revoke", BOOL, "Stop trusting it, and forget the MCP servers it was trusted with"),
+            flag("list", BOOL, "List every trusted directory instead; takes no path"),
+        ],
+        ..cmd("trust", "krowk trust [<path>] | krowk trust --revoke [<path>] | krowk trust --list", "Trust a repository to run its hooks and MCP servers")
     }
 }
 
@@ -1157,6 +1173,8 @@ pub const GROUPS: &[(&str, &[&str])] = &[
             "worktrees",
             #[cfg(feature = "harness")]
             "mcp",
+            #[cfg(feature = "harness")]
+            "trust",
             #[cfg(all(feature = "harness", unix))]
             "host",
             #[cfg(all(feature = "harness", unix))]
@@ -1183,6 +1201,9 @@ pub const ALL_ONLY: &[&str] = &[
     "help",
     #[cfg(feature = "harness")]
     "mcp",
+    // Run once per repository, so the overview's one screen goes to what is run daily.
+    #[cfg(feature = "harness")]
+    "trust",
     #[cfg(all(feature = "harness", unix))]
     "relay",
     // Only for a person with more than one machine syncing.

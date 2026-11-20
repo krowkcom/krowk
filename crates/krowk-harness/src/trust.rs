@@ -186,6 +186,31 @@ impl Store {
             listed.directories.push(root);
             listed.directories.sort();
         }
+        self.write(&listed)
+    }
+
+    /// Forgets `root`: its entry and the MCP digest recorded with it.
+    /// Whether it was listed at all; nothing is written when it was not.
+    pub fn revoke(&self, root: &Path) -> Result<bool, String> {
+        let mut listed = self.read()?;
+        let root = root.display().to_string();
+        let had = listed.directories.contains(&root);
+        let digest = listed.mcp.remove(&root).is_some();
+        if !had && !digest {
+            return Ok(false);
+        }
+        listed.directories.retain(|d| *d != root);
+        self.write(&listed)?;
+        Ok(had)
+    }
+
+    /// Every directory the file lists, as written: `directories` holds only
+    /// those trust still stands for.
+    pub fn recorded(&self) -> Result<Vec<PathBuf>, String> {
+        Ok(self.read()?.directories.into_iter().map(PathBuf::from).collect())
+    }
+
+    fn write(&self, listed: &Listed) -> Result<(), String> {
         let path = self.path.as_ref().ok_or("there is no home directory to remember it in — set HOME, or KROWK_HOME to an absolute path")?;
         let dir = path.parent().ok_or_else(|| format!("{} has no directory", path.display()))?;
         crate::log::private_dir(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
@@ -194,7 +219,7 @@ impl Store {
         o.write(true).create(true).truncate(true);
         #[cfg(unix)]
         std::os::unix::fs::OpenOptionsExt::mode(&mut o, 0o600);
-        let body = serde_json::to_vec_pretty(&listed).expect("the list serializes");
+        let body = serde_json::to_vec_pretty(listed).expect("the list serializes");
         std::io::Write::write_all(&mut o.open(&tmp).map_err(|e| format!("write {}: {e}", tmp.display()))?, &body).map_err(|e| format!("write {}: {e}", tmp.display()))?;
         std::fs::rename(&tmp, path).map_err(|e| format!("replace {}: {e}", path.display()))
     }
@@ -264,6 +289,12 @@ mod tests {
         assert!(store.trusts(&repo));
         std::fs::write(repo.join(".mcp.json"), r#"{"mcpServers": {"x": {"command": "y"}}}"#).unwrap();
         assert!(!store.trusts(&repo), "r_tool_3: a changed .mcp.json is asked about");
+        // Revoking drops the entry and its digest; a second revoke finds nothing.
+        store.trust(&repo).unwrap();
+        assert_eq!(store.recorded().unwrap(), std::slice::from_ref(&repo));
+        assert!(store.revoke(&repo).unwrap() && !store.trusts(&repo) && store.recorded().unwrap().is_empty());
+        assert!(store.recorded_mcp(&repo).is_none() && !store.revoke(&repo).unwrap());
+        assert!(!std::fs::read_to_string(base.join("config/trusted.json")).unwrap().contains("mcp\""), "the digest went with it");
         std::fs::write(base.join("config/trusted.json"), "not json").unwrap();
         assert!(!store.trusts(&repo), "a file that cannot be read trusts nothing");
         let _ = std::fs::remove_dir_all(&base);
