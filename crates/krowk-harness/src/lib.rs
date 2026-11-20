@@ -91,6 +91,7 @@ pub mod log;
 pub mod mcp;
 pub mod native;
 pub mod mcp_oauth;
+pub mod neutral;
 pub mod oauth;
 pub mod openai;
 pub mod paste_guard;
@@ -118,4 +119,5 @@ pub mod trust;
 // `krowk sessions` runs.
 #[cfg(unix)]
 pub mod vintage;
+pub mod wire;
 pub mod worktree;

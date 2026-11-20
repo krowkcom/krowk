@@ -10,7 +10,8 @@
 //! what goes back on the next call.
 
 use crate::engine::{EngineError, EngineEvent};
-use crate::http::{clip, Decode};
+use crate::http::clip;
+use crate::wire::Decode;
 use crate::native::ModelResponse;
 use crate::protocol::{Delta, Item, ItemKind, ProviderBlob, Usage, WireApi};
 use crate::sse::SseEvent;

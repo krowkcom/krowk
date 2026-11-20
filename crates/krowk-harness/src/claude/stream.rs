@@ -24,7 +24,7 @@
 //! keeps, since a background agent's calls go on between turns. `result`
 //! ends the turn, with Claude Code's own `total_cost_usd` for it.
 
-use crate::anthropic::stream::Decoder;
+use super::messages::Decoder;
 use crate::engine::{EngineError, EngineEvent};
 use crate::protocol::{Item, ItemKind, LimitState, LimitStatus, ProviderBlob, Usage, WireApi};
 use crate::sse::SseEvent;
@@ -460,7 +460,7 @@ fn usage(u: &Value) -> Usage {
 
 /// One content block of a whole `assistant` message as an item.
 fn block(b: &Value) -> Option<Item> {
-    let blob = |data: Value| Some(ProviderBlob { provider: crate::anthropic::stream::PROVIDER.into(), wire_api: WireApi::ClaudeCode, data });
+    let blob = |data: Value| Some(ProviderBlob { provider: super::messages::PROVIDER.into(), wire_api: WireApi::ClaudeCode, data });
     Some(match str_of(b, "type") {
         "text" => Item::AssistantText { text: str_of(b, "text").into() },
         "thinking" => Item::Reasoning { text: str_of(b, "thinking").into(), blob: blob(json!({"type": "thinking", "signature": str_of(b, "signature")})) },

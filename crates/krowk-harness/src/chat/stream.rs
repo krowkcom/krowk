@@ -6,7 +6,8 @@
 //! `[DONE]` (or ends after a `finish_reason`, for servers that never send it).
 
 use crate::engine::{EngineError, EngineEvent};
-use crate::http::{clip, Decode};
+use crate::http::clip;
+use crate::wire::Decode;
 use crate::native::ModelResponse;
 use crate::protocol::{Delta, Item, ItemKind, ProviderBlob, Usage, WireApi};
 use crate::sse::SseEvent;

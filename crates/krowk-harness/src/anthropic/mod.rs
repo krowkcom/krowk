@@ -19,12 +19,14 @@
 //! differently from one call to the next, which is what keeps both the
 //! cache and replayed thinking valid.
 
-pub mod stream;
+/// The Messages stream decoder, which Claude Code's stream needs too.
+pub use crate::claude::messages as stream;
 /// The SSE parser every wire client shares, where it has always been found.
 pub use crate::sse;
 
 use crate::engine::{BoxFuture, EngineError, Events, HistoryItem};
-use crate::http::{self, Answer, Peer};
+use crate::http;
+use crate::wire::{self, Answer, Peer};
 use crate::instances::{Resolved, Thinking};
 use crate::native::{self, ModelClient, ModelRequest, ModelResponse};
 use crate::protocol::{Effort, Item, ProviderBlob, WireApi};
@@ -214,13 +216,39 @@ impl ModelClient for AnthropicClient {
                     .header("user-agent", &self.user_agent)
                     .body(body.clone())
             };
-            match http::send(&build, &cancel, peer).await? {
-                Answer::Streaming(resp) => http::read_stream(resp, stream::Decoder::default(), events, &cancel, &req.model, peer).await,
+            match wire::send(&build, &cancel, peer).await? {
+                Answer::Streaming(resp) => wire::read_stream(resp, stream::Decoder::default(), events, &cancel, &req.model, peer).await,
                 Answer::Refused(resp) => {
-                    Err(http::refused(resp, peer, &req.model, &crate::keys::auth_fix(inst)).await)
+                    Err(wire::refused(resp, peer, &req.model, &crate::keys::auth_fix(inst)).await)
                 }
                 Answer::Interrupted => Ok(ModelResponse { model: req.model.clone(), interrupted: true, ..ModelResponse::default() }),
             }
         })
+    }
+}
+
+/// The native client reads the same stream over its own connection.
+impl crate::wire::Decode for stream::Decoder {
+    fn apply(&mut self, ev: &crate::sse::SseEvent) -> Result<Vec<crate::engine::EngineEvent>, EngineError> {
+        stream::Decoder::apply(self, ev)
+    }
+
+    fn done(&self) -> bool {
+        self.done
+    }
+
+    fn interrupt(&mut self) -> Vec<crate::engine::EngineEvent> {
+        stream::Decoder::interrupt(self)
+    }
+
+    fn finish(self, requested_model: &str, interrupted: bool) -> crate::native::ModelResponse {
+        crate::native::ModelResponse {
+            response_id: self.response_id,
+            model: if self.model.is_empty() { requested_model.to_string() } else { self.model },
+            usage: self.usage,
+            stop_reason: self.stop_reason,
+            items: self.items,
+            interrupted,
+        }
     }
 }

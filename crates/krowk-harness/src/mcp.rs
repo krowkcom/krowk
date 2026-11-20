@@ -670,7 +670,7 @@ impl Pool {
 async fn close_all(cells: Vec<Cell>) {
     let started: Vec<Started> = cells.iter().map(|c| c.current(None)).collect();
     let closes = started.iter().filter_map(|c| c.get()).filter_map(|l| l.conn.as_ref()).map(|c| -> crate::engine::BoxFuture<'_, ()> { Box::pin(c.close()) });
-    crate::native::join_all(closes.collect()).await;
+    crate::engine::join_all(closes.collect()).await;
 }
 
 impl Live {
@@ -821,7 +821,7 @@ impl Mcp {
                     cell
                 })
             });
-            crate::native::join_all(starts.collect()).await
+            crate::engine::join_all(starts.collect()).await
         };
         let mut cancel = cancel.clone();
         tokio::select! {

@@ -19,7 +19,8 @@
 pub mod stream;
 
 use crate::engine::{BoxFuture, EngineError, Events, HistoryItem};
-use crate::http::{self, Answer, Peer};
+use crate::http;
+use crate::wire::{self, Answer, Peer};
 use crate::instances::Resolved;
 use crate::native::{self, ModelClient, ModelRequest, ModelResponse};
 use crate::oauth;
@@ -281,11 +282,11 @@ impl ModelClient for ChatClient {
                     }
                     r
                 };
-                match http::send(&build, &cancel, peer).await? {
-                    Answer::Streaming(resp) => return http::read_stream(resp, stream::Decoder::new(&inst.provider), events, &cancel, &req.model, peer).await,
+                match wire::send(&build, &cancel, peer).await? {
+                    Answer::Streaming(resp) => return wire::read_stream(resp, stream::Decoder::new(&inst.provider), events, &cancel, &req.model, peer).await,
                     Answer::Refused(resp) if resp.status().as_u16() == 401 && !refresh && matches!(self.credential, Credential::OAuth(_)) => continue,
                     Answer::Refused(resp) => {
-                        return Err(http::refused(resp, peer, &req.model, &self.auth_fix()).await);
+                        return Err(wire::refused(resp, peer, &req.model, &self.auth_fix()).await);
                     }
                     Answer::Interrupted => return Ok(ModelResponse { model: req.model.clone(), interrupted: true, ..ModelResponse::default() }),
                 }

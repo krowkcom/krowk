@@ -33,7 +33,7 @@
 //! reasoning's are.
 
 use crate::engine::{EngineEvent, HistoryItem};
-use crate::native;
+use crate::neutral;
 use crate::protocol::{HandoffKind, Item, ModelRef};
 use std::path::{Path, PathBuf};
 
@@ -218,7 +218,7 @@ fn count(n: usize, what: &str) -> String {
 /// line of its own — a forged `[the person]` in a file stays inside the
 /// block it came in.
 fn framed(text: &str) -> String {
-    lines(&native::neutralised(text, "handoff")).split('\n').map(|l| format!("{QUOTE}{l}")).collect::<Vec<_>>().join("\n")
+    lines(&neutral::neutralised(text, "handoff")).split('\n').map(|l| format!("{QUOTE}{l}")).collect::<Vec<_>>().join("\n")
 }
 
 /// Every line break a model or a terminal could read as one — CR LF, CR,
@@ -235,7 +235,7 @@ const QUOTE: &str = "│ ";
 
 /// Text from the log on one line of a summary: neutralised, newlines shown.
 fn inline(text: &str) -> String {
-    lines(&native::neutralised(text, "handoff")).replace('\n', " ⏎ ")
+    lines(&neutral::neutralised(text, "handoff")).replace('\n', " ⏎ ")
 }
 
 /// A name or id from the log inside a marker line: nothing that could end
@@ -306,7 +306,7 @@ fn verbatim(items: &[HistoryItem], t: &TurnSpan, n: usize) -> String {
             // Readable reasoning, framed as the native clients frame it
             // across providers (R-SWITCH-1); encrypted-only has none.
             Item::Reasoning { text, .. } => {
-                if let Some(d) = native::downgraded(&clip(text.trim(), REASONING_CHARS)) {
+                if let Some(d) = neutral::downgraded(&clip(text.trim(), REASONING_CHARS)) {
                     s.push_str(&format!("{}\n", framed(&d)));
                 }
             }

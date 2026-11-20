@@ -102,6 +102,7 @@
 
 pub mod auth;
 pub mod children;
+pub mod messages;
 pub mod stream;
 
 use crate::bridge::{self, BridgeEnv};

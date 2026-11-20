@@ -12,7 +12,7 @@ mod providers;
 use krowk_harness::chat::request_body;
 use krowk_harness::chat::stream::Decoder;
 use krowk_harness::engine::{EngineEvent, HistoryItem};
-use krowk_harness::http::Decode;
+use krowk_harness::wire::Decode;
 use krowk_harness::native::ModelRequest;
 use krowk_harness::protocol::{Effort, ImageRef, Item, WireApi};
 use krowk_harness::sse::SseParser;

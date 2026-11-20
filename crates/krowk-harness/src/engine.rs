@@ -493,6 +493,40 @@ pub async fn sleep_until(deadline: Option<tokio::time::Instant>) {
     }
 }
 
+/// Tokens in a text, estimated at four bytes a token — the ratio providers
+/// quote for English and code. No tokenizer ships with krowk; what the
+/// estimate is for is noticing growth, which it does whatever the true
+/// ratio is.
+pub fn estimate_tokens(text: &str) -> u64 {
+    (text.len() as u64).div_ceil(4)
+}
+
+/// The tool definitions' estimated tokens, over the JSON a provider is sent
+/// for them.
+pub fn tools_tokens(tools: &[ToolDefinition]) -> u64 {
+    tools.iter().map(|t| estimate_tokens(&serde_json::to_string(t).expect("a definition serializes"))).sum()
+}
+
+/// Runs every future to its end at once, and answers in their order: a
+/// fan-out of subagents, which borrow the turn and so cannot be spawned.
+pub(crate) async fn join_all<T>(mut futs: Vec<BoxFuture<'_, T>>) -> Vec<T> {
+    let mut done: Vec<Option<T>> = futs.iter().map(|_| None).collect();
+    std::future::poll_fn(|cx| {
+        let mut pending = false;
+        for (f, slot) in futs.iter_mut().zip(done.iter_mut()) {
+            if slot.is_none() {
+                match f.as_mut().poll(cx) {
+                    std::task::Poll::Ready(v) => *slot = Some(v),
+                    std::task::Poll::Pending => pending = true,
+                }
+            }
+        }
+        if pending { std::task::Poll::Pending } else { std::task::Poll::Ready(()) }
+    })
+    .await;
+    done.into_iter().map(|v| v.expect("every future finished")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
