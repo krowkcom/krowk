@@ -248,6 +248,20 @@ it. In a clone with an origin, a second list says for each other machine
 `run: git clone <origin>`, or the account to sign in. `--json` (the default
 when piped) carries the same, and `krowk hosts` is this command.
 
+Managing them:
+
+  krowk machines add               a code and QR for a phone, or a machine that
+                                   can't sign in; valid 10 minutes and once, and
+                                   this machine asks you to confirm the new one
+                                   by name before anything is added
+  krowk machines remove NAME       take one off and rotate your key
+  krowk machines always-on on|off  keep this machine available while you're away
+  krowk machines recovery          whether you have a recovery kit; `new`,
+                                   `check` or `discard-old` act on it
+
+`krowk devices`, `krowk host enable|disable` and `krowk sync recovery` are older
+names for these and still work.
+
 Read from the registry's synced sessions with this machine's sync keys:
 hosting when it holds one now; reachable directly when this machine's
 Tailscale finds it online. No tag and no admin console step: a host names
@@ -560,7 +574,7 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(relay_command());
     #[cfg(all(feature = "harness", unix))]
-    c.commands.push(Command { subcommands: vec![cmd("list", "krowk machines [list]", "Your machines, and what each can take"), machines_accept()], ..cmd("machines", "", "Your machines, and what each can take") });
+    c.commands.push(Command { subcommands: machines_subcommands(), ..cmd("machines", "", "Your machines, and what each can take") });
     #[cfg(all(feature = "harness", unix))]
     c.commands.push(cmd("hosts", "krowk hosts", "The same as krowk machines"));
     #[cfg(feature = "harness")]
@@ -654,7 +668,7 @@ fn sync_command() -> Command {
             },
             Command {
                 flags: vec![flag("name", STRING, "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)")],
-                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
+                ..cmd("join", "krowk sync join", "Add this machine by the code `krowk machines add` shows")
             },
             #[cfg(unix)]
             Command { hidden: true, ..cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open") },
@@ -773,6 +787,25 @@ fn mcp_command() -> Command {
         ],
         ..cmd("mcp", "", "MCP servers krowk's agent uses (add, remove, list, login)")
     }
+}
+
+#[cfg(all(feature = "harness", unix))]
+fn machines_subcommands() -> Vec<Command> {
+    vec![
+        cmd("list", "krowk machines [list]", "Your machines, and what each can take"),
+        machines_accept(),
+        cmd("add", "krowk machines add", "Show a code and QR that adds a phone, or a machine that can't sign in"),
+        Command { args: vec![arg("name", "The machine's name, as `krowk machines` lists it", true)], ..cmd("remove", "krowk machines remove NAME", "Take a machine off your list and rotate your key") },
+        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away, as a service, or stop that") },
+        Command {
+            subcommands: vec![
+                Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk machines recovery new [--save FILE]", "Make a new recovery kit") },
+                cmd("check", "krowk machines recovery check", "Test the kit's words against your device list, locally"),
+                cmd("discard-old", "krowk machines recovery discard-old", "Drop the old keys a start-over kept aside"),
+            ],
+            ..cmd("recovery", "krowk machines recovery [new|check|discard-old]", "Whether you have a recovery kit; make a new one, or test its words")
+        },
+    ]
 }
 
 #[cfg(all(feature = "harness", unix))]
@@ -1122,11 +1155,11 @@ synced by itself. `sync.auto: false` in ~/.krowk/config.json turns that off,
 and `sync.exclude` or a `.krowk/no-sync` file keeps a directory off sync. A
 session idle for `sync.idleMinutes` (10), with no other device watching it,
 stops syncing until its next prompt here, or until another device opens it
-while the host daemon runs and has stayed online (`krowk host enable` keeps
-it running).",
+while the host daemon runs and has stayed online (`krowk machines always-on on`
+keeps it running).",
         #[cfg(feature = "harness")]
         "devices" => "\
-Adding a machine: `krowk devices add` here shows a code, valid 10 minutes and
+Adding a machine: `krowk machines add` here shows a code, valid 10 minutes and
 once; run `krowk sync join` on the new machine and type it there. The code is
 checked by both machines, not by the registry, and this one asks you to
 confirm the new machine by name before anything is added. A wrong code ends
@@ -1162,7 +1195,7 @@ directories, which a subagent's changes leave to you, are applied.",
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
-`krowk host enable` keeps it running instead, for an always-on machine.",
+`krowk machines always-on on` keeps it running instead, for an always-on machine.",
         _ => "",
     }
 }
@@ -1212,6 +1245,9 @@ pub const GROUPS: &[(&str, &[&str])] = &[
 /// host one.
 pub const ALL_ONLY: &[&str] = &[
     "auth",
+    // Its commands live under `krowk machines` now: add, remove and list.
+    #[cfg(feature = "harness")]
+    "devices",
     "help",
     #[cfg(feature = "harness")]
     "mcp",

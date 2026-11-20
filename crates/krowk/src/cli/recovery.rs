@@ -37,7 +37,7 @@ use serde_json::json;
 /// What skipping the kit risks, said where the person decides and on every
 /// device until there is one. A second device is no backup: it's another
 /// thing to lose.
-pub(super) const NO_KIT: &str = "no recovery kit: if you lose every device you lose every session, and a stolen device that removes the others first can lock you out — `krowk sync recovery new` makes one";
+pub(super) const NO_KIT: &str = "no recovery kit: if you lose every device you lose every session, and a stolen device that removes the others first can lock you out — `krowk machines recovery new` makes one";
 
 /// What to do with a lost kit and working devices: start over from one of
 /// them, which brings their sessions along.
@@ -213,7 +213,7 @@ pub(super) enum Registered {
 /// The first-machine flow's registration (the effect of `sync init` with no
 /// kit, and no prompt): `client`, a key naming the person, starts the list
 /// with this machine. The kit is offered afterwards, not here
-/// (`krowk sync recovery new` makes one on a list without).
+/// (`krowk machines recovery new` makes one on a list without).
 pub(super) fn register_first_device(ctx: &Ctx, client: &Client) -> Result<Registered, Error> {
     let store = super::sync::keystore(ctx)?;
     let holds = |slot| store.holds(slot).map_err(|e| fail("keys_unreadable", e));
@@ -269,14 +269,14 @@ fn finish_start_over(ctx: &mut Ctx, client: Client, old: Old, served: Vec<Signed
     let count = reseal::run(ctx, &client, &me, &old, &keys, &new).map_err(unfinished)?;
     // While the old keys are kept, every `--start-over` lands here: said, so
     // a person who meant to start over again knows nothing new was started.
-    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `krowk sync recovery discard-old` first", resealed(&count));
+    let summary = format!("{}. This went on with the start-over already made; nothing new was started — a new start-over needs `krowk machines recovery discard-old` first", resealed(&count));
     say(ctx, json!({ "resealed": count.sealed, "already": count.already, "left": count.left, "continued": true }), summary)
 }
 
 fn resealed(c: &reseal::Count) -> String {
     let left = match c.left {
         0 => String::new(),
-        _ => " — run `krowk sync init --start-over` again under that workspace's key to finish, and `krowk sync recovery discard-old` once none is left".to_string(),
+        _ => " — run `krowk sync init --start-over` again under that workspace's key to finish, and `krowk machines recovery discard-old` once none is left".to_string(),
     };
     format!("{} re-sealed, {} left (other workspaces or refused){left}", c.sealed, c.left)
 }
@@ -293,17 +293,17 @@ fn init_summary(name: &str, start_over: bool, kept: bool, count: Option<&reseal:
     }
 }
 
-/// `krowk sync recovery discard-old`: drops the old keys a start-over kept
+/// `krowk machines recovery discard-old`: drops the old keys a start-over kept
 /// aside, once the person says so — after being told how many sessions in
 /// this workspace only they still open.
 pub(super) fn discard_old(ctx: &mut Ctx) -> Result<(), Error> {
-    need_person(ctx, "`krowk sync recovery discard-old` throws away the keys that open your old sessions", false)?;
+    need_person(ctx, "`krowk machines recovery discard-old` throws away the keys that open your old sessions", false)?;
     let home = chain::home(ctx)?;
     let Some(old) = reseal::set_aside(&home)? else {
         return say(ctx, json!({ "discarded": false }), "nothing is set aside here — no start-over left old keys behind".into());
     };
     let me = Me::load(ctx)?;
-    let client = super::sync::keyed_client(ctx, "`krowk sync recovery discard-old`")?;
+    let client = super::sync::keyed_client(ctx, "`krowk machines recovery discard-old`")?;
     let v = chain::verified(ctx, &client, &me)?;
     let keys = chain::held_keys(ctx)?.ok_or_else(chain::not_set_up)?;
     let left = reseal::still_left(ctx, &client, &me, &old, &keys, &v.chain)?;
@@ -471,7 +471,7 @@ fn status_lines(v: &chain::Verified, me: &Me, revoked: &[&Device]) -> Vec<String
     }
     for r in revoked {
         let name = super::sync::printable(&r.name);
-        lines.push(format!("'{name}' was revoked on the dashboard but is still on your device list — finish removing it with `krowk devices remove '{name}'`, which rotates your key away from it"));
+        lines.push(format!("'{name}' was revoked on the dashboard but is still on your device list — finish removing it with `krowk machines remove '{name}'`, which rotates your key away from it"));
     }
     lines
 }
@@ -484,7 +484,7 @@ pub(super) fn check(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let why = match kept.recovery() {
         Some(_) => "these words are not the recovery kit on your device list — check each word against where you wrote it down; a kit replaced since is no longer yours",
-        None => "your device list has no recovery kit to check against — `krowk sync recovery new` makes one",
+        None => "your device list has no recovery kit to check against — `krowk machines recovery new` makes one",
     };
     Err(fail("kit_not_on_list", why))
 }
@@ -534,7 +534,7 @@ fn review(ctx: &mut Ctx, chain: &Chain, entries: &[SignedEntry], revoked: &[&Dev
 pub(super) fn recover(ctx: &mut Ctx) -> Result<(), Error> {
     let piped = !ctx.io.stdin_tty;
     need_person(ctx, "`krowk sync recover` goes through every device on your list with you", piped)?;
-    refuse_if_set_up(ctx, "this machine is already set up for sync — `krowk sync recover` is for a new machine; `krowk devices remove` takes a lost device off from here")?;
+    refuse_if_set_up(ctx, "this machine is already set up for sync — `krowk sync recover` is for a new machine; `krowk machines remove` takes a lost device off from here")?;
     let rdev = read_kit(ctx, "Recovery kit (12 words):")?.ok_or_else(|| fail("bad_recovery_kit", "no words were entered, so nothing was done"))?.device();
     let (client, entries) = chain::signed_in_list(ctx, LoginAction::Login)?;
     if entries.is_empty() {
@@ -591,7 +591,7 @@ pub(super) fn offer_kit(ctx: &mut Ctx) -> Result<bool, Error> {
 }
 
 fn make_kit(ctx: &mut Ctx, offered: bool) -> Result<bool, Error> {
-    need_person(ctx, "`krowk sync recovery new` shows a new recovery kit", false)?;
+    need_person(ctx, "`krowk machines recovery new` shows a new recovery kit", false)?;
     let me = Me::load(ctx)?;
     let client = chain::signed_in(ctx, LoginAction::ReplaceKit)?;
     let v = chain::verified(ctx, &client, &me)?;

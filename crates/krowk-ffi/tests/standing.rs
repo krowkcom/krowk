@@ -32,7 +32,7 @@ fn post_of(batch: &Batch, start_over: bool) -> ListPost {
 }
 
 /// The host signs `changes` onto the list, rotating the key for a removal,
-/// as `krowk devices remove` does; the user key it leaves current.
+/// as `krowk machines remove` does; the user key it leaves current.
 fn host_posts(w: &World, held: &krowk_client::user_key::UserKey, changes: impl FnOnce(&Chain) -> Vec<Change<'static>>, time: u64) -> krowk_client::user_key::UserKey {
     let (chain, _) = served(w);
     let (_, batch) = chain.batch(held, changes(&chain), w.host_device.id(), &w.host_signing, time).unwrap();

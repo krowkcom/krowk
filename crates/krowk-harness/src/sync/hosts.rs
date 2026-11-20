@@ -1,4 +1,4 @@
-//! `krowk hosts` (R-NET-4): the machines of yours that host synced
+//! `krowk machines` (R-NET-4): the machines of yours that host synced
 //! sessions, found with no step in the Tailscale admin console. The
 //! registry's sessions say which of your devices host — each sealed index
 //! names the machine that last took its session up, and the lease which one

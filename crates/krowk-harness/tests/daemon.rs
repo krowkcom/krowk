@@ -440,7 +440,7 @@ fn r_host_1_a_request_left_with_no_client_to_answer_it_is_denied() {
     assert!(!home.repo().join("made-by-the-model").exists());
 }
 
-/// R-HOST-2: `krowk host enable` hands the socket over to the service by
+/// R-HOST-2: `krowk machines always-on on` hands the socket over to the service by
 /// asking the daemon krowk started to stop — refused while a turn runs.
 #[test]
 fn r_host_2_a_daemon_stops_when_asked_unless_a_turn_runs() {

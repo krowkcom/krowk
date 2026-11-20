@@ -1369,7 +1369,7 @@ pub enum ClientFrame {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         renamed_to: Option<String>,
     },
-    /// Asks the daemon to exit — `krowk host stop`, or `krowk host enable`
+    /// Asks the daemon to exit — `krowk host stop`, or `krowk machines always-on on`
     /// handing over to the service. Refused with `host_busy` while a turn
     /// runs, and with `host_in_use` while another client is connected
     /// unless `force` (a TUI connected to it reconnects to the next one);

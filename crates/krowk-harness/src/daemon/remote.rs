@@ -1,6 +1,6 @@
 //! A daemon client that outlives its daemon: what the TUI holds for as long
 //! as it is open. A daemon can go while a TUI idles — `krowk host stop
-//! --force`, `krowk host enable` handing over to the service, an upgrade's
+//! --force`, `krowk machines always-on on` handing over to the service, an upgrade's
 //! old daemon killed, a crash — and the TUI's next command then reaches the
 //! next one, started when none runs (`daemon::ensure`), rather than failing
 //! with `host_gone` until krowk is restarted. A turn under way when its

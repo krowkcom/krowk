@@ -1,4 +1,4 @@
-//! `krowk host enable`: the daemon as a service of the user's own — a
+//! `krowk machines always-on on`: the daemon as a service of the user's own — a
 //! systemd user unit on Linux, a launchd agent on macOS (R-HOST-2) — for a
 //! machine that is always on and reached from other devices. Run that way
 //! it has no idle window (`KROWK_HOST_IDLE=0`): the service manager starts
@@ -76,7 +76,7 @@ fn quote(s: &str) -> String {
 fn systemd(exe: &Path, env: &dyn Fn(&str) -> String) -> String {
     let vars: String = environment(env).iter().map(|(k, v)| format!("Environment={}\n", quote(&format!("{k}={v}")))).collect();
     format!(
-        "# Written by `krowk host enable`; `krowk host disable` removes it.\n\
+        "# Written by `krowk machines always-on on`; `krowk machines always-on off` removes it.\n\
          [Unit]\n\
          Description=krowk host: agent sessions that outlive the terminal\n\
          \n\
@@ -103,7 +103,7 @@ fn launchd(exe: &Path, log: &Path, env: &dyn Fn(&str) -> String) -> String {
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
          <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
-         <!-- Written by `krowk host enable`; `krowk host disable` removes it. -->\n\
+         <!-- Written by `krowk machines always-on on`; `krowk machines always-on off` removes it. -->\n\
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key>\n\

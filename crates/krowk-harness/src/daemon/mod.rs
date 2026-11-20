@@ -15,7 +15,7 @@
 //!   a client up, bounded by a snapshot (R-LAG-10).
 //! - `ws` — the WebSocket listener: the same frames in batches, compressed,
 //!   windowed, with heartbeats of their own (R-PROTO-1, R-LAG-3/5/9).
-//! - `service` — `krowk host enable`: the systemd user unit and the launchd
+//! - `service` — `krowk machines always-on on`: the systemd user unit and the launchd
 //!   agent that keep it running on an always-on machine (R-HOST-2).
 //!
 //! Where it listens: `$XDG_RUNTIME_DIR/krowk/<home>/host.sock`, and where
@@ -362,7 +362,7 @@ pub fn pairing_answer(env: &dyn Fn(&str) -> String, version: &str, pairing: &str
 }
 
 /// Stops the daemon that runs, if one does, and waits for its socket to go:
-/// `krowk host enable` hands over to the service, which could not bind
+/// `krowk machines always-on on` hands over to the service, which could not bind
 /// while it listens. Refused while a turn runs. Answers the pid stopped.
 pub fn stop(env: &dyn Fn(&str) -> String, version: &str, force: bool) -> Result<Option<u32>, EngineError> {
     let path = socket(env).map_err(|e| EngineError::new("host_unavailable", e))?;

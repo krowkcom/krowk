@@ -479,7 +479,7 @@ fn d2_bs_code_is_consumed_by_start() {
 
 // ------------------------------------------------- the invite URI (ticket 68)
 
-/// The URI `krowk devices add` draws as a QR code reads back to the same
+/// The URI `krowk machines add` draws as a QR code reads back to the same
 /// code, person and device, and the code in it is the one A shows.
 #[test]
 fn r_e2e_3_an_invite_uri_round_trips() {

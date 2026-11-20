@@ -30,7 +30,7 @@
 //! can be seen read-only (R-HAND-4).
 //!
 //! A phone joins host A's device list with the code on `pair=` (R-E2E-3):
-//! with `--pair`, which `--demo` implies, the fleet runs `krowk devices add`
+//! with `--pair`, which `--demo` implies, the fleet runs `krowk machines add`
 //! as host A — the real CLI, from a debug build at `KROWK_BIN`, its keys in
 //! the fleet's home, saying yes to the device that joins — and prints its
 //! code before `ready`. A code works once: a line `pair` on stdin ends the

@@ -100,7 +100,7 @@ pub const MAX_NAME: usize = 64;
 pub const MAX_OS: usize = 32;
 
 fn failed() -> Error {
-    Error("the pairing failed — run `krowk devices add` again for a new code".into())
+    Error("the pairing failed — run `krowk machines add` again for a new code".into())
 }
 
 // ---------------------------------------------------------------- the code
@@ -203,7 +203,7 @@ impl std::fmt::Debug for PairingCode {
 /// bind two people and a workspace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerKind {
-    /// Another device of the same person (`krowk devices add`): kind 1.
+    /// Another device of the same person (`krowk machines add`): kind 1.
     SamePersonDevice,
 }
 

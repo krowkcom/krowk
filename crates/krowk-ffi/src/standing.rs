@@ -40,7 +40,7 @@ impl Account {
     /// - `device_removed`: the verified list no longer names this phone
     ///   (the list, which only grew, is kept as the pin), or the registry
     ///   refuses its key (`unauthorized`,
-    ///   `device_revoked`): removed with `krowk devices remove`, revoked
+    ///   `device_revoked`): removed with `krowk machines remove`, revoked
     ///   on the dashboard, or left behind by a start-over, which revokes
     ///   the keys of every device it leaves off;
     /// - `device_list_reset`: the list's first entry is not the one kept,
@@ -165,7 +165,7 @@ fn key_refused(e: krowk_client::e2e::Error) -> KrowkError {
 }
 
 fn not_paired() -> KrowkError {
-    refused("not_paired", "this phone is not paired yet — add it from a computer with `krowk devices add`".into())
+    refused("not_paired", "this phone is not paired yet — add it from a computer with `krowk machines add`".into())
 }
 
 fn refused(code: &str, detail: String) -> KrowkError {

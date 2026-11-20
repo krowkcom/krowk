@@ -105,7 +105,7 @@ pub struct Options {
     /// relay alone.
     pub direct: Option<super::direct::Config>,
     /// This machine's tailnet node, kept in the session's sealed index so
-    /// `krowk hosts` finds it on the tailnet (R-NET-4); None when Tailscale
+    /// `krowk machines` finds it on the tailnet (R-NET-4); None when Tailscale
     /// is down.
     pub tailnet: Option<super::tailscale::Tailnet>,
     /// The lease another host handed this one with the session (R-HAND-1):
@@ -312,7 +312,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
 }
 
 /// This machine as the index names its host: what the index is next
-/// written with, so `krowk hosts` lists the session under it.
+/// written with, so `krowk machines` lists the session under it.
 fn hosted_on(o: &Options) -> store::HostedOn {
     store::HostedOn { device: o.device.to_string(), tailnet: o.tailnet.clone() }
 }
