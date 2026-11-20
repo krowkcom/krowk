@@ -1,6 +1,7 @@
 //! `krowk doctor`: describes a broken setup rather than being stopped by one,
 //! so the workspace is resolved by hand and every check reports what it found.
 
+use super::health::{self, Check, Lookup};
 use super::workspace::resolve_workspace;
 use super::{Ctx, VERSION};
 use crate::output::Format;
@@ -22,7 +23,9 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     report.insert("api_status".into(), json!(probe(&client)));
     report.insert("authenticated".into(), json!(client.authenticated()));
     report.insert("token_source".into(), json!(creds::token_source(ctx.io.env, &ws)));
-    report.insert("key".into(), json!(key_summary(&client)));
+    let signed_in = client.authenticated();
+    let verified = signed_in.then(|| client.verify_key());
+    report.insert("key".into(), json!(key_summary(&verified)));
     report.insert("workspace".into(), json!(workspace_summary(ctx, &resolved)));
     // Runs are where metadata goes, and they need a key.
     report.insert("runs_available".into(), json!(client.authenticated()));
@@ -34,13 +37,53 @@ pub(crate) fn doctor(ctx: &mut Ctx) -> Result<(), krowk_api::Error> {
     #[cfg(feature = "harness")]
     report.insert("rollover".into(), rollover_check(ctx));
     report.insert("context".into(), serde_json::to_value(crate::runctx::detect(ctx.io.env)).expect("context serializes"));
+    let checks = all_checks(ctx, &report, signed_in, &verified);
+    let failing = checks.iter().filter(|c| c["status"] == "fail").count();
+    report.insert("checks".into(), Value::Array(checks));
 
     if ctx.format != Format::Human {
-        return ctx.emit(&crate::output::encode(&report));
+        ctx.emit(&crate::output::encode(&report))?;
+    } else {
+        let text = human(&report, ctx.colour);
+        let _ = writeln!(ctx.io.stdout, "{text}");
     }
-    let text = human(&report, ctx.colour);
-    let _ = writeln!(ctx.io.stdout, "{text}");
-    Ok(())
+    // Exits non-zero exactly when a check failed: a warning is worth knowing,
+    // and is no failure.
+    match failing {
+        0 => Ok(()),
+        n => Err(krowk_api::fail("doctor_failed", format!("{} failed — each ✗ line says what fixes it", if n == 1 { "1 check".to_string() } else { format!("{n} checks") }))),
+    }
+}
+
+/// Every check, in the order of importance, each as `name`, `status`,
+/// `message` and — for anything that did not pass — the `fix`.
+fn all_checks(ctx: &Ctx, report: &Map<String, Value>, signed_in: bool, verified: &Option<Result<krowk_api::types::Key, krowk_api::Error>>) -> Vec<Value> {
+    let lookup = match verified {
+        None => Lookup::Unchecked,
+        Some(Ok(k)) => Lookup::Ok { email: k.email.clone(), workspace: k.workspace.clone() },
+        // Neither a good key nor a bad one: the registry did not answer.
+        Some(Err(e)) if e.code() == "network_unreachable" || e.status >= 500 => Lookup::Offline,
+        Some(Err(e)) => Lookup::Rejected(e.code()),
+    };
+    let (mut ours, machine) = health::local(ctx, signed_in, &lookup);
+    let plan = verified.as_ref().and_then(|v| v.as_ref().ok()).map(|k| k.plan.as_str());
+    ours.extend([health::trusted(&health::trust_here(ctx)), health::recovery_kit(&machine), health::plan(plan, &machine)]);
+    let mut out: Vec<Value> = ours.iter().map(Check::json).collect();
+    // The older checks, which carry a `hint` for the fix.
+    let mut older = ["providers", "store", "pricing", "rollover"].into_iter().filter_map(|k| report.get(k)).map(|c| {
+        let mut c = c.clone();
+        if c["status"] != "pass" {
+            if let Some(hint) = c.get("hint").cloned() {
+                c["fix"] = hint;
+            }
+        }
+        c
+    });
+    // The models come before this directory's trust, the rest after.
+    let at = out.iter().position(|c| c["name"] == "trust").unwrap_or(out.len());
+    out.splice(at..at, older.next());
+    out.extend(older);
+    out
 }
 
 /// The report for a person: the facts as a table, then each check with a
@@ -74,19 +117,28 @@ fn human(report: &Map<String, Value>, colour: bool) -> String {
         })
         .collect();
     lines.push(String::new());
-    for (k, label) in [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers"), ("rollover", "Rollover")] {
-        // The agent build has no rollover to check.
-        let Some(check) = report.get(k) else { continue };
+    let mark = |status: &str| match status {
+        "pass" => paint(colour, crate::output::GREEN, "✓"),
+        "skip" => paint(colour, DIM, "-"),
+        "warn" => paint(colour, crate::output::YELLOW, "!"),
+        _ => paint(colour, crate::output::RED, "✗"),
+    };
+    for check in report.get("checks").and_then(Value::as_array).into_iter().flatten() {
         let text = |key: &str| check.get(key).and_then(Value::as_str).unwrap_or_default();
-        let mark = match text("status") {
-            "pass" => paint(colour, crate::output::GREEN, "✓"),
-            "skip" => paint(colour, DIM, "-"),
-            "warn" => paint(colour, crate::output::YELLOW, "!"),
-            _ => paint(colour, crate::output::RED, "✗"),
-        };
-        lines.push(format!("{mark} {label:<13} {}", crate::output::fix::capitalised(text("message"))));
-        if !text("hint").is_empty() && text("status") != "pass" {
-            lines.push(paint(colour, DIM, &format!("  {:<13} {}", "", crate::output::fix::sentence(text("hint")))));
+        let name = text("name");
+        let mark = mark(text("status"));
+        let fix = crate::output::fix::sentence(text("fix"));
+        // The older checks keep their label and a line for the fix; the rest
+        // read as a sentence with the command after a dash.
+        match [("store", "Store"), ("pricing", "Pricing"), ("providers", "Providers"), ("rollover", "Rollover")].iter().find(|(n, _)| *n == name) {
+            Some((_, label)) => {
+                lines.push(format!("{mark} {label:<13} {}", crate::output::fix::capitalised(text("message"))));
+                if !text("fix").is_empty() {
+                    lines.push(paint(colour, DIM, &format!("  {:<13} {fix}", "")));
+                }
+            }
+            None if text("fix").is_empty() => lines.push(format!("{mark} {}", text("message"))),
+            None => lines.push(format!("{mark} {} — {}", text("message"), text("fix"))),
         }
     }
     if let Some(Value::Object(context)) = report.get("context").filter(|c| c.as_object().is_some_and(|m| !m.is_empty())) {
@@ -154,7 +206,7 @@ fn providers_check(ctx: &Ctx) -> Value {
     };
     let states: Map<String, Value> = reports.iter().map(|r| (r.instance.clone(), json!(r.readiness.state()))).collect();
     let mut v = json!({ "name": "providers", "status": if ready.is_empty() { "warn" } else { "pass" }, "message": message, "instances": states });
-    v["hint"] = json!("run `krowk status` for where each key or login comes from, and what fixes it");
+    v["hint"] = json!("run `krowk connect` to add one, or `krowk status` for where each key or login comes from");
     v
 }
 
@@ -202,14 +254,12 @@ fn probe(client: &Client) -> String {
     }
 }
 
-fn key_summary(client: &Client) -> String {
-    if !client.authenticated() {
-        return "none — uploads will be anonymous".into();
-    }
-    match client.verify_key() {
-        Ok(k) if !k.name.is_empty() => format!("{} ({}) {}", k.key_id, k.workspace, k.name),
-        Ok(k) => format!("{} ({})", k.key_id, k.workspace),
-        Err(e) => format!("rejected — {}", e.code()),
+fn key_summary(verified: &Option<Result<krowk_api::types::Key, krowk_api::Error>>) -> String {
+    match verified {
+        None => "none — uploads will be anonymous".into(),
+        Some(Ok(k)) if !k.name.is_empty() => format!("{} ({}) {}", k.key_id, k.workspace, k.name),
+        Some(Ok(k)) => format!("{} ({})", k.key_id, k.workspace),
+        Some(Err(e)) => format!("rejected — {}", e.code()),
     }
 }
 

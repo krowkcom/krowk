@@ -216,6 +216,9 @@ pub struct Options {
     /// kit: the status line says so until one is made (canon, devices.md →
     /// Skippable, with a reminder).
     pub no_recovery_kit: bool,
+    /// The most important problem with the setup, as `krowk doctor` would
+    /// name it with its fix, for the status line: none when all is well.
+    pub top_problem: Option<String>,
     /// A newer release: a header row when it is due, and always a line in
     /// the details overlay (canon, harness.md → Update notice).
     pub update: Option<app::Update>,
@@ -516,6 +519,7 @@ async fn session(opts: Options) -> Outcome {
     app.model = shown;
     app.device = device::name(&|k| std::env::var(k).unwrap_or_default());
     app.no_recovery_kit = opts.no_recovery_kit;
+    app.top_problem = opts.top_problem;
     app.update = opts.update;
     app.skills = krowk_harness::compat::skills::discover(&opts.host.permissions, &opts.host.cwd).into_iter().filter(|k| k.user_invocable).map(|k| (k.name, k.description)).collect();
     app.vendor_instances = opts.host.registry.instances.values().filter(|i| i.backend.is_some()).map(|i| i.name.clone()).collect();

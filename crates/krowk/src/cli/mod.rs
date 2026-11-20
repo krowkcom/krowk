@@ -6,6 +6,7 @@ mod auth;
 mod billing;
 pub mod catalog;
 mod doctor;
+mod health;
 pub mod exit;
 pub mod flags;
 pub mod help;
