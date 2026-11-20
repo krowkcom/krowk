@@ -157,10 +157,12 @@ stdout:
 krowk config — Show or set configuration
 
 Pins a repository, or the machine, to a workspace: `krowk help workspaces`.
+`config get <key>` prints one key's effective value and its source.
 
 Commands (krowk config …)
   show                        The effective configuration, and which layer set
                               each value
+  get <key>                   One key's effective value and where it comes from
   set <key> <value> [--global]
                               Write one value into the repo config, or the
                               global one
