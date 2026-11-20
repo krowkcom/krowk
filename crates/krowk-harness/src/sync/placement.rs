@@ -61,8 +61,8 @@
 //! caller's, never retried (D11): `Failure`. A machine with no announcement
 //! for `OFFLINE_AFTER` and no stream from the child has gone (R-ALLOC-9).
 //!
-//! Slice 07 builds `busy`, `ruled_out`, `choose` and the `Placer`; slice 08
-//! calls it from krowk-mcp.
+//! krowk's own agent places its subagents with the `Placer`, and krowk-mcp
+//! its `krowk_delegate` tasks (`Here::Worktree`).
 
 use super::announce::Announcer;
 use krowk_client::host_command::{key_shaped, slug_shaped, HostAnswer, JobRef, ModelChoice, RunTask};
@@ -535,7 +535,9 @@ impl Default for Timing {
 pub struct LocalRun {
     pub summary: String,
     pub usage: Usage,
-    pub worktree: crate::worktree::Worktree,
+    /// Where its changes are; none when it changed nothing, which leaves
+    /// no worktree to land.
+    pub worktree: Option<crate::worktree::Worktree>,
     pub denied: Vec<String>,
 }
 
@@ -900,8 +902,13 @@ impl Placer {
         task.set(State::Running { machine: name.to_string(), child: String::new(), why });
         let failed = |reason: String| Failure::Failed { machine: name.to_string(), reason };
         let ran = f.run_local(spec, model).map_err(&failed)?;
-        let landed = f.land_local(&ran.worktree, &spec.cwd).map_err(|e| failed(format!("its changes could not be applied: {e}")))?;
-        let (applied, kept) = split(&ran.worktree, landed);
+        let (applied, kept) = match &ran.worktree {
+            Some(wt) => {
+                let landed = f.land_local(wt, &spec.cwd).map_err(|e| failed(format!("its changes could not be applied: {e}")))?;
+                split(wt, landed)
+            }
+            None => (Vec::new(), None),
+        };
         Ok(Some(Outcome { summary: ran.summary, applied, kept, denied: ran.denied, usage: ran.usage, machine: name.to_string() }))
     }
 

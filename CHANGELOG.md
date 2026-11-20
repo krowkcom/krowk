@@ -11,6 +11,20 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **Claude Code and Codex can hand a task to the machine with room.** With
+  krowk-mcp added and sync set up, `krowk_delegate` takes a task (and an
+  optional `host` and `model`), returns a task id at once and runs it on this
+  machine unless it is busy, otherwise on another of yours, from your working
+  tree's exact state. `krowk_collect` waits for it (five minutes at most,
+  then says it is still running, and you collect again) and returns the
+  summary, what was applied to the working tree the server runs in or kept,
+  the approvals it was denied, its usage and the machine; the changes land
+  when the task finishes.
+  `krowk_machines` lists your machines as `krowk machines --json` does.
+  Tasks live in the krowk-mcp process, so a restart forgets them (the child
+  keeps running on its machine, and its work stays in that machine's
+  worktree).
+
 - **krowk's own agent starts a subagent on the machine with room.** With
   sync set up, a subagent stays on this machine unless it is busy (every
   build or agent slot in use, load at the core count, or under 2 GiB free);
