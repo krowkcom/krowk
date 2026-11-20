@@ -56,7 +56,6 @@ impl Sandbox {
             .env("KROWK_NO_UPDATE_CHECK", "1")
             // The TUI runs its sessions in this process here: the daemon has
             // its own tests (tui.rs, host_daemon), and none is left behind.
-            .env("KROWK_TUI_HOST", "local")
             .env("FAKE_CLAUDE_LOG", self.root.join("fake.log"))
             .current_dir(self.root.join("repo"))
             .stdin(Stdio::null());
@@ -349,51 +348,6 @@ fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
             assert!(!st.success(), "{st}");
             assert!(!trusted.exists());
             assert!(!b.fake_log().contains("argv -p"), "claude never ran");
-        }
-    }
-}
-
-/// Bare `krowk` on a terminal, on a Claude Code instance, in a repository
-/// nobody trusted: the trust prompt comes before the TUI takes the
-/// terminal, a yes is remembered and the session runs on the fake claude;
-/// a no opens the TUI anyway, and the first prompt is refused with why,
-/// with nothing spawned.
-#[test]
-fn r_back_6_the_tui_asks_before_claude_runs_in_an_untrusted_repository() {
-    for yes in [true, false] {
-        let b = Sandbox::new(if yes { "tui-yes" } else { "tui-no" });
-        b.json(&["providers", "add", "claude", "--json"], &[]);
-        let cmd = b.command(&["--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
-        // Wide enough that a long temporary path does not wrap the question.
-        let mut t = pty::Pty::spawn(cmd, 400, 30);
-        assert!(t.wait_for("[y/N]", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
-        assert!(t.text().contains("Trust ") && t.text().contains("Claude Code runs a repository's own hooks"), "{:?}", t.text());
-        assert!(!b.fake_log().contains("argv -p"), "nothing spawned before the answer");
-        t.write(if yes { b"y\r" } else { b"n\r" });
-        assert!(t.wait_for("anything", std::time::Duration::from_secs(10)).is_some(), "the TUI opens: {:?}", t.text());
-        t.write(b"hello\r");
-        let trusted = b.root.join("home/.krowk/trusted.json");
-        if yes {
-            assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
-            assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "a yes is remembered");
-            assert!(b.fake_log().contains("argv -p"));
-        } else {
-            assert!(t.wait_for_words("type /trust", std::time::Duration::from_secs(10)).is_some(), "the refusal says why, and how to take the no back: {:?}", t.text());
-            assert!(!b.fake_log().contains("argv -p"), "claude never ran");
-            assert!(!trusted.exists());
-            // The no taken back: `/trust`, and the next prompt runs.
-            t.write(b"/trust\r");
-            assert!(t.wait_for_words("and remembered", std::time::Duration::from_secs(10)).is_some(), "{:?}", t.text());
-            assert!(std::fs::read_to_string(&trusted).unwrap().contains(&b.root.join("repo").display().to_string()), "remembered");
-            t.write(b"again\r");
-            assert!(t.wait_for("tokens", std::time::Duration::from_secs(10)).is_some(), "the turn ran on Claude Code: {:?}", t.text());
-            assert!(b.fake_log().contains("argv -p"));
-        }
-        t.write(b"\x04\x04");
-        let st = t.wait(std::time::Duration::from_secs(10)).expect("krowk exits on Ctrl-D");
-        assert!(st.success(), "{st}");
-        if yes {
-            assert!(b.fake_log().lines().last() == Some("eof"), "the TUI let Claude Code go cleanly: {}", b.fake_log());
         }
     }
 }

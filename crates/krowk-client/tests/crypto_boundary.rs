@@ -73,7 +73,7 @@ fn r_e2e_2_r_client_1_no_crate_but_krowk_client_imports_a_crypto_primitive() {
     let m = metadata();
     let names: Vec<&str> = m["packages"].as_array().unwrap().iter().filter_map(|p| p["name"].as_str()).collect();
     // The workspace is what it should be, so an empty answer means something.
-    for crate_name in ["krowk", "krowk-harness", "krowk-tui", "krowk-api", OWNER] {
+    for crate_name in ["krowk", "krowk-harness", "krowk-devregistry", "krowk-api", OWNER] {
         assert!(names.contains(&crate_name), "{crate_name} is not in the workspace: {names:?}");
     }
     let owner = m["packages"].as_array().unwrap().iter().find(|p| p["name"] == OWNER).unwrap();
@@ -92,7 +92,7 @@ fn r_e2e_2_the_crypto_import_test_fails_when_another_crate_adds_one() {
     for p in m["packages"].as_array_mut().unwrap() {
         let add = match p["name"].as_str() {
             Some("krowk-harness") => serde_json::json!({"name": "chacha20poly1305", "kind": null, "rename": null}),
-            Some("krowk-tui") => serde_json::json!({"name": "x25519-dalek", "kind": "dev", "rename": null}),
+            Some("krowk-devregistry") => serde_json::json!({"name": "x25519-dalek", "kind": "dev", "rename": null}),
             Some("krowk") => serde_json::json!({"name": "hpke", "kind": null, "rename": "not_crypto"}),
             Some("krowk-api") => serde_json::json!({"name": "aes-gcm", "kind": "build", "rename": null}),
             Some("krowk-store") => serde_json::json!({"name": "hmac", "kind": null, "rename": null, "target": "cfg(windows)"}),
@@ -107,6 +107,6 @@ fn r_e2e_2_the_crypto_import_test_fails_when_another_crate_adds_one() {
     assert!(found.contains(&"krowk-store depends on hmac (normal)".to_string()), "a target-specific dependency: {found:?}");
     assert!(found.contains(&"krowk-import depends on libcrux-sha2 (normal)".to_string()), "{found:?}");
     assert!(found.contains(&"krowk-harness depends on chacha20poly1305 (normal)".to_string()), "{found:?}");
-    assert!(found.contains(&"krowk-tui depends on x25519-dalek (dev)".to_string()), "{found:?}");
+    assert!(found.contains(&"krowk-devregistry depends on x25519-dalek (dev)".to_string()), "{found:?}");
     assert!(found.contains(&"krowk depends on hpke (normal)".to_string()), "{found:?}");
 }

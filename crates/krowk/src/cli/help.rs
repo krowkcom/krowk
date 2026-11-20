@@ -46,16 +46,16 @@ pub struct Files<'a> {
 
 #[cfg(feature = "harness")]
 const USAGE: &[(&str, &str)] =
-    &[("krowk", "Open the agent here"), ("krowk -p \"…\"", "One prompt, headless"), ("krowk <command> [flags]", "")];
+    &[("krowk -p \"…\"", "One prompt, headless"), ("krowk <command> [flags]", "")];
 #[cfg(not(feature = "harness"))]
 const USAGE: &[(&str, &str)] = &[("krowk <command> [flags]", ""), ("krowk push shot.png", "Upload a file, get a link")];
 
 /// The flags worth knowing before any command; `krowk help flags` has them all.
 const FLAGS: &[(&str, &str)] = &[
     #[cfg(feature = "harness")]
-    ("--model <instance/model>", "Which model (e.g. claude/sonnet)"),
+    ("--model <instance/model>", "With -p: which model (e.g. claude/sonnet)"),
     #[cfg(feature = "harness")]
-    ("--resume · --worktree", "Continue a session, or start one in a worktree"),
+    ("--resume · --worktree", "With -p: continue a session, or start one in a worktree"),
     ("--json · --jq <expr>", "Output as JSON, or filter it"),
     ("-h, --help · -v, --version", ""),
 ];

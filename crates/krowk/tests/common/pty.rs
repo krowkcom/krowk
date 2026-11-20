@@ -1,9 +1,9 @@
-//! A pseudo-terminal to run the TUI on, for the tests and the budgets: the
+//! A pseudo-terminal to run krowk on, for the tests and the budgets: the
 //! child gets the slave side as its stdin, stdout, stderr and controlling
 //! terminal, and everything it draws is collected from the master side.
 //!
-//! Nothing emulates a screen here — tmux does that where a test needs one.
-//! The one thing a terminal must do for the TUI to start is answer "where
+//! Nothing emulates a screen here, so tests read the bytes.
+//! The one thing a terminal must do for a full-screen program is answer "where
 //! is the cursor" (CSI 6n), so the reader does: row 1, column 1, which is
 //! where a fresh terminal's cursor is. Each synchronized-update start (CSI
 //! ?2026h) is timestamped as it arrives: one per frame drawn.

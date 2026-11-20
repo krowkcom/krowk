@@ -405,30 +405,6 @@ pub(crate) fn maybe_notify(ctx: &mut Ctx) {
     write_state(&path, &state);
 }
 
-/// For the TUI, which waits on no network before its prompt (R-PERF-1): the
-/// last check's answer, marked shown when it is due, and a check for the
-/// next start run on a thread of its own when that one is a day old.
-#[cfg(feature = "harness")]
-pub(crate) fn for_tui(ctx: &Ctx) -> Option<Newer> {
-    if !enabled(ctx) {
-        return None;
-    }
-    let path = state_path(ctx)?;
-    let mut state = read_state(&path);
-    let now = jiff::Timestamp::now();
-    let n = newer(&state, VERSION, now);
-    // Marked before the refresh starts, which reads the file again only
-    // once its answer is in.
-    if let Some(n) = n.as_ref().filter(|n| n.due) {
-        mark_shown(&mut state, &n.line, now);
-        write_state(&path, &state);
-    }
-    if stale(&state, now) {
-        std::thread::spawn(move || refresh(&path, Duration::from_secs(10)));
-    }
-    n
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

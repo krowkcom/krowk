@@ -269,5 +269,5 @@ fn wt6_help_lists_the_flag_and_sessions_keeps_its_own() {
     assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
     // Anywhere else, it is named as the flag of what takes it.
     let o = b.krowk_in(&b.repo(), &["worktrees", "list", "--worktree"]);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("`krowk -p` and the TUI"), "{}", String::from_utf8_lossy(&o.stderr));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("`krowk -p`"), "{}", String::from_utf8_lossy(&o.stderr));
 }

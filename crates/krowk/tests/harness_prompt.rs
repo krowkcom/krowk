@@ -678,3 +678,42 @@ fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
     let err = String::from_utf8_lossy(&out.stderr);
     assert!(!out.status.success() && err.contains("bad_config") && err.contains("auto, offer, off"), "{err}");
 }
+
+/// R-CUT-8, D9: bare `krowk` on a terminal prints the overview it prints without
+/// one; a flag that once opened the TUI, given with no command and no `-p`,
+/// is refused with the way to `-p`, and `--resume` with no value is refused
+/// whatever else is given; the commands that own those flags still take them.
+#[cfg(unix)]
+#[test]
+fn r_cut_8_bare_krowk_on_a_terminal_prints_the_overview_and_the_old_tui_flags_point_to_p() {
+    let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
+    let b = Sandbox::new("bare-tty", &m.url);
+    let on_a_tty = |args: &[&str]| {
+        let mut c = b.command(args, "sk-test");
+        c.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+        let mut t = pty::Pty::spawn(c, 120, 40);
+        let st = t.wait(std::time::Duration::from_secs(20)).expect("krowk exits at once");
+        (t.text().replace("\r\n", "\n"), st)
+    };
+    let mut piped = b.command(&[], "sk-test");
+    piped.env("NO_COLOR", "1").env("TERM", "xterm-256color");
+    let piped = piped.output().unwrap();
+    assert!(piped.status.success());
+    let (greeting, st) = on_a_tty(&[]);
+    assert!(st.success(), "{greeting}");
+    assert_eq!(greeting, String::from_utf8_lossy(&piped.stdout), "the same greeting on a terminal as off it");
+
+    for args in [&["--model", "x"][..], &["--permission-mode", "plan"], &["--toolset", "none"], &["--effort", "low"], &["--resume", "abc"], &["--worktree"], &["--max-usd", "1"], &["--max-tokens", "10"]] {
+        let (said, st) = on_a_tty(args);
+        assert!(!st.success() && said.contains("-p") && said.contains(&format!("--{}", &args[0][2..])), "{args:?}: {said}");
+    }
+    for with_p in [false, true] {
+        let (said, st) = on_a_tty(&[if with_p { &["-p", "hi"][..] } else { &[] }, &["--resume"]].concat());
+        assert!(!st.success() && said.contains("--resume needs a value"), "-p {with_p}: {said}");
+    }
+    // The commands that own the flags are unchanged.
+    let out = b.krowk(&["sessions", "--worktree", "/nowhere", "--json"]);
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let out = b.krowk(&["sessions", "budget", "--max-usd", "1", "--json"]);
+    assert!(!String::from_utf8_lossy(&out.stderr).contains("only a flag"), "{}", String::from_utf8_lossy(&out.stderr));
+}
