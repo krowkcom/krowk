@@ -2499,12 +2499,15 @@ async fn take_up(w: &World, b: &Device, session: &str, a_bridge: tokio::task::Jo
 
     // B takes it up, as `krowk sync take` does.
     let (api, keys, chain, id, slug, b_env2, from, me, wt_root, b_repo2) = (w.as_device(b), w.keys(), w.chain(), session.to_string(), handed.transport.clone(), b_env.clone(), handed.from_device.clone(), b.key.id().to_string(), w.root.join("worktrees-b"), b_repo.clone());
+    let claude_home = w.root.join("claude");
     let key = handoff::key_from_hex(&handed.key).unwrap();
     let applied = tokio::task::spawn_blocking(move || {
         let sealed = api.read_transport(&slug).unwrap();
         let plain = e2e::open_transport(&sealed, &krowk_harness::daemon::ws::uuid(&id), &key).unwrap();
         let bundle = handoff::Bundle::decode(&plain, &id).unwrap();
         let applied = handoff::apply(&bundle, &b_repo2, &wt_root).unwrap();
+        // As `krowk sync take` does: Claude Code's transcript, where B's resumes it.
+        handoff::place_transcript(&bundle, &claude_home, &applied.cwd).unwrap();
         api.spend_transport(&slug).unwrap();
         let gone = api.read_transport(&slug).unwrap_err();
         assert_eq!(gone.status, 404, "R-HAND-2: a transport is read once, and gone when spent");
@@ -2607,6 +2610,7 @@ async fn r_hand_1_a_session_moves_to_b_mid_task_with_its_work_and_c_stays_attach
         assert!(sent.contains("make the file"), "{sent}");
         assert!(!sent.contains("file is gone"), "and does not call it gone");
     }
+    assert!(moved_transcript(&w).contains(&data), "R-IMG-12: the transcript B's claude resumed carries the image A's first turn named");
     assert!(!repo.join("approved.txt").exists(), "not on A");
     let b_log = std::fs::read_to_string(log::sessions_dir(&b_env).unwrap().join(&session).join("events.jsonl")).unwrap();
     assert!(b_log.contains("session.moved"), "B logged the move");
@@ -2698,6 +2702,8 @@ async fn r_img_wave_three_screenshots_over_4_mib_reach_the_model_the_registry_an
     cv.commands.send(w.prompt(Some(&session), "and what did you see before the move?")).unwrap();
     until(&mut cv, Duration::from_secs(30), &mut frames, result_of).await;
     assert!(fake::prompts(&w.root, "claude").iter().any(|p| p.to_string().contains("and what did you see before the move?")), "B called the model");
+    let carried = moved_transcript(&w);
+    assert!(want.iter().all(|d| carried.contains(d.as_str())), "the transcript B's claude resumed carries the earlier three");
     // Both resolved: macOS reaches the temp folder through /var -> /private/var.
     assert!(applied.cwd.canonicalize().unwrap().starts_with(w.root.join("worktrees-b").canonicalize().unwrap()), "the turn ran in B's worktree");
 }
@@ -2806,6 +2812,15 @@ async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     let walk = |head: &String| log::branch(&events, head).iter().map(|e| e.id.clone()).collect::<Vec<_>>();
     assert_eq!(walk(parent_ids.last().unwrap()), parent_ids, "the parent's replay is its own log's, the child's events left out");
     assert_eq!(walk(child_ids.last().unwrap()), child_ids, "the child is rebuilt from the parent's chunks");
+}
+
+/// The Claude Code transcript the handoff placed for B's worktree (its
+/// directory is named after B's `worktrees-b`), as B's claude resumed it.
+fn moved_transcript(w: &World) -> String {
+    let projects = w.root.join("claude/projects");
+    let dirs = std::fs::read_dir(&projects).unwrap_or_else(|e| panic!("{}: {e}", projects.display()));
+    let dir = dirs.flatten().find(|d| d.file_name().to_string_lossy().contains("worktrees-b")).unwrap_or_else(|| panic!("no transcript placed for B's worktree under {}", projects.display()));
+    std::fs::read_dir(dir.path()).unwrap().flatten().map(|f| std::fs::read_to_string(f.path()).unwrap()).collect()
 }
 
 /// The fake `claude` beside the Claude Code tests, as an instance whose

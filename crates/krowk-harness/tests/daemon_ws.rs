@@ -219,7 +219,8 @@ fn held_typing(n: usize, pause: f64, hold: f64) -> String {
     out.push(format!("@sleep {hold}"));
     out.push(event(serde_json::json!({"type": "content_block_stop", "index": 0})));
     out.push(event(serde_json::json!({"type": "message_stop"})));
-    out.push(fake::answer(&words(n)));
+    // The closing message is the one streamed, as Claude Code sends it.
+    out.push(fake::answer(&words(n)).replacen("msg_fake", "msg_held", 1));
     out.join("\n")
 }
 

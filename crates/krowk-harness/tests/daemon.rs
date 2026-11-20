@@ -380,7 +380,7 @@ fn r_host_1_two_krowks_starting_at_once_spawn_one_daemon_over_a_stale_socket() {
 /// A model that asks to run one bash command, then answers once it has the
 /// result. It runs nothing: were it allowed, the file would be the test's.
 fn runs_bash() -> String {
-    format!("{}\n{}", fake::asks_bash("toolu_01Call", "touch made-by-the-model"), fake::answer("Done."))
+    format!("{}\n@touch made-by-the-model\n{}", fake::asks_bash("toolu_01Call", "touch made-by-the-model"), fake::answer("Done."))
 }
 
 fn tool_result(lines: &[StreamLine]) -> Option<(String, bool)> {

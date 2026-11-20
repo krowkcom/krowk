@@ -60,7 +60,7 @@ fn scenario_text() -> String {
 {"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":[],"session_id":"{{SESSION}}"}"#;
     let sections = [
         format!("@when make the allowed file\n{}\n@touch allowed.txt\n{}", fake::asks_bash("toolu_allowed", "touch allowed.txt"), fake::answer("made it")),
-        format!("@when make the denied file\n{}\n{}", fake::asks_bash("toolu_denied", "touch denied.txt"), fake::answer("did not")),
+        format!("@when make the denied file\n{}\n{}", fake::asks_bash("toolu_denied", "touch denied.txt"), "@touch denied.txt\n".to_string() + &fake::answer("did not")),
         format!("@when a long answer\n@type 40 0.02 word\n@await-interrupt\n{interrupted}"),
         format!("@when run two agents\n{}", agents().0),
         format!("@when {LIMITED}\n{limited}"),
@@ -379,7 +379,7 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     view.type_line("/interrupt");
     let result = view.until("the turn's end", is("result"));
     assert_eq!(result["status"], "interrupted", "B's /interrupt stopped the turn: {result}");
-    assert!(!result["result"].as_str().unwrap_or_default().contains("word399"), "short of its end: {result}");
+    assert!(!result["result"].as_str().unwrap_or_default().contains("word39"), "short of its end: {result}");
 
     // Said on stderr beside each approval line: what answers it.
     let said = view.stderr();

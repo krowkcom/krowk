@@ -595,8 +595,10 @@ fn an_image_sent_with_a_prompt_is_kept_beside_the_log_and_reaches_the_model() {
     assert_eq!(std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(&file).unwrap().permissions()) & 0o777, 0o600);
     let sent = fake::prompts(&home.root, "claude");
     let content = &sent[0]["message"]["content"];
-    let image = content.as_array().unwrap().iter().find(|b| b["type"] == "image").unwrap_or_else(|| panic!("{content}"));
-    assert_eq!(image["source"]["data"], data.as_str(), "{content}");
+    // The prompt, its label, then the image it names.
+    assert_eq!(content[1]["text"], "[Image #1]", "{content}");
+    assert_eq!(content[2]["type"], "image", "{content}");
+    assert_eq!(content[2]["source"]["data"], data.as_str(), "{content}");
 }
 
 /// The last message of a request, as JSON text.

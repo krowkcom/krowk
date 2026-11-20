@@ -1372,6 +1372,35 @@ fn a_bare_model_goes_to_the_one_ready_instance() {
     assert!(status_cwds(&w.fake_log("claude-work")).iter().all(|d| *d == w.root.join("repo")), "{}", w.fake_log("claude-work"));
 }
 
+/// A bare model stays on the session's account; with no session and two
+/// accounts that could run it — one whose check could not answer among
+/// them — it is refused, each named, never guessed.
+#[test]
+fn a_bare_model_stays_on_the_sessions_account_and_two_accounts_are_refused_as_ambiguous() {
+    let mut w = World::new("routing-accounts");
+    let rt = rt();
+    w.claude("claude:personal", "claude-personal", None, true);
+    let host = w.host();
+    let bare = |m: &str| Asked::Bare(m.into());
+    let repo = w.root.join("repo");
+    let on_personal = ModelRef { instance: "claude:personal".into(), model: "sonnet".into() };
+    assert_eq!(rt.block_on(host.route_model(Some(&bare("haiku")), Some(&on_personal), &repo)).unwrap(), ModelRef { instance: "claude:personal".into(), model: "haiku".into() });
+    let e = rt.block_on(host.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();
+    assert_eq!(e.code, "ambiguous_model");
+    assert!(e.message.contains("claude:work, Claude subscription: --model claude:work/haiku") && e.message.contains("claude:personal, Claude subscription: --model claude:personal/haiku"), "{}", e.message);
+    // A subscription whose check could not answer is a candidate too.
+    if let Some((_, InstanceKind::ClaudeCode { binary, .. })) = w.instances.iter_mut().find(|(n, _)| n == "claude:personal") {
+        let broken = w.root.join("bin/claude-broken");
+        std::fs::write(&broken, "#!/bin/sh\necho 'not json'\nexit 3\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&broken, std::fs::Permissions::from_mode(0o755)).unwrap();
+        *binary = Some(broken.display().to_string());
+    }
+    let host = w.host();
+    let e = rt.block_on(host.route_model(Some(&bare("haiku")), None, &repo)).unwrap_err();
+    assert!(e.code == "ambiguous_model" && e.message.contains("claude:personal, Claude subscription: --model claude:personal/haiku (could not be checked"), "{}", e.message);
+}
+
 /// Native-only: the API-key instances beside the subscriptions.
 #[test]
 fn a_bare_model_stays_on_the_sessions_account_and_refuses_to_guess() {

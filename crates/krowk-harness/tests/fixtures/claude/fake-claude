@@ -43,12 +43,14 @@
 #                      does once the model reads it
 #   @sleep <seconds>   waits
 #   @type <n> <seconds> <word> [<per>]
-#                      types an answer of <n> words, `<word>0 <word>1 …`,
+#                      types an answer of <n> words, `<word>0 <word>1 …`
+#                      (<word> letters and digits only),
 #                      as stream events, <per> words (1 without it) and
 #                      then a wait of <seconds> (none for 0), and then the
 #                      whole `assistant` message: a model typing at a known rate
 #   @touch <path>      makes the file, in the working directory if relative,
-#                      as an allowed Bash or Write call would
+#                      as an allowed Bash or Write call would: unless the
+#                      last `@ask` was answered with a denial
 #   @exit <code>       exits mid-turn, as a crashed process would
 #   @exit-once <code>  the same, the first time only (a marker in the config dir)
 #   @mode <mode>       the mode later turns report, as an approved
@@ -406,7 +408,7 @@ type_words() {
     text="$text$piece"
     emit '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"'"$piece"'"}},'"$tail"
     i=$((i + 1))
-    [ "$pause" != 0 ] && [ $((i % per)) -eq 0 ] && sleep "$pause"
+    [ "$pause" != 0 ] && [ $((i % (per > 0 ? per : 1))) -eq 0 ] && sleep "$pause"
   done
   emit '{"type":"stream_event","event":{"type":"content_block_stop","index":0},'"$tail"
   emit '{"type":"stream_event","event":{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":'"$n"'}},'"$tail"
@@ -425,8 +427,13 @@ play() {
       return
       ;;
     '') ;;
-    '@type '*) type_words ${l#@type } ;;
-    '@touch '*) : >"${l#@touch }" && log "touched ${l#@touch }" ;;
+    '@type '*) set -f; type_words ${l#@type }; set +f ;;
+    '@touch '*)
+      case "$ANSWER" in
+      *'"behavior":"deny"'*) log "not touched ${l#@touch }" ;;
+      *) : >"${l#@touch }" && log "touched ${l#@touch }" ;;
+      esac
+      ;;
     '@ask '*) ask "${l#@ask }" ;;
     '@tool_result '*) tool_result "${l#@tool_result }" ;;
     @await-interrupt) await_interrupt ;;
