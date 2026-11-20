@@ -313,6 +313,9 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     if hosts.is_empty() {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
     }
+    // A new machine that signed in, and the code to type on it: last, as it
+    // waits on a person.
+    super::pairing::show_offer(ctx);
     Ok(())
 }
 

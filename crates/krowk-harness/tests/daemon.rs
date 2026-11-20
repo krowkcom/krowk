@@ -96,7 +96,7 @@ impl Home {
                     session: Default::default(),
                 })
             });
-            server::run(server::Options { socket, idle, krowk_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, ..Default::default() }, factory)
+            server::run(server::Options { socket, idle, krowk_version: version, kick, turns: hooks.turns, bridged: hooks.bridged, introductions: hooks.introductions, ..Default::default() }, factory)
         });
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
         while std::os::unix::net::UnixStream::connect(self.socket()).is_err() {
@@ -136,6 +136,7 @@ impl Home {
 struct Hooks {
     turns: Option<tokio::sync::mpsc::UnboundedSender<server::TurnEvent>>,
     bridged: Option<Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>>,
+    introductions: Option<Arc<krowk_harness::sync::introduce::Introductions>>,
 }
 
 impl Drop for Home {
@@ -1172,7 +1173,7 @@ fn r_lag_9_the_turn_hook_is_told_each_sessions_own_turns_and_never_a_subagents()
     });
     let home = Home::new("turns", &m.url);
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-    let daemon = home.serve_hooked("test", Some(Duration::from_millis(300)), None, Hooks { turns: Some(tx), bridged: None });
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(300)), None, Hooks { turns: Some(tx), bridged: None, introductions: None });
     let rt = rt();
     rt.block_on(async {
         let c = home.client().await;
@@ -1210,12 +1211,66 @@ fn r_host_1_status_reports_the_bridged_sessions_only_with_a_supervisor() {
     daemon.join().unwrap().unwrap();
 
     let set = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let daemon = home.serve_hooked("test", Some(Duration::from_millis(200)), None, Hooks { turns: None, bridged: Some(set.clone()) });
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(200)), None, Hooks { turns: None, bridged: Some(set.clone()), introductions: None });
     rt().block_on(async {
         let c = home.client().await;
         assert_eq!(c.status().await.unwrap().bridged, Some(Vec::new()));
         set.lock().unwrap().extend(["b".to_string(), "a".to_string()]);
         assert_eq!(c.status().await.unwrap().bridged, Some(vec!["a".to_string(), "b".to_string()]));
+    });
+    daemon.join().unwrap().unwrap();
+}
+
+/// R-EASE-5: a client of the unix socket asks the offer a host opened for a
+/// new machine and sends the person's answer; with no pairing waiting for
+/// one, an answer is refused, and a daemon with no introductions has no
+/// offer to tell.
+#[test]
+fn r_ease_5_a_client_reads_the_pairing_offer_and_an_answer_with_none_waiting_is_refused() {
+    use krowk_api::sync::DeliveredPairingRequest;
+    use krowk_harness::sync::introduce::Introductions;
+    let home = Home::new("offer", "http://127.0.0.1:9");
+    let daemon = home.serve(Some(Duration::from_millis(200)));
+    rt().block_on(async { assert_eq!(home.client().await.pairing_offer().await.unwrap(), None) });
+    daemon.join().unwrap().unwrap();
+
+    // A host that is not on the list its keys are checked against: the
+    // request is taken up and refused before any call, and the refusal is
+    // what a client is told.
+    let device = krowk_client::e2e::DeviceKey::generate();
+    let signing = krowk_client::e2e::SigningKey::generate();
+    let listed = krowk_client::e2e::DeviceKey::generate();
+    let listed_signing = krowk_client::e2e::SigningKey::generate();
+    let subject = krowk_client::device_chain::Subject { kind: krowk_client::device_chain::Kind::Device, name: "other".into(), os: "Linux".into(), device: listed.public(), signing: listed_signing.public() };
+    let (chain, start) = krowk_client::device_chain::Chain::start(subject, &listed_signing, None, 1_790_000_000).unwrap();
+    let id = device.id();
+    let secret = signing.secret_bytes().to_vec();
+    let introductions = Introductions::new(Box::new(move || {
+        Ok(krowk_harness::sync::introduce::Introducer {
+            api: Arc::new(krowk_api::Client::new("http://127.0.0.1:9", "krowk_sk_x")),
+            keys: krowk_client::user_key::UserKeys::new(start.newest.clone(), []).unwrap(),
+            chain: chain.clone(),
+            entries: start.entries.clone(),
+            device: id,
+            signing: krowk_client::e2e::SigningKey::from_secret(&secret).unwrap(),
+            keep: None,
+        })
+    }));
+    let daemon = home.serve_hooked("test", Some(Duration::from_millis(400)), None, Hooks { introductions: Some(introductions.clone()), ..Hooks::default() });
+    rt().block_on(async {
+        let c = home.client().await;
+        assert_eq!(c.pairing_offer().await.unwrap(), None);
+        introductions.deliver(&[DeliveredPairingRequest { id: "prq_1".into(), ..Default::default() }]);
+        let offer = loop {
+            if let Some(o) = c.pairing_offer().await.unwrap() {
+                break o;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        };
+        assert_eq!(offer.stage, krowk_harness::protocol::OfferStage::Failed);
+        assert!(offer.note.contains("not on your device list") && offer.code.is_empty(), "{offer:?}");
+        let refused = c.pairing_answer(&offer.pairing, true).await.unwrap_err();
+        assert_eq!(refused.code, "no_pairing_offer");
     });
     daemon.join().unwrap().unwrap();
 }

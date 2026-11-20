@@ -340,6 +340,27 @@ pub fn status(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crat
     })
 }
 
+/// The pairing the daemon opened for a new machine that signed in, or none
+/// when none runs or none is open. Never starts one.
+pub fn pairing_offer(env: &dyn Fn(&str) -> String, version: &str) -> Result<Option<crate::protocol::PairingOffer>, EngineError> {
+    runtime()?.block_on(async {
+        match running(env, version).await? {
+            Some(c) => c.pairing_offer().await,
+            None => Ok(None),
+        }
+    })
+}
+
+/// The person's yes or no to the offer's question.
+pub fn pairing_answer(env: &dyn Fn(&str) -> String, version: &str, pairing: &str, yes: bool) -> Result<(), EngineError> {
+    runtime()?.block_on(async {
+        match running(env, version).await? {
+            Some(c) => c.pairing_answer(pairing, yes).await,
+            None => Err(EngineError::new("host_not_running", "no host daemon runs, so no pairing waits for an answer")),
+        }
+    })
+}
+
 /// Stops the daemon that runs, if one does, and waits for its socket to go:
 /// `krowk host enable` hands over to the service, which could not bind
 /// while it listens. Refused while a turn runs. Answers the pid stopped.

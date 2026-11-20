@@ -2964,10 +2964,16 @@ fn using_krowk_locally_is_not_offered_again_and_krowk_login_runs_the_flow_from_s
 }
 
 /// An account that already has machines is not given a device list of its
-/// own: this machine goes to the add-a-machine flow (a stub until it is
-/// built), and the model step still follows.
+/// own: this machine asks the others for a pairing (R-EASE-5, D6), the
+/// laptop's host opens it and shows the code, the code is typed here, the
+/// laptop says yes, and the model step follows. Nothing is owed after.
 #[test]
 fn an_account_with_machines_goes_to_the_add_a_machine_flow() {
+    use krowk_client::device_chain::SignedEntry;
+    use krowk_client::e2e::{unhex, DeviceSigner, SigningKey};
+    use krowk_client::protocol::OfferStage;
+    use krowk_client::user_key::UserKeys;
+    use krowk_harness::sync::introduce::{Introducer, Introductions, Timing};
     let r = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config { login_person: Some("krowk_sk_first".into()), ..Default::default() }).unwrap();
     let api = format!("{}/v1", r.url());
     // The first machine's list, begun as `sync init` does.
@@ -2987,15 +2993,113 @@ fn an_account_with_machines_goes_to_the_add_a_machine_flow() {
         .output()
         .unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    // The laptop's host, as its daemon is: keys and list read, presence
+    // refreshed, each request handed to its introductions.
+    let store = keystore(&other);
+    let device = store.device().unwrap().unwrap().id();
+    let secret = store.signing_key().unwrap().secret_bytes().to_vec();
+    let signing = move || SigningKey::from_secret(&secret).unwrap();
+    let laptop = {
+        let (api, signing) = (api.clone(), signing.clone());
+        move || krowk_api::Client::new(&api, "krowk_sk_first#laptop").signed_by(DeviceSigner::new(device, signing()).shared())
+    };
+    let entries: Vec<SignedEntry> = laptop().device_list_all().unwrap().entries.iter().map(|e| SignedEntry::from_parts(unhex(&e.entry).unwrap(), &unhex(&e.signatures).unwrap()).unwrap()).collect();
+    let (chain, user) = (store.device_list().unwrap().unwrap(), store.user_keys().unwrap().unwrap().newest().clone());
+    let host = {
+        let (laptop, signing) = (laptop.clone(), signing.clone());
+        Introductions::with_timing(
+            Box::new(move || Ok(Introducer { api: Arc::new(laptop()), keys: UserKeys::new(user.clone(), []).unwrap(), chain: chain.clone(), entries: entries.clone(), device, signing: signing(), keep: None })),
+            Timing { poll: Duration::from_millis(50), wait: Duration::from_secs(60) },
+        )
+    };
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let refresher = {
+        let (host, stop) = (host.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let c = laptop();
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                if let Ok(put) = c.put_presence(b"laptop", 30) {
+                    host.deliver(&put.pairing_requests);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+
     let b = Sandbox::new("others-second");
     let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
     assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
     t.write(b"\r");
     signs_in(&r, &t);
-    assert!(t.wait_for("already has machines", Duration::from_secs(20)).is_some(), "{:?}", t.text());
+    assert!(t.wait_for("Type the code shown on your other machine", Duration::from_secs(30)).is_some(), "{:?}", t.text());
+    assert_eq!(first_run_state(&b)["pending"], true, "owed until it has joined");
+    let code = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(o) = host.offer().filter(|o| o.stage == OfferStage::Waiting) {
+                break o.code;
+            }
+            assert!(Instant::now() < deadline, "the laptop's host showed no code: {:?}", t.text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    settle();
+    t.write(format!("{code}\r").as_bytes());
+    let asked = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(o) = host.offer().filter(|o| o.stage == OfferStage::Confirm) {
+                break o;
+            }
+            assert!(Instant::now() < deadline, "the laptop asked nothing: {:?}", t.text());
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    assert_eq!(asked.name, "first");
+    assert!(host.answer(&asked.pairing, true));
+    assert!(t.wait_for("Joined as 'first'", Duration::from_secs(30)).is_some(), "{:?}", t.text());
     assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some_and(|c| ["laptop", "first"].iter().all(|n| c.devices().iter().any(|d| d.name == *n))), "on the laptop's list, not one of its own");
+    assert_eq!(first_run_state(&b)["pending"], false, "nothing owed once joined");
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = refresher.join();
+}
+
+/// No machine of the person's answers: the new machine says so, still owes
+/// the join (it asks again at the next `krowk`), and the model step follows.
+#[test]
+fn a_new_machine_with_no_host_online_says_so_and_keeps_the_join_owed() {
+    let r = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config { login_person: Some("krowk_sk_first".into()), ..Default::default() }).unwrap();
+    let api = format!("{}/v1", r.url());
+    let other = Sandbox::new("nohost-first");
+    let out = Command::new(env!("CARGO_BIN_EXE_krowk"))
+        .args(["sync", "init", "--save"])
+        .arg(other.root.join("kit"))
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", other.root.join("home"))
+        .env("KROWK_NO_UPDATE_CHECK", "1")
+        .env("KROWK_API_URL", &api)
+        .env("KROWK_TOKEN", "krowk_sk_first#laptop")
+        .env("KROWK_DEVICE_NAME", "laptop")
+        .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .current_dir(&other.root)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let b = Sandbox::new("nohost-second");
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("KROWK_TEST_NO_HOST_SECS", "2");
+    let mut t = pty::Pty::spawn(cmd, 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"\r");
+    signs_in(&r, &t);
+    assert!(t.wait_for("None of your machines is online to show a code. Run krowk machines add on one of them.", Duration::from_secs(60)).is_some(), "{:?}", t.text());
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert_eq!(first_run_state(&b)["pending"], true, "still owed");
     assert!(keystore(&b).device_list().unwrap().is_none(), "no list of its own");
-    assert_eq!(first_run_state(&b)["pending"], false, "the stub owes nothing on every launch");
     t.write(b"\x1b\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some());
 }

@@ -29,9 +29,22 @@ the versions are the `v*` tags a release is cut from. Entries land under
   record a request with its proposed name and OS. It opens nothing and carries
   no keys. Your hosts hear of it within one presence refresh, your phone is
   told only that a new machine signed in (no name, no OS), and it lapses after
-  ten minutes; a second machine asking meanwhile waits its turn. The client
-  calls are in place and the test registry answers them; showing the code on
-  your other machine comes next.
+  ten minutes; a second machine asking meanwhile waits its turn.
+
+- **Joining another machine is signing in there and typing one code.** On the
+  new machine, `krowk` (signing in to an account that already has machines) or
+  `krowk sync join` asks your other machines for a pairing and
+  says `Type the code shown on your other machine: ____-____`. Whichever of
+  your machines runs the host opens the pairing on its own (only one does) and
+  shows `A new machine signed in to your account. Its code: K7QF-9M3X` in any
+  open TUI and in `krowk machines`; once the code is typed there, `krowk
+  machines` asks `Add 'B' (Linux) to your devices? [Y/n]`, showing the new
+  machine's name and OS only after the code's checks, as `krowk devices add`
+  does. Nothing about who may add a machine changed: an existing machine
+  opens the pairing, a wrong code ends it, and a yes needs a person at a
+  terminal. With none of your machines online the new one says so and points
+  to `krowk machines add`. A pairing opened by hand with `krowk devices add`
+  still works.
 
 - **`krowk sessions` works with the sessions on all your machines.** It lists
   this machine's sessions, then the ones on your other machines that you can
@@ -114,6 +127,12 @@ the versions are the `v*` tags a release is cut from. Entries land under
   itself.
 
 ### Changed
+
+- **A removed machine can start over without moving files by hand.** `krowk
+  sync join` on a machine whose keys were removed from your devices now asks
+  `This machine was removed from your devices. Start it over as a new
+  machine? [Y/n]`; yes renames its old device and signing key files aside
+  (`…removed-<time>`, never deleted) and joins with new keys.
 
 - **`krowk machines` shows which of your machines could take a task, and what
   stops the others.** One row per machine: online, load per core, free memory,

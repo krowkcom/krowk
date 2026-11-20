@@ -692,6 +692,7 @@ impl Hosting {
                 trusted,
                 mode_for: Box::new(|_| Ok(PermissionMode::Default)),
                 take: None,
+                introductions: None,
             }),
         };
         auto::Supervisor::spawn(c, turns)

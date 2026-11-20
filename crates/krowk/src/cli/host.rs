@@ -111,8 +111,12 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     raise_open_files(OPEN_FILES);
     let (turns_tx, turns_rx) = krowk_harness::sync::auto::turn_hook();
     let bridged = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
-    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for), turns_rx);
-    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
+    // New machines asking for a pairing (R-EASE-5): the publisher hands each
+    // refresh's requests to this, and the daemon tells clients its offer.
+    let introduce_flags = ctx.f.clone();
+    let introductions = krowk_harness::sync::introduce::Introductions::new(Box::new(move || own_ctx(&introduce_flags, |ctx| super::pairing::introducer(ctx)).map_err(|e| (e.code(), krowk_harness::sync::announce::words(&e)))));
+    let auto = krowk_harness::sync::auto::Supervisor::spawn(auto_sync(ctx, &socket, log::sessions_dir(ctx.io.env)?, bridged.clone(), announced_store, mode_for, introductions.clone()), turns_rx);
+    let served = server::run(server::Options { socket, idle, krowk_version: super::VERSION.into(), websocket, turns: Some(turns_tx), bridged: Some(bridged), introductions: Some(introductions), ..Default::default() }, factory).map_err(|e| fail("host_failed", e));
     // However the daemon ended — idle, `krowk host stop`, a signal — each
     // bridge ends its stream and gives its lease back before the process
     // exits, rather than leaving it to lapse. The daemon's runtime is gone,
@@ -156,7 +160,7 @@ fn raise_open_files(want: libc::rlim_t) {
 /// status` checks them, their models from the models.dev cache, and the
 /// repositories `trusted` lists. The sessions another device starts here
 /// (R-HOST-4) run in `mode_for`'s mode.
-fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: krowk_harness::sync::announce::ModeFor) -> krowk_harness::sync::auto::Config {
+fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, bridged: Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>, trusted: trust::Store, mode_for: krowk_harness::sync::announce::ModeFor, introductions: Arc<krowk_harness::sync::introduce::Introductions>) -> krowk_harness::sync::auto::Config {
     use krowk_harness::sync::{announce, auto};
     let (f, f2, f3, f4) = (ctx.f.clone(), ctx.f.clone(), ctx.f.clone(), ctx.f.clone());
     let env = krowk_api::home::process_env;
@@ -197,6 +201,7 @@ fn auto_sync(ctx: &Ctx, socket: &std::path::Path, sessions: std::path::PathBuf, 
             trusted,
             mode_for,
             take: take_up(ctx),
+            introductions: Some(introductions),
         }),
     }
 }

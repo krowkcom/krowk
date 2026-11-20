@@ -120,7 +120,7 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
             state.pending = false;
             save(ctx, state);
         }
-        Ok(Registered::OthersExist) => add_a_machine(ctx, &client, state),
+        Ok(Registered::OthersExist) => add_a_machine(ctx, client, state),
         // A key the registry refuses is not retried on every launch.
         Err(e) if e.status == 401 || e.status == 403 => {
             state.pending = false;
@@ -134,13 +134,23 @@ fn finish(ctx: &mut Ctx, client: Client, state: &mut State) {
 /// The hand-off for an account that already has machines: this one joins
 /// them rather than starting a device list.
 ///
-/// TICKET 04 fills this in: ask the registry for a pairing
-/// (`Client::request_pairing`), wait for the code, finish joining. It owns
-/// `pending` from here — the stub clears it, so `krowk` does not ask the
-/// registry on every launch for a flow that is not there yet; the real flow
-/// keeps it set until the machine has joined, so a cancelled one resumes.
-pub(super) fn add_a_machine(ctx: &mut Ctx, _client: &Client, state: &mut State) {
-    state.pending = false;
-    save(ctx, state);
-    let _ = writeln!(ctx.io.stderr, "Your account already has machines. Adding this one to them is not available yet.");
+/// The new machine asks the person's others to show a code, takes it at a
+/// prompt, and joins (`pairing::join_new_machine`: R-EASE-5, D6). `pending`
+/// stays set until the machine has joined, so a cancelled or failed one —
+/// no machine online, a wrong code — resumes at the next `krowk`; the model
+/// step follows either way.
+pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
+    let _ = writeln!(ctx.io.stderr, "Your account already has machines. Adding this one to them takes a code from one of them.");
+    match super::pairing::join_new_machine(ctx, client) {
+        Ok(()) => {
+            state.pending = false;
+            save(ctx, state);
+        }
+        // Already on the list: nothing is owed.
+        Err(e) if e.code() == "already_joined" => {
+            state.pending = false;
+            save(ctx, state);
+        }
+        Err(e) => ctx.warn(&format!("this machine is not added to your others yet: {} — run krowk again to retry", e.fix())),
+    }
 }
