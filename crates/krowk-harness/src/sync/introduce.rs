@@ -113,9 +113,10 @@ struct State {
     answer: Option<bool>,
     /// The question was answered: it is not asked again.
     answered: bool,
-    /// Attempts at the request being served that failed before a pairing was
-    /// opened, which a registry's blip may cause, and when the next is due.
-    attempts: u8,
+    /// The request that failed before a pairing was opened, which a
+    /// registry's blip may cause, and how many times; and when the next try
+    /// is due.
+    retrying: Option<(String, u8)>,
     retry_at: Option<Instant>,
 }
 
@@ -207,17 +208,19 @@ impl Introductions {
         // a pairing opens for it or it lapses, after a pause.
         let over = match over {
             Over::Retry(why) => {
-                s.attempts += 1;
-                if s.attempts < TRIES { Over::Elsewhere } else { Over::Failed(why) }
+                let tried = match &s.retrying {
+                    Some((again, n)) if again == id => n + 1,
+                    _ => 1,
+                };
+                s.retrying = Some((id.to_string(), tried));
+                if tried < TRIES { Over::Elsewhere } else { Over::Failed(why) }
             }
-            other => other,
+            other => {
+                s.retrying = None;
+                other
+            }
         };
-        if matches!(over, Over::Elsewhere) {
-            s.retry_at = Some(Instant::now() + RETRY_AFTER);
-        } else {
-            s.attempts = 0;
-            s.retry_at = None;
-        }
+        s.retry_at = matches!(over, Over::Elsewhere).then(|| Instant::now() + RETRY_AFTER);
         s.offer = match over {
             Over::Elsewhere | Over::Retry(_) => None,
             Over::Added(name, os) => Some(PairingOffer { pairing: String::new(), code: String::new(), stage: OfferStage::Added, note: format!("Added '{name}' ({os})."), name, os }),
@@ -260,7 +263,8 @@ impl Introductions {
         self.set(PairingOffer { pairing: opened.id.clone(), code: a.code().to_string(), stage: OfferStage::Waiting, name: String::new(), os: String::new(), note: String::new() });
         // Up to the reply, anything that goes wrong ends the pairing on the
         // registry too, so the new machine hears it at once, and adds nothing.
-        let sealed = match self.seal_reply(&i, &opened.id, a) {
+        // A panic in it is a failure like any other, so the pairing is ended.
+        let sealed = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.seal_reply(&i, &opened.id, a))).unwrap_or_else(|_| Err("the pairing code panicked — nothing was added".into())) {
             Ok(s) => s,
             Err(why) => {
                 let _ = i.api.end_pairing();
