@@ -213,6 +213,7 @@ fn fan_out(body: &Value, _: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_r_sub_2_three_subagents_run_in_parallel_and_one_is_interrupted_alone() {
     let m = mock::serve(fan_out);
     let b = Sandbox::new("fan-out", &m.url);
@@ -348,6 +349,7 @@ fn two_writers(body: &Value, _: usize) -> mock::Reply {
 /// sibling, writing all the while, goes on streaming to its end, and the
 /// parent's turn completes.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_10_interrupting_a_child_stops_it_alone_and_its_sibling_keeps_running() {
     let m = mock::serve(two_writers);
     let b = Sandbox::new("child-stop", &m.url);
@@ -426,6 +428,7 @@ fn costly_child(body: &Value, n: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_4_a_childs_spend_counts_toward_the_parents_max_usd() {
     let m = mock::serve(costly_child);
     let b = Sandbox::new("budget", &m.url);
@@ -471,6 +474,7 @@ fn review(body: &Value, _: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_5_a_claude_code_agent_definition_is_used_as_is() {
     let m = mock::serve(review);
     let b = Sandbox::new("definition", &m.url);
@@ -509,6 +513,7 @@ fn planning(body: &Value, _: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_todo_1_r_todo_2_the_todo_list_lives_in_the_log_and_survives_resume() {
     let m = mock::serve(planning);
     let b = Sandbox::new("todos", &m.url);
@@ -557,6 +562,7 @@ fn children_of(b: &Sandbox, parent: &str) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_6_sessions_rebuild_restores_parent_and_children_from_the_logs_alone() {
     let m = mock::serve(fan_three(Duration::ZERO));
     let b = Sandbox::new("rebuild", &m.url);
@@ -592,6 +598,7 @@ fn fan_three(pause: Duration) -> impl Fn(&Value, usize) -> mock::Reply + Send + 
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_2_max_parallel_one_runs_the_fan_out_one_subagent_at_a_time() {
     let m = mock::serve(fan_three(Duration::from_millis(150)));
     let b = Sandbox::new("max-parallel", &m.url);
@@ -633,6 +640,7 @@ fn elsewhere(body: &Value, _: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_5_an_untrusted_repositorys_definition_stays_on_the_parents_instance() {
     let m = mock::serve(elsewhere);
     let b = Sandbox::new("untrusted-def", &m.url);
@@ -684,6 +692,7 @@ fn run_in_process(b: &Sandbox, cfg: HostConfig, session: Option<String>, text: &
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_4_the_parents_turn_cost_includes_its_subagents() {
     let m = mock::serve(one_reader);
     let b = Sandbox::new("turn-cost", &m.url);
@@ -717,6 +726,7 @@ fn publishing_child(body: &Value, n: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_6_a_run_a_subagent_opens_is_the_parents_and_a_resume_reuses_it() {
     let m = mock::serve(publishing_child);
     let b = Sandbox::new("child-run", &m.url);
@@ -783,6 +793,7 @@ fn parent_result(b: &Sandbox, session: &str) -> (String, bool) {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_a_subagents_calls_are_judged_by_its_parents_rules_and_mode() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("child-rules", &m.url);
@@ -803,6 +814,7 @@ fn r_sub_1_a_subagents_calls_are_judged_by_its_parents_rules_and_mode() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_subagent_and_todo_write_need_no_mode_but_a_deny_rule_refuses_them() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("task-deny", &m.url);
@@ -825,6 +837,7 @@ fn r_sub_1_subagent_and_todo_write_need_no_mode_but_a_deny_rule_refuses_them() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_hooks_see_subagent_calls_as_task_and_can_block_them() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("task-hook", &m.url);
@@ -839,6 +852,7 @@ fn r_sub_1_hooks_see_subagent_calls_as_task_and_can_block_them() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_2_a_subagents_approval_request_is_answered_under_its_own_session() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("child-approval", &m.url);
@@ -889,6 +903,7 @@ fn statuses(lines: &[StreamLine], child: &str) -> Vec<Status> {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in_order() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("child-status", &m.url);
@@ -949,6 +964,7 @@ fn r_sub_9_a_child_that_runs_a_tool_and_waits_on_an_approval_says_each_change_in
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_9_a_child_streaming_a_thousand_deltas_sends_a_frame_per_change_of_state_only() {
     let words: String = (0..1000).map(|i| format!("w{i} ")).collect();
     let m = mock::serve(move |body: &Value, _| {
@@ -1003,6 +1019,7 @@ fn names_agent(agent: &'static str) -> impl Fn(&Value, usize) -> mock::Reply + S
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_5_every_spelling_of_a_denied_agent_is_denied_and_an_unknown_one_refused_first() {
     for spelled in ["reviewer", " reviewer ", "Reviewer", "\treviewer\n", "REVIEWER"] {
         let m = mock::serve(names_agent(spelled));
@@ -1032,6 +1049,7 @@ fn r_sub_5_every_spelling_of_a_denied_agent_is_denied_and_an_unknown_one_refused
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_an_ask_rule_or_a_hooks_ask_holds_subagent_and_todo_write_and_headless_refuses() {
     let asks = [
         json!({"permissions": {"ask": ["Task"]}}),
@@ -1056,6 +1074,7 @@ fn r_sub_1_an_ask_rule_or_a_hooks_ask_holds_subagent_and_todo_write_and_headless
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_a_subagent_fires_subagent_stop_not_stop_or_user_prompt_submit_and_hooks_see_its_parent() {
     let m = mock::serve(child_runs_bash("subagent"));
     let b = Sandbox::new("subagent-stop", &m.url);
@@ -1094,6 +1113,7 @@ fn r_sub_1_a_subagent_fires_subagent_stop_not_stop_or_user_prompt_submit_and_hoo
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_5_a_definition_spelled_in_another_case_never_dodges_a_task_deny() {
     // The reviewer's case: the person denies `Task(reviewer)`; the
     // repository defines `Reviewer`, found first; the model asks for it by
@@ -1132,6 +1152,7 @@ fn r_sub_5_a_definition_spelled_in_another_case_never_dodges_a_task_deny() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_task_hooks_read_claude_codes_input_and_can_filter_on_subagent_type() {
     for (asked, blocked) in [("reviewer", true), ("", false)] {
         let m = mock::serve(names_agent(asked));
@@ -1157,6 +1178,7 @@ fn r_sub_1_task_hooks_read_claude_codes_input_and_can_filter_on_subagent_type() 
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_a_subagents_file_tools_are_fenced_from_krowks_home_as_its_parents_are() {
     // The child goes for the credentials file by name, then searches the
     // home, under allow rules for both, in acceptEdits, with nobody to ask:
@@ -1237,6 +1259,7 @@ fn two_in_worktrees(body: &Value, _: usize) -> mock::Reply {
 /// working tree, uncommitted, its summary naming it, and its worktree and
 /// branch gone too.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn wt3_two_subagents_in_worktrees_each_get_their_own_and_a_changed_ones_work_is_applied() {
     let m = mock::serve(two_in_worktrees);
     let b = Sandbox::new("worktrees", &m.url);
@@ -1273,6 +1296,7 @@ fn wt3_two_subagents_in_worktrees_each_get_their_own_and_a_changed_ones_work_is_
 /// and no subagent starts; `"none"` runs in the parent's directory as
 /// before.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
     let m = mock::serve(|body: &Value, _: usize| {
         if is_child(body) {
@@ -1306,6 +1330,7 @@ fn wt3_isolation_outside_a_repository_is_refused_and_none_is_todays() {
 /// Worktrees WT3: a repository's `/`-anchored deny holds in a subagent's
 /// worktree as it does in the checkout, in bypassPermissions too.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn wt3_a_repositorys_anchored_deny_holds_inside_the_worktree() {
     let m = mock::serve(|body: &Value, _: usize| {
         if is_child(body) {
@@ -1349,6 +1374,7 @@ fn one_subagent(body: &Value, _: usize) -> mock::Reply {
 /// another krowk would — a subagent says so on its call and waits, starting
 /// once the slot is let go.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
     let m = mock::serve(one_subagent);
     let b = Sandbox::new("agent-slot", &m.url);
@@ -1397,6 +1423,7 @@ fn wt12_a_subagent_waits_for_an_agent_slot_another_process_holds() {
 /// a `--worktree` session's — the session's subagent runs on that slot
 /// rather than waiting forever for another, and finishes.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn wt12_a_subagent_of_a_session_on_the_last_agent_slot_runs_on_it() {
     let m = mock::serve(one_subagent);
     let b = Sandbox::new("own-slot", &m.url);

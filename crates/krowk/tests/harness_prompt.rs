@@ -95,6 +95,7 @@ fn krowk_sessions(b: &Sandbox) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("session", &m.url);
@@ -165,6 +166,7 @@ fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() 
 /// is answered, and stderr names them; a job that ended in the turn left
 /// its note, which krowk.db keeps as krowk's, never the person's.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_2_krowk_p_names_a_job_it_stops_at_exit_and_krowk_db_keeps_a_note_as_krowks() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
@@ -201,17 +203,11 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("stream-json"));
     let out = b.krowk(&["-p"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a prompt"));
-    // No key: refused before a session exists, exit 3, the variable named.
+    // No account: refused before a session exists, exit 3, with D4's line.
     let out = b.krowk_with(&["-p", "hi"], "");
     assert_eq!(out.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("connect a Claude Code or Codex account"));
     assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
-    // Nothing listening: named as unreachable, exit 6, and R-OFF-1's words
-    // lead the fix line.
-    let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6"]);
-    assert_eq!(out.status.code(), Some(6), "{}", String::from_utf8_lossy(&out.stderr));
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    assert!(err.contains("network_unreachable") && err.contains("no network connectivity"), "r_off_1: {err}");
 }
 
 /// R-TOOL-2 through the built binary: the recorded tool definitions carry
@@ -219,6 +215,7 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
 /// knows the model, from the id otherwise — and config's `toolset` and
 /// `--toolset` override it, in that order.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
     let b = Sandbox::new("toolset", &m.url);
@@ -263,6 +260,7 @@ fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
     // A model that takes its time: the interrupt has to reach a turn that is
     // waiting on the network, not one between events.
@@ -305,6 +303,7 @@ fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
 /// notice naming the file — and `--permission-mode` wins without one. A
 /// deny rule that does not parse still refuses the prompt.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("auto-mode", &m.url);
@@ -343,6 +342,7 @@ fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
 /// `.mcp.json` it will not start is named on stderr; trusted, a server it
 /// leaves out for its name or its config is named with why.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_3_krowk_p_names_an_untrusted_mcp_json_and_a_server_it_skips() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("mcp-notice", &m.url);
@@ -399,6 +399,7 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 /// stdout but the answer.
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     use krowk::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
@@ -426,6 +427,7 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
 /// JSON but for what differs between any two runs (ids, times).
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("pres6file", &m.url);
@@ -483,6 +485,7 @@ fn steady(out: &str) -> String {
 /// error: the person stopped it.
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     use krowk::osc7501::State;
     // A model that takes the request and holds its answer: the turn is
@@ -509,6 +512,7 @@ fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
 /// `[Image #1]` and `[Image #2]` in the prompt; a big one is shrunk to fit;
 /// a missing or non-image file is refused naming it, before any turn.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let seen = bodies.clone();

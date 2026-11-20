@@ -94,6 +94,8 @@ impl Sandbox {
             "workspace": "ws_mig",
             "instances": {
                 "claude:work": {"kind": "claude-code", "configDir": account.display().to_string()},
+                // The stored key's account: Claude Code on that key (NL03).
+                "anthropic": {"kind": "claude-code", "configDir": account.display().to_string(), "apiKeyEnv": "ANTHROPIC_API_KEY"},
                 "supergrok": {"kind": "xai-oauth"},
             },
         });
@@ -191,12 +193,12 @@ fn an_older_layout_moves_its_config_and_keys_deletes_the_old_secrets_and_names_t
     assert_eq!(c["keys"]["anthropic"], json!({"literal": STORED_KEY}));
     assert_eq!(b.config()["workspace"], "ws_mig");
 
-    // And they work from there: the registry key is found, the login and
-    // the stored key make their instances ready, the store opens (empty).
+    // And they work from there: the registry key is found, the stored key
+    // makes its account ready (SuperGrok's login is moved but runs nothing:
+    // D4), the store opens (empty).
     let doctor: Value = serde_json::from_slice(&first.stdout).unwrap();
     assert_eq!(doctor["token_source"], "credentials file", "{doctor}");
     assert_eq!(doctor["workspace"], "ws_mig (global config)", "{doctor}");
-    assert_eq!(b.row("supergrok")["state"], "ready");
     assert_eq!(b.row("anthropic")["state"], "ready");
     let sessions = b.krowk(&["sessions", "--json"], &[]);
     assert!(sessions.status.success(), "{}", printed(&sessions));

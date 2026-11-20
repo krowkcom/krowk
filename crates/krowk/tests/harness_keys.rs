@@ -98,6 +98,25 @@ impl Sandbox {
         std::fs::read_to_string(self.root.join("home/.krowk/config.json")).map(|s| serde_json::from_str(&s).unwrap()).unwrap_or(json!({}))
     }
 
+    /// Keyed Claude Code and Codex accounts, as `krowk connect` makes them
+    /// for an Anthropic, OpenAI, xAI and OpenRouter key: the instances a
+    /// stored key belongs to now (D3), krowk running no model itself (D4).
+    fn keyed_accounts(&self) {
+        let dir = |n: &str| {
+            let d = self.root.join("home/.krowk/accounts").join(n);
+            std::fs::create_dir_all(&d).unwrap();
+            d.display().to_string()
+        };
+        let codex = |n: &str, var: &str| json!({"kind": "codex-app-server", "codexHome": dir(n), "apiKeyEnv": var});
+        let cfg = json!({"instances": {
+            "anthropic": {"kind": "claude-code", "configDir": dir("anthropic"), "apiKeyEnv": "ANTHROPIC_API_KEY"},
+            "openai": codex("openai", "OPENAI_API_KEY"),
+            "xai": codex("xai", "XAI_API_KEY"),
+            "openrouter": codex("openrouter", "OPENROUTER_API_KEY"),
+        }});
+        std::fs::write(self.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
+    }
+
     fn row(&self, instance: &str, env: &[(&str, &str)]) -> Value {
         let out = self.krowk(&["status", "--json"], env);
         let v: Value = serde_json::from_slice(&out.stdout).or_else(|_| serde_json::from_slice(&out.stderr)).unwrap();
@@ -288,15 +307,19 @@ fn r_cred_1_no_config_but_the_persons_own_credentials_file_can_make_krowk_run_a_
     std::fs::write(b.root.join("repo/.krowk/config.json"), planted.to_string()).unwrap();
     std::fs::write(b.root.join("planted.json"), json!({"version": 1, "keys": {"anthropic": {"command": cmd}}}).to_string()).unwrap();
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    let own = json!({"instances": {"openai:x": {"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")}, "xai:y": {"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"}}, "keysFrom": b.root.join("planted.json")});
+    b.keyed_accounts();
+    let mut own: Value = serde_json::from_str(&std::fs::read_to_string(b.root.join("home/.krowk/config.json")).unwrap()).unwrap();
+    own["instances"]["openai:x"] = json!({"kind": "openai-api", "apiKeyEnv": format!("!{cmd}")});
+    own["instances"]["xai:y"] = json!({"kind": "xai-api", "apiKeyEnv": "$(touch pwned)"});
+    own["keysFrom"] = json!(b.root.join("planted.json"));
     std::fs::write(b.root.join("home/.krowk/config.json"), own.to_string()).unwrap();
 
     let env = [("ANTHROPIC_API_KEY", DECOY)];
     let row = b.row("anthropic", &env);
-    assert_eq!(row["source"], "env ANTHROPIC_API_KEY", "{row}");
+    assert_eq!(row["source"], "env ANTHROPIC_API_KEY, handed to Claude Code", "{row}");
     let turn = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--trust"], &env);
     assert!(turn.status.success(), "{}", printed(&turn));
-    assert_eq!(m.seen.lock().unwrap()[0].header("x-api-key"), Some(DECOY));
+    assert!(b.logged("env ANTHROPIC_API_KEY=set") >= 1, "the environment's key, handed to Claude Code");
     assert_eq!(b.row("openai:x", &[])["state"], "key_not_set", "a variable's name is only ever a name");
     assert!(!pwned.exists() && !b.root.join("repo/pwned").exists(), "nothing ran");
 }
@@ -325,6 +348,7 @@ fn r_cred_1_at_a_terminal_a_key_is_pasted_without_echo_and_without_one_the_flags
 }
 
 #[test]
+#[ignore = "native loop: krowk's own file tools run only in a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_cred_1_the_file_tools_neither_read_search_nor_write_krowks_home_unasked() {
     // The model goes for krowk's home by every spelling that leads there —
     // by name, through `..`, in another case, through a symlinked alias —
@@ -391,6 +415,7 @@ fn r_cred_1_a_credentials_file_krowk_cannot_read_is_named_without_quoting_it() {
     let m = answer();
     let b = Sandbox::new("unreadable", &m.url);
     std::fs::create_dir_all(b.credentials().parent().unwrap()).unwrap();
+    b.keyed_accounts();
     // A key and a token written by hand as bare strings: serde's own words
     // would quote them back.
     for file in [json!({"version": 1, "keys": {"anthropic": SENTINEL}}), json!({"version": 1, "instances": {"supergrok": SENTINEL}})] {
@@ -437,6 +462,8 @@ fn r_cred_1_with_no_home_krowk_reads_no_repositorys_dot_krowk_as_its_own() {
 #[test]
 fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output() {
     let b = Sandbox::new("once", "http://127.0.0.1:9");
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    b.keyed_accounts();
     // One that asks on the terminal; one that never stops printing.
     b.install("tty-pass", &format!("#!/bin/sh\nread x </dev/tty || exit 1\necho \"{SENTINEL}\"\n"));
     b.install("chatty", "#!/bin/sh\nhead -c 1000000 /dev/zero | tr '\\0' a\n");
@@ -473,7 +500,8 @@ fn r_cred_1_a_command_runs_once_per_process_with_no_terminal_and_bounded_output(
     assert!(t.text().contains("with no terminal"), "{}", t.text());
 
     // At a terminal, `krowk connect` runs it there, so its passphrase can be typed.
-    let mut c = b.command(&["connect", "xai", "--method", "api-key"], &[]);
+    // A new account: `xai` is the hand-written one above.
+    let mut c = b.command(&["connect", "xai", "--method", "api-key", "--name", "t"], &[]);
     c.env("TERM", "xterm-256color");
     let mut t = pty::Pty::spawn(c, 120, 30);
     let wait = Duration::from_secs(20);

@@ -128,6 +128,7 @@ fn script(body: &Value, _: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named() {
     if !has_git() {
         return;
@@ -174,6 +175,7 @@ fn wt6_a_worktree_session_makes_its_file_in_the_worktree_which_is_kept_and_named
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn wt6_a_worktree_session_that_changes_nothing_leaves_nothing() {
     if !has_git() {
         return;
@@ -206,7 +208,7 @@ fn wt6_worktree_outside_a_repository_is_refused() {
     }
     let m = mock::serve(script);
     let b = Sandbox::new("no-repo", &m.url);
-    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "anthropic/claude-sonnet-4-6", "--worktree", "make a file"]);
+    let o = b.krowk_in(&b.root.join("elsewhere"), &["-p", "--model", "claude/sonnet", "--worktree", "make a file"]);
     let said = String::from_utf8_lossy(&o.stderr);
     assert_eq!(o.status.code(), Some(1), "{said}");
     assert!(said.contains("not_a_repository") && said.contains("this directory is in none"), "{said}");
@@ -215,6 +217,7 @@ fn wt6_worktree_outside_a_repository_is_refused() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn worktrees_default_starts_a_new_session_in_its_own_worktree_without_the_flag() {
     if !has_git() {
         return;

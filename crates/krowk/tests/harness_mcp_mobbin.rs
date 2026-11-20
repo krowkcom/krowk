@@ -71,6 +71,7 @@ fn images(m: &mock::Mock) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_refresh() {
     let f = mobbin::fake(mobbin::Knobs { registration: true, ..Default::default() });
     let api = mock::serve(model);

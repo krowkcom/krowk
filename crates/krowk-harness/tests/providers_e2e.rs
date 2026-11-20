@@ -111,6 +111,7 @@ fn wire_of(lines: &[StreamLine]) -> WireApi {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_prov_1_a_gpt_task_patches_a_file_and_its_second_turn_reads_the_cache() {
     let m = mock::serve(providers::responses_script);
     let mut home = Home::new("gpt");
@@ -156,6 +157,7 @@ fn r_prov_1_a_gpt_task_patches_a_file_and_its_second_turn_reads_the_cache() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_prov_4_a_grok_task_edits_a_file_on_an_xai_key() {
     let m = mock::serve(providers::chat_script);
     let mut home = Home::new("xai");
@@ -183,6 +185,7 @@ fn r_prov_4_a_grok_task_edits_a_file_on_an_xai_key() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_prov_4_a_grok_task_runs_signed_in_with_supergrok_and_its_token_is_refreshed() {
     let auth = providers::auth_server(0);
     let chat = providers::chat_behind(auth.state.clone());

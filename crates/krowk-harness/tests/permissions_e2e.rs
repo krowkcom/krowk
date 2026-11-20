@@ -135,6 +135,7 @@ fn tool_result_sent(m: &mock::Mock) -> String {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_perm_1_a_repository_whose_settings_deny_bash_rm_blocks_it_in_every_mode() {
     let m = mock::serve(one_tool("bash", json!({"command": "rm -f keep.txt"})));
     let h = Home::new("deny-rm", &m.url);
@@ -153,6 +154,7 @@ fn r_perm_1_a_repository_whose_settings_deny_bash_rm_blocks_it_in_every_mode() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_perm_1_unhinged_runs_what_a_deny_rule_would_have_stopped() {
     let m = mock::serve(one_tool("bash", json!({"command": "rm -f keep.txt"})));
     let h = Home::new("unhinged", &m.url);
@@ -166,6 +168,7 @@ fn r_perm_1_unhinged_runs_what_a_deny_rule_would_have_stopped() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_perm_1_a_hook_that_blocks_still_blocks_under_unhinged() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
     let h = Home::new("unhinged-hook", &m.url);
@@ -184,6 +187,7 @@ fn gh_comment(body: &str) -> String {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn a_gh_post_with_a_bare_card_link_is_refused_in_every_mode_and_the_krowk_block_runs() {
     let card = "https://krowk.com/a/art_0123456789abcdefghijklmn";
     let bare = gh_comment(&format!("Fixed, see {card}"));
@@ -211,6 +215,7 @@ fn a_gh_post_with_a_bare_card_link_is_refused_in_every_mode_and_the_krowk_block_
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_why() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch ran.txt"})));
     let h = Home::new("hook", &m.url);
@@ -238,6 +243,7 @@ fn r_compat_1_a_pretooluse_hook_exiting_2_blocks_the_tool_and_the_model_reads_wh
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_compat_1_a_skill_is_listed_by_its_description_and_its_body_enters_only_when_used() {
     let m = mock::serve(one_tool("skill", json!({"name": "release-notes"})));
     let h = Home::new("skill", &m.url);
@@ -267,6 +273,7 @@ fn r_compat_1_a_skill_is_listed_by_its_description_and_its_body_enters_only_when
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_protocol() {
     let m = mock::serve(one_tool("bash", json!({"command": "touch approved.txt"})));
     let h = Home::new("approve", &m.url);
@@ -313,6 +320,7 @@ fn r_perm_2_an_asked_call_is_an_approval_request_a_client_answers_over_the_proto
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn ask_user_is_offered_where_a_person_answers_and_the_model_reads_their_answers() {
     use krowk_harness::protocol::QuestionAnswer;
     let question = json!({"questions": [{"question": "Which database?", "header": "DB", "options": [{"label": "Postgres"}, {"label": "SQLite"}]}]});
@@ -360,6 +368,7 @@ fn ask_user_is_offered_where_a_person_answers_and_the_model_reads_their_answers(
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_perm_2_headless_never_waits_on_an_ask_and_says_what_would_allow_it() {
     let m = mock::serve(one_tool("bash", json!({"command": "npm test"})));
     let h = Home::new("headless", &m.url);
@@ -374,6 +383,7 @@ fn r_perm_2_headless_never_waits_on_an_ask_and_says_what_would_allow_it() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_compat_1_a_skill_denied_by_rule_never_enters_the_context_and_hooks_see_skill_calls() {
     let m = mock::serve(one_tool("skill", json!({"name": "deploy"})));
     let h = Home::new("skill-deny", &m.url);
@@ -392,6 +402,7 @@ fn r_compat_1_a_skill_denied_by_rule_never_enters_the_context_and_hooks_see_skil
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_compat_1_a_hook_that_says_continue_false_stops_the_turn_with_its_reason() {
     let m = mock::serve(one_tool("bash", json!({"command": "ls"})));
     let h = Home::new("hook-stop", &m.url);

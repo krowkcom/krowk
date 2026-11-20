@@ -93,6 +93,7 @@ fn rereading(_: &Value, n: usize) -> mock::Reply {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_budget_1_max_usd_stops_the_session_before_the_call_that_would_cross_it_and_exits_4() {
     let m = mock::serve(rereading);
     let b = Sandbox::new("usd", &m.url);
@@ -123,6 +124,7 @@ fn r_budget_1_max_usd_stops_the_session_before_the_call_that_would_cross_it_and_
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_budget_1_max_tokens_stops_the_session_the_same_way() {
     let m = mock::serve(rereading);
     let b = Sandbox::new("tokens", &m.url);
@@ -143,6 +145,7 @@ fn r_budget_1_max_tokens_stops_the_session_the_same_way() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_budget_1_a_child_sessions_spend_counts_toward_its_parents_budget() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
     let b = Sandbox::new("child", &m.url);
@@ -202,6 +205,7 @@ fn tool_result(m: &mock::Mock) -> (String, bool) {
 /// R-EVID-1, and R-EVID-2's substrate: the artifact carries the session, the
 /// engine and the model its card links back with.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let m = mock::serve(publishing(json!(["shot.png"])));
@@ -248,6 +252,7 @@ fn r_evid_1_publish_pushes_a_screenshot_tagged_with_the_session_under_its_run() 
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_evid_1_without_a_key_publish_is_anonymous_opens_no_run_and_its_claim_token_reaches_only_the_person() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let m = mock::serve(publishing(json!(["notes.txt"])));
@@ -280,6 +285,7 @@ fn r_evid_1_without_a_key_publish_is_anonymous_opens_no_run_and_its_claim_token_
 /// to what an edit is: asked about in the default mode (refused, with
 /// nobody to ask) and refused in plan.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_evid_1_publish_needs_accept_edits_as_an_edit_does() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let m = mock::serve(publishing(json!(["notes.txt"])));
@@ -301,6 +307,7 @@ fn r_evid_1_publish_needs_accept_edits_as_an_edit_does() {
 /// A repository can name a command in its git config (`core.fsmonitor`);
 /// the run metadata publish detects runs none of it, in any mode.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_evid_1_publish_detects_the_run_context_without_running_the_repositorys_git_config() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let m = mock::serve(publishing(json!(["notes.txt"])));
@@ -326,6 +333,7 @@ fn r_evid_1_publish_detects_the_run_context_without_running_the_repositorys_git_
 /// The golden case `mcp-credential-refusals` holds krowk_push to these
 /// refusals; `publish` is the same code, and is held to the same files.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_evid_1_publish_refuses_credentials_paths_outside_the_root_and_hard_links_as_krowk_push_does() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let mut b = Sandbox::new("refusals", "http://127.0.0.1:9");
