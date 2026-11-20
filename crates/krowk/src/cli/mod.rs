@@ -704,7 +704,7 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk mcp add`")));
             }
         }
-        let trusting = words.first() == Some(&"trust");
+        let trusting = words.first() == Some(&"trust") && !f.print;
         for name in ["list", "revoke"] {
             if f.given.contains(name) && !trusting {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk trust`")));

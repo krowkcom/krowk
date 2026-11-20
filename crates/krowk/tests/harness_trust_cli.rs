@@ -99,6 +99,13 @@ fn trust_grant_then_list_shows_the_repository_and_revoke_removes_it() {
     // Revoking what was not trusted is not an error.
     let again = b.json(&["trust", "--revoke", "--json"]);
     assert_eq!(again["data"]["trusted"], false);
+
+    // A repository deleted since it was trusted is revoked by the path --list shows.
+    std::fs::remove_dir_all(b.root.join("other")).unwrap();
+    assert_eq!(b.listed(), json!([other]));
+    let gone = b.json(&["trust", "--revoke", &other, "--json"]);
+    assert_eq!(gone["data"], json!({"directory": other, "trusted": false}), "{gone}");
+    assert_eq!(b.listed(), json!([]));
 }
 
 /// Revoking removes the MCP digest recorded with the entry.

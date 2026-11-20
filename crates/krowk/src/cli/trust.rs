@@ -17,9 +17,14 @@ fn store(ctx: &Ctx) -> Result<trust::Store, Error> {
 
 /// The repository `arg` (default: the working directory) belongs to,
 /// canonical. A krowk worktree is its main repository, as `-p` trusts it.
-fn repository(ctx: &Ctx, arg: Option<&str>) -> Result<PathBuf, Error> {
+fn repository(ctx: &Ctx, arg: Option<&str>, revoke: bool) -> Result<PathBuf, Error> {
     let cwd = std::env::current_dir().map_err(|e| fail("no_directory", format!("the working directory cannot be read: {e}")))?;
     let dir = arg.map_or(cwd.clone(), |a| cwd.join(a));
+    // A repository deleted or moved since it was trusted still has its entry
+    // in `--list`: revoking it by the path listed is how it goes.
+    if revoke && !dir.exists() {
+        return Ok(dir);
+    }
     if !dir.is_dir() {
         return Err(fail("not_a_directory", format!("{} is not a directory", dir.display())));
     }
@@ -56,7 +61,7 @@ pub(super) fn run(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         }
         return Ok(());
     }
-    let root = repository(ctx, args.first().map(String::as_str))?;
+    let root = repository(ctx, args.first().map(String::as_str), revoke)?;
     let shown = root.display().to_string();
     if revoke {
         let had = store.revoke(&root).map_err(|e| fail("trust_not_saved", e))?;
