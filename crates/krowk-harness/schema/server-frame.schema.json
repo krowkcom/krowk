@@ -201,6 +201,35 @@
       ]
     },
     {
+      "description": "The answer to `pairingOffer`.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "offer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PairingOffer"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "type": {
+          "type": "string",
+          "const": "pairingOffer"
+        }
+      },
+      "required": [
+        "type",
+        "id"
+      ]
+    },
+    {
       "description": "The answer to `mcpStatus`: each server of the session, in the order\nit is configured.",
       "type": "object",
       "properties": {
@@ -2311,6 +2340,53 @@
         "sessionId",
         "running",
         "clients"
+      ]
+    },
+    "PairingOffer": {
+      "description": "The pairing a host daemon opened for a new machine that signed in to\nthe person's account (`krowk machines`, the terminal UI): the code to\ntype there and where the pairing stands. `name` and `os` are the new\nmachine's own, set only once the code's confirmation checks passed.",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "stage": {
+          "$ref": "#/$defs/OfferStage"
+        },
+        "name": {
+          "type": "string"
+        },
+        "os": {
+          "type": "string"
+        },
+        "note": {
+          "description": "What came of it, at `added` and `failed`.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "stage"
+      ]
+    },
+    "OfferStage": {
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "added",
+            "failed"
+          ]
+        },
+        {
+          "description": "The code is shown; the new machine has not typed it, or its checks\nhave not passed.",
+          "type": "string",
+          "const": "waiting"
+        },
+        {
+          "description": "The checks passed: the person is asked to add `name` (`os`).",
+          "type": "string",
+          "const": "confirm"
+        }
       ]
     },
     "McpServer": {

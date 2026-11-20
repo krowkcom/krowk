@@ -279,6 +279,8 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
             .collect();
         return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
+    // A new machine that signed in, and the code to type on it.
+    super::pairing::show_offer(ctx);
     let now = jiff::Timestamp::now();
     for (h, online) in hosts.iter().zip(&online) {
         let reach = match (&h.tailnet, &h.peer) {

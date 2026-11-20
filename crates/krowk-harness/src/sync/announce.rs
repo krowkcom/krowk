@@ -95,6 +95,10 @@ pub struct Options {
     /// asks (R-HAND-1, R-HAND-4): `krowk sync take <session>` run in the
     /// directory, detached, as the target's own take. None takes none.
     pub take: Option<TakeUp>,
+    /// The pairings this host opens when a new machine asks the person's
+    /// hosts for one (R-EASE-5): handed each refresh's requests. None
+    /// opens none.
+    pub introductions: Option<Arc<super::introduce::Introductions>>,
 }
 
 /// The host's default permission mode for a directory.
@@ -494,6 +498,11 @@ fn tick(c: &Arc<Config>, o: &Options, rt: &tokio::runtime::Runtime, t: &mut Tick
         && !put.commands.is_empty()
     {
         Commands::take(commands, c, &a, &record.name, put.commands.clone());
+    }
+    if let (Ok(put), Some(i)) = (&sent, &o.introductions)
+        && !put.pairing_requests.is_empty()
+    {
+        i.deliver(&put.pairing_requests);
     }
     *last = Some(a);
     match sent {

@@ -286,7 +286,7 @@ impl Client {
                                 let _ = i.sinks.remove(n).q.send(Item::End(None));
                             }
                         }
-                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::Mcp { id, .. } | ServerFrame::McpSignIn { id, .. } => {
+                        ServerFrame::Done { id, .. } | ServerFrame::Attached { id, .. } | ServerFrame::Status { id, .. } | ServerFrame::PairingOffer { id, .. } | ServerFrame::Mcp { id, .. } | ServerFrame::McpSignIn { id, .. } => {
                             let mut i = inner.lock().unwrap_or_else(|e| e.into_inner());
                             let Some(w) = i.waiting.remove(&id) else { continue };
                             // A turn's `done` comes after its lines: handed
@@ -539,6 +539,26 @@ impl Client {
         let rx = self.ask(|id| ClientFrame::Status { id }, None)?;
         match rx.await {
             Ok(ServerFrame::Status { status, .. }) => Ok(status),
+            _ => Err(gone()),
+        }
+    }
+
+    /// The pairing this host opened for a new machine, if one is (`ClientFrame::PairingOffer`).
+    pub async fn pairing_offer(&self) -> Result<Option<crate::protocol::PairingOffer>, EngineError> {
+        let rx = self.ask(|id| ClientFrame::PairingOffer { id }, None)?;
+        match rx.await {
+            Ok(ServerFrame::PairingOffer { offer, .. }) => Ok(offer),
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            _ => Err(gone()),
+        }
+    }
+
+    /// The person's answer to the offer's question (`ClientFrame::PairingAnswer`).
+    pub async fn pairing_answer(&self, yes: bool) -> Result<(), EngineError> {
+        let rx = self.ask(|id| ClientFrame::PairingAnswer { id, yes }, None)?;
+        match rx.await {
+            Ok(ServerFrame::Done { error: Some(e), .. }) => Err(engine_error(e)),
+            Ok(ServerFrame::Done { .. }) => Ok(()),
             _ => Err(gone()),
         }
     }

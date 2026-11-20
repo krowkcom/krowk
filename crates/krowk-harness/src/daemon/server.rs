@@ -82,6 +82,10 @@ pub struct Options {
     /// keeps them: `status` reports them (`HostStatus.bridged`). The owner
     /// holds the lock only to insert or remove one id.
     pub bridged: Option<std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>>,
+    /// The pairings this host opens for new machines (R-EASE-5): clients
+    /// ask it for the offer (`pairingOffer`) and send the person's answer
+    /// (`pairingAnswer`). None has no offer to tell.
+    pub introductions: Option<std::sync::Arc<crate::sync::introduce::Introductions>>,
 }
 
 /// A session's own turn started (`running`) or ended (`Options::turns`).
@@ -93,7 +97,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
     }
 }
 
@@ -644,6 +648,17 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             let mut s = state.borrow_mut();
             let f = ServerFrame::Status { id: cmd_id, status: status(&s) };
             s.send(id, "", control(&f));
+        }
+        ClientFrame::PairingOffer { id: cmd_id } => {
+            let mut s = state.borrow_mut();
+            let offer = s.opts.introductions.as_ref().and_then(|i| i.offer());
+            s.send(id, "", control(&ServerFrame::PairingOffer { id: cmd_id, offer }));
+        }
+        ClientFrame::PairingAnswer { id: cmd_id, yes } => {
+            let mut s = state.borrow_mut();
+            let taken = s.opts.introductions.as_ref().is_some_and(|i| i.answer(yes));
+            let error = (!taken).then(|| error_info(&EngineError::new("no_pairing_offer", "no new machine's pairing waits for an answer here")));
+            s.send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
         }
         ClientFrame::McpStatus { id: cmd_id, session_id } => {
             let mut s = state.borrow_mut();
