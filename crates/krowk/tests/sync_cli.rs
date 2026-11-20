@@ -12,12 +12,13 @@
 //! from B starting a session on A's host daemon and following it, or
 //! refusing, with nothing sent, a host that is offline, a directory it did
 //! not offer and a model it cannot run (R-HOST-4).
-//! Against the stand-in registry, the reference relay and a mock model.
+//! Against the stand-in registry, the reference relay and the fake
+//! `claude` beside the Claude Code tests.
 
 #![cfg(all(feature = "harness", unix))]
 
-#[path = "../../krowk-harness/tests/common/mock.rs"]
-mod mock;
+#[path = "../../krowk-harness/tests/common/fake.rs"]
+mod fake;
 #[path = "common/pty.rs"]
 mod pty;
 
@@ -38,63 +39,59 @@ const ANSWER: &str = "the-answer-marker-5c2e";
 /// What the model answers a prompt typed into `sync attach` on B.
 const ATTACH_ANSWER: &str = "attach-round-trip-answer-81aa";
 
-/// A prompt A's `anthropic` instance answers with its rate limit.
+/// A prompt A's Claude Code answers with its rate limit.
 const LIMITED: &str = "past-the-limit-prompt-3e0a";
 
-/// A prompt A's `anthropic` instance answers, leaving one request in a
-/// hundred: an early offer.
+/// A prompt A's Claude Code answers, its five hours 96% used: an early offer.
 const NEARLY_OUT: &str = "nearly-out-prompt-7b1d";
 
-/// Holds the slower subagent's answer until the test opens it.
-static SLOWER: std::sync::LazyLock<mock::Gate> = std::sync::LazyLock::new(mock::Gate::default);
+/// The model each machine's fake `claude` plays: a section a prompt
+/// matches (`@when`), the marker for any other. A prompt to make a file
+/// asks for a Bash call (an approval) and makes it once allowed; a long
+/// answer is typed until it is interrupted; two agents, as Claude Code ran
+/// them once, the sleeper waiting to be stopped.
+fn scenario_text() -> String {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude");
+    let limited = std::fs::read_to_string(fixtures.join("limited.jsonl")).unwrap();
+    let limited = limited.split("\n---\n").next().unwrap().trim_end().to_string();
+    let low = std::fs::read_to_string(fixtures.join("low.jsonl")).unwrap().replace("claude-code answered", ANSWER);
+    let interrupted = r#"{"type":"assistant","message":{"model":"{{MODEL}}","id":"msg_long","type":"message","role":"assistant","content":[{"type":"text","text":"word0 word1"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}","aborted":true}
+{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]},"parent_tool_use_id":null,"session_id":"{{SESSION}}"}
+{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","errors":[],"session_id":"{{SESSION}}"}"#;
+    let sections = [
+        format!("@when make the allowed file\n{}\n@touch allowed.txt\n{}", fake::asks_bash("toolu_allowed", "touch allowed.txt"), fake::answer("made it")),
+        format!("@when make the denied file\n{}\n{}", fake::asks_bash("toolu_denied", "touch denied.txt"), fake::answer("did not")),
+        format!("@when a long answer\n@type 40 0.02 word\n@await-interrupt\n{interrupted}"),
+        format!("@when run two agents\n{}", agents().0),
+        format!("@when {LIMITED}\n{limited}"),
+        format!("@when {NEARLY_OUT}\n{}", low.trim_end()),
+        format!("@when attach round trip\n{}", fake::answer(ATTACH_ANSWER)),
+        // Every user line holds this: the answer to anything else.
+        format!("@when \"type\":\"user\"\n{}", fake::answer(&format!("{ANSWER} one two three"))),
+    ];
+    sections.join("\n---\n") + "\n"
+}
 
-/// A model that answers with the marker, except when asked to make a
-/// file, which it does with `bash` — an approval — and a long answer, paced
-/// so that it can be interrupted part way.
-fn model(body: &serde_json::Value, _n: usize) -> mock::Reply {
-    let messages = body["messages"].as_array().cloned().unwrap_or_default();
-    let last = messages.last().cloned().unwrap_or_default();
-    let has_result = last["content"].as_array().is_some_and(|c| c.iter().any(|b| b["type"] == "tool_result"));
-    let text = last.to_string();
-    // The slower subagent: a search, then, once the test lets it
-    // (`SLOWER`), a slow answer — an item begun while a viewer looks on.
-    if body["system"].to_string().contains("You are a subagent") && messages.first().is_some_and(|m| m.to_string().contains("look slower")) {
-        if !has_result {
-            return mock::Reply::sse(&mock::tool_use("toolu_01Glob", "glob", &serde_json::json!({"pattern": "*"})));
-        }
-        let words: String = (0..400).map(|i| format!("slowword{i} ")).collect();
-        return mock::Reply { hold: Some(("content_block_start", SLOWER.clone())), ..mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(50)) };
-    }
-    // A subagent's own call: a slow answer, stopped part way.
-    if body["system"].to_string().contains("You are a subagent") {
-        let words: String = (0..400).map(|i| format!("childword{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    if !has_result && text.contains("start a slower subagent") {
-        return mock::Reply::sse(&mock::tool_use("toolu_01Slower", "subagent", &serde_json::json!({"description": "a slower look", "prompt": "look slower"})));
-    }
-    if !has_result && text.contains("start a slow subagent") {
-        return mock::Reply::sse(&mock::tool_use("toolu_01Kid", "subagent", &serde_json::json!({"description": "a slow look", "prompt": "look slowly"})));
-    }
-    if !has_result && text.contains(LIMITED) {
-        return mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "Number of request tokens has exceeded your per-minute rate limit"}})) };
-    }
-    if !has_result && text.contains(NEARLY_OUT) {
-        return mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(ANSWER)) };
-    }
-    if !has_result && text.contains("attach round trip") {
-        return mock::Reply::paced(mock::text_stream(ATTACH_ANSWER), Duration::from_millis(5));
-    }
-    if !has_result && text.contains("a long answer") {
-        let words: String = (0..400).map(|i| format!("word{i} ")).collect();
-        return mock::Reply::paced(mock::text_stream(&words), Duration::from_millis(20));
-    }
-    for (ask, file) in [("make the allowed file", "allowed.txt"), ("make the denied file", "denied.txt")] {
-        if !has_result && text.contains(ask) {
-            return mock::Reply::sse(&mock::tool_use("toolu_01Touch", "bash", &serde_json::json!({"command": format!("touch {file}")})));
+/// Claude Code's recorded turn of two agents, as scenario lines, the
+/// fake waiting where the recording stopped the one called `sleeper`; and
+/// that agent's task id.
+fn agents() -> (String, String) {
+    let raw = std::fs::read_to_string(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/recorded/agents_parallel.txt")).unwrap();
+    let printed: Vec<serde_json::Value> = raw.lines().filter_map(|l| l.strip_prefix("<< ")).map(|j| serde_json::from_str(j).unwrap()).collect();
+    let sleeper = printed.iter().find(|m| m["subtype"] == "task_started" && m["description"] == "sleeper").unwrap()["task_id"].as_str().unwrap().to_string();
+    let init = printed.iter().position(|m| m["subtype"] == "init").unwrap();
+    let mut lines = Vec::new();
+    for m in &printed[init + 1..] {
+        let said_stopped = m["task_id"] == sleeper.as_str() && (m["patch"]["status"] == "killed" || m["status"] == "stopped");
+        match m["type"].as_str() {
+            _ if said_stopped && m["subtype"] == "task_updated" => lines.push("@await-stop".to_string()),
+            _ if said_stopped => {}
+            Some("control_request" | "control_response") => {}
+            _ if m["isReplay"] == true => {}
+            _ => lines.push(m.to_string()),
         }
     }
-    mock::Reply::paced(mock::text_stream(&format!("{ANSWER} one two three")), Duration::from_millis(5))
+    (lines.join("\n"), sleeper)
 }
 
 struct World {
@@ -104,12 +101,12 @@ struct World {
     root: PathBuf,
     api: String,
     relay: String,
-    mock: String,
+    /// The fake `claude`'s scenario, every machine's.
+    scenario: PathBuf,
     account: AccountKey,
     /// The person's device list, which every machine is put on.
     people: std::sync::Mutex<People>,
     _registry: krowk_devregistry::Running,
-    _mock: mock::Mock,
 }
 
 /// One machine: a home with its own device keys, on the person's device
@@ -136,8 +133,27 @@ impl World {
         let roster = format!(r#"{{"ticketKeys": {{"{}": "{}"}}}}"#, e2e::hex(&krowk_devregistry::TICKET_KID), e2e::hex(&krowk_devregistry::ticket_public_key()));
         let roster = krowk_harness::relay::Roster::parse(&roster).unwrap();
         std::thread::spawn(move || krowk_harness::relay::run(relay, krowk_harness::relay::Config { roster, origin: None, limits: Default::default(), state: None, origins: Vec::new(), whois: None, pin: None }));
-        let m = mock::serve(model);
-        World { name: name.into(), root: root.canonicalize().unwrap(), api, relay: relay_url, mock: m.url.clone(), account: AccountKey::generate(), people: Default::default(), _registry: registry, _mock: m }
+        let root = root.canonicalize().unwrap();
+        let scenario = root.join("scenario.jsonl");
+        std::fs::write(&scenario, scenario_text()).unwrap();
+        World { name: name.into(), root, api, relay: relay_url, scenario, account: AccountKey::generate(), people: Default::default(), _registry: registry }
+    }
+
+    /// The environment that gives a machine's home Claude Code — the fake,
+    /// first on PATH, signed in — and trusts its repository.
+    fn claude(&self, home: &std::path::Path, repo: &std::path::Path) -> Vec<(String, String)> {
+        let bin = home.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // `fake::binary()` is the harness crate's path, not this one's.
+        std::os::unix::fs::symlink(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude"), bin.join("claude")).unwrap();
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/fake-login"), "").unwrap();
+        std::fs::write(home.join(".krowk/trusted.json"), serde_json::json!({"directories": [repo]}).to_string()).unwrap();
+        vec![
+            ("PATH".into(), format!("{}:/usr/bin:/bin", bin.display())),
+            ("FAKE_CLAUDE_SCENARIO".into(), self.scenario.display().to_string()),
+            ("FAKE_CLAUDE_LOG".into(), home.join("fake-claude.log").display().to_string()),
+        ]
     }
 
     fn machine(&self, name: &str) -> Machine {
@@ -159,8 +175,7 @@ impl World {
             people.publish(&self.api, TOKEN);
             people.client(&self.api, TOKEN, people.len() - 1)
         };
-        let env = vec![
-            ("PATH".into(), "/usr/bin:/bin".into()),
+        let mut env = vec![
             ("HOME".into(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
@@ -171,9 +186,8 @@ impl World {
             // No tailscaled unless a test fakes one: never the one this
             // machine may run.
             ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
-            ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
-            ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
         ];
+        env.extend(self.claude(&home, &repo));
         Machine { home, repo, run, env, api }
     }
 
@@ -190,8 +204,7 @@ impl World {
         std::fs::create_dir_all(&run).unwrap();
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&run, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let env = vec![
-            ("PATH".into(), "/usr/bin:/bin".into()),
+        let mut env = vec![
             ("HOME".into(), home.display().to_string()),
             ("XDG_RUNTIME_DIR".into(), run.display().to_string()),
             ("KROWK_NO_UPDATE_CHECK".into(), "1".into()),
@@ -200,9 +213,8 @@ impl World {
             ("KROWK_TOKEN".into(), device_list::key(TOKEN, name)),
             ("KROWK_RELAY_URL".into(), relay.into()),
             ("KROWK_TAILSCALE_SOCKET".into(), run.join("no-tailscaled.sock").display().to_string()),
-            ("ANTHROPIC_API_KEY".into(), "sk-test".into()),
-            ("ANTHROPIC_BASE_URL".into(), self.mock.clone()),
         ];
+        env.extend(self.claude(&home, &repo));
         (repo, env, run)
     }
 }
@@ -330,7 +342,7 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
     let w = World::new("attach");
     let a = w.machine("a");
     let b = w.machine("b");
-    let made = a.command(&["-p", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    let made = a.command(&["-p", "hello", "--model", "claude/sonnet"]).output().unwrap();
     assert!(made.status.success(), "A makes a session: {}", String::from_utf8_lossy(&made.stderr));
     let session = a.session();
 
@@ -376,20 +388,20 @@ fn r_perm_2_sync_attach_approves_denies_and_interrupts_from_stdin() {
 }
 
 /// R-SUB-12 through the command line: B, attached with `krowk sync
-/// attach`, stops one subagent of A's turn with `/interrupt` and the id its
-/// `subagent.started` line names, and the turn goes on to its answer.
+/// attach`, stops one of the agents of A's turn with `/interrupt` and the
+/// id its `subagent.started` line names, and the turn goes on to its answer.
 #[test]
 fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
     let w = World::new("child");
     let a = w.machine("a");
     let b = w.machine("b");
     let (_host, session) = hosted(&w, &a);
+    let sleeper = agents().1;
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
     view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
-    view.type_line("start a slow subagent");
-    let started = view.until("the subagent", is("subagent.started"));
+    view.type_line("run two agents");
+    let started = view.until("the sleeper", |v| v["type"] == "subagent.started" && v.to_string().contains(&sleeper));
     let child = started["subagentSessionId"].as_str().expect("the line names the child").to_string();
-    view.until("the subagent typing", |v| v["type"] == "item.delta" && v["sessionId"] == child.as_str());
     view.type_line(&format!("/interrupt {child}"));
     let ended = view.until("the subagent's end", |v| v["type"] == "turn.completed" && v["sessionId"] == child.as_str());
     assert_eq!(ended["status"], "interrupted", "{ended}");
@@ -405,17 +417,10 @@ fn r_sub_12_sync_attach_stops_one_subagent_by_its_id() {
 #[test]
 fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_once_trusted() {
     let w = World::new("untrusted");
-    let mut a = w.machine("a");
+    let a = w.machine("a");
     let b = w.machine("b");
-    // A fake `claude` first on A's PATH: Claude Code, signed in.
-    let bin = a.home.join("bin");
-    std::fs::create_dir_all(&bin).unwrap();
-    std::os::unix::fs::symlink(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude/fake-claude"), bin.join("claude")).unwrap();
-    for (k, v) in a.env.iter_mut() {
-        if k == "PATH" {
-            *v = format!("{}:{v}", bin.display());
-        }
-    }
+    // A's repository on no trusted list.
+    std::fs::remove_file(a.home.join(".krowk/trusted.json")).unwrap();
     let added = a.command(&["providers", "add", "claude", "--json"]).output().unwrap();
     assert!(added.status.success(), "A adds Claude Code: {}", String::from_utf8_lossy(&added.stderr));
     let made = a.command(&["-p", "hello", "--model", "claude/sonnet", "--trust"]).output().unwrap();
@@ -456,10 +461,8 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     let w = World::new("offer");
     let a = w.machine("a");
     let b = w.machine("b");
-    let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
-    let config = serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
-    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
-    let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
+    let other = personal(&w, &a);
+    let (_host, session) = hosted_on(&a, "claude/sonnet");
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
     view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
 
@@ -467,22 +470,22 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     view.said("the refusal", |l| l == "krowk: no switch offer is waiting");
     view.type_line(&format!("say {LIMITED}"));
     let result = view.until("the limited turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
-    assert_eq!(result["switchOffer"]["to"]["instance"], "anthropic:personal", "{result}");
-    view.said("the offer", |l| l == "krowk: anthropic/claude-sonnet-4-6 is at its limit — type /switch to continue on anthropic:personal/claude-sonnet-4-6");
+    assert_eq!(result["switchOffer"]["to"]["instance"], "claude:personal", "{result}");
+    view.said("the offer", |l| l == "krowk: claude/sonnet is at its limit — type /switch to continue on claude:personal/sonnet");
 
     view.type_line("/switch");
     let result = view.until("the turn again", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
-    assert_eq!((result["status"].as_str(), result["model"]["instance"].as_str()), (Some("completed"), Some("anthropic:personal")), "{result}");
+    assert_eq!((result["status"].as_str(), result["model"]["instance"].as_str()), (Some("completed"), Some("claude:personal")), "{result}");
     assert!(result["result"].as_str().is_some_and(|r| r.contains("on the other")), "{result}");
     let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
     let events: Vec<serde_json::Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
     let switched: Vec<_> = events.iter().filter(|e| e["type"] == "model.switched").collect();
     assert_eq!(switched.len(), 1, "{switched:?}");
-    assert_eq!(switched[0]["to"]["instance"], "anthropic:personal");
+    assert_eq!(switched[0]["to"]["instance"], "claude:personal");
     let turns: Vec<_> = events.iter().filter(|e| e["type"] == "turn.started").collect();
-    assert_eq!(turns.last().unwrap()["model"]["instance"], "anthropic:personal", "the prompt again ran on the offered instance");
+    assert_eq!(turns.last().unwrap()["model"]["instance"], "claude:personal", "the prompt again ran on the offered instance");
     assert_eq!(turns.len(), 3, "hello, the limited turn, and once again: {turns:?}");
-    assert!(other.seen.lock().unwrap().last().is_some_and(|c| c.body["messages"].to_string().contains(LIMITED)), "B's last prompt was sent again");
+    assert!(prompts(&other).last().is_some_and(|p| p.contains(LIMITED)), "B's last prompt was sent again");
 }
 
 /// R-ROLL-12, D10: an early offer, from a turn that succeeded, is named on
@@ -494,34 +497,58 @@ fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     let w = World::new("early");
     let a = w.machine("a");
     let b = w.machine("b");
-    let other = mock::serve(|_, _| mock::Reply::paced(mock::text_stream(&format!("{ANSWER} on the other")), Duration::from_millis(5)));
-    let config = serde_json::json!({"instances": {"anthropic:personal": {"kind": "anthropic-api", "baseUrl": other.url}}});
-    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
-    let (_host, session) = hosted_on(&a, "anthropic/claude-sonnet-4-6");
+    let other = personal(&w, &a);
+    let (_host, session) = hosted_on(&a, "claude/sonnet");
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(20.0), resets_at_ms: None };
-    krowk_harness::usage::Usage::in_home(&a.home.join(".krowk")).record_limit("anthropic:personal", &limit, now).unwrap();
+    // Five hours 90% used before the turn takes it to 96%; the other
+    // account seen with room, on the same model.
+    let usage = krowk_harness::usage::Usage::in_home(&a.home.join(".krowk"));
+    for (instance, used) in [("claude", 90.0), ("claude:personal", 20.0)] {
+        usage.record_instance(instance, instance, &["sonnet".to_string()], now).unwrap();
+        let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
+        usage.record_limit(instance, &limit, now).unwrap();
+    }
     let mut view = Running::spawn(b.command(&["sync", "attach", &session]));
     view.until("the host", |v| v["type"] == "sync.host" && v["present"] == true);
 
     view.type_line(&format!("say {NEARLY_OUT}"));
     let result = view.until("the turn's end", |v| v["type"] == "result" && v["sessionId"] == session.as_str());
     assert_eq!((result["status"].as_str(), result["switchOffer"]["early"].as_bool()), (Some("completed"), Some(true)), "{result}");
-    view.said("the offer", |l| l.starts_with("krowk: anthropic/claude-sonnet-4-6 is running low — type /switch to continue on anthropic:personal/claude-sonnet-4-6 ("));
+    view.said("the offer", |l| l.starts_with("krowk: claude/sonnet is running low — type /switch to continue on claude:personal/sonnet ("));
     view.type_line("/switch");
-    view.until("the switch", |v| v["type"] == "model.switched" && v["to"]["instance"] == "anthropic:personal");
+    view.until("the switch", |v| v["type"] == "model.switched" && v["to"]["instance"] == "claude:personal");
     std::thread::sleep(Duration::from_millis(500));
-    assert!(other.seen.lock().unwrap().is_empty(), "nothing was sent again");
+    assert!(prompts(&other).is_empty(), "nothing was sent again");
     let log = std::fs::read_to_string(a.home.join(".krowk/sessions").join(&session).join("events.jsonl")).unwrap();
     let turns = log.lines().filter(|l| serde_json::from_str::<serde_json::Value>(l).unwrap()["type"] == "turn.started").count();
     assert_eq!(turns, 2, "hello and the early one, no third");
+}
+
+/// A second Claude Code account on A, `claude:personal`, answering
+/// everything with the marker "on the other": its fake's log.
+fn personal(w: &World, a: &Machine) -> PathBuf {
+    let dir = a.home.join("claude-personal");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("fake-login"), "").unwrap();
+    let scenario = w.root.join("other.jsonl");
+    std::fs::write(&scenario, format!("@when \"type\":\"user\"\n{}\n", fake::answer(&format!("{ANSWER} on the other")))).unwrap();
+    let log = a.home.join("claude-personal.log");
+    let env = serde_json::json!({"FAKE_CLAUDE_SCENARIO": scenario, "FAKE_CLAUDE_LOG": log});
+    let config = serde_json::json!({"instances": {"claude:personal": {"kind": "claude-code", "configDir": dir, "env": env}}});
+    std::fs::write(a.home.join(".krowk/config.json"), config.to_string()).unwrap();
+    log
+}
+
+/// The prompts a fake `claude` logging to `log` was sent.
+fn prompts(log: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(log).unwrap_or_default().lines().filter_map(|l| l.strip_prefix("in ")).filter(|l| l.starts_with(r#"{"type":"user""#)).map(String::from).collect()
 }
 
 /// A's session made with `krowk -p` and hosted by `krowk sync host`, synced
 /// to the registry: the host's process, and the session's id.
 fn hosted(w: &World, a: &Machine) -> (Running, String) {
     let _ = w;
-    hosted_on(a, "claude-sonnet-4-6")
+    hosted_on(a, "claude/sonnet")
 }
 
 /// `hosted`, the session made on `model`.
@@ -874,7 +901,7 @@ fn r_sync_3_a_daemon_session_is_listed_elsewhere_with_no_sync_command() {
     a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
     a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
     let started = Instant::now();
-    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "A runs a turn in its daemon: {}", String::from_utf8_lossy(&made.stderr));
     let session = a.session();
     let host_log = || std::fs::read_to_string(a.home.join(".krowk/host.log")).unwrap_or_default();
@@ -984,7 +1011,7 @@ fn r_sync_1_a_machine_without_sync_makes_no_sync_call() {
         c.args(args).env_clear().envs(env.iter().map(|(k, v)| (k, v))).current_dir(&repo).stdin(Stdio::null());
         c
     };
-    let made = command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).output().unwrap();
+    let made = command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).output().unwrap();
     assert!(made.status.success(), "the turn runs: {}", String::from_utf8_lossy(&made.stderr));
     assert!(String::from_utf8_lossy(&made.stdout).contains(ANSWER));
     std::thread::sleep(Duration::from_secs(3));
@@ -1015,7 +1042,7 @@ fn r_sync_3_the_daemon_syncs_nothing_the_policy_leaves_out() {
     std::fs::create_dir_all(marked.repo.join(".krowk")).unwrap();
     std::fs::write(marked.repo.join(".krowk/no-sync"), "").unwrap();
     for (m, why) in [(&off, "automatic sync is off (sync.auto in config.json)"), (&marked, "opts")] {
-        let made = m.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+        let made = m.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
         assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
         let session = m.session();
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -1046,7 +1073,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     a.env.retain(|(k, _)| k != "KROWK_HOST_IDLE");
     a.env.push(("KROWK_HOST_IDLE".into(), "0".into()));
     std::fs::write(a.home.join(".krowk/trusted.json"), serde_json::json!({"directories": [a.repo]}).to_string()).unwrap();
-    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude-sonnet-4-6"]).stdin(Stdio::null()).output().unwrap();
+    let made = a.command(&["-p", "--daemon", "hello", "--model", "claude/sonnet"]).stdin(Stdio::null()).output().unwrap();
     assert!(made.status.success(), "{}", String::from_utf8_lossy(&made.stderr));
 
     let deadline = Instant::now() + Duration::from_secs(20);
@@ -1063,9 +1090,9 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     assert_eq!((v["tailscale"].as_bool(), v["unopened"].as_u64()), (Some(false), Some(0)), "{v}");
     assert_eq!((h["online"].as_bool(), h["direct"].as_bool(), h["thisMachine"].as_bool()), (Some(true), Some(false), Some(false)), "online with no Tailscale: {h}");
     assert!(h["lastSeen"].as_str().is_some_and(|s| !s.is_empty()) && h["version"].as_str().is_some_and(|s| !s.is_empty()), "{h}");
-    let anthropic = h["instances"].as_array().unwrap().iter().find(|i| i["kind"] == "anthropic-api").cloned().unwrap_or_default();
-    assert_eq!((anthropic["ready"].as_bool(), anthropic["state"].as_str()), (Some(true), Some("ready")), "{h}");
-    assert!(anthropic["models"].as_array().is_some_and(|m| !m.is_empty()), "{h}");
+    let claude = h["instances"].as_array().unwrap().iter().find(|i| i["kind"] == "claude-code").cloned().unwrap_or_default();
+    assert_eq!((claude["ready"].as_bool(), claude["state"].as_str()), (Some(true), Some("ready")), "{h}");
+    assert!(claude["models"].as_array().is_some_and(|m| !m.is_empty()), "{h}");
     assert_eq!(h["directories"], serde_json::json!([a.repo]), "{h}");
 
     let human = b.command(&["hosts", "--format", "human"]).stdin(Stdio::null()).output().unwrap();
@@ -1074,7 +1101,7 @@ fn r_host_3_krowk_hosts_shows_an_announced_host_online_with_no_tailscale() {
     // Hosting or not: its daemon's automatic sync may have taken the turn's session up.
     assert!(lines.next().is_some_and(|l| l.contains("  Tailscale is not running here  ")), "{human}");
     assert!(lines.next().is_some_and(|l| l.starts_with("  online · krowk ")), "{human}");
-    assert!(human.contains("  ready: anthropic (") && human.contains("  directories: "), "{human}");
+    assert!(human.contains("  ready: claude (") && human.contains("  directories: "), "{human}");
 }
 
 /// A with sync set up, its repository trusted and its host daemon kept up
@@ -1372,14 +1399,17 @@ fn r_hand_4_a_third_device_moves_a_session_from_a_to_b() {
     assert!(!a_log.contains("hello from c on b"), "and not on A");
 }
 
-/// R-CRED-1, R-HAND-4: B has no key for the instance the session runs on.
+/// R-CRED-1, R-HAND-4: B has no Claude Code for the instance the session runs on.
 /// C's take into B's clone is refused by B's own take, before anything
 /// moves, with its fix as the message; the session stays on A.
 #[test]
 fn r_cred_1_a_take_b_cannot_run_is_refused_with_its_fix_and_the_session_stays() {
     use krowk_client::host_command::HostAnswer;
     let w = World::new("takeno");
-    let m = Moving::new(&w, |env| env.retain(|(k, _)| k != "ANTHROPIC_API_KEY"));
+    let m = Moving::new(&w, |env| {
+        env.retain(|(k, _)| k != "PATH");
+        env.push(("PATH".into(), "/usr/bin:/bin".into()));
+    });
     let refused = m.ask(&w, 1, &m.b.repo);
     let HostAnswer::Refused { code, message } = &refused else { panic!("not refused: {refused:?}") };
     assert_eq!(code, "take_refused", "{message}");
