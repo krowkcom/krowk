@@ -205,7 +205,9 @@ pub struct DeliveredPairingRequest {
 pub enum PairingRequestState {
     /// Recorded; no host has opened a pairing yet.
     Pending,
-    /// A pairing is open: read it with `find_open_pairing` and join.
+    /// A pairing opened for this person since: read it with `find_open_pairing`
+    /// and join. A hint only: it stays so after that pairing ends, and the
+    /// pairing itself is what says whether it can still be joined.
     PairingOpen,
     /// Ten minutes passed with no pairing. Ask again.
     Expired,

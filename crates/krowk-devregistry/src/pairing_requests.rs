@@ -112,17 +112,24 @@ pub fn answered(s: &mut SyncStore, person: &str, now: Timestamp) {
 /// other devices' terminals).
 fn text(given: &Value, field: &str, max: usize) -> Result<String, Resp> {
     let Some(Value::Str(s)) = given.get(field).map(|m| &m.value) else { return Err(invalid(field, "must be a string")) };
-    let s = s.trim().to_owned();
+    let s = s.trim_matches(|c| matches!(c, ' ' | '\t' | '\n' | '\x0b' | '\x0c' | '\r')).to_owned();
     if s.is_empty() {
         return Err(invalid(field, "can't be blank"));
     }
     if s.chars().count() > max {
         return Err(invalid(field, &format!("is too long (maximum is {max} characters)")));
     }
-    if s.chars().any(char::is_control) {
-        return Err(invalid(field, "cannot hold control characters"));
+    if s.chars().any(|c| c.is_control() || is_invisible_format(c)) {
+        return Err(invalid(field, "cannot hold control or invisible formatting characters"));
     }
     Ok(s)
+}
+
+/// The registry also refuses format characters (Unicode Cf: bidi overrides,
+/// zero-width) and line and paragraph separators: the text is untrusted and
+/// shown on the person's other machines.
+fn is_invisible_format(c: char) -> bool {
+    matches!(c, '\u{ad}' | '\u{61c}' | '\u{180e}' | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}')
 }
 
 /// POST /v1/users/:user_id/pairing_request. The key alone: a key that speaks
@@ -143,11 +150,11 @@ pub fn create(app: &App, req: &mut Req) -> Resp {
         }
         let v = crate::json::parse(&body).ok_or_else(crate::errors::bad_request)?;
         let given = v.get("pairing_request").map(|m| m.value.clone()).filter(|v| matches!(v, Value::Obj(_))).unwrap_or(Value::Null);
-        let (name, os) = (text(&given, "name", MAX_NAME_CHARS)?, text(&given, "os", MAX_OS_CHARS)?);
         s.sync.pairing_requests.retain(|_, r| r.expires_at + GRACE > now);
         if s.sync.pairing_requests.values().any(|r| r.person == who.person && r.pending(now)) {
             return Err(error(409, "pairing_request_pending", "another machine's pairing request is still waiting — it lapses in 10 minutes, or when a pairing opens for it", None));
         }
+        let (name, os) = (text(&given, "name", MAX_NAME_CHARS)?, text(&given, "os", MAX_OS_CHARS)?);
         // A pairing already open is the one this machine joins: answered at
         // once, and no host is nudged to open another.
         let opened = s.sync.pairings.values().any(|p| p.person == who.person && p.live_at(now));
@@ -155,8 +162,11 @@ pub fn create(app: &App, req: &mut Req) -> Resp {
         let r = PairingRequest { slug: generate_slug("prq"), person: who.person.clone(), key: who.key, name, os, created_at: now, expires_at: now + LIFETIME, opened, order: s.sync.seq };
         let resp = Resp::json(201, &Json::map([("pairing_request", serialize(&r, now))]));
         s.sync.pairing_requests.insert(r.slug.clone(), r);
-        // The phone's push says only that a new machine signed in.
-        s.sync.notifications.push(Notified { session: String::new(), kind: "new_machine".into(), dedup: String::new(), from_device: String::new(), at: now });
+        // The phone's push says only that a new machine signed in, and is not
+        // sent when a pairing is already open: nothing is waiting on a host.
+        if !opened {
+            s.sync.notifications.push(Notified { session: String::new(), kind: "new_machine".into(), dedup: String::new(), from_device: String::new(), at: now });
+        }
         Ok(resp)
     };
     run().unwrap_or_else(|r| r)

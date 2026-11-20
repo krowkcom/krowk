@@ -186,6 +186,8 @@ fn a_host_opening_a_pairing_answers_the_request() {
 
     let c = new_machine(&p, "c");
     assert_eq!(c.request_pairing("laptop", "macOS").unwrap().state, PairingRequestState::PairingOpen);
+    // Nothing is waiting on a host, so the phone is not rung for it.
+    assert_eq!(seen(p.addr, "/_notifications")["notifications"].as_array().unwrap().len(), 1);
 }
 
 /// A request opens nothing and carries no keys: no pairing, no device, and
@@ -222,7 +224,7 @@ fn a_request_is_its_machines_and_its_text_is_plain() {
     let c = new_machine(&p, "c");
     p.advance(11 * 60);
     let (long_name, long_os) = ("n".repeat(101), "o".repeat(33));
-    for (name, os, field) in [("esc\u{1b}[2J", "Linux", "name"), ("ok", "Li\nnux", "os"), ("  ", "Linux", "name"), ("ok", "", "os"), (long_name.as_str(), "Linux", "name"), ("ok", long_os.as_str(), "os")] {
+    for (name, os, field) in [("esc\u{1b}[2J", "Linux", "name"), ("ok", "Li\nnux", "os"), ("  ", "Linux", "name"), ("ok", "", "os"), (long_name.as_str(), "Linux", "name"), ("ok", long_os.as_str(), "os"), ("\u{202e}evil", "Linux", "name"), ("ok", "Li\u{200b}nux", "os"), ("a\u{2028}b", "Linux", "name")] {
         let e = c.request_pairing(name, os).unwrap_err();
         assert_eq!((e.code().as_str(), e.status), ("invalid", 422), "{name:?} {os:?}");
         assert!(e.body.get("details").and_then(|d| d.get(field)).is_some(), "{e:?}");
