@@ -91,6 +91,11 @@ fn registry(config: krowk_devregistry::Config) -> (krowk_devregistry::Running, S
 /// The person at the browser: approves the login whose page the terminal
 /// shows.
 fn signs_in(r: &krowk_devregistry::Running, t: &pty::Pty) {
+    decides(r, t, "approval");
+}
+
+/// Answers the login whose page the terminal shows: `approval` or `denial`.
+fn decides(r: &krowk_devregistry::Running, t: &pty::Pty, decision: &str) {
     let deadline = Instant::now() + WAIT;
     let code = loop {
         let text = t.text();
@@ -104,7 +109,7 @@ fn signs_in(r: &krowk_devregistry::Running, t: &pty::Pty) {
         std::thread::sleep(Duration::from_millis(50));
     };
     let mut s = TcpStream::connect(r.addr()).unwrap();
-    write!(s, "POST /_approve/cli/authorizations/{code}/approval HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+    write!(s, "POST /_approve/cli/authorizations/{code}/{decision} HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     let mut answer = String::new();
     s.read_to_string(&mut answer).unwrap();
     assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
@@ -427,6 +432,26 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_any_other_answer_i
     assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
     assert!(b.keystore().device_list().unwrap().is_some());
     assert_eq!(b.state()["pending"], false);
+}
+
+/// A sign-in that fails is said, and nothing after it is asked: the next
+/// `krowk` asks to sign in again rather than going on without an account.
+#[test]
+fn a_failed_sign_in_is_asked_again_and_nothing_after_it_is() {
+    let (r, api) = registry(Default::default());
+    let b = Sandbox::new("denied");
+    let mut t = wide(b.command(&api, &[]));
+    says(&t, "Sign in to krowk");
+    types(&mut t, b"\r");
+    decides(&r, &t, "denial");
+    says(&t, "run krowk again to retry");
+    says(&t, "krowk help agents");
+    ends(&mut t);
+    assert!(!t.text().contains("Connect which provider?"), "{:?}", t.text());
+    let mut t = wide(b.command(&api, &[]));
+    says(&t, "Sign in to krowk");
+    types(&mut t, b"x\r");
+    ends(&mut t);
 }
 
 /// D9, R-EASE-8: the overview bare `krowk` prints names the most important

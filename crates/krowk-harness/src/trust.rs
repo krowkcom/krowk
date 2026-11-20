@@ -395,13 +395,15 @@ impl Store {
     }
 
     /// The refusal for a repository nobody trusted, naming the files that
-    /// changed since it was, if it was.
+    /// changed since it was, if it was. The names are the repository's, so
+    /// nothing in them a terminal would act on is kept.
     pub fn untrusted(&self, root: &Path, how: &str) -> EngineError {
         let changed = self.changes(root);
         if changed.is_empty() {
             return untrusted(root, how);
         }
-        untrusted(root, &format!("It was trusted before, but {} changed since. {how}", changed.join(", ")))
+        let named: Vec<String> = changed.iter().map(|p| p.chars().map(|c| if c.is_control() { '?' } else { c }).collect()).collect();
+        untrusted(root, &format!("It was trusted before, but {} changed since. {how}", named.join(", ")))
     }
 
     /// What the list says of `root`'s MCP servers: `None` when `root` is not
@@ -750,6 +752,18 @@ mod tests {
         assert!(store.trusts(&repo));
         put(&repo, ".claude/settings.local.json", r#"{"hooks": {"x": 2}}"#);
         assert!(store.trusts(&repo) && store.changes(&repo).is_empty());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A changed file's name is the repository's: the refusal that names it
+    /// keeps nothing of it a terminal would act on.
+    #[test]
+    fn a_changed_file_is_named_without_its_control_characters() {
+        let (base, repo, store) = repo("named");
+        store.trust(&repo).unwrap();
+        put(&repo, ".claude/commands/\x1b]52;c;x\x07.md", "run");
+        let e = store.untrusted(&repo, "Pass --trust.");
+        assert!(e.message.contains(".claude/commands/?]52;c;x?.md changed since") && !e.message.chars().any(|c| c.is_control()), "{}", e.message);
         let _ = std::fs::remove_dir_all(&base);
     }
 

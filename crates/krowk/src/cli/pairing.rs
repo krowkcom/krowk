@@ -458,7 +458,7 @@ fn ask(ctx: &mut Ctx, question: &str) -> Result<(), Error> {
 #[cfg(unix)]
 pub(super) fn show_offer(ctx: &mut Ctx) {
     use krowk_client::protocol::OfferStage;
-    let ask_here = unattended(ctx) || (ctx.io.stdin_tty && ctx.io.err_tty);
+    let ask_here = unattended(ctx) || (ctx.io.tty && ctx.io.stdin_tty && ctx.io.err_tty);
     let deadline = Instant::now() + WAIT;
     let mut said_code = false;
     loop {
@@ -682,7 +682,7 @@ fn ask_hosts(ctx: &mut Ctx, client: &Client) -> Result<Pairing, Error> {
         }
         Err(e) => return Err(e),
     };
-    let _ = writeln!(ctx.io.stderr, "Asking your other machines to show a code…");
+    let _ = writeln!(ctx.io.stderr, "Asking your other machines to show a code… `krowk machines` on one of them shows it.");
     let _ = ctx.io.stderr.flush();
     let poll = if unattended(ctx) { Duration::from_millis(100) } else { Duration::from_secs(request.poll_interval.clamp(1, 5)) };
     // A host online refreshes its presence every few seconds, and a request

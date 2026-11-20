@@ -57,12 +57,14 @@ pub(super) fn chose_local(ctx: &Ctx) -> bool {
 /// Bare `krowk` with a person at the terminal: the setup's steps still to
 /// do, in order, before the overview. The sign-in step is asked only when
 /// nothing here can run a model yet and there is no key; the rest only once
-/// the setup has begun (`first-run.json` is there) and until both questions
+/// the setup has begun (`first-run.json` is there), the account step is
+/// behind it (signed in, or using krowk locally), and until both questions
 /// are asked. A step cancelled or failed is said, and the next `krowk`
 /// takes it up again.
 pub(super) fn bare(ctx: &mut Ctx) {
     account_step(ctx, runnable(ctx));
-    if !path(ctx).is_ok_and(|p| p.exists()) || !steps_due(ctx) {
+    let past_account = load(ctx).local || agent::new_client(ctx).is_ok_and(|c| c.authenticated());
+    if !path(ctx).is_ok_and(|p| p.exists()) || !past_account || !steps_due(ctx) {
         return;
     }
     if model_step(ctx) {

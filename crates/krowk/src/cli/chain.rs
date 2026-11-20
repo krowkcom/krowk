@@ -83,14 +83,24 @@ pub(super) fn ask(ctx: &mut Ctx, question: &str) -> Result<bool, Error> {
 }
 
 /// One answer from a line of keys, in plain text on stderr: `title`, then
-/// the keys and what each does, read as a line from stdin — `""` for Enter
-/// alone, else the line trimmed and lowercased, `"esc"` at the end of input.
+/// the keys and what each does, read as a line from stdin typed after it was
+/// asked — `""` for Enter alone, else the line trimmed and lowercased,
+/// `"esc"` at the end of input.
 /// The debug build's test suite answers with the next stand-in answer
 /// instead.
 pub(super) fn ask_key(ctx: &mut Ctx, title: &str, options: &[(&str, &str)]) -> String {
     use std::io::BufRead as _;
     if let Some(a) = test_answer(ctx) {
         return a;
+    }
+    // What was typed before the question was asked is not its answer: an
+    // Enter pressed while waiting would otherwise take a `[Y/n]`'s yes.
+    #[cfg(unix)]
+    if ctx.io.stdin_tty {
+        // SAFETY: tcflush only discards the terminal's pending input on fd 0.
+        unsafe {
+            libc::tcflush(0, libc::TCIFLUSH);
+        }
     }
     let keys: Vec<String> = options.iter().map(|(k, what)| format!("[{k}] {what}")).collect();
     let _ = if keys.is_empty() { write!(ctx.io.stderr, "\n{title} ") } else { write!(ctx.io.stderr, "\n{title}\n  {} ", keys.join("   ")) };
