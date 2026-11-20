@@ -575,7 +575,6 @@ pub fn catalog(version: &str) -> Catalog {
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
         sessions.subcommands.extend(machine_commands());
-        sessions.summary = "List and read agent sessions, here and on your other machines";
     }
     c
 }

@@ -73,6 +73,10 @@ Agent
   sessions vintage  List a week's vintages, replaced ones included
   sessions pin      Never archive this session
   sessions unpin    Let a pinned session be archived again
+  sessions attach   Follow a session on another machine in the TUI, or as
+                    stream-json
+  sessions take     Move a live session here, uncommitted work and all
+  sessions new      Start a session on another machine of yours, and follow it
   sync init         Set up sync: this device, your user key and a recovery kit
   sync recover      Back in from the recovery kit's 12 words, on a new machine
   sync status       This device's list, recovery kit and auto-sync, checked
