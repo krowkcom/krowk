@@ -705,10 +705,6 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     super::sessions::emit_data(ctx, json!({ "device": device.id().to_string(), "name": name, "seq": seq, "joined": true, "hostService": service }), summary)
 }
 
-/// What a machine asks for when the person has no pairing open: the
-/// registry told (`request_pairing`), the person's online hosts told within
-/// a refresh; then the person's one pairing found once a host opens it, and
-/// the code typed at its prompt.
 const NO_HOST: &str = "None of your machines is online to show a code. Run krowk machines add on one of them.";
 
 /// A pairing a person already has open (a `krowk machines add` or `krowk
@@ -726,15 +722,17 @@ fn open_pairing_and_code(ctx: &mut Ctx, client: &Client) -> Result<(Pairing, Pai
     Ok((open, code))
 }
 
-/// How often the new machine looks for the pairing a host opens, and how
-/// long it waits: the request's own ten minutes.
+/// How long the new machine waits for a host to open a pairing before it
+/// says none is online: three of a host's refreshes (`announce::EVERY`) and a
+/// breath. A debug build's tests shorten it.
+fn no_host_after(ctx: &Ctx) -> Duration {
+    let tested = ctx.env("KROWK_TEST_NO_HOST_SECS").parse::<u64>().ok().filter(|_| cfg!(debug_assertions));
+    Duration::from_secs(tested.unwrap_or(40))
+}
+
+/// The new machine asks the person's hosts, and waits for the pairing one
+/// of them opens.
 fn ask_hosts(ctx: &mut Ctx, client: &Client) -> Result<Pairing, Error> {
-    // Online hosts first: with none there is nobody to open a pairing, and
-    // the phone is not rung for nothing. A registry that cannot say is asked
-    // anyway.
-    if client.list_presences().is_ok_and(|p| !p.iter().any(|x| x.online)) {
-        return Err(fail("no_host_online", NO_HOST));
-    }
     let name = clip(&device_name(ctx), pairing::MAX_NAME);
     let request = match client.request_pairing(&name, os_name()) {
         Ok(r) => r,
@@ -749,7 +747,11 @@ fn ask_hosts(ctx: &mut Ctx, client: &Client) -> Result<Pairing, Error> {
     let _ = writeln!(ctx.io.stderr, "Asking your other machines to show a code…");
     let _ = ctx.io.stderr.flush();
     let poll = if unattended(ctx) { Duration::from_millis(100) } else { Duration::from_secs(request.poll_interval.clamp(1, 5)) };
-    let deadline = Instant::now() + WAIT;
+    // A host online refreshes its presence every few seconds, and a request
+    // reaches it in that refresh: a few refreshes with no pairing opened
+    // means none is. (The new machine is no device yet, so it cannot read
+    // which are online.)
+    let deadline = Instant::now() + no_host_after(ctx);
     loop {
         // The state is a hint that stays after its pairing ends: the pairing
         // itself says whether there is one to join.
@@ -760,7 +762,7 @@ fn ask_hosts(ctx: &mut Ctx, client: &Client) -> Result<Pairing, Error> {
             Err(e) => return Err(e),
         }
         if client.pairing_request().is_ok_and(|r| r.state == PairingRequestState::Expired) || Instant::now() > deadline {
-            return Err(fail("pairing_request_expired", NO_HOST));
+            return Err(fail("no_host_online", NO_HOST));
         }
         std::thread::sleep(poll);
     }

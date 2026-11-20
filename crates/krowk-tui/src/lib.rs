@@ -40,6 +40,7 @@ pub mod child;
 pub mod clipboard;
 pub mod connect;
 pub mod link;
+pub mod newmachine;
 pub mod device;
 pub mod pr;
 pub mod presence;
@@ -606,6 +607,7 @@ async fn session(opts: Options) -> Outcome {
         host: &host,
         watch: host.watch(),
         sync_events: host.synced().and_then(|s| s.events()),
+        new_machine: newmachine::watch(opts.version.clone()),
         live: live.clone(),
         named: opts.model.is_some(),
         model: opts.model,
@@ -791,6 +793,9 @@ struct Ui<'h> {
     /// A synced session's news besides its lines: a host there or not, the
     /// path, a turn begun elsewhere.
     sync_events: Option<mpsc::UnboundedReceiver<synced::Event>>,
+    /// What the host daemon says of a new machine that signed in: its code,
+    /// and how adding it went (`newmachine`).
+    new_machine: mpsc::UnboundedReceiver<String>,
     model: Option<ModelRef>,
     /// The model the person named (`--model`, a `/model` switch): with the
     /// session's own, what a bare `/model` id stays beside. A routed
@@ -1343,6 +1348,7 @@ impl<'h> Ui<'h> {
                 line = recv(&mut self.rx) => self.on_stream_line(app, &line, &mut reach).await,
                 line = watched(&mut self.watch) => self.on_watched(app, &line),
                 e = recv_sync(&mut self.sync_events) => self.on_sync(app, e),
+                l = newmachine::next(&mut self.new_machine) => app.notice(&l),
                 r = finish(&mut self.turn) => {
                     if self.on_turn_end(app, r, &mut reach, quitting).await {
                         return Ok(());

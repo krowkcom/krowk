@@ -54,6 +54,7 @@ fn krowk(home: &Path, api: &str, token: &str, args: &[&str]) -> Command {
         .env("KROWK_TOKEN", token)
         .env("KROWK_DEVICE_NAME", home.file_name().unwrap())
         .env("KROWK_TEST_UNATTENDED_DEVICE_APPROVAL", "1")
+        .env("KROWK_TEST_NO_HOST_SECS", "3")
         .current_dir(home)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -90,7 +91,7 @@ fn set_up(home: &Path, api: &str) -> UserKey {
 
 /// The registry's chain, verified from seq 0.
 fn served(api: &str) -> Chain {
-    let list = krowk_api::Client::new(api, DESKTOP).device_list_all().unwrap();
+    let list = krowk_api::Client::new(api, LAPTOP).device_list_all().unwrap();
     let entries: Vec<SignedEntry> = list.entries.iter().map(|e| SignedEntry::from_parts(e2e::unhex(&e.entry).unwrap(), &e2e::unhex(&e.signatures).unwrap()).unwrap()).collect();
     Chain::verify(&entries, None).unwrap()
 }
@@ -143,7 +144,8 @@ fn wait(mut child: Child, within: Duration) -> std::process::Output {
     while child.try_wait().unwrap().is_none() {
         if Instant::now() > deadline {
             let _ = child.kill();
-            panic!("a krowk did not finish in {within:?}");
+            let out = child.wait_with_output().unwrap();
+            panic!("a krowk did not finish in {within:?}:\n{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -209,7 +211,7 @@ fn r_e2e_3_a_wrong_code_adds_nothing_and_the_new_device_asks_for_a_new_one() {
     let wrong = if code.starts_with('2') { "3" } else { "2" }.to_string() + &code[1..];
     let b = join(&desktop, &api, &wrong);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("krowk devices add") && err.contains("a code works once"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("krowk sync join") && err.contains("a code works once"), "{err}");
     let a = wait(a, Duration::from_secs(30));
     let said = rest(&a_err);
     assert!(!a.status.success() && !said.contains("[Y/n]"), "the laptop asked nothing: {said}");
@@ -319,7 +321,7 @@ fn r_e2e_3_a_connection_dropped_after_confirming_asks_for_a_new_code() {
     let code = code_shown(&a_err);
     let b = join(&desktop, &format!("http://{proxy}/v1"), &code);
     let err = String::from_utf8_lossy(&b.stderr);
-    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("on 'laptop' run `krowk devices add` again"), "{err}");
+    assert!(!b.status.success() && err.contains("pairing_failed") && err.contains("a code works once") && err.contains("run `krowk sync join` here again for a new one from 'laptop'"), "{err}");
     let calls = seen.lock().unwrap().clone();
     assert_eq!(calls.iter().filter(|l| l.contains("/join")).count(), 1, "one start with the code, never a second: {calls:?}");
     assert!(calls.last().unwrap().contains("/confirmation"), "{calls:?}");
@@ -555,11 +557,12 @@ fn a_code_given_as_an_argument_is_refused() {
     let _ = std::fs::remove_dir_all(&r);
 }
 
-/// A machine removed from the list cannot bring its old keys back: `sync
-/// join` says so before any code is typed, rather than after the person
-/// has said yes on the other device.
+/// R-EASE-5: a machine removed from the list cannot bring its old keys
+/// back, so `sync join` offers to start it over as a new machine, before any
+/// code is typed: yes moves the old device and signing keys aside, never
+/// deletes them, and the join goes on with new ones.
 #[test]
-fn a_removed_machine_is_told_to_join_with_new_keys() {
+fn r_ease_5_a_removed_machine_is_offered_a_start_over_and_its_old_keys_move_aside() {
     let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
     let api = format!("{}/v1", registry.url());
     let r = root("removed");
@@ -578,10 +581,113 @@ fn a_removed_machine_is_told_to_join_with_new_keys() {
     let pinned = Chain::verify(&chain_entries(&api), Some(chain.head())).unwrap();
     let (_, remove) = pinned.batch(&key, vec![krowk_client::device_chain::Change::Remove(subject)], device.id(), &signing, now()).unwrap();
     krowk_api::Client::new(&api, LAPTOP).signed_by(DeviceSigner::new(device.id(), store.signing_key().unwrap()).shared()).append_device_list(&post(&remove)).unwrap();
-    // Its key went with it; signed in again, it is told to start afresh.
-    let again = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", "");
-    let err = String::from_utf8_lossy(&again.stderr);
-    assert!(!again.status.success() && err.contains("device_removed"), "{err}");
+    let old = keys(&desktop).device().unwrap().unwrap().id();
+
+    // Nothing online and nothing open: the start over is still offered and
+    // done, and the person is told to run `krowk machines add` on a machine.
+    let nobody = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", "");
+    let said = format!("{}{}", String::from_utf8_lossy(&nobody.stdout), String::from_utf8_lossy(&nobody.stderr));
+    assert!(!nobody.status.success() && said.contains("This machine was removed from your devices. Start it over as a new machine? [Y/n] y"), "{said}");
+    assert!(said.contains("None of your machines is online to show a code. Run krowk machines add on one of them."), "{said}");
+    let aside: Vec<_> = std::fs::read_dir(desktop.join(".krowk")).unwrap().filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().into_owned()).filter(|n| n.contains(".removed-")).collect();
+    assert_eq!(aside.len(), 2, "the device and signing keys, renamed: {aside:?}");
+    let fresh = keys(&desktop).device().unwrap().unwrap().id();
+    assert_ne!(fresh, old, "a new device key");
+
+    // With a pairing open it joins as the new machine it started over as.
+    let mut a = krowk(&laptop, &api, LAPTOP, &["devices", "add"]).spawn().unwrap();
+    let code = code_shown(&lines(&mut a));
+    let again = join_as(&desktop, &api, "krowk_sk_pairing#desktop-again", &code);
+    assert!(again.status.success(), "{}", String::from_utf8_lossy(&again.stderr));
+    assert!(wait(a, Duration::from_secs(30)).status.success());
+    let names: Vec<_> = served(&api).devices().iter().map(|d| d.name.clone()).collect();
+    assert!(names.iter().filter(|n| *n == "desktop").count() == 1, "{names:?}");
+    let _ = std::fs::remove_dir_all(&r);
+}
+
+/// R-EASE-5, D6: the new machine signs in and asks; the laptop's host reads
+/// the request in its presence refresh, opens the pairing and shows its code
+/// (here, the daemon's offer); the code is typed on the new machine, which
+/// then waits on the laptop's yes. No `devices add`, no code before the
+/// pairing exists.
+#[test]
+fn r_ease_5_a_new_machine_asks_and_the_hosts_code_joins_it() {
+    use krowk_client::protocol::OfferStage;
+    use krowk_harness::sync::introduce::{Introducer, Introductions, Timing};
+    let registry = krowk_devregistry::start(TcpListener::bind("127.0.0.1:0").unwrap(), krowk_devregistry::Config::default()).unwrap();
+    let api = format!("{}/v1", registry.url());
+    let r = root("asks");
+    let (laptop, desktop) = (r.join("laptop"), r.join("desktop"));
+    set_up(&laptop, &api);
+    // The laptop's host: its keys and list as the daemon reads them, its
+    // presence refreshed, each request handed to its introductions.
+    let store = keys(&laptop);
+    let (device, signing_secret) = (store.device().unwrap().unwrap().id(), store.signing_key().unwrap().secret_bytes().to_vec());
+    let signing = move || krowk_client::e2e::SigningKey::from_secret(&signing_secret).unwrap();
+    let (entries, user, chain) = (chain_entries(&api), store.user_keys().unwrap().unwrap().newest().clone(), served(&api));
+    let host_api = api.clone();
+    let make_signing = signing.clone();
+    let host = Introductions::with_timing(
+        Box::new(move || {
+            Ok(Introducer {
+                api: Arc::new(krowk_api::Client::new(&host_api, LAPTOP).signed_by(DeviceSigner::new(device, make_signing()).shared())),
+                keys: UserKeys::new(user.clone(), []).unwrap(),
+                chain: chain.clone(),
+                entries: entries.clone(),
+                device,
+                signing: make_signing(),
+            })
+        }),
+        Timing { poll: Duration::from_millis(50), wait: Duration::from_secs(60) },
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let refresher = {
+        let (host, stop, api) = (host.clone(), stop.clone(), api.clone());
+        let host_signing = signing.clone();
+        std::thread::spawn(move || {
+            let c = krowk_api::Client::new(&api, LAPTOP).signed_by(DeviceSigner::new(device, host_signing()).shared());
+            while !stop.load(Ordering::SeqCst) {
+                if let Ok(put) = c.put_presence(b"laptop", 30) {
+                    host.deliver(&put.pairing_requests);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        })
+    };
+
+    let mut b = krowk(&desktop, &api, DESKTOP, &["sync", "join"]).spawn().unwrap();
+    let b_err = lines(&mut b);
+    let code = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(o) = host.offer().filter(|o| o.stage == OfferStage::Waiting) {
+                break o.code;
+            }
+            assert!(Instant::now() < deadline, "the host showed no code: {}", rest(&b_err));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    b.stdin.take().unwrap().write_all(format!("{code}\nn\n").as_bytes()).unwrap();
+    let asked = {
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if let Some(o) = host.offer().filter(|o| o.stage == OfferStage::Confirm) {
+                break o;
+            }
+            assert!(Instant::now() < deadline, "the host asked nothing: {}", rest(&b_err));
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    assert_eq!(asked.name, "desktop");
+    assert!(host.answer(true));
+    let b = wait(b, Duration::from_secs(60));
+    stop.store(true, Ordering::SeqCst);
+    let _ = refresher.join();
+    let said = format!("{}{}", String::from_utf8_lossy(&b.stdout), rest(&b_err));
+    assert!(b.status.success(), "{said}");
+    assert!(said.contains("Asking your other machines to show a code") && said.contains("Type the code shown on your other machine: ____-____") && said.contains("Waiting for laptop…"), "{said}");
+    assert!(said.contains("Joined as 'desktop'"), "{said}");
+    assert!(served(&api).devices().iter().any(|d| d.name == "desktop"));
     let _ = std::fs::remove_dir_all(&r);
 }
 
