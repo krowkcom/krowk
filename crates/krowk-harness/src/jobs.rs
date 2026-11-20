@@ -460,7 +460,7 @@ async fn watch(table: Arc<Mutex<Table>>, tell: Option<Tell>, (session, id): (Str
 }
 
 /// What a note of background work that ended starts with.
-pub const NOTE: &str = "<background-done ";
+pub use crate::log::BACKGROUND_DONE as NOTE;
 
 /// A job's end, as the model reads it: krowk's words, not the person's.
 pub fn note(id: &str, status: Status, last: &str) -> String {

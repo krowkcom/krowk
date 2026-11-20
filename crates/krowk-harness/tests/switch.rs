@@ -249,7 +249,7 @@ impl World {
             trust: self.trust.clone().unwrap_or_else(krowk_harness::trust::allow_all),
             publisher: None,
             permissions: krowk_harness::permissions::Config { trusted: self.trusted.then(|| Arc::new(|_: &Path| true) as krowk_harness::permissions::settings::Trusted), ..Default::default() },
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         })
     }

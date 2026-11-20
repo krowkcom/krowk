@@ -39,7 +39,7 @@
 //! rule) by the one permission evaluator; a tool a deny rule covers is left
 //! out of search results too, as Claude Code leaves it out of the tool list.
 //! A subagent whose definition names MCP servers or tools reaches those
-//! alone (`crate::subagent::AgentRun::reaches`): the rest are left out of its
+//! alone (`crate::agents::AgentRun::reaches`): the rest are left out of its
 //! search, its calls to them refused, and a server it cannot reach is not
 //! started for it.
 //!
@@ -670,7 +670,7 @@ impl Pool {
 async fn close_all(cells: Vec<Cell>) {
     let started: Vec<Started> = cells.iter().map(|c| c.current(None)).collect();
     let closes = started.iter().filter_map(|c| c.get()).filter_map(|l| l.conn.as_ref()).map(|c| -> crate::engine::BoxFuture<'_, ()> { Box::pin(c.close()) });
-    crate::native::join_all(closes.collect()).await;
+    crate::engine::join_all(closes.collect()).await;
 }
 
 impl Live {
@@ -775,10 +775,10 @@ impl Mcp {
             crate::protocol::ToolDefinition {
                 name: SEARCH.into(),
                 description: format!("Find tools on the MCP servers ({}): returns their names and input schemas.", names.join(", ")),
-                input_schema: crate::tools::input_schema::<SearchInput>(),
+                input_schema: crate::schema::input_schema::<SearchInput>(),
                 grammar: None,
             },
-            crate::protocol::ToolDefinition { name: CALL.into(), description: format!("Call a tool {SEARCH} found."), input_schema: crate::tools::input_schema::<CallInput>(), grammar: None },
+            crate::protocol::ToolDefinition { name: CALL.into(), description: format!("Call a tool {SEARCH} found."), input_schema: crate::schema::input_schema::<CallInput>(), grammar: None },
         ]
     }
 
@@ -821,7 +821,7 @@ impl Mcp {
                     cell
                 })
             });
-            crate::native::join_all(starts.collect()).await
+            crate::engine::join_all(starts.collect()).await
         };
         let mut cancel = cancel.clone();
         tokio::select! {

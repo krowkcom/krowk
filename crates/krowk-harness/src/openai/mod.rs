@@ -23,7 +23,8 @@
 pub mod stream;
 
 use crate::engine::{BoxFuture, EngineError, Events, HistoryItem};
-use crate::http::{self, Answer, Peer};
+use crate::http;
+use crate::wire::{self, Answer, Peer};
 use crate::instances::Resolved;
 use crate::native::{self, ModelClient, ModelRequest, ModelResponse};
 use crate::protocol::{Item, WireApi};
@@ -233,10 +234,10 @@ impl ModelClient for ResponsesClient {
                 }
                 r
             };
-            match http::send(&build, &cancel, peer).await? {
-                Answer::Streaming(resp) => http::read_stream(resp, stream::Decoder::new(&inst.provider), events, &cancel, &req.model, peer).await,
+            match wire::send(&build, &cancel, peer).await? {
+                Answer::Streaming(resp) => wire::read_stream(resp, stream::Decoder::new(&inst.provider), events, &cancel, &req.model, peer).await,
                 Answer::Refused(resp) => {
-                    Err(http::refused(resp, peer, &req.model, &crate::keys::auth_fix(inst)).await)
+                    Err(wire::refused(resp, peer, &req.model, &crate::keys::auth_fix(inst)).await)
                 }
                 Answer::Interrupted => Ok(ModelResponse { model: req.model.clone(), interrupted: true, ..ModelResponse::default() }),
             }

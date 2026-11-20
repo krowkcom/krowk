@@ -34,7 +34,7 @@
 //! the file and the value.
 
 use super::rules::{self, Kind, Rule};
-use crate::hooks::{self, Hooks};
+use crate::permissions::hooks::{self, Hooks};
 use crate::protocol::PermissionMode;
 use serde_json::Value;
 use std::path::{Path, PathBuf};

@@ -215,7 +215,7 @@ fn flush(th: &mut Thread, pending: &mut Vec<(&str, &str, &Item)>, provider: &str
 /// person's place (a background job's end, the todo reminder), so sync,
 /// web and search never show it as theirs; the person otherwise.
 fn said_by(text: &str) -> Role {
-    if text.starts_with(crate::jobs::NOTE) || text.starts_with(crate::todo::REMINDER) { Role::System } else { Role::User }
+    if text.starts_with(crate::log::BACKGROUND_DONE) || text.starts_with(crate::log::REMINDER) { Role::System } else { Role::User }
 }
 
 fn event_type(b: &LogBody) -> &'static str {

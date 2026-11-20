@@ -64,7 +64,7 @@ impl Home {
             trust: krowk_harness::trust::allow_all(),
             publisher: None,
             permissions: Config { home: Some(self.root.join("home")), krowk_dir: Some(self.root.join("home/.krowk")), ..permissions },
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         })
     }

@@ -16,13 +16,15 @@ use crate::budget::Budget;
 use crate::agents;
 use crate::engine::{BoxFuture, Engine, EngineError, EngineEvent, Events, HistoryItem, Idle, Steer, Steers, TurnContext, TurnEnd};
 use crate::images;
-use crate::subagent::{AgentRun, AgentsConfig, ChildWatch, ParentTurn, Spawn, Subagents};
+use crate::agents::{AgentRun, AgentsConfig};
+use crate::children::ChildWatch;
+use crate::subagent::{ParentTurn, Spawn, Subagents};
 use crate::evidence::{Evidence, Publisher};
 use crate::instances::{Asked, Auth, Registry, Resolved};
 use crate::oauth;
 use crate::openai::ResponsesClient;
 use crate::log::{self, LogError, SessionLog};
-use crate::native::{self, NativeEngine};
+use crate::native::NativeEngine;
 use crate::toolset;
 use crate::handoff::{self, TurnSpan};
 use crate::instances::Rollover;
@@ -618,7 +620,7 @@ impl Host {
         self.shared.jobs.shutdown().await;
         let pools: Vec<Arc<crate::mcp::Pool>> = self.shared.mcp.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, (p, _))| p).collect();
         let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(async move { let _ = tokio::time::timeout(SHUTDOWN_GRACE, p.close()).await; }) });
-        crate::native::join_all(closes.collect()).await;
+        crate::engine::join_all(closes.collect()).await;
         let backends: Vec<(Arc<dyn Engine>, SessionKids)> = self.shared.backends.lock().unwrap_or_else(|e| e.into_inner()).drain().map(|(_, b)| (b.engine, b.children)).collect();
         // Each engine ends the agents it still runs, and those ends are
         // written before the host is gone: an agent's log is left with its
@@ -633,7 +635,7 @@ impl Host {
                 .is_err()
             })
         });
-        let stuck = crate::native::join_all(waits.collect()).await.contains(&true);
+        let stuck = crate::engine::join_all(waits.collect()).await.contains(&true);
         if stuck {
             crate::group::kill_all();
         }
@@ -894,7 +896,7 @@ impl Shared {
             stale.iter().filter_map(|id| mcp.remove(id)).map(|(p, _)| p).collect()
         };
         let closes = pools.iter().map(|p| -> BoxFuture<'_, ()> { Box::pin(p.close()) });
-        crate::native::join_all(closes.collect()).await;
+        crate::engine::join_all(closes.collect()).await;
     }
 
     /// Puts the session's kept MCP connections under the configuration the
@@ -2607,8 +2609,8 @@ impl Writer<'_> {
                 WireApi::CodexAppServer => crate::codex::BACKEND.into(),
                 _ => self.preset.name.into(),
             },
-            system_tokens: native::estimate_tokens(&system),
-            tools_tokens: native::tools_tokens(&tools),
+            system_tokens: crate::engine::estimate_tokens(&system),
+            tools_tokens: crate::engine::tools_tokens(&tools),
             system,
             tools,
             handoff: self.handoff.take(),

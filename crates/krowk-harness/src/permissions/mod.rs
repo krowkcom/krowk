@@ -45,13 +45,15 @@
 //! way to go, with options to pick from. Those are asked in every mode, and
 //! answered by `approve` with the person's answers.
 
+pub(crate) mod glob;
+pub mod hooks;
 pub mod rules;
+pub mod scope;
 pub mod settings;
 
 use crate::engine::{EngineEvent, Events};
-use crate::hooks;
 use crate::protocol::{ApprovalDecision, ApprovalRequest, PermissionMode, Question, QuestionAnswer};
-use crate::tools::{Hidden, Reach, Scope};
+use crate::permissions::scope::{Hidden, Reach, Scope};
 pub use rules::{Access, Call, Kind, Rule};
 use serde_json::Value;
 pub use settings::{Config, Loaded};

@@ -125,7 +125,7 @@ pub fn definition() -> crate::protocol::ToolDefinition {
     crate::protocol::ToolDefinition {
         name: TOOL.into(),
         description: "Load a skill's instructions by its name, as the system prompt lists it. Returns the skill's full text and the directory its other files are in.".into(),
-        input_schema: crate::tools::input_schema::<SkillInput>(),
+        input_schema: crate::schema::input_schema::<SkillInput>(),
         grammar: None,
     }
 }

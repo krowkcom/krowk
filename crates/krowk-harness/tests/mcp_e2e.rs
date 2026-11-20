@@ -107,7 +107,7 @@ impl Home {
                 trusted: Some(trusted),
                 ..Config::default()
             },
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         })
     }

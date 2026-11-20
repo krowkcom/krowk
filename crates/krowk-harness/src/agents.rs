@@ -28,7 +28,7 @@
 //!   whole server, `mcp__github__get_pr` for one of its tools — or as a
 //!   permission rule does, `Mcp(github)` and `Mcp(github:get_pr)`: a list
 //!   naming any is offered `mcp_search` and `mcp_call`, reaching those
-//!   alone (`crate::subagent::AgentRun::reaches`), and a list naming none
+//!   alone (`crate::agents::AgentRun::reaches`), and a list naming none
 //!   is offered no MCP. A name krowk has no tool for — `WebFetch` — is left
 //!   out, and so is the subagent tool itself: subagents do not start
 //!   subagents.
@@ -45,8 +45,11 @@
 //! is always the parent's, so an allowlist never grants what the mode
 //! refuses, and nothing in a definition is run.
 
-use crate::subagent::Isolation;
+use crate::catalog::Listed;
+use schemars::JsonSchema;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// One definition.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,6 +76,88 @@ pub struct AgentDef {
     /// someone else may have written it, so until the repository is trusted
     /// its `model` resolves only on the parent's own instance.
     pub project: bool,
+}
+
+/// Where a subagent works: the parent's directory, or a git worktree of
+/// its own (`crate::worktree`). Claude Code's agent files spell it the same.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Isolation {
+    #[default]
+    None,
+    Worktree,
+}
+
+/// What a subagent's turn runs with, from its definition.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AgentRun {
+    /// The definition's name, or none for a general subagent.
+    pub name: Option<String>,
+    /// The definition's body, after krowk's own prompt.
+    pub instructions: String,
+    /// The tools it may use, krowk's names with the edit tool as `edit`,
+    /// and the MCP servers and tools it may reach as `mcp__<server>` and
+    /// `mcp__<server>__<tool>`; none is every tool but `subagent`, and every
+    /// server.
+    pub tools: Option<Vec<String>>,
+    /// The session that started it, and its log: what a hook is told the
+    /// session is, as Claude Code tells a subagent's hooks — the
+    /// subagent's own id rides beside it as `agent_session_id`.
+    pub parent_session: String,
+    pub parent_transcript: String,
+}
+
+impl AgentRun {
+    /// Whether it may reach `server`'s `tool` — or, `tool` none, the
+    /// server at all, which is whether it is started and named for it:
+    /// every one with no list or with `mcp__*`, else the servers its list
+    /// names whole and those it names a tool of. Held at search, at call
+    /// and at the servers' start, under the parent's deny rules and hooks,
+    /// which still judge every call it may make.
+    pub fn reaches(&self, server: &str, tool: Option<&str>) -> bool {
+        let Some(t) = &self.tools else { return true };
+        t.iter().filter_map(|a| a.strip_prefix(MCP_PREFIX)).any(|a| match a.split_once("__") {
+            None => a == "*" || a == server,
+            Some((s, named)) => s == server && tool.is_none_or(|t| t == named),
+        })
+    }
+
+    /// Why a call to `server`'s `tool` outside its list is refused, naming
+    /// what the list does reach, as `mcp_call` names a tool.
+    pub fn unreached(&self, server: &str, tool: &str) -> String {
+        let reached: Vec<String> = self.tools.iter().flatten().filter_map(|a| a.strip_prefix(MCP_PREFIX)).map(|a| a.split_once("__").map_or_else(|| if a == "*" { "every server".into() } else { format!("{a} (any tool)") }, |(s, t)| format!("{s}:{t}"))).collect();
+        let agent = self.name.as_deref().map_or_else(|| "this subagent".to_string(), |n| format!("agent {n}"));
+        format!("{server}:{tool} was not run: {agent} reaches only the MCP tools its definition names — {}", reached.join(", "))
+    }
+}
+
+/// How an allowlist names an MCP server or tool, as Claude Code does.
+pub(crate) const MCP_PREFIX: &str = "mcp__";
+
+/// Every model the catalog lists for a provider, for choosing a
+/// subagent's model: supplied by the caller, which owns the models.dev cache.
+pub type Models = Arc<dyn Fn(&str) -> Vec<Listed> + Send + Sync>;
+
+/// Where agent definitions come from beyond the repository, and how a
+/// subagent's model is chosen.
+#[derive(Clone)]
+pub struct AgentsConfig {
+    /// The person's own definition directories — krowk's, then Claude
+    /// Code's — read after the repository's.
+    pub user_dirs: Vec<PathBuf>,
+    pub models: Models,
+    /// Where a subagent's worktree is made (`krowk_api::home::worktrees_root`);
+    /// none refuses `isolation: "worktree"`.
+    pub worktrees: Option<PathBuf>,
+}
+
+impl AgentsConfig {
+    /// No definitions of the person's, and a catalog that lists nothing:
+    /// subagents run on the parent's model unless told otherwise, and in
+    /// no worktree.
+    pub fn none() -> AgentsConfig {
+        AgentsConfig { user_dirs: Vec::new(), models: Arc::new(|_| Vec::new()), worktrees: None }
+    }
 }
 
 /// The directories a repository holds definitions in, krowk's first.

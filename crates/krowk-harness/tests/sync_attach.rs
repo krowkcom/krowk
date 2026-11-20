@@ -392,7 +392,7 @@ impl World {
                     trust: krowk_harness::trust::allow_all(),
                     publisher: None,
                     permissions: krowk_harness::permissions::Config { approvals: answers, ..Default::default() },
-                    agents: krowk_harness::subagent::AgentsConfig::none(),
+                    agents: krowk_harness::agents::AgentsConfig::none(),
                     session: Default::default(),
                 })
             });
@@ -848,7 +848,7 @@ fn viewer_proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, mode: Arc<AtomicU8>, 
                             if m == DROP_ALL {
                                 continue;
                             }
-                            if batch && m == DROP_BATCHES && drop_left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                            if batch && m == DROP_BATCHES && drop_left.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
                                 continue;
                             }
                             if batch {

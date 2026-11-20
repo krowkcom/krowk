@@ -337,7 +337,7 @@ struct PathPattern {
     cwd: PathBuf,
 }
 
-use crate::tools::search::Glob;
+use crate::permissions::glob::Glob;
 
 /// Where a path rule's specifier is anchored, and the glob below it.
 enum Anchor<'s> {
@@ -396,7 +396,7 @@ impl PathPattern {
     /// deny rule, `anywhere` — case-folded on both sides, since macOS and
     /// Windows open `.ENV` as `.env` and `Secrets/` as `secrets/`.
     fn matches(&self, p: &Path, anywhere: bool) -> bool {
-        let real = crate::tools::real_path(p, 0).unwrap_or_else(|_| p.to_path_buf());
+        let real = crate::permissions::scope::real_path(p, 0).unwrap_or_else(|_| p.to_path_buf());
         let fold = |q: &Path| PathBuf::from(q.to_string_lossy().to_lowercase());
         let canon = |d: &Path| d.canonicalize().unwrap_or_else(|_| d.to_path_buf());
         let below = |f: &Path, dir: &Path, folded: bool| -> Option<String> {
@@ -1124,7 +1124,7 @@ fn uncoverable(words: &[String], cwd: &Path) -> bool {
 /// which it could then fill with a pager or an fsmonitor for git to run.
 fn plain_repo_dir(dir: &Path, cwd: &Path) -> bool {
     let root = cwd.canonicalize().unwrap_or_else(|_| cwd.to_path_buf());
-    let Ok(mut at) = crate::tools::real_path(dir, 0) else { return false };
+    let Ok(mut at) = crate::permissions::scope::real_path(dir, 0) else { return false };
     if !at.starts_with(&root) {
         return false;
     }

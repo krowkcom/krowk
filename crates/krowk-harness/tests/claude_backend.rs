@@ -123,7 +123,7 @@ impl Home {
             trust: gate,
             publisher,
             permissions: krowk_harness::permissions::Config { home: Some(self.root.join("home")), ..Default::default() },
-            agents: krowk_harness::subagent::AgentsConfig::none(),
+            agents: krowk_harness::agents::AgentsConfig::none(),
             session: Default::default(),
         }
     }

@@ -132,7 +132,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
     }
     let digit = |c: u8| (c as char).to_digit(16).map(|d| d as u8);
     let mut out = Vec::with_capacity(s.len() / 2);
-    for pair in s.as_bytes().chunks_exact(2) {
+    for pair in s.as_bytes().as_chunks::<2>().0 {
         out.push(digit(pair[0])? << 4 | digit(pair[1])?);
     }
     Some(out)
@@ -1046,7 +1046,7 @@ pub fn unwrap_session_keys(blob: &[u8], session: &[u8; 16], keys: &UserKeys) -> 
     let nonce: [u8; NONCE] = blob[2..2 + NONCE].try_into().expect("24 bytes");
     let aad = session_key_aad(&blob[..2], &user, session);
     let plain = zeroize::Zeroizing::new(cipher(user.as_bytes()).decrypt(&XNonce::from(nonce), Payload { msg: &blob[2 + NONCE..], aad: &aad }).map_err(|_| refused())?);
-    let ring: Vec<SessionKey> = plain.chunks_exact(KEY).map(|k| SessionKey(k.try_into().expect("32 bytes"))).collect();
+    let ring: Vec<SessionKey> = plain.as_chunks::<KEY>().0.iter().map(|k| SessionKey(*k)).collect();
     if ring.is_empty() || ring.len() * KEY != plain.len() {
         return Err(refused());
     }

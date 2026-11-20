@@ -127,7 +127,7 @@ fn mobbin_add_login_search_with_its_screens_a_reused_connection_and_a_silent_ref
         trust: krowk_harness::trust::allow_all(),
         publisher: None,
         permissions: Config { home: Some(root.join("home")), krowk_dir: Some(root.join("home/.krowk")), user: Some(config), trusted: Some(Arc::new(|_: &std::path::Path| true)), ..Config::default() },
-        agents: krowk_harness::subagent::AgentsConfig::none(),
+        agents: krowk_harness::agents::AgentsConfig::none(),
         session: Default::default(),
     });
     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();

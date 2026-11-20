@@ -14,7 +14,7 @@ mod mock;
 mod providers;
 
 use krowk_harness::engine::{EngineEvent, HistoryItem};
-use krowk_harness::http::Decode;
+use krowk_harness::wire::Decode;
 use krowk_harness::native::ModelRequest;
 use krowk_harness::openai::request_body;
 use krowk_harness::openai::stream::Decoder;
