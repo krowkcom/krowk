@@ -30,6 +30,7 @@
 //! address.
 
 use super::sync::{keyed_client, keystore};
+use super::sessions::SyncedRow;
 use super::Ctx;
 use krowk_api::{fail, Client, Error};
 use krowk_client::e2e::{DeviceId, SigningKey};
@@ -401,6 +402,38 @@ fn one(args: &[String], what: &str) -> Result<String, Error> {
     }
 }
 
+/// What `krowk sessions` adds to this machine's own list: this machine's name
+/// on the device list, and the synced sessions it can open, newest first.
+/// `None` when sync is not set up here, so nothing is asked of the registry;
+/// `Err` is why the other machines' sessions could not be listed.
+pub(super) fn listing(ctx: &Ctx) -> Option<Result<(String, Vec<SyncedRow>), String>> {
+    let k = match keys(ctx) {
+        Ok(k) => k,
+        Err(e) if e.code() == "not_set_up" => return None,
+        Err(e) => return Some(Err(e.fix())),
+    };
+    let run = || -> Result<(String, Vec<SyncedRow>), Error> {
+        let api = signed(ctx, &k, "krowk sessions")?;
+        let (listed, _) = viewer::list(&api, &k.user, &k.chain)?;
+        let name_of = |id: &str| k.chain.devices().iter().find(|d| d.kind == krowk_client::device_chain::Kind::Device && d.id().to_string() == id).map(|d| super::sync::printable(&d.name));
+        let this = name_of(&k.device.to_string()).unwrap_or_else(|| "this machine".into());
+        let mut rows: Vec<SyncedRow> = listed
+            .iter()
+            .map(|s| SyncedRow {
+                id: s.id.clone(),
+                title: s.index.title.clone(),
+                cwd: s.index.cwd.clone(),
+                updated_ms: i64::try_from(s.index.updated_ms).unwrap_or(i64::MAX),
+                machine: s.holder.clone().or_else(|| s.index.host.as_ref().map(|h| h.device.clone())).and_then(|d| name_of(&d)),
+                hosted: s.holder.is_some(),
+            })
+            .collect();
+        rows.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        Ok((this, rows))
+    };
+    Some(run().map_err(|e| e.fix()))
+}
+
 pub(super) fn sessions(ctx: &mut Ctx) -> Result<(), Error> {
     let k = keys(ctx)?;
     let api = signed(ctx, &k, "krowk sync sessions")?;
@@ -619,7 +652,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     use krowk_harness::sync::{handoff, store};
     let session = one(args, "take")?;
     if !krowk_harness::log::valid_id(&session) {
-        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sync sessions` lists the synced ones")));
+        return Err(fail("bad_session", format!("{session:?} is not a session id — `krowk sessions` lists them")));
     }
     let cwd = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     current(ctx)?;
@@ -627,7 +660,7 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let api = Arc::new(signed(ctx, &k, "krowk sync take")?);
     let me = k.device.to_string();
     let read_log = |api: &Client| -> Result<Vec<serde_json::Value>, Error> {
-        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sync sessions` lists them")) } else { e })?;
+        let s = api.show_sync_session(&session).map_err(|e| if e.status == 404 { fail("no_session", format!("the registry holds no synced session {session} — `krowk sessions` lists them")) } else { e })?;
         let key = store::open_session_key(&s, &session, &k.user, &k.chain, krowk_client::session_record::Signer::EverHeld).map_err(|e| fail("sync_failed", e))?;
         let index = store::open_index(&key, &session, &s.sealed_index).map_err(|e| fail("sync_failed", e))?;
         Ok(store::attach(api, &key, &session, index, None).map_err(|e| fail("sync_failed", e))?.events)
@@ -759,19 +792,20 @@ const APPEAR_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// instance for are refused here, from its announcement, before anything is
 /// sent; the host checks again, and its own refusal is said the same way.
 /// The permission mode is the host's (`--permission-mode` is refused).
-pub(super) fn new_session(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
+pub(super) fn new_session(ctx: &mut Ctx, args: &[String], form: &str) -> Result<(), Error> {
     use krowk_client::host_command::{self, HostAnswer, HostCommand};
     let prompt = args.join(" ");
-    let example = "e.g. krowk sync new --host desktop --cwd ~/code/app \"fix the tests\"";
+    let on = if form == "sync new" { "--host" } else { "--on" };
+    let example = format!("e.g. krowk {form} {on} desktop --cwd ~/code/app \"fix the tests\"");
     if prompt.trim().is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` takes the session's first prompt — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` takes the session's first prompt — {example}")));
     }
     let (asked, dir) = (ctx.f.host.trim().to_string(), ctx.f.cwd.trim().to_string());
     if asked.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --host, the machine to start the session on (`krowk machines` lists yours) — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` needs {on}, the machine to start the session on (`krowk machines` lists yours) — {example}")));
     }
     if dir.is_empty() {
-        return Err(fail("bad_args", format!("`krowk sync new` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
+        return Err(fail("bad_args", format!("`krowk {form}` needs --cwd, the directory there to start it in (`krowk machines` lists what each machine offers) — {example}")));
     }
     let here = std::env::current_dir().map_err(|e| fail("no_cwd", e.to_string()))?;
     let cwd = absolute(&dir, &ctx.env("HOME"), &here)?;

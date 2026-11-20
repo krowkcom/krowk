@@ -20,6 +20,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
   calls are in place and the test registry answers them; showing the code on
   your other machine comes next.
 
+- **`krowk sessions` works with the sessions on all your machines.** It lists
+  this machine's sessions, then the ones on your other machines that you can
+  open, each with the machine it runs on (as data too: `machine`,
+  `this_machine`). `krowk sessions attach <id>` follows one, `krowk sessions
+  take <id>` moves a live one here, and `krowk sessions new --on <machine>
+  --cwd <dir> "prompt"` starts one on another machine. The `krowk sync
+  sessions|attach|take|new` forms and `krowk sessions sync` work as before and
+  are no longer listed in the help (`krowk help --all` still has them).
+
 - **Claude Code and Codex can hand a task to the machine with room.** With
   krowk-mcp added and sync set up, `krowk_delegate` takes a task (and an
   optional `host` and `model`), returns a task id at once and runs it on this

@@ -32,6 +32,10 @@ pub struct Command {
     /// --jq has nothing to read on.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub no_json: bool,
+    /// Works, but is left out of its group's command list: an older form
+    /// another one replaced. `help --all` still lists it.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -505,6 +509,7 @@ pub fn catalog(version: &str) -> Catalog {
                         ..cmd("budget", "krowk sessions budget <id> [--max-usd N] [--max-tokens N]", "Check a session against a spend limit")
                     },
                     Command {
+                        hidden: true,
                         flags: vec![flag("no-network", BOOL, "Skip the models.dev price refresh")],
                         ..cmd("sync", "krowk sessions sync [--no-network]", "Import what changed since the last import, refresh prices")
                     },
@@ -512,7 +517,7 @@ pub fn catalog(version: &str) -> Catalog {
                 ..cmd(
                     "sessions",
                     "krowk sessions [--harness <name>] [--worktree <path>] [--limit N] [--all]",
-                    "List and read agent sessions on this machine",
+                    "List and read agent sessions, here and on your other machines",
                 )
             },
             Command {
@@ -569,8 +574,29 @@ pub fn catalog(version: &str) -> Catalog {
     #[cfg(all(feature = "harness", unix))]
     if let Some(sessions) = c.commands.iter_mut().find(|c| c.name == "sessions") {
         sessions.subcommands.extend(vintage_commands());
+        sessions.subcommands.extend(machine_commands());
     }
     c
+}
+
+/// `krowk sessions attach`, `take` and `new --on`: a session on any of your
+/// machines, by the same code as the `krowk sync` forms they replace.
+#[cfg(all(feature = "harness", unix))]
+fn machine_commands() -> Vec<Command> {
+    let id = || vec![arg("id", "The session's id, as `krowk sessions` lists it", true)];
+    vec![
+        Command { args: id(), ..cmd("attach", "krowk sessions attach <id>", "Follow a session on another machine in the TUI, or as stream-json") },
+        Command { args: id(), ..cmd("take", "krowk sessions take <id>", "Move a live session here, uncommitted work and all") },
+        Command {
+            args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
+            flags: vec![
+                flag("on", STRING, "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"),
+                flag("cwd", STRING, "The directory there to start it in, one that machine offers (`krowk machines`)"),
+                flag("model", STRING, "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"),
+            ],
+            ..cmd("new", "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT", "Start a session on another machine of yours, and follow it")
+        },
+    ]
 }
 
 /// `krowk sessions archive`, `restore`, `vintage`, `pin` and `unpin`: native sessions
@@ -631,15 +657,16 @@ fn sync_command() -> Command {
                 ..cmd("join", "krowk sync join", "Add this machine by the code `krowk devices add` shows")
             },
             #[cfg(unix)]
-            cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open"),
+            Command { hidden: true, ..cmd("sessions", "krowk sync sessions", "The synced sessions this machine can open") },
             #[cfg(unix)]
             cmd("host", "krowk sync host SESSION", "Run a session here and sync it until interrupted"),
             #[cfg(unix)]
-            cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json"),
+            Command { hidden: true, ..cmd("attach", "krowk sync attach SESSION", "Follow a synced session in the TUI, or as stream-json") },
             #[cfg(unix)]
-            cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all"),
+            Command { hidden: true, ..cmd("take", "krowk sync take SESSION", "Move a live session here, uncommitted work and all") },
             #[cfg(unix)]
             Command {
+                hidden: true,
                 args: vec![arg("prompt", "The session's first prompt; it seals to at most 16 KiB", true)],
                 flags: vec![
                     flag("host", STRING, "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"),
@@ -1036,7 +1063,7 @@ pub fn about(name: &str) -> &'static str {
         "config" => "Pins a repository, or the machine, to a workspace: `krowk help workspaces`.",
         "doctor" => "Checks the local setup, and that the registry answers.",
         "sessions budget" => BUDGET_ABOUT,
-        "sessions" => "Lists every agent thread on this machine, newest first.",
+        "sessions" => "Lists every agent thread on this machine, newest first, then the sessions on your other machines that you can open, with the machine each runs on.",
         "upgrade" => "Upgrades krowk to the latest release.",
         "billing" => BILLING_ABOUT,
         #[cfg(all(feature = "harness", unix))]

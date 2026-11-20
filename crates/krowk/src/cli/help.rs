@@ -355,8 +355,9 @@ pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
         // Each under the group's name, `krowk artifacts` read as said.
         heading(&mut out, &format!("Commands (krowk {} …)", cmd.name), colour);
         let prefix = format!("krowk {} ", cmd.name);
-        let width = cmd.subcommands.iter().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
-        for s in &cmd.subcommands {
+        let shown = || cmd.subcommands.iter().filter(|s| !s.hidden);
+        let width = shown().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
+        for s in shown() {
             row(&mut out, "  ", width, s.usage.get(prefix.len()..).unwrap_or(s.usage), s.summary);
         }
     }

@@ -382,6 +382,51 @@ fn resolve_store_path(ctx: &Ctx) -> Result<String, Error> {
 
 // ---- list -------------------------------------------------------------------
 
+/// A synced session as `krowk sessions` lists it after this machine's own.
+pub(super) struct SyncedRow {
+    pub id: String,
+    pub title: String,
+    pub cwd: String,
+    pub updated_ms: i64,
+    /// The machine that hosts it now, else the one that last took it up;
+    /// none for an index that names neither.
+    pub machine: Option<String>,
+    pub hosted: bool,
+}
+
+/// This machine's name among the others, the synced sessions that are not
+/// already in the local list, and why the rest could not be listed.
+#[derive(Default)]
+struct Elsewhere {
+    this: String,
+    rows: Vec<SyncedRow>,
+    note: Option<String>,
+}
+
+/// Synced sessions come after the local ones, only where sync is set up, and
+/// not under a filter, which is about the local store.
+#[cfg(all(feature = "harness", unix))]
+fn elsewhere(ctx: &Ctx, local: &[SessionRow], limit: i64) -> Elsewhere {
+    if !ctx.f.harness.is_empty() || !ctx.f.worktree.is_empty() {
+        return Elsewhere::default();
+    }
+    match super::synced::listing(ctx) {
+        None => Elsewhere::default(),
+        Some(Err(note)) => Elsewhere { note: Some(note), ..Elsewhere::default() },
+        Some(Ok((this, mut rows))) => {
+            rows.retain(|s| !local.iter().any(|r| r.id == s.id || r.foreign_session_id == s.id));
+            if let Ok(n @ 1..) = usize::try_from(limit) {
+                rows.truncate(n);
+            }
+            Elsewhere { this, rows, note: None }
+        }
+    }
+}
+#[cfg(not(all(feature = "harness", unix)))]
+fn elsewhere(_: &Ctx, _: &[SessionRow], _: i64) -> Elsewhere {
+    Elsewhere::default()
+}
+
 pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     check_os()?;
     if ctx.f.limit < 0 {
@@ -402,23 +447,56 @@ pub fn list(ctx: &mut Ctx) -> Result<(), Error> {
     let priced: Vec<Priced> = rows.iter().map(|r| price_session(ctx, r, groups.get(&r.id))).collect();
     let bases: BTreeSet<pricing::Basis> = priced.iter().flat_map(|p| p.bases.iter().copied()).collect();
     let now = now_ms();
+    let other = elsewhere(ctx, &rows, limit);
+    let this = if other.this.is_empty() { "this machine" } else { other.this.as_str() };
     if ctx.format != Format::Human {
-        let sessions: Vec<Value> = rows.iter().zip(&priced).map(|(r, p)| session_row_json(r, p, now)).collect();
+        let mut sessions: Vec<Value> = rows
+            .iter()
+            .zip(&priced)
+            .map(|(r, p)| {
+                let mut v = session_row_json(r, p, now);
+                v["machine"] = json!(this);
+                v["this_machine"] = json!(true);
+                v
+            })
+            .collect();
+        sessions.extend(other.rows.iter().map(|s| {
+            json!({
+                "id": s.id,
+                "title": s.title,
+                "machine": s.machine,
+                "this_machine": false,
+                "synced": true,
+                "state": if s.hosted { "hosted" } else { "offline" },
+                "directory": s.cwd,
+                "time_updated_ms": s.updated_ms,
+                "time_updated_relative": relative_time(s.updated_ms, now),
+            })
+        }));
         let mut data = json!({ "sessions": sessions });
+        if let Some(note) = &other.note {
+            data["synced_unavailable"] = json!(note);
+        }
         if !bases.is_empty() {
             data["priced_with"] = json!(pricing::basis_note(&bases));
         }
-        return emit_data(ctx, data, format!("{} sessions", rows.len()));
+        return emit_data(ctx, data, format!("{} sessions", rows.len() + other.rows.len()));
     }
     // One option per row: an unbounded page would hang the terminal building
     // them, so the picker only fires on a paged list.
-    if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT {
+    if interactive(ctx) && !ctx.f.all && !rows.is_empty() && rows.len() <= DEFAULT_SESSION_LIMIT && other.rows.is_empty() {
         let id = pick_session(&rows, now, &archived_rows(ctx, &rows))?;
         let _ = writeln!(ctx.io.stdout, "krowk sessions show {id}");
         return Ok(());
     }
     let table = human_sessions_list(&rows, &priced, ctx.colour, now);
     let _ = write!(ctx.io.stdout, "{table}");
+    if !other.rows.is_empty() {
+        let _ = write!(ctx.io.stdout, "\n\n{}", human_synced_list(&other.rows, ctx.colour, now));
+    }
+    if let Some(note) = &other.note {
+        let _ = write!(ctx.io.stdout, "\n\n{}", paint(ctx.colour, "2", &format!("Sessions on your other machines are not listed: {note}")));
+    }
     if rows.is_empty() {
         let _ = writeln!(ctx.io.stdout);
     } else {
@@ -797,6 +875,30 @@ fn human_sessions_list(rows: &[SessionRow], priced: &[Priced], colour: bool, now
                 pad_left(colour, code, &cost, 10),
                 paint(colour, "2", &relative_time(r.time_updated, now)),
                 id,
+            ]
+            .join("  "),
+        );
+    }
+    lines.join("\n")
+}
+
+/// The sessions on other machines, under the machine each runs on; `krowk
+/// sessions attach|take <id>` opens one by the id shown.
+fn human_synced_list(rows: &[SyncedRow], colour: bool, now: i64) -> String {
+    const MAX_TITLE: usize = 60;
+    let titles: Vec<String> = rows.iter().map(|r| truncate_chars(&display_title(&cell(&r.title)), MAX_TITLE)).collect();
+    let machines: Vec<String> = rows.iter().map(|r| cell(r.machine.as_deref().unwrap_or("—"))).collect();
+    let tw = titles.iter().map(|t| width(t)).max().unwrap_or(0).max(width("Title"));
+    let mw = machines.iter().map(|m| width(m)).max().unwrap_or(0).max(width("Machine"));
+    let mut lines = vec![[pad_right(colour, "2", "Title", tw), pad_right(colour, "2", "Machine", mw), pad_right(colour, "2", "State", 7), paint(colour, "2", "Updated")].join("  ")];
+    for (i, r) in rows.iter().enumerate() {
+        lines.push(
+            [
+                pad_right(colour, "1", &titles[i], tw),
+                pad_right(colour, "2", &machines[i], mw),
+                pad_right(colour, "2", if r.hosted { "hosted" } else { "offline" }, 7),
+                paint(colour, "2", &relative_time(r.updated_ms, now)),
+                paint(colour, "2", &cell(&r.id)),
             ]
             .join("  "),
         );
