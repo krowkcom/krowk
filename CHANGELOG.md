@@ -83,6 +83,17 @@ the versions are the `v*` tags a release is cut from. Entries land under
   sessions|attach|take|new` forms and `krowk sessions sync` work as before and
   are no longer listed in the help (`krowk help --all` still has them).
 
+- **Manage your machines in one place: `krowk machines add`, `remove`,
+  `always-on` and `recovery`.** `add` shows the code and QR that adds a phone
+  or a machine that can't sign in, `remove NAME` takes a machine off and rotates
+  your key, `always-on on|off` keeps this machine running as a service so it
+  syncs and takes work while you're away, and `recovery` says whether you have
+  a recovery kit (`recovery new`, `check` and `discard-old` make, test and tidy
+  it). Each does what `krowk devices add`, `devices remove`, `host enable|disable`
+  and `sync recovery` do, and those still work; `krowk devices` is hidden from
+  `krowk help` and listed by `krowk help --all`. Error messages and fixes now
+  name the new commands.
+
 - **Claude Code and Codex can hand a task to the machine with room.** With
   krowk-mcp added and sync set up, `krowk_delegate` takes a task (and an
   optional `host` and `model`), returns a task id at once and runs it on this

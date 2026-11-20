@@ -1026,7 +1026,7 @@ impl Pairer {
     /// types the code, and its lines and exit status go to stderr.
     pub fn pair(&mut self) -> Result<String, String> {
         self.end();
-        let mut child = self.krowk(&["devices", "add"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let mut child = self.krowk(&["machines", "add"]).stdout(Stdio::null()).stderr(Stdio::piped()).spawn().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
         let stderr = child.stderr.take().expect("piped");
         let (code, shown) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
@@ -1068,7 +1068,7 @@ impl Pairer {
     /// asks for a fresh one. Its lines, on failure, are the error.
     pub fn remove(&mut self, name: &str) -> Result<(), String> {
         self.end();
-        let out = self.krowk(&["devices", "remove", name]).env("KROWK_TEST_ANSWERS", "y").output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
+        let out = self.krowk(&["machines", "remove", name]).env("KROWK_TEST_ANSWERS", "y").output().map_err(|e| format!("cannot run KROWK_BIN={}: {e}", self.bin.display()))?;
         let said = String::from_utf8_lossy(&out.stderr).trim().to_string();
         eprintln!("fleet: krowk machines remove: {said}");
         if out.status.success() { Ok(()) } else { Err(format!("`krowk machines remove` as host A failed ({}): {said}", out.status)) }

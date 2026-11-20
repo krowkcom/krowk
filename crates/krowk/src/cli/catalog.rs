@@ -794,16 +794,16 @@ fn machines_subcommands() -> Vec<Command> {
     vec![
         cmd("list", "krowk machines [list]", "Your machines, and what each can take"),
         machines_accept(),
-        cmd("add", "krowk machines add", "Show a code and QR that adds a phone, or a machine that can't sign in"),
+        cmd("add", "krowk machines add", "Show a code and QR that adds a phone or a machine"),
         Command { args: vec![arg("name", "The machine's name, as `krowk machines` lists it", true)], ..cmd("remove", "krowk machines remove NAME", "Take a machine off your list and rotate your key") },
-        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away, as a service, or stop that") },
+        Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away") },
         Command {
             subcommands: vec![
                 Command { flags: vec![flag("save", STRING, "Write the new kit to this file (0600) instead of showing it")], ..cmd("new", "krowk machines recovery new [--save FILE]", "Make a new recovery kit") },
                 cmd("check", "krowk machines recovery check", "Test the kit's words against your device list, locally"),
                 cmd("discard-old", "krowk machines recovery discard-old", "Drop the old keys a start-over kept aside"),
             ],
-            ..cmd("recovery", "krowk machines recovery [new|check|discard-old]", "Whether you have a recovery kit; make a new one, or test its words")
+            ..cmd("recovery", "krowk machines recovery [new|check|discard-old]", "Your recovery kit: see it, make a new one, test it")
         },
     ]
 }
@@ -1195,7 +1195,8 @@ directories, which a subagent's changes leave to you, are applied.",
         "host" => "\
 The first krowk that needs it starts the daemon, and it exits after ten idle
 minutes (host.idleMinutes in config.json, or KROWK_HOST_IDLE seconds).
-`krowk machines always-on on` keeps it running instead, for an always-on machine.",
+`krowk machines always-on on` keeps it running instead, for an
+always-on machine.",
         _ => "",
     }
 }
