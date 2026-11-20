@@ -162,7 +162,10 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
         trust: trust_gate(ctx.f.trust, super::interactive(ctx) && std::io::stdin().is_terminal() && ctx.io.err_tty, krowk_dir, home, vendor, trust_as),
         publisher: Some(publisher(ctx)),
         permissions,
+        #[cfg(unix)]
         agents: AgentsConfig { placer: Some(super::synced::placer_source(&ctx.f)), ..agents_config(ctx.io.env) },
+        #[cfg(not(unix))]
+        agents: agents_config(ctx.io.env),
         session,
     };
     // R-PRES-6: the run's record, on stderr when that is a terminal: working
