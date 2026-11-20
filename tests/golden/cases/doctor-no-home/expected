@@ -30,7 +30,68 @@ stdout:
     "status": "skip",
     "message": "this build runs no model"
   },
-  "context": {}
+  "context": {},
+  "checks": [
+    {
+      "name": "account",
+      "status": "fail",
+      "message": "Not signed in to krowk",
+      "fix": "krowk login"
+    },
+    {
+      "name": "machine",
+      "status": "skip",
+      "message": "This machine is not registered for sync: there is no account"
+    },
+    {
+      "name": "always_on",
+      "status": "skip",
+      "message": "The always-on service is not available on this platform"
+    },
+    {
+      "name": "providers",
+      "status": "skip",
+      "message": "this build runs no model"
+    },
+    {
+      "name": "trust",
+      "status": "skip",
+      "message": "This directory is not in a repository"
+    },
+    {
+      "name": "recovery_kit",
+      "status": "skip",
+      "message": "No device list here to hold a recovery kit"
+    },
+    {
+      "name": "plan",
+      "status": "skip",
+      "message": "The plan is not known: the key was not checked"
+    },
+    {
+      "name": "store",
+      "status": "fail",
+      "message": "krowk.db has nowhere to live",
+      "hint": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path",
+      "fix": "there is no home directory to keep krowk's files in — set HOME, or KROWK_HOME to an absolute path"
+    },
+    {
+      "name": "pricing",
+      "status": "warn",
+      "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
+      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
+      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    }
+  ]
 }
-exit: 0
+stderr:
+{
+  "ok": false,
+  "error": {
+    "error": "doctor_failed",
+    "fix": "2 checks failed — each ✗ line says what fixes it",
+    "retryable": false
+  }
+}
+exit: 1
 
