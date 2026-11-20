@@ -43,8 +43,36 @@ pub(super) const NO_KIT: &str = "no recovery kit: if you lose every device you l
 /// them, which brings their sessions along.
 const LOST_KIT: &str = "a kit on your list is replaced only with its words; if they are lost, start over from this device with `krowk sync init --start-over`, which makes a new kit and keeps the sessions this device can open";
 
-/// A kit, shown or saved. `false` when the person skipped it.
-fn hand_over_kit(ctx: &mut Ctx, kit: &RecoveryKit, skippable: bool) -> Result<bool, Error> {
+/// What the recovery kit is, said where the first machine's setup offers it
+/// (D5).
+pub(super) const KIT_EXPLAINED: &str = "Your recovery kit is 12 words that stand in for a device of yours. If every device you own is lost or stolen, the words are the only way to read your sessions again and to remove the lost devices. Nobody else can do this for you, krowk included.";
+
+/// Whether a device on the list is a machine: phones are devices, but they
+/// cannot add devices yet, so they are no second machine to fall back on.
+fn is_machine(d: &Device) -> bool {
+    d.kind == Kind::Device && !matches!(d.os.to_ascii_lowercase().as_str(), "ios" | "ipados" | "android")
+}
+
+/// D5's rule, the one place it is decided (`krowk machines`, the TUI's status
+/// line, `krowk doctor`): remind while the person has fewer than two
+/// machines and the list has no recovery kit.
+pub(super) fn reminder_due(chain: &Chain) -> bool {
+    chain.recovery().is_none() && chain.devices().iter().filter(|d| is_machine(d)).count() < 2
+}
+
+/// `reminder_due` for the device list this machine keeps, as it last
+/// verified it — read from disk, never the network, so a start with no
+/// registry is as fast as one with. No list (not set up here) is no
+/// reminder.
+pub(super) fn reminder_due_here(ctx: &Ctx) -> bool {
+    let Ok(home) = krowk_api::home::dir(ctx.io.env) else { return false };
+    matches!(krowk_client::keystore::Keystore::new(&home).device_list(), Ok(Some(chain)) if reminder_due(&chain))
+}
+
+/// A kit, shown or saved. `false` when the person skipped it. `offered`: it
+/// is the first machine's setup offering it, with the explanation first and
+/// one key to say later.
+fn hand_over_kit(ctx: &mut Ctx, kit: &RecoveryKit, skippable: bool, offered: bool) -> Result<bool, Error> {
     let words = kit.words();
     if !ctx.f.save.is_empty() {
         let path = ctx.f.save.clone();
@@ -53,8 +81,18 @@ fn hand_over_kit(ctx: &mut Ctx, kit: &RecoveryKit, skippable: bool) -> Result<bo
         let _ = writeln!(ctx.io.stderr, "Your recovery kit is in {path}{mode}: the only way back in if you lose every device. Keep a copy off this machine, and delete this one when you have.");
         return Ok(true);
     }
+    if offered {
+        let _ = writeln!(ctx.io.stderr, "\n{KIT_EXPLAINED}\n");
+    }
     show_kit(ctx, &words);
     drop(words);
+    if offered {
+        let later = chain::ask_key(ctx, "Saved the words?", &[("Enter", "saved"), ("s", "later")]).trim().eq_ignore_ascii_case("s");
+        if later {
+            let _ = writeln!(ctx.io.stderr, "Later: `krowk machines recovery` makes one when you want it.");
+        }
+        return Ok(!later);
+    }
     let prompt = if skippable { "[Enter] done   [s] skip for now" } else { "[Enter] done" };
     let answer = ask_line(ctx, prompt)?;
     if skippable && answer.trim().eq_ignore_ascii_case("s") {
@@ -136,7 +174,7 @@ pub(super) fn init(ctx: &mut Ctx) -> Result<(), Error> {
     }
     let me = Me::load(ctx)?;
     let kit = RecoveryKit::generate();
-    let kept = hand_over_kit(ctx, &kit, true)?;
+    let kept = hand_over_kit(ctx, &kit, true, false)?;
     let recovery = kept.then(|| kit.device());
     drop(kit);
     let first = this_subject(ctx, &me.device, &me.signing);
@@ -535,6 +573,17 @@ fn old_kit(ctx: &mut Ctx, chain: &Chain) -> Result<Option<RecoveryDevice>, Error
 }
 
 pub(super) fn new_kit(ctx: &mut Ctx) -> Result<(), Error> {
+    make_kit(ctx, false).map(|_| ())
+}
+
+/// The first machine's setup offers the kit: the same as `recovery new` on a
+/// list without one, with the D5 words and a one-key later. Whether one was
+/// made.
+pub(super) fn offer_kit(ctx: &mut Ctx) -> Result<bool, Error> {
+    make_kit(ctx, true)
+}
+
+fn make_kit(ctx: &mut Ctx, offered: bool) -> Result<bool, Error> {
     need_person(ctx, "`krowk sync recovery new` shows a new recovery kit", false)?;
     let me = Me::load(ctx)?;
     let client = chain::signed_in(ctx, LoginAction::ReplaceKit)?;
@@ -543,7 +592,9 @@ pub(super) fn new_kit(ctx: &mut Ctx) -> Result<(), Error> {
     let old = old_kit(ctx, &v.chain)?;
     let kit = RecoveryKit::generate();
     let nd = kit.device();
-    hand_over_kit(ctx, &kit, false)?;
+    if !hand_over_kit(ctx, &kit, offered, offered)? {
+        return Ok(false);
+    }
     drop(kit);
     let change = vec![Change::RotateRecovery(kit_subject(&nd), &nd.signing)];
     // Signed by whoever authorizes it — the old kit, else this device —
@@ -555,6 +606,42 @@ pub(super) fn new_kit(ctx: &mut Ctx) -> Result<(), Error> {
     let (next, batch) = v.chain.batch(keys.newest(), change, signer.id(), key, now()).map_err(|e| fail("sync_setup_failed", e.0))?;
     chain::signed_as(&client, signer, key).append_device_list(&post_of(&batch)).inspect_err(|_| discard_kit(ctx, true))?;
     chain::keep(ctx, &v.entries, &next, &batch, &me, chain::older_of(&keys))?;
-    let summary = format!("the new recovery kit is in effect; the old one opens nothing sealed from now on (key generation {})", next.generation());
-    say(ctx, json!({ "generation": next.generation() }), summary)
+    let summary = if offered { "Your recovery kit is on your device list.".to_string() } else { format!("the new recovery kit is in effect; the old one opens nothing sealed from now on (key generation {})", next.generation()) };
+    say(ctx, json!({ "generation": next.generation() }), summary)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use krowk_client::e2e::{DeviceKey, SigningKey};
+
+    struct Dev(Subject, DeviceKey, SigningKey);
+
+    fn dev(kind: Kind, name: &str, os: &str) -> Dev {
+        let (d, s) = (DeviceKey::generate(), SigningKey::generate());
+        Dev(Subject { kind, name: name.into(), os: os.into(), device: d.public(), signing: s.public() }, d, s)
+    }
+
+    /// A list begun by `first`, with `kit`, then `more` added by it.
+    fn list(first: &Dev, kit: Option<&Dev>, more: &[&Dev]) -> Chain {
+        let (mut chain, start) = Chain::start(first.0.clone(), &first.2, kit.map(|k| (k.0.clone(), &k.2)), 1).unwrap();
+        for d in more {
+            let (next, _) = chain.batch(&start.newest, vec![Change::Add(d.0.clone())], first.1.id(), &first.2, 2).unwrap();
+            chain = next;
+        }
+        chain
+    }
+
+    /// D5: the reminder is for fewer than two machines and no kit; phones do
+    /// not count as a machine, a kit or a second machine ends it.
+    #[test]
+    fn d5_the_reminder_is_due_for_fewer_than_two_machines_and_no_kit() {
+        let (laptop, desktop, phone, kit) = (dev(Kind::Device, "laptop", "linux"), dev(Kind::Device, "desktop", "macos"), dev(Kind::Device, "phone", "ios"), dev(Kind::Recovery, "recovery kit", ""));
+        assert!(reminder_due(&list(&laptop, None, &[])), "one machine, no kit");
+        assert!(reminder_due(&list(&laptop, None, &[&phone])), "a phone is no second machine");
+        assert!(!reminder_due(&list(&laptop, None, &[&desktop])), "two machines");
+        assert!(!reminder_due(&list(&laptop, Some(&kit), &[])), "a kit");
+        assert!(!reminder_due(&list(&laptop, Some(&kit), &[&desktop])), "both");
+    }
 }

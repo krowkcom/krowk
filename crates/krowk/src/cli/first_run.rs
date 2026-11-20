@@ -11,7 +11,7 @@
 //! registration that finishes it. `krowk login` on a terminal runs the same
 //! step from the top.
 
-use super::recovery::{register_first_device, Registered};
+use super::recovery::{self, register_first_device, Registered};
 use super::{agent, auth, Ctx};
 use krowk_api::{creds, Client, Error, LoginAction};
 use krowk_tui::card::{pick, Pressed};
@@ -25,6 +25,12 @@ pub(super) struct State {
     local: bool,
     /// Signed in, and not yet registered or handed to the add-a-machine flow.
     pending: bool,
+    /// The always-on question was asked, and answered or declined with
+    /// Escape: not asked again.
+    always_on_asked: bool,
+    /// The recovery kit was offered once, made or put off: not offered again
+    /// (`krowk machines recovery` makes one, and the reminder stays).
+    kit_offered: bool,
 }
 
 fn path(ctx: &Ctx) -> Result<PathBuf, Error> {
@@ -159,3 +165,55 @@ pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
         Err(e) => ctx.warn(&format!("this machine is not added to your others yet: {} — run krowk again to retry", e.fix())),
     }
 }
+
+/// The questions after the model step (D4, D5), on the terminal, each asked
+/// once: keep this machine available, then the recovery kit. Cancelled or
+/// failed, a step is said and not retried every launch; the kit's reminder
+/// stays while it is due. Whether that reminder is still due.
+pub(super) fn after_model_step(ctx: &mut Ctx) -> bool {
+    let mut state = load(ctx);
+    if !state.always_on_asked {
+        state.always_on_asked = true;
+        save(ctx, &state);
+        always_on(ctx);
+    }
+    // Only a machine that is on a device list has a kit to offer on it: one
+    // using krowk locally is offered it the day it signs in, by the reminder.
+    if !state.kit_offered && recovery::reminder_due_here(ctx) {
+        state.kit_offered = true;
+        save(ctx, &state);
+        if let Err(e) = recovery::offer_kit(ctx) {
+            ctx.warn(&format!("no recovery kit was made: {} — `krowk machines recovery` makes one", e.fix()));
+        }
+    }
+    recovery::reminder_due_here(ctx)
+}
+
+/// Whether the always-on step defaults to yes: on a desktop, not on a
+/// laptop (R-EASE-3).
+#[cfg(unix)]
+fn always_on(ctx: &mut Ctx) {
+    let default_yes = !super::power::has_battery();
+    let _ = writeln!(ctx.io.stderr, "\n  It syncs your sessions and takes work from your other machines.");
+    let title = format!("Keep this machine available while you're away? {}", if default_yes { "[Y/n]" } else { "[y/N]" });
+    let options: [(&str, &str); 2] = if default_yes { [("Enter", "yes"), ("n", "no")] } else { [("Enter", "no"), ("y", "yes")] };
+    let yes = match super::chain::ask_key(ctx, &title, &options).trim().to_ascii_lowercase().as_str() {
+        "" => default_yes,
+        "y" | "yes" => true,
+        _ => false,
+    };
+    if !yes {
+        let _ = writeln!(ctx.io.stderr, "Not enabled. `krowk host enable` does it later.");
+        return;
+    }
+    match super::host::set_service(ctx, true) {
+        Ok((file, _)) => {
+            let _ = writeln!(ctx.io.stderr, "This machine stays available: the host runs as a service ({}).", file.display());
+        }
+        Err(e) => ctx.warn(&format!("the always-on service did not start: {} — `krowk host enable` tries again", e.fix())),
+    }
+}
+
+/// No service to keep a host in on this platform: nothing to ask.
+#[cfg(not(unix))]
+fn always_on(_: &mut Ctx) {}

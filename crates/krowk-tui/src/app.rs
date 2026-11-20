@@ -71,6 +71,10 @@ pub struct Update {
 }
 use look::{bold, error as red, warning as yellow};
 
+/// The status line's reminder while a person has one machine and no recovery
+/// kit (D5), said once per session.
+pub const RECOVERY_REMINDER: &str = "One machine, no recovery kit: losing it loses your sessions. krowk machines recovery.";
+
 /// Between the status line's items.
 const BAR_SEP: &str = " | ";
 
@@ -861,7 +865,8 @@ pub struct App {
     pub offline: Option<String>,
     /// `<user>/<host>`, read once at start, for the status line.
     pub device: Option<String>,
-    /// Sync is set up and there is no recovery kit (`Options`).
+    /// The person has fewer than two machines and no recovery kit, and the
+    /// session has not said so yet (`Options`).
     pub no_recovery_kit: bool,
     /// The most important problem with the setup and its fix, in plain
     /// colour (`Options::top_problem`).
@@ -3399,10 +3404,10 @@ impl App {
                 StatusItem::Help => {}
             }
         }
-        // Whatever the list says, until there is a kit: losing every device
-        // without one loses every session.
+        // While the person has one machine and no kit, until the first prompt
+        // of the session is sent (D5): losing the machine loses every session.
         if self.no_recovery_kit {
-            first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None, tail: None });
+            first.push(Part { rank: Rank::Kit, text: RECOVERY_REMINDER.into(), style: yellow(), url: None, mark: None, tail: None });
         }
         // Whatever the list says: the one thing most worth fixing, in the
         // colour of the rest of the line.
@@ -3977,6 +3982,8 @@ impl App {
 
     /// A turn has started: `Command::Prompt` is on its way.
     pub fn start_turn(&mut self, now: Instant) {
+        // Said once per session: it has been on screen since the first frame.
+        self.no_recovery_kit = false;
         self.answer.clear();
         self.blocks.clear();
         self.block = None;
@@ -5338,13 +5345,16 @@ mod tests {
         assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
     }
 
-    /// D6: until a kit exists, the status line says there is none.
+    /// D5: the reminder is in the status line from the first frame and is
+    /// gone once the session's first prompt is sent.
     #[test]
-    fn d6_the_status_line_says_there_is_no_recovery_kit_until_there_is_one() {
+    fn d5_the_status_line_reminds_once_per_session_of_the_missing_recovery_kit() {
         let mut a = app();
         assert!(!a.status_bar().contains("no recovery kit"));
         a.no_recovery_kit = true;
-        assert!(a.status_bar().contains("no recovery kit"), "{}", a.status_bar());
+        assert!(a.status_bar().contains(RECOVERY_REMINDER), "{}", a.status_bar());
+        a.start_turn(Instant::now());
+        assert!(!a.status_bar().contains("no recovery kit"), "{}", a.status_bar());
     }
 
     #[test]
