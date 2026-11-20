@@ -261,6 +261,13 @@ fn with_nothing_connected_the_refusal_is_the_one_line() {
         assert_eq!(err, NO_DIRECT, "{env:?}");
     }
 
+    // An account the person connected, not ready, says what it needs
+    // rather than to connect one.
+    b.config(&json!({"instances": {"claude:work": {"kind": "claude-code", "configDir": b.account("claude-work")}}}));
+    let err = fail(&b.krowk(&["-p", "hi"], &[]), "none_ready");
+    assert!(err.starts_with("no connected account is ready to run a model (no --model, and config names no defaultModel). What each one needs:") && err.contains("\n  claude:work, Claude subscription (not signed in): "), "{err}");
+    b.config(&json!({}));
+
     // A bare id names only the accounts of its own line, and how to
     // connect one.
     let out = b.krowk(&["-p", "hi", "--model", "sonnet"], &[]);

@@ -1082,9 +1082,10 @@ impl Shared {
         };
         let registry = self.registry();
         let instance = registry.get(&model.instance).map_err(|e| staying(EngineError::new("no_instance", e)))?;
-        // D4: a session moves only to a Claude Code or Codex account.
+        // D4: a session moves only to a Claude Code or Codex account, and
+        // the refusal is the one line.
         if instance.backend.is_none() {
-            return Err(staying(crate::connect::no_direct_models()));
+            return Err(crate::connect::no_direct_models());
         }
         self.ready(instance, cwd, false).await.map_err(staying)
     }
@@ -1402,7 +1403,7 @@ impl Shared {
         let wire = instance.wire_for(info.as_ref().and_then(|i| i.wire_api));
         let native: Option<Box<dyn Engine>> = match &instance.backend {
             // D4: krowk runs a turn only in Claude Code or Codex.
-            None => return Err(staying(crate::connect::no_direct_models())),
+            None => return Err(crate::connect::no_direct_models()),
             // A backend runs the repository's own hooks and MCP servers, so
             // it is not started in one nobody trusted; and a binary that is
             // not there, or a login that is not, is named before a session
@@ -1422,7 +1423,7 @@ impl Shared {
         // rather than running it unsandboxed.
         if let Some(crate::sandbox::Sandbox { profile, by }) = policy.sandbox {
             if instance.backend.is_some() {
-                return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — pick a model krowk runs natively, or run without --sandbox", instance.name, instance.vendor, profile.name()))));
+                return Err(staying(EngineError::new("sandbox_unsupported", format!("{} runs {} as a backend, which runs its own tools outside krowk's {} sandbox — run without --sandbox", instance.name, instance.vendor, profile.name()))));
             }
             if by == crate::sandbox::By::Bubblewrap {
                 crate::sandbox::enforcer().map_err(|fix| staying(EngineError::new("sandbox_unavailable", fix)))?;

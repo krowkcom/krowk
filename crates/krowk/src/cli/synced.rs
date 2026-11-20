@@ -598,7 +598,8 @@ pub(super) fn take(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
 /// Whether the session can run here (R-INST-5, R-CRED-1): the instance its
 /// next turn runs on, by name, ready — signed in, its key set, its vendor's
 /// login good — and for a backend this repository trusted. The backend's
-/// config directory, where its transcript goes; None for a native session.
+/// config directory, where its transcript goes; None for a session that
+/// has run no turn yet. A native instance is refused (D4).
 fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std::path::Path) -> Result<Option<std::path::PathBuf>, Error> {
     use krowk_harness::{readiness, trust};
     let Some(name) = krowk_harness::sync::handoff::last_instance(events) else { return Ok(None) };
@@ -606,6 +607,10 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let config = super::prompt::config_json()?;
     let registry = krowk_harness::instances::Registry::resolve(&super::prompt::instances_from(&config)?, &krowk_api::home::process_env);
     let inst = registry.get(&name).map_err(|_| fail("instance_missing", format!("session {session} runs on the {name} instance, which this machine does not have — {stays}; connect it here under the same name with `krowk connect`, then take it again")))?;
+    // D4: a session on an instance krowk would run itself goes nowhere.
+    if inst.backend.is_none() {
+        return Err(fail("removed_provider", krowk_harness::connect::NO_DIRECT_MODELS));
+    }
     let creds = super::providers::credentials_path()?;
     let probe = readiness::Probe { dir: cwd.to_path_buf(), within: std::time::Duration::from_secs(20) };
     if let Some(e) = readiness::check(inst, &creds, &probe).refusal(inst) {

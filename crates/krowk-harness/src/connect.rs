@@ -1693,7 +1693,7 @@ impl ProviderAuth<'_> {
                 (Ok(m), Some(kind)) => made.push((name.clone(), kind, m)),
                 (Err(why), _) => {
                     let harness = if harness == "codex-app-server" { "Codex" } else { "Claude Code" };
-                    said.push(format!("{name} could not become a {harness} account ({why}) — it runs as before for now"));
+                    said.push(format!("{name} could not become a {harness} account ({why}) — krowk refuses it until it is connected again with `krowk connect`"));
                 }
                 (Ok(m), None) => {
                     let _ = undo(&m, EngineError::new("", ""));

@@ -701,14 +701,14 @@ fn r_nat_2_an_existing_native_key_account_is_converted_on_first_use_with_one_not
 /// One that cannot be converted — its directory another account's — is
 /// said, and left as it was: the run goes on.
 #[test]
-fn r_nat_2_a_native_key_account_that_cannot_be_converted_is_said_and_runs_as_before() {
+fn r_nat_2_a_native_key_account_that_cannot_be_converted_is_said_and_left_as_it_was() {
     let b = Sandbox::new("convert-taken");
     let taken = b.data().join("accounts/anthropic-x").display().to_string();
     std::fs::create_dir_all(b.data()).unwrap();
     let native = json!({"kind": "anthropic-api", "apiKeyEnv": "X_KEY"});
     std::fs::write(b.config_path(), json!({"instances": {"anthropic:x": native, "claude:y": {"kind": "claude-code", "configDir": taken}}}).to_string()).unwrap();
     let out = b.krowk(&["status", "--json"], &[]);
-    assert!(stderr(&out).contains("krowk: anthropic:x could not become a Claude Code account") && stderr(&out).contains("runs as before"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("krowk: anthropic:x could not become a Claude Code account") && stderr(&out).contains("krowk refuses it until it is connected again"), "{}", stderr(&out));
     assert!(stderr(&out).contains(r#""instance": "claude:y""#), "status still ran and listed them: {}", stderr(&out));
     assert_eq!(b.config()["instances"]["anthropic:x"], native);
 }

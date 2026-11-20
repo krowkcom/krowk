@@ -168,7 +168,9 @@ pub(super) fn add(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
     let way = PROVIDERS.contains(&provider.as_str()).then(|| connect::by_provider(&provider, ctx.f.device)).flatten();
     let Some(way) = way else {
         let said = if provider.is_empty() { "no provider".to_string() } else { format!("{provider:?}") };
-        return Err(fail("bad_argument", format!("{said} is not a provider krowk's engine speaks — one of {}", PROVIDERS.join(", "))));
+        // SuperGrok stays in PROVIDERS only to be refused with D4's line.
+        let offered: Vec<&str> = PROVIDERS.iter().copied().filter(|p| *p != "supergrok").collect();
+        return Err(fail("bad_argument", format!("{said} is not a provider krowk's engine speaks — one of {}", offered.join(", "))));
     };
     // `add` asks nothing: what it makes is on its command line.
     if provider == "openai-compatible" && ctx.f.name.trim().is_empty() {

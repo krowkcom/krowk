@@ -404,8 +404,10 @@ pub fn route(
     };
     match pool.as_slice() {
         [one] => spell(one),
-        // D4: with no model asked, nothing connected is the one line.
-        [] if bare.is_none() => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
+        // D4: with no model asked and nothing connected — only the implicit
+        // `claude` and `codex`, neither ready — the one line; an account
+        // the person connected says what it needs instead.
+        [] if bare.is_none() && cands.iter().all(|i| crate::instances::implicit().iter().any(|(n, _)| *n == i.name)) => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
         [] => {
             let run: Vec<String> = crate::instances::serving(bare)
                 .1
@@ -420,7 +422,11 @@ pub fn route(
             };
             let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, account_label(i), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
             let needs = if needs.is_empty() { String::new() } else { format!(". What each one needs:\n{}", needs.join("\n")) };
-            Err(EngineError::new("none_ready", format!("no connected account serves {what} (asked for {asked}) — run {run}, or name the account that runs it: `--model <account>/<id>`{needs}")))
+            let said = match bare {
+                Some(_) => format!("no connected account serves {what} (asked for {asked}) — run {run}, or name the account that runs it: `--model <account>/<id>`"),
+                None => format!("no connected account is ready to run {asked}"),
+            };
+            Err(EngineError::new("none_ready", format!("{said}{needs}")))
         }
         several => {
             let picks: Vec<String> = several

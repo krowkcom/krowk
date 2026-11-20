@@ -328,7 +328,7 @@ fn sandbox_and_mode(flag: &str, daemon: bool, mode_chosen: bool, mode: Permissio
                 return Err(fail("bad_flag", "--sandbox holds the tools of a turn in this process, and --daemon runs the turn in the host daemon, which has no sandbox yet — drop one of them"));
             }
             if !runs_native {
-                return Err(fail("sandbox_unsupported", "the model runs on a backend (Claude Code or Codex), which runs its own tools outside krowk's sandbox — pick a model krowk runs natively with --model, or drop --sandbox"));
+                return Err(fail("sandbox_unsupported", "the model runs on a backend (Claude Code or Codex), which runs its own tools outside krowk's sandbox — drop --sandbox"));
             }
             here.enforcer.clone().map_err(|fix| fail("sandbox_unavailable", fix))?;
             (Some(Sandbox { profile: p, by: By::Bubblewrap }), chosen(PermissionMode::AcceptEdits))
