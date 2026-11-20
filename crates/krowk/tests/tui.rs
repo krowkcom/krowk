@@ -2992,7 +2992,40 @@ fn an_account_with_machines_goes_to_the_add_a_machine_flow() {
     assert!(t.wait_for("already has machines", Duration::from_secs(20)).is_some(), "{:?}", t.text());
     assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
     assert!(keystore(&b).device_list().unwrap().is_none(), "no list of its own");
-    assert_eq!(first_run_state(&b)["pending"], true);
+    assert_eq!(first_run_state(&b)["pending"], false, "the stub owes nothing on every launch");
     t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+}
+
+/// A registration left owed — signed in, then stopped or failed — is taken
+/// up by the next `krowk`, even on a machine that can run a model by now;
+/// Escape at the sign-in card is "not now", and the TUI opens.
+#[test]
+fn a_registration_left_owed_is_finished_by_the_next_krowk_and_escape_is_not_now() {
+    let (_r, api) = registry();
+    let b = Sandbox::new("owed");
+    // Not now: the TUI opens on the model step, nothing is kept.
+    let mut t = pty::Pty::spawn(account_command(&b, "http://127.0.0.1:9", &api), 110, 34);
+    assert!(t.wait_for("Sign in to krowk", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    t.write(b"\x1b");
+    assert!(says(&t, 0, "Connect a model", Duration::from_secs(15)), "{:?}", t.text());
+    assert_eq!(first_run_state(&b), serde_json::json!({}));
+    t.write(b"\x1b\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+    // A key stored, the registration owed, and a model ready.
+    let login = account_command(&b, "http://127.0.0.1:9", &api).args(["login", "--token", "krowk_sk_owed#a"]).output().unwrap();
+    assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
+    std::fs::write(b.root.join("home/.krowk/first-run.json"), "{\"pending\": true}\n").unwrap();
+    assert!(keystore(&b).device_list().unwrap().is_none());
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("ANTHROPIC_API_KEY", "sk-test");
+    let mut t = pty::Pty::spawn(cmd, 110, 34);
+    assert!(t.wait_for("is set up to sync", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    assert!(!t.text().contains("Sign in to krowk"), "{:?}", t.text());
+    assert!(keystore(&b).device_list().unwrap().is_some());
+    assert_eq!(first_run_state(&b)["pending"], false);
+    assert!(t.wait_for("anything", Duration::from_secs(15)).is_some(), "the prompt: {:?}", t.text());
+    settle();
+    t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some());
 }
