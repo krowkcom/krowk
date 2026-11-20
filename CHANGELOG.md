@@ -11,6 +11,15 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **A new machine can ask your other machines for a pairing.** Once signed in
+  to an account that already has devices, a machine that is not on the list can
+  record a request with its proposed name and OS. It opens nothing and carries
+  no keys. Your hosts hear of it within one presence refresh, your phone is
+  told only that a new machine signed in (no name, no OS), and it lapses after
+  ten minutes; a second machine asking meanwhile waits its turn. The client
+  calls are in place and the test registry answers them; showing the code on
+  your other machine comes next.
+
 - **Claude Code and Codex can hand a task to the machine with room.** With
   krowk-mcp added and sync set up, `krowk_delegate` takes a task (and an
   optional `host` and `model`), returns a task id at once and runs it on this

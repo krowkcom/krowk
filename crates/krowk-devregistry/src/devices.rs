@@ -326,7 +326,8 @@ pub fn presence(app: &App, req: &mut Req) -> Resp {
         let answer = Json::map([("device", Json::str(&device)), ("expires_at", Json::str(rfc3339_nano(expires_at))), ("updated_at", Json::str(rfc3339_nano(now)))]);
         // The commands waiting for the host ride along (R-HOST-4).
         let commands = crate::commands::waiting(&s.sync, &device, now);
-        Ok(Resp::json(200, &Json::map([("presence", answer), ("commands", commands)])))
+        let requests = crate::pairing_requests::waiting(&s.sync, &who.person, now);
+        Ok(Resp::json(200, &Json::map([("presence", answer), ("pairing_requests", requests), ("commands", commands)])))
     };
     run().unwrap_or_else(|r| r)
 }
@@ -385,7 +386,7 @@ pub fn presences_seen(app: &App) -> Resp {
     Resp::json(200, &Json::map([("presences", Json::Arr(held))]))
 }
 
-fn no_device_list() -> Resp {
+pub fn no_device_list() -> Resp {
     error(409, "no_device_list", "you have no device list yet — set sync up with `krowk sync init`", None)
 }
 

@@ -164,14 +164,81 @@ pub struct Presence {
     pub online: bool,
 }
 
-/// What a publish answers: until when the presence holds, and the commands
-/// waiting for this device (R-HOST-4), oldest first and at most 16. A
-/// command is delivered on every refresh until it is answered, so the host
-/// de-duplicates by id. The answer has room for more, ignored until known.
+/// What a publish answers: until when the presence holds, the commands
+/// waiting for this device (R-HOST-4), oldest first and at most 16, and the
+/// pairing requests waiting for a host to open a pairing, oldest first and at
+/// most 4. A command is delivered on every refresh until it is answered, so
+/// the host de-duplicates by id; a request is carried on every refresh until
+/// a pairing opens for it or it lapses, so a host that already opened one
+/// de-duplicates by `id` too. The answer has room for more, ignored until
+/// known.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct PresencePut {
     pub expires_at: String,
     pub commands: Vec<DeliveredCommand>,
+    pub pairing_requests: Vec<DeliveredPairingRequest>,
+}
+
+/// A new machine's request for a pairing, as a host reads it in its presence
+/// refresh. `name` and `os` are what the new machine typed about itself:
+/// plaintext and untrusted, a hint to show, never a fact — what the person
+/// confirms is the pairing's own name and OS, after the code's checks. It
+/// carries no keys and opens nothing: a host that wants to answer it opens a
+/// pairing (`open_pairing`) like any other.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct DeliveredPairingRequest {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub os: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub created_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+}
+
+/// Where a pairing request is, as the new machine polls it.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum PairingRequestState {
+    /// Recorded; no host has opened a pairing yet.
+    Pending,
+    /// A pairing is open: read it with `find_open_pairing` and join.
+    PairingOpen,
+    /// Ten minutes passed with no pairing. Ask again.
+    Expired,
+    /// A state this client does not know: treat it as not yet answered.
+    #[default]
+    #[serde(other)]
+    Unknown,
+}
+
+/// A pairing request as the machine that made it reads it.
+#[derive(Debug, Clone, Default, Deserialize, PartialEq)]
+pub struct PairingRequest {
+    #[serde(default, deserialize_with = "nullable")]
+    pub id: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub state: PairingRequestState,
+    #[serde(default, deserialize_with = "nullable")]
+    pub name: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub os: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub created_at: String,
+    #[serde(default, deserialize_with = "nullable")]
+    pub expires_at: String,
+    /// Seconds between polls the registry asks for.
+    #[serde(default, deserialize_with = "nullable")]
+    pub poll_interval: u64,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+struct PairingRequestAnswer {
+    #[serde(default, deserialize_with = "nullable")]
+    pairing_request: PairingRequest,
 }
 
 /// A command another of the person's devices sent this one (R-HOST-4): its
@@ -210,6 +277,8 @@ struct PresencePutAnswer {
     presence: PresenceTimes,
     #[serde(default, deserialize_with = "nullable")]
     commands: Vec<DeliveredCommand>,
+    #[serde(default, deserialize_with = "nullable")]
+    pairing_requests: Vec<DeliveredPairingRequest>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -841,7 +910,7 @@ impl Client {
     pub fn put_presence(&self, sealed: &[u8], ttl_seconds: u64) -> Result<PresencePut, Error> {
         let body = json!({ "presence": { "sealed": crate::client::hex(sealed), "ttl": ttl_seconds } });
         let (answer, _): (PresencePutAnswer, u16) = self.call_as_device("PUT", "/key/device/presence", Some(body), ATTEMPTS, None)?;
-        Ok(PresencePut { expires_at: answer.presence.expires_at, commands: answer.commands })
+        Ok(PresencePut { expires_at: answer.presence.expires_at, commands: answer.commands, pairing_requests: answer.pairing_requests })
     }
 
     /// Sends `device`, another of the person's devices, a command sealed to
@@ -894,6 +963,30 @@ impl Client {
     pub fn user_key(&self) -> Result<UserKeyWraps, Error> {
         let path = format!("{}/devices/{}/key", self.user_path()?, slug_path(&self.device_signer()?.device()));
         Ok(self.call_as_device("GET", &path, None, ATTEMPTS, None)?.0)
+    }
+
+    /// A new machine asks the person's hosts to open a pairing: signed in as
+    /// the person (the key alone), not a device yet. `name` and `os` are what
+    /// it proposes to be called and runs on, plaintext and untrusted: no
+    /// control characters, a name of at most 100 characters and an OS of at
+    /// most 32. It opens nothing and carries no keys. The person's hosts read
+    /// it in their presence refresh, their phones are told only that a new
+    /// machine signed in, and it lapses after ten minutes. Once: a request
+    /// sent again while it is pending is `pairing_request_pending`, so a
+    /// caller whose answer was lost reads it (`pairing_request`) instead. A
+    /// key that speaks for a device is `device_mismatch`; a person with no
+    /// device list is `no_device_list`.
+    pub fn request_pairing(&self, name: &str, os: &str) -> Result<PairingRequest, Error> {
+        let body = json!({ "pairing_request": { "name": name, "os": os } });
+        let (answer, _): (PairingRequestAnswer, u16) = self.call("POST", &format!("{}/pairing_request", self.user_path()?), Some(body), 1, None)?;
+        Ok(answer.pairing_request)
+    }
+
+    /// The latest request this key made, as its machine polls it: pending,
+    /// pairing open or expired. Another key's request is not this one's:
+    /// none is `no_pairing_request`.
+    pub fn pairing_request(&self) -> Result<PairingRequest, Error> {
+        Ok(self.get::<PairingRequestAnswer>(&format!("{}/pairing_request", self.user_path()?))?.pairing_request)
     }
 
     /// Opens a pairing from this device. Once: a pairing is one per person,
