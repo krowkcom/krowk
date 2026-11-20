@@ -456,7 +456,6 @@ fn sync_attach_hears_a_prompt_the_host_refuses_as_untrusted_and_the_next_runs_on
 /// `switchModel` to it, then, once A has taken that, the prompt again,
 /// which runs there. With no offer waiting, `/switch` sends nothing.
 #[test]
-#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
     let w = World::new("offer");
     let a = w.machine("a");
@@ -492,7 +491,6 @@ fn r_switch_4_sync_attach_names_a_limits_offer_and_switch_takes_it() {
 /// B's stderr, and `/switch` takes it with a `switchModel` alone: the prompt
 /// is not sent again.
 #[test]
-#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_roll_12_sync_attach_switch_takes_an_early_offer_without_sending_again() {
     let w = World::new("early");
     let a = w.machine("a");
