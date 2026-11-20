@@ -428,7 +428,7 @@ pub(super) fn listing(ctx: &Ctx) -> Option<Result<(String, Vec<SyncedRow>), Stri
                 hosted: s.holder.is_some(),
             })
             .collect();
-        rows.sort_by(|a, b| b.updated_ms.cmp(&a.updated_ms));
+        rows.sort_by_key(|r| std::cmp::Reverse(r.updated_ms));
         Ok((this, rows))
     };
     Some(run().map_err(|e| e.fix()))
