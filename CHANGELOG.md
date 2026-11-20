@@ -17,8 +17,7 @@ the versions are the `v*` tags a release is cut from. Entries land under
   gateways keep working: `krowk connect` turns them into Claude Code or Codex
   accounts, and the key stays in krowk's credentials. Signing in with
   SuperGrok is not carried over; connect a Claude Code or Codex account
-  instead. This ships in the same release that announces it, as a one-time
-  exception to the release policy.
+  instead. It is announced and removed in the same release.
 
 ### Added
 
