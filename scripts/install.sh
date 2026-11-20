@@ -955,8 +955,7 @@ next_steps() {
   echo ""
   echo "  Run krowk:"
   if [[ "$HAS_AGENT" == yes ]]; then
-    echo "    $(bold "krowk")                         Sign in, connect a model and open the agent"
-    echo "    $(bold "krowk machines add")            Show a QR code to add the phone app"
+    echo "    $(bold "krowk")                         Set this machine up: sign in and connect a model"
     echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
   else
     echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"

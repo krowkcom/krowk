@@ -261,10 +261,10 @@ when piped) carries the same, and `krowk hosts` is this command.
 
 Managing them:
 
-  krowk machines add               a code and QR for a phone, or a machine that
-                                   can't sign in; valid 10 minutes and once, and
-                                   this machine asks you to confirm the new one
-                                   by name before anything is added
+  krowk machines add               a code for a machine that can't sign in;
+                                   valid 10 minutes and once, and this machine
+                                   asks you to confirm the new one by name
+                                   before anything is added
   krowk machines remove NAME       take one off and rotate your key
   krowk machines always-on on|off  keep this machine available while you're away
   krowk machines recovery          whether you have a recovery kit; `new`,
@@ -826,7 +826,7 @@ fn machines_subcommands() -> Vec<Command> {
     vec![
         cmd("list", "krowk machines [list]", "Your machines, and what each can take"),
         machines_accept(),
-        cmd("add", "krowk machines add", "Show a code and QR that adds a phone or a machine"),
+        cmd("add", "krowk machines add", "Show a code that adds another machine"),
         Command { args: vec![arg("name", "The machine's name, as `krowk machines` lists it", true)], ..cmd("remove", "krowk machines remove NAME", "Take a machine off your list and rotate your key") },
         Command { args: vec![arg("state", "on or off", true)], ..cmd("always-on", "krowk machines always-on on|off", "Keep this machine available while you're away") },
         Command {

@@ -1,15 +1,18 @@
-//! The first machine, step 1: signing in to krowk before the TUI opens. A
-//! machine with no way to run a model and no krowk account is asked once —
-//! sign in in the browser, or use krowk locally. Signing in leaves a
-//! workspace key and this machine registered for sync, with no further
-//! prompt. The model step is the TUI's own first-run card, which follows.
+//! The first machine's setup, from bare `krowk` on a terminal (D4, D5), as
+//! plain prompts on stderr answered with a line on stdin: sign in to krowk
+//! (or use it locally), connect a model with `krowk connect`'s own flow, keep
+//! this machine available while you're away, and the recovery kit. Signing
+//! in leaves a workspace key and this machine registered for sync, with no
+//! further prompt; an account that already has machines adds this one to
+//! them with a code instead. Without a terminal nothing is asked.
 //!
 //! Each step can be cancelled and resumed by running `krowk` again, so what
 //! is left to do is read from what is on disk: the key, the device list, and
 //! `first-run.json` — `local` once the person chose to use krowk without an
 //! account (never offered again), `pending` between signing in and the
-//! registration that finishes it. `krowk login` on a terminal runs the same
-//! step from the top.
+//! registration that finishes it, and the two questions once asked. The
+//! file is there once the setup has begun. `krowk login` on a terminal runs
+//! the account step from the top, and the next `krowk` goes on from there.
 
 use super::recovery::{self, register_first_device, Registered};
 use super::{agent, auth, Ctx};
@@ -24,8 +27,8 @@ pub(super) struct State {
     local: bool,
     /// Signed in, and not yet registered or handed to the add-a-machine flow.
     pending: bool,
-    /// The always-on question was asked, and answered or declined with
-    /// Escape: not asked again.
+    /// The always-on question was asked, and answered or left unanswered at
+    /// the end of input: not asked again.
     always_on_asked: bool,
     /// The recovery kit was offered once, made or put off: not offered again
     /// (`krowk machines recovery` makes one, and the reminder stays).
@@ -51,14 +54,63 @@ pub(super) fn chose_local(ctx: &Ctx) -> bool {
     load(ctx).local
 }
 
-/// Step 1, before the TUI takes the terminal, as the trust question is
-/// asked. A registration left unfinished is taken up whenever `krowk` runs
-/// (it needs no terminal question); the sign-in card is asked only when
-/// nothing here can run a model yet (`runnable` false) and there is no key.
-/// A failure is said and left for the next `krowk` to retry — nothing here
-/// keeps the TUI from opening, which still connects a model, and Escape at
-/// the card is "not now": asked again next time.
-pub(super) fn account_step(ctx: &mut Ctx, runnable: bool) {
+/// Bare `krowk` with a person at the terminal: the setup's steps still to
+/// do, in order, before the overview. The sign-in step is asked only when
+/// nothing here can run a model yet and there is no key; the rest only once
+/// the setup has begun (`first-run.json` is there) and until both questions
+/// are asked. A step cancelled or failed is said, and the next `krowk`
+/// takes it up again.
+pub(super) fn bare(ctx: &mut Ctx) {
+    account_step(ctx, runnable(ctx));
+    if !path(ctx).is_ok_and(|p| p.exists()) || !steps_due(ctx) {
+        return;
+    }
+    if model_step(ctx) {
+        after_model_step(ctx);
+    }
+}
+
+/// What can run a model without asking a vendor: a key, a login krowk
+/// keeps, a server. A vendor's own login is not told apart from none, so a
+/// machine on one with no krowk account is asked to sign in once.
+fn runnable(ctx: &Ctx) -> bool {
+    use krowk_harness::readiness::{self, Readiness};
+    let (Ok(config), Ok(credentials)) = (super::prompt::load_instances(), super::providers::credentials_path()) else { return true };
+    let registry = krowk_harness::instances::Registry::resolve(&config, ctx.io.env);
+    registry.instances.values().filter_map(|i| readiness::local(i, &credentials)).any(|r| matches!(r, Readiness::Ready { .. } | Readiness::Unknown { .. }))
+}
+
+/// Step 2: a model, connected with `krowk connect`'s own pickers when none
+/// is ready here, vendors asked too. Whether the setup goes on.
+fn model_step(ctx: &mut Ctx) -> bool {
+    let ready = super::status::reports(ctx).is_ok_and(|(_, _, r)| r.iter().any(|r| r.readiness.is_ready()));
+    if ready {
+        return true;
+    }
+    let _ = writeln!(ctx.io.stderr, "\nConnect a model");
+    match super::providers::connect(ctx, &[]) {
+        Ok(()) => true,
+        Err(e) => {
+            ctx.warn(&format!("no model is connected: {} — run krowk again to connect one", e.fix()));
+            false
+        }
+    }
+}
+
+/// The lines bare `krowk` puts under its overview: the most important
+/// problem with this setup and its fix (D9), and the recovery-kit reminder
+/// while the person has fewer than two machines (D5). From the disk alone.
+pub(super) fn overview_lines(ctx: &Ctx) -> Vec<String> {
+    super::health::top_problem(ctx).into_iter().chain(recovery::reminder_due_here(ctx).then(|| recovery::REMINDER.to_string())).collect()
+}
+
+/// Step 1: sign in to krowk, or use it locally. A registration left
+/// unfinished is taken up whenever bare `krowk` runs on a terminal; the
+/// question is asked only when nothing here can run a model yet
+/// (`runnable` false) and there is no key. A failure is said and left for
+/// the next `krowk` to retry, and any other answer is "not now": asked
+/// again next time.
+fn account_step(ctx: &mut Ctx, runnable: bool) {
     let mut state = load(ctx);
     // A key in the environment is the caller's own, not this machine's
     // account: with it set, the step is not asked and nothing owed is finished.
@@ -166,7 +218,7 @@ pub(super) fn add_a_machine(ctx: &mut Ctx, client: Client, state: &mut State) {
 }
 
 /// Whether `after_model_step` has anything to ask.
-pub(super) fn steps_due(ctx: &Ctx) -> bool {
+fn steps_due(ctx: &Ctx) -> bool {
     let state = load(ctx);
     !state.always_on_asked || (!state.kit_offered && recovery::reminder_due_here(ctx))
 }
@@ -174,10 +226,10 @@ pub(super) fn steps_due(ctx: &Ctx) -> bool {
 /// The questions after the model step (D4, D5), on the terminal, each asked
 /// once: keep this machine available, then the recovery kit. Cancelled or
 /// failed, a step is said and not retried every launch; the kit's reminder
-/// stays while it is due. Whether that reminder is still due.
-pub(super) fn after_model_step(ctx: &mut Ctx) -> bool {
+/// stays in the overview while it is due.
+fn after_model_step(ctx: &mut Ctx) {
     let mut state = load(ctx);
-    // Marked once answered, not before: Ctrl-C at a card leaves it to be
+    // Marked once answered, not before: Ctrl-C at the question leaves it to be
     // asked next time.
     if !state.always_on_asked {
         always_on(ctx);
@@ -193,7 +245,6 @@ pub(super) fn after_model_step(ctx: &mut Ctx) -> bool {
         state.kit_offered = true;
         save(ctx, &state);
     }
-    recovery::reminder_due_here(ctx)
 }
 
 /// Whether the always-on step defaults to yes: on a desktop, not on a
@@ -201,8 +252,7 @@ pub(super) fn after_model_step(ctx: &mut Ctx) -> bool {
 #[cfg(unix)]
 fn always_on(ctx: &mut Ctx) {
     let default_yes = !super::power::has_battery();
-    let _ = writeln!(ctx.io.stderr, "\n  It syncs your sessions and takes work from your other machines.");
-    let title = format!("Keep this machine available while you're away? {}", if default_yes { "[Y/n]" } else { "[y/N]" });
+    let title = format!("Keep this machine available while you're away?\nIt syncs your sessions and takes work from your other machines. {}", if default_yes { "[Y/n]" } else { "[y/N]" });
     let yes = match super::chain::ask_key(ctx, &title, &[]).as_str() {
         "" => default_yes,
         "y" | "yes" => true,

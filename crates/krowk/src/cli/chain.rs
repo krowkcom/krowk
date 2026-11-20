@@ -93,8 +93,7 @@ pub(super) fn ask_key(ctx: &mut Ctx, title: &str, options: &[(&str, &str)]) -> S
         return a;
     }
     let keys: Vec<String> = options.iter().map(|(k, what)| format!("[{k}] {what}")).collect();
-    let _ = write!(ctx.io.stderr, "\n{title}\n{}{}", if keys.is_empty() { "" } else { "  " }, keys.join("   "));
-    let _ = write!(ctx.io.stderr, " ");
+    let _ = if keys.is_empty() { write!(ctx.io.stderr, "\n{title} ") } else { write!(ctx.io.stderr, "\n{title}\n  {} ", keys.join("   ")) };
     let _ = ctx.io.stderr.flush();
     let mut line = String::new();
     match std::io::stdin().lock().read_line(&mut line) {

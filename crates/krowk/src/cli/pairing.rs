@@ -491,8 +491,8 @@ pub(super) fn show_offer(ctx: &mut Ctx) {
                     let _ = writeln!(ctx.io.stdout, "A new machine is waiting to be added. Run krowk machines in a terminal to answer.");
                     return;
                 }
-                let question = format!("Add '{}' ({}) to your devices?", printable(&offer.name), printable(&offer.os));
-                let yes = ask(ctx, &question).is_ok();
+                let question = format!("Add '{}' ({}) to your devices? [Y/n]", printable(&offer.name), printable(&offer.os));
+                let yes = matches!(super::chain::ask_key(ctx, &question, &[]).as_str(), "" | "y" | "yes");
                 if let Err(e) = krowk_harness::daemon::pairing_answer(ctx.io.env, super::VERSION, &offer.pairing, yes) {
                     let _ = writeln!(ctx.io.stderr, "{}", printable(&e.message));
                     return;

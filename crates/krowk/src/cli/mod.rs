@@ -253,7 +253,22 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     let mut ctx = Ctx { io, f, format, colour, filter };
     let result = if ctx.f.help || positionals.is_empty() || positionals[0] == "help" {
         let topic = if positionals.first().is_some_and(|p| p == "help") { &positionals[1..] } else { &positionals[..] };
-        show_help(&mut ctx, topic)
+        // Bare `krowk`: the first machine's setup, with a person at the
+        // terminal to answer it, then the overview with what needs doing.
+        #[cfg(feature = "harness")]
+        let bare = positionals.is_empty() && !ctx.f.help;
+        #[cfg(feature = "harness")]
+        if bare && interactive(&ctx) && ctx.io.stdin_tty && ctx.io.err_tty {
+            first_run::bare(&mut ctx);
+        }
+        let shown = show_help(&mut ctx, topic);
+        #[cfg(feature = "harness")]
+        if bare && shown.is_ok() && help_is_human(&ctx) {
+            for line in first_run::overview_lines(&ctx) {
+                let _ = writeln!(ctx.io.stdout, "\n{}", output::warning(ctx.colour, &line));
+            }
+        }
+        shown
     } else {
         reject_misplaced_sessions_flags(&ctx.f, &positionals).and_then(|()| dispatch(&mut ctx, &positionals, &typed))
     };
@@ -554,14 +569,18 @@ fn clip(s: &[String], n: usize) -> &[String] {
     &s[..n.min(s.len())]
 }
 
+/// Help is read, by a person or an agent, so it is the page unless JSON was
+/// asked for by name: piped, the whole catalog would bury the overview.
+fn help_is_human(ctx: &Ctx) -> bool {
+    let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
+    ctx.format != Format::Json || !asked_for_json
+}
+
 fn show_help(ctx: &mut Ctx, topic: &[String]) -> Result<(), Error> {
     let c = catalog::catalog(VERSION);
     // `krowk help uploads` is the help of what `uploads` now is.
     let (typed, topic) = (topic, &catalog::canonical(topic));
-    // Help is read, by a person or an agent, so it is the page unless JSON was
-    // asked for by name: piped, the whole catalog would bury the overview.
-    let asked_for_json = ctx.f.json || ctx.filter.is_some() || ctx.f.format == "json";
-    let human = ctx.format != Format::Json || !asked_for_json;
+    let human = help_is_human(ctx);
     if topic.is_empty() {
         if !human {
             return ctx.emit(&output::encode(&c));

@@ -5,13 +5,14 @@
 //! its state and, when it needs fixing, the visible command that fixes it.
 //!
 //! The decisions are plain functions of what was read, so each has a passing
-//! and a failing test; reading is `Machine::here` and friends. The TUI's
-//! status line asks for the one most important problem (`top_problem`),
-//! from what is on disk alone: it never waits on the registry.
+//! and a failing test; reading is `Machine::here` and friends. The overview
+//! bare `krowk` prints asks for the one most important problem
+//! (`top_problem`), from what is on disk alone: it never waits on the
+//! registry.
 //!
-//! The recovery kit's line is the doctor's alone. In the TUI the once-per-
-//! session reminder is the status line's own (`Options::no_recovery_kit`,
-//! ticket 02), so `top_problem` never names it: one owner, never twice.
+//! The recovery kit's line is the doctor's. In the overview the reminder is
+//! its own line (`recovery::REMINDER`), so `top_problem` never names it: one
+//! owner, never twice.
 
 #![cfg_attr(not(feature = "harness"), allow(dead_code))]
 
@@ -62,7 +63,7 @@ impl Check {
         v
     }
 
-    /// "message — fix": what the status line and the doctor's lines say.
+    /// "message — fix": what the overview and the doctor's lines say.
     pub(super) fn said(&self) -> String {
         match &self.fix {
             Some(fix) => format!("{} — {fix}", self.message),
@@ -74,7 +75,7 @@ impl Check {
 /// What the key lookup said, when doctor asked the registry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum Lookup {
-    /// Not asked: the status line reads the disk only.
+    /// Not asked: the overview reads the disk only.
     Unchecked,
     Ok { email: String, workspace: String },
     /// The registry could not be reached, so the key is neither good nor bad.
@@ -154,12 +155,12 @@ pub(super) fn trusted(t: &Trust) -> Check {
         Trust::Trusted(dir) => Check::new("trust", Status::Pass, format!("{dir} is trusted"), None),
         // Also what a repository reads as once something in it that can run
         // code has changed since it was trusted.
-        Trust::Untrusted(dir) => Check::new("trust", Status::Fail, format!("{dir} is not trusted, or something in it that can run code changed"), Some("run `krowk` there and answer its question")),
+        Trust::Untrusted(dir) => Check::new("trust", Status::Fail, format!("{dir} is not trusted, or something in it that can run code changed"), Some("krowk trust")),
     }
 }
 
 /// D5's rule, the one place it is decided (`recovery::reminder_due` reads a
-/// device list through it, for `krowk machines` and the TUI's status line):
+/// device list through it, for `krowk machines` and the overview):
 /// remind while there are fewer than two machines (phones are devices, not
 /// machines) and no kit on the list.
 pub(super) fn reminder_due(machines: usize, kit: bool) -> bool {
@@ -207,21 +208,21 @@ pub(super) fn plan(plan: Option<&str>, machine: &Machine) -> Check {
 }
 
 /// The checks that read the disk only, in the order of importance: what the
-/// status line picks from, and the first part of the doctor's report.
+/// overview picks from, and the first part of the doctor's report.
 pub(super) fn local(ctx: &Ctx, signed_in: bool, lookup: &Lookup) -> (Vec<Check>, Machine) {
     let machine = Machine::here(ctx, signed_in);
     let checks = vec![account(signed_in, chose_local(ctx), lookup), registered(signed_in, &machine), always_on(&machine, service_installed(ctx))];
     (checks, machine)
 }
 
-/// The most important problem with this setup, said for the status line:
-/// from the disk alone, so it costs the TUI no wait. Only what is broken
-/// counts, and only for a person who has an account: one who never signed in
-/// is not nagged on every start (doctor says so, and the first run asked),
-/// and a key the registry rejects is found by asking it, which is doctor's.
-/// Left out on purpose: the recovery kit (the status line's own reminder,
-/// once per session), repository trust (the TUI asks it before the first
-/// prompt), and the always-on service (a person may have said no).
+/// The most important problem with this setup, said for the overview bare
+/// `krowk` prints: from the disk alone, so it costs no wait. Only what is
+/// broken counts, and only for a person who has an account: one who never
+/// signed in is not nagged on every run (doctor says so, and the first run
+/// asked), and a key the registry rejects is found by asking it, which is
+/// doctor's. Left out on purpose: the recovery kit (the overview's own
+/// reminder line), repository trust (`krowk -p` asks it before it runs), and
+/// the always-on service (a person may have said no).
 pub(super) fn top_problem(ctx: &Ctx) -> Option<String> {
     let client = super::agent::new_client(ctx).ok()?;
     let signed_in = client.authenticated() && ctx.env("KROWK_TOKEN").is_empty();
