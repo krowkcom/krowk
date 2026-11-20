@@ -69,7 +69,56 @@ stdout:
     "vcs.change.id": "42",
     "krowk.change.url": "https://github.com/krowkcom/golden/pull/42",
     "krowk.session": "s-9"
-  }
+  },
+  "checks": [
+    {
+      "name": "account",
+      "status": "pass",
+      "message": "Signed in as c2eb20c8@example.test"
+    },
+    {
+      "name": "machine",
+      "status": "skip",
+      "message": "This build carries no sync"
+    },
+    {
+      "name": "always_on",
+      "status": "skip",
+      "message": "The always-on service is not available on this platform"
+    },
+    {
+      "name": "providers",
+      "status": "skip",
+      "message": "this build runs no model"
+    },
+    {
+      "name": "trust",
+      "status": "skip",
+      "message": "This directory is not in a repository"
+    },
+    {
+      "name": "recovery_kit",
+      "status": "skip",
+      "message": "No device list here to hold a recovery kit"
+    },
+    {
+      "name": "plan",
+      "status": "pass",
+      "message": "Pro plan: up to 10 machines"
+    },
+    {
+      "name": "store",
+      "status": "pass",
+      "message": "healthy (<scratch>/home/.krowk/sessions/krowk.db, schema v1, wal)"
+    },
+    {
+      "name": "pricing",
+      "status": "warn",
+      "message": "no price cache — prices come from the models.dev snapshot 2026-09-10 embedded in this build",
+      "hint": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day",
+      "fix": "run `krowk pricing refresh`, or `krowk sessions sync`, which refreshes prices once a day"
+    }
+  ]
 }
 exit: 0
 

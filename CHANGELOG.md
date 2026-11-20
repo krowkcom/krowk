@@ -11,6 +11,19 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk doctor` checks everything, and the TUI names the top problem.**
+  Beyond the store, prices and providers, doctor now checks that you are signed
+  in, that this machine is registered for sync, that the always-on service is
+  on, that this directory's repository is trusted, that you have a recovery kit
+  (only flagged with fewer than two machines), and your plan against its
+  machine limit. Each is one line with what is wrong and the command that fixes
+  it (`✗ Always-on service off — krowk machines always-on on`), `--json` carries
+  every check under `checks`, and doctor exits non-zero when a check failed
+  (warnings do not count). A machine set to use krowk locally is not asked to
+  sign in. The TUI status line shows the single most important problem, if any
+  (for now, that this machine is signed in but not registered for sync), and
+  nothing when all is well.
+
 - **The first machine sets up in one flow from `krowk`.** On a terminal with
   nothing to run a model on, `krowk` asks once: sign in to krowk in the browser
   (`[Enter]`), or use krowk locally without an account (`[l]`). Signing in

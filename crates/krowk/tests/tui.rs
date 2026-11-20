@@ -3136,3 +3136,34 @@ fn a_registration_left_owed_is_finished_by_the_next_krowk_and_escape_is_not_now(
     t.write(b"\x04\x04");
     assert!(t.wait(Duration::from_secs(10)).is_some());
 }
+
+/// D9, R-EASE-8: the status line names the most important problem with the
+/// setup and its fix; a machine with nothing wrong says nothing.
+#[test]
+fn the_status_line_shows_the_top_problem_and_nothing_when_nothing_is_wrong() {
+    let (_r, api) = registry();
+    // Signed in with a key, and never registered for sync.
+    let b = Sandbox::new("top-problem");
+    let mut cmd = account_command(&b, "http://127.0.0.1:9", &api);
+    cmd.env("ANTHROPIC_API_KEY", "sk-test");
+    let login = account_command(&b, "http://127.0.0.1:9", &api).args(["login", "--token", "krowk_sk_top#a"]).output().unwrap();
+    assert!(login.status.success(), "{}", String::from_utf8_lossy(&login.stderr));
+    assert!(keystore(&b).device_list().unwrap().is_none());
+    let mut t = pty::Pty::spawn(cmd, 130, 34);
+    assert!(says(&t, 0, "This machine is not registered for sync — krowk login", Duration::from_secs(20)), "{:?}", t.text());
+    settle();
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+
+    // Using krowk locally, with a model: nothing is wrong, so nothing is said.
+    let b = Sandbox::new("no-problem");
+    let mut cmd = fresh_command(&b, "http://127.0.0.1:9");
+    cmd.env("ANTHROPIC_API_KEY", "sk-test");
+    let mut t = pty::Pty::spawn(cmd, 130, 34);
+    assert!(t.wait_for(" help", Duration::from_secs(15)).is_some(), "{:?}", t.text());
+    let text = t.text();
+    assert!(!text.contains("krowk login") && !text.contains("not registered"), "{text:?}");
+    settle();
+    t.write(b"\x04\x04");
+    assert!(t.wait(Duration::from_secs(10)).is_some());
+}

@@ -85,6 +85,9 @@ enum Rank {
     Subagents,
     Tasks,
     Cost,
+    /// Longer than the cost, and dropped before the model is cut short: a
+    /// narrow row names the model, and the details overlay has the rest.
+    Problem,
     /// Cut short rather than dropped.
     Model,
     Kit,
@@ -860,6 +863,9 @@ pub struct App {
     pub device: Option<String>,
     /// Sync is set up and there is no recovery kit (`Options`).
     pub no_recovery_kit: bool,
+    /// The most important problem with the setup and its fix, in plain
+    /// colour (`Options::top_problem`).
+    pub top_problem: Option<String>,
     /// A newer krowk release (`Options::update`).
     pub update: Option<Update>,
     /// The session runs on another machine, followed through sync: whether
@@ -1105,6 +1111,7 @@ impl App {
             offline: None,
             device: None,
             no_recovery_kit: false,
+            top_problem: None,
             update: None,
             sync: None,
             follow: crate::pr::Follow::default(),
@@ -3397,6 +3404,11 @@ impl App {
         if self.no_recovery_kit {
             first.push(Part { rank: Rank::Kit, text: "no recovery kit".into(), style: yellow(), url: None, mark: None, tail: None });
         }
+        // Whatever the list says: the one thing most worth fixing, in the
+        // colour of the rest of the line.
+        if let Some(problem) = &self.top_problem {
+            first.push(Part { rank: Rank::Problem, text: problem.clone(), style: Style::default(), url: None, mark: None, tail: None });
+        }
         // Whatever the list says: where a synced session's host is decides
         // whether a prompt runs now or waits.
         if let Some(sync) = &self.sync {
@@ -5312,6 +5324,18 @@ mod tests {
         let mut a = app();
         a.on_line(&log(switch_turn("claude:work", "haiku")));
         assert_eq!(a.status_bar(), "Haiku (claude:work) | ? help\n$0.00");
+    }
+
+    /// D9: the status line names the one problem, and nothing when all pass.
+    #[test]
+    fn d9_the_status_line_shows_the_top_problem_and_nothing_when_all_pass() {
+        let mut a = app();
+        assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
+        a.top_problem = Some("Not signed in to krowk — krowk login".into());
+        let bar = a.status_bar();
+        assert!(bar.contains("Not signed in to krowk — krowk login"), "{bar}");
+        a.top_problem = None;
+        assert!(!a.status_bar().contains("krowk login"), "{}", a.status_bar());
     }
 
     /// D6: until a kit exists, the status line says there is none.

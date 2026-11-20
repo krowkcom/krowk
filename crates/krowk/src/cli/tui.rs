@@ -200,6 +200,7 @@ fn run_with(ctx: &mut Ctx, sync: Option<krowk_tui::synced::Options>) -> Result<(
         history_file,
         notices: notices.into_iter().chain(mode_notices).collect(),
         no_recovery_kit: no_recovery_kit(ctx),
+        top_problem: super::health::top_problem(ctx),
         // A synced session prints no header to say it under.
         update: if synced {
             None

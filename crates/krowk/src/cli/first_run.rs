@@ -41,6 +41,11 @@ fn save(ctx: &mut Ctx, s: &State) {
     }
 }
 
+/// Whether the person chose to use krowk locally, without an account.
+pub(super) fn chose_local(ctx: &Ctx) -> bool {
+    load(ctx).local
+}
+
 /// Step 1, before the TUI takes the terminal, as the trust question is
 /// asked. A registration left unfinished is taken up whenever `krowk` runs
 /// (it needs no terminal question); the sign-in card is asked only when
