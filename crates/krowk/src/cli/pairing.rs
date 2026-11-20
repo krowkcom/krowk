@@ -280,7 +280,10 @@ pub(super) fn introducer(ctx: &Ctx) -> Result<krowk_harness::sync::introduce::In
     let (signing, shared) = signer(&store, &device)?;
     let client = keyed_client(ctx, "a pairing for a new machine")?.signed_by(shared);
     let (entries, chain, keys) = current_list(&store, &client, &device)?;
-    Ok(krowk_harness::sync::introduce::Introducer { api: std::sync::Arc::new(client), keys, chain, entries, device: device.id(), signing })
+    // The list this machine keeps as its pin, taken up to the new entry once
+    // it is posted, as `devices add` does.
+    let keep: krowk_harness::sync::introduce::Keep = Box::new(move |entries| store.save_device_list(entries).map(|_| ()));
+    Ok(krowk_harness::sync::introduce::Introducer { api: std::sync::Arc::new(client), keys, chain, entries, device: device.id(), signing, keep: Some(keep) })
 }
 
 /// The device list as the registry has it now, kept only if it extends
@@ -555,6 +558,9 @@ pub(super) fn show_offer(ctx: &mut Ctx) {
     let mut said_code = false;
     loop {
         let Ok(Some(offer)) = krowk_harness::daemon::pairing_offer(ctx.io.env, super::VERSION) else { return };
+        if Instant::now() > deadline {
+            return;
+        }
         match offer.stage {
             OfferStage::Waiting => {
                 // The code goes only to a person at a terminal: an agent that
@@ -667,8 +673,12 @@ pub(super) fn join(ctx: &mut Ctx, args: &[String]) -> Result<(), Error> {
         // the person is offered to start over with new ones, the old moved
         // aside.
         Listing::Removed => {
+            let old = device.id();
             start_over(ctx, &store)?;
             device = store.device_key().map_err(|e| fail("sync_setup_failed", e))?;
+            if device.id() == old {
+                return Err(fail("sync_setup_failed", "this machine's old keys could not be moved aside, so it has no new ones — move them aside by hand, then run `krowk sync join` again"));
+            }
             (signing, shared) = signer(&store, &device)?;
         }
         _ => {}

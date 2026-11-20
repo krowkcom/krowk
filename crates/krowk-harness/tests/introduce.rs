@@ -92,6 +92,7 @@ impl Person {
                 entries: entries.clone(),
                 device,
                 signing: SigningKey::from_secret(&signing).unwrap(),
+                keep: None,
             })
         };
         Introductions::with_timing(Box::new(build), Timing { poll: Duration::from_millis(20), wait: Duration::from_secs(30) })
@@ -191,6 +192,7 @@ fn r_ease_5_a_host_opens_the_pairing_and_a_typed_code_adds_the_new_machine() {
 
     assert!(!host.answer("another-pairing", true), "a yes about another pairing is refused");
     assert!(host.answer(&asked.pairing, true));
+    assert!(!host.answer(&asked.pairing, true), "the question is answered once, even before it is carried out");
     let joined = joining.join().unwrap().unwrap();
     assert_eq!(joined.name, "laptop");
     let added = stage(&host, OfferStage::Added);

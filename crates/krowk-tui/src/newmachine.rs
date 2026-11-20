@@ -29,10 +29,10 @@ pub fn watch(version: String) -> mpsc::UnboundedReceiver<String> {
     let (tx, rx) = mpsc::unbounded_channel();
     let spawned = std::thread::Builder::new().name("krowk-new-machine".into()).spawn(move || {
         let env = |k: &str| std::env::var(k).unwrap_or_default();
-        let mut shown: Option<(OfferStage, String)> = None;
+        let mut shown: Option<(OfferStage, String, String)> = None;
         while !tx.is_closed() {
             let offer = krowk_harness::daemon::pairing_offer(&env, &version).ok().flatten();
-            let key = offer.as_ref().map(|o| (o.stage, o.code.clone()));
+            let key = offer.as_ref().map(|o| (o.stage, o.pairing.clone(), o.note.clone()));
             if key != shown {
                 if let Some(l) = offer.as_ref().and_then(line)
                     && tx.send(l).is_err()

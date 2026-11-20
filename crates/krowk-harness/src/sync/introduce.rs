@@ -37,7 +37,7 @@
 use super::announce::words;
 use krowk_api::sync::{DeliveredPairingRequest, ListPost, PairingStep};
 use krowk_api::{Client, Error};
-use krowk_client::device_chain::{confusable_names, Change, Kind, SignedEntry, Subject};
+use krowk_client::device_chain::{confusable_names, refused_in_name, Change, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, DeviceId, SigningKey};
 use krowk_client::pairing::{PairA, PeerKind};
 use krowk_client::pairing_join::Field;
@@ -65,7 +65,14 @@ pub struct Introducer {
     pub entries: Vec<SignedEntry>,
     pub device: DeviceId,
     pub signing: SigningKey,
+    /// Keeps the list with the new entry on its end as this machine's pin,
+    /// once it is posted (`Keystore::save_device_list`); None keeps none.
+    pub keep: Option<Keep>,
 }
+
+/// Saves a device list. Errors are said, never fatal: the next read of the
+/// list takes the pin up.
+pub type Keep = Box<dyn Fn(&[SignedEntry]) -> Result<(), String> + Send + Sync>;
 
 /// Builds an `Introducer`, the list brought up to date from the registry
 /// first. Blocking. Errors are `(code, message)`.
@@ -104,6 +111,12 @@ struct State {
     /// When a finished offer stops being told.
     over: Option<Instant>,
     answer: Option<bool>,
+    /// The question was answered: it is not asked again.
+    answered: bool,
+    /// Attempts at the request being served that failed before a pairing was
+    /// opened, which a registry's blip may cause, and when the next is due.
+    attempts: u8,
+    retry_at: Option<Instant>,
 }
 
 /// How a run ended.
@@ -112,7 +125,14 @@ enum Over {
     Failed(String),
     /// Another host has the pairing open: nothing was made here.
     Elsewhere,
+    /// It failed before a pairing was opened, for a reason that may pass.
+    Retry(String),
 }
+
+/// How long before a request is tried again after another host had the
+/// pairing, or this one failed before opening one; and how many tries.
+const RETRY_AFTER: Duration = Duration::from_secs(30);
+const TRIES: u8 = 3;
 
 impl Introductions {
     pub fn new(build: Build) -> Arc<Introductions> {
@@ -132,7 +152,7 @@ impl Introductions {
     pub fn deliver(self: &Arc<Self>, requests: &[DeliveredPairingRequest]) {
         let id = {
             let mut s = self.lock();
-            if s.busy {
+            if s.busy || s.retry_at.is_some_and(|at| Instant::now() < at) {
                 return;
             }
             let Some(r) = requests.iter().find(|r| !r.id.is_empty() && !s.handled.contains(&r.id)) else { return };
@@ -140,6 +160,7 @@ impl Introductions {
             s.offer = None;
             s.over = None;
             s.answer = None;
+            s.answered = false;
             r.id.clone()
         };
         let this = self.clone();
@@ -165,7 +186,7 @@ impl Introductions {
     /// is asked, or it is about another.
     pub fn answer(&self, pairing: &str, yes: bool) -> bool {
         let mut s = self.lock();
-        let asked = s.offer.as_ref().is_some_and(|o| o.stage == OfferStage::Confirm && o.pairing == pairing) && s.answer.is_none();
+        let asked = s.offer.as_ref().is_some_and(|o| o.stage == OfferStage::Confirm && o.pairing == pairing) && s.answer.is_none() && !s.answered;
         if asked {
             s.answer = Some(yes);
             self.changed.notify_all();
@@ -178,13 +199,27 @@ impl Introductions {
     }
 
     fn run(&self, id: &str) {
-        let over = self.drive();
+        // A panic is a failure, not a host that never opens another.
+        let over = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.drive())).unwrap_or_else(|_| Over::Failed("this machine could not answer: the pairing code panicked".into()));
         let mut s = self.lock();
         s.busy = false;
+        // Nothing was made, or not yet: the request is delivered again until
+        // a pairing opens for it or it lapses, after a pause.
+        let over = match over {
+            Over::Retry(why) => {
+                s.attempts += 1;
+                if s.attempts < TRIES { Over::Elsewhere } else { Over::Failed(why) }
+            }
+            other => other,
+        };
+        if matches!(over, Over::Elsewhere) {
+            s.retry_at = Some(Instant::now() + RETRY_AFTER);
+        } else {
+            s.attempts = 0;
+            s.retry_at = None;
+        }
         s.offer = match over {
-            // Nothing was made: the request is delivered again until a
-            // pairing opens for it or it lapses.
-            Over::Elsewhere => None,
+            Over::Elsewhere | Over::Retry(_) => None,
             Over::Added(name, os) => Some(PairingOffer { pairing: String::new(), code: String::new(), stage: OfferStage::Added, note: format!("Added '{name}' ({os})."), name, os }),
             Over::Failed(note) => Some(PairingOffer { pairing: String::new(), code: String::new(), stage: OfferStage::Failed, name: String::new(), os: String::new(), note }),
         };
@@ -203,7 +238,7 @@ impl Introductions {
         let failed = |why: String| Over::Failed(why);
         let i = match (self.build)() {
             Ok(i) => i,
-            Err((code, message)) => return failed(format!("this machine could not open a pairing: {message} ({code})")),
+            Err((code, message)) => return Over::Retry(format!("this machine could not open a pairing: {message} ({code})")),
         };
         // Only a listed device opens a pairing.
         if !i.chain.devices().iter().any(|d| d.id() == i.device && d.kind == Kind::Device) {
@@ -211,7 +246,7 @@ impl Introductions {
         }
         let user = match i.api.verify_key() {
             Ok(k) => k.user_id,
-            Err(e) => return failed(format!("this machine could not read your account: {}", words(&e))),
+            Err(e) => return Over::Retry(format!("this machine could not read your account: {}", words(&e))),
         };
         let a = match PairA::new(PeerKind::SamePersonDevice, user, i.device) {
             Ok(a) => a,
@@ -220,7 +255,7 @@ impl Introductions {
         let opened = match i.api.open_pairing() {
             Ok(p) => p,
             Err(e) if e.code() == "pairing_open" => return Over::Elsewhere,
-            Err(e) => return failed(format!("the pairing could not be opened: {}", words(&e))),
+            Err(e) => return Over::Retry(format!("the pairing could not be opened: {}", words(&e))),
         };
         self.set(PairingOffer { pairing: opened.id.clone(), code: a.code().to_string(), stage: OfferStage::Waiting, name: String::new(), os: String::new(), note: String::new() });
         // Up to the reply, anything that goes wrong ends the pairing on the
@@ -240,6 +275,12 @@ impl Introductions {
             let _ = i.api.end_pairing();
         }
         let posted = post_add(&i.api, &sealed.batch);
+        // Posted, so this machine's pin takes it up, as `devices add` does.
+        if posted.is_ok()
+            && let Some(Err(e)) = i.keep.as_ref().map(|k| k(&sealed.entries))
+        {
+            eprintln!("krowk: the device list could not be kept after adding a machine: {e}");
+        }
         let (name, os) = (sealed.name, sealed.os);
         match (acked, posted) {
             (Ok(_), Ok(())) => Over::Added(name, os),
@@ -260,6 +301,11 @@ impl Introductions {
         // nothing.
         let confirmed = await_confirm.receive_confirm(&confirmation).map_err(|_| "the new machine's confirmation did not check — the code was wrong, or someone else tried it; nothing was added".to_string())?;
         let new = confirmed.device().clone();
+        // A name or OS with a character the list refuses (a bidirectional
+        // override, an invisible one) is never put in front of the person.
+        if new.name.chars().chain(new.os.chars()).any(refused_in_name) {
+            return Err("the new machine's name or OS has characters that cannot be shown safely — nothing was added; on the new machine run krowk sync join --name <another name>".into());
+        }
         let (name, os) = (printable(&new.name), printable(&new.os));
         // Before the person is asked: a name that reads like a listed
         // device's is the new machine's to change.
@@ -276,7 +322,7 @@ impl Introductions {
         let bytes = pairing_payload::seal(&all, &i.keys, next.generation(), &wrapped, &i.signing.public());
         let (await_ack, reply) = confirmed.approve(&bytes).map_err(|_| ended(None))?;
         send_reply(&i.api, id, &reply).map_err(|e| ended(Some(e)))?;
-        Ok(Sealed { batch, await_ack, name, os })
+        Ok(Sealed { batch, entries: all, await_ack, name, os })
     }
 
     /// The question, asked once: told to clients, and answered by one of
@@ -292,6 +338,7 @@ impl Introductions {
         loop {
             let mut s = self.lock();
             if let Some(yes) = s.answer.take() {
+                s.answered = true;
                 return if yes { Ok(()) } else { Err("not added — the new machine was told, and nothing reached your device list".into()) };
             }
             if Instant::now() > deadline {
@@ -336,6 +383,8 @@ impl Introductions {
 /// A's side once the reply is out.
 struct Sealed {
     batch: krowk_client::device_chain::Batch,
+    /// The whole list with the new entry on its end.
+    entries: Vec<SignedEntry>,
     await_ack: krowk_client::pairing::AwaitAck,
     name: String,
     os: String,

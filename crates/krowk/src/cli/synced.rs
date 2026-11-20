@@ -279,8 +279,6 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
             .collect();
         return ctx.emit(&json!({"machines": rows, "repository": here.as_ref().map(|(origin, _)| origin), "tailscale": status.is_some(), "unopened": unopened}).to_string());
     }
-    // A new machine that signed in, and the code to type on it.
-    super::pairing::show_offer(ctx);
     let now = jiff::Timestamp::now();
     for (h, online) in hosts.iter().zip(&online) {
         let reach = match (&h.tailnet, &h.peer) {
@@ -315,6 +313,9 @@ pub(super) fn machines(ctx: &mut Ctx) -> Result<(), Error> {
     if hosts.is_empty() {
         let _ = writeln!(ctx.io.stdout, "no machine of yours hosts a synced session or announces itself yet — `krowk sync host <session>` on one hosts it");
     }
+    // A new machine that signed in, and the code to type on it: last, as it
+    // waits on a person.
+    super::pairing::show_offer(ctx);
     Ok(())
 }
 
