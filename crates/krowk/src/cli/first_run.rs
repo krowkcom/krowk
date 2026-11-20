@@ -178,19 +178,21 @@ pub(super) fn steps_due(ctx: &Ctx) -> bool {
 /// stays while it is due. Whether that reminder is still due.
 pub(super) fn after_model_step(ctx: &mut Ctx) -> bool {
     let mut state = load(ctx);
+    // Marked once answered, not before: Ctrl-C at a card leaves it to be
+    // asked next time.
     if !state.always_on_asked {
+        always_on(ctx);
         state.always_on_asked = true;
         save(ctx, &state);
-        always_on(ctx);
     }
     // Only a machine that is on a device list has a kit to offer on it: one
     // using krowk locally is offered it the day it signs in, by the reminder.
     if !state.kit_offered && recovery::reminder_due_here(ctx) {
-        state.kit_offered = true;
-        save(ctx, &state);
         if let Err(e) = recovery::offer_kit(ctx) {
             ctx.warn(&format!("no recovery kit was made: {} — `krowk machines recovery` makes one", e.fix()));
         }
+        state.kit_offered = true;
+        save(ctx, &state);
     }
     recovery::reminder_due_here(ctx)
 }

@@ -344,13 +344,18 @@ fn pick(ctx: &mut Ctx) -> Result<String, Error> {
 /// terminal given up to them: a context of their own, on the real streams,
 /// since the command's own is borrowed for the whole run.
 fn after_model_step(ctx: &Ctx) -> krowk_tui::AfterModelStep {
-    fn own<R>(f: &super::flags::Flags, format: Format, body: impl FnOnce(&mut Ctx) -> R) -> R {
+    fn own<R>(f: &super::flags::Flags, format: Format, ttys: (bool, bool), body: impl FnOnce(&mut Ctx) -> R) -> R {
         let (mut out, mut err) = (std::io::stdout(), std::io::stderr());
         let env = |k: &str| std::env::var(k).unwrap_or_default();
-        let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: true, err_tty: true, stdin_tty: true };
+        let mut io = Io { stdout: &mut out, stderr: &mut err, env: &env, tty: true, err_tty: ttys.0, stdin_tty: ttys.1 };
         body(&mut Ctx { io: &mut io, f: f.clone(), format, colour: true, filter: None })
     }
-    let (f, format) = (ctx.f.clone(), ctx.format);
-    let due = (f.clone(), format);
-    krowk_tui::AfterModelStep { due: Box::new(move || own(&due.0, due.1, |ctx| super::first_run::steps_due(ctx))), run: Box::new(move || own(&f, format, super::first_run::after_model_step)) }
+    let (f, format, ttys) = (ctx.f.clone(), ctx.format, (ctx.io.err_tty, ctx.io.stdin_tty));
+    let due = f.clone();
+    // The questions and the kit's words go to stderr: with it not a terminal
+    // nobody would see them, so none is asked.
+    krowk_tui::AfterModelStep {
+        due: Box::new(move || ttys.0 && ttys.1 && own(&due, format, ttys, |ctx| super::first_run::steps_due(ctx))),
+        run: Box::new(move || own(&f, format, ttys, super::first_run::after_model_step)),
+    }
 }

@@ -87,7 +87,9 @@ fn hand_over_kit(ctx: &mut Ctx, kit: &RecoveryKit, skippable: bool, offered: boo
     show_kit(ctx, &words);
     drop(words);
     if offered {
-        let later = chain::ask_key(ctx, "Saved the words?", &[("Enter", "saved"), ("s", "later")]).trim().eq_ignore_ascii_case("s");
+        // Only Enter says they are saved: any other answer, Escape included,
+        // puts the kit off rather than putting words nobody wrote down on the list.
+        let later = !chain::ask_key(ctx, "Saved the words?", &[("Enter", "saved"), ("s", "later")]).trim().is_empty();
         if later {
             let _ = writeln!(ctx.io.stderr, "Later: `krowk machines recovery` makes one when you want it.");
         }
