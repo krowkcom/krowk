@@ -89,7 +89,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     }
     #[cfg(unix)]
     if ctx.f.daemon && ctx.f.trust {
-        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (run krowk there on a terminal once), or drop --daemon"));
+        return Err(fail("bad_flag", "--trust holds for one run in this process, and --daemon runs the turn in the host daemon — trust the repository for good (`krowk trust`), or drop --daemon"));
     }
     if ctx.f.daemon && (ctx.f.own_worktree || resumed.is_some()) {
         return Err(fail("bad_flag", "a session in a worktree of its own runs in this process, which holds the worktree and finishes it when the run ends, and --daemon runs the turn in the host daemon — drop --daemon"));
@@ -119,7 +119,7 @@ pub(super) fn run(ctx: &mut Ctx, positionals: &[String]) -> Result<(), Error> {
     // a backend's refusal says them, never just missing.
     let repo = trust::root(&runs_in);
     if runs_native && !trusted && krowk_harness::mcp::project_has_servers(&repo) {
-        ctx.warn(&format!("{}/.mcp.json names MCP servers, which krowk starts only in a trusted repository — run krowk there on a terminal once and answer its question, or pass --trust", crate::home_relative(&repo)));
+        ctx.warn(&format!("{}/.mcp.json names MCP servers, which krowk starts only in a trusted repository — run `krowk trust` there, or pass --trust", crate::home_relative(&repo)));
     }
     // Everything that can still refuse the run is asked first: a worktree
     // made before a refusal would be left behind.
@@ -541,7 +541,7 @@ fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run krowk -p from a repository of its own.")));
         }
         if !ask {
-            return Err(trust::untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run krowk -p there once on a terminal and answer its prompt."));
+            return Err(trust::untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
         }
         if ask_trust(&store, root, vendor) { Ok(()) } else { Err(trust::untrusted(root, "Nothing was run.")) }
     })

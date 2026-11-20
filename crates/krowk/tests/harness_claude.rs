@@ -257,8 +257,9 @@ fn r_back_6_headless_refuses_an_untrusted_repository_before_claude_is_spawned() 
     assert!(!b.root.join("home/.krowk/trusted.json").exists(), "--trust is not remembered");
     // A repository trusted before (a yes at the prompt) needs no flag, and
     // covers its subdirectories.
-    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/trusted.json"), serde_json::json!({"directories": [b.root.join("repo")]}).to_string()).unwrap();
+    assert!(err.contains("`krowk trust`"), "the refusal names the fix: {err}");
+    let granted = b.json(&["trust", "--json"], &[]);
+    assert_eq!(granted["data"]["trusted"], true, "{granted}");
     std::fs::create_dir_all(b.root.join("repo/src")).unwrap();
     let out = b.command(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]).current_dir(b.root.join("repo/src")).output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));

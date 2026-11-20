@@ -666,7 +666,7 @@ impl Gate {
         // No allow rule gets past what only unhinged runs.
         let rule = remember.first().filter(|_| !past_bypass).map(|r| format!("an allow rule such as `{r}` in `permissions.allow` of .claude/settings.json or krowk's config.json, or ")).unwrap_or_default();
         let hint = match untrusted.filter(|_| !past_bypass) {
-            Some(r) => format!(" ({} allows it with `{}`, but a repository's own allow rules apply only once it is trusted — run krowk there once on a terminal and answer its trust question, or pass --trust.)", r.source, r.text),
+            Some(r) => format!(" ({} allows it with `{}`, but a repository's own allow rules apply only once it is trusted — run `krowk trust` in that repository, or pass --trust.)", r.source, r.text),
             None => String::new(),
         };
         format!("{what} needs approval — {reason} — and nobody is here to give it: this session cannot ask. It is allowed by {rule}rerunning with `--permission-mode {mode}`.{hint}")

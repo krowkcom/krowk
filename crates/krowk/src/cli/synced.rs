@@ -615,7 +615,7 @@ fn ready_here(ctx: &Ctx, session: &str, events: &[serde_json::Value], cwd: &std:
     let store = trust::Store::new(Some(super::providers::krowk_dir()?.join(trust::FILE)), Some(ctx.env("HOME")).filter(|h| !h.is_empty()).map(Into::into));
     let root = trust::root(cwd);
     if !store.trusts(&root) {
-        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run krowk there once on a terminal and trust it, then take it again", root.display(), inst.vendor)));
+        return Err(fail("untrusted_directory", format!("{} is not a repository you have trusted, and the session runs on {}, which runs what a repository configures — {stays}; run `krowk trust` there, then take it again", root.display(), inst.vendor)));
     }
     Ok(b.home.clone())
 }
@@ -785,7 +785,7 @@ fn startable(name: &str, announced: Option<&krowk_harness::sync::hosts::Announce
         _ => return Err(offline(name, &announced.map_or_else(|| "not announced".to_string(), |a| format!("last seen {}", ago(&a.updated_at, now))))),
     };
     if !a.directories.iter().any(|d| d == cwd) {
-        let offers = if a.directories.is_empty() { "none yet — run krowk in a repository there once and trust it".to_string() } else { a.directories.join(", ") };
+        let offers = if a.directories.is_empty() { "none yet — run `krowk trust` in a repository there".to_string() } else { a.directories.join(", ") };
         return Err(fail("directory_not_offered", super::sync::printable(&format!("{shown} does not offer {cwd}; it offers: {offers}"))));
     }
     let model = model.trim();

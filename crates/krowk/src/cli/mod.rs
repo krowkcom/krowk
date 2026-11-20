@@ -43,6 +43,8 @@ mod reseal;
 mod sync;
 #[cfg(all(feature = "harness", unix))]
 mod synced;
+#[cfg(feature = "harness")]
+mod trust;
 mod upgrade;
 mod workspace;
 #[cfg(feature = "harness")]
@@ -347,6 +349,8 @@ fn dispatch(ctx: &mut Ctx, p: &[String], typed: &[String]) -> Result<(), Error> 
         ["providers", "remove", ..] => providers::remove(ctx, rest(2)),
         #[cfg(feature = "harness")]
         ["providers", "rename", ..] => providers::rename(ctx, rest(2)),
+        #[cfg(feature = "harness")]
+        ["trust", ..] => trust::run(ctx, rest(1)),
         #[cfg(feature = "harness")]
         ["mcp", "add", ..] => mcp::add(ctx, rest(2)),
         #[cfg(feature = "harness")]
@@ -698,6 +702,12 @@ fn reject_misplaced_sessions_flags(f: &Flags, p: &[String]) -> Result<(), Error>
         for name in ["env", "header"] {
             if f.given.contains(name) && !mcp_add {
                 return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk mcp add`")));
+            }
+        }
+        let trusting = words.first() == Some(&"trust");
+        for name in ["list", "revoke"] {
+            if f.given.contains(name) && !trusting {
+                return Err(fail("bad_flag", format!("`--{name}` is only a flag of `krowk trust`")));
             }
         }
         let owners = [("device", "`krowk providers add` (`krowk connect` takes --method device)", add), ("method", "`krowk connect`", connect), ("default", "`krowk connect`", connect), ("key-stdin", "`krowk connect`", connect), ("key-ref", "`krowk connect`", connect), ("remove", "`krowk disconnect`", words.first() == Some(&"disconnect")), ("sign-out-vendor", "`krowk disconnect`", words.first() == Some(&"disconnect"))];

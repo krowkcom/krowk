@@ -11,6 +11,18 @@ the versions are the `v*` tags a release is cut from. Entries land under
 
 ### Added
 
+- **`krowk trust` grants, revokes and lists repo trust.** `krowk trust
+  [<path>]` trusts the repository `<path>` (default: the current directory)
+  is in, so `krowk -p`, the host and `sync take` may run its hooks and MCP
+  servers; a krowk worktree is trusted as its main repository.
+  `krowk trust --revoke [<path>]` takes the entry back, with the MCP servers
+  it was trusted with, and `krowk trust --list` prints every trusted
+  directory. All three work without a terminal, and with `--json` print
+  `{"directories": [...]}` or `{"directory": ..., "trusted": ...}`. `/` and
+  your home directory are still refused. Every refusal for an untrusted
+  repository now names `krowk trust` as the fix instead of telling you to
+  run krowk there on a terminal.
+
 - **`krowk config set defaultMode` and `rollover`, and `krowk config get`.**
   `krowk config set defaultMode default|unhinged` chooses the permission
   mode new sessions start in, and `krowk config set rollover auto|offer|off`

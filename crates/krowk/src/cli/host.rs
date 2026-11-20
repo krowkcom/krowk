@@ -65,7 +65,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
         if let Some(why) = store.refuses(root) {
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Run `krowk -p --trust` there, in this process rather than the daemon, for one run.")));
         }
-        Err(trust::untrusted(root, "The host daemon asks nobody: run krowk there once on a terminal and answer its trust prompt, then send the prompt again."))
+        Err(trust::untrusted(root, "The host daemon asks nobody: run `krowk trust` in that repository, then send the prompt again."))
     });
     // A session another device starts here runs in the mode `krowk -p`
     // would with no `--permission-mode` (R-HOST-4): the most specific

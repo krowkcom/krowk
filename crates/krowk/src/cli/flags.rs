@@ -78,6 +78,11 @@ pub struct Flags {
     /// `-p`: run the turn in the host daemon.
     #[cfg(feature = "harness")]
     pub daemon: bool,
+    /// `trust`: list every trusted directory, or forget one.
+    #[cfg(feature = "harness")]
+    pub list: bool,
+    #[cfg(feature = "harness")]
+    pub revoke: bool,
     /// `host stop`: even with clients connected.
     #[cfg(feature = "harness")]
     pub force: bool,
@@ -388,6 +393,10 @@ impl Flags {
                     "trust" => &mut self.trust,
                     #[cfg(feature = "harness")]
                     "daemon" => &mut self.daemon,
+                    #[cfg(feature = "harness")]
+                    "list" => &mut self.list,
+                    #[cfg(feature = "harness")]
+                    "revoke" => &mut self.revoke,
                     #[cfg(feature = "harness")]
                     "force" => &mut self.force,
                     #[cfg(feature = "harness")]

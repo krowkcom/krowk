@@ -4872,7 +4872,7 @@ async fn r_host_4_a_directory_a_did_not_offer_is_refused_and_nothing_starts() {
     send_command(&w, &b, &a, &id, &start_json(&elsewhere, &mock_model(&w), "hello"));
     let HostAnswer::Refused { code, message } = answer_of(&w, &b, &a, &id, Instant::now() + Duration::from_secs(20)).await else { panic!("started") };
     assert_eq!(code, "directory_not_offered");
-    assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: on start-host-a, run krowk there once and trust it")) && message.ends_with(&offered_dir(&w)), "{message}");
+    assert!(message.starts_with(&format!("start-host-a does not offer {elsewhere}: run `krowk trust {elsewhere}` on start-host-a")) && message.ends_with(&offered_dir(&w)), "{message}");
     assert!(daemon_sessions(&w).await.is_empty(), "nothing started");
     auto.stop(Duration::from_secs(10)).await;
 }
