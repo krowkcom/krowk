@@ -1444,6 +1444,7 @@ mod tests {
         let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
         assert_eq!((out.machine.as_str(), out.summary.as_str(), out.applied.as_slice(), out.kept.as_deref()), ("b", "added fixed.rs", &["fixed.rs".to_string()][..], None));
         assert_eq!((out.usage.output_tokens, out.denied), (7, vec!["bash: rm -rf".to_string()]));
+        assert_eq!(out.why, "this machine is busy (4 of 4 build slots in use)", "the outcome says why b");
         assert_eq!(f.landed.lock().unwrap().as_slice(), [format!("{CHILD} -> /work/app")]);
         let sent = f.sent.lock().unwrap();
         let run = &sent[0].1;
@@ -1463,7 +1464,8 @@ mod tests {
         let Ok(Progress::Running { machine, why, .. }) = p.placed(&h, Duration::from_secs(5)) else { panic!("not running") };
         assert_eq!(machine, "c");
         assert!(why.contains("b would not take it"), "{why}");
-        assert!(matches!(p.wait(&h, Duration::from_secs(5)), Ok(Progress::Done(_))));
+        let Ok(Progress::Done(out)) = p.wait(&h, Duration::from_secs(5)) else { panic!("not done") };
+        assert!(out.why.contains("b would not take it"), "the outcome says why c: {}", out.why);
         let asked: Vec<String> = f.sent.lock().unwrap().iter().map(|(n, _)| n.clone()).collect();
         assert_eq!(asked, ["b", "c"]);
     }

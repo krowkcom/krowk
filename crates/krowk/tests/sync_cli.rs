@@ -1783,14 +1783,14 @@ fn alloc_10_a_target_that_drops_mid_task_fails_naming_it() {
     let id = started["task_id"].as_str().unwrap().to_string();
     // Mid-task: once A has started it, not while it is still being placed
     // (a machine gone before it answers is one that did not take it).
-    let started = Instant::now();
+    let since = Instant::now();
     loop {
         let (said, _, _) = mcp.call("krowk_collect", serde_json::json!({"task_id": id, "wait_seconds": 2}));
         assert!(said.contains("still running"), "{said}");
         if said.contains("running on a") {
             break;
         }
-        assert!(started.elapsed() < Duration::from_secs(60), "never started on A: {said}");
+        assert!(since.elapsed() < Duration::from_secs(60), "never started on A: {said}");
     }
     drop(serve);
     let _ = a.command(&["host", "stop", "--force"]).stdout(Stdio::null()).stderr(Stdio::null()).status();

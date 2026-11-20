@@ -767,8 +767,6 @@ mod delegation {
     const WAIT: u64 = 300;
     const WAIT_MOST: u64 = 600;
 
-    /// Why each started task was placed where it was, as it was seen
-    /// while the task was running, for the answer that ends it.
     #[derive(Deserialize, Default)]
     #[serde(default)]
     struct DelegateArgs {
