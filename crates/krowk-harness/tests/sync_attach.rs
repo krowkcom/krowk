@@ -848,7 +848,7 @@ fn viewer_proxy(to: SocketAddr, seen: Arc<Mutex<Vec<u8>>>, mode: Arc<AtomicU8>, 
                             if m == DROP_ALL {
                                 continue;
                             }
-                            if batch && m == DROP_BATCHES && drop_left.fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
+                            if batch && m == DROP_BATCHES && drop_left.try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1)).is_ok() {
                                 continue;
                             }
                             if batch {
