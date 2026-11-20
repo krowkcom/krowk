@@ -632,7 +632,7 @@ fn r_lag_4_r_lag_10_a_slow_websocket_client_is_caught_up_from_its_cursor_in_boun
     daemon.join().unwrap().unwrap();
 }
 
-/// The same bound on the unix socket, which the TUI is on: a TUI suspended
+/// The same bound on the unix socket, which an interactive client is on: an interactive client suspended
 /// with ^Z while it follows a long turn costs the daemon the cap, not the
 /// turn (R-LAG-4, R-LAG-10).
 #[test]
@@ -1012,7 +1012,7 @@ fn r_lag_9_a_peer_that_answers_no_heartbeat_is_let_go() {
     daemon.join().unwrap().unwrap();
 }
 
-/// A client of the unix socket reading and writing raw frames, as a TUI's
+/// A client of the unix socket reading and writing raw frames, as an interactive client's
 /// link does, with the `seq`s and cursors the client library hides.
 struct Raw {
     w: std::os::unix::net::UnixStream,

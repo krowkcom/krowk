@@ -851,7 +851,7 @@ pub enum LogBody {
         call_id: String,
         #[schemars(regex(pattern = UUID7_PATTERN))]
         subagent_session_id: String,
-        /// The few words the model gave it, which the TUI shows.
+        /// The few words the model gave it, which an interactive client shows.
         description: String,
         /// The agent definition it runs, when any.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1226,7 +1226,7 @@ pub enum ClientFrame {
         /// The client's own version, for the daemon's log.
         #[serde(default, skip_serializing_if = "String::is_empty")]
         krowk_version: String,
-        /// Whether the client answers `approval.requested` (the TUI). A turn
+        /// Whether the client answers `approval.requested` (an interactive client). A turn
         /// it runs asks it, and a request left with no such client
         /// following the session is denied. One that does not (`krowk -p`)
         /// runs its turns as the in-process `-p` does: what would be asked
@@ -1311,7 +1311,7 @@ pub enum ClientFrame {
     McpSignOut { id: u64, session_id: String, server: String },
     /// Reads the instances again — config.json and the credentials file —
     /// for every host, after a client connected or signed one out
-    /// (`/connect`): `changed` is that instance, whose backend processes are
+    /// (`krowk connect`): `changed` is that instance, whose backend processes are
     /// not reused; `renamedFrom` and `renamedTo` a rename, whose are.
     /// Answered by `done` once applied; a command sent after it runs on
     /// what it read, answered or not.
@@ -1327,15 +1327,15 @@ pub enum ClientFrame {
     /// Asks the daemon to exit — `krowk host stop`, or `krowk host enable`
     /// handing over to the service. Refused with `host_busy` while a turn
     /// runs, and with `host_in_use` while another client is connected
-    /// unless `force` (a TUI connected to it reconnects to the next one);
+    /// unless `force` (an interactive client connected to it reconnects to the next one);
     /// answered by `done` just before it goes.
     Stop {
         id: u64,
         #[serde(default)]
         force: bool,
     },
-    /// Stops following a session: the client moved to another (`/new`,
-    /// `/sessions`). Its frames no longer come, and a request only this
+    /// Stops following a session: the client moved to another
+    /// session. Its frames no longer come, and a request only this
     /// client could have answered is denied.
     Leave { session_id: String },
 }

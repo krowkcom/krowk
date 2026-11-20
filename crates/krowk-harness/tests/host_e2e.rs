@@ -455,7 +455,7 @@ fn r_proto_1_steering_an_interrupted_turn_never_read_comes_back_on_its_result() 
 }
 
 /// R-CRED-1: a stored key's `!command` runs off the host's runtime thread.
-/// The TUI draws and reads keys on a single-threaded runtime; a turn whose
+/// An interactive client draws and reads keys on a single-threaded runtime; a turn whose
 /// key comes from a slow command (a password manager asking gpg-agent) must
 /// not stop it. Here a ticker on the same current-thread runtime keeps
 /// ticking through a turn whose command takes 1.5 s.

@@ -1,6 +1,6 @@
 //! What the daemon has for one client and has not handed to its transport
 //! yet: one queue per session it follows, bounded, so a client that stops
-//! reading — a TUI suspended with ^Z, a phone in a tunnel — costs the
+//! reading — a client suspended with ^Z, a device in a tunnel — costs the
 //! daemon a fixed amount, never a buffer that grows with the session
 //! (R-LAG-4, R-LAG-10).
 //!

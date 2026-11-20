@@ -13,7 +13,7 @@
 //! display frame is handed on as one `Vec<Update>`, never a message a batch.
 //!
 //! The viewer itself is `krowk_client::sync::viewer::ViewerCore`, the one
-//! the phone links too (R-CLIENT-1): this file is its tokio driver. The
+//! every client links (R-CLIENT-1): this file is its tokio driver. The
 //! sockets, the registry calls, the clock and the race for a direct path
 //! (with mDNS) are the harness's; what is shown, sent and when is the core's.
 
@@ -67,8 +67,7 @@ pub struct Options {
 
 /// How often an attached viewer reads this machine's addresses: a set
 /// that changed (another Wi-Fi, a VPN up or down) races for the direct
-/// path again at once, its backoff started over (R-NET-2), as the phone
-/// does on a network change.
+/// path again at once, its backoff started over (R-NET-2).
 pub const ADDR_CHECK: Duration = Duration::from_secs(2);
 
 /// The least time between two races an address change starts: a network

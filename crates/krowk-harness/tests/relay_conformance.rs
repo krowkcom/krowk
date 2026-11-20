@@ -1236,7 +1236,7 @@ async fn r_relay_1_a_join_needs_a_live_ticket_the_registry_signed_for_it() {
 /// R-RELAY-1: a flood of upgrades cannot keep a channel's devices off it.
 /// Ten addresses at ten upgrades a second each — without a ticket, with a
 /// forged one, and with one valid ticket replayed — while the lease holder
-/// and a viewer take 600 and 150 ms to answer their challenges, as a phone
+/// and a viewer take 600 and 150 ms to answer their challenges, as a slow device
 /// can: both join. A stranger is refused at the upgrade and takes no room,
 /// and a replayed ticket crowds out only the device it names.
 #[tokio::test]

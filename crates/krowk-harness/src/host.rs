@@ -113,8 +113,7 @@ pub struct Host {
 pub(crate) struct Shared {
     pub(crate) cfg: HostConfig,
     /// The instances, taken from `cfg.registry` (left empty) and replaced by
-    /// `set_registry`: a connection made while the host runs (the TUI's
-    /// `/connect`) is a turn's to use at once.
+    /// `set_registry`: a connection made while the host runs (`krowk connect`) is a turn's to use at once.
     instances: std::sync::RwLock<Instances>,
     /// Each session with a turn running — a subagent's too: its cancel
     /// switch and the queue its steering waits in.
@@ -419,7 +418,7 @@ struct Backend {
 }
 
 /// A backend process kept this long without a turn is let go: a long-lived
-/// host (the daemon, the TUI) holds many sessions, and an idle `claude` or
+/// host (the daemon, an interactive client) holds many sessions, and an idle `claude` or
 /// `codex app-server` is a few hundred megabytes. The next turn starts it
 /// again on the vendor's resume.
 pub const BACKEND_IDLE: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -470,7 +469,7 @@ impl Host {
     /// The frames sent while no turn of their session runs — a backend's
     /// agents (`backend.agents`), and a turn it began by itself
     /// (`turn.unprompted`), which `continue` runs. A client that stays
-    /// open between turns, as the TUI does, subscribes once.
+    /// open between turns, as an interactive client does, subscribes once.
     pub fn watch(&self) -> broadcast::Receiver<StreamLine> {
         self.shared.watch.subscribe()
     }
@@ -687,7 +686,7 @@ impl Host {
 
     /// Where a bare model id — or, with none, the default — runs here
     /// (`readiness::route`), for a client choosing one before it asks for a
-    /// turn or a switch (the TUI's `/model sonnet`). `current` is the
+    /// turn or a switch (`switchModel`). `current` is the
     /// session's model, whose instance a bare id stays on when it can;
     /// `cwd` the session's working directory, where a vendor is asked once
     /// its repository is trusted.
@@ -2138,7 +2137,7 @@ pub fn clock(ms: i64) -> String {
 }
 
 /// A stored key's command, run off the runtime's thread when this process
-/// has no key from it yet: it may take its whole timeout, and the TUI's
+/// has no key from it yet: it may take its whole timeout, and a client's
 /// drawing and keys run on that one thread. After it, `engine_for` finds
 /// the key kept (`keys::run`) and runs nothing; a failure is the turn's.
 async fn key_off_thread(instance: &Resolved) -> Result<(), EngineError> {

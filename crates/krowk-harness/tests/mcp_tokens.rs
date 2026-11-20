@@ -12,7 +12,7 @@ use mock::{Mock, Reply, Seen};
 use serde_json::{json, Value};
 use std::sync::{Arc, Mutex};
 
-const SIGN_IN: &str = "mobbin needs sign-in: run `krowk mcp login mobbin` or open /mcp";
+const SIGN_IN: &str = "mobbin needs sign-in: run `krowk mcp login mobbin`";
 
 struct Fake {
     mcp: Mock,

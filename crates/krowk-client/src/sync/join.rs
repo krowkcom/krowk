@@ -2,7 +2,7 @@
 //! Joining), with no IO and no clock: where to dial, and a state machine
 //! that is handed each binary WebSocket message received and answers what
 //! to send. Every client links it (R-CLIENT-1): the harness drives it over
-//! tokio-tungstenite, the phone over Network.framework, and neither
+//! tokio-tungstenite, and no caller
 //! re-derives the signature's layout. Opening the socket, TLS and the
 //! 10-second waits are the caller's.
 //!

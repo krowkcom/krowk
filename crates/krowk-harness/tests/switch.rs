@@ -1263,7 +1263,7 @@ fn readiness_a_vendors_signed_in_is_believed_for_a_minute_and_a_signed_out_asked
         let (tx, _rx) = mpsc::channel(16);
         rt.block_on(host.execute(Command::SwitchModel { session_id: Some(id.clone()), model: ModelRef { instance: instance.into(), model: "haiku".into() } }, tx))
     };
-    // Signed in: asked once, then believed — a long-lived host (the TUI)
+    // Signed in: asked once, then believed — a long-lived host (an interactive client)
     // does not spawn Claude Code's status for every switch.
     switch("claude:in").unwrap();
     switch(&Eng::Anthropic.model().instance).unwrap();
@@ -1313,7 +1313,7 @@ fn a_bare_model_stays_on_the_sessions_account_goes_to_the_one_ready_instance_and
     let bare = |m: &str| Asked::Bare(m.into());
     let repo = w.root.join("repo");
     let route = |m: Option<&Asked>, current: Option<&ModelRef>| rt.block_on(host.route_model(m, current, &repo));
-    // The TUI's `/model haiku` on a claude:work session: that account.
+    // A switch to `haiku` on a claude:work session: that account.
     let on_work = ModelRef { instance: "claude:work".into(), model: "sonnet".into() };
     assert_eq!(route(Some(&bare("haiku")), Some(&on_work)).unwrap(), ModelRef { instance: "claude:work".into(), model: "haiku".into() });
     // With no session, a key and a subscription both serve it: refused,

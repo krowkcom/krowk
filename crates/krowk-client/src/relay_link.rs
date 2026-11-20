@@ -2,7 +2,7 @@
 //! the relay, crypto.md → Session content): the host's end and a viewer's
 //! end of one channel, as state machines over the envelopes the relay
 //! carries. They hold the session key and nothing else of the transport,
-//! so the desktop app and the phones link the same rules the terminal does
+//! so any client links the same rules the terminal does
 //! (R-CLIENT-1).
 //!
 //! Three chains per viewer, each an epoch and a strictly increasing counter:

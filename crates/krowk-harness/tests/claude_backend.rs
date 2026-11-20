@@ -103,7 +103,7 @@ impl Home {
         Host::new(self.config(instances, gate, publisher))
     }
 
-    /// A host whose clients answer approval requests, as the TUI's does.
+    /// A host whose clients answer approval requests, as a client's does.
     fn host_answering(&self, instances: Vec<(&str, InstanceKind)>) -> Host {
         let mut cfg = self.config(instances, trust::allow_all(), None);
         cfg.permissions.approvals = true;
@@ -835,11 +835,11 @@ fn within<F: std::future::Future>(f: F) -> F::Output {
     rt().block_on(async { tokio::time::timeout(std::time::Duration::from_secs(30), f).await.expect("finished within 30 s") })
 }
 
-/// Its instance changed while a session's process is up — the TUI's
-/// `/disconnect` or `/connect` of it — the process is not taken at its
+/// Its instance changed while a session's process is up — a client's
+/// `krowk disconnect` or `krowk connect` of it — the process is not taken at its
 /// word: the next turn asks the vendor again, and a sign-out since is
 /// refused rather than run on the old, still signed-in process. Instances
-/// read again with nothing changed (a cancelled `/connect`), or another
+/// read again with nothing changed (a cancelled `krowk connect`), or another
 /// instance changed, keep it.
 #[test]
 fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
@@ -880,7 +880,7 @@ fn a_session_process_is_not_reused_once_its_instance_is_replaced() {
 }
 
 /// Renamed while a session's process is up — `krowk providers rename
-/// claude:work claude:personal`, or from `/connect` — it is the same account: the process goes on under
+/// claude:work claude:personal`, or from `krowk connect` — it is the same account: the process goes on under
 /// the new name, and a turn naming the old one runs there too.
 #[test]
 fn a_renamed_instance_keeps_its_session_process() {

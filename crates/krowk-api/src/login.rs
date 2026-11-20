@@ -1,6 +1,6 @@
 //! A browser login's poll, as a state machine with no IO and no clock of its
 //! own: the caller sleeps, reads and passes the time in. The CLI drives it
-//! with a blocking client and `std::thread::sleep`; a phone drives the same
+//! with a blocking client and `std::thread::sleep`; any other caller drives the same
 //! rules with whatever it sleeps and reads with (R-CLIENT-1).
 
 use crate::client::retry_after_for;

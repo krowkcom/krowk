@@ -16,7 +16,7 @@
 # form, and dist/<triple>/ holding the loose binaries.
 #
 # Two builds of krowk per target (R-PKG-3). The full build (`--features
-# harness`: the agent, its TUI, the session store) is the one above, under the
+# harness`: the agent, the session store) is the one above, under the
 # name every earlier release used, so links, npm and old upgraders keep
 # getting what a person wants. The lean build (no features: the agent-container
 # build, R-PKG-2) is dist/krowk-lean_<version>_<goos>_<goarch>.tar.gz beside

@@ -101,7 +101,7 @@ impl Home {
         Host::new(self.config(instances, gate))
     }
 
-    /// A host whose clients answer approval requests, as the TUI's does.
+    /// A host whose clients answer approval requests, as a client's does.
     fn host_answering(&self, instances: Vec<(&str, InstanceKind)>) -> Host {
         let mut cfg = self.config(instances, trust::allow_all());
         cfg.permissions.approvals = true;

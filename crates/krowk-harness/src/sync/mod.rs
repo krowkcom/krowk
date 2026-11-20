@@ -308,8 +308,7 @@ pub fn run_attach(o: viewer::Options, out: &mut dyn std::io::Write) -> Result<()
                 l = lines.recv(), if !owed.eof => match l {
                     Some(text) if !text.trim().is_empty() => match crate::pasted::dropped(&text) {
                         // A line of only dropped image files is a prompt with
-                        // them: each goes ahead as its own `put_image`, as the
-                        // TUI's do.
+                        // them: each goes ahead as its own `put_image`.
                         Some(paths) => match with_images(&session, &paths) {
                             Ok((first, rest, prompt)) => {
                                 offered.sending(&prompt);
@@ -501,9 +500,9 @@ fn jsonl(u: viewer::Update) -> Result<String, String> {
             // Said once per request, beside the line a script reads: what
             // answers it, typed here.
             match &l {
-                // Questions are answered in the TUI, which can pick and type.
+                // A question needs a picked answer, which this stream cannot give.
                 crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) if !r.questions.is_empty() => {
-                    eprintln!("krowk: {} asks a question — answer it in krowk's TUI, or type `/deny {id}` to decline", r.tool, id = r.request_id);
+                    eprintln!("krowk: {} asks a question, which a stream cannot answer — type `/deny {id}` to decline", r.tool, id = r.request_id);
                 }
                 crate::protocol::StreamLine::Live(crate::protocol::LiveEvent::ApprovalRequested(r)) => {
                     eprintln!("krowk: {} wants approval — type `/approve {id}`, `/allow-session {id}` or `/deny {id}`", r.tool, id = r.request_id);

@@ -218,7 +218,7 @@ pub fn run(args: &[String], io: &mut Io) -> i32 {
     } else {
         (io, f, filter)
     };
-    // The flags that once opened the TUI mean nothing without a command
+    // The flags that once opened an interactive client mean nothing without a command
     // or `-p`: refused with the way to the same thing, on a terminal or not.
     #[cfg(feature = "harness")]
     if positionals.is_empty() && !f.help {

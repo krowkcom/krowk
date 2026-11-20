@@ -34,7 +34,7 @@
 //! Vendor checks spawn a process, so `check_all` runs them in parallel,
 //! each bounded by one deadline (`VENDOR_TIMEOUT`) and killed with its
 //! whole process group when it passes (unix; on Windows only the process
-//! krowk started, see `probing`), and a long-lived host (the TUI) does
+//! krowk started, see `probing`), and a long-lived host (an interactive client) does
 //! not re-ask for every switch: a vendor's "signed in" is kept for
 //! `CACHE_FOR`. Only "signed in" is kept. A person who is told to sign in
 //! does so in another terminal and tries again at once, and a remembered
@@ -290,7 +290,7 @@ pub fn check_all(instances: &[&Resolved], credentials: &Path, probe: &Probe) -> 
 
 /// `check`, off an async runtime's thread: a vendor check blocks on a
 /// process for up to `VENDOR_TIMEOUT`, and the host's runtime has one
-/// thread that the TUI's drawing and every other session also run on.
+/// thread that a client's drawing and every other session also run on.
 pub async fn check_async(inst: &Resolved, credentials: &Path, probe: &Probe) -> Report {
     if let Some(r) = local(inst, credentials) {
         return report(inst, r, credentials);
@@ -531,7 +531,7 @@ fn vendor_cached(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 
 /// Forgets what was believed of an instance's vendor login, in every
 /// directory it was asked in: a sign-in or a sign-out has just changed it,
-/// and a long-lived host (the TUI) asks again rather than believe the old
+/// and a long-lived host (an interactive client) asks again rather than believe the old
 /// answer for another minute.
 pub fn forget(instance: &str) {
     if let Some(m) = SIGNED_IN.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
@@ -562,7 +562,7 @@ fn vendor(inst: &Resolved, b: &Backend, probe: &Probe) -> Readiness {
 /// worth a new dependency for a status check.
 ///
 /// The group is registered (`group::register`) until the check lets it
-/// go, so a krowk that leaves while a check is still running — the TUI
+/// go, so a krowk that leaves while a check is still running — an interactive client
 /// quit while it routes — kills it on the way out (`group::kill_all`)
 /// rather than leaving it to its deadline, whose thread is gone with the
 /// process.

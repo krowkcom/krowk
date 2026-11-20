@@ -5,7 +5,7 @@
 //! openers), so no client reimplements the crypto (R-CLIENT-1). Writing
 //! them is the lease holder's, in the harness
 //! (`krowk_harness::sync::store::Writer`). Blocking: each read is a round
-//! trip through `krowk_api::Client`, so a phone calls these off its main
+//! trip through `krowk_api::Client`, so an async caller runs these off its executor's
 //! thread.
 //!
 //! **A chunk** is JSON, sealed with `e2e::ChunkSealer`: `{"type": "events",
@@ -138,10 +138,10 @@ pub struct ReadError {
     /// a head it knows, or a chunk that does not open where it was served
     /// for any reason but a newer format or a rotated key (one changed,
     /// replayed, out of order, or not following the chunk before it). What
-    /// the phone calls `session_rolled_back`.
+    /// a viewer reports as a session rolled back.
     pub rolled_back: bool,
     /// The registry or storage call that failed, when one did: what tells
-    /// the network out of reach from the rest (the phone's `Network`).
+    /// the network out of reach from the rest (an offline error).
     pub registry: Option<krowk_api::Error>,
 }
 
@@ -398,8 +398,7 @@ pub fn open_session_key(s: &krowk_api::sync::SyncSession, id: &str, keys: &UserK
     e2e::unwrap_session_keys(&wrapped, &raw, keys).map_err(|e| e.to_string())
 }
 
-/// A synced session as a listing shows it (`krowk sessions`, the phone's
-/// session list), from its sealed index.
+/// A synced session as a listing shows it (`krowk sessions`), from its sealed index.
 #[derive(Debug, Clone)]
 pub struct Listed {
     pub id: String,
@@ -493,7 +492,7 @@ pub fn attach(client: &Client, key: &SessionKeys, id: &str, index: Index, known:
 
 /// Reads the tail again from where `a` stopped, until it reaches `known`.
 /// A log that stops short of `known`, or holds another chunk there, is a
-/// permanent `ReadError`, as `session_rolled_back` is to the phone.
+/// permanent `ReadError`, as a rolled-back session is to a viewer.
 pub fn catch_up(client: &Client, key: &SessionKeys, id: &str, a: &mut Attached, known: Option<Head>) -> Result<Vec<Value>, ReadError> {
     let mut reader = ChunkReader::resume(key, crate::sync::uuid(id), a.next, a.previous, a.fence, a.epoch);
     let mut fresh = Vec::new();

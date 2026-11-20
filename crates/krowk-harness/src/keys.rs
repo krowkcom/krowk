@@ -226,12 +226,12 @@ pub(crate) fn apply(instances: &mut BTreeMap<String, Resolved>, credentials: &Pa
 
 /// What each command gave in this process, by command. Each has its own
 /// lock, held while the command runs, so two checks at once (status's
-/// parallel pass, the TUI routing while its first turn starts) wait for one
+/// parallel pass, an interactive client routing while its first turn starts) wait for one
 /// run — one passphrase prompt. A key is kept for the process. A failure
 /// is shared only with the calls that were waiting on that run, and never
 /// kept: the person told to unlock their password manager does so and
 /// tries again, and a remembered failure would refuse every later turn of
-/// a long-lived host (the TUI) for nothing — as readiness never remembers
+/// a long-lived host (an interactive client) for nothing — as readiness never remembers
 /// "not signed in".
 #[derive(Default)]
 struct Memo {
@@ -390,7 +390,7 @@ mod tests {
     }
 
     // A command that fails (a locked password manager) is not remembered:
-    // unlocked, the next call in the same process (a TUI's next turn) runs
+    // unlocked, the next call in the same process (an interactive client's next turn) runs
     // it again and has the key, which is then kept.
     #[cfg(unix)]
     #[test]

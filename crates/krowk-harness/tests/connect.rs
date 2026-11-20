@@ -1,5 +1,5 @@
 //! `krowk_harness::connect` driven the way a front end drives it: through
-//! an `AuthInteraction` that answers from a script, as the TUI's overlay
+//! an `AuthInteraction` that answers from a script, as a client's overlay
 //! will, against a fake `claude` (no real login anywhere). The account
 //! picker lists each account of the chosen way in with its readiness and a
 //! new one; a vendor login runs inside `terminal`, the hook a front end
@@ -127,7 +127,7 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     let done = pa.connect(&req, &mut ui).unwrap();
     assert_eq!((done.instance.as_str(), done.renewed), ("claude:team", false));
     assert!(done.vendor.as_ref().is_some_and(|v| v.logged_in && v.ran), "Claude's own login ran");
-    assert_eq!(ui.terminal_runs, 1, "the login ran inside the terminal hook, where a TUI suspends itself");
+    assert_eq!(ui.terminal_runs, 1, "the login ran inside the terminal hook, where an interactive client suspends itself");
     assert!(ui.told.iter().any(|t| t.starts_with("Signing in to Claude Code as claude:team")), "{:?}", ui.told);
     let dir = b.root.join("home/.krowk/accounts/claude-team");
     assert!(dir.join("fake-login").exists(), "signed in in its own directory");
@@ -145,7 +145,7 @@ fn r_inst_2_the_account_picker_lists_each_account_with_its_readiness_and_a_new_o
     assert_eq!(ui.terminal_runs, 0);
 }
 
-/// `/connect`'s picker renames an account beside the others: a built-in
+/// The connect picker renames an account beside the others: a built-in
 /// is not offered, so the one with a name of its own is asked nothing more
 /// than its new name, the provider's prefix typed already.
 #[test]

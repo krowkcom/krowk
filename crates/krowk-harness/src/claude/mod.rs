@@ -403,7 +403,7 @@ pub fn cleared(b: &Backend) -> impl Iterator<Item = &'static str> + '_ {
 /// reads.
 ///
 /// Telemetry off because Claude Code flushes it on exit: ~0.7 s that every
-/// quit of the TUI would wait on, against ~30 ms without. An instance that
+/// quit of an interactive client would wait on, against ~30 ms without. An instance that
 /// wants it sets `DISABLE_TELEMETRY` in its `env`, which comes after.
 pub fn environment(b: &Backend) -> (Vec<&'static str>, Vec<(String, String)>) {
     let mut set: Vec<(String, String)> = vec![("DISABLE_TELEMETRY".into(), "1".into())];
@@ -613,7 +613,7 @@ impl Engine for ClaudeEngine {
                 session_dir: ctx.session_dir.clone(),
                 images: Arc::default(),
             };
-            // Started now, so `/mcp` and a needs-sign-in notice are not left
+            // Started now, so the server list and a needs-sign-in notice are not left
             // to the first call; plan mode runs no commands.
             if ctx.permission_mode != PermissionMode::Plan {
                 ctx.compat.mcp.warm(&|s, t| crate::mcp::denied_by(&ctx.gate, s, t));

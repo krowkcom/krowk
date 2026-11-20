@@ -398,7 +398,7 @@ impl Client {
 
     /// Follows a session from `after`, not waited for: what its log holds
     /// after that event, then its frames as they come, all with what
-    /// arrives while no turn of this client's streams (`watch`). What a TUI
+    /// arrives while no turn of this client's streams (`watch`). What an interactive client
     /// resuming a session asks when work of its goes on between turns — a
     /// backend's agent run in the background.
     pub fn attach_later(&self, session_id: &str, after: Option<&str>) {
@@ -409,7 +409,7 @@ impl Client {
     /// Follows a session's running turn to its end, as though this client
     /// ran it: what its log holds after `after`, the turn so far, then each
     /// frame live, to `out`, answering the turn's result — none when no
-    /// turn is running, or the session settles without one. What the TUI
+    /// turn is running, or the session settles without one. What an interactive client
     /// reattaches with (R-HOST-1).
     pub async fn follow(&self, session_id: &str, after: Option<&str>, out: mpsc::Sender<StreamLine>) -> Result<Option<RunResult>, EngineError> {
         let from = Resume { session_id: session_id.to_string(), after_event_id: after.map(String::from), after_seq: 0, epoch: 0, client_ref: None };
@@ -493,8 +493,8 @@ impl Client {
         urx.await.map_err(|_| cut(self))
     }
 
-    /// `reload`, not waited for: a client that must not stop for it (the
-    /// TUI, just after `/connect`). A prompt sent after it runs on what it
+    /// `reload`, not waited for: a client that must not stop for it (one that
+    /// connected an account just before). A prompt sent after it runs on what it
     /// read: the daemon holds a command back until the reloads before it
     /// have settled.
     pub fn reload_later(&self, changed: Option<String>, renamed: Option<(String, String)>) {
