@@ -54,11 +54,15 @@ pub fn root(cwd: &Path) -> PathBuf {
 /// when it is trusted: what Claude Code reads from a project (settings and
 /// their hooks, hook scripts kept under `.claude/hooks`, commands, agents,
 /// skills), what Codex layers from `.codex` (config, rules, hooks), and
-/// krowk's own agent definitions. A directory is every file under it.
+/// krowk's own agent definitions and `.krowk/config.json` (hooks, allow rules
+/// and the worktree setup command). A directory is every file under it. The
+/// project settings, hooks, `.codex` and `.krowk/config.json` of every
+/// directory below the root count too (`roots_of_prints`). Not covered: a
+/// script a hook or server names from elsewhere in the repository.
 /// `.mcp.json` is covered by its own servers digest (`Listed::mcp`).
 /// `.claude/settings.local.json` is left out: it is not in git, so a pull
 /// cannot change it, and the person edits it themselves.
-pub const FINGERPRINTED: &[&str] = &[".claude/settings.json", ".claude/hooks", ".claude/commands", ".claude/agents", ".claude/skills", ".krowk/agents", ".codex"];
+pub const FINGERPRINTED: &[&str] = &[".claude/settings.json", ".claude/hooks", ".claude/commands", ".claude/agents", ".claude/skills", ".krowk/agents", ".krowk/config.json", ".codex"];
 
 /// What a backend would run of the repository's own, found in it: the
 /// reason the question is asked, shown with it.
@@ -121,33 +125,89 @@ const STALE: &str = "changed-before-upgrade";
 const MAX_FILES: usize = 4000;
 const MAX_FILE: u64 = 8 << 20;
 const MAX_DEPTH: usize = 12;
+const MAX_DIRS: usize = 3000;
+const MAX_DEPTH_DIRS: usize = 6;
+
+type Prints = std::collections::BTreeMap<String, (String, Option<std::time::SystemTime>)>;
+
+/// What `fingerprints` records when a limit cut it short: a different digest
+/// every time, so a repository too big to fingerprint is never remembered as
+/// unchanged.
+const TRUNCATED: &str = "(too many files to fingerprint)";
+
+/// The paths to fingerprint, from the root: `FINGERPRINTED`, and the same
+/// project files of every directory below it that a session could start in
+/// (a vendor reads `.claude/settings.json` and Codex a `.codex` from the
+/// working directory up to the root). A directory with a `.git` of its own is
+/// a repository asked about on its own. Bounded in directories and depth.
+fn roots_of_prints(root: &Path) -> (Vec<String>, bool) {
+    let mut paths: Vec<String> = FINGERPRINTED.iter().map(|p| p.to_string()).collect();
+    let (mut seen, mut cut) = (0, false);
+    let mut stack = vec![(String::new(), 0usize)];
+    while let Some((rel, depth)) = stack.pop() {
+        let dir = if rel.is_empty() { root.to_path_buf() } else { root.join(&rel) };
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if matches!(name.as_str(), ".git" | "node_modules" | "target") || !e.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+            if name == ".claude" || name == ".codex" || name == ".krowk" {
+                continue;
+            }
+            if e.path().join(".git").symlink_metadata().is_ok() {
+                continue;
+            }
+            seen += 1;
+            if seen > MAX_DIRS || depth >= MAX_DEPTH_DIRS {
+                cut = true;
+                continue;
+            }
+            for f in [".claude/settings.json", ".claude/hooks", ".codex", ".krowk/config.json"] {
+                paths.push(format!("{sub}/{f}"));
+            }
+            stack.push((sub, depth + 1));
+        }
+    }
+    (paths, cut)
+}
 
 /// Each fingerprinted file of `root` with its digest and modification time:
-/// regular files and symlinks (by their target text) only, never followed,
-/// so a FIFO or a link out of the repository reads nothing; bounded in
-/// count, depth and size. A file too large to read is digested by its size.
-fn fingerprints(root: &Path) -> std::collections::BTreeMap<String, (String, Option<std::time::SystemTime>)> {
+/// regular files, and symlinks, which are followed when they point inside
+/// the repository (their target's contents count) and are otherwise hashed
+/// by their target's text, so a FIFO or a link out reads nothing. Bounded
+/// in count, depth and size; a limit hit is recorded as a change.
+fn fingerprints(root: &Path) -> Prints {
     use sha2::Digest;
-    fn walk(root: &Path, rel: &str, depth: usize, out: &mut std::collections::BTreeMap<String, (String, Option<std::time::SystemTime>)>) {
+    fn walk(root: &Path, canon_root: &Path, rel: &str, depth: usize, out: &mut Prints) {
         if out.len() >= MAX_FILES {
+            out.insert(TRUNCATED.into(), (nonce(), None));
             return;
         }
         let path = root.join(rel);
-        let Ok(meta) = path.symlink_metadata() else { return };
-        let digest = if meta.is_dir() {
-            if depth < MAX_DEPTH
-                && let Ok(entries) = std::fs::read_dir(&path)
-            {
+        let Ok(mut meta) = path.symlink_metadata() else { return };
+        let mut link = None;
+        if meta.file_type().is_symlink() {
+            let inside = path.canonicalize().ok().filter(|c| c.starts_with(canon_root));
+            match inside.and_then(|_| path.metadata().ok()) {
+                Some(m) => meta = m,
+                None => link = Some(std::fs::read_link(&path).map(|t| t.display().to_string()).unwrap_or_default()),
+            }
+        }
+        let digest = if let Some(target) = link {
+            sha2::Sha256::digest(format!("link:{target}").as_bytes())
+        } else if meta.is_dir() {
+            if depth >= MAX_DEPTH {
+                out.insert(TRUNCATED.into(), (nonce(), None));
+            } else if let Ok(entries) = std::fs::read_dir(&path) {
                 let mut names: Vec<_> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
                 names.sort();
                 for n in names {
-                    walk(root, &format!("{rel}/{n}"), depth + 1, out);
+                    walk(root, canon_root, &format!("{rel}/{n}"), depth + 1, out);
                 }
             }
             return;
-        } else if meta.file_type().is_symlink() {
-            let target = std::fs::read_link(&path).map(|t| t.display().to_string()).unwrap_or_default();
-            sha2::Sha256::digest(format!("link:{target}").as_bytes())
         } else if meta.is_file() {
             let body = if meta.len() <= MAX_FILE { std::fs::read(&path).ok() } else { None };
             let mut h = sha2::Sha256::new();
@@ -163,9 +223,17 @@ fn fingerprints(root: &Path) -> std::collections::BTreeMap<String, (String, Opti
         };
         out.insert(rel.to_string(), (digest.iter().map(|b| format!("{b:02x}")).collect(), meta.modified().ok()));
     }
-    let mut out = std::collections::BTreeMap::new();
-    for p in FINGERPRINTED {
-        walk(root, p, 0, &mut out);
+    fn nonce() -> String {
+        format!("{:?}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or_default())
+    }
+    let canon_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    let (paths, cut) = roots_of_prints(root);
+    let mut out = Prints::new();
+    for p in &paths {
+        walk(root, &canon_root, p, 0, &mut out);
+    }
+    if cut {
+        out.insert(TRUNCATED.into(), (nonce(), None));
     }
     out
 }
@@ -443,6 +511,10 @@ mod tests {
             ".codex/config.toml",
             ".codex/hooks.json",
             ".codex/rules/default.rules",
+            ".krowk/config.json",
+            "packages/app/.claude/settings.json",
+            "packages/app/.codex/config.toml",
+            "packages/app/.krowk/config.json",
         ];
         for file in files {
             let (base, repo, store) = repo("each");
@@ -478,6 +550,45 @@ mod tests {
         // Deleting one is not a way to run something.
         std::fs::remove_file(repo.join(".codex/config.toml")).unwrap();
         assert!(store.trusts(&repo));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn r_ease_7_a_link_inside_the_repository_is_followed_and_one_outside_is_not() {
+        let (base, repo, store) = repo("links");
+        put(&repo, "tools/codex/config.toml", "a");
+        put(&repo, "tools/hook.sh", "a");
+        #[cfg(unix)]
+        {
+            std::fs::create_dir_all(repo.join(".claude")).unwrap();
+            std::os::unix::fs::symlink(repo.join("tools/codex"), repo.join(".codex")).unwrap();
+            std::os::unix::fs::symlink(repo.join("tools/hook.sh"), repo.join(".claude/settings.json")).unwrap();
+            put(&base, "outside.sh", "a");
+            std::os::unix::fs::symlink(base.join("outside.sh"), repo.join(".claude/hooks")).unwrap();
+            store.trust(&repo).unwrap();
+            assert!(store.trusts(&repo));
+            put(&repo, "tools/codex/config.toml", "b");
+            assert_eq!(store.changes(&repo), [".codex/config.toml"], "the target's file changed");
+            store.trust(&repo).unwrap();
+            put(&repo, "tools/hook.sh", "b");
+            assert_eq!(store.changes(&repo), [".claude/settings.json"]);
+            store.trust(&repo).unwrap();
+            put(&base, "outside.sh", "b");
+            assert!(store.trusts(&repo), "a target outside the repository is not read");
+        }
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A repository too big to fingerprint is never remembered as unchanged.
+    #[test]
+    fn r_ease_7_a_repository_too_big_to_fingerprint_asks_again() {
+        let (base, repo, store) = repo("big");
+        for i in 0..=MAX_FILES {
+            put(&repo, &format!(".claude/hooks/h{i}"), "x");
+        }
+        store.trust(&repo).unwrap();
+        assert!(!store.trusts(&repo));
+        assert!(store.changes(&repo).iter().any(|c| c == TRUNCATED));
         let _ = std::fs::remove_dir_all(&base);
     }
 

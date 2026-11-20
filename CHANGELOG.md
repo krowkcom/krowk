@@ -171,7 +171,8 @@ the versions are the `v*` tags a release is cut from. Entries land under
   Before, only `.mcp.json` was watched, so a `git pull` that changed a Claude
   hook, a command, an agent or Codex's config ran under the old yes. Now the
   record also covers Claude's project settings, hook scripts, commands, agents
-  and skills, krowk's agent definitions and everything under `.codex`; when any
+  and skills (including those in subdirectories), krowk's agent definitions and
+  `.krowk/config.json`, and everything under `.codex`; when any
   of them is added or changed, krowk asks again and names the file.
   `.claude/settings.local.json` is not in git and never asks. Repositories you
   trusted before upgrade without a question for files that have not changed

@@ -603,7 +603,7 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
     // question nobody sees, answered by the next key.
     let seen = std::io::IsTerminal::is_terminal(&std::io::stderr());
     // Yes now, or later in the TUI, when a routed model lands on a backend.
-    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor)));
+    let accepted = Arc::new(AtomicBool::new((backend || widens) && seen && !store.trusts(&asked) && store.refuses(&asked).is_none() && ask_trust(&store, &asked, vendor) && !store.trusts(&asked)));
     let (s2, a2, acc2, t2) = (store.clone(), asked.clone(), accepted.clone(), trust_as.clone());
     let trusted: permissions::settings::Trusted = Arc::new(move |root: &std::path::Path| {
         let root = t2.root(root);
@@ -617,8 +617,12 @@ pub(super) fn tui_trust_gate(model: Option<&krowk_harness::protocol::ModelRef>, 
         refuses: store.refuses(&asked),
         changed: store.changes(&asked),
         accept: Arc::new(move || {
-            acc4.store(true, Ordering::SeqCst);
-            s4.trust(&a4).err().map(|e| format!("trusted for this run, but not remembered: {e}"))
+            // A yes the list remembers is the list's to answer from, so a
+            // later change to the repository asks again; only one it could
+            // not remember holds for the run.
+            let err = s4.trust(&a4).err();
+            acc4.store(err.is_some(), Ordering::SeqCst);
+            err.map(|e| format!("trusted for this run, but not remembered: {e}"))
         }),
     };
     let gate: trust::Gate = Arc::new(move |root: &std::path::Path| {
