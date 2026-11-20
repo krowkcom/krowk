@@ -94,8 +94,7 @@ fn wire_shape_matches_the_registrys_routes() {
 
 /// The sync calls (R-SYNC-1): the device list `krowk sync init` posts, and
 /// the session and lease calls krowk-api makes for the host (ticket 19 puts
-/// them behind a command), with the host's notifications and a device's
-/// push token (R-IOS-12).
+/// them behind a command).
 #[cfg(all(feature = "harness", unix))]
 #[test]
 fn sync_wire_shape_matches_the_registrys_routes() {
@@ -149,11 +148,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
     assert_eq!(object.state, "ready");
     assert_eq!(client.put_image_object(id, &image, b"sealed image stand-in", &lease.token).unwrap().state, "ready", "a repeated name is a no-op");
     assert_eq!(client.get_image_object(id, &image).unwrap(), b"sealed image stand-in");
-    use krowk_api::sync::NotifyKind;
-    assert!(client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap());
-    assert!(!client.notify_session(id, NotifyKind::Done, &"ab".repeat(32), &lease.token).unwrap(), "a repeat is a duplicate");
-    client.put_push_token(&"cd".repeat(32), "sandbox").unwrap();
-    client.delete_push_token().unwrap();
     client.put_presence(b"sealed", 30).unwrap();
     assert!(client.list_presences().unwrap()[0].online);
     // A command the laptop sends itself, the one device it has: delivered in
@@ -198,15 +192,6 @@ fn sync_wire_shape_matches_the_registrys_routes() {
         "PUT /v1/sessions/{id}/images/{name}/finalization +signed",
         "POST /v1/sessions/{id}/images +signed",
         "GET /v1/sessions/{id}/images/{name} +signed",
-        // The holder asking for the person's other devices to be rung: a
-        // singular resource of the session, its dedup in the body rather
-        // than an Idempotency-Key, so the repeat is a second POST.
-        "POST /v1/sessions/{id}/notification +signed",
-        "POST /v1/sessions/{id}/notification +signed",
-        // The device's own APNs token, a singular resource of the key's
-        // device: PUT sets or replaces it, DELETE clears it.
-        "PUT /v1/key/device/push_token +signed",
-        "DELETE /v1/key/device/push_token +signed",
         // The host's sealed announcement (R-HOST-3), refreshed like a
         // lease and signed; the person's presences are read unsigned.
         "PUT /v1/key/device/presence +signed",

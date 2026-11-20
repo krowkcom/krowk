@@ -405,8 +405,7 @@ const RETRY_MS: u64 = 1000;
 pub const REREAD_MAX: Duration = Duration::from_secs(30);
 
 /// How a `Note` about a failed join ends: the cadence of `RETRY_MS`. A
-/// caller that times the retries itself (the phone's `supervisor`) says
-/// its own.
+/// caller that times the retries itself says its own.
 pub const EVERY_SECOND: &str = "; trying again every second";
 
 /// A viewer of a synced session following its host live, without IO

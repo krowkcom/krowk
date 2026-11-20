@@ -275,10 +275,7 @@ pub fn decide_cli_authorization(app: &App, code: &str, approve: bool) -> Resp {
     let decision = if approve {
         a.state = APPROVED;
         let random = &random_token()[..32];
-        a.token = match &app.login_person {
-            Some(base) => format!("{base}#{random}"),
-            None => format!("krowk_sk_{random}"),
-        };
+        a.token = format!("krowk_sk_{random}");
         a.key_id = format!("key_{}", &sha256_hex(a.token.as_bytes())[..8]);
         a.workspace = workspace_for(&a.token);
         APPROVED

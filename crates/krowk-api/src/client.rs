@@ -1036,10 +1036,6 @@ fn fix_for(code: &str, status: u16) -> String {
         "signature_stale" => "the request was signed more than 5 minutes from the registry's clock — check this machine's clock",
         "too_many_requests" => "the registry is limiting these calls for a moment — wait out its Retry-After (about a minute) and try again",
         "device_mismatch" => "the request is signed by a device other than the one it names or the one this key speaks for — a device acts only for itself: use this machine's own key (unset a KROWK_TOKEN copied from another machine, or run `krowk auth login` here)",
-        // Pushes (R-IOS-12): the registry sends them, never the host.
-        "push_unconfigured" => "this registry cannot send pushes yet (it has no APNs key) — your other devices were not notified; nothing else is affected",
-        "push_unqueued" => "the registry could not queue this notification and took it back — send it again",
-        "push_token_contended" => "another device registered the same push token at the same moment — register it again",
         "method_not_allowed" => {
             "the registry does not answer that HTTP method — read the Allow header on this response, if it carries one, for the methods it does"
         }
@@ -1058,10 +1054,7 @@ fn fix_for(code: &str, status: u16) -> String {
 /// Where the code knows better than the status whether a retry could help.
 fn retryable_for(code: &str) -> Option<bool> {
     match code {
-        "upload_missing" | "storage_unavailable" | "push_token_contended" => Some(true),
-        // A 503 that a retry a second later cannot help: the registry has no
-        // APNs key until its operator adds one.
-        "push_unconfigured" => Some(false),
+        "upload_missing" | "storage_unavailable" => Some(true),
         "invalid" | "parameter_missing" | "unauthorized" | "not_found" | "expired" | "taken_down" | "checksum_mismatch"
         | "empty_upload" | "run_needs_key" | "already_finalized" | "bad_request" | "no_such_endpoint" => Some(false),
         _ => None,
@@ -1485,18 +1478,6 @@ mod tests {
         let fix = fix_for("account_key_mismatch", 409);
         assert!(!fix.contains("sync join"), "{fix}");
         assert!(fix.contains("krowk devices list") && fix.contains("never with an id in an error message"), "{fix}");
-    }
-
-    /// R-IOS-12: a registry without its APNs key answers 503, which a retry
-    /// a moment later cannot help, so it is not retried; a notification the
-    /// registry could not queue was taken back, so it is.
-    #[test]
-    fn r_ios_12_push_unconfigured_is_not_retried_and_push_unqueued_is() {
-        let refused = |code: &str| response_error(503, format!(r#"{{"error":{{"code":"{code}","message":"m"}}}}"#).as_bytes(), "");
-        let unconfigured = refused("push_unconfigured");
-        assert!(!unconfigured.retryable() && !unconfigured.fix().is_empty(), "{unconfigured:?}");
-        let unqueued = refused("push_unqueued");
-        assert!(unqueued.retryable() && !unqueued.fix().is_empty(), "{unqueued:?}");
     }
 
     #[test]
