@@ -603,14 +603,14 @@ fn r_nat_2_openai_xai_openrouter_and_compatible_keys_become_codex_accounts() {
     assert!(turn.status.success(), "{}", stderr(&turn));
     assert!(b.logins(&format!("env OPENAI_API_KEY={KEY} ROUTER_KEY=<unset>")) >= 1, "the stored key, handed to Codex, not the environment's");
 
-    // xAI and OpenRouter: Codex, on the chat wire API and the provider's default model.
+    // xAI and OpenRouter: Codex, on the Responses wire API and the provider's default model.
     for (vendor, base, model) in [("xai", "https://api.x.ai/v1", "grok-4.7"), ("openrouter", "https://openrouter.ai/api/v1", "openai/gpt-5.4")] {
         let c = b.json(&["connect", vendor, "--key-ref", "$VENDOR_KEY", "--json"], &[]);
         b.holds_no_key(vendor);
         let def = &c["data"]["definition"];
         assert_eq!((def["kind"].as_str(), def["apiKeyEnv"].as_str()), (Some("codex-app-server"), Some(&*format!("{}_API_KEY", vendor.to_uppercase()))), "{def}");
         let set = overrides(def);
-        for want in [format!("model_providers.krowk-{vendor}.base_url=\"{base}\""), format!("model_providers.krowk-{vendor}.wire_api=\"chat\""), format!("model=\"{model}\"")] {
+        for want in [format!("model_providers.krowk-{vendor}.base_url=\"{base}\""), format!("model_providers.krowk-{vendor}.wire_api=\"responses\""), format!("model=\"{model}\"")] {
             assert!(set.contains(&want), "{vendor}: {want} in {set:?}");
         }
         assert_eq!(b.credentials()["keys"][vendor], json!({"env": "VENDOR_KEY"}));
@@ -622,7 +622,52 @@ fn r_nat_2_openai_xai_openrouter_and_compatible_keys_become_codex_accounts() {
     let def = &c["data"]["definition"];
     assert!(def.get("apiKeyEnv").is_none() && !overrides(def).iter().any(|s| s.contains("env_key")), "{def}");
     assert!(overrides(def).contains(&r#"model_providers.krowk-openai-compatible.base_url="http://127.0.0.1:11434/v1""#.to_string()), "{def}");
+    assert!(overrides(def).contains(&r#"model_providers.krowk-openai-compatible.wire_api="responses""#.to_string()), "{def}");
     assert_eq!(b.logins("argv login"), 0, "a server needs no login");
+}
+
+/// D3 as amended: a key's Codex account written on the chat wire API,
+/// which Codex refuses, is on the Responses API from its first use on, with
+/// one notice; everything else in it stays as it was.
+#[test]
+fn d3_a_keys_codex_account_on_the_chat_wire_api_moves_to_responses_with_one_notice() {
+    let b = Sandbox::new("rewire");
+    b.json(&["connect", "xai", "--key-ref", "$VENDOR_KEY"], &[]);
+    b.json(&["connect", "openai-compatible", "--name", "local", "--base-url", "http://127.0.0.1:11434/v1"], &[]);
+    // As NL03 wrote them: on the chat wire API.
+    let mut cfg = b.config();
+    for (name, vendor) in [("xai", "xai"), ("local", "openai-compatible")] {
+        for a in cfg["instances"][name]["args"].as_array_mut().unwrap() {
+            if a.as_str().is_some_and(|s| s.starts_with(&format!("model_providers.krowk-{vendor}.wire_api="))) {
+                *a = json!(format!("model_providers.krowk-{vendor}.wire_api=\"chat\""));
+            }
+        }
+    }
+    std::fs::write(b.config_path(), cfg.to_string()).unwrap();
+
+    let first = b.krowk(&["status", "--json"], &[]);
+    let err = stderr(&first);
+    let said: Vec<&str> = err.lines().filter(|l| l.contains("Responses API")).collect();
+    assert_eq!(
+        said,
+        ["krowk: local now uses the Responses API — Codex no longer accepts the chat wire API", "krowk: xai now uses the Responses API — Codex no longer accepts the chat wire API"],
+        "{err}"
+    );
+    let now = b.config();
+    for (name, vendor) in [("xai", "xai"), ("local", "openai-compatible")] {
+        let mut want = cfg["instances"][name].clone();
+        for a in want["args"].as_array_mut().unwrap() {
+            if a.as_str().is_some_and(|s| s.contains(".wire_api=")) {
+                *a = json!(format!("model_providers.krowk-{vendor}.wire_api=\"responses\""));
+            }
+        }
+        assert_eq!(now["instances"][name], want, "only the wire API moves");
+    }
+    assert_eq!(b.credentials()["keys"]["xai"], json!({"env": "VENDOR_KEY"}), "the key stays where it was");
+
+    // Once: the next run says nothing.
+    let again = b.krowk(&["status", "--json"], &[]);
+    assert!(!stderr(&again).contains("Responses API"), "{}", stderr(&again));
 }
 
 /// Connecting a key's Codex account again keeps its home and its key, and
