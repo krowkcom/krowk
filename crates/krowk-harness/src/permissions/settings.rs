@@ -74,8 +74,8 @@ pub struct Config {
     /// be asked is refused, with the reason.
     pub approvals: bool,
     /// The OS sandbox a turn asked for (R-PERM-3). Claude Code and Codex
-    /// run their own tools outside it, so a turn with one is refused; none
-    /// is every turn now.
+    /// run their own tools outside it, so a turn with one is refused, and
+    /// every turn runs without one.
     pub sandbox: Option<crate::sandbox::Sandbox>,
 }
 
@@ -407,7 +407,7 @@ pub fn load(cfg: &Config, cwd: &Path) -> Result<Loaded, String> {
 }
 
 /// Whether a repository has settings that only trust would apply: the
-/// trust question's reason, for a native session.
+/// trust question's reason.
 pub fn widens(cfg: &Config, cwd: &Path) -> bool {
     let cfg = Config { trusted: None, user: None, claude_dir: None, krowk_dir: None, ..cfg.clone() };
     // A `.mcp.json` names commands krowk's bridge would start: trust turns

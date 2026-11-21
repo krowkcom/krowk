@@ -318,7 +318,7 @@ mod tests {
         let plain = BridgeEnv { gate: &default, ..env };
         let refused = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "publish", "arguments": {"files": ["shot.png"]}}}), &plain));
         assert_eq!(refused["result"]["isError"], true);
-        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("needs approval"), "judged by the same evaluator as the native tool: {refused}");
+        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("needs approval"), "judged by the one evaluator: {refused}");
         assert!(rx.try_recv().is_err(), "nothing was published");
     }
 }

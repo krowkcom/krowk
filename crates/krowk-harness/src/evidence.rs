@@ -22,7 +22,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-/// The tool's name, native and bridged alike.
+/// The tool's name, as the bridge offers it.
 pub const PUBLISH: &str = "publish";
 
 /// What the model is told the tool does. Short: it rides on every call.

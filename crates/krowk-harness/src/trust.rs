@@ -16,8 +16,9 @@
 //! `.git` of its own under it (a home kept in git for its dotfiles is the
 //! usual way to get there). The list lives in krowk's home as
 //! `trusted.json`, `0600`, replaced by rename; it is a host's own record and
-//! never syncs. The host consults it for what a repository would widen (`crate::permissions::settings`) and the MCP servers its
-//! `.mcp.json` would start (`crate::mcp`).
+//! never syncs. The host consults it for what a repository would widen
+//! (`crate::permissions::settings`) and the MCP servers its `.mcp.json`
+//! would start (`crate::mcp`).
 
 use crate::engine::EngineError;
 use serde::{Deserialize, Serialize};

@@ -103,11 +103,12 @@ status = "enforced"
 
 # --- Idle: no polling and no timers while nothing happens (Linux /proc) ---
 
-# Measured on the fake `claude` since krowk's own engine went (NL06): the
-# Claude Code backend looks for steering to pass on every 100 ms
-# (`claude::STEER_POLL`), about 20 wakeups a second, so the zero budgets
-# that held krowk's own engine waiting on a socket do not hold here. Pending
-# until that poll waits on the steering queue instead of a timer.
+# Measured on the fake `claude` since krowk's own engine went (NL06). The
+# release build holds 0 ticks and about 12 MB waiting on it, but wakes about
+# 20 times a second: the Claude Code backend looks for steering to pass on
+# every 100 ms (`claude::STEER_POLL`). `engine.idle_wakeups` is pending until
+# that poll waits on the steering queue instead of a timer (owner: the
+# Basecamp to-do 10534685604).
 [[budget]]
 id = "engine.idle_cpu"
 req = "R-PERF-2"
@@ -115,8 +116,7 @@ what = "`krowk -p` waiting on a silent Claude Code: CPU ticks over 10 s"
 unit = "ticks"
 max = 0
 window_s = 10
-status = "pending"
-owner = "10534685604"
+status = "enforced"
 
 [[budget]]
 id = "engine.idle_wakeups"
@@ -139,8 +139,7 @@ unit = "MB"
 # is the most idle the host gets.
 max = 30
 window_s = 10
-status = "pending"
-owner = "10534685604"
+status = "enforced"
 
 # --- The session log ---
 

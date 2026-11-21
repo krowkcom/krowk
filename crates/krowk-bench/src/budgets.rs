@@ -326,6 +326,8 @@ mod tests {
             "lean.size",
             "lean.deps",
             "log.append",
+            "engine.idle_cpu",
+            "engine.idle_rss",
             "remote.attach",
             "remote.resume",
         ] {

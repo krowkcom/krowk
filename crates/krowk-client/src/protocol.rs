@@ -867,8 +867,9 @@ pub enum LogBody {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         backend_id: Option<String>,
     },
-    /// The session's todo list, whole, as `todo_write` last set it
-    /// (R-TODO-2): each write replaces the list before it.
+    /// The session's todo list, whole, as krowk's own `todo_write` last set
+    /// it (R-TODO-2), in logs from before that engine went: each write
+    /// replaced the list before it.
     #[serde(rename = "todos.updated")]
     TodosUpdated { turn_id: String, todos: Vec<Todo> },
     /// The krowk run this session's evidence is grouped under, opened by

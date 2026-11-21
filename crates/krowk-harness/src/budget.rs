@@ -1,7 +1,6 @@
 //! The budget (R-BUDGET-1): what a session may spend. A backend's calls are
-//! the vendor's to make, so the host refuses a turn the session is already
-//! at its limit for, and interrupts a turn as soon as a metered call takes
-//! it past.
+//! the vendor's to make, so the host checks before a turn and interrupts
+//! the turn as soon as a metered call takes it past a limit.
 //!
 //! What counts is what the provider metered — the `usage` of every
 //! `response.completed` — never what a request asked for: a request's
@@ -15,18 +14,17 @@
 //! way every krowk figure is. Both are the limits `krowk sessions budget`
 //! takes, with its meaning: at the limit is inside it.
 //!
-//! The next call's cost is not known before it is made, so the check asks
-//! what it costs at least. It resends at least the whole prompt of the call
-//! before it on the same model — the log is append-only, so the
-//! conversation only grows — and generates at least one token; priced as if
-//! that prompt were all read from cache, the cheapest a provider charges
-//! for input, that is a floor no real call comes in under. A call is
-//! refused when what has been spent plus that floor would go past the
-//! limit. A model with no price trips `--max-usd` outright: an unknown
-//! spend is not a spend inside the limit.
-//!
-//! A backend makes its own model calls, so for one the host checks before
-//! the turn starts and interrupts the turn as soon as a metered call has
+//! A turn's first call is not known before it is made, so once a call on
+//! the turn's model has been metered the check before a turn asks what the
+//! next costs at least: it resends at least the whole prompt of the call
+//! before it — the log is append-only, so the conversation only grows — and
+//! generates at least one token; priced as if that prompt were all read
+//! from cache, the cheapest a provider charges for input, that is a floor
+//! no real call comes in under. A turn is refused when what has been spent
+//! plus that floor would go past the limit; with no call metered yet, only
+//! when the spend is already past it. A model with no price trips
+//! `--max-usd` outright: an unknown spend is not a spend inside the limit.
+//! During the turn the host interrupts it as soon as a metered call has
 //! gone over (`Budget::over`).
 
 use crate::engine::EngineError;

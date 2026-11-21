@@ -44,10 +44,9 @@ pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     c
 }
 
-/// The CLIs krowk connects by finding them on PATH: with one there, krowk
-/// has more than the bench's API instance able to run a model, and
-/// `krowk -p` refuses to choose — a machine with them installed measured
-/// nothing.
+/// The CLIs krowk connects by finding them on PATH: kept off it, so a
+/// machine with them installed measures the same as one without — no
+/// implicit instance of the real `claude` or `codex` beside the bench's.
 const AGENT_CLIS: [&str; 2] = ["claude", "codex"];
 
 /// The caller's PATH with each directory that holds one of `AGENT_CLIS`

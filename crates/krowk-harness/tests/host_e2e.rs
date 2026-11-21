@@ -250,7 +250,9 @@ fn r_cred_1_a_stored_keys_command_never_blocks_the_hosts_runtime() {
     let r = result.unwrap_or_else(|e| panic!("{e:?}")).unwrap();
     assert_eq!(r.status, TurnStatus::Completed, "{:?}", r.error);
     assert!(took >= std::time::Duration::from_millis(1400), "the command ran: {took:?}");
-    assert!(ticks >= 15, "the runtime kept running while the command did: {ticks} ticks in {took:?}");
+    // A tick every 50 ms through the whole turn, give or take a loaded
+    // machine: a runtime the command blocked misses its 1.5 s of them.
+    assert!(ticks as u128 >= took.as_millis() / 50 * 3 / 4, "the runtime kept running while the command did: {ticks} ticks in {took:?}");
     assert!(fake::log(&home.root, "anthropic").contains("env ANTHROPIC_AUTH_TOKEN=sk-from-command"), "the command's key is handed to Claude Code: {}", fake::log(&home.root, "anthropic"));
 }
 

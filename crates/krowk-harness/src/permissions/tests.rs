@@ -436,7 +436,7 @@ async fn r_perm_2_with_nobody_to_ask_a_call_is_refused_at_once_with_what_would_a
 
 #[test]
 fn r_perm_1_publish_is_held_to_what_an_edit_is_and_a_read_deny_keeps_a_file_from_it() {
-    // One rule, the evaluator's, for the native tool and the bridged one.
+    // One rule, the evaluator's, for the bridged tool.
     let d = repo("publish");
     let shot = Call { tool: "Publish".into(), access: Access::Publish(vec![d.join("shot.png")]), subject: None };
     let got: String = MODES.iter().map(|m| letter(&gate(&policy(&d, &[]), *m).verdict(&shot))).collect();

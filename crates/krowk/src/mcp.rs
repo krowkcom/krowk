@@ -830,7 +830,7 @@ mod tests {
         assert!(secret_component(Path::new("src/env.rs")).is_none());
     }
 
-/// R-EVID-1: what `publish` — krowk_push, and the bridge's `publish` on
+    /// R-EVID-1: what `publish` — krowk_push, and the bridge's `publish` on
     /// Claude Code and Codex — refuses: a credential file, a path outside
     /// the root (a symlink out of it too), and a file with a second name.
     #[test]

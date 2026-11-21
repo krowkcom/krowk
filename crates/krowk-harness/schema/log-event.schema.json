@@ -332,7 +332,7 @@
       ]
     },
     {
-      "description": "The session's todo list, whole, as `todo_write` last set it\n(R-TODO-2): each write replaces the list before it.",
+      "description": "The session's todo list, whole, as krowk's own `todo_write` last set\nit (R-TODO-2), in logs from before that engine went: each write\nreplaced the list before it.",
       "type": "object",
       "properties": {
         "turnId": {
