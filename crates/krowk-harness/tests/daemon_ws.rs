@@ -640,11 +640,21 @@ fn r_lag_4_r_lag_10_a_slow_websocket_client_is_caught_up_from_its_cursor_in_boun
         let watcher = home.client().await;
         let (mut c, _) = Ws::connect(&addr, Some(&token), &home.repo()).await;
         c.send(&ClientFrame::Execute { id: 1, command: home.prompt("count", PermissionMode::Default), client_ref: None }).await;
-        // Asleep: nothing read, nothing acknowledged, while the turn runs.
+        // Asleep: nothing read, nothing acknowledged, while the turn runs,
+        // until it has fallen behind and a while after. Not for a fixed
+        // time: a macOS runner's `sleep`s type the answer several times
+        // slower, and in the 1.2 s this once slept the client was not yet
+        // behind. The turn's words are enough to put it behind at any rate.
         let mut most = 0u64;
-        let until = Instant::now() + Duration::from_millis(1200);
-        while Instant::now() < until {
-            most = most.max(watcher.status().await.unwrap().queued_bytes);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        let mut behind: Option<Instant> = None;
+        while behind.is_none_or(|at| at.elapsed() < Duration::from_millis(300)) {
+            let s = watcher.status().await.unwrap();
+            most = most.max(s.queued_bytes);
+            if s.caught_up > 0 && behind.is_none() {
+                behind = Some(Instant::now());
+            }
+            assert!(Instant::now() < deadline, "a client reading nothing never fell behind; it was held at most {most} bytes");
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(most <= (cap + 16 * 1024) as u64, "the daemon held {most} bytes for a client that does not read");
