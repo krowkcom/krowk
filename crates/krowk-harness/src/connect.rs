@@ -794,7 +794,7 @@ impl ProviderAuth<'_> {
         match (self.own_home(r), r.kind) {
             (Some(_), "codex-app-server") => format!("{}, your own Codex login", instances::kind_label(r.kind)),
             (Some(_), _) => format!("{}, your own Claude Code login", instances::kind_label(r.kind)),
-            (None, k) => instances::kind_label(k).to_string(),
+            (None, _) => instances::account_label(r).to_string(),
         }
     }
 
@@ -1203,7 +1203,7 @@ impl ProviderAuth<'_> {
         let known = Registry::resolve(&existing, self.env);
         match known.instances.get(&instance) {
             Some(r) if way_of(r).is_none_or(|w| w.provider != provider) => {
-                return Err(EngineError::new("instance_exists", format!("{instance} is already {} ({}) — give this one another --name", r.kind, instances::kind_label(r.kind))));
+                return Err(EngineError::new("instance_exists", format!("{instance} is already {} ({}) — give this one another --name", r.kind, instances::account_label(r))));
             }
             Some(_) => {}
             None => {

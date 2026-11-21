@@ -142,6 +142,11 @@ the versions are the `v*` tags a release is cut from. Entries land under
   it had already expired), so other devices can show it for about as long as
   the new message that uses it.
 
+- **`krowk connect` names a Codex account on an API key as one.** When it
+  refused a name already taken, or listed accounts to pick from, a Codex
+  account you wrote by hand on a key read "ChatGPT subscription"; it now
+  reads "Codex, API key", as `krowk status` already says.
+
 ### Removed
 
 - **The terminal UI, the iPhone app and the FFI bindings.** Krowk is now
