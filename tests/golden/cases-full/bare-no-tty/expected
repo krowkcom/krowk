@@ -13,7 +13,7 @@ Examples
   krowk sessions --json      Every agent session on this machine, as data
 
 Agent
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
@@ -962,7 +962,7 @@ stdout:
     {
       "name": "connect",
       "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-      "summary": "Connect a model: Claude, ChatGPT, SuperGrok or an API key",
+      "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
           "name": "vendor",
@@ -975,7 +975,7 @@ stdout:
           "name": "method",
           "type": "string",
           "default": "",
-          "usage": "subscription (Claude, ChatGPT or SuperGrok, signed in by the vendor's own login), device (the same with a code typed into any browser: ChatGPT, SuperGrok) or api-key. Required without a terminal when the vendor has more than one"
+          "usage": "subscription (Claude or ChatGPT, signed in by Claude Code's or Codex's own login), device (the same with a code typed into any browser: ChatGPT) or api-key (a Claude Code or Codex account on the key). Required without a terminal when the vendor has more than one"
         },
         {
           "name": "name",
@@ -1012,18 +1012,6 @@ stdout:
           "type": "string",
           "default": "",
           "usage": "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"
-        },
-        {
-          "name": "client-id",
-          "type": "string",
-          "default": "",
-          "usage": "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-        },
-        {
-          "name": "no-browser",
-          "type": "bool",
-          "default": "false",
-          "usage": "SuperGrok: print the sign-in link instead of opening a browser"
         },
         {
           "name": "binary",
@@ -1076,7 +1064,7 @@ stdout:
           "args": [
             {
               "name": "provider",
-              "summary": "anthropic, openai, xai, openrouter, openai-compatible, supergrok (xAI with a SuperGrok or X Premium subscription), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
+              "summary": "anthropic, openai, xai, openrouter, openai-compatible (an API key or a gateway, run in Claude Code or Codex), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
               "required": true
             }
           ],
@@ -1100,22 +1088,10 @@ stdout:
               "usage": "Where the API is, for a gateway, a router or a local server — required for openai-compatible"
             },
             {
-              "name": "client-id",
-              "type": "string",
-              "default": "",
-              "usage": "supergrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-            },
-            {
               "name": "device",
               "type": "bool",
               "default": "false",
-              "usage": "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"
-            },
-            {
-              "name": "no-browser",
-              "type": "bool",
-              "default": "false",
-              "usage": "supergrok: print the sign-in link instead of opening a browser"
+              "usage": "codex: sign in with a code typed into any browser, instead of one opened here"
             },
             {
               "name": "binary",
@@ -1833,7 +1809,7 @@ Examples
   krowk sessions --json      Every agent session on this machine, as data
 
 Agent
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
@@ -1888,7 +1864,7 @@ tty:
   krowk sessions --json      Every agent session on this machine, as data
 
 \e[1mAgent\e[0m
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
@@ -2837,7 +2813,7 @@ tty:
     {
       "name": "connect",
       "usage": "krowk connect [vendor] [--method subscription|api-key|device] [--name N]",
-      "summary": "Connect a model: Claude, ChatGPT, SuperGrok or an API key",
+      "summary": "Connect a Claude Code or Codex account, by login or API key",
       "args": [
         {
           "name": "vendor",
@@ -2850,7 +2826,7 @@ tty:
           "name": "method",
           "type": "string",
           "default": "",
-          "usage": "subscription (Claude, ChatGPT or SuperGrok, signed in by the vendor's own login), device (the same with a code typed into any browser: ChatGPT, SuperGrok) or api-key. Required without a terminal when the vendor has more than one"
+          "usage": "subscription (Claude or ChatGPT, signed in by Claude Code's or Codex's own login), device (the same with a code typed into any browser: ChatGPT) or api-key (a Claude Code or Codex account on the key). Required without a terminal when the vendor has more than one"
         },
         {
           "name": "name",
@@ -2887,18 +2863,6 @@ tty:
           "type": "string",
           "default": "",
           "usage": "Where the API is, for a gateway, a router or a local server — asked for openai-compatible"
-        },
-        {
-          "name": "client-id",
-          "type": "string",
-          "default": "",
-          "usage": "SuperGrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-        },
-        {
-          "name": "no-browser",
-          "type": "bool",
-          "default": "false",
-          "usage": "SuperGrok: print the sign-in link instead of opening a browser"
         },
         {
           "name": "binary",
@@ -2951,7 +2915,7 @@ tty:
           "args": [
             {
               "name": "provider",
-              "summary": "anthropic, openai, xai, openrouter, openai-compatible, supergrok (xAI with a SuperGrok or X Premium subscription), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
+              "summary": "anthropic, openai, xai, openrouter, openai-compatible (an API key or a gateway, run in Claude Code or Codex), claude (runs Claude Code, signed in with its own login), or codex (runs Codex, signed in with its own login)",
               "required": true
             }
           ],
@@ -2975,22 +2939,10 @@ tty:
               "usage": "Where the API is, for a gateway, a router or a local server — required for openai-compatible"
             },
             {
-              "name": "client-id",
-              "type": "string",
-              "default": "",
-              "usage": "supergrok: the OAuth client id to sign in as, when xAI's server offers no registration"
-            },
-            {
               "name": "device",
               "type": "bool",
               "default": "false",
-              "usage": "supergrok, codex: sign in with a code typed into any browser, instead of one opened here"
-            },
-            {
-              "name": "no-browser",
-              "type": "bool",
-              "default": "false",
-              "usage": "supergrok: print the sign-in link instead of opening a browser"
+              "usage": "codex: sign in with a code typed into any browser, instead of one opened here"
             },
             {
               "name": "binary",

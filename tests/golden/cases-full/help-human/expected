@@ -13,7 +13,7 @@ Examples
   krowk sessions --json      Every agent session on this machine, as data
 
 Agent
-  connect       Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
   status        What's connected, and whether each is ready
   sessions      List and read agent sessions on this machine
@@ -58,7 +58,7 @@ stdout:
 krowk — every command and subcommand
 
 Agent
-  connect           Connect a model: Claude, ChatGPT, SuperGrok or an API key
+  connect           Connect a Claude Code or Codex account, by login or API key
   disconnect        Sign a connected model out
   status            What's connected, and whether each is ready
   sessions          List and read agent sessions on this machine

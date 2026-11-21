@@ -202,14 +202,15 @@ fn connect_without_a_terminal_needs_the_method_when_there_is_a_choice_and_the_ve
     for (word, want) in [
         ("anthropic", "krowk connect anthropic --method subscription"),
         ("chatgpt", "krowk connect openai --method subscription"),
-        ("grok", "krowk connect xai --method subscription"),
+        // SuperGrok is gone (D6): Grok is an xAI key, in Codex.
+        ("grok", "krowk connect xai --method api-key"),
         ("claude:work", "krowk connect anthropic --method subscription --name work"),
         // The prefix is the method: an `anthropic:` instance is a key.
         ("anthropic:work", "krowk connect anthropic --method api-key --name work"),
         ("openai:team", "krowk connect openai --method api-key --name team"),
         ("codex:team", "krowk connect openai --method subscription --name team"),
         ("xai:x", "krowk connect xai --method api-key --name x"),
-        ("supergrok:x", "krowk connect xai --method subscription --name x"),
+        ("supergrok:x", "krowk connect xai --method api-key --name x"),
         ("grok:team", "krowk connect grok:team"),
     ] {
         let out = b.krowk(&["login", word], &[]);
@@ -316,7 +317,9 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     std::fs::create_dir_all(&creds).unwrap();
     let token = json!({"issuer": "https://auth.x.ai", "clientId": "krowk-test", "tokenEndpoint": "https://auth.x.ai/oauth2/token", "accessToken": "xai-at-sentinel", "obtainedAtMs": 0});
     std::fs::write(creds.join("credentials.json"), json!({"version": 1, "instances": {"supergrok": token}}).to_string()).unwrap();
-    assert_eq!((b.state("claude:work"), b.state("codex:team"), b.state("supergrok")), ("ready".into(), "ready".into(), "ready".into()));
+    assert_eq!((b.state("claude:work"), b.state("codex:team")), ("ready".into(), "ready".into()));
+    // SuperGrok runs nothing any more (D4), so status does not offer it.
+    assert!(!b.status().iter().any(|r| r["instance"] == "supergrok"));
 
     // Never a guess: with no terminal and no instance, the instances are listed.
     let out = b.krowk(&["disconnect"], &[]);
@@ -332,11 +335,10 @@ fn disconnect_signs_each_kind_out_its_own_way_and_keeps_the_definition_unless_re
     let d = b.json(&["disconnect", "codex:team", "--json"], &[]);
     assert_eq!(d["data"]["command"], "codex logout");
     assert_eq!(b.state("codex:team"), "not_signed_in");
-    // SuperGrok's tokens are krowk's own, and deleted.
+    // SuperGrok's tokens, left from before, are krowk's own, and deleted.
     let d = b.json(&["disconnect", "supergrok", "--json"], &[]);
     assert_eq!((d["data"]["signed_out"].as_str(), d["data"]["had_login"].as_bool()), (Some("tokens"), Some(true)));
     assert!(!std::fs::read_to_string(creds.join("credentials.json")).unwrap().contains("xai-at-sentinel"));
-    assert_eq!(b.state("supergrok"), "not_signed_in");
     // An API key is the environment's: the variable is named, nothing run.
     let out = b.krowk(&["disconnect", "anthropic:work", "--format", "human"], &[]);
     assert!(out.status.success());
@@ -699,14 +701,14 @@ fn r_nat_2_an_existing_native_key_account_is_converted_on_first_use_with_one_not
 /// One that cannot be converted — its directory another account's — is
 /// said, and left as it was: the run goes on.
 #[test]
-fn r_nat_2_a_native_key_account_that_cannot_be_converted_is_said_and_runs_as_before() {
+fn r_nat_2_a_native_key_account_that_cannot_be_converted_is_said_and_left_as_it_was() {
     let b = Sandbox::new("convert-taken");
     let taken = b.data().join("accounts/anthropic-x").display().to_string();
     std::fs::create_dir_all(b.data()).unwrap();
     let native = json!({"kind": "anthropic-api", "apiKeyEnv": "X_KEY"});
     std::fs::write(b.config_path(), json!({"instances": {"anthropic:x": native, "claude:y": {"kind": "claude-code", "configDir": taken}}}).to_string()).unwrap();
     let out = b.krowk(&["status", "--json"], &[]);
-    assert!(stderr(&out).contains("krowk: anthropic:x could not become a Claude Code account") && stderr(&out).contains("runs as before"), "{}", stderr(&out));
+    assert!(stderr(&out).contains("krowk: anthropic:x could not become a Claude Code account") && stderr(&out).contains("krowk refuses it until it is connected again"), "{}", stderr(&out));
     assert!(stderr(&out).contains(r#""instance": "claude:y""#), "status still ran and listed them: {}", stderr(&out));
     assert_eq!(b.config()["instances"]["anthropic:x"], native);
 }

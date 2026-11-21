@@ -2741,6 +2741,7 @@ async fn chunks_hold(w: &World, session: &str, sessions: &[&str], wait: Duration
 /// written into the parent's chunks: the parent's branch walk leaves them
 /// out, so its replay is its own log's, and the child is rebuilt from them.
 #[tokio::test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 async fn r_sub_12_a_viewer_stops_the_sessions_own_child_and_nothing_else() {
     let w = World::native("child");
     let (a, b) = (w.device("machine-a"), w.device("machine-b"));

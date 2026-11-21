@@ -411,6 +411,7 @@ fn r_switch_5_claude_code_and_codex_round_trip() {
 
 /// Every pair with a native engine in it: native-only.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_switch_5_every_pair_with_a_native_engine_round_trips() {
     for (i, a) in Eng::ALL.iter().enumerate() {
         for b in &Eng::ALL[i + 1..] {
@@ -470,6 +471,7 @@ fn round_trip(a: Eng, b: Eng) {
 
 /// Native-only.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_switch_1_native_to_native_carries_calls_and_results_and_downgrades_reasoning() {
     let w = World::native("native");
     let host = w.host();
@@ -505,6 +507,7 @@ fn r_switch_1_native_to_native_carries_calls_and_results_and_downgrades_reasonin
 
 /// Native-only.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_switch_3_back_from_claude_code_the_native_model_reads_its_turns_whole() {
     let w = World::native("back");
     let host = w.host();
@@ -524,6 +527,7 @@ fn r_switch_3_back_from_claude_code_the_native_model_reads_its_turns_whole() {
 
 /// Native-only.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_switch_2_one_session_moves_claude_api_gpt_claude_code_grok_and_back_to_native() {
     let w = World::native("chain");
     let host = w.host();
@@ -730,6 +734,7 @@ fn r_switch_4_a_switch_does_not_escape_the_budget_or_loosen_the_mode() {
 
 /// Native-only: an API's 429 with `retry-after`.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_inst_7_a_limited_api_instance_offers_the_next_one_and_a_yes_continues_there() {
     let limited = mock::serve(|body, _| {
         let _ = body;
@@ -932,6 +937,7 @@ fn r_inst_6_each_instance_reports_how_near_its_limit_it_is() {
 
 /// Native-only: an API's `anthropic-ratelimit-*` headers.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_inst_6_an_api_instance_reports_how_near_its_limit_it_is_from_its_headers() {
     let headers = mock::serve(|body, _| Reply {
         headers: vec![("anthropic-ratelimit-tokens-limit".into(), "1000".into()), ("anthropic-ratelimit-tokens-remaining".into(), "150".into())],
@@ -1272,6 +1278,7 @@ fn r_switch_4_a_switch_during_a_turn_is_kept_for_after_it() {
 
 /// Native-only: krowk's own `subagent` tool.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_switch_4_a_switch_during_a_fan_out_moves_the_parent_and_leaves_its_subagent_on_its_model() {
     let w = World::native("fan-out");
     let host = w.host();
@@ -1403,6 +1410,7 @@ fn a_bare_model_stays_on_the_sessions_account_and_two_accounts_are_refused_as_am
 
 /// Native-only: the API-key instances beside the subscriptions.
 #[test]
+#[ignore = "native loop: key-versus-subscription routing on an API instance krowk no longer runs (NL04); covered on accounts by krowk/tests/harness_routing.rs; goes with the native loop (NL06)"]
 fn a_bare_model_stays_on_the_sessions_account_and_refuses_to_guess() {
     let mut w = World::native("routing-keys");
     let rt = rt();

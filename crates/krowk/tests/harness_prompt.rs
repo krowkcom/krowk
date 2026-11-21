@@ -95,6 +95,7 @@ fn krowk_sessions(b: &Sandbox) -> Vec<Value> {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("session", &m.url);
@@ -165,6 +166,7 @@ fn r_log_5_krowk_p_answers_streams_resumes_and_lists_beside_imported_sessions() 
 /// is answered, and stderr names them; a job that ended in the turn left
 /// its note, which krowk.db keeps as krowk's, never the person's.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_steer_2_krowk_p_names_a_job_it_stops_at_exit_and_krowk_db_keeps_a_note_as_krowks() {
     let m = mock::serve(|_, n| {
         mock::Reply::sse(&match n {
@@ -201,17 +203,11 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
     assert!(String::from_utf8_lossy(&out.stderr).contains("stream-json"));
     let out = b.krowk(&["-p"]);
     assert!(String::from_utf8_lossy(&out.stderr).contains("needs a prompt"));
-    // No key: refused before a session exists, exit 3, the variable named.
+    // No account: refused before a session exists, exit 3, with D4's line.
     let out = b.krowk_with(&["-p", "hi"], "");
     assert_eq!(out.status.code(), Some(3));
-    assert!(String::from_utf8_lossy(&out.stderr).contains("ANTHROPIC_API_KEY"));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("connect a Claude Code or Codex account"));
     assert!(!b.root.join("home/.krowk/sessions").exists(), "a refused prompt leaves no session behind");
-    // Nothing listening: named as unreachable, exit 6, and R-OFF-1's words
-    // lead the fix line.
-    let out = b.krowk(&["-p", "hi", "--model", "claude-sonnet-4-6"]);
-    assert_eq!(out.status.code(), Some(6), "{}", String::from_utf8_lossy(&out.stderr));
-    let err = String::from_utf8_lossy(&out.stderr).to_lowercase();
-    assert!(err.contains("network_unreachable") && err.contains("no network connectivity"), "r_off_1: {err}");
 }
 
 /// R-TOOL-2 through the built binary: the recorded tool definitions carry
@@ -219,6 +215,7 @@ fn p_flags_are_refused_elsewhere_and_bad_values_are_named() {
 /// knows the model, from the id otherwise — and config's `toolset` and
 /// `--toolset` override it, in that order.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
     let m = mock::serve(|_, _| mock::Reply::sse(&mock::fixture("turn2_answer.sse")));
     let b = Sandbox::new("toolset", &m.url);
@@ -263,6 +260,7 @@ fn r_tool_2_krowk_p_records_each_familys_edit_tool_and_toolset_overrides_it() {
 
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
     // A model that takes its time: the interrupt has to reach a turn that is
     // waiting on the network, not one between events.
@@ -305,6 +303,7 @@ fn ctrl_c_interrupts_a_turn_waiting_on_the_model_and_keeps_the_session() {
 /// notice naming the file — and `--permission-mode` wins without one. A
 /// deny rule that does not parse still refuses the prompt.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("auto-mode", &m.url);
@@ -343,6 +342,7 @@ fn r_perm_1_krowk_p_runs_beside_a_claude_default_mode_it_does_not_run() {
 /// `.mcp.json` it will not start is named on stderr; trusted, a server it
 /// leaves out for its name or its config is named with why.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_3_krowk_p_names_an_untrusted_mcp_json_and_a_server_it_skips() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("mcp-notice", &m.url);
@@ -399,6 +399,7 @@ fn on_a_terminal(b: &Sandbox, args: &[&str]) -> (String, Vec<u8>, std::process::
 /// stdout but the answer.
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
     use krowk::osc7501::State;
     let prompt = "\nread README.md and summarise it in one line\nand nothing else";
@@ -426,6 +427,7 @@ fn r_pres_6_krowk_p_on_a_terminal_reports_working_then_done_or_error() {
 /// JSON but for what differs between any two runs (ids, times).
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_stderr_in_a_file_gets_no_report_and_stdout_is_the_same_either_way() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("pres6file", &m.url);
@@ -483,6 +485,7 @@ fn steady(out: &str) -> String {
 /// error: the person stopped it.
 #[cfg(unix)]
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
     use krowk::osc7501::State;
     // A model that takes the request and holds its answer: the turn is
@@ -509,6 +512,7 @@ fn r_pres_6_ctrl_c_during_the_turn_reports_idle_before_exit() {
 /// `[Image #1]` and `[Image #2]` in the prompt; a big one is shrunk to fit;
 /// a missing or non-image file is refused naming it, before any turn.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     let bodies = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
     let seen = bodies.clone();
@@ -584,41 +588,55 @@ fn krowk_p_image_sends_each_file_with_the_prompt_and_refuses_a_bad_one_first() {
     assert!(images[1]["source"]["data"].as_str().unwrap().len() < std::fs::metadata(big).unwrap().len() as usize * 4 / 3);
 }
 
-/// Saves `login`'s `requests` window with `used` percent used, as seen now.
-fn seed_usage(home: &std::path::Path, login: &str, used: f64) {
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
-    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("requests".into()), used_percent: Some(used), resets_at_ms: None };
-    usage.record_limit(login, &limit, now).unwrap();
+/// Two Claude Code accounts, each signed in in a directory of its own:
+/// `claude:a` replaying `scenario`, `claude:b` answering, and `rollover`
+/// when given — what a limit on `claude:a` may move on to.
+fn two_claude_accounts(b: &Sandbox, scenario: &str, rollover: Option<&str>) {
+    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../krowk-harness/tests/fixtures/claude");
+    let account = |name: &str, scenario: &str| {
+        let dir = b.root.join("home/.krowk/accounts").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("fake-login"), "").unwrap();
+        serde_json::json!({"kind": "claude-code", "binary": b.root.join("bin/claude"), "configDir": dir, "env": {"FAKE_CLAUDE_SCENARIO": fixtures.join(scenario)}})
+    };
+    let mut cfg = serde_json::json!({"instances": {"claude:a": account("claude-a", scenario), "claude:b": account("claude-b", "switch.jsonl")}});
+    if let Some(r) = rollover {
+        cfg["rollover"] = r.into();
+    }
+    std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
 }
 
-/// A successful answer that leaves one request in a hundred: the early switch's trigger.
-fn nearly_out(text: &str) -> mock::Reply {
-    mock::Reply { headers: vec![("anthropic-ratelimit-requests-limit".into(), "100".into()), ("anthropic-ratelimit-requests-remaining".into(), "1".into())], ..mock::Reply::sse(&mock::text_stream(text)) }
+/// Saves `instance`'s five-hour window with `used` percent used, as seen
+/// now, under a login of its own name, listing `haiku`.
+fn seed_usage(home: &std::path::Path, instance: &str, used: f64) {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
+    let usage = krowk_harness::usage::Usage::in_home(&home.join(".krowk"));
+    usage.record_instance(instance, instance, &["haiku".to_string()], now).unwrap();
+    let limit = krowk_harness::protocol::LimitStatus { status: krowk_harness::protocol::LimitState::Allowed, window: Some("five_hour".into()), used_percent: Some(used), resets_at_ms: Some(now + 3_600_000) };
+    usage.record_limit(instance, &limit, now).unwrap();
 }
 
 /// R-ROLL-11, D16: `krowk -p` with `offer` ends a turn that left too little
-/// by offering the next instance in its JSON result, marked early, and
+/// by offering the next account in its JSON result, marked early, and
 /// says how to continue there on stderr; the turn itself succeeded.
+#[cfg(unix)]
 #[test]
-#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
-    let low = mock::serve(|_, _| nearly_out("low-answer-marker"));
-    let ok = mock::serve(mock::readme_script);
-    let b = Sandbox::new("early", &low.url);
+    let b = Sandbox::new("early", "http://127.0.0.1:9");
     std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-    std::fs::write(b.root.join("home/.krowk/config.json"), serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}}).to_string()).unwrap();
-    seed_usage(&b.root.join("home"), "anthropic:b", 20.0);
-    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"]);
+    two_claude_accounts(&b, "low.jsonl", None);
+    seed_usage(&b.root.join("home"), "claude:a", 90.0);
+    seed_usage(&b.root.join("home"), "claude:b", 20.0);
+    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json"]);
     let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
     assert!(out.status.success(), "{stdout}{err}");
     let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
-    assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("anthropic:b")), "{stdout}");
+    assert_eq!((v["switchOffer"]["early"].as_bool(), v["switchOffer"]["to"]["instance"].as_str()), (Some(true), Some("claude:b")), "{stdout}");
     let id = v["sessionId"].as_str().unwrap();
-    assert!(err.contains("continue on anthropic:b/claude-sonnet-4-6 (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model anthropic:b/claude-sonnet-4-6`")), "{err}");
+    assert!(err.contains("continue on claude:b/haiku (80% left as of ") && err.contains(&format!("with `krowk -p --resume {id} --model claude:b/haiku`")), "{err}");
     // Off: no offer, no hint.
-    let out = b.krowk(&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json", "--rollover", "off"]);
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    let out = b.krowk(&["-p", "hi", "--model", "claude:a/haiku", "--trust", "--output-format", "json", "--rollover", "off"]);
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&out.stderr)));
     assert!(v["switchOffer"].is_null() && !String::from_utf8_lossy(&out.stderr).contains("continue on"), "{v}");
 }
 
@@ -626,43 +644,37 @@ fn r_roll_11_krowk_p_shows_an_early_offer_in_json_and_hints_on_stderr() {
 /// repository's `.krowk/config.json` and `--rollover`, most specific first;
 /// `off` fails a limit with no offer; a resumed session keeps its value; any
 /// other value is refused naming the three.
+#[cfg(unix)]
 #[test]
-#[ignore = "runs a second native account, which is a Claude Code account from its first use on (NL03); moves onto the fake harnesses (NL05)"]
 fn r_roll_5_krowk_p_resolves_rollover_per_session_repo_and_global() {
-    let limited = mock::serve(|_, _| mock::Reply { headers: vec![("retry-after".into(), "0".into())], ..mock::Reply::json(429, &serde_json::json!({"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}})) });
-    let ok = mock::serve(mock::readme_script);
-    let b = Sandbox::new("rollover", &limited.url);
-    let global = |rollover: Option<&str>| {
-        let mut cfg = serde_json::json!({"instances": {"anthropic:b": {"kind": "anthropic-api", "baseUrl": ok.url}}});
-        if let Some(r) = rollover {
-            cfg["rollover"] = r.into();
-        }
-        std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
-        std::fs::write(b.root.join("home/.krowk/config.json"), cfg.to_string()).unwrap();
-    };
+    let b = Sandbox::new("rollover", "http://127.0.0.1:9");
+    std::fs::create_dir_all(b.root.join("home/.krowk")).unwrap();
+    let global = |rollover: Option<&str>| two_claude_accounts(&b, "limited.jsonl", rollover);
     let repo = |rollover: &str| {
         std::fs::create_dir_all(b.root.join("repo/.krowk")).unwrap();
         std::fs::write(b.root.join("repo/.krowk/config.json"), serde_json::json!({"rollover": rollover}).to_string()).unwrap();
     };
-    // Whether the limited turn was offered a way on, and its session.
+    // Whether the limited turn was offered a way on, and its session. The
+    // repository is trusted only when `--trust` is given.
     let offered = |extra: &[&str]| -> (bool, String) {
-        let out = b.krowk(&[&["-p", "hi", "--model", "anthropic/claude-sonnet-4-6", "--output-format", "json"], extra].concat());
+        let out = b.krowk(&[&["-p", "hi", "--model", "claude:a/haiku", "--output-format", "json"], extra].concat());
         let (stdout, err) = (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned());
         let v: Value = serde_json::from_str(&stdout).unwrap_or_else(|e| panic!("{e}: {stdout}{err}"));
-        let hinted = v["error"]["message"].as_str().unwrap_or_default().contains("continue on");
-        assert_eq!(hinted, !v["switchOffer"].is_null(), "the hint and the offer go together: {stdout}");
-        (hinted, v["sessionId"].as_str().unwrap_or_default().to_string())
+        assert_eq!(v["error"]["code"].as_str(), Some("rate_limited"), "{stdout}");
+        let offer = !v["switchOffer"].is_null();
+        assert_eq!(offer, v["error"]["message"].as_str().unwrap_or_default().contains("continue on"), "the hint and the offer go together: {stdout}");
+        (offer, v["sessionId"].as_str().unwrap_or_default().to_string())
     };
 
     global(None);
-    assert!(offered(&[]).0, "offer is the default");
+    assert!(offered(&["--trust"]).0, "offer is the default");
     global(Some("off"));
-    assert!(!offered(&[]).0, "the global value");
+    assert!(!offered(&["--trust"]).0, "the global value");
     repo("offer");
-    assert!(!offered(&[]).0, "an untrusted repository's value is ignored");
     assert!(offered(&["--trust"]).0, "a trusted repository overrides the global value");
     assert!(!offered(&["--trust", "--rollover", "off"]).0, "--rollover overrides both");
-    assert!(offered(&["--rollover", "offer"]).0, "--rollover overrides the global value");
+    std::fs::remove_dir_all(b.root.join("repo/.krowk")).unwrap();
+    assert!(offered(&["--trust", "--rollover", "offer"]).0, "--rollover overrides the global value");
 
     // Resumed: the recorded value stands until a new one replaces it.
     let (_, id) = offered(&["--rollover", "off", "--trust"]);

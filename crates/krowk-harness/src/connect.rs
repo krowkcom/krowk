@@ -61,10 +61,11 @@ use serde_json::{Map, Value};
 use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
-/// What a way in krowk no longer runs — SuperGrok — is refused with.
+/// What a way in krowk no longer runs — SuperGrok, or any instance that is
+/// not a Claude Code or Codex account — is refused with (D4).
 pub const NO_DIRECT_MODELS: &str = "krowk no longer runs models directly; connect a Claude Code or Codex account.";
 
-fn no_direct_models() -> EngineError {
+pub fn no_direct_models() -> EngineError {
     EngineError::new("removed_provider", NO_DIRECT_MODELS)
 }
 
@@ -1692,7 +1693,7 @@ impl ProviderAuth<'_> {
                 (Ok(m), Some(kind)) => made.push((name.clone(), kind, m)),
                 (Err(why), _) => {
                     let harness = if harness == "codex-app-server" { "Codex" } else { "Claude Code" };
-                    said.push(format!("{name} could not become a {harness} account ({why}) — it runs as before for now"));
+                    said.push(format!("{name} could not become a {harness} account ({why}) — krowk refuses it until it is connected again with `krowk connect`"));
                 }
                 (Ok(m), None) => {
                     let _ = undo(&m, EngineError::new("", ""));
@@ -1714,7 +1715,7 @@ impl ProviderAuth<'_> {
             for (_, _, m) in &made {
                 let _ = undo(m, EngineError::new("", ""));
             }
-            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — they run as before for now", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
+            said.push(format!("{} could not become Claude Code or Codex accounts ({}) — krowk refuses them until they are connected again with `krowk connect`", made.iter().map(|(n, ..)| n.as_str()).collect::<Vec<_>>().join(", "), e.message));
             return said;
         }
         said.extend(made.iter().map(|(name, kind, _)| {

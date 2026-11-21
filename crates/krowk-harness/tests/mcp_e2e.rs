@@ -233,6 +233,7 @@ fn context_tokens_budget() -> u64 {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
     let m = mock::serve(script(vec![
         ("mcp_search", json!({"query": "echo text"})),
@@ -274,6 +275,7 @@ fn r_tool_3_a_trusted_projects_mcp_server_is_found_by_search_and_called() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_an_untrusted_repositorys_mcp_json_starts_nothing() {
     let m = mock::serve(script(vec![("mcp_search", json!({"query": "echo"}))]));
     let h = Home::new("untrusted", &m.url);
@@ -299,6 +301,7 @@ fn r_tool_3_an_untrusted_repositorys_mcp_json_starts_nothing() {
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_tool_3_fifty_mcp_tools_cost_the_context_two_definitions_within_the_ticket_3_budget() {
     let m = mock::serve(script(vec![("mcp_search", json!({"query": "filler"}))]));
     let h = Home::new("fifty", &m.url);
@@ -338,6 +341,7 @@ fn r_tool_3_fifty_mcp_tools_cost_the_context_two_definitions_within_the_ticket_3
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_plan_mode_and_a_whole_server_deny_start_no_server() {
     for (mode, user) in [(PermissionMode::Plan, json!({})), (PermissionMode::BypassPermissions, json!({"permissions": {"deny": ["Mcp(fake)"]}}))] {
         let m = mock::serve(script(vec![("mcp_search", json!({"query": "echo"}))]));
@@ -352,6 +356,7 @@ fn r_tool_3_plan_mode_and_a_whole_server_deny_start_no_server() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_deny_rule_on_mcp_server_tool_blocks_the_call() {
     let m = mock::serve(script(vec![
         ("mcp_search", json!({"query": "echo"})),
@@ -384,6 +389,7 @@ fn r_tool_3_a_deny_rule_on_mcp_server_tool_blocks_the_call() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_tool_3_a_streamable_http_server_from_the_persons_own_config_is_called() {
     // The server answers JSON, and `tools/call` as an SSE stream; its
     // session id is carried from `initialize` on.
@@ -436,6 +442,7 @@ fn is_child(body: &Value) -> bool {
 /// other, its call there is refused before it runs, and the other is never
 /// started for it — while the session that started it still reaches both.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
     let parent = script(vec![
         ("subagent", json!({"description": "echo", "prompt": "echo hi through fake", "agent": "fake-only"})),
@@ -496,6 +503,7 @@ fn r_sub_1_a_subagent_limited_to_one_mcp_server_cannot_call_another() {
 /// `mcp__fake__echo`, finds that tool alone on its server and is refused
 /// its sibling, before the server sees the call.
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_sub_1_a_subagent_limited_to_one_mcp_tool_cannot_call_its_sibling() {
     let parent = script(vec![("subagent", json!({"description": "echo", "prompt": "echo hi", "agent": "echo-only"}))]);
     let child = script(vec![
@@ -601,6 +609,7 @@ fn http_count(server: &mock::Mock, method: &str) -> usize {
 /// process and one `initialize` for the stdio server, one `initialize` for
 /// the HTTP one.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_1_two_turns_of_a_session_start_each_server_once() {
     let web = http_server();
     let m = mock::serve(search_each_turn);
@@ -622,6 +631,7 @@ fn r_mcp_1_two_turns_of_a_session_start_each_server_once() {
 /// one and one of a repository that is no longer trusted are closed before
 /// the next model call.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_2_a_changed_server_restarts_alone_and_a_removed_or_untrusted_one_is_closed() {
     let m = mock::serve(search_each_turn);
     let h = Home::new("changes", &m.url);
@@ -659,6 +669,7 @@ fn r_mcp_2_a_changed_server_restarts_alone_and_a_removed_or_untrusted_one_is_clo
 /// R-MCP-5: the idle sweep closes a session's servers, and so does the
 /// host's shutdown — processes stopped, an HTTP session ended with DELETE.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
     let web = http_server();
     let m = mock::serve(search_each_turn);
@@ -684,6 +695,7 @@ fn r_mcp_5_the_idle_sweep_and_shutdown_close_a_sessions_servers() {
 const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR\0\0\0\x01\0\0\0\x01";
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_mcp_14_an_image_block_and_an_image_resource_reach_the_model_inside_the_tool_result() {
     use base64::Engine as _;
     let b64 = base64::engine::general_purpose::STANDARD.encode(PNG);
@@ -746,6 +758,7 @@ fn image_result_request(instance: &str, model: &str, call: Reply, answer: Reply)
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_mcp_14_an_image_reaches_a_responses_model_as_an_input_image_in_the_function_call_output() {
     let call = r#"event: response.output_item.added
 data: {"type":"response.output_item.added","sequence_number":0,"output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"mcp_call","arguments":""}}
@@ -769,6 +782,7 @@ data: {"type":"response.completed","sequence_number":2,"response":{"id":"resp_1"
 }
 
 #[test]
+#[ignore = "native loop: runs a native turn, which krowk refuses now (NL04); goes with the native loop (NL06)"]
 fn r_mcp_14_an_image_reaches_a_chat_completions_model_in_a_user_message_after_the_tool_message() {
     let chunk = |delta: Value, finish: Value| format!("data: {}\n\n", json!({"id": "c1", "object": "chat.completion.chunk", "created": 1, "model": "grok-4.7", "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}));
     let call = chunk(json!({"role": "assistant", "tool_calls": [{"index": 0, "id": "call_1", "type": "function", "function": {"name": "mcp_call", "arguments": "{\"tool\":\"fake:echo\",\"input\":{\"text\":\"x\"}}"}}]}), Value::Null) + &chunk(json!({}), json!("tool_calls")) + "data: [DONE]\n\n";
@@ -787,6 +801,7 @@ fn r_mcp_14_an_image_reaches_a_chat_completions_model_in_a_user_message_after_th
 /// R-MCP-21: the host reports a session's servers — name, where each is
 /// configured, status and tools — and starts one again on request.
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_mcp_21_the_host_reports_the_sessions_servers_and_reconnects_one() {
     use krowk_harness::protocol::McpState;
     let m = mock::serve(script(vec![]));

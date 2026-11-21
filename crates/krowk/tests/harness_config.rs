@@ -131,6 +131,7 @@ fn r_cut_7_get_reads_workspace_and_refuses_an_unknown_key() {
 }
 
 #[test]
+#[ignore = "runs a native turn, which krowk refuses now (NL04); needs moving onto the fake harnesses before the mock model goes (NL05 list: NL06 or a follow-up)"]
 fn r_cut_6_a_session_started_after_config_set_uses_the_default_mode() {
     let m = mock::serve(mock::readme_script);
     let b = Sandbox::new("session");

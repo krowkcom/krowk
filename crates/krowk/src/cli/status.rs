@@ -1,5 +1,6 @@
-//! `krowk status`: whether each provider instance can run a turn here —
-//! the implicit ones and the configured ones, one row each: its name, its
+//! `krowk status`: whether each Claude Code or Codex account can run a turn
+//! here — the implicit ones and the configured ones, one row each (an
+//! instance krowk would run itself is not offered: D6): its name, its
 //! kind, its readiness, where its credential comes from, and what fixes it.
 //! The answer is `krowk_harness::readiness`, the same check `providers
 //! list`, `doctor` and a model switch use, so the three never disagree.
@@ -9,8 +10,8 @@
 //! call. `--json` is the table as data:
 //!
 //! ```json
-//! {"ready": 1, "instances": [{"instance": "anthropic", "kind": "anthropic-api",
-//!   "state": "ready", "ready": true, "source": "env ANTHROPIC_API_KEY",
+//! {"ready": 1, "instances": [{"instance": "anthropic", "kind": "claude-code",
+//!   "state": "ready", "ready": true, "source": "env ANTHROPIC_API_KEY, handed to Claude Code",
 //!   "fix": null, "var": null, "reason": null}, …]}
 //! ```
 //!
@@ -27,11 +28,12 @@ use krowk_harness::instances::{InstancesConfig, Registry};
 use krowk_harness::readiness::{self, Report};
 use serde_json::{json, Value};
 
-/// Every instance this host has, checked — the vendors in parallel.
+/// Every Claude Code or Codex account this host has, checked — the vendors
+/// in parallel.
 pub(super) fn reports(ctx: &Ctx) -> Result<(InstancesConfig, Registry, Vec<Report>), Error> {
     let cfg = super::prompt::load_instances()?;
     let reg = Registry::resolve(&cfg, ctx.io.env);
-    let all: Vec<_> = reg.instances.values().collect();
+    let all: Vec<_> = reg.instances.values().filter(|i| i.backend.is_some()).collect();
     let reports = readiness::check_all(&all, &super::providers::credentials_path()?, &neutral_probe(ctx)?);
     Ok((cfg, reg, reports))
 }
@@ -62,7 +64,7 @@ pub(super) fn status(ctx: &mut Ctx) -> Result<(), Error> {
         return super::sessions::emit_data(ctx, data.clone(), summary);
     }
     let width = |f: &dyn Fn(&Report) -> usize| reports.iter().map(f).max().unwrap_or(0);
-    let label = |r: &Report| krowk_harness::instances::kind_label(r.kind);
+    let label = |r: &Report| r.label;
     let (wn, wk, ws) = (width(&|r| r.instance.len()), width(&|r| label(r).len()), width(&|r| r.readiness.label().len()));
     let out = &mut *ctx.io.stdout;
     for r in &reports {

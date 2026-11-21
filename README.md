@@ -9,10 +9,10 @@ Plumbing for independent agents: they travel between your machines to use comput
 
 ---
 
-Krowk is plumbing for agents running in other harnesses, built for power users who run coding agents all day. It has no interface of its own: a command line, a background daemon and the agent engines. It drives Claude Code and Codex, or runs Claude, GPT, Grok or any OpenAI-compatible model with your existing subscription or an API key. A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
+Krowk is plumbing for agents running in other harnesses, built for power users who run coding agents all day. It has no interface of its own: a command line, a background daemon and the agent engines. It drives Claude Code and Codex, on your existing subscription or an API key (an xAI, OpenRouter or OpenAI-compatible key runs in Codex). A session can move to another model or agent mid-conversation, and syncs to your other machines end-to-end encrypted. It follows Claude Code's permissions, skills and hooks, keeps track of every agent session on your machine, and publishes screenshots, diffs and logs as links that unfurl in GitHub, Slack, Linear and Basecamp. It assumes you're comfortable in a terminal, with git and with configuration files.
 
 ```bash
-krowk connect            # sign in with a Claude, ChatGPT or SuperGrok subscription, or an API key
+krowk connect            # a Claude Code or Codex account: a Claude or ChatGPT subscription, or an API key
 krowk -p "fix the build" # run one prompt headless (--output-format json)
 krowk -p --resume <id> "go on" # continue an earlier session
 ```

@@ -45,7 +45,7 @@ use crate::codex::auth as codex_auth;
 use crate::connect;
 use crate::engine::EngineError;
 use crate::catalog::Listed;
-use crate::instances::{kind_label, Asked, Auth, Backend, Registry, Resolved};
+use crate::instances::{account_label, kind_label, Asked, Auth, Backend, Registry, Resolved};
 use crate::keys::{self, Stored};
 use crate::oauth;
 use crate::protocol::{ModelRef, WireApi};
@@ -148,6 +148,8 @@ impl Readiness {
 pub struct Report {
     pub instance: String,
     pub kind: &'static str,
+    /// What it is, in a person's words (`instances::account_label`).
+    pub label: &'static str,
     pub readiness: Readiness,
     /// Where the credential comes from — or, when it is not there, would.
     /// A name or a place, never a secret.
@@ -164,7 +166,7 @@ impl Report {
         json!({
             "instance": self.instance,
             "kind": self.kind,
-            "label": crate::instances::kind_label(self.kind),
+            "label": self.label,
             "state": self.readiness.state(),
             "ready": self.readiness.is_ready(),
             "source": self.source,
@@ -313,8 +315,9 @@ pub async fn check_async(inst: &Resolved, credentials: &Path, probe: &Probe) -> 
 ///    each when it serves the id and is ready: the person already chose it;
 /// 2. else the one that is ready, when exactly one is;
 /// 3. else, when several are, `ambiguous_model`, listing them with what
-///    each is and the `--model` that picks it; when none is, `none_ready`,
-///    naming each and what connects it.
+///    each is and the `--model` that picks it; when none is, `none_ready`:
+///    with no id, D4's one line, and for an id, each account of its line
+///    and what connects one.
 ///
 /// A vendor that could not tell (`unknown`) is a candidate like a ready
 /// one — alone it is taken, as the host's own check leaves such a turn to
@@ -401,6 +404,10 @@ pub fn route(
     };
     match pool.as_slice() {
         [one] => spell(one),
+        // D4: with no model asked and nothing connected — no account in
+        // config.json, and the implicit `claude` and `codex` not ready — the
+        // one line; an account the person connected says what it needs.
+        [] if bare.is_none() && !cands.iter().any(|i| reg.configured.contains(&i.name)) => Err(EngineError::new("none_ready", crate::connect::NO_DIRECT_MODELS)),
         [] => {
             let run: Vec<String> = crate::instances::serving(bare)
                 .1
@@ -413,18 +420,13 @@ pub fn route(
                 Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
                 None => String::new(),
             };
-            // A router or a compatible server that is ready may serve it:
-            // krowk cannot tell, but the person can name it.
-            let named: Vec<String> = reg
-                .instances
-                .values()
-                .filter(|i| i.backend.is_none() && suggested(i).is_none() && local(i, credentials).is_some_and(|r| r.is_ready()))
-                .map(|i| format!("`--model {}/<id>`", i.name))
-                .collect();
-            let named = if named.is_empty() { String::new() } else { format!(", or name one that may serve it: {}", named.join(", ")) };
-            let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, kind_label(i.kind), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
-            let for_what = if bare.is_some() { format!(" serves {what} (asked for {asked})") } else { " can run a model here (no --model, and config names no defaultModel)".into() };
-            Err(EngineError::new("none_ready", format!("no connected instance{for_what} — run {run}{named}. What each one needs:\n{}", needs.join("\n"))))
+            let needs: Vec<String> = rows.iter().map(|(i, r)| format!("  {}, {} ({}): {}", i.name, account_label(i), r.readiness.label(), r.fix.clone().unwrap_or_default())).collect();
+            let needs = if needs.is_empty() { String::new() } else { format!(". What each one needs:\n{}", needs.join("\n")) };
+            let said = match bare {
+                Some(_) => format!("no connected account serves {what} (asked for {asked}) — run {run}, or name the account that runs it: `--model <account>/<id>`"),
+                None => format!("no connected account is ready to run {asked}"),
+            };
+            Err(EngineError::new("none_ready", format!("{said}{needs}")))
         }
         several => {
             let picks: Vec<String> = several
@@ -432,7 +434,7 @@ pub fn route(
                 .map(|i| {
                     let m = reg.model_on(i, bare, listed).unwrap_or_else(|_| "<model>".into());
                     let unchecked = if unknown.iter().any(|u| u.name == i.name) { " (could not be checked — see `krowk status`)" } else { "" };
-                    format!("  {}, {}: --model {}/{m}{unchecked}", i.name, kind_label(i.kind), i.name)
+                    format!("  {}, {}: --model {}/{m}{unchecked}", i.name, account_label(i), i.name)
                 })
                 .collect();
             let example = several.iter().find_map(|i| suggested(i)).map(|c| format!(" (e.g. `{c} --default`)")).unwrap_or_default();
@@ -456,7 +458,7 @@ pub fn report(inst: &Resolved, readiness: Readiness, credentials: &Path) -> Repo
         _ => expected_source(inst, credentials),
     };
     let fix = fix(inst, &readiness);
-    Report { instance: inst.name.clone(), kind: inst.kind, readiness, source, fix }
+    Report { instance: inst.name.clone(), kind: inst.kind, label: crate::instances::account_label(inst), readiness, source, fix }
 }
 
 /// Where the credential would come from, said of an instance that is not
@@ -500,9 +502,10 @@ fn fix(inst: &Resolved, r: &Readiness) -> Option<String> {
 /// The command routing suggests for an instance — `connect::connect_command`,
 /// the one every fix line uses — for a kind `krowk connect` sets up by a
 /// vendor's own method. None for a router or a compatible server, whose
-/// models krowk cannot tell: routing only ever names those.
+/// models krowk cannot tell: routing only ever names those; none for
+/// SuperGrok, which no longer connects (D6).
 fn suggested(i: &Resolved) -> Option<String> {
-    (!matches!(i.kind, "openrouter-api" | "openai-compatible")).then(|| connect::connect_command(&i.name, i.kind))
+    (!matches!(i.kind, "openrouter-api" | "openai-compatible" | "xai-oauth")).then(|| connect::connect_command(&i.name, i.kind))
 }
 
 /// Vendor answers that said "signed in", by instance, and when.
