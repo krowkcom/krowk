@@ -13,24 +13,21 @@ Examples
                              The same, as JSON for a script or an agent
   krowk login                Add a key, so uploads keep and group under runs
 
-Publish
-  push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
-
-Account
+Accounts
   login         Sign in to your krowk account
-  logout        Remove this machine's key
   whoami        Show the key and its workspace
   billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
 
-Other
+Work
   sessions      List and read agent sessions on this machine
-  config        Show or set configuration
+
+Publish
+  push          Upload files, get a link for each
+
+Health
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --json · --jq <expr>       Output as JSON, or filter it

@@ -203,6 +203,52 @@ fn r_roll_14_doctor_names_the_rollover_order_entries_rollover_ignores() {
     assert!(said.contains("\"claude/sonnet\": the model") && said.contains("\"anthropic\": a "), "{said}");
 }
 
+/// R-EASE-8: doctor lists every check with its state and the visible command
+/// that fixes it, and exits non-zero exactly when one failed.
+#[test]
+fn doctor_checks_everything_names_the_fix_and_exits_non_zero_exactly_when_a_check_failed() {
+    let b = Sandbox::new("doctor-everything");
+    b.install_fakes();
+    let names = |d: &Value| d["checks"].as_array().unwrap().iter().map(|c| c["name"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+    let check = |d: &Value, name: &str| d["checks"].as_array().unwrap().iter().find(|c| c["name"] == name).cloned().unwrap_or_else(|| panic!("no {name} in {d}"));
+
+    // No account, and not chosen to go without: it fails, and says how to sign in.
+    let out = b.krowk(&["doctor", "--json"], &[]);
+    let d = stdout_json(&out);
+    assert_eq!(names(&d), ["account", "machine", "always_on", "providers", "trust", "recovery_kit", "plan", "store", "pricing", "rollover"], "{d}");
+    assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "account")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");
+    assert!(!out.status.success(), "a failed check is a non-zero exit");
+    let human = b.krowk(&["doctor", "--format", "human"], &[]);
+    assert!(String::from_utf8_lossy(&human.stdout).contains("✗ Not signed in to krowk — krowk login"), "{}", String::from_utf8_lossy(&human.stdout));
+    assert!(!human.status.success());
+
+    // Using krowk locally: the account step is skipped, nothing needs fixing.
+    std::fs::create_dir_all(b.home().join(".krowk")).unwrap();
+    std::fs::write(b.home().join(".krowk/first-run.json"), "{\"local\": true}\n").unwrap();
+    let out = b.krowk(&["doctor", "--json"], &[]);
+    let d = stdout_json(&out);
+    assert!(d["checks"].as_array().unwrap().iter().all(|c| c["status"] != "fail"), "{d}");
+    assert_eq!(check(&d, "account")["status"], "skip", "{d}");
+    assert!(out.status.success(), "no failed check, exit 0: {d}");
+
+    // A key in KROWK_TOKEN (CI, an agent): signed in, and no machine of the
+    // person's, so nothing about registration or the service is asked.
+    let out = b.krowk(&["doctor", "--json"], &[("KROWK_TOKEN", "krowk_sk_ci#a")]);
+    let d = stdout_json(&out);
+    assert_eq!((check(&d, "account")["status"].as_str(), check(&d, "machine")["status"].as_str(), check(&d, "always_on")["status"].as_str()), (Some("pass"), Some("skip"), Some("skip")), "{d}");
+    assert!(out.status.success(), "{d}");
+
+    // Signed in with a key, on a machine never registered: that fails with
+    // its fix, and the service has no machine to keep on.
+    std::fs::write(b.home().join(".krowk/credentials.json"), json!({"version": 1, "default": "ws_t", "workspaces": {"ws_t": {"token": "krowk_sk_doctor#a", "key_id": "key_t", "workspace": "ws_t"}}}).to_string()).unwrap();
+    let out = b.krowk(&["doctor", "--json"], &[("KROWK_API_URL", "http://127.0.0.1:9")]);
+    let d = stdout_json(&out);
+    assert_eq!(check(&d, "account")["status"], "pass", "{d}");
+    assert_eq!((check(&d, "machine")["status"].as_str(), check(&d, "machine")["fix"].as_str()), (Some("fail"), Some("krowk login")), "{d}");
+    assert_eq!(check(&d, "always_on")["status"], "skip", "{d}");
+    assert!(!out.status.success());
+}
+
 #[test]
 fn no_secret_reaches_status_list_or_doctor() {
     let b = Sandbox::new("secrets");

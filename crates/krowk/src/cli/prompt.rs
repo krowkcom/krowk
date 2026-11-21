@@ -518,9 +518,9 @@ fn trust_gate(flag: bool, ask: bool, dir: std::path::PathBuf, home: Option<std::
             return Err(trust::untrusted(root, &format!("It cannot be trusted for good — {why}. Pass --trust to run there this once, or run krowk -p from a repository of its own.")));
         }
         if !ask {
-            return Err(trust::untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
+            return Err(store.untrusted(root, "Look at what it would run, then pass --trust to run it anyway, or run `krowk trust` there to trust it for good."));
         }
-        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(trust::untrusted(root, "Nothing was run.")) }
+        if ask_trust(&store, root, vendor) { Ok(()) } else { Err(store.untrusted(root, "Nothing was run.")) }
     })
 }
 
@@ -543,6 +543,8 @@ pub(super) fn ask_trust(store: &trust::Store, root: &std::path::Path, vendor: &s
         v => format!("{v} runs a repository's own hooks and MCP servers without asking."),
     };
     let has = if runs.is_empty() { "Nothing of that kind is there now.".to_string() } else { format!("It has {}.", runs.join(", ")) };
+    let changed = store.changes(root);
+    let has = if changed.is_empty() { has } else { format!("{has} You trusted it before; {} changed since.", changed.join(", ")) };
     let mut err = std::io::stderr();
     let _ = write!(err, "{}\n{}\nTrust {}? [y/N] ", crate::termclean::cell(&why), crate::termclean::cell(&has), crate::termclean::cell(&crate::home_relative(root)));
     let _ = err.flush();

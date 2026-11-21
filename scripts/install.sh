@@ -953,17 +953,15 @@ write_skill() {
 
 next_steps() {
   echo ""
-  echo "  Next:"
+  echo "  Run krowk:"
   if [[ "$HAS_AGENT" == yes ]]; then
-    echo "    $(bold "krowk")                         Open krowk's agent: any model, Claude Code or Codex"
-    echo "    $(bold "krowk login")                   Sign in to your krowk account"
-    echo "    $(bold "krowk sync init")               Sync sessions across your machines, end-to-end encrypted"
-    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link — no key needed, lasts a day"
+    echo "    $(bold "krowk")                         Set this machine up: sign in and connect a model"
+    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
   else
-    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link — no key needed, lasts a day"
-    echo "    $(bold "krowk login --token …")    Add a key, and uploads keep, group under runs and stay yours"
+    echo "    $(bold "krowk push screenshot.png")     Publish a file to a link, no key needed, lasts a day"
+    echo "    $(bold "krowk login")                   Sign in, and uploads keep, group and stay yours"
   fi
-  echo "    $(bold "krowk help")                    Everything else — add --json for the surface as data"
+  echo "    $(bold "krowk help")                    Everything else, add --json for the surface as data"
   echo ""
 }
 

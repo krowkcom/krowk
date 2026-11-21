@@ -103,7 +103,7 @@ pub struct Options {
     /// relay alone.
     pub direct: Option<super::direct::Config>,
     /// This machine's tailnet node, kept in the session's sealed index so
-    /// `krowk hosts` finds it on the tailnet (R-NET-4); None when Tailscale
+    /// `krowk machines` finds it on the tailnet (R-NET-4); None when Tailscale
     /// is down.
     pub tailnet: Option<super::tailscale::Tailnet>,
     /// The lease another host handed this one with the session (R-HAND-1):
@@ -310,7 +310,7 @@ fn take(o: &Options) -> Result<(SessionKeys, Writer, Held), String> {
 }
 
 /// This machine as the index names its host: what the index is next
-/// written with, so `krowk hosts` lists the session under it.
+/// written with, so `krowk machines` lists the session under it.
 fn hosted_on(o: &Options) -> store::HostedOn {
     store::HostedOn { device: o.device.to_string(), tailnet: o.tailnet.clone() }
 }
@@ -534,6 +534,8 @@ enum Write {
     Checkpoint(Option<String>),
     /// A checkpoint before a handoff, answered once it is stored or not.
     Handoff(Option<String>, std::sync::mpsc::Sender<Result<(), String>>),
+    /// A flush, answered once everything before it is stored or not.
+    Flushed(std::sync::mpsc::Sender<Result<(), String>>),
 }
 
 /// How often a write the registry refused is tried again.
@@ -613,7 +615,7 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
                     // are kept and a flush is owed still, and a handoff hears
                     // why. A checkpoint asked for then is not cut (the next
                     // take-up cuts one).
-                    (Err(e), Some(Write::Handoff(_, done))) => {
+                    (Err(e), Some(Write::Handoff(_, done) | Write::Flushed(done))) => {
                         let _ = done.send(Err(e.clone()));
                         Err(e)
                     }
@@ -627,6 +629,11 @@ fn writer_loop(mut w: Writer, held: Arc<Mutex<Held>>, rx: std::sync::mpsc::Recei
                     (Ok(()), Some(Write::Checkpoint(tree))) => w.checkpoint(tree, &h.token).inspect(|()| put_off = false),
                     (Ok(()), Some(Write::Handoff(tree, done))) => {
                         let r = w.checkpoint(tree, &h.token).inspect(|()| put_off = false);
+                        let _ = done.send(r.clone());
+                        r
+                    }
+                    (Ok(()), Some(Write::Flushed(done))) => {
+                        let r = w.flush(&h.token).inspect(|()| put_off = false);
                         let _ = done.send(r.clone());
                         r
                     }
@@ -888,6 +895,7 @@ pub async fn run(o: Options, daemon: Arc<Daemon>, stop: watch::Receiver<bool>, o
         current_turn: None,
         turn_running: false,
         handing: false,
+        packing: None,
         handoff: None,
         handed_at: None,
         refused_moving: HashSet::new(),
@@ -997,6 +1005,10 @@ struct Hosting {
     /// A handoff under way: another is refused meanwhile, and so is every
     /// command, so nothing runs here once the work is packed.
     handing: bool,
+    /// A task child's result being packed and stored (`task_result`), on a
+    /// blocking thread: the `task.result` event it ends with. The bridge
+    /// does not stop before it is logged.
+    packing: Option<tokio::sync::oneshot::Receiver<Packed>>,
     /// The handoff asked for, by its id: the link to answer, which a viewer
     /// that joins again moves, and the answer once there is one, sent again
     /// to a viewer that asks again.
@@ -1091,6 +1103,9 @@ impl Hosting {
                         self.current_turn = None;
                     }
                     let _ = self.jobs.send(Write::Flush);
+                    if own && !stored && self.packing.is_none() && !self.log.iter().any(|l| matches!(&l.body, LogBody::TaskResult { turn_id: t, .. } if t == turn_id)) {
+                        self.pack_result(e);
+                    }
                 }
                 LogBody::TurnStarted { permission_mode, turn_id, .. } if own => {
                     self.mode = *permission_mode;
@@ -1113,6 +1128,44 @@ impl Hosting {
             _ => {}
         }
         self.waiting.push(line);
+    }
+
+    /// A task child's one turn is over (R-ALLOC-6): its changes are packed
+    /// against the job's snapshot, stored sealed under this session and
+    /// named in a `task.result` event, on a blocking thread; the worktree
+    /// goes once they are stored. A session that is no task's child has
+    /// nothing to do here.
+    fn pack_result(&mut self, completed: &crate::protocol::LogEvent) {
+        if super::commands::read_task(&self.o.sessions, &self.o.session).is_none() {
+            return;
+        }
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.packing = Some(rx);
+        let (o, held, completed) = (self.o.clone(), self.held.clone(), completed.clone());
+        tokio::task::spawn_blocking(move || {
+            if let Some(p) = task_result(&o, &held, &completed) {
+                let _ = tx.send(p);
+            }
+        });
+    }
+
+    /// The `task.result` a packing thread ended with, logged and flushed to
+    /// the registry; only then is the worktree removed (when the child's
+    /// turn completed and its changes are stored), on a thread that waits
+    /// for the flush, so a result never named is never the only copy gone.
+    fn packed(&mut self, p: Packed) {
+        self.line(StreamLine::Log(p.event));
+        let (done, stored) = std::sync::mpsc::channel();
+        if self.jobs.send(Write::Flushed(done)).is_err() {
+            return;
+        }
+        if let Some(path) = p.discard {
+            tokio::task::spawn_blocking(move || {
+                if stored.recv_timeout(Duration::from_secs(120)).is_ok_and(|r| r.is_ok()) && let Some(root) = krowk_api::home::worktrees_root(&krowk_api::home::process_env) {
+                    discard_worktree(&root, &path);
+                }
+            });
+        }
     }
 
     /// The lines waiting, sealed as one batch and sent up both uplinks.
@@ -1638,6 +1691,7 @@ impl Hosting {
                     let Some(line) = line else { return Ok(()) };
                     self.line(line);
                 }
+                Some(p) = packed(&mut self.packing) => self.packed(p),
                 _ = tick.tick(), if !self.waiting.is_empty() => self.send_batch().await?,
                 Some(head) = i.heads.recv() => self.head = Some(head),
                 Some((to, a)) = i.answers.recv() => self.answer(to, a).await,
@@ -1647,7 +1701,14 @@ impl Hosting {
                 _ = tokio::time::sleep_until(self.dretry.into()), if self.dws.is_none() && self.listening.is_some() => self.join_direct().await,
                 _ = tokio::time::sleep_until(self.retry.into()), if self.ws.is_none() => self.join_relay().await,
                 (direct, m) = recv_either(&mut self.ws, &mut self.dws) => self.inbound(direct, m).await,
-                _ = i.stop.changed() => return Ok(()),
+                _ = i.stop.changed() => {
+                    // A turn's last lines may be waiting beside the stop: a
+                    // task's turn that ended must still be packed.
+                    while let Ok(line) = i.lines.try_recv() {
+                        self.line(line);
+                    }
+                    return Ok(());
+                }
             }
         }
     }
@@ -1656,6 +1717,10 @@ impl Hosting {
     /// lease given back once the writer is done. Its relay link, while it
     /// is up and no handoff took the session, and whether a viewer was here.
     async fn stop(mut self, halt: &AtomicBool, writing: std::thread::JoinHandle<()>) -> Option<(super::Ws, bool)> {
+        // A result being stored is waited for, so the log names it.
+        if let Some(rx) = self.packing.take() && let Ok(Ok(p)) = tokio::time::timeout(PACK_WAIT, rx).await {
+            self.packed(p);
+        }
         self.seal().await;
         drop(self.listening.take());
         drop(self.dws.take());
@@ -1678,6 +1743,72 @@ impl Hosting {
                 let _ = super::send(w, end).await;
             }
         }
+    }
+}
+
+/// How long a stopping bridge waits for a task's result to be stored.
+const PACK_WAIT: Duration = Duration::from_secs(120);
+
+/// A task's result, logged, and the worktree to remove once it is stored.
+struct Packed {
+    event: crate::protocol::LogEvent,
+    discard: Option<String>,
+}
+
+/// The result being packed, once it is: none, forever, when there is none.
+async fn packed(p: &mut Option<tokio::sync::oneshot::Receiver<Packed>>) -> Option<Packed> {
+    match p {
+        Some(rx) => {
+            let r = rx.await.ok();
+            *p = None;
+            r
+        }
+        None => std::future::pending().await,
+    }
+}
+
+/// A task child's result (R-ALLOC-6, R-ALLOC-14): the worktree's changes
+/// against the job's snapshot, sealed under a fresh key and stored under
+/// the session with its lease, and the `task.result` event that names them,
+/// after `completed`, whatever status the turn ended in. A child that
+/// changed nothing stores nothing and names no transport. When packing or
+/// storing fails the event says why (`error`) and names no transport, and
+/// the worktree stays. The worktree is to go only for a turn that
+/// completed, once the event is stored (`Hosting::packed`). None when the
+/// session has no task record.
+fn task_result(o: &Options, held: &Mutex<Held>, completed: &crate::protocol::LogEvent) -> Option<Packed> {
+    let task = super::commands::read_task(&o.sessions, &o.session)?;
+    let LogBody::TurnCompleted { turn_id, status, .. } = &completed.body else { return None };
+    let stored = || -> Result<(Option<String>, Option<String>), String> {
+        // Said whole when it is one of the result's own refusals; else what
+        // failed is named, as the supervisor shows it as the task's failure.
+        let bundle = super::handoff::pack_result(std::path::Path::new(&task.worktree), &task.snapshot, &o.session).map_err(|e| if e == super::handoff::RESULT_TOO_BIG || e == super::handoff::RESULT_CONFIG { e } else { format!("the result could not be packed: {e}") })?;
+        if bundle.diff.is_empty() && bundle.untracked.is_empty() {
+            return Ok((None, None));
+        }
+        let key: [u8; 32] = e2e::random();
+        let sealed = e2e::seal_transport(&key, &crate::daemon::ws::uuid(&o.session), &bundle.encode());
+        let token = held.lock().unwrap_or_else(|e| e.into_inner()).token.clone();
+        let t = o.api.put_transport(&o.session, &sealed, &token).map_err(|e| format!("the result could not be stored ({}): {}", e.code(), e.fix()))?;
+        Ok((Some(t.slug), Some(super::handoff::key_hex(&key))))
+    }();
+    let (transport, key, error) = match stored {
+        Ok((t, k)) => (t, k, None),
+        Err(e) => {
+            eprintln!("krowk: the result of task session {} was not stored: {e}", o.session);
+            (None, None, Some(e.chars().take(500).collect::<String>()))
+        }
+    };
+    let discard = (error.is_none() && *status == crate::protocol::TurnStatus::Completed).then(|| task.worktree.clone());
+    let body = LogBody::TaskResult { turn_id: turn_id.clone(), transport, key, against: task.snapshot, denied: task.denied, error };
+    Some(Packed { event: crate::protocol::LogEvent { id: krowk_store::new_id(), parent_id: Some(completed.id.clone()), session_id: o.session.clone(), time_ms: krowk_store::now_ms(), body }, discard })
+}
+
+/// The worktree at `path`, if it is one krowk made under `root`, removed
+/// with its branch; one that cannot be is left for `krowk worktrees`.
+fn discard_worktree(root: &std::path::Path, path: &str) {
+    if let Ok(listed) = crate::worktree::manage::find(root, path) && let Some(w) = listed.worktree() {
+        let _ = crate::worktree::discard(&w);
     }
 }
 
@@ -1751,6 +1882,28 @@ fn rejoin_wait(rng: &mut u64) -> Duration {
 
 #[cfg(test)]
 mod tests {
+
+    /// R-ALLOC-6: a finished task's worktree is removed once its result is
+    /// stored, and a path that is none of krowk's is left alone.
+    #[test]
+    fn alloc_06_a_stored_tasks_worktree_is_removed() {
+        let root = std::env::temp_dir().join(format!("krowk-alloc-06-discard-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let repo = root.join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| assert!(std::process::Command::new("git").args(["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main"]).args(args).current_dir(&repo).output().unwrap().status.success());
+        git(&["init", "-q"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "base"]);
+        let head = String::from_utf8(std::process::Command::new("git").args(["rev-parse", "HEAD"]).current_dir(&repo).output().unwrap().stdout).unwrap().trim().to_string();
+        let (wt, held) = crate::worktree::create_at(&repo, &root.join("worktrees"), "s", &head).unwrap();
+        drop(held);
+        std::fs::write(wt.path.join("child.txt"), "x").unwrap();
+        discard_worktree(&root.join("worktrees"), &repo.display().to_string());
+        assert!(repo.exists() && wt.path.exists(), "a path that is no worktree of krowk's stays");
+        discard_worktree(&root.join("worktrees"), &wt.path.display().to_string());
+        assert!(!wt.path.exists(), "the worktree is gone");
+        let _ = std::fs::remove_dir_all(&root);
+    }
     use super::*;
 
     /// Fifty bridges, each seeded by its session, draw their rejoins

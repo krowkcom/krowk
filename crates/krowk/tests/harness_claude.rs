@@ -347,6 +347,32 @@ fn r_cut_5_p_on_a_terminal_asks_in_plain_text_before_claude_runs() {
     }
 }
 
+/// R-EASE-7, D8: a repository trusted with `krowk trust` is asked about
+/// again once a file that can run code changes, and both the headless
+/// refusal and the plain-text prompt name the file.
+#[test]
+fn r_ease_7_a_changed_hook_asks_again_and_the_prompt_names_it() {
+    let b = Sandbox::new("p-changed");
+    b.json(&["providers", "add", "claude", "--json"], &[]);
+    std::fs::create_dir_all(b.root.join("repo/.claude/hooks")).unwrap();
+    std::fs::write(b.root.join("repo/.claude/hooks/pre.sh"), "echo one\n").unwrap();
+    let granted = b.json(&["trust", "--json"], &[]);
+    assert_eq!(granted["data"]["trusted"], true, "{granted}");
+    b.json(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]);
+    std::fs::write(b.root.join("repo/.claude/hooks/pre.sh"), "echo two\n").unwrap();
+    let out = b.krowk(&["-p", "hello", "--model", "claude/sonnet"], &[]);
+    assert_eq!(out.status.code(), Some(4), "asked again");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("It was trusted before, but .claude/hooks/pre.sh changed since."), "{err}");
+    let cmd = b.command(&["-p", "hello", "--model", "claude/sonnet"], &[("TERM", "xterm-256color")]);
+    let mut t = pty::Pty::spawn(cmd, 400, 30);
+    assert!(t.wait_for("[y/N]", std::time::Duration::from_secs(10)).is_some(), "no trust prompt: {:?}", t.text());
+    assert!(t.text().contains("You trusted it before; .claude/hooks/pre.sh changed since."), "{:?}", t.text());
+    t.write(b"y\r");
+    assert!(t.wait(std::time::Duration::from_secs(10)).is_some_and(|s| s.success()), "{:?}", t.text());
+    b.json(&["-p", "hello", "--model", "claude/sonnet", "--output-format", "json"], &[]);
+}
+
 fn alive(pid: i32) -> bool {
     // SAFETY: signal 0 only asks whether the process exists.
     unsafe { libc::kill(pid, 0) == 0 }

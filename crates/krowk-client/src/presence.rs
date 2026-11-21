@@ -5,6 +5,12 @@
 //! for a session is content, so the record is sealed to the person's
 //! devices (`e2e::seal_to_person`) and bound to the device it is about.
 //!
+//! Since automatic allocation (R-ALLOC-1) it also says how loaded the
+//! machine is (`Capacity`), which trusted repositories it has and their
+//! origins (`AnnouncedRepository`), and whether it takes tasks another
+//! machine hands it (`accepting`): what a supervisor places work by
+//! (`krowk_harness::sync::placement`).
+//!
 //! Pure code: the endpoint that carries it and the daemon that publishes
 //! it are elsewhere.
 
@@ -23,6 +29,8 @@ pub const MAX_MODELS: usize = 20;
 pub const MAX_DIRECTORIES: usize = 64;
 /// The most session ids one record lists.
 pub const MAX_SESSIONS: usize = 256;
+/// The most repositories one record lists.
+pub const MAX_REPOSITORIES: usize = 64;
 /// The most bytes a record's JSON takes, before padding.
 pub const MAX_JSON: usize = 12 * 1024;
 /// The JSON is padded with spaces to a multiple of this before it is
@@ -53,6 +61,105 @@ pub struct Announcement {
     /// The ids of the sessions the daemon holds now. Never a title.
     #[serde(default)]
     pub sessions: Vec<String>,
+    /// How loaded the machine is now (R-ALLOC-1). None from a host older
+    /// than automatic allocation, and kept last when the record must shrink.
+    /// One an older device cannot read (a shape added since) reads as none,
+    /// rather than refusing the whole record.
+    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "lenient")]
+    pub capacity: Option<Capacity>,
+    /// The trusted repositories it takes handed-over tasks in, each with
+    /// its origin normalised (`normalise_origin`), so a supervisor finds
+    /// the machines with a clone of its own (D7).
+    #[serde(default)]
+    pub repositories: Vec<AnnouncedRepository>,
+    /// Whether it takes tasks a supervisor hands it (D14, R-ALLOC-12). A
+    /// record without it reads as not accepting: a host that does not say
+    /// so does not know the `run` command either.
+    #[serde(default)]
+    pub accepting: bool,
+}
+
+/// How loaded a machine is (R-ALLOC-1, D5). Build and agent slots are the
+/// machine-wide pools of `krowk_harness::slots`, counted without taking
+/// one; load and memory are read from the OS, since build slots see only
+/// the build commands krowk itself runs.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Capacity {
+    /// Logical cores.
+    pub cores: u32,
+    /// The 1-minute load average.
+    pub load_1m: f64,
+    /// Memory free for new work (available, not merely unused), in bytes.
+    pub free_memory: u64,
+    pub build_slots: Slots,
+    pub agent_slots: Slots,
+}
+
+/// A slot pool's occupancy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Slots {
+    pub in_use: u32,
+    pub total: u32,
+}
+
+/// One trusted repository a machine offers: the directory, as on
+/// `directories`, and its git origin, normalised.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnnouncedRepository {
+    pub directory: String,
+    /// `normalise_origin` of its `origin` remote: `github.com/acme/app`.
+    pub origin: String,
+}
+
+/// A git remote URL as one string for every way of writing it (D7): the
+/// scheme, the user and any password or token, and a `.git` suffix
+/// stripped and the host lower-cased, so no credential is ever announced:
+/// `git@github.com:Acme/app.git` and `https://github.com/Acme/app` are
+/// both `github.com/Acme/app`. None for a URL that names no host (a local
+/// path), which no other machine has. A port is dropped too: ssh and https
+/// name one repository on different ports.
+pub fn normalise_origin(url: &str) -> Option<String> {
+    let url = url.trim();
+    if url.contains('\\') {
+        return None;
+    }
+    let (host, path) = if let Some((scheme, rest)) = url.split_once("://") {
+        if scheme.is_empty() || scheme.eq_ignore_ascii_case("file") {
+            return None;
+        }
+        let (authority, path) = rest.split_once('/').unwrap_or((rest, ""));
+        let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+        // A bracketed IPv6 address ends at its bracket, a port after it
+        // dropped; otherwise `host:port`.
+        let host = match host.strip_prefix('[') {
+            Some(v6) => &host[..v6.find(']')? + 2],
+            None => host.rsplit_once(':').filter(|(_, port)| port.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(h, _)| h),
+        };
+        (host, path)
+    } else {
+        // scp-like: `[user[:secret]@]host:path`, the colon before any slash.
+        let head = url.split('/').next().unwrap_or("");
+        let rest = head.rfind('@').map_or(url, |i| &url[i + 1..]);
+        let (host, path) = rest.split_once(':')?;
+        if host.len() < 2 {
+            return None;
+        }
+        (host, path)
+    };
+    let path = path.split(['?', '#']).next().unwrap_or("").trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path).trim_end_matches('/');
+    let origin = format!("{}/{path}", host.to_ascii_lowercase());
+    // Fails closed: a secret that broke the reading (one with a `/`, `#`
+    // or `:` in it) leaves an `@` or a bare `:` behind, and a real origin
+    // has neither in its host.
+    let bare = host.strip_prefix('[').map_or(host, |_| "");
+    if host.is_empty() || path.is_empty() || bare.contains([':', '@']) || origin.contains('@') || origin.contains(char::is_whitespace) {
+        return None;
+    }
+    Some(origin)
 }
 
 /// One of the host's instances, and whether it is ready.
@@ -79,7 +186,7 @@ pub struct AnnouncedInstance {
     pub limit: Option<LimitStatus>,
 }
 
-fn lenient<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<LimitStatus>, D::Error> {
+fn lenient<'de, D: serde::Deserializer<'de>, T: serde::de::DeserializeOwned>(d: D) -> Result<Option<T>, D::Error> {
     let v = Option::<serde_json::Value>::deserialize(d)?;
     Ok(v.and_then(|v| serde_json::from_value(v).ok()))
 }
@@ -113,6 +220,18 @@ impl Announcement {
         if self.sessions.len() > MAX_SESSIONS {
             return Err(format!("the announcement lists more than {MAX_SESSIONS} sessions"));
         }
+        if self.repositories.len() > MAX_REPOSITORIES {
+            return Err(format!("the announcement lists more than {MAX_REPOSITORIES} repositories"));
+        }
+        if self.capacity.is_some_and(|c| !c.load_1m.is_finite() || c.load_1m < 0.0) {
+            return Err("the announcement's load is not a number of zero or more".into());
+        }
+        // Strict on purpose: a capacity no machine could have is a host's
+        // bug or a forgery, and the whole record is refused rather than
+        // placed on.
+        if self.capacity.is_some_and(|c| c.cores == 0 || c.build_slots.in_use > c.build_slots.total || c.agent_slots.in_use > c.agent_slots.total) {
+            return Err("the announcement's capacity has no cores, or more slots in use than it has".into());
+        }
         let json = serde_json::to_vec(self).map_err(|e| format!("the announcement does not encode: {e}"))?;
         if json.len() > MAX_JSON {
             return Err(format!("the announcement is {} bytes, more than {MAX_JSON}", json.len()));
@@ -126,7 +245,8 @@ impl Announcement {
             let own = [&i.name, &i.kind, &i.state].into_iter().chain(&i.fix).chain(&i.models).chain(i.limit.as_ref().and_then(|l| l.window.as_ref()));
             own.map(String::as_str)
         });
-        top.chain(instances).chain(self.directories.iter().map(String::as_str)).chain(self.sessions.iter().map(String::as_str))
+        let repositories = self.repositories.iter().flat_map(|r| [r.directory.as_str(), r.origin.as_str()]);
+        top.chain(instances).chain(self.directories.iter().map(String::as_str)).chain(self.sessions.iter().map(String::as_str)).chain(repositories)
     }
 }
 
@@ -160,7 +280,7 @@ pub fn open(sealed: &[u8], device: &DeviceId, keys: &UserKeys, chain: &Chain) ->
     // Any device that ever held an older generation could have sealed one
     // under it, a device removed since included.
     if generation < chain.generation() {
-        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk devices`) and announces itself again", chain.generation()));
+        return Err(format!("the announcement from {device} is sealed under user key generation {generation}, older than the generation {} your device list names current; it opens once {device} catches up with the device list (`krowk machines`) and announces itself again", chain.generation()));
     }
     let json = e2e::open_from_person(sealed, Label::Presence, &device.0, keys).map_err(|e| e.0)?;
     // serde's message can quote what the host wrote, so it is escaped.

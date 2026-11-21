@@ -444,7 +444,7 @@ pub const VINTAGE_V2: u8 = 2;
 pub fn seal_vintage(keys: &UserKeys, current_generation: u32, week: &str, plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     let user = keys.newest();
     if user.generation() < current_generation {
-        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again", user.generation())));
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again", user.generation())));
     }
     let head = [VINTAGE_V2, SUITE_XCHACHA20_POLY1305];
     let generation = user.generation().to_be_bytes();
@@ -541,7 +541,7 @@ impl Label {
 pub fn seal_to_person(keys: &UserKeys, current_generation: u32, label: Label, binding: &[u8], plaintext: &[u8]) -> Result<Vec<u8>, Error> {
     let user = keys.newest();
     if user.generation() < current_generation {
-        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again", user.generation())));
+        return Err(err(format!("this device holds user key generation {}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again", user.generation())));
     }
     let head = [PERSON_V1, SUITE_XCHACHA20_POLY1305];
     let generation = user.generation().to_be_bytes();
@@ -999,7 +999,7 @@ pub fn seal_session_key(session_key: &SessionKey, session: &[u8; 16], keys: &Use
 pub fn seal_session_keys(ring: &SessionKeys, session: &[u8; 16], keys: &UserKeys, current_generation: u32) -> Result<Vec<u8>, Error> {
     let held = keys.newest().generation();
     if held < current_generation {
-        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk devices`) and try again")));
+        return Err(err(format!("this device holds user key generation {held}, but the device list names generation {current_generation} — nothing is sealed under an old key; catch this device up with the device list (`krowk machines`) and try again")));
     }
     Ok(wrap_session_keys(ring, session, keys.newest()))
 }

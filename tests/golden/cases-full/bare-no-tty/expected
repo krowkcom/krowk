@@ -3,43 +3,38 @@ stdout:
 █  █  Krowk 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-Usage
+Start
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk <command> [flags]
+  krowk -p --resume          Continue a session
 
 Examples
   krowk connect anthropic    Connect a model to run the agent on
   krowk push shot.png        Upload a screenshot and get a link to paste
   krowk sessions --json      Every agent session on this machine, as data
 
-Agent
+Accounts
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  status        What's connected, and whether each is ready
+  login         Sign in to your krowk account
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+
+Work
   sessions      List and read agent sessions on this machine
-  sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
+  machines      Your machines, and what each can take
+  worktrees     The git worktrees krowk made for agents, across repositories
+  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 Publish
   push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
 
-Account
-  login         Sign in to your krowk account
-  logout        Remove this machine's key
-  whoami        Show the key and its workspace
-  billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
-
-Other
-  providers     Low-level instance config (add, list, rename, remove)
-  worktrees     The git worktrees krowk made for agents, across repositories
-  host          The daemon sessions run in, which outlives the terminal
-  config        Show or set configuration
+Health
+  status        What's connected, and whether each is ready
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --model <instance/model>   With -p: which model (e.g. claude/sonnet)
@@ -169,7 +164,8 @@ stdout:
           "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "artifacts",
@@ -284,7 +280,8 @@ stdout:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -309,7 +306,8 @@ stdout:
               "default": "",
               "usage": "Narrow it to what one run produced. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -321,7 +319,8 @@ stdout:
               "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "attach",
@@ -341,7 +340,8 @@ stdout:
               "default": "",
               "usage": "The run to put it under — required, and it must be one this workspace holds. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "delete",
@@ -358,7 +358,8 @@ stdout:
               "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "claim",
@@ -383,9 +384,11 @@ stdout:
               "default": "",
               "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "runs",
@@ -467,7 +470,8 @@ stdout:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -486,7 +490,8 @@ stdout:
               "default": "",
               "usage": "Start after this row — the `next` of the last page"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -498,7 +503,8 @@ stdout:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "finish",
@@ -510,9 +516,11 @@ stdout:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "claim",
@@ -537,7 +545,8 @@ stdout:
           "default": "",
           "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "login",
@@ -556,17 +565,20 @@ stdout:
           "default": "false",
           "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Remove this machine's key"
+      "summary": "Remove this machine's key",
+      "hidden": true
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Show the key and its workspace"
+      "summary": "Show the key and its workspace",
+      "hidden": false
     },
     {
       "name": "billing",
@@ -579,7 +591,8 @@ stdout:
           "default": "false",
           "usage": "Print the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "auth",
@@ -602,25 +615,30 @@ stdout:
               "default": "false",
               "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The long form of `krowk logout`"
+          "summary": "The long form of `krowk logout`",
+          "hidden": false
         },
         {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
-          "no_json": true
+          "no_json": true,
+          "hidden": false
         },
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The long form of `krowk whoami`"
+          "summary": "The long form of `krowk whoami`",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "workspaces",
@@ -629,7 +647,8 @@ stdout:
         {
           "name": "list",
           "usage": "krowk workspaces [list]",
-          "summary": "List the stored keys, and which workspace resolves here"
+          "summary": "List the stored keys, and which workspace resolves here",
+          "hidden": false
         },
         {
           "name": "use",
@@ -641,9 +660,11 @@ stdout:
               "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "config",
@@ -652,7 +673,8 @@ stdout:
         {
           "name": "show",
           "usage": "krowk config show",
-          "summary": "The effective configuration, and which layer set each value"
+          "summary": "The effective configuration, and which layer set each value",
+          "hidden": false
         },
         {
           "name": "get",
@@ -664,7 +686,8 @@ stdout:
               "summary": "workspace, defaultMode or rollover",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",
@@ -689,7 +712,8 @@ stdout:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "unset",
@@ -709,14 +733,17 @@ stdout:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check this machine's setup"
+      "summary": "Check this machine's setup",
+      "hidden": false
     },
     {
       "name": "sessions",
@@ -767,7 +794,8 @@ stdout:
               "default": "false",
               "usage": "Show full thinking parts instead of one line each"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "import",
@@ -792,7 +820,8 @@ stdout:
               "default": "0",
               "usage": "Read at most this many transcripts per source (0 is all)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "rebuild",
@@ -805,7 +834,8 @@ stdout:
               "default": "false",
               "usage": "Delete without asking — required when nobody is at a terminal to confirm"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "budget",
@@ -831,7 +861,8 @@ stdout:
               "default": "",
               "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "sync",
@@ -844,7 +875,8 @@ stdout:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         },
         {
           "name": "archive",
@@ -863,7 +895,8 @@ stdout:
               "default": "false",
               "usage": "Run only a week after the last run: the weekly job"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "restore",
@@ -883,7 +916,8 @@ stdout:
               "default": "",
               "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "vintage",
@@ -895,7 +929,8 @@ stdout:
               "summary": "An archived session's id, or an ISO week like 2026-W40; every week when absent",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "pin",
@@ -907,7 +942,8 @@ stdout:
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "unpin",
@@ -919,9 +955,70 @@ stdout:
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sessions attach <id>",
+          "summary": "Follow a session on another machine, live",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "take",
+          "usage": "krowk sessions take <id>",
+          "summary": "Move a live session here, uncommitted work and all",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "new",
+          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "on",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
+            }
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "pricing",
@@ -930,14 +1027,17 @@ stdout:
         {
           "name": "refresh",
           "usage": "krowk pricing refresh",
-          "summary": "Refresh the models.dev price cache"
+          "summary": "Refresh the models.dev price cache",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk"
+      "summary": "Upgrade krowk",
+      "hidden": false
     },
     {
       "name": "help",
@@ -957,7 +1057,8 @@ stdout:
           "default": "false",
           "usage": "List every command and subcommand"
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "connect",
@@ -1025,7 +1126,8 @@ stdout:
           "default": "",
           "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "disconnect",
@@ -1051,7 +1153,8 @@ stdout:
           "default": "false",
           "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "providers",
@@ -1105,12 +1208,14 @@ stdout:
               "default": "",
               "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it is ready"
+          "summary": "List every instance, and whether it is ready",
+          "hidden": false
         },
         {
           "name": "remove",
@@ -1122,7 +1227,8 @@ stdout:
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "rename",
@@ -1139,14 +1245,17 @@ stdout:
               "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "status",
       "usage": "krowk status",
-      "summary": "What's connected, and whether each is ready"
+      "summary": "What's connected, and whether each is ready",
+      "hidden": false
     },
     {
       "name": "host",
@@ -1155,7 +1264,8 @@ stdout:
         {
           "name": "status",
           "usage": "krowk host status",
-          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions",
+          "hidden": false
         },
         {
           "name": "attach",
@@ -1167,7 +1277,8 @@ stdout:
               "summary": "The session id a result names",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "stop",
@@ -1180,19 +1291,23 @@ stdout:
               "default": "false",
               "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "enable",
           "usage": "krowk host enable",
-          "summary": "Run the daemon as a systemd or launchd user service"
+          "summary": "Run the daemon as a systemd or launchd user service",
+          "hidden": true
         },
         {
           "name": "disable",
           "usage": "krowk host disable",
-          "summary": "Stop the service and remove it"
+          "summary": "Stop the service and remove it",
+          "hidden": true
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "relay",
@@ -1227,14 +1342,109 @@ stdout:
               "default": "",
               "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
+    },
+    {
+      "name": "machines",
+      "summary": "Your machines, and what each can take",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk machines [list]",
+          "summary": "Your machines, and what each can take",
+          "hidden": false
+        },
+        {
+          "name": "accept",
+          "usage": "krowk machines accept on|off",
+          "summary": "Take work from your other machines, or not",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "add",
+          "usage": "krowk machines add",
+          "summary": "Show a code that adds another machine",
+          "hidden": false
+        },
+        {
+          "name": "remove",
+          "usage": "krowk machines remove NAME",
+          "summary": "Take a machine off your list and rotate your key",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The machine's name, as `krowk machines` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "always-on",
+          "usage": "krowk machines always-on on|off",
+          "summary": "Keep this machine available while you're away",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk machines recovery [new|check|discard-old]",
+          "summary": "Your recovery kit: see it, make a new one, test it",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk machines recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ],
+              "hidden": false
+            },
+            {
+              "name": "check",
+              "usage": "krowk machines recovery check",
+              "summary": "Test the kit's words against your device list, locally",
+              "hidden": false
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk machines recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside",
+              "hidden": false
+            }
+          ],
+          "hidden": false
+        }
+      ],
+      "hidden": false
     },
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "Your machines that host synced sessions"
+      "summary": "The same as krowk machines",
+      "hidden": true
     },
     {
       "name": "sync",
@@ -1263,7 +1473,8 @@ stdout:
               "default": "",
               "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "recover",
@@ -1276,12 +1487,14 @@ stdout:
               "default": "",
               "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "status",
           "usage": "krowk sync status",
-          "summary": "This device's list, recovery kit and auto-sync, checked"
+          "summary": "This device's list, recovery kit and auto-sync, checked",
+          "hidden": false
         },
         {
           "name": "recovery",
@@ -1299,24 +1512,28 @@ stdout:
                   "default": "",
                   "usage": "Write the new kit to this file (0600) instead of showing it"
                 }
-              ]
+              ],
+              "hidden": false
             },
             {
               "name": "check",
               "usage": "krowk sync recovery check",
-              "summary": "Test the kit's words against your device list, locally"
+              "summary": "Test the kit's words against your device list, locally",
+              "hidden": false
             },
             {
               "name": "discard-old",
               "usage": "krowk sync recovery discard-old",
-              "summary": "Drop the old keys a start-over kept aside"
+              "summary": "Drop the old keys a start-over kept aside",
+              "hidden": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "join",
           "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk devices add` shows",
+          "summary": "Add this machine by the code `krowk machines add` shows",
           "flags": [
             {
               "name": "name",
@@ -1324,27 +1541,32 @@ stdout:
               "default": "",
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "sessions",
           "usage": "krowk sync sessions",
-          "summary": "The synced sessions this machine can open"
+          "summary": "The synced sessions this machine can open",
+          "hidden": true
         },
         {
           "name": "host",
           "usage": "krowk sync host SESSION",
-          "summary": "Run a session here and sync it until interrupted"
+          "summary": "Run a session here and sync it until interrupted",
+          "hidden": false
         },
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session as stream-json"
+          "summary": "Follow a synced session as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
           "usage": "krowk sync take SESSION",
-          "summary": "Move a live session here, uncommitted work and all"
+          "summary": "Move a live session here, uncommitted work and all",
+          "hidden": true
         },
         {
           "name": "new",
@@ -1362,13 +1584,13 @@ stdout:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
             },
             {
               "name": "model",
@@ -1376,9 +1598,11 @@ stdout:
               "default": "",
               "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
-          ]
+          ],
+          "hidden": true
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "devices",
@@ -1387,19 +1611,23 @@ stdout:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The devices on your device list, this one marked"
+          "summary": "The devices on your device list, this one marked",
+          "hidden": false
         },
         {
           "name": "add",
           "usage": "krowk devices add",
-          "summary": "Show a code that adds a new machine to your devices"
+          "summary": "Show a code that adds a new machine to your devices",
+          "hidden": false
         },
         {
           "name": "remove",
           "usage": "krowk devices remove NAME",
-          "summary": "Take a device off your list and rotate your key"
+          "summary": "Take a device off your list and rotate your key",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "mcp",
@@ -1423,7 +1651,8 @@ stdout:
               "default": "false",
               "usage": "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "logout",
@@ -1435,7 +1664,8 @@ stdout:
               "summary": "The server's name",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "add",
@@ -1474,7 +1704,8 @@ stdout:
               "default": "false",
               "usage": "Replace a server of that name already in config.json"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "remove",
@@ -1486,14 +1717,17 @@ stdout:
               "summary": "The server to remove",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
           "usage": "krowk mcp list",
-          "summary": "List the servers krowk would load here, without connecting"
+          "summary": "List the servers krowk would load here, without connecting",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "trust",
@@ -1519,7 +1753,8 @@ stdout:
           "default": "false",
           "usage": "List every trusted directory instead; takes no path"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "worktrees",
@@ -1528,7 +1763,8 @@ stdout:
         {
           "name": "list",
           "usage": "krowk worktrees list",
-          "summary": "Each one: branch, commits ahead, changes, session, age"
+          "summary": "Each one: branch, commits ahead, changes, session, age",
+          "hidden": false
         },
         {
           "name": "add",
@@ -1541,7 +1777,8 @@ stdout:
               "default": "",
               "usage": "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "remove",
@@ -1561,7 +1798,8 @@ stdout:
               "default": "false",
               "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "apply",
@@ -1581,14 +1819,17 @@ stdout:
               "default": "",
               "usage": "The checkout its changes go to (default: the repository's main checkout)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "prune",
           "usage": "krowk worktrees prune",
-          "summary": "Clear what deleted worktrees left, and old snapshots"
+          "summary": "Clear what deleted worktrees left, and old snapshots",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     }
   ],
   "global_flags": [
@@ -1799,43 +2040,38 @@ stdout:
 █  █  Krowk 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-Usage
+Start
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk <command> [flags]
+  krowk -p --resume          Continue a session
 
 Examples
   krowk connect anthropic    Connect a model to run the agent on
   krowk push shot.png        Upload a screenshot and get a link to paste
   krowk sessions --json      Every agent session on this machine, as data
 
-Agent
+Accounts
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  status        What's connected, and whether each is ready
+  login         Sign in to your krowk account
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+
+Work
   sessions      List and read agent sessions on this machine
-  sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
+  machines      Your machines, and what each can take
+  worktrees     The git worktrees krowk made for agents, across repositories
+  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 Publish
   push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
 
-Account
-  login         Sign in to your krowk account
-  logout        Remove this machine's key
-  whoami        Show the key and its workspace
-  billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
-
-Other
-  providers     Low-level instance config (add, list, rename, remove)
-  worktrees     The git worktrees krowk made for agents, across repositories
-  host          The daemon sessions run in, which outlives the terminal
-  config        Show or set configuration
+Health
+  status        What's connected, and whether each is ready
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 Flags
   --model <instance/model>   With -p: which model (e.g. claude/sonnet)
@@ -1854,43 +2090,38 @@ tty:
 █  █  \e[1mKrowk\e[0m 0.0.0-golden
 █▀▀▄  A coding agent harness: one session, any machine, model or agent
 
-\e[1mUsage\e[0m
+\e[1mStart\e[0m
+  krowk                      Set this machine up, then an overview of it
   krowk -p "…"               One prompt, headless
-  krowk <command> [flags]
+  krowk -p --resume          Continue a session
 
 \e[1mExamples\e[0m
   krowk connect anthropic    Connect a model to run the agent on
   krowk push shot.png        Upload a screenshot and get a link to paste
   krowk sessions --json      Every agent session on this machine, as data
 
-\e[1mAgent\e[0m
+\e[1mAccounts\e[0m
   connect       Connect a Claude Code or Codex account, by login or API key
   disconnect    Sign a connected model out
-  status        What's connected, and whether each is ready
+  login         Sign in to your krowk account
+  whoami        Show the key and its workspace
+  billing       Choose or manage the workspace's plan
+
+\e[1mWork\e[0m
   sessions      List and read agent sessions on this machine
-  sync          Sync sessions between your machines, end-to-end encrypted
-  devices       The machines that sync this workspace's sessions
+  machines      Your machines, and what each can take
+  worktrees     The git worktrees krowk made for agents, across repositories
+  mcp           MCP servers krowk's agent uses (add, remove, list, login)
+  trust         Trust a repository to run its hooks and MCP servers
 
 \e[1mPublish\e[0m
   push          Upload files, get a link for each
-  runs          Group uploads under a run
-  artifacts     Create, list, show, attach, delete or claim artifacts
-  claim         Keep an anonymous upload past expiry
 
-\e[1mAccount\e[0m
-  login         Sign in to your krowk account
-  logout        Remove this machine's key
-  whoami        Show the key and its workspace
-  billing       Choose or manage the workspace's plan
-  workspaces    Switch between stored keys
-
-\e[1mOther\e[0m
-  providers     Low-level instance config (add, list, rename, remove)
-  worktrees     The git worktrees krowk made for agents, across repositories
-  host          The daemon sessions run in, which outlives the terminal
-  config        Show or set configuration
+\e[1mHealth\e[0m
+  status        What's connected, and whether each is ready
   doctor        Check this machine's setup
   upgrade       Upgrade krowk
+  config        Show or set configuration
 
 \e[1mFlags\e[0m
   --model <instance/model>   With -p: which model (e.g. claude/sonnet)
@@ -2020,7 +2251,8 @@ tty:
           "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
           "repeatable": true
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "artifacts",
@@ -2135,7 +2367,8 @@ tty:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -2160,7 +2393,8 @@ tty:
               "default": "",
               "usage": "Narrow it to what one run produced. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -2172,7 +2406,8 @@ tty:
               "summary": "The artifact slug, or a link carrying it — the card page or the CDN URL",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "attach",
@@ -2192,7 +2427,8 @@ tty:
               "default": "",
               "usage": "The run to put it under — required, and it must be one this workspace holds. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "delete",
@@ -2209,7 +2445,8 @@ tty:
               "summary": "The claim token an anonymous upload came back with, when there is no key to authorise the takedown",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "claim",
@@ -2234,9 +2471,11 @@ tty:
               "default": "",
               "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "runs",
@@ -2318,7 +2557,8 @@ tty:
               "usage": "Extra key=value metadata, repeatable: on push it lands on each artifact, on `runs start` on the run. Your value wins over a detected one. Metadata is public",
               "repeatable": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
@@ -2337,7 +2577,8 @@ tty:
               "default": "",
               "usage": "Start after this row — the `next` of the last page"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "show",
@@ -2349,7 +2590,8 @@ tty:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "finish",
@@ -2361,9 +2603,11 @@ tty:
               "summary": "The run slug, or a link carrying it",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "claim",
@@ -2388,7 +2632,8 @@ tty:
           "default": "",
           "usage": "The run to group it under while claiming — a claimed upload has none otherwise. Its slug, or a link carrying it"
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "login",
@@ -2407,17 +2652,20 @@ tty:
           "default": "false",
           "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "logout",
       "usage": "krowk logout",
-      "summary": "Remove this machine's key"
+      "summary": "Remove this machine's key",
+      "hidden": true
     },
     {
       "name": "whoami",
       "usage": "krowk whoami",
-      "summary": "Show the key and its workspace"
+      "summary": "Show the key and its workspace",
+      "hidden": false
     },
     {
       "name": "billing",
@@ -2430,7 +2678,8 @@ tty:
           "default": "false",
           "usage": "Print the page instead of opening a browser — the default over SSH, or with no display"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "auth",
@@ -2453,25 +2702,30 @@ tty:
               "default": "false",
               "usage": "Print the code and the page instead of opening a browser — the default over SSH, or with no display"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "logout",
           "usage": "krowk auth logout",
-          "summary": "The long form of `krowk logout`"
+          "summary": "The long form of `krowk logout`",
+          "hidden": false
         },
         {
           "name": "token",
           "usage": "krowk auth token",
           "summary": "Print the stored token",
-          "no_json": true
+          "no_json": true,
+          "hidden": false
         },
         {
           "name": "verify",
           "usage": "krowk auth verify",
-          "summary": "The long form of `krowk whoami`"
+          "summary": "The long form of `krowk whoami`",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "workspaces",
@@ -2480,7 +2734,8 @@ tty:
         {
           "name": "list",
           "usage": "krowk workspaces [list]",
-          "summary": "List the stored keys, and which workspace resolves here"
+          "summary": "List the stored keys, and which workspace resolves here",
+          "hidden": false
         },
         {
           "name": "use",
@@ -2492,9 +2747,11 @@ tty:
               "summary": "A workspace `krowk workspaces` lists, e.g. <ws_1> — a person at a terminal may omit it and pick from a list instead",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "config",
@@ -2503,7 +2760,8 @@ tty:
         {
           "name": "show",
           "usage": "krowk config show",
-          "summary": "The effective configuration, and which layer set each value"
+          "summary": "The effective configuration, and which layer set each value",
+          "hidden": false
         },
         {
           "name": "get",
@@ -2515,7 +2773,8 @@ tty:
               "summary": "workspace, defaultMode or rollover",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "set",
@@ -2540,7 +2799,8 @@ tty:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "unset",
@@ -2560,14 +2820,17 @@ tty:
               "default": "false",
               "usage": "Write the machine-wide config instead of the repository's"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "doctor",
       "usage": "krowk doctor",
-      "summary": "Check this machine's setup"
+      "summary": "Check this machine's setup",
+      "hidden": false
     },
     {
       "name": "sessions",
@@ -2618,7 +2881,8 @@ tty:
               "default": "false",
               "usage": "Show full thinking parts instead of one line each"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "import",
@@ -2643,7 +2907,8 @@ tty:
               "default": "0",
               "usage": "Read at most this many transcripts per source (0 is all)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "rebuild",
@@ -2656,7 +2921,8 @@ tty:
               "default": "false",
               "usage": "Delete without asking — required when nobody is at a terminal to confirm"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "budget",
@@ -2682,7 +2948,8 @@ tty:
               "default": "",
               "usage": "Trip when the session's generated tokens (output and reasoning — the session's and its subagents') are over this many"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "sync",
@@ -2695,7 +2962,8 @@ tty:
               "default": "false",
               "usage": "Skip the models.dev price refresh"
             }
-          ]
+          ],
+          "hidden": true
         },
         {
           "name": "archive",
@@ -2714,7 +2982,8 @@ tty:
               "default": "false",
               "usage": "Run only a week after the last run: the weekly job"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "restore",
@@ -2734,7 +3003,8 @@ tty:
               "default": "",
               "usage": "The vintage of its week to restore it from (see `krowk sessions vintage <id>`)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "vintage",
@@ -2746,7 +3016,8 @@ tty:
               "summary": "An archived session's id, or an ISO week like 2026-W40; every week when absent",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "pin",
@@ -2758,7 +3029,8 @@ tty:
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "unpin",
@@ -2770,9 +3042,70 @@ tty:
               "summary": "The session id, an unambiguous id prefix of at least 8 chars",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
+        },
+        {
+          "name": "attach",
+          "usage": "krowk sessions attach <id>",
+          "summary": "Follow a session on another machine, live",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "take",
+          "usage": "krowk sessions take <id>",
+          "summary": "Move a live session here, uncommitted work and all",
+          "args": [
+            {
+              "name": "id",
+              "summary": "The session's id, as `krowk sessions` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "new",
+          "usage": "krowk sessions new --on MACHINE --cwd DIR [--model INSTANCE/ID] PROMPT",
+          "summary": "Start a session on another machine of yours, and follow it",
+          "args": [
+            {
+              "name": "prompt",
+              "summary": "The session's first prompt; it seals to at most 16 KiB",
+              "required": true
+            }
+          ],
+          "flags": [
+            {
+              "name": "on",
+              "type": "string",
+              "default": "",
+              "usage": "The machine to start it on: its name, or 8+ hex characters of its device id (`krowk machines` lists them)"
+            },
+            {
+              "name": "cwd",
+              "type": "string",
+              "default": "",
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
+            },
+            {
+              "name": "model",
+              "type": "string",
+              "default": "",
+              "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
+            }
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "pricing",
@@ -2781,14 +3114,17 @@ tty:
         {
           "name": "refresh",
           "usage": "krowk pricing refresh",
-          "summary": "Refresh the models.dev price cache"
+          "summary": "Refresh the models.dev price cache",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "upgrade",
       "usage": "krowk upgrade",
-      "summary": "Upgrade krowk"
+      "summary": "Upgrade krowk",
+      "hidden": false
     },
     {
       "name": "help",
@@ -2808,7 +3144,8 @@ tty:
           "default": "false",
           "usage": "List every command and subcommand"
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "connect",
@@ -2876,7 +3213,8 @@ tty:
           "default": "",
           "usage": "A subscription: the CLAUDE_CONFIG_DIR or CODEX_HOME the account signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named account"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "disconnect",
@@ -2902,7 +3240,8 @@ tty:
           "default": "false",
           "usage": "The built-in claude or codex: yes, sign me out of Claude Code or Codex itself (~/.claude, ~/.codex), for every tool. Asked at a terminal; required without one"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "providers",
@@ -2956,12 +3295,14 @@ tty:
               "default": "",
               "usage": "claude, codex: the CLAUDE_CONFIG_DIR or CODEX_HOME this instance signs in and keeps its sessions in; a new one in ~/.krowk/accounts/ for a named instance"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
           "usage": "krowk providers list",
-          "summary": "List every instance, and whether it is ready"
+          "summary": "List every instance, and whether it is ready",
+          "hidden": false
         },
         {
           "name": "remove",
@@ -2973,7 +3314,8 @@ tty:
               "summary": "The instance to remove, e.g. openai:work",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "rename",
@@ -2990,14 +3332,17 @@ tty:
               "summary": "Its whole new name, e.g. claude:personal — the same <provider>: prefix; a server's has none. Asked at a terminal when absent",
               "required": false
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "status",
       "usage": "krowk status",
-      "summary": "What's connected, and whether each is ready"
+      "summary": "What's connected, and whether each is ready",
+      "hidden": false
     },
     {
       "name": "host",
@@ -3006,7 +3351,8 @@ tty:
         {
           "name": "status",
           "usage": "krowk host status",
-          "summary": "Whether the daemon runs: socket, pid, uptime, sessions"
+          "summary": "Whether the daemon runs: socket, pid, uptime, sessions",
+          "hidden": false
         },
         {
           "name": "attach",
@@ -3018,7 +3364,8 @@ tty:
               "summary": "The session id a result names",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "stop",
@@ -3031,19 +3378,23 @@ tty:
               "default": "false",
               "usage": "Stop it though other clients are connected; each reconnects to the next daemon"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "enable",
           "usage": "krowk host enable",
-          "summary": "Run the daemon as a systemd or launchd user service"
+          "summary": "Run the daemon as a systemd or launchd user service",
+          "hidden": true
         },
         {
           "name": "disable",
           "usage": "krowk host disable",
-          "summary": "Stop the service and remove it"
+          "summary": "Stop the service and remove it",
+          "hidden": true
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "relay",
@@ -3078,14 +3429,109 @@ tty:
               "default": "",
               "usage": "The directory each channel's fence is kept in across restarts; required off loopback"
             }
-          ]
+          ],
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
+    },
+    {
+      "name": "machines",
+      "summary": "Your machines, and what each can take",
+      "subcommands": [
+        {
+          "name": "list",
+          "usage": "krowk machines [list]",
+          "summary": "Your machines, and what each can take",
+          "hidden": false
+        },
+        {
+          "name": "accept",
+          "usage": "krowk machines accept on|off",
+          "summary": "Take work from your other machines, or not",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "add",
+          "usage": "krowk machines add",
+          "summary": "Show a code that adds another machine",
+          "hidden": false
+        },
+        {
+          "name": "remove",
+          "usage": "krowk machines remove NAME",
+          "summary": "Take a machine off your list and rotate your key",
+          "args": [
+            {
+              "name": "name",
+              "summary": "The machine's name, as `krowk machines` lists it",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "always-on",
+          "usage": "krowk machines always-on on|off",
+          "summary": "Keep this machine available while you're away",
+          "args": [
+            {
+              "name": "state",
+              "summary": "on or off",
+              "required": true
+            }
+          ],
+          "hidden": false
+        },
+        {
+          "name": "recovery",
+          "usage": "krowk machines recovery [new|check|discard-old]",
+          "summary": "Your recovery kit: see it, make a new one, test it",
+          "subcommands": [
+            {
+              "name": "new",
+              "usage": "krowk machines recovery new [--save FILE]",
+              "summary": "Make a new recovery kit",
+              "flags": [
+                {
+                  "name": "save",
+                  "type": "string",
+                  "default": "",
+                  "usage": "Write the new kit to this file (0600) instead of showing it"
+                }
+              ],
+              "hidden": false
+            },
+            {
+              "name": "check",
+              "usage": "krowk machines recovery check",
+              "summary": "Test the kit's words against your device list, locally",
+              "hidden": false
+            },
+            {
+              "name": "discard-old",
+              "usage": "krowk machines recovery discard-old",
+              "summary": "Drop the old keys a start-over kept aside",
+              "hidden": false
+            }
+          ],
+          "hidden": false
+        }
+      ],
+      "hidden": false
     },
     {
       "name": "hosts",
       "usage": "krowk hosts",
-      "summary": "Your machines that host synced sessions"
+      "summary": "The same as krowk machines",
+      "hidden": true
     },
     {
       "name": "sync",
@@ -3114,7 +3560,8 @@ tty:
               "default": "",
               "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "recover",
@@ -3127,12 +3574,14 @@ tty:
               "default": "",
               "usage": "What your device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "status",
           "usage": "krowk sync status",
-          "summary": "This device's list, recovery kit and auto-sync, checked"
+          "summary": "This device's list, recovery kit and auto-sync, checked",
+          "hidden": false
         },
         {
           "name": "recovery",
@@ -3150,24 +3599,28 @@ tty:
                   "default": "",
                   "usage": "Write the new kit to this file (0600) instead of showing it"
                 }
-              ]
+              ],
+              "hidden": false
             },
             {
               "name": "check",
               "usage": "krowk sync recovery check",
-              "summary": "Test the kit's words against your device list, locally"
+              "summary": "Test the kit's words against your device list, locally",
+              "hidden": false
             },
             {
               "name": "discard-old",
               "usage": "krowk sync recovery discard-old",
-              "summary": "Drop the old keys a start-over kept aside"
+              "summary": "Drop the old keys a start-over kept aside",
+              "hidden": false
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "join",
           "usage": "krowk sync join",
-          "summary": "Add this machine by the code `krowk devices add` shows",
+          "summary": "Add this machine by the code `krowk machines add` shows",
           "flags": [
             {
               "name": "name",
@@ -3175,27 +3628,32 @@ tty:
               "default": "",
               "usage": "What the workspace's device list calls this machine; its host name when absent (also KROWK_DEVICE_NAME)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "sessions",
           "usage": "krowk sync sessions",
-          "summary": "The synced sessions this machine can open"
+          "summary": "The synced sessions this machine can open",
+          "hidden": true
         },
         {
           "name": "host",
           "usage": "krowk sync host SESSION",
-          "summary": "Run a session here and sync it until interrupted"
+          "summary": "Run a session here and sync it until interrupted",
+          "hidden": false
         },
         {
           "name": "attach",
           "usage": "krowk sync attach SESSION",
-          "summary": "Follow a synced session as stream-json"
+          "summary": "Follow a synced session as stream-json",
+          "hidden": true
         },
         {
           "name": "take",
           "usage": "krowk sync take SESSION",
-          "summary": "Move a live session here, uncommitted work and all"
+          "summary": "Move a live session here, uncommitted work and all",
+          "hidden": true
         },
         {
           "name": "new",
@@ -3213,13 +3671,13 @@ tty:
               "name": "host",
               "type": "string",
               "default": "",
-              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk hosts` lists them)"
+              "usage": "The machine to start it on: its name on your device list, or 8+ hex characters of its device id (`krowk machines` lists them)"
             },
             {
               "name": "cwd",
               "type": "string",
               "default": "",
-              "usage": "The directory there to start it in, one that machine offers (`krowk hosts`)"
+              "usage": "The directory there to start it in, one that machine offers (`krowk machines`)"
             },
             {
               "name": "model",
@@ -3227,9 +3685,11 @@ tty:
               "default": "",
               "usage": "<instance>/<model>, an instance that machine has ready; its first ready instance's first model when absent"
             }
-          ]
+          ],
+          "hidden": true
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "devices",
@@ -3238,19 +3698,23 @@ tty:
         {
           "name": "list",
           "usage": "krowk devices list",
-          "summary": "The devices on your device list, this one marked"
+          "summary": "The devices on your device list, this one marked",
+          "hidden": false
         },
         {
           "name": "add",
           "usage": "krowk devices add",
-          "summary": "Show a code that adds a new machine to your devices"
+          "summary": "Show a code that adds a new machine to your devices",
+          "hidden": false
         },
         {
           "name": "remove",
           "usage": "krowk devices remove NAME",
-          "summary": "Take a device off your list and rotate your key"
+          "summary": "Take a device off your list and rotate your key",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": true
     },
     {
       "name": "mcp",
@@ -3274,7 +3738,8 @@ tty:
               "default": "false",
               "usage": "Print the sign-in page and read the address your browser lands on, instead of opening a browser — the default over SSH, or with no display"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "logout",
@@ -3286,7 +3751,8 @@ tty:
               "summary": "The server's name",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "add",
@@ -3325,7 +3791,8 @@ tty:
               "default": "false",
               "usage": "Replace a server of that name already in config.json"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "remove",
@@ -3337,14 +3804,17 @@ tty:
               "summary": "The server to remove",
               "required": true
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "list",
           "usage": "krowk mcp list",
-          "summary": "List the servers krowk would load here, without connecting"
+          "summary": "List the servers krowk would load here, without connecting",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "trust",
@@ -3370,7 +3840,8 @@ tty:
           "default": "false",
           "usage": "List every trusted directory instead; takes no path"
         }
-      ]
+      ],
+      "hidden": false
     },
     {
       "name": "worktrees",
@@ -3379,7 +3850,8 @@ tty:
         {
           "name": "list",
           "usage": "krowk worktrees list",
-          "summary": "Each one: branch, commits ahead, changes, session, age"
+          "summary": "Each one: branch, commits ahead, changes, session, age",
+          "hidden": false
         },
         {
           "name": "add",
@@ -3392,7 +3864,8 @@ tty:
               "default": "",
               "usage": "The commit or ref to start from, such as origin/main (default: this checkout's files as they are)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "remove",
@@ -3412,7 +3885,8 @@ tty:
               "default": "false",
               "usage": "Remove it though it has changes; uncommitted ones are saved as refs/krowk/snapshots/<hex>"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "apply",
@@ -3432,14 +3906,17 @@ tty:
               "default": "",
               "usage": "The checkout its changes go to (default: the repository's main checkout)"
             }
-          ]
+          ],
+          "hidden": false
         },
         {
           "name": "prune",
           "usage": "krowk worktrees prune",
-          "summary": "Clear what deleted worktrees left, and old snapshots"
+          "summary": "Clear what deleted worktrees left, and old snapshots",
+          "hidden": false
         }
-      ]
+      ],
+      "hidden": false
     }
   ],
   "global_flags": [

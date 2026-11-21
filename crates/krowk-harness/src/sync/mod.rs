@@ -11,10 +11,13 @@ pub mod announce;
 pub mod auto;
 pub mod commands;
 pub mod direct;
+pub mod fleet;
 pub mod handoff;
 pub mod host;
 pub mod hosts;
+pub mod introduce;
 pub mod mdns;
+pub mod placement;
 pub mod store;
 pub mod tailscale;
 pub mod viewer;
@@ -189,6 +192,28 @@ pub fn ask_handoff(o: viewer::Options, wait: Duration) -> Result<Handed, String>
                 }
             }
         }
+    })
+}
+
+/// Interrupts the turn `o.session` is running, as a viewer does (the stop
+/// of a child that started too late, `placement::Fleet::stop`): attached
+/// until the host is there, up to `wait`, then the command sent and given a
+/// moment to reach it.
+pub fn interrupt(o: viewer::Options, wait: Duration) -> Result<(), String> {
+    let session = o.session.clone();
+    runtime()?.block_on(async move {
+        let mut v = viewer::attach(o).await?;
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            match tokio::time::timeout_at(deadline, v.updates.recv()).await {
+                Ok(Some(batch)) if batch.iter().any(|u| matches!(u, viewer::Update::Host(true))) => break,
+                Ok(Some(_)) => {}
+                _ => return Err(format!("the host of session {session} did not answer in {} seconds, so its turn was not interrupted", wait.as_secs())),
+            }
+        }
+        v.commands.send(crate::protocol::Command::Interrupt { session_id: session }).map_err(|_| "the interrupt could not be sent".to_string())?;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        Ok(())
     })
 }
 

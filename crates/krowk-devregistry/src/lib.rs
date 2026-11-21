@@ -31,6 +31,7 @@ mod image;
 mod json;
 mod moves;
 mod page;
+mod pairing_requests;
 mod pairings;
 mod runs;
 mod store;
@@ -336,6 +337,9 @@ fn users_route(a: &App, req: &mut Req, m: &str, user: &str, rest: &[&str]) -> Re
         ("POST", ["devices", target, "commands"]) => sync::signed(a, req, |a, req, by| commands::send(a, req, target, by)),
         (_, ["devices", target, "commands", id]) if get => sync::signed(a, req, |a, req, by| commands::show(a, req, target, id, by)),
         (_, ["presences"]) if get => devices::presences(a, req),
+        // A new machine's ask of the person's hosts to open a pairing, and its poll.
+        ("POST", ["pairing_request"]) => pairing_requests::create(a, req),
+        (_, ["pairing_request"]) if get => pairing_requests::show(a, req),
         ("POST", ["pairing"]) => pairings::open(a, req),
         (_, ["pairing"]) if get => pairings::read(a, req),
         ("DELETE", ["pairing"]) => pairings::destroy(a, req, &pairings::latest(a, req)),

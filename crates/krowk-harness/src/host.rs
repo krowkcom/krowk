@@ -2006,8 +2006,9 @@ fn replay(branch: &[&LogEvent], registry: &Registry) -> Past {
             // On another host now: its turns run in the worktree there.
             LogBody::SessionMoved { cwd, .. } => past.cwd = Some(PathBuf::from(cwd)),
             // The subagents' own logs hold their conversations; the todo
-            // list is read back from the calls that set it.
-            LogBody::SubagentResponse { .. } | LogBody::BackendHandoff { .. } | LogBody::SubagentStarted { .. } | LogBody::TodosUpdated { .. } => {}
+            // list is read back from the calls that set it; a task's result
+            // is its supervisor's to read.
+            LogBody::SubagentResponse { .. } | LogBody::BackendHandoff { .. } | LogBody::SubagentStarted { .. } | LogBody::TodosUpdated { .. } | LogBody::TaskResult { .. } => {}
         }
     }
     past

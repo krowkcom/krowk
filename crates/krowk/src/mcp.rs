@@ -267,6 +267,12 @@ impl Server<'_> {
             "krowk_claim_artifact" => self.claim_artifact(&args),
             "krowk_get_run" => self.get_run(),
             "krowk_verify_key" => self.verify_key(),
+            #[cfg(all(feature = "harness", unix))]
+            "krowk_delegate" => delegate(&args),
+            #[cfg(all(feature = "harness", unix))]
+            "krowk_collect" => collect(&args),
+            #[cfg(all(feature = "harness", unix))]
+            "krowk_machines" => machines(),
             other => return Err(rpc_error(-32602, &format!("unknown tool {other}"))),
         };
         Ok(match outcome {
@@ -744,9 +750,99 @@ fn render_push(artifacts: &[Artifact], run: Option<&Run>, notes: &[String]) -> (
     (lines.join("\n"), structured)
 }
 
+/// krowk_delegate, krowk_collect and krowk_machines (R-ALLOC-11, D18): the
+/// supervisor's side of automatic allocation for a Claude Code or Codex that
+/// runs with krowk-mcp added. Placement, the job, the child's result and its
+/// landing in the working tree are `Placer`'s, the one krowk's own agent
+/// places its subagents with; this is the tools around it. Tasks live in this
+/// process: they do not survive a restart.
+#[cfg(all(feature = "harness", unix))]
+mod delegation {
+    use super::*;
+    use krowk_harness::sync::placement::{Failure, Handle, HostPin, Progress};
+    use std::time::Duration;
+
+    /// How long krowk_collect waits when it is not told, and the most it
+    /// will: under what an MCP client gives one call.
+    const WAIT: u64 = 300;
+    const WAIT_MOST: u64 = 600;
+
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct DelegateArgs {
+        task: String,
+        host: String,
+        model: String,
+    }
+
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct CollectArgs {
+        task_id: String,
+        wait_seconds: Option<u64>,
+    }
+
+    fn handle(id: &str) -> Result<Handle, Error> {
+        let cwd = std::env::current_dir().map_err(|e| fail("no_working_directory", format!("the working directory is not readable: {e}")))?;
+        Ok(Handle { id: id.to_string(), cwd })
+    }
+
+    fn no_sync() -> Error {
+        fail("no_machines", "krowk is not set up to sync on this machine, so there is nowhere else to run a task: `krowk sync init` on this machine, `krowk sync join` on your others")
+    }
+
+    pub fn delegate(args: &Value) -> Outcome {
+        let a: DelegateArgs = arguments(args, "krowk_delegate takes a task, and optionally a host and a model")?;
+        if a.task.trim().is_empty() {
+            return Err(fail("bad_arguments", "krowk_delegate needs a task: what the other agent should do, in full, since it starts with none of this conversation"));
+        }
+        let host = match a.host.trim() {
+            "" => None,
+            h => Some(HostPin::parse(h).map_err(|e| fail("bad_arguments", format!("invalid host: {e}")))?),
+        };
+        let placer = crate::cli::placer().ok_or_else(no_sync)?;
+        let cwd = std::env::current_dir().map_err(|e| fail("no_working_directory", format!("the working directory is not readable: {e}")))?;
+        let model = krowk_client::host_command::ModelChoice { instance: None, model: Some(a.model.trim().to_string()).filter(|m| !m.is_empty()) };
+        let description: String = a.task.trim().lines().next().unwrap_or_default().chars().take(80).collect();
+        let spec = krowk_harness::sync::placement::TaskSpec { description, prompt: a.task, cwd, host, model, budget: Default::default(), permission_mode: None, store: None };
+        let h = placer.start(spec, krowk_harness::sync::placement::Here::Worktree);
+        Ok((format!("Started task {}. It is being placed on a machine with room; call krowk_collect with this task_id to wait for it. Its changes land in this working tree when it finishes.", h.id), json!({ "task_id": h.id })))
+    }
+
+    pub fn collect(args: &Value) -> Outcome {
+        let a: CollectArgs = arguments(args, "krowk_collect takes a task_id, and optionally wait_seconds")?;
+        let h = handle(a.task_id.trim())?;
+        let unknown = || fail("unknown_task", Failure::Unknown(h.id.clone()).to_string() + " Tasks live in the krowk-mcp process that started them, so a restart forgets them (the child keeps running on its machine, and its work stays in that machine's worktree).");
+        let placer = crate::cli::placer().ok_or_else(unknown)?;
+        let most = Duration::from_secs(a.wait_seconds.unwrap_or(WAIT).min(WAIT_MOST));
+        let progress = placer.wait(&h, most).map_err(|f| match f {
+            Failure::Unknown(_) => unknown(),
+            f => fail("task_failed", f.to_string()),
+        })?;
+        match progress {
+            Progress::Done(o) => {
+                let text = krowk_harness::sync::placement::told(&o);
+                let u = o.usage;
+                let usage = json!({ "input_tokens": u.input_tokens, "output_tokens": u.output_tokens, "cache_read_tokens": u.cache_read_tokens, "cache_write_tokens": u.cache_write_tokens, "reasoning_tokens": u.reasoning_tokens });
+                Ok((text, json!({ "status": "done", "task_id": h.id, "machine": o.machine, "summary": o.summary, "applied": o.applied, "kept": o.kept, "denied": o.denied, "usage": usage })))
+            }
+            Progress::Running { machine, why, .. } => Ok((format!("Task {} is still running on {machine} ({why}). Call krowk_collect again to keep waiting.", h.id), json!({ "status": "running", "task_id": h.id, "machine": machine }))),
+            Progress::Placing | Progress::Here { .. } => Ok((format!("Task {} is still running: it is still being placed. Call krowk_collect again to keep waiting.", h.id), json!({ "status": "running", "task_id": h.id }))),
+        }
+    }
+
+    pub fn machines() -> Outcome {
+        let data = crate::cli::machines().map_err(|why| fail("machines_unavailable", why))?;
+        Ok((serde_json::to_string_pretty(&data).unwrap_or_default(), data))
+    }
+}
+#[cfg(all(feature = "harness", unix))]
+use delegation::{collect, delegate, machines};
+
 fn tool_schemas() -> Value {
     let slug = "Artifact slug, e.g. art_9f3c2e1a7b04d6c8e5f1a2b3 — or any link carrying it, like https://krowk.com/a/art_9f3c2e1a7b04d6c8e5f1a2b3.";
-    json!([
+    #[cfg_attr(not(all(feature = "harness", unix)), allow(unused_mut))]
+    let mut tools = json!([
         {
             "name": "krowk_push",
             "description": "Upload one or more local files; every file becomes its own artifact with a permalink, grouped under a run when an API key is configured. Returns both paste-ready forms per artifact: the markdown image embed for GitHub, Linear and Notion, and the bare URL for Slack and Basecamp. Repo, commit, branch and agent are detected automatically. Uploads are public unless `private` says otherwise, and each artifact reports its own `visibility`.",
@@ -815,7 +911,40 @@ fn tool_schemas() -> Value {
             "description": "Check whether an API key is configured, and which workspace uploads made with it land in. Without a key, pushes still work but are anonymous and expire in 24h. Call it when a push is refused: if this checkout pinned a workspace the server could not reach, the reason is here.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
         }
-    ])
+    ]);
+    #[cfg(all(feature = "harness", unix))]
+    tools.as_array_mut().expect("a list").extend(delegation_schemas());
+    tools
+}
+
+/// The tools that hand work to another of the person's machines. Only where
+/// the build can: a lean build has no machines to place work on.
+#[cfg(all(feature = "harness", unix))]
+fn delegation_schemas() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "krowk_delegate",
+            "description": "Hand a self-contained task to a krowk agent that runs on whichever of your machines has room, and return a task_id at once. Use it instead of your own subagent tool when the task should run on whichever of your machines has room, for example when this machine is busy with builds or tests; for a quick task that can run here, use your own subagent tool. The task runs on this machine unless it is busy, otherwise on another of your machines that has a clone of this repository and a ready account, starting from this working tree's exact state: your uncommitted changes and unpushed commits included. The other agent has none of this conversation, so the task must say everything it needs. It runs one turn and cannot ask questions: what it would have asked is refused. Call krowk_collect with the task_id to wait for it. Its changes are applied to this working tree when it finishes, or kept in a worktree that the result names when they conflict, so do not edit the files it was asked to change while it runs; krowk_collect reports what landed. Tasks live in this krowk-mcp process: restarting the MCP server forgets them (the child keeps running on its machine, and its work stays in that machine's worktree). krowk_machines says what each machine has room for.",
+            "inputSchema": { "type": "object", "required": ["task"], "properties": {
+                "task": { "type": "string", "description": "What the agent should do, in full." },
+                "host": { "type": "string", "description": "Run it on this machine, by the name krowk_machines gives, or `any` for any other machine than a busy one, or `any:macos`, `any:linux` or `any:windows` for one of that kind. Without it krowk picks: this machine unless it is busy." },
+                "model": { "type": "string", "description": "The model or account to run it on: `<instance>/<model>`, an account such as `claude:work`, or a model id. Without it krowk picks one that is ready." }
+            }, "additionalProperties": false }
+        }),
+        json!({
+            "name": "krowk_collect",
+            "description": "Wait for a task started with krowk_delegate. Returns its summary once it has finished, with the changes applied to this working tree (or kept in a named worktree on a conflict), the approvals a task on another machine was denied, its token usage and the machine it ran on. If it has not finished when the wait is over, it says the task is still running, and you call krowk_collect again with the same task_id. A task still being placed reads as still running too. A task that failed says why and on which machine.",
+            "inputSchema": { "type": "object", "required": ["task_id"], "properties": {
+                "task_id": { "type": "string", "description": "The task_id krowk_delegate returned." },
+                "wait_seconds": { "type": "integer", "minimum": 0, "maximum": 600, "description": "How long to wait for it, at most (default 300, the most 600). Pass less if your client gives a tool call less time. 0 only asks where it is." }
+            }, "additionalProperties": false }
+        }),
+        json!({
+            "name": "krowk_machines",
+            "description": "List your machines as `krowk machines --json` does: each one's name, whether it is online, its capacity (cores, load, free memory, build and agent slots), the repositories it has, whether it accepts work, and whether it is ready for this repository or what would make it ready.",
+            "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false }
+        }),
+    ]
 }
 
 #[cfg(test)]
@@ -877,6 +1006,32 @@ mod tests {
         let lines: Vec<Value> = out.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
         assert_eq!(lines[0]["error"]["code"], -32602);
         assert_eq!(lines[1]["result"], json!({}), "a last line without its newline is still answered");
+    }
+
+    /// Slice 08 (R-ALLOC-11, D18): krowk_delegate, krowk_collect and
+    /// krowk_machines are offered, delegate saying when to use it rather
+    /// than the harness's own subagent tool, and a task id nobody started
+    /// is a tool error, not a protocol one.
+    #[test]
+    #[cfg(all(feature = "harness", unix))]
+    fn alloc_08_the_delegation_tools_are_offered_and_say_when_to_delegate() {
+        let (_, out) = serve(b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}\n");
+        let listed: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        let tools = listed["result"]["tools"].as_array().unwrap();
+        let tool = |name: &str| tools.iter().find(|t| t["name"] == name).unwrap_or_else(|| panic!("{name} is not offered")).clone();
+        let delegate = tool("krowk_delegate");
+        assert!(delegate["description"].as_str().unwrap().contains("whichever of your machines has room"), "{}", delegate["description"]);
+        assert_eq!(delegate["inputSchema"]["required"], json!(["task"]));
+        for optional in ["host", "model"] {
+            assert!(delegate["inputSchema"]["properties"].get(optional).is_some(), "{optional}");
+        }
+        let collect = tool("krowk_collect");
+        assert_eq!(collect["inputSchema"]["required"], json!(["task_id"]));
+        assert!(collect["inputSchema"]["properties"].get("wait_seconds").is_some(), "how long to wait, bounded; 0 asks where it is");
+        tool("krowk_machines");
+        let (_, out) = serve(b"{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"krowk_collect\",\"arguments\":{\"task_id\":\"0190f3c2-0000-7000-8000-000000000009\"}}}\n");
+        let called: Value = serde_json::from_str(out.lines().next().unwrap()).unwrap();
+        assert_eq!(called["result"]["isError"], true, "{called}");
     }
 
     #[test]

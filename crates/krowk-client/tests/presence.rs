@@ -5,7 +5,7 @@
 
 use krowk_client::device_chain::{Action, Chain, Entry, Kind, SignedEntry, Subject};
 use krowk_client::e2e::{self, hex, DeviceId, DeviceKey, Label, SigningKey};
-use krowk_client::presence::{self, AnnouncedInstance, Announcement};
+use krowk_client::presence::{self, AnnouncedInstance, AnnouncedRepository, Announcement, Capacity, Slots};
 use krowk_client::protocol::{LimitState, LimitStatus};
 use krowk_client::recovery::RecoveryKit;
 use krowk_client::user_key::{UserKey, UserKeys};
@@ -109,6 +109,9 @@ fn record(me: &DeviceId) -> Announcement {
         }],
         directories: vec!["/home/someone/Repositories/secret-project".into()],
         sessions: vec!["0123456789abcdef0123456789abcdef".into()],
+        capacity: Some(Capacity { cores: 16, load_1m: 3.25, free_memory: 9 << 30, build_slots: Slots { in_use: 3, total: 3 }, agent_slots: Slots { in_use: 1, total: 32 } }),
+        repositories: vec![AnnouncedRepository { directory: "/home/someone/Repositories/secret-project".into(), origin: "github.com/someone/secret-project".into() }],
+        accepting: true,
     }
 }
 
@@ -205,6 +208,86 @@ fn r_host_3_an_announcement_over_its_bounds_is_refused_on_seal() {
     assert!(presence::seal(&models, &keys(1), 1, &me).unwrap_err().contains("models"));
     let big = Announcement { sessions: vec!["0123456789abcdef0123456789abcdef".into(); 256], directories: vec!["/d".repeat(100); 64], ..record(&me) };
     assert!(presence::seal(&big, &keys(1), 1, &me).unwrap_err().contains("bytes"));
+}
+
+/// R-ALLOC-1: the allocation fields are held to bounds of their own: no
+/// more than `MAX_REPOSITORIES`, no control character in a directory or
+/// origin, and a load that is a number.
+#[test]
+fn r_alloc_1_the_allocation_fields_are_held_to_their_bounds() {
+    let w = world();
+    let me = w.laptop.id();
+    let repo = |i: usize| AnnouncedRepository { directory: format!("/r/{i}"), origin: format!("github.com/a/{i}") };
+    let many = Announcement { repositories: (0..=presence::MAX_REPOSITORIES).map(repo).collect(), ..record(&me) };
+    assert!(presence::seal(&many, &keys(1), 1, &me).unwrap_err().contains("repositories"));
+    let spoof = Announcement { repositories: vec![AnnouncedRepository { directory: "/r".into(), origin: "github.com/\u{202e}a".into() }], ..record(&me) };
+    assert!(presence::seal(&spoof, &keys(1), 1, &me).unwrap_err().contains("control character"));
+    let mut wild = record(&me);
+    wild.capacity.as_mut().unwrap().load_1m = -1.0;
+    assert!(presence::seal(&wild, &keys(1), 1, &me).unwrap_err().contains("load"));
+    let mut none = record(&me);
+    none.capacity.as_mut().unwrap().cores = 0;
+    assert!(presence::seal(&none, &keys(1), 1, &me).unwrap_err().contains("no cores"));
+    let mut over = record(&me);
+    over.capacity.as_mut().unwrap().agent_slots = Slots { in_use: 33, total: 32 };
+    assert!(presence::seal(&over, &keys(1), 1, &me).unwrap_err().contains("slots in use"));
+}
+
+/// R-ALLOC-1: a capacity this build cannot read, from a newer host, reads
+/// as none, and the rest of the record still opens.
+#[test]
+fn r_alloc_1_a_capacity_this_build_cannot_read_reads_as_none() {
+    let w = world();
+    let me = w.laptop.id();
+    let mut json = serde_json::to_value(record(&me)).unwrap();
+    json["capacity"]["load1m"] = serde_json::json!({"oneMinute": 3.2});
+    let sealed = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, &serde_json::to_vec(&json).unwrap()).unwrap();
+    let opened = presence::open(&sealed, &me, &keys(1), &chain(&w)).unwrap();
+    assert_eq!((opened.capacity, opened.accepting, opened.repositories.len()), (None, true, 1));
+}
+
+/// R-ALLOC-1, D14: a record from a host older than automatic allocation
+/// opens with no capacity, no repositories, and not accepting, so no
+/// supervisor hands it a task it would not know.
+#[test]
+fn r_alloc_1_an_older_hosts_record_reads_as_not_accepting() {
+    let w = world();
+    let me = w.laptop.id();
+    let mut json = serde_json::to_value(record(&me)).unwrap();
+    for gone in ["capacity", "repositories", "accepting"] {
+        json.as_object_mut().unwrap().remove(gone);
+    }
+    let sealed = e2e::seal_to_person(&keys(1), 1, Label::Presence, &me.0, &serde_json::to_vec(&json).unwrap()).unwrap();
+    let opened = presence::open(&sealed, &me, &keys(1), &chain(&w)).unwrap();
+    assert_eq!((opened.capacity, opened.repositories.len(), opened.accepting), (None, 0, false));
+    // The wire names, which canon documents.
+    let wire = serde_json::to_value(record(&me)).unwrap();
+    assert_eq!(wire["capacity"], serde_json::json!({"cores": 16, "load1m": 3.25, "freeMemory": 9u64 << 30, "buildSlots": {"inUse": 3, "total": 3}, "agentSlots": {"inUse": 1, "total": 32}}));
+    assert_eq!(wire["repositories"][0]["origin"], "github.com/someone/secret-project");
+    assert_eq!(wire["accepting"], true);
+}
+
+/// Slice 02 (R-ALLOC-1, D7): SSH and HTTPS forms of one repository's
+/// origin are the same string, and a local path is none.
+#[test]
+fn alloc_02_ssh_and_https_origins_normalise_alike() {
+    let want = Some("github.com/Acme/app".to_string());
+    for url in ["git@github.com:Acme/app.git", "https://github.com/Acme/app", "https://user@GitHub.com/Acme/app.git", "https://ann:ghp_secret@github.com/Acme/app.git", "ssh://git@github.com/Acme/app.git", "https://github.com/Acme/app/"] {
+        assert_eq!(presence::normalise_origin(url), want, "{url}");
+    }
+    assert_eq!(presence::normalise_origin("/srv/git/app.git"), None);
+}
+
+#[test]
+fn a_port_a_secret_or_a_local_form_never_reaches_the_origin() {
+    let want = Some("git.example.com/a/b".to_string());
+    assert_eq!(presence::normalise_origin("ssh://git@[::1]:2222/a/b.git/"), Some("[::1]/a/b".into()));
+    for url in ["ssh://git@Git.Example.com:2222/a/b.git", "https://tok:x-oauth@git.example.com:8443/a/b.git/", "ann:secret@git.example.com:a/b.git", "https://git.example.com/a/b.git?x=1#y", "https://ann:sec#1@git.example.com/a/b.git", "ann:sec#1@git.example.com:a/b"] {
+        assert_eq!(presence::normalise_origin(url), want, "{url}");
+    }
+    for url in ["", "file:///srv/app.git", "./app", "../app.git", "~/app", "C:/repos/app", "C:\\repos\\app", "https://github.com", "https://github.com/", "ann:sec/ret@git.example.com:a/b", "https://ann:sec/ret@git.example.com/a/b", "\\\\?\\C:\\x"] {
+        assert_eq!(presence::normalise_origin(url), None, "{url}");
+    }
 }
 
 #[test]

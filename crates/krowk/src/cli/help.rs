@@ -2,7 +2,7 @@
 //! catalog under the headings in `GROUPS`, a command's own help from its
 //! entry and its `about`; the topics are what belongs to no one command.
 
-use super::catalog::{self, Catalog, Command, Flag, ALL_ONLY, BOOL, GROUPS};
+use super::catalog::{self, Catalog, Command, Flag, ALL_ONLY, BOOL, GROUPS, MORE_HEADING};
 
 /// The Krowk mark: the logo's four-by-four grid of squares, two grid rows to a
 /// text row so a square stays square.
@@ -45,10 +45,10 @@ pub struct Files<'a> {
 }
 
 #[cfg(feature = "harness")]
-const USAGE: &[(&str, &str)] =
-    &[("krowk -p \"…\"", "One prompt, headless"), ("krowk <command> [flags]", "")];
+const START: &[(&str, &str)] =
+    &[("krowk", "Set this machine up, then an overview of it"), ("krowk -p \"…\"", "One prompt, headless"), ("krowk -p --resume", "Continue a session")];
 #[cfg(not(feature = "harness"))]
-const USAGE: &[(&str, &str)] = &[("krowk <command> [flags]", ""), ("krowk push shot.png", "Upload a file, get a link")];
+const START: &[(&str, &str)] = &[("krowk <command> [flags]", ""), ("krowk push shot.png", "Upload a file, get a link")];
 
 /// The flags worth knowing before any command; `krowk help flags` has them all.
 const FLAGS: &[(&str, &str)] = &[
@@ -98,18 +98,21 @@ pub fn help(c: &Catalog, all: bool, colour: bool) -> String {
         format!("{}  {} {}\n{}  {}\n", MARK[0], bold(colour, "Krowk"), c.version, MARK[1], c.summary)
     };
     if !all {
-        heading(&mut out, "Usage", colour);
-        rows(&mut out, "  ", 27, USAGE);
+        heading(&mut out, if cfg!(feature = "harness") { "Start" } else { "Usage" }, colour);
+        rows(&mut out, "  ", 27, START);
         heading(&mut out, "Examples", colour);
         rows(&mut out, "  ", 27, EXAMPLES);
     }
     let leaves = c.leaves();
     for (title, names) in GROUPS {
+        if !all && *title == MORE_HEADING {
+            continue;
+        }
         heading(&mut out, title, colour);
         for name in *names {
             if all {
                 for leaf in leaves.iter().filter(|l| l.name.split(' ').next() == Some(name)) {
-                    row(&mut out, "  ", 18, &leaf.name, leaf.summary);
+                    row(&mut out, "  ", 20, &leaf.name, leaf.summary);
                 }
             } else if !ALL_ONLY.contains(name) {
                 row(&mut out, "  ", 14, name, c.commands.iter().find(|c| c.name == *name).map_or("", |c| c.summary));
@@ -355,8 +358,9 @@ pub fn command_help(cmd: &Command, globals: &[Flag], colour: bool) -> String {
         // Each under the group's name, `krowk artifacts` read as said.
         heading(&mut out, &format!("Commands (krowk {} …)", cmd.name), colour);
         let prefix = format!("krowk {} ", cmd.name);
-        let width = cmd.subcommands.iter().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
-        for s in &cmd.subcommands {
+        let shown = || cmd.subcommands.iter().filter(|s| !s.hidden);
+        let width = shown().map(|s| s.usage.len() - prefix.len() + 2).max().unwrap_or(0).min(28);
+        for s in shown() {
             row(&mut out, "  ", width, s.usage.get(prefix.len()..).unwrap_or(s.usage), s.summary);
         }
     }

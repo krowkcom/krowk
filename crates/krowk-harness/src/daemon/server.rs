@@ -82,6 +82,10 @@ pub struct Options {
     /// keeps them: `status` reports them (`HostStatus.bridged`). The owner
     /// holds the lock only to insert or remove one id.
     pub bridged: Option<std::sync::Arc<std::sync::Mutex<BTreeSet<String>>>>,
+    /// The pairings this host opens for new machines (R-EASE-5): clients
+    /// ask it for the offer (`pairingOffer`) and send the person's answer
+    /// (`pairingAnswer`). None has no offer to tell.
+    pub introductions: Option<std::sync::Arc<crate::sync::introduce::Introductions>>,
 }
 
 /// A session's own turn started (`running`) or ended (`Options::turns`).
@@ -93,7 +97,7 @@ pub struct TurnEvent {
 
 impl Default for Options {
     fn default() -> Options {
-        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None }
+        Options { socket: PathBuf::new(), idle: Some(super::DEFAULT_IDLE), krowk_version: String::new(), websocket: None, heartbeat: super::ws::HEARTBEAT, caps: Caps::default(), replay_cap: replay::CAP, lateness: None, kick: None, turns: None, bridged: None, introductions: None }
     }
 }
 
@@ -253,6 +257,9 @@ struct Client {
     /// Never holds the daemon up: the idle exit and `stop` do not count it
     /// (`hello.background`).
     background: bool,
+    /// On the unix socket, which only this user can open: the WebSocket,
+    /// whose token is a file's, is not (`pairingOffer`, `pairingAnswer`).
+    local: bool,
 }
 
 pub(super) type Shared = Rc<RefCell<State>>;
@@ -538,7 +545,7 @@ pub(super) fn welcome(state: &Shared, hello: Option<ClientFrame>, token: Option<
     let id = s.next_client;
     let outbox = Rc::new(Outbox::new(s.opts.caps));
     outbox.push("", control(&ServerFrame::Welcome { protocol_version: PROTOCOL_VERSION, krowk_version: s.opts.krowk_version.clone(), pid: std::process::id(), epoch: s.epoch }));
-    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background });
+    s.clients.insert(id, Client { outbox: outbox.clone(), cwd, answers, background, local: token.is_none() });
     s.wake.notify_one();
     Ok((id, outbox))
 }
@@ -644,6 +651,22 @@ pub(super) fn dispatch(state: &Shared, id: u64, frame: ClientFrame) {
             let mut s = state.borrow_mut();
             let f = ServerFrame::Status { id: cmd_id, status: status(&s) };
             s.send(id, "", control(&f));
+        }
+        // Adding a machine hands it every session: only a client of the
+        // unix socket may see the code or give the yes, never one that came
+        // by the WebSocket and its token.
+        ClientFrame::PairingOffer { id: cmd_id } => {
+            let mut s = state.borrow_mut();
+            let local = s.clients.get(&id).is_some_and(|c| c.local);
+            let offer = s.opts.introductions.as_ref().filter(|_| local).and_then(|i| i.offer());
+            s.send(id, "", control(&ServerFrame::PairingOffer { id: cmd_id, offer }));
+        }
+        ClientFrame::PairingAnswer { id: cmd_id, pairing, yes } => {
+            let mut s = state.borrow_mut();
+            let local = s.clients.get(&id).is_some_and(|c| c.local);
+            let taken = local && s.opts.introductions.as_ref().is_some_and(|i| i.answer(&pairing, yes));
+            let error = (!taken).then(|| error_info(&EngineError::new("no_pairing_offer", "no new machine's pairing waits for an answer here")));
+            s.send(id, "", control(&ServerFrame::Done { id: cmd_id, result: None, error }));
         }
         ClientFrame::McpStatus { id: cmd_id, session_id } => {
             let mut s = state.borrow_mut();
