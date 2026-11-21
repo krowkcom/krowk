@@ -23,8 +23,8 @@
 //!   its allowlist. The port base is the worktree's port slot's
 //!   (`port_slot`), which the agent's own commands see too, so servers
 //!   started in two worktrees at once do not fight over a port.
-//! - **A build slot** (`crate::builds`) when the command is a heavy one, as
-//!   the bash tool takes for it, waited for within the timeout.
+//! - **A build slot** (`crate::builds`) when the command is a heavy one,
+//!   waited for within the timeout.
 //! - **Its output** goes to `<admin dir>/krowk-setup.log`, the worktree's
 //!   own directory in the repository's git directory, written by krowk
 //!   once the command is over — and so once nothing it started is left

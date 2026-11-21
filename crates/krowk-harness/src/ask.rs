@@ -1,24 +1,13 @@
-//! `ask_user`: the agent asks the person which way to go — a few
-//! questions, each with options to pick from, or the person's own answer.
-//! The native loop's tool, and what Claude Code's `AskUserQuestion` and
-//! Codex's `item/tool/requestUserInput` become: one approval request that
-//! carries the questions (`Gate::ask`), answered by whichever client is
-//! attached.
-//!
-//! The input is Claude Code's, so a model trained on `AskUserQuestion`
-//! writes it as it would there, and what it reads back is Claude Code's
-//! sentence. It is offered only to a session a person can answer, never to
-//! a subagent.
+//! The agent asks the person which way to go — a few questions, each with
+//! options to pick from, or the person's own answer: what Claude Code's
+//! `AskUserQuestion` and Codex's `item/tool/requestUserInput` become, one
+//! approval request that carries the questions (`Gate::ask`), answered by
+//! whichever client is attached. The input is Claude Code's.
 
 use crate::protocol::{Question, QuestionAnswer, QuestionOption};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use serde_json::Value;
-
-pub const ASK_USER: &str = "ask_user";
-
-/// What the model is told. Short: it rides on every call.
-pub const DESCRIPTION: &str = "Ask the user 1-4 questions when a choice is theirs, each with 2-4 options, the one you recommend first. They can always answer in their own words.";
 
 /// The most questions one call asks, and options one question offers.
 pub const MAX_QUESTIONS: usize = 4;
@@ -89,19 +78,6 @@ pub fn said(a: &QuestionAnswer) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(", "))
 }
 
-/// What the model reads back: Claude Code's sentence, for the questions
-/// answered; or, with none answered, what to do instead.
-pub fn reply(questions: &[Question], answers: &[QuestionAnswer]) -> Result<String, String> {
-    let pairs: Vec<String> = questions
-        .iter()
-        .filter_map(|q| answers.iter().find(|a| a.id == q.id).and_then(said).map(|a| format!("{:?}={:?}", q.question, a)))
-        .collect();
-    if pairs.is_empty() {
-        return Err(crate::permissions::DECLINED.into());
-    }
-    Ok(format!("User has answered your questions: {}. You can now continue with the user's answers in mind.", pairs.join(", ")))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,8 +98,8 @@ mod tests {
             QuestionAnswer { id: "Which database?".into(), picked: vec![], text: Some("DuckDB".into()) },
             QuestionAnswer { id: "Which tests?".into(), picked: vec!["unit".into(), "e2e".into()], text: Some("fuzz".into()) },
         ];
-        assert_eq!(reply(&qs, &answers).unwrap(), r#"User has answered your questions: "Which database?"="DuckDB", "Which tests?"="unit, e2e, fuzz". You can now continue with the user's answers in mind."#);
-        assert_eq!(reply(&qs, &[QuestionAnswer { id: "Which database?".into(), ..Default::default() }]).unwrap_err(), crate::permissions::DECLINED, "none answered");
+        assert_eq!((said(&answers[0]).as_deref(), said(&answers[1]).as_deref()), (Some("DuckDB"), Some("unit, e2e, fuzz")));
+        assert_eq!(said(&QuestionAnswer { id: "Which database?".into(), ..Default::default() }), None, "none answered");
     }
 
     #[test]

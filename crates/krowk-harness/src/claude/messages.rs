@@ -1,5 +1,6 @@
 //! Anthropic's Messages stream, decoded straight into krowk's items
-//! (R-PROV-1): one content block is one item, streamed under one id.
+//! (R-PROV-1): one content block is one item, streamed under one id. Claude
+//! Code forwards this stream as its `stream_event` lines (`super::stream`).
 //!
 //! Thinking is where fidelity matters. A `thinking` block's text and its
 //! `signature` must go back to the API exactly as they came, or the next
@@ -7,7 +8,7 @@
 //! item carries the readable text, and the signature or the redacted data
 //! rides in the item's `ProviderBlob` untouched (R-LOG-3).
 
-use super::sse::SseEvent;
+use crate::sse::SseEvent;
 use crate::engine::{EngineError, EngineEvent};
 use crate::protocol::{Delta, Item, ItemKind, ProviderBlob, Usage, WireApi};
 use serde::Deserialize;
@@ -59,31 +60,6 @@ struct Raw {
 
 fn str_of<'a>(v: &'a Value, k: &str) -> &'a str {
     v.get(k).and_then(Value::as_str).unwrap_or_default()
-}
-
-impl crate::http::Decode for Decoder {
-    fn apply(&mut self, ev: &SseEvent) -> Result<Vec<EngineEvent>, EngineError> {
-        Decoder::apply(self, ev)
-    }
-
-    fn done(&self) -> bool {
-        self.done
-    }
-
-    fn interrupt(&mut self) -> Vec<EngineEvent> {
-        Decoder::interrupt(self)
-    }
-
-    fn finish(self, requested_model: &str, interrupted: bool) -> crate::native::ModelResponse {
-        crate::native::ModelResponse {
-            response_id: self.response_id,
-            model: if self.model.is_empty() { requested_model.to_string() } else { self.model },
-            usage: self.usage,
-            stop_reason: self.stop_reason,
-            items: self.items,
-            interrupted,
-        }
-    }
 }
 
 impl Decoder {

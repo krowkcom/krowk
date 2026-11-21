@@ -1041,6 +1041,31 @@ fn finished(events: &[Value], child: &str) -> Option<Result<Finish, String>> {
     }
 }
 
+/// The `Placer` krowk-mcp's delegation tools (R-ALLOC-11) place by, made
+/// on first use: none when sync is not set up here.
+pub type PlacerSource = Arc<dyn Fn() -> Option<Arc<Placer>> + Send + Sync>;
+
+/// A delegated task's answer once it ran on another machine: its summary,
+/// where it ran, what landed in the working tree or was kept, and the
+/// approvals it was denied (R-ALLOC-8, R-ALLOC-14).
+pub fn told(o: &Outcome) -> String {
+    let mut text = o.summary.trim_end().to_string();
+    text.push_str(&format!("\n\nRan on {}.", o.machine));
+    if !o.why.is_empty() {
+        text.push_str(&format!("\nPlaced there because {}.", o.why));
+    }
+    if !o.applied.is_empty() {
+        text.push_str(&format!("\nChanges applied to your working tree: {}", crate::worktree::apply::named(&o.applied)));
+    }
+    if let Some(kept) = &o.kept {
+        text.push_str(&format!("\n{kept}"));
+    }
+    if !o.denied.is_empty() {
+        text.push_str(&format!("\nDenied, since a task on another machine cannot ask: {}", o.denied.join("; ")));
+    }
+    text
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

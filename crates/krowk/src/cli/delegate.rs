@@ -1,15 +1,14 @@
 //! What krowk-mcp's delegation tools (R-ALLOC-11) need of the command line:
-//! the `Placer` its tasks are placed by, the one `synced::placer_source`
-//! makes for krowk's own agent, and `krowk machines --json` read back. A
+//! the `Placer` its tasks are placed by (`synced::source`), and
+//! `krowk machines --json` read back. A
 //! task that stays on this machine runs as `krowk -p --worktree` does, in a
 //! worktree of its own, and lands as a remote one does.
 
 use super::{Io, VERSION};
 use krowk_harness::instances::{default_model_of, Asked, Registry};
 use krowk_harness::protocol::{ModelRef, RunResult, TurnStatus};
-use krowk_harness::subagent::PlacerSource;
 use krowk_harness::sync::fleet::{Resolver, RunLocal};
-use krowk_harness::sync::placement::{LocalRun, Placer};
+use krowk_harness::sync::placement::{LocalRun, Placer, PlacerSource};
 use serde_json::Value;
 use std::sync::{Arc, OnceLock};
 

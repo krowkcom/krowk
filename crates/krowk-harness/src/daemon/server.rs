@@ -37,7 +37,7 @@ use crate::host::{Host, HostConfig};
 use crate::log;
 use super::outbox::{self, Caps, Out, Outbox, Pushed};
 use super::replay::{self, Tail};
-use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LiveEvent, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
+use crate::protocol::{ClientFrame, Command, ErrorInfo, HostSession, HostStatus, LogBody, ServerFrame, StreamLine, PROTOCOL_VERSION};
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
@@ -372,7 +372,7 @@ pub async fn serve(opts: Options, factory: Factory) -> Result<(), String> {
     loop {
         let (quiet, stopping) = {
             let s = state.borrow();
-            (s.clients.values().all(|c| c.background) && s.working == 0 && s.hosts.values().all(|h| h.running_jobs().is_empty()), s.stopping)
+            (s.clients.values().all(|c| c.background) && s.working == 0, s.stopping)
         };
         if stopping {
             eprintln!("asked to stop: exiting");
@@ -919,12 +919,6 @@ async fn host_for(state: &Shared, cwd: &Path, answers: bool) -> Result<Rc<Host>,
                     s.send(f, &session, line_out(&json, &line, &session, None, seq, None));
                 }
             }
-            // A session's last job ended: its hub, kept for it, may go now,
-            // and the idle window start.
-            if matches!(line, StreamLine::Live(LiveEvent::Background { running: 0, .. })) {
-                s.tidy();
-                s.wake.notify_one();
-            }
         }
     });
     Ok(host)
@@ -1148,9 +1142,8 @@ impl State {
     }
 
     fn tidy(&mut self) {
-        let hosts = &self.hosts;
-        self.hubs.retain(|id, h| h.running || h.in_flight > 0 || !h.followers.is_empty() || hosts.values().any(|x| x.background_of(id) > 0));
-        let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1 && h.running_jobs().is_empty()).map(|(k, _)| k.clone()).collect();
+        self.hubs.retain(|_, h| h.running || h.in_flight > 0 || !h.followers.is_empty());
+        let idle: Vec<(PathBuf, bool)> = self.hosts.iter().filter(|(_, h)| Rc::strong_count(h) == 1).map(|(k, _)| k.clone()).collect();
         for k in idle {
             if let Some(h) = self.hosts.remove(&k) {
                 tokio::task::spawn_local(async move { h.shutdown().await });
@@ -1645,17 +1638,6 @@ fn decide(state: &Shared, client: u64, session: &str, host: &Rc<Host>, start: u6
         }
     }
     if last {
-        // The status line's count is sent only as it changes: a client
-        // that comes to the session meanwhile is told it now, once caught up.
-        // Over every host with work of the session's: the one that started
-        // its jobs (a `-p` client's) may not be the one its turns run on now,
-        // and is kept while they run (`tidy`). With one, the live figure.
-        let running: u32 = s.hosts.values().map(|h| h.background_of(session)).sum();
-        if running > 0 {
-            let line = StreamLine::Live(LiveEvent::Background { session_id: session.to_string(), running });
-            let json = serde_json::to_string(&line).expect("a stream line serializes");
-            page.push(line_out(&json, &line, session, None, 0, None));
-        }
         s.follow(session, host, client);
     }
     if let Some(id) = outbox.resynced(session, page, rest, last) {

@@ -44,10 +44,9 @@ pub fn sandboxed(bin: &Path, home: &Path) -> Command {
     c
 }
 
-/// The CLIs krowk connects by finding them on PATH: with one there, krowk
-/// has more than the bench's API instance able to run a model, and
-/// `krowk -p` refuses to choose — a machine with them installed measured
-/// nothing.
+/// The CLIs krowk connects by finding them on PATH: kept off it, so a
+/// machine with them installed measures the same as one without — no
+/// implicit instance of the real `claude` or `codex` beside the bench's.
 const AGENT_CLIS: [&str; 2] = ["claude", "codex"];
 
 /// The caller's PATH with each directory that holds one of `AGENT_CLIS`
@@ -147,71 +146,6 @@ pub fn log_append(work: &Path, runs: usize) -> Outcome {
     xs.sort_by(f64::total_cmp);
     let p99 = xs[(xs.len() * 99 / 100).min(xs.len() - 1)];
     Outcome::Measured { value: median(&mut xs), note: format!("{} events, p99 {p99:.1} µs", xs.len()) }
-}
-
-/// The system prompt plus tool definitions every model call carries, in
-/// the tokens `krowk -p` records for them in the session's context.jsonl:
-/// the largest over the toolset presets. Each preset is one real `krowk -p
-/// --toolset <preset>` against a local provider that refuses every request
-/// at once — the record is written before the first call, so a refusal
-/// costs nothing but the process. The count is krowk's estimate (four
-/// bytes a token), deterministic, so one run each is the number. Run from
-/// `/`: the working directory is the one variable part of the system
-/// prompt, and the number should be the code's, not the checkout path's.
-pub fn context_tokens(bin: &Path, home: &Path) -> Outcome {
-    use std::io::{Read, Write};
-    if let Err(e) = std::fs::create_dir_all(home) {
-        return Outcome::Error(format!("{}: {e}", home.display()));
-    }
-    let listener = match std::net::TcpListener::bind("127.0.0.1:0") {
-        Ok(l) => l,
-        Err(e) => return Outcome::Error(format!("bind the refusing provider: {e}")),
-    };
-    let url = format!("http://{}", listener.local_addr().expect("bound"));
-    std::thread::spawn(move || {
-        for mut conn in listener.incoming().flatten() {
-            // Read the request's head and whatever of the body came with
-            // it, then refuse: 400 is not retried.
-            let mut buf = [0u8; 64 * 1024];
-            let _ = conn.read(&mut buf);
-            let body = r#"{"type":"error","error":{"type":"invalid_request_error","message":"krowk-bench refuses every request"}}"#;
-            let _ = write!(conn, "HTTP/1.1 400 Bad Request\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len());
-        }
-    });
-    let mut per = Vec::new();
-    for preset in krowk_harness::toolset::PRESETS {
-        let before = sessions(home);
-        let run = sandboxed(bin, home)
-            .args(["-p", "hello", "--toolset", preset.name, "--output-format", "json"])
-            .current_dir("/")
-            .env("ANTHROPIC_API_KEY", "sk-bench")
-            .env("ANTHROPIC_BASE_URL", &url)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
-        if let Err(e) = run {
-            return Outcome::Error(format!("{}: {e}", bin.display()));
-        }
-        let Some(dir) = sessions(home).into_iter().find(|d| !before.contains(d)) else {
-            return Outcome::Error(format!("`krowk -p --toolset {}` left no session behind", preset.name));
-        };
-        let rec = std::fs::read_to_string(dir.join("context.jsonl")).ok().and_then(|raw| serde_json::from_str::<serde_json::Value>(raw.lines().next()?).ok());
-        let tokens = rec.as_ref().and_then(|r| Some(r["systemTokens"].as_u64()? + r["toolsTokens"].as_u64()?));
-        match tokens {
-            Some(t) => per.push((preset.name, t)),
-            None => return Outcome::Error(format!("{}: no context record with token counts", dir.display())),
-        }
-    }
-    let max = per.iter().map(|(_, t)| *t).max().unwrap_or(0);
-    let note = per.iter().map(|(p, t)| format!("{p} {t}")).collect::<Vec<_>>().join(" · ");
-    Outcome::Measured { value: max as f64, note }
-}
-
-/// The session directories `krowk -p` has made under a sandboxed home:
-/// those holding a context record, never krowk.db or the import lock that
-/// sit beside them in `sessions/`.
-fn sessions(home: &Path) -> Vec<PathBuf> {
-    std::fs::read_dir(home.join(".krowk/sessions")).map(|r| r.flatten().map(|e| e.path()).filter(|p| p.join("context.jsonl").is_file()).collect()).unwrap_or_default()
 }
 
 /// What a process did while it sat idle for the window.

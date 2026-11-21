@@ -953,7 +953,7 @@ mod tests {
     fn alloc_05_a_run_is_refused_in_each_case_and_admitted_holding_a_slot() {
         let runtime = std::env::temp_dir().join(format!("krowk-admit-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&runtime);
-        let agents = crate::slots::Pool::new(runtime.clone(), crate::subagent::AGENT_SLOTS, 1);
+        let agents = crate::slots::Pool::new(runtime.clone(), crate::children::AGENT_SLOTS, 1);
         let repositories = [AnnouncedRepository { directory: "/home/ann/app".into(), origin: "github.com/acme/app".into() }];
         let instances = [AnnouncedInstance { name: "anthropic".into(), kind: "anthropic".into(), ready: true, state: "ready".into(), fix: None, models: vec!["claude-opus-5-5".into()], limit: None }];
         let here = Admission { now_ms: 1_000, accepting: true, repositories: &repositories, instances: &instances, agents: &agents };

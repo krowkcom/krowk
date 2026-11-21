@@ -8,11 +8,12 @@
 //! instance's tokens live in krowk's provider credentials file, so
 //! definitions can sync between hosts and keys cannot (R-INST-5). A key
 //! can be stored too — in that same credentials file, never here — and is
-//! then used before the variable (`crate::keys`). The kinds
-//! are the native providers' (R-PROV-4): `anthropic-api`, `openai-api`,
-//! `xai-api`, `openrouter-api`, `openai-compatible` for anything else that
-//! speaks Chat Completions, and `xai-oauth` for a SuperGrok subscription.
-//! The vendor backends are more variants: `claude-code` drives the user's
+//! then used before the variable (`crate::keys`). The kinds krowk once ran
+//! itself — `anthropic-api`, `openai-api`, `xai-api`, `openrouter-api`,
+//! `openai-compatible`, and `xai-oauth` for SuperGrok — are still read, so
+//! that a key's definition is turned into a Claude Code or Codex account
+//! (`crate::connect`) and the rest refused with D4's line; no turn runs on
+//! one. The kinds that run: `claude-code` drives the user's
 //! own `claude` binary (R-BACK-1), and is a binary path, a config directory
 //! (`CLAUDE_CONFIG_DIR`), environment variables and launch arguments
 //! (R-INST-1) — so `claude:work` and `claude:personal` are two Claude
@@ -133,13 +134,13 @@ impl SubagentsConfig {
 
     /// Subagents at once: the config's, at least one.
     pub fn max_parallel(&self) -> usize {
-        self.max_parallel.unwrap_or(crate::subagent::MAX_PARALLEL).max(1)
+        self.max_parallel.unwrap_or(crate::children::MAX_PARALLEL).max(1)
     }
 
     /// Agents at once on the machine: the config's, else
-    /// `crate::subagent::max_host`'s for this one.
+    /// `crate::children::max_host`'s for this one.
     pub fn max_host(&self) -> usize {
-        self.max_host.unwrap_or_else(crate::subagent::max_host).max(1)
+        self.max_host.unwrap_or_else(crate::children::max_host).max(1)
     }
 }
 
@@ -406,6 +407,20 @@ pub fn kind_label(kind: &str) -> &'static str {
     }
 }
 
+/// What an account is, in a person's words (R-NAT-4): `kind_label`, but a
+/// Claude Code or Codex account on an API key (one naming `apiKeyEnv`), or a
+/// Codex account on a server of its own, says so rather than "subscription".
+pub fn account_label(inst: &Resolved) -> &'static str {
+    let keyed = !inst.api_key_env.is_empty();
+    let server = inst.backend.as_ref().is_some_and(|b| b.args.iter().any(|a| a.starts_with("model_provider=")));
+    match inst.kind {
+        "claude-code" if keyed => "Claude Code, API key",
+        "codex-app-server" if keyed => "Codex, API key",
+        "codex-app-server" if server => "Codex, own server",
+        k => kind_label(k),
+    }
+}
+
 impl InstanceKind {
     /// `kind_label` of this kind.
     pub fn label(&self) -> &'static str {
@@ -602,6 +617,9 @@ pub struct Registry {
     pub rollover_order: Vec<String>,
     /// Config's `renamed`: an old name, and the one it became.
     pub renamed: BTreeMap<String, String>,
+    /// The names config.json defines an instance under: an account the
+    /// person connected, as against an implicit one (D4's "none connected").
+    pub configured: std::collections::BTreeSet<String>,
 }
 
 impl Registry {
@@ -625,10 +643,11 @@ impl Registry {
             subagents: cfg.subagents.clone(),
             worktrees: cfg.worktrees.clone(),
             builds: crate::builds::Builds::resolve(&cfg.builds, env),
-            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::subagent::AGENT_SLOTS, cfg.subagents.max_host())),
+            agents: Some(crate::slots::Pool::new(crate::slots::runtime_dir(env), crate::children::AGENT_SLOTS, cfg.subagents.max_host())),
             rollover: cfg.rollover.unwrap_or_default(),
             rollover_order: cfg.rollover_order.clone(),
             renamed: cfg.renamed.clone(),
+            configured: cfg.instances.keys().cloned().collect(),
         }
     }
 
@@ -758,9 +777,8 @@ impl Registry {
 
     /// `read_model`, a bare id put on the implicit API instance of the
     /// provider its family names, ready or not (`gpt-…`, `o3`, `codex-…` on
-    /// `openai`, `grok-…` on `xai`, anything else on `anthropic`): where a
-    /// subagent's model goes, since a subagent runs only on krowk's own loop
-    /// and so never on a backend. A turn's model is routed instead.
+    /// `openai`, `grok-…` on `xai`, anything else on `anthropic`). A turn's
+    /// model is routed instead.
     pub fn parse_model(&self, s: &str) -> Result<ModelRef, String> {
         match self.read_model(s)? {
             Asked::Exact(m) => Ok(m),
@@ -777,16 +795,15 @@ impl Registry {
 
     /// The instances that could run a bare `model` — with none, any model —
     /// by name, whether they are ready or not (that is the router's to
-    /// ask): every instance of a kind that serves the id's line. An
-    /// Anthropic model runs on `anthropic-api` or `claude-code`, a GPT on
-    /// `openai-api` or `codex-app-server`, a Grok on `xai-api` or
-    /// `xai-oauth`. A router or a compatible server serves whatever it
-    /// serves, which krowk cannot tell, so it is reached only by naming it.
-    /// None is ranked above another: which one runs is `readiness::route`'s
-    /// rule, and never a guess between an API key and a subscription.
+    /// ask): every Claude Code or Codex account that serves the id's line
+    /// (D4: krowk runs no model itself). An Anthropic model runs on
+    /// `claude-code`, a GPT on `codex-app-server`; a Grok, or a model behind
+    /// a gateway, runs on the account that names it. None is ranked above
+    /// another: which one runs is `readiness::route`'s rule, and never a
+    /// guess between an API key and a subscription.
     pub fn candidates(&self, model: Option<&str>) -> Vec<&Resolved> {
         let line = model.map(line_of);
-        self.instances.values().filter(|i| line_of_kind(i.kind).is_some_and(|l| line.is_none_or(|m| m == l))).collect()
+        self.instances.values().filter(|i| i.backend.is_some() && line_of_kind(i.kind).is_some_and(|l| line.is_none_or(|m| m == l))).collect()
     }
 
     /// A bare id as `inst` takes it: Claude Code takes its aliases
@@ -1378,16 +1395,17 @@ mod tests {
             &env,
         );
         let names = |m: Option<&str>| reg.candidates(m).iter().map(|i| i.name.clone()).collect::<Vec<_>>();
-        let claude = ["anthropic", "anthropic:work", "claude", "claude:work"];
+        // Only Claude Code and Codex accounts run a turn (D4): an instance
+        // krowk would run itself is never a candidate.
+        let claude = ["claude", "claude:work"];
         assert_eq!(names(Some("sonnet")), claude);
         assert_eq!(names(Some("claude-sonnet-4-6")), claude);
         assert_eq!(names(Some("router/some/model")), claude, "an id with a / of its own is Claude's line, as it always was");
-        assert_eq!(names(Some("gpt-5.5")), ["codex", "codex:team", "openai"]);
-        assert_eq!(names(Some("o3")), ["codex", "codex:team", "openai"]);
-        assert_eq!(names(Some("grok-4.7")), ["grok:team", "supergrok", "xai"]);
-        // With no id, every instance with a default model; a router or a
-        // compatible server serves what krowk cannot tell: only ever named.
-        assert_eq!(names(None), ["anthropic", "anthropic:work", "claude", "claude:work", "codex", "codex:team", "grok:team", "openai", "supergrok", "xai"]);
+        assert_eq!(names(Some("gpt-5.5")), ["codex", "codex:team"]);
+        assert_eq!(names(Some("o3")), ["codex", "codex:team"]);
+        assert!(names(Some("grok-4.7")).is_empty(), "a Grok runs on the Codex account that names it");
+        // With no id, every account with a default model.
+        assert_eq!(names(None), ["claude", "claude:work", "codex", "codex:team"]);
         // What each is, in a person's words.
         let labels: Vec<&str> = ["anthropic", "claude", "openai", "codex", "xai", "supergrok", "openrouter", "router"].iter().map(|n| kind_label(reg.get(n).unwrap().kind)).collect();
         assert_eq!(labels, ["Anthropic API key", "Claude subscription", "OpenAI API key", "ChatGPT subscription", "xAI API key", "SuperGrok", "OpenRouter", "OpenAI-compatible"]);
@@ -1430,7 +1448,7 @@ mod tests {
     fn r_sub_2_subagents_config_is_read_and_a_zero_fan_out_refused() {
         let cfg = from_config_json(&serde_json::json!({"subagents": {"maxParallel": 2, "model": "inherit"}})).unwrap();
         assert_eq!((cfg.subagents.max_parallel(), cfg.subagents.model.as_deref()), (2, Some("inherit")));
-        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::subagent::MAX_PARALLEL);
+        assert_eq!(from_config_json(&serde_json::json!({})).unwrap().subagents.max_parallel(), crate::children::MAX_PARALLEL);
         assert!(from_config_json(&serde_json::json!({"subagents": {"maxParallel": 0}})).unwrap_err().contains("at least 1"));
         assert_eq!(from_config_json(&serde_json::json!({"subagents": {"maxHost": 2}})).unwrap().subagents.max_host(), 2);
         let default = from_config_json(&serde_json::json!({})).unwrap().subagents.max_host();

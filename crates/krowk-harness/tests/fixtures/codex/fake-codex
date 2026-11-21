@@ -66,6 +66,9 @@ ARGV="$*"
 log "home ${CODEX_HOME:-<unset>}"
 log "pid $$"
 log "env OPENAI_API_KEY=${OPENAI_API_KEY:-<unset>} ROUTER_KEY=${ROUTER_KEY:-<unset>}"
+# A model provider named with `-c model_provider=…` (a key's account) wants
+# no OpenAI login, as Codex's own custom providers do not.
+case " $* " in *" model_provider="*) PROVIDER=1 ;; esac
 
 case "${1:-}" in
 --version)
@@ -136,7 +139,7 @@ account() {
     apiKey*) printf '{"account":{"type":"apiKey"},"requiresOpenaiAuth":true}' ;;
     *) printf '{"account":{"type":"chatgpt","email":"%s","planType":"plus"},"requiresOpenaiAuth":true}' "$(cut -d' ' -f2 <"$HOME_DIR/fake-login")" ;;
     esac
-  elif [ -n "${ROUTER_KEY:-}" ]; then
+  elif [ -n "${ROUTER_KEY:-}" ] || [ -n "${PROVIDER:-}" ]; then
     printf '{"account":null,"requiresOpenaiAuth":false}'
   else
     printf '{"account":null,"requiresOpenaiAuth":true}'

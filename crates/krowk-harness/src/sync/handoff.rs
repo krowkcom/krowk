@@ -176,7 +176,7 @@ fn collect_untracked(top: &Path, since_ms: i64, limit: u64, fence: bool, over: i
     let mut total = 0u64;
     for rel in listed.split(|b| *b == 0).filter(|p| !p.is_empty()) {
         let rel = String::from_utf8(rel.to_vec()).map_err(|_| "an untracked file's name is not UTF-8, so it cannot move".to_string())?;
-        if fence && crate::tools::fenced_dir(Path::new(&rel)).is_some() {
+        if fence && crate::permissions::scope::fenced_dir(Path::new(&rel)).is_some() {
             continue;
         }
         let path = top.join(&rel);
@@ -215,7 +215,7 @@ fn touches_fence(out: &[u8]) -> bool {
         if f.next() == Some("160000") || f.next() == Some("160000") {
             return true;
         }
-        if tokens.next().is_some_and(|path| crate::tools::fenced_dir(Path::new(path.as_ref())).is_some()) {
+        if tokens.next().is_some_and(|path| crate::permissions::scope::fenced_dir(Path::new(path.as_ref())).is_some()) {
             return true;
         }
     }
@@ -252,7 +252,7 @@ pub fn pack(cwd: &Path, session: &str, since_ms: i64, transcript: Option<(&str, 
 /// repository at HEAD, its uncommitted changes, every untracked file `pack`
 /// would take, the commits no remote has, and `prompt`, for the transport
 /// stored under `session`. Left out: any change inside a `.git`,
-/// `.claude`, `.codex` or `.krowk` directory (`crate::tools::fenced_dir`,
+/// `.claude`, `.codex` or `.krowk` directory (`crate::permissions::scope::fenced_dir`,
 /// as a local return fences them) and any change to a submodule, which
 /// would name what runs, or what is allowed, on the target. The unpushed
 /// commits are held to the same fence: when the commits on the way to
@@ -276,7 +276,7 @@ pub fn pack_job(cwd: &Path, session: &str, prompt: &str) -> Result<Bundle, Strin
         let Ok(name) = std::str::from_utf8(name) else {
             return Err(format!("a changed file's name is not UTF-8, so it cannot move. {JOB_FENCED}"));
         };
-        if crate::tools::fenced_dir(Path::new(name)).is_some() {
+        if crate::permissions::scope::fenced_dir(Path::new(name)).is_some() {
             fenced.push(format!(":(exclude,literal){name}"));
         }
     }
@@ -331,7 +331,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
     if !matches!(b.base.len(), 40 | 64) || !b.base.bytes().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("the job names {:?} as its base, which is not a commit id", b.base));
     }
-    if let Some(f) = b.untracked.iter().find(|f| crate::tools::fenced_dir(Path::new(&f.path)).is_some()) {
+    if let Some(f) = b.untracked.iter().find(|f| crate::permissions::scope::fenced_dir(Path::new(&f.path)).is_some()) {
         return Err(format!("the job carries {}, inside a directory krowk never hands to another machine", f.path));
     }
     if !b.diff.is_empty() {
@@ -344,7 +344,7 @@ pub fn apply_job(b: &Bundle, repo: &Path, worktrees: &Path) -> Result<JobApplied
         // `added<TAB>deleted<TAB>path`, NUL-ended.
         for t in names.split(|c| *c == 0).filter(|p| !p.is_empty()) {
             let t = String::from_utf8_lossy(t);
-            if t.splitn(3, '\t').nth(2).is_none_or(|p| crate::tools::fenced_dir(Path::new(p)).is_some()) {
+            if t.splitn(3, '\t').nth(2).is_none_or(|p| crate::permissions::scope::fenced_dir(Path::new(p)).is_some()) {
                 return Err("the job carries changes inside a directory krowk never hands to another machine".to_string());
             }
         }

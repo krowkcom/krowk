@@ -17,7 +17,7 @@
 //!
 //! Every tool in `EXPOSED` is offered to every backend session, and only
 //! those: a tool is exposed by being listed there, with its input a Rust
-//! type its schema is derived from, as the native tools' are.
+//! type its schema is derived from.
 
 use crate::engine::{BoxFuture, Events};
 use crate::evidence::{self, Evidence};
@@ -42,8 +42,8 @@ pub struct BridgeEnv<'a> {
     /// The backend running the session, e.g. `claude-code`.
     pub backend: &'a str,
     pub krowk_version: &'a str,
-    /// The turn's permissions: `publish` is judged by them, as the native
-    /// one is — whatever a vendor's own settings allowed.
+    /// The turn's permissions: `publish` is judged by them, whatever a
+    /// vendor's own settings allowed.
     pub gate: &'a crate::permissions::Gate,
     /// The turn's interrupt, while a person is asked; none outside a turn.
     pub cancel: Option<&'a tokio::sync::watch::Receiver<bool>>,
@@ -51,7 +51,7 @@ pub struct BridgeEnv<'a> {
     /// none when the host publishes nothing.
     pub evidence: Option<(&'a Evidence, &'a Events)>,
     /// The session's MCP servers, offered as `mcp_search` and `mcp_call`
-    /// (the native engine's two tools) when there is at least one; none for
+    /// when there is at least one; none for
     /// a backend that does not carry them.
     pub mcp: Option<&'a crate::mcp::Mcp>,
     /// The tool calls (by Claude Code's tool-use id) the person was asked
@@ -100,7 +100,7 @@ async fn mcp_tool(name: &str, input: &Value, env: &BridgeEnv<'_>, mcp: &crate::m
         Err((m, _)) => return refuse(m),
     };
     let call = crate::permissions::Call { tool: format!("mcp__{server}__{tool}"), access: crate::permissions::Access::Mcp { server: server.clone(), tool: tool.clone() }, subject: None };
-    match gate.verdict(&call, None) {
+    match gate.verdict(&call) {
         crate::permissions::Verdict::Allow(_) => {}
         crate::permissions::Verdict::Deny(m) => return refuse(m),
         crate::permissions::Verdict::Ask { reason, .. } => {
@@ -148,12 +148,12 @@ pub const EXPOSED: &[Exposed] = &[
     Exposed {
         name: "session_info",
         description: "What krowk knows about this session: its krowk session id, the turn, the instance and model it runs on, and its working directory. Takes no input.",
-        input_schema: crate::tools::input_schema::<SessionInfoInput>,
+        input_schema: crate::schema::input_schema::<SessionInfoInput>,
         run: |env, input| Box::pin(std::future::ready(session_info(env, input))),
     },
-    // The native `publish`, the same call: a backend's evidence lands under
-    // the same run, tagged with the same krowk session.
-    Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::tools::input_schema::<evidence::PublishInput>, run: publish },
+    // `publish`: a backend's evidence lands under the session's run,
+    // tagged with its krowk session.
+    Exposed { name: evidence::PUBLISH, description: evidence::DESCRIPTION, input_schema: crate::schema::input_schema::<evidence::PublishInput>, run: publish },
 ];
 
 fn publish<'a>(env: &'a BridgeEnv<'a>, input: &'a Value) -> BoxFuture<'a, (String, bool)> {
@@ -166,8 +166,8 @@ fn publish<'a>(env: &'a BridgeEnv<'a>, input: &'a Value) -> BoxFuture<'a, (Strin
             Err(e) => return e,
         };
         let judged = match (env.evidence, env.cancel) {
-            (Some((_, events)), Some(cancel)) => env.gate.check(&call, evidence::PUBLISH, input, None, events, cancel).await.map(drop),
-            _ => match env.gate.verdict(&call, None) {
+            (Some((_, events)), Some(cancel)) => env.gate.check(&call, evidence::PUBLISH, input, events, cancel).await.map(drop),
+            _ => match env.gate.verdict(&call) {
                 crate::permissions::Verdict::Allow(_) => Ok(()),
                 crate::permissions::Verdict::Deny(m) => Err(m),
                 crate::permissions::Verdict::Ask { reason, .. } => Err(format!("publish needs approval — {reason} — and it was called where nobody can be asked")),
@@ -318,7 +318,7 @@ mod tests {
         let plain = BridgeEnv { gate: &default, ..env };
         let refused = rt.block_on(handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "publish", "arguments": {"files": ["shot.png"]}}}), &plain));
         assert_eq!(refused["result"]["isError"], true);
-        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("needs approval"), "judged by the same evaluator as the native tool: {refused}");
+        assert!(refused["result"]["content"][0]["text"].as_str().unwrap().contains("needs approval"), "judged by the one evaluator: {refused}");
         assert!(rx.try_recv().is_err(), "nothing was published");
     }
 }

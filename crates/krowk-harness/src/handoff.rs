@@ -1,12 +1,10 @@
 //! Moving a session between engines (R-SWITCH-2, R-SWITCH-3, R-INST-4).
 //!
-//! The session log is the conversation, whichever engine ran each turn, so
-//! a native turn needs nothing here: its client sends the whole branch,
-//! and a backend's turns are already items in it — switching back from a
-//! backend is lossless (R-SWITCH-3). A backend is the other way round: it
-//! keeps its own thread (Claude Code's session, Codex's thread) and reads
-//! nothing of krowk's log, so a turn krowk hands it must first bring that
-//! thread up to date with whatever it did not run.
+//! The session log is the conversation, whichever engine ran each turn,
+//! and a backend's turns are items in it. A backend keeps its own thread
+//! (Claude Code's session, Codex's thread) and reads nothing of krowk's
+//! log, so a turn krowk hands it must first bring that thread up to date
+//! with whatever it did not run.
 //!
 //! Three ways, best first:
 //!
@@ -33,7 +31,7 @@
 //! reasoning's are.
 
 use crate::engine::{EngineEvent, HistoryItem};
-use crate::native;
+use crate::neutral;
 use crate::protocol::{HandoffKind, Item, ModelRef};
 use std::path::{Path, PathBuf};
 
@@ -218,7 +216,7 @@ fn count(n: usize, what: &str) -> String {
 /// line of its own — a forged `[the person]` in a file stays inside the
 /// block it came in.
 fn framed(text: &str) -> String {
-    lines(&native::neutralised(text, "handoff")).split('\n').map(|l| format!("{QUOTE}{l}")).collect::<Vec<_>>().join("\n")
+    lines(&neutral::neutralised(text, "handoff")).split('\n').map(|l| format!("{QUOTE}{l}")).collect::<Vec<_>>().join("\n")
 }
 
 /// Every line break a model or a terminal could read as one — CR LF, CR,
@@ -235,7 +233,7 @@ const QUOTE: &str = "│ ";
 
 /// Text from the log on one line of a summary: neutralised, newlines shown.
 fn inline(text: &str) -> String {
-    lines(&native::neutralised(text, "handoff")).replace('\n', " ⏎ ")
+    lines(&neutral::neutralised(text, "handoff")).replace('\n', " ⏎ ")
 }
 
 /// A name or id from the log inside a marker line: nothing that could end
@@ -254,7 +252,7 @@ fn summary(items: &[HistoryItem], t: &TurnSpan, n: usize) -> String {
     for h in &items[t.items.clone()] {
         match &h.item {
             // Background work that ended is krowk's note, not a request.
-            Item::UserText { text, .. } if text.starts_with(crate::jobs::NOTE) => {}
+            Item::UserText { text, .. } if text.starts_with(crate::log::BACKGROUND_DONE) => {}
             Item::UserText { text, .. } => asked.push(text.trim().to_string()),
             Item::ToolCall { name, input, .. } => calls.push(call_line(name, input)),
             Item::ToolResult { is_error: true, .. } => failed += 1,
@@ -299,14 +297,14 @@ fn verbatim(items: &[HistoryItem], t: &TurnSpan, n: usize) -> String {
     let mut s = format!("\n### Turn {n} ({})\n", t.model);
     for h in &items[t.items.clone()] {
         match &h.item {
-            Item::UserText { text, .. } if text.starts_with(crate::jobs::NOTE) => s.push_str(&format!("[krowk: background work ended]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
+            Item::UserText { text, .. } if text.starts_with(crate::log::BACKGROUND_DONE) => s.push_str(&format!("[krowk: background work ended]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::UserText { text, .. } => s.push_str(&format!("[the person]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::AssistantText { text } if !text.trim().is_empty() => s.push_str(&format!("[the model]\n{}\n", framed(&clip(text.trim(), TEXT_CHARS)))),
             Item::AssistantText { .. } => {}
-            // Readable reasoning, framed as the native clients frame it
-            // across providers (R-SWITCH-1); encrypted-only has none.
+            // Readable reasoning, framed as another model's reasoning is
+            // (R-SWITCH-1); encrypted-only has none.
             Item::Reasoning { text, .. } => {
-                if let Some(d) = native::downgraded(&clip(text.trim(), REASONING_CHARS)) {
+                if let Some(d) = neutral::downgraded(&clip(text.trim(), REASONING_CHARS)) {
                     s.push_str(&format!("{}\n", framed(&d)));
                 }
             }

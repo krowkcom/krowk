@@ -77,7 +77,6 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
     let sessions_dir = log::sessions_dir(ctx.io.env)?;
     let credentials = super::providers::credentials_path()?;
     let env = krowk_api::home::process_env;
-    let placer = super::synced::placer_source(&ctx.f);
     let factory: server::Factory = Box::new(move |cwd: &std::path::Path, answers: bool| {
         // Read again for each directory's host: a provider connected since
         // the daemon started is one its next directory has.
@@ -94,7 +93,7 @@ pub(super) fn serve(ctx: &mut Ctx) -> Result<(), Error> {
             trust: gate.clone(),
             publisher: Some(publisher.clone()),
             permissions: krowk_harness::permissions::Config { approvals: answers, ..permissions.clone() },
-            agents: krowk_harness::subagent::AgentsConfig { placer: Some(placer.clone()), ..prompt::agents_config(&env) },
+            agents: prompt::agents_config(&env),
             session: Default::default(),
         })
     });

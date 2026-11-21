@@ -120,7 +120,7 @@ fn r_tool_3_every_spelling_of_a_whole_server_deny_starts_nothing() {
         let denied = |srv: &str, tool: Option<&str>| {
             let tool = tool.unwrap_or("*");
             let call = krowk_harness::permissions::Call { tool: format!("mcp__{srv}__{tool}"), access: krowk_harness::permissions::Access::Mcp { server: srv.into(), tool: tool.into() }, subject: None };
-            matches!(gate.verdict(&call, None), krowk_harness::permissions::Verdict::Deny(_))
+            matches!(gate.verdict(&call), krowk_harness::permissions::Verdict::Deny(_))
         };
         let m = Mcp::new(vec![server("fake", "bash", vec![s.display().to_string()], &b.join("home"))]);
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -214,8 +214,7 @@ fn r_tool_3_a_tool_named_with_a_star_is_left_out_and_said() {
     assert!(out.contains("(the MCP server fake: 2 tool(s) named with a control character, whitespace or `*`, or with no name, were left out)"), "{out}");
 }
 
-/// `mcp_call` holds what `denied` keeps from the turn itself — a
-/// subagent's allowlist, which the native loop refuses first — before any
+/// `mcp_call` holds what `denied` keeps from the turn itself before any
 /// server starts, the whole server or the one tool.
 #[test]
 fn r_sub_1_mcp_call_refuses_what_the_turn_may_not_reach_before_any_server_starts() {
